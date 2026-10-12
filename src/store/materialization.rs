@@ -15,6 +15,120 @@ use crate::{
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReceiptBackfillResult {
+    pub inspected: u16,
+    pub more: bool,
+    /// One-shot durable transition. A caller retaining a due cursor must reset
+    /// it before scanning, because repair may insert behind its previous key.
+    pub completed: bool,
+}
+
+/// Advance the historical physical/prepared snapshot by at most `limit` rows.
+/// The cursor and all projections commit together. `scan_due` uses the inner
+/// helper so its completion reset and warning decisions share that transaction.
+pub fn backfill_receipt_deadlines(
+    db: &mut Connection,
+    limit: u16,
+) -> Result<ReceiptBackfillResult, ApiError> {
+    let tx = db.transaction().map_err(store_error)?;
+    let result = backfill_receipt_deadlines_in(&tx, limit)?;
+    tx.commit().map_err(store_error)?;
+    Ok(result)
+}
+
+pub(crate) fn backfill_receipt_deadlines_in(
+    tx: &Connection,
+    limit: u16,
+) -> Result<ReceiptBackfillResult, ApiError> {
+    if !(1..=100).contains(&limit) {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "invalid receipt backfill limit",
+        ));
+    }
+    let (mut physical, physical_high, mut prepared, prepared_high, completed): (i64,i64,i64,i64,bool) = tx.query_row(
+        "SELECT physical_after,physical_high_water,prepared_after,prepared_high_water,completed FROM receipt_deadline_backfill WHERE singleton=1",
+        [], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
+    ).map_err(store_error)?;
+    if completed {
+        return Ok(ReceiptBackfillResult {
+            inspected: 0,
+            more: false,
+            completed: false,
+        });
+    }
+    let mut inspected = 0u16;
+    if physical < physical_high {
+        let rows: Vec<(i64, String, String)> = {
+            let mut statement = tx.prepare("SELECT ordinal,message_id,seat_id FROM receipts WHERE ordinal>?1 AND ordinal<=?2 ORDER BY ordinal LIMIT ?3").map_err(store_error)?;
+            statement
+                .query_map(params![physical, physical_high, limit], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+                .map_err(store_error)?
+                .collect::<Result<_, _>>()
+                .map_err(store_error)?
+        };
+        inspected = u16::try_from(rows.len())
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "receipt backfill batch too large"))?;
+        for (ordinal, message, seat) in rows {
+            if let Some(receipt) = effective_receipt(tx, &message, &seat)?
+                && receipt.source == super::effective::ReceiptSource::Physical
+                && receipt.state == EffectiveReceiptState::Pending
+            {
+                tx.execute("UPDATE receipts SET deadline_at=?1 WHERE ordinal=?2 AND state='pending' AND ack_required=1 AND deadline_at IS NULL",
+                    params![receipt.deadline_at,ordinal]).map_err(store_error)?;
+            }
+            physical = ordinal;
+        }
+        if inspected < limit {
+            physical = physical_high;
+        }
+    }
+    if physical == physical_high && inspected < limit && prepared < prepared_high {
+        let allowance = limit - inspected;
+        let rows: Vec<(i64, Option<String>, String)> = {
+            // Include unpublished rows in the row budget. Filtering them in a
+            // JOIN could hide an unbounded staged run before the first match.
+            let mut statement = tx.prepare("SELECT pr.ordinal,sm.message_id,pr.seat_id FROM prepared_recipients pr LEFT JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE pr.ordinal>?1 AND pr.ordinal<=?2 ORDER BY pr.ordinal LIMIT ?3").map_err(store_error)?;
+            statement
+                .query_map(params![prepared, prepared_high, allowance], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+                .map_err(store_error)?
+                .collect::<Result<_, _>>()
+                .map_err(store_error)?
+        };
+        let count = u16::try_from(rows.len())
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "manifest backfill batch too large"))?;
+        inspected += count;
+        for (ordinal, message, seat) in rows {
+            if let Some(message) = message
+                && effective_receipt(tx, &message, &seat)?
+                    .is_some_and(|receipt| receipt.state == EffectiveReceiptState::Pending)
+            {
+                let indexed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM receipt_state WHERE message_id=?1 AND seat_id=?2 AND deadline_at IS NOT NULL)",params![message,seat],|r|r.get(0)).map_err(store_error)?;
+                if !indexed {
+                    project_receipt(tx, &message, &seat)?;
+                }
+            }
+            prepared = ordinal;
+        }
+        if count < allowance {
+            prepared = prepared_high;
+        }
+    }
+    let completed = physical == physical_high && prepared == prepared_high;
+    tx.execute("UPDATE receipt_deadline_backfill SET physical_after=?1,prepared_after=?2,completed=?3 WHERE singleton=1",
+        params![physical,prepared,completed]).map_err(store_error)?;
+    Ok(ReceiptBackfillResult {
+        inspected,
+        more: !completed,
+        completed,
+    })
+}
+
 #[derive(Clone, Copy)]
 enum Kind {
     Warning,

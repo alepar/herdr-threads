@@ -1298,9 +1298,9 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
     // Spec D7: a live mod channel delivers attention itself, so the digest,
     // ready commands and mark stay out of this boundary; the stored mark is
     // left alone, so what is pending is presented once the channel is gone.
-    // Informational notices do not travel on the channel (as in
-    // `lifecycle_check_in`, where the offered notices still show), so pending
-    // ones are still offered here.
+    // Capable Watch and hooks share the exact-occupant notice frontier.
+    // Any notices still pending here remain eligible for this hook offer,
+    // including when the live channel uses legacy delivery.
     let live = digest.as_ref().is_ok_and(|digest| digest.mod_channel_live);
     // A hook-pull seat withholds the digest from what it presents at every tool
     // boundary (delivery-policy DP7) while the coalescing mark works as for any

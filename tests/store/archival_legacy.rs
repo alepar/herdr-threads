@@ -137,6 +137,14 @@ fn legacy_compound(
     context: ContinuationContext,
     new_thread: bool,
 ) -> herdr_threads::cli::journal::IntentRef {
+    legacy_compound_with_body(paths, context, new_thread, "body".into())
+}
+fn legacy_compound_with_body(
+    paths: &InstancePaths,
+    context: ContinuationContext,
+    new_thread: bool,
+    body: String,
+) -> herdr_threads::cli::journal::IntentRef {
     use herdr_threads::{
         cli::{
             handoff::{HandoffPlan, HandoffRequest},
@@ -150,12 +158,13 @@ fn legacy_compound(
         startup_input: None,
         bootstrap_input: None,
         request: HandoffRequest {
+            policy: None,
             automatic: false,
             thread: (!new_thread).then(|| ThreadId::new("t")),
             thread_name: None,
             topic: new_thread.then(|| "literal-topic".into()),
             goal: new_thread.then(|| "literal-goal".into()),
-            body: "body".into(),
+            body,
             launch: LaunchRequest {
                 target: HostTargetId::new("p"),
                 harness: serde_json::from_str("\"Codex\"").unwrap(),
@@ -451,9 +460,18 @@ pub(super) fn modern_compound(
     bootstrap: bool,
     new_thread: bool,
 ) -> herdr_threads::cli::journal::IntentRef {
+    modern_compound_with_body(paths, bootstrap, new_thread, "work".into())
+}
+fn modern_compound_with_body(
+    paths: &InstancePaths,
+    bootstrap: bool,
+    new_thread: bool,
+    body: String,
+) -> herdr_threads::cli::journal::IntentRef {
     use herdr_threads::cli::journal::{BootstrapPlan, DeliveryPlan, Journal, SemanticMutation};
     use herdr_threads::protocol::handoff::{HandoffChannel, HandoffNamespace};
     let mut id = super::topology_handoff::identity();
+    id.payload.handoff.body = body;
     let current = context(paths);
     id.payload.handoff.namespace = HandoffNamespace {
         instance: "i".into(),
@@ -528,6 +546,43 @@ fn archival_legacy_delivery_uses_its_own_frozen_identity_without_launch() {
         1,
         "delivery must protect its exact channel"
     );
+}
+
+#[test]
+fn maximum_escaped_handoff_bodies_survive_real_archival_origin_and_terminal_loaders() {
+    for mode in ["legacy", "delivery", "bootstrap"] {
+        let (_dir, paths, mut source) = source();
+        let body = "\u{1}".repeat(65_536);
+        let reference = match mode {
+            "legacy" => legacy_compound_with_body(&paths, context(&paths), false, body),
+            "delivery" => modern_compound_with_body(&paths, false, false, body),
+            _ => modern_compound_with_body(&paths, true, false, body),
+        };
+        let file = paths.instance_dir.join("intents").join(format!(
+            "{:020}-{}.intent",
+            reference.ordinal,
+            reference.operation.as_str()
+        ));
+        let original = std::fs::read(&file).unwrap();
+        assert!(original.len() >= 393_216);
+        let scan = complete_scan(&mut source);
+        assert!(
+            scan.coverage.is_some(),
+            "maximum {mode} origin must establish coverage"
+        );
+        assert_eq!(scan.hints.len(), 1);
+        assert_eq!(std::fs::read(&file).unwrap(), original);
+        if mode == "delivery" {
+            let (terminal, bytes) = delivery_terminal(&paths, &reference);
+            assert!(bytes.len() >= 458_752);
+            // Cover both an exact surviving original and terminal-only cleanup.
+            std::fs::write(&file, &original).unwrap();
+            assert!(complete_scan(&mut source).coverage.is_some());
+            std::fs::remove_file(&file).unwrap();
+            assert!(complete_scan(&mut source).coverage.is_some());
+            assert_eq!(std::fs::read(terminal).unwrap(), bytes);
+        }
+    }
 }
 
 pub(super) fn scanner_store(

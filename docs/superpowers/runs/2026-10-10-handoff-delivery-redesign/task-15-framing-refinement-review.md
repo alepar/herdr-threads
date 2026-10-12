@@ -1,0 +1,51 @@
+# Task15 final framing design review
+
+Initial reviewed proposal SHA-256: `51ecb6ab91b25a89ef3f1dcde8064397bfac9881290c63e2afd47110c352ad40`, `task-15-framing-refinement-proposal.md`, complete document. Source reads: actual D warm `.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2`; frozen six-path emit helper `.worktrees/emit-helper-15` at supplied `949b69a4`. Neither implementation was edited or tested. This is a design/interface review, not a final code review or implementation authorization.
+
+## Initial verdict
+
+**Spec: Important unresolved interface choices.**
+
+**Quality: Important unresolved interface choices.**
+
+Exact final-output sizing is necessary and the registered pure descriptor approach is suitable. The initial document expressly leaves ordered Watch notice/control projection and durable deferred Attention unresolved. Those are load-bearing: without them the implementation can settle an informational notice without emitting it, lose five-way ordering, or lose/repeat deferred Attention. No CLEAN verdict applies to the initial hash.
+
+## Source-backed dispositions
+
+### Registered codec and selector snapshot
+
+The neutral descriptor method with inert None default is appropriate. Core receives a validated bounded profile, never an arbitrary adapter callback or caller envelope. Both selector choices must be resolved before retiring a supplied token or mutating progress. Adapter selection stays registry-based from canonical binding; no AGY names/selector literals belong in neutral core. The descriptor's static envelope and actual `InjectionStep::render` must share constants/encoding definition and actual Rust-serde equality fixtures; prose System54/User34 counts alone are insufficient.
+
+The helper currently chooses downgrade/probation step after receiving a page (`agy/delivery.rs::pre_invocation`) and computes confirmability from `page.offered`. The refinement must move expiration handling and both selector choices into one pre-request frozen snapshot, preserve the existing confirmable-message probation rules, then encode the returned selected selector without rereading local downgrade state. Two selectors are necessary because passive-only invitation/notice output and a mixed page with nontruncated offered message IDs can use different native shapes. Every candidate that changes that predicate must remeasure the whole trial page; it cannot displace an already selected first-priority FULL item.
+
+Parent explicitly accepts frozen replay representation after a newer local preferred selector. A codec that is truly removed/unsupported/drifted causes bounded refusal, no emission/confirmation/new allocation; binding/operator repair is the accepted recovery limit. Record that tradeoff in TRUST in the same implementation commit. No automatic token-preserving repartition is implied. The client must separately validate a replay's echoed codec is a registered supported codec, rather than requiring it equal its new preferred selectors.
+
+### Ordered Watch output is a real missing seam
+
+Current `DeliveryPageV2` has separate `messages` and `invitations` vectors and no ordered control/notice representation (`protocol/delivery.rs`). `invitation_content::pull` can settle `carried_notices`, but `page` gives Watch only those two vectors and an empty text. Current Watch drain constructs typed WatchLine objects at the emitter; `write_line` serializes actual WatchLine plus LF (`cli/watch.rs:108`). The mod accepts message/lazy/invitation/attention and ignores unknown kinds (`register.js`). Therefore the final ordered plan must have an explicit projection for **every** carried class and control, and any additive notice kind must have matching informational mod handling.
+
+Recommended concrete shape: one bounded ordered `Vec<PresentationOutputItem>` (<=32) with typed Message/Lazy, Invitation, Notice, Attention, AttentionCleared variants, or an equally concrete bounded reference list whose indices/uniqueness/count are validated. A self-contained typed list avoids dangling references and duplicate-order entries. Existing V1 Watch message/attention JSON remains exact. Share one pure constructor from each ordered typed item to actual WatchLine; store sizing and CLI emission call that constructor. New Notice must carry canonical warning identity/thread and the exact inspection-marker body, be non-ACKable and informational, and enter the mod's in-turn queue without initiating an idle submit or acquiring message receipt authority. It cannot be encoded as waking Attention to reuse an existing arm.
+
+The shared serializer must count schema/id/kind, conditional fields, escaped metadata and LF. The final batch sum, not each line independently, is capped65536. Hook uses the same order to construct the actual plaintext frame, then counts its selected native envelope. Hook and Watch projection differences must not omit a carried notice or control from either allocation accounting or emission. A source page/request bound is separate from this final-output bound.
+
+### Deferred Attention requires durable progress and completion
+
+The proposal correctly rejects preinserting Attention ahead of first-priority content. Actual D currently does preinsert it; selected refinement must remove that ordering. A first-priority standalone-fitting FULL candidate gets its whole output allowance, then Attention can be appended only if the actual final encoding/item count fits.
+
+Persist current-binding/consumer deferred version, allocated/presented version and bounded control opportunity state. A deferred version gets at most one control-only allocation between fresh quanta; replay does not rotate or count as a new opportunity. On canonical condition clear, suppress pending stale control; a changed attention version supersedes the old obligation and remains independently eligible. Neither invitation complete counters nor notice settlement satisfy the Attention obligation, and canonical open-warning/native eligibility remains independent.
+
+The existing durable outbox is invitation-only and currently requires nonempty invitation descriptors. A control-only allocation therefore needs an explicitly selected token/completion representation: either a single bounded separate control slot or a scoped extension of the outbox's frozen ordered descriptor list to include control. Confirmation after successful emit+flush must work with zero invitations, without creating any invitation/message ACK. Commit-before-output deletion of attention debt is not enough; lost socket reply/broken output must replay the same logical control allocation. Explicitly define the result's token presence for these pages, replay validation and obsolete-empty retirement. A pending control obligation must bypass Unchanged/whole_read and continue at unchanged recipient version; it must not generate a new Lazy idle wake.
+
+### Final bytes, SQL/CPU bounds and RPC scope
+
+Actual plaintext join is HEADER +2 LF, then blocks separated by2 LF. Source body/goal length, intermediate V2 page size and final native/JSON size are distinct. The design's serde counting writer avoids hand-maintained escaping estimates and6x materialization. Use actual frame output and final WatchLine construction. Count partial continuations through the same final projection. `required_render_bytes` becomes standalone **final** bytes for the validated render key, including prefix/selector/schema identity; a different render shape invalidates sizing through the bounded existing dirty walk, never by resetting complete/partial allowances or discovery frontiers.
+
+The stated candidate/serializer algebra is finite:100 invitations +32 ordinary +16 notices +1 Attention gives149 trial candidates, at most200 invitation standalone complete/partial measurements, with each capped counting pass<=65537.349 such passes are<23MiB counted bytes. Enforce attempt counters across lending and count each serializing projection exactly once per declared attempt. Include any final emission verification/count and RPC-result serialization as additional separately bounded passes rather than silently placing them inside149. This is CPU work separate from canonical SQL visits (100 invitation +100 ordinary +17 notice, plus16 notice validations/fixed probes; replay<=32). No old invitation4096-page drain or hidden query callback is needed.
+
+The64KiB working **output** buffer bound does not mean all process memory is64KiB: bounded candidate plaintext/context descriptors and existing ordinary carry are additional data. Keep that accounting honest. Source canonical topic/goal/prefix limits bound each candidate before counting; no unbounded envelope strings enter from callers.
+
+The requirement that actual WireResponse fitting happen before canonical allocation needs an implementable seam. Current store/service operations do not receive transport request_id/daemon_boot; those belong to the outer wire handler. Prefer count actual CommandResult serialization precommit plus a conservative **fixed** outer-envelope allowance derived from actual wire validator maxima. Complete actual WireResponse fixtures verify that bound at transport integration. Final Hook/native65536 and Watch batch65536 leave substantial room under unchanged1MiB RPC framing; do not invent a generic transport-envelope callback, pretend the store knows unknown correlation fields, or raise the cap. A measured result exceeding its proven response allowance fails/rolls back before allocation.
+
+## Closure required
+
+Persist exact ordered Watch notice/control type and matching emitter/mod behavior, durable Attention token/control progress and canonical-clear/replay semantics, explicit accepted frozen-codec recovery limit, and implementable bounded RPC wrapper proof. Then a focused textual rereview can issue Spec CLEAN / Quality CLEAN for the selected design. Actual extreme System100333/User100313 REDs are parent/author evidence; this reviewer ran no tests. Required GREEN remains actual producer/emitter codec equality,65535/65536/65537 boundaries, all-class order and notice visibility, five-way first FULL under pending Attention, lost reply/broken output/replay codec changes and old V1 byte/fallback controls.

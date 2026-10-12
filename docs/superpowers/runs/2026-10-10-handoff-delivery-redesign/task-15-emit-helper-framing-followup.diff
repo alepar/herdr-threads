@@ -1,0 +1,1206 @@
+diff --git a/src/cli/hook.rs b/src/cli/hook.rs
+index 4dcf3dd4..b67a61f8 100644
+--- a/src/cli/hook.rs
++++ b/src/cli/hook.rs
+@@ -2987,7 +2987,7 @@ fn run_hook_step(
+     });
+     HookOutcome {
+         stdout: prepared.stdout,
+-        diagnostic: None,
++        diagnostic: prepared.diagnostic,
+         attention: None,
+         lazy: None,
+         step_completion,
+diff --git a/src/harness/adapter.rs b/src/harness/adapter.rs
+index 8d319809..95ec94f3 100644
+--- a/src/harness/adapter.rs
++++ b/src/harness/adapter.rs
+@@ -2,8 +2,23 @@
+ use crate::protocol::time::CallBudget;
+ use std::ffi::OsString;
+ 
++/// Registered static representation of one JSON string; never caller-supplied
++/// native bytes, a callback, or an authority/admission decision.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum PresentationCodec {
++    JsonStringEnvelope {
++        prefix: &'static str,
++        suffix: &'static str,
++    },
++}
++
+ pub trait HarnessAdapter: Send + Sync + 'static {
+     type Admission: Send + Sync + 'static;
++    /// Pure static presentation descriptor. Unsupported selectors grant no V2
++    /// Hook representation; callers may retain historical delivery instead.
++    fn presentation_codec(&self, _selector: u8) -> Option<PresentationCodec> {
++        None
++    }
+     fn metadata(&self) -> &'static AdapterMetadata;
+     fn receipt_admission_summary(&self) -> Option<String> {
+         None
+@@ -609,6 +624,7 @@ pub trait HookStep: Send + Sync {
+         HookStepOutput {
+             stdout: self.run(context),
+             completion: None,
++            diagnostic: None,
+         }
+     }
+     /// Invoked only after all prepared stdout was written and flushed. The daemon
+@@ -633,6 +649,8 @@ impl HookStepCompletionPayload {
+ pub struct HookStepOutput {
+     pub stdout: Vec<u8>,
+     pub completion: Option<HookStepCompletionPayload>,
++    /// Bounded adapter failure detail for stderr, never model context.
++    pub diagnostic: Option<String>,
+ }
+ pub struct HookStepContext<'a> {
+     pub input: &'a HookInput,
+diff --git a/src/harness/agy/decode.rs b/src/harness/agy/decode.rs
+index 3e48f110..23471507 100644
+--- a/src/harness/agy/decode.rs
++++ b/src/harness/agy/decode.rs
+@@ -25,7 +25,64 @@ pub enum InjectionStep {
+     /// `{"injectSteps":[{"userMessage":"T"}]}`
+     UserMessage,
+ }
++const SYSTEM_PRESENTATION_PREFIX: &str = "{\"injectSteps\":[{\"systemMessage\":{\"systemMessage\":";
++const SYSTEM_PRESENTATION_SUFFIX: &str = "}}]}";
++const USER_PRESENTATION_PREFIX: &str = "{\"injectSteps\":[{\"userMessage\":";
++const USER_PRESENTATION_SUFFIX: &str = "}]}";
++const PRESENTATION_MAX_BYTES: usize = 65_536;
++
+ impl InjectionStep {
++    pub(crate) fn presentation_selector(self) -> u8 {
++        match self {
++            Self::SystemMessage => 0,
++            Self::UserMessage => 1,
++        }
++    }
++    pub(crate) fn from_presentation_selector(selector: u8) -> Option<Self> {
++        match selector {
++            0 => Some(Self::SystemMessage),
++            1 => Some(Self::UserMessage),
++            _ => None,
++        }
++    }
++    pub(crate) fn presentation_codec(self) -> crate::harness::adapter::PresentationCodec {
++        use crate::harness::adapter::PresentationCodec;
++        match self {
++            Self::SystemMessage => PresentationCodec::JsonStringEnvelope {
++                prefix: SYSTEM_PRESENTATION_PREFIX,
++                suffix: SYSTEM_PRESENTATION_SUFFIX,
++            },
++            Self::UserMessage => PresentationCodec::JsonStringEnvelope {
++                prefix: USER_PRESENTATION_PREFIX,
++                suffix: USER_PRESENTATION_SUFFIX,
++            },
++        }
++    }
++    /// One capped native encoding, using exactly the static descriptor exposed
++    /// to canonical fitting. Historical lifecycle encoding still uses render().
++    pub(crate) fn encode_presentation(self, text: &str) -> Option<Vec<u8>> {
++        use std::io::Write;
++        struct Capped(Vec<u8>);
++        impl Write for Capped {
++            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
++                if bytes.len() > PRESENTATION_MAX_BYTES.saturating_sub(self.0.len()) {
++                    return Err(std::io::ErrorKind::FileTooLarge.into());
++                }
++                self.0.extend_from_slice(bytes);
++                Ok(bytes.len())
++            }
++            fn flush(&mut self) -> std::io::Result<()> {
++                Ok(())
++            }
++        }
++        let crate::harness::adapter::PresentationCodec::JsonStringEnvelope { prefix, suffix } =
++            self.presentation_codec();
++        let mut writer = Capped(Vec::new());
++        writer.write_all(prefix.as_bytes()).ok()?;
++        serde_json::to_writer(&mut writer, text).ok()?;
++        writer.write_all(suffix.as_bytes()).ok()?;
++        Some(writer.0)
++    }
+     pub(super) fn render(self, text: &str) -> Value {
+         match self {
+             Self::SystemMessage => {
+diff --git a/src/harness/agy/delivery.rs b/src/harness/agy/delivery.rs
+index d835d186..7ed82fd6 100644
+--- a/src/harness/agy/delivery.rs
++++ b/src/harness/agy/delivery.rs
+@@ -24,6 +24,7 @@ use crate::{
+             DeliveryConfirm, DeliveryConfirmOutcome, DeliveryPresentationConfirmV2,
+             DeliveryPresentationConfirmationV2, DeliveryPull, DeliveryPullReply,
+             DeliveryPullReplyV2, DeliveryPullV2, DeliveryRefusalReason, PresentationConsumer,
++            PresentationControlStampV2, PresentationRenderRequest, PresentationRenderSelection,
+         },
+         ids::{MessageId, OperationId},
+         results::CommandResult,
+@@ -279,6 +280,10 @@ pub struct Injected {
+ pub struct ConversationState {
+     pub v: u32,
+     pub seen_attention_version: Option<u64>,
++    /// Highest emitted V2 Attention epoch, retained after its scoped clear so
++    /// an old replay cannot resurrect it. Absent preserves historical V1 bytes.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub seen_presentation_epoch: Option<String>,
+     pub injected: Vec<Injected>,
+     /// Counts `invocationNum == 0` events.
+     pub turn: u64,
+@@ -292,6 +297,7 @@ impl Default for ConversationState {
+         Self {
+             v: 1,
+             seen_attention_version: None,
++            seen_presentation_epoch: None,
+             injected: Vec::new(),
+             turn: 0,
+             injected_this_turn: false,
+@@ -638,6 +644,7 @@ fn run_step_with_completion(context: &HookStepContext<'_>, runtime: &Runtime) ->
+     let empty = || HookStepOutput {
+         stdout: Vec::new(),
+         completion: None,
++        diagnostic: None,
+     };
+     let Some(state_dir) = context.state_dir.as_deref() else {
+         return empty();
+@@ -652,6 +659,7 @@ fn run_step_with_completion(context: &HookStepContext<'_>, runtime: &Runtime) ->
+         payload: &payload,
+         state_path: paths::conversation_state(state_dir, &payload.conversation),
+         completion: RefCell::new(None),
++        diagnostic: RefCell::new(None),
+     };
+     let stdout = match context.decoded.metadata.native_event.as_str() {
+         "PreInvocation" => step.pre_invocation(),
+@@ -664,13 +672,16 @@ fn run_step_with_completion(context: &HookStepContext<'_>, runtime: &Runtime) ->
+     HookStepOutput {
+         stdout,
+         completion: step.completion.into_inner(),
++        diagnostic: step.diagnostic.into_inner(),
+     }
+ }
+ 
+ const PRESENTATION_V2: &str = "delivery.presentation_v2";
+-// State and optional probation record <=4096 each, six ASCII claim fields
+-// <=128 each (<=4608 escaped bytes), three64hex digests, optional32hex token,
+-// and fixed keys/u64 scalars (<1024). Nested records are typed objects, not JSON strings.
++// State and optional probation record <=4096 each; six <=128 claim fields
++// cost <=2048 escaped bytes (five graphic IDs, one ASCII instance String).
++// Three64hex digests, optional32hex token, <=32 canonical decimal epoch stamps
++// (<3072 bytes), and fixed keys/scalars (<1024) total <14560. Nested records
++// are typed objects, not JSON strings; the actual complete serializer is capped.
+ // Enforce each component and the final serialized envelope, rather than assuming
+ // the private transport cap bounds a nested state or an opaque caller ID.
+ const COMPLETION_MAX_BYTES: usize = 16_384;
+@@ -684,6 +695,7 @@ struct EmissionCompletion {
+     conversation_key: String,
+     previous_digest: Option<String>,
+     presentation_token: Option<String>,
++    emitted_controls: Vec<PresentationControlStampV2>,
+     now_ms: u64,
+     existed: bool,
+ }
+@@ -703,6 +715,16 @@ fn valid_completion(completion: &EmissionCompletion) -> bool {
+     let claim = &completion.claim;
+     let bounded_id = |id: &str| !id.is_empty() && id.len() <= 128 && id.is_ascii();
+     completion.state.v == 1
++        && completion
++            .state
++            .seen_presentation_epoch
++            .as_deref()
++            .is_none_or(|v| decimal_epoch(v).is_some())
++        && completion.emitted_controls.len() <= MAX_TRACKED
++        && completion.emitted_controls.iter().all(|stamp| match stamp {
++            PresentationControlStampV2::Attention { epoch, .. }
++            | PresentationControlStampV2::Cleared { epoch, .. } => decimal_epoch(epoch).is_some(),
++        })
+         && completion.state.injected.len() <= MAX_TRACKED
+         && serde_json::to_vec(&completion.state).is_ok_and(|bytes| bytes.len() <= MAX_STATE_BYTES)
+         && completion.probation.as_ref().is_none_or(|record| {
+@@ -737,6 +759,38 @@ fn valid_completion(completion: &EmissionCompletion) -> bool {
+             .is_none_or(|v| valid_hex(v, 32))
+         && completion.state.generation == Some(claim.binding_generation)
+ }
++fn decimal_epoch(epoch: &str) -> Option<u64> {
++    if !crate::protocol::delivery::valid_presentation_epoch(epoch) {
++        return None;
++    }
++    epoch.parse().ok()
++}
++fn apply_emitted_controls(state: &mut ConversationState, controls: &[PresentationControlStampV2]) {
++    for stamp in controls {
++        match stamp {
++            PresentationControlStampV2::Attention { epoch, version } => {
++                let Some(incoming) = decimal_epoch(epoch) else {
++                    continue;
++                };
++                let previous = state
++                    .seen_presentation_epoch
++                    .as_deref()
++                    .and_then(decimal_epoch);
++                if previous.is_none_or(|old| incoming > old) {
++                    state.seen_presentation_epoch = Some(epoch.clone());
++                    state.seen_attention_version = Some(*version);
++                }
++            }
++            PresentationControlStampV2::Cleared { epoch, version } => {
++                if state.seen_presentation_epoch.as_deref() == Some(epoch.as_str())
++                    && state.seen_attention_version == Some(*version)
++                {
++                    state.seen_attention_version = None;
++                }
++            }
++        }
++    }
++}
+ fn complete_step(payload: &[u8], daemon: &dyn HookStepDaemon, state_dir: &Path, deadline: Instant) {
+     if payload.len() > COMPLETION_MAX_BYTES || Instant::now() >= deadline {
+         return;
+@@ -793,6 +847,7 @@ fn complete_step(payload: &[u8], daemon: &dyn HookStepDaemon, state_dir: &Path,
+     if !completion.existed {
+         prune_conversation_states(state_dir, &path, completion.now_ms);
+     }
++    apply_emitted_controls(&mut completion.state, &completion.emitted_controls);
+     completion.state.save(&path);
+     if let Some(probation) = completion.probation {
+         save_downgrade(state_dir, &probation);
+@@ -806,6 +861,7 @@ struct Step<'a> {
+     payload: &'a Payload,
+     state_path: PathBuf,
+     completion: RefCell<Option<HookStepCompletionPayload>>,
++    diagnostic: RefCell<Option<String>>,
+ }
+ 
+ /// Delete regular `*.json` files in `<state_dir>/conversations` (other than `keep`) whose mtime is
+@@ -963,6 +1019,7 @@ impl Step<'_> {
+         {
+             state.injected.clear();
+             state.seen_attention_version = None;
++            state.seen_presentation_epoch = None;
+             state.injected_this_turn = false;
+         }
+         let mut downgrade = match load_downgrade(self.state_dir) {
+@@ -979,15 +1036,84 @@ impl Step<'_> {
+         // Capability discovery precedes every V2 progress/token operation. Old
+         // daemons retain the old pull bytes and historical local-hint semantics.
+         let modern = daemon.supports_capability(PRESENTATION_V2);
++        // Freeze both preferences before the request. Replay may echo another
++        // still-supported frozen selector; never reread local state to encode it.
++        let mut frozen_record = modern.then(|| self.downgrade());
++        if let Some(record) = frozen_record.as_mut()
++            && record.probation
++            && record
++                .probation_at
++                .is_none_or(|at| self.runtime.now_ms >= at.saturating_add(PROBATION_AFTER_MS))
++        {
++            let reason = record.reason.clone().unwrap_or_else(|| "misses".to_owned());
++            record.downgrade(&reason, self.runtime.now_ms);
++            save_downgrade(self.state_dir, record);
++        }
++        let confirmable_step = frozen_record
++            .as_ref()
++            .map(|record| record.step(self.runtime.now_ms))
++            .unwrap_or(InjectionStep::SystemMessage);
++        let passive_step = if frozen_record
++            .as_ref()
++            .is_some_and(|record| record.downgraded_at.is_some())
++        {
++            InjectionStep::UserMessage
++        } else {
++            InjectionStep::SystemMessage
++        };
++        let mut selected_step = None;
++        let mut expected_output_bytes = None;
++        let mut emitted_controls = Vec::new();
+         let (reply, presentation_token) = if modern {
+             match daemon.call(Command::DeliveryPullV2(DeliveryPullV2 {
+                 claim: claim.clone(),
+                 consumer: PresentationConsumer::Hook,
++                render: PresentationRenderRequest::Hook {
++                    confirmable_selector: confirmable_step.presentation_selector(),
++                    passive_selector: passive_step.presentation_selector(),
++                },
+                 confirmed_token: None,
+                 presentation_lease: None,
+                 marker_prefix: self.context.command_prefix.clone(),
+             })) {
+                 Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page))) => {
++                    let PresentationRenderSelection::Hook { selector } = page.render else {
++                        *self.diagnostic.borrow_mut() = Some("presentation codec mismatch".into());
++                        return Vec::new();
++                    };
++                    let Some(step) = InjectionStep::from_presentation_selector(selector) else {
++                        *self.diagnostic.borrow_mut() = Some("presentation codec mismatch".into());
++                        return Vec::new();
++                    };
++                    if page.items.len() > MAX_TRACKED
++                        || (page.presentation_token.is_none()
++                            && page.items.iter().any(|item| {
++                                !matches!(
++                                    item,
++                                    crate::protocol::delivery::PresentationItemV2::Message { .. }
++                                )
++                            }))
++                        || page.output_bytes > 65_536
++                        || crate::delivery::presentation::emitted_controls(&page.items)
++                            != page.emitted_controls
++                        || crate::delivery::presentation::presentation_hook_text(&page.items)
++                            != page.text
++                        || page.emitted_controls.iter().any(|stamp| match stamp {
++                            PresentationControlStampV2::Attention { epoch, .. }
++                            | PresentationControlStampV2::Cleared { epoch, .. } => {
++                                decimal_epoch(epoch).is_none()
++                            }
++                        })
++                    {
++                        *self.diagnostic.borrow_mut() = Some("presentation codec mismatch".into());
++                        return Vec::new();
++                    }
++                    if page.items.is_empty() && page.text.is_empty() && page.output_bytes == 0 {
++                        return Vec::new(); // obsolete-empty replay is not an emitted control
++                    }
++                    selected_step = Some(step);
++                    expected_output_bytes = Some(page.output_bytes);
++                    emitted_controls = page.emitted_controls;
+                     let token = page.presentation_token;
+                     (
+                         DeliveryPullReply::Page(crate::protocol::delivery::DeliveryPage {
+@@ -1034,6 +1160,9 @@ impl Step<'_> {
+                 Vec::new()
+             }
+             DeliveryPullReply::Unchanged { attention_version } => {
++                if modern {
++                    return Vec::new();
++                }
+                 state.seen_attention_version = Some(attention_version);
+                 state.generation = Some(claim.binding_generation);
+                 self.prune_if_new(existed);
+@@ -1041,9 +1170,11 @@ impl Step<'_> {
+                 Vec::new()
+             }
+             DeliveryPullReply::Page(page) => {
+-                state.seen_attention_version = Some(page.attention_version);
++                if !modern {
++                    state.seen_attention_version = Some(page.attention_version);
++                }
+                 state.generation = Some(claim.binding_generation);
+-                let mut record = self.downgrade();
++                let mut record = frozen_record.unwrap_or_else(|| self.downgrade());
+                 let now = self.runtime.now_ms;
+                 // A probation turn that never reached a `Stop` (agy killed) ends after 24 h.
+                 if record.probation
+@@ -1060,13 +1191,15 @@ impl Step<'_> {
+                 // spends a probation turn, and a downgraded harness gets the step
+                 // known to work.
+                 let confirmable = !page.offered.is_empty();
+-                let step = if confirmable {
+-                    record.step(now)
+-                } else if record.downgraded_at.is_some() {
+-                    InjectionStep::UserMessage
+-                } else {
+-                    InjectionStep::SystemMessage
+-                };
++                let step = selected_step.unwrap_or_else(|| {
++                    if confirmable {
++                        record.step(now)
++                    } else if record.downgraded_at.is_some() {
++                        InjectionStep::UserMessage
++                    } else {
++                        InjectionStep::SystemMessage
++                    }
++                });
+                 let previous_probation_digest =
+                     read_capped(&downgrade_path(self.state_dir), MAX_STATE_BYTES)
+                         .map(|bytes| hex_digest(&bytes));
+@@ -1075,6 +1208,7 @@ impl Step<'_> {
+                     && record.downgraded_at.is_some()
+                     && !record.probation
+                     && step == InjectionStep::SystemMessage
++                    && (!modern || confirmable_step == InjectionStep::SystemMessage)
+                 {
+                     // Opening the retry is output-coupled. An un-emitted or
+                     // unconfirmed page cannot spend this one probation turn.
+@@ -1083,7 +1217,23 @@ impl Step<'_> {
+                     probation = Some(record);
+                 }
+                 let user = step == InjectionStep::UserMessage;
+-                let output = step.render(&page.text);
++                let stdout = if modern {
++                    let Some(bytes) = step.encode_presentation(&page.text) else {
++                        *self.diagnostic.borrow_mut() = Some("presentation codec mismatch".into());
++                        return Vec::new();
++                    };
++                    if Some(bytes.len() as u32) != expected_output_bytes {
++                        *self.diagnostic.borrow_mut() = Some("presentation codec mismatch".into());
++                        return Vec::new();
++                    }
++                    bytes
++                } else {
++                    // Historical V1 wire bytes and hint semantics are unchanged.
++                    let Ok(bytes) = serde_json::to_vec(&step.render(&page.text)) else {
++                        return Vec::new();
++                    };
++                    bytes
++                };
+                 let offset = self.transcript_len();
+                 state.record_injection(&page.offered, offset, user);
+                 // Apply the existing bounded-state pruning policy before deriving
+@@ -1097,6 +1247,7 @@ impl Step<'_> {
+                     conversation_key: hex_digest(self.payload.conversation.as_bytes()),
+                     previous_digest,
+                     presentation_token,
++                    emitted_controls,
+                     now_ms: self.runtime.now_ms,
+                     existed,
+                 };
+@@ -1112,9 +1263,6 @@ impl Step<'_> {
+                 let Some(payload) = HookStepCompletionPayload::new(bytes) else {
+                     return Vec::new();
+                 };
+-                let Ok(stdout) = serde_json::to_vec(&output) else {
+-                    return Vec::new();
+-                };
+                 *self.completion.borrow_mut() = Some(payload);
+                 stdout
+             }
+diff --git a/src/harness/agy/mod.rs b/src/harness/agy/mod.rs
+index 57402647..d69ff67b 100644
+--- a/src/harness/agy/mod.rs
++++ b/src/harness/agy/mod.rs
+@@ -61,6 +61,9 @@ static TEXT: AdapterText = AdapterText {
+ 
+ impl HarnessAdapter for AgyAdapter {
+     type Admission = AgyAdmission;
++    fn presentation_codec(&self, selector: u8) -> Option<PresentationCodec> {
++        InjectionStep::from_presentation_selector(selector).map(InjectionStep::presentation_codec)
++    }
+     fn metadata(&self) -> &'static AdapterMetadata {
+         &METADATA
+     }
+diff --git a/src/harness/registry.rs b/src/harness/registry.rs
+index 5726ee32..d707f18e 100644
+--- a/src/harness/registry.rs
++++ b/src/harness/registry.rs
+@@ -284,6 +284,7 @@ trait ErasedAdapter: Send + Sync {
+     fn launch_policy(&self) -> Option<&dyn LaunchPolicy>;
+     fn composer_policy(&self) -> Option<&dyn ComposerPolicy>;
+     fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence;
++    fn presentation_codec(&self, selector: u8) -> Option<PresentationCodec>;
+     fn hook_step(&self) -> Option<&dyn HookStep>;
+     fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy>;
+     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy>;
+@@ -486,6 +487,9 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
+     fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence {
+         self.0.local_evidence(request)
+     }
++    fn presentation_codec(&self, selector: u8) -> Option<PresentationCodec> {
++        self.0.presentation_codec(selector)
++    }
+     fn hook_step(&self) -> Option<&dyn HookStep> {
+         self.0.hook_step()
+     }
+@@ -1101,6 +1105,9 @@ impl Registration {
+     pub fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence {
+         self.adapter.local_evidence(request)
+     }
++    pub fn presentation_codec(&self, selector: u8) -> Option<PresentationCodec> {
++        self.adapter.presentation_codec(selector)
++    }
+     pub fn hook_step(&self) -> Option<&dyn HookStep> {
+         self.adapter.hook_step()
+     }
+diff --git a/tests/harness/agy_decode.rs b/tests/harness/agy_decode.rs
+index 34ec0c8b..5552b141 100644
+--- a/tests/harness/agy_decode.rs
++++ b/tests/harness/agy_decode.rs
+@@ -629,3 +629,55 @@ fn stubbed_surfaces_refuse_or_read_unreadable() {
+             .is_empty()
+     );
+ }
++
++#[test]
++fn registered_presentation_codecs_equal_actual_native_shapes() {
++    use crate::harness::adapter::PresentationCodec;
++    for (selector, step, overhead) in [
++        (0, InjectionStep::SystemMessage, 54),
++        (1, InjectionStep::UserMessage, 34),
++    ] {
++        assert_eq!(step.presentation_selector(), selector);
++        let codec = AgyAdapter.presentation_codec(selector).unwrap();
++        assert_eq!(codec, step.presentation_codec());
++        assert_eq!(
++            builtins()
++                .by_id(builtins().agent("agy").unwrap())
++                .unwrap()
++                .presentation_codec(selector),
++            Some(codec)
++        );
++        let PresentationCodec::JsonStringEnvelope { prefix, suffix } = codec;
++        assert_eq!(prefix.len() + suffix.len(), overhead);
++        for text in ["", "plain", "\0\u{1}\t\r\n\"\\/", "é🙂\u{2028}"] {
++            let actual = serde_json::to_vec(&step.render(text)).unwrap();
++            let mut descriptor = prefix.as_bytes().to_vec();
++            descriptor.extend(serde_json::to_vec(text).unwrap());
++            descriptor.extend(suffix.as_bytes());
++            assert_eq!(descriptor, actual);
++            assert_eq!(step.encode_presentation(text).unwrap(), actual);
++        }
++    }
++    assert!(AgyAdapter.presentation_codec(2).is_none());
++    assert!(AgyAdapter.presentation_codec(u8::MAX).is_none());
++}
++
++#[test]
++fn native_presentation_encoder_caps_actual_final_bytes() {
++    for step in [InjectionStep::SystemMessage, InjectionStep::UserMessage] {
++        let crate::harness::adapter::PresentationCodec::JsonStringEnvelope { prefix, suffix } =
++            step.presentation_codec();
++        let available = 65_536 - prefix.len() - suffix.len() - 2;
++        assert_eq!(
++            step.encode_presentation(&"x".repeat(available))
++                .unwrap()
++                .len(),
++            65_536
++        );
++        assert!(
++            step.encode_presentation(&"x".repeat(available + 1))
++                .is_none()
++        );
++        assert!(step.encode_presentation(&"\0".repeat(available)).is_none());
++    }
++}
+diff --git a/tests/harness/agy_delivery.rs b/tests/harness/agy_delivery.rs
+index adc0c2c3..af101436 100644
+--- a/tests/harness/agy_delivery.rs
++++ b/tests/harness/agy_delivery.rs
+@@ -15,6 +15,7 @@ use crate::{
+     protocol::{
+         authority::{CallerRole, Harness},
+         delivery::{DeliveryConfirmItem, DeliveryConfirmReport, DeliveryPage},
++        delivery::{PresentationItemV2, PresentationRenderSelection},
+         ids::{ExecutionId, HostTargetId, NativeSessionId, SeatId},
+         results::{ApiError, ErrorCode},
+         time::{CallBudget, MonoInstant},
+@@ -1636,6 +1637,208 @@ mod daemon {
+         assert_eq!(confirm(&second, "op-3"), DeliveryConfirmOutcome::Settled);
+         assert_eq!(world.receipt().0, "acked");
+     }
++    fn canonical_v2_allocations_fit_actual_native_codec(user: bool) {
++        use crate::protocol::{
++            commands::{CreateThread, InvitationConfirmation, Invite},
++            delivery::DeliveryPageV2,
++        };
++        let world = world();
++        let recipient = world.check_in();
++        world.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('origin','i','resolved','native','p-origin',0,0,0)", []).unwrap();
++        world.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p-origin','b',1,0,1,'fresh','unknown','unknown',0,0,'term-origin','inc-origin','coherent_enumeration',1)", []).unwrap();
++        let mut origin = claim(0);
++        origin.seat = SeatId::new("origin");
++        origin.target = HostTargetId::new("p-origin");
++        origin.native_session = NativeSessionId::new("origin-conversation");
++        origin.execution = ExecutionId::new("00000000-0000-4000-8000-000000000009");
++        let CommandResult::CheckedIn(origin) = world
++            .service
++            .handle(
++                Command::CheckIn(CheckIn {
++                    mode: CheckInMode::Lifecycle {
++                        expected_binding_generation: 0,
++                    },
++                    claim: origin,
++                    operation: OperationId::new("origin-checkin"),
++                }),
++                peer(),
++                &budget(),
++            )
++            .unwrap()
++        else {
++            panic!("origin check-in")
++        };
++        let origin = origin.context;
++        //300NUL per field is a supported public canonical producer: unlike the
++        // old scripted1024NUL fixture, the released4096byte event admission fits.
++        let topic = "\0".repeat(300);
++        let goal = "\0".repeat(300);
++        for n in 0..24 {
++            let CommandResult::ThreadCreated(thread) = world
++                .service
++                .handle(
++                    Command::CreateThread(CreateThread {
++                        name: None,
++                        topic: topic.clone(),
++                        goal: goal.clone(),
++                        operation: OperationId::new(format!("escaped-create-{n}")),
++                        claim: origin.clone(),
++                    }),
++                    peer(),
++                    &budget(),
++                )
++                .unwrap()
++            else {
++                panic!("created canonical thread")
++            };
++            world
++                .service
++                .handle(
++                    Command::Invite(Invite {
++                        confirmation: Some(InvitationConfirmation::Lazy),
++                        thread,
++                        seat: recipient.seat.clone(),
++                        deadline_millis: None,
++                        operation: OperationId::new(format!("escaped-invite-{n}")),
++                        claim: origin.clone(),
++                    }),
++                    peer(),
++                    &budget(),
++                )
++                .unwrap();
++        }
++        struct Canonical<'a> {
++            service: &'a DomainService,
++            page: RefCell<Option<DeliveryPageV2>>,
++        }
++        impl HookStepDaemon for Canonical<'_> {
++            fn supports_capability(&self, name: &str) -> bool {
++                name == PRESENTATION_V2
++            }
++            fn call(&self, command: Command) -> Result<CommandResult, ApiError> {
++                // The external transport is in-process, but every deciding pull
++                // and confirmation is the actual production DomainService.
++                let result = self.service.handle(command, peer(), &budget())?;
++                if let CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page)) = &result {
++                    *self.page.borrow_mut() = Some(page.clone());
++                }
++                Ok(result)
++            }
++        }
++        let daemon = Canonical {
++            service: &world.service,
++            page: RefCell::new(None),
++        };
++        let rig = Rig::new();
++        let identity = ident("a");
++        if user {
++            let mut record = DowngradeRecord::blank(&identity);
++            record.downgrade("abort", 1000);
++            save_downgrade(&rig.state, &record);
++        }
++        let input = HookInput {
++            bytes: serde_json::to_vec(&json!({"conversationId": CONV, "transcriptPath": rig.transcript.to_str().unwrap(), "invocationNum": 0, "initialNumSteps": 1})).unwrap(),
++            registered_event: Some("PreInvocation".into()),
++        };
++        let decoded = decode(
++            &AgyAdmission {
++                step: InjectionStep::SystemMessage,
++            },
++            &input,
++        )
++        .unwrap();
++        let rt = runtime(1001, &identity);
++        let mut full = BTreeSet::new();
++        let mut largest = 0;
++        for _ in 0..40 {
++            daemon.page.borrow_mut().take();
++            let prepared = run_step_with_completion(
++                &HookStepContext {
++                    input: &input,
++                    decoded: &decoded,
++                    claim: Some(recipient.clone()),
++                    daemon: Some(&daemon),
++                    state_dir: Some(rig.state.clone()),
++                    command_prefix: vec!["herdr-threads".into()],
++                    deadline: Instant::now() + Duration::from_secs(30),
++                },
++                &rt,
++            );
++            assert!(prepared.diagnostic.is_none(), "{:?}", prepared.diagnostic);
++            let Some(page) = daemon.page.borrow_mut().take() else {
++                continue;
++            };
++            assert_eq!(page.output_bytes as usize, prepared.stdout.len());
++            assert!(prepared.stdout.len() <= 65_536, "actual final native bytes");
++            largest = largest.max(prepared.stdout.len());
++            if !page.items.is_empty() {
++                let native: Value = serde_json::from_slice(&prepared.stdout).unwrap();
++                let text = if user {
++                    native["injectSteps"][0]["userMessage"].as_str().unwrap()
++                } else {
++                    native["injectSteps"][0]["systemMessage"]["systemMessage"]
++                        .as_str()
++                        .unwrap()
++                };
++                assert_eq!(text, page.text);
++            }
++            for item in &page.items {
++                if let PresentationItemV2::Invitation { id, content } = item {
++                    if !content.truncated {
++                        assert!(content.body.contains(&topic) && content.body.contains(&goal));
++                        full.insert(id.as_str().to_owned());
++                    }
++                }
++            }
++            // Real write+flush of the native bytes precedes actual canonical
++            // confirmation. The process transport/write-failure seam has its
++            // separate neutral CLI controls; this is canonical codec integration.
++            let mut stdout = Vec::new();
++            use std::io::Write;
++            stdout.write_all(&prepared.stdout).unwrap();
++            stdout.flush().unwrap();
++            assert_eq!(stdout, prepared.stdout);
++            if let Some(payload) = prepared.completion {
++                complete_step(
++                    &payload.0,
++                    &daemon,
++                    &rig.state,
++                    Instant::now() + Duration::from_secs(30),
++                );
++            }
++            if full.len() == 24 {
++                break;
++            }
++        }
++        assert_eq!(
++            full.len(),
++            24,
++            "every canonical invitation becomes full through bounded V2 pages"
++        );
++        assert!(
++            largest > 32_768,
++            "exercise real aggregate escaping, not just tiny pages"
++        );
++        let pending: i64 = world.db.query_row("SELECT count(*) FROM invitations WHERE seat_id='s' AND state='pending' AND confirmation='lazy'", [], |row| row.get(0)).unwrap();
++        assert_eq!(
++            pending, 24,
++            "emission confirmation is not invitation acceptance"
++        );
++        assert_eq!(
++            world.receipt().0,
++            "pending",
++            "presentation confirmation is not message ACK"
++        );
++    }
++
++    #[test]
++    fn canonical_v2_system_allocated_pages_fit_actual_native_codec() {
++        canonical_v2_allocations_fit_actual_native_codec(false);
++    }
++    #[test]
++    fn canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec() {
++        canonical_v2_allocations_fit_actual_native_codec(true);
++    }
+ }
+ 
+ // --- stale tracked ids and old state files (ht-poh.36) ---------------------------------------------
+@@ -1826,7 +2029,7 @@ fn native_escaping_invitation_page() -> String {
+ }
+ 
+ #[test]
+-fn system_message_native_invitation_frame_respects_final_64k_bound() {
++fn historical_system_message_scripted_page_preserves_native_bytes_and_oversize_geometry() {
+     let rig = Rig::new();
+     let text = native_escaping_invitation_page();
+     assert!(text.len() < 65_536, "supported canonical plaintext page");
+@@ -1840,15 +2043,14 @@ fn system_message_native_invitation_frame_respects_final_64k_bound() {
+         native["injectSteps"][0]["systemMessage"]["systemMessage"],
+         text
+     );
+-    assert!(
+-        output.len() <= 65_536,
+-        "final systemMessage frame is {} bytes",
+-        output.len()
+-    );
++    // Corrected scope: this is a handcrafted V1 daemon page, not a supported
++    // canonical V2 allocation. Preserve historical bytes; actual V2 allocation
++    // tests below own the final64KiB guarantee.
++    assert_eq!(output.len(), 100_333);
+ }
+ 
+ #[test]
+-fn downgraded_user_message_native_invitation_frame_respects_final_64k_bound() {
++fn historical_downgraded_user_message_scripted_page_preserves_native_bytes_and_oversize_geometry() {
+     let rig = Rig::new();
+     let identity = ident("a");
+     let mut record = DowngradeRecord::blank(&identity);
+@@ -1863,28 +2065,81 @@ fn downgraded_user_message_native_invitation_frame_respects_final_64k_bound() {
+     );
+     let native: Value = serde_json::from_slice(&output).unwrap();
+     assert_eq!(native["injectSteps"][0]["userMessage"], text);
+-    assert!(
+-        output.len() <= 65_536,
+-        "final userMessage frame is {} bytes",
+-        output.len()
+-    );
++    assert_eq!(output.len(), 100_313);
+ }
+ 
+-fn modern_page(token: &str) -> Result<CommandResult, ApiError> {
++fn modern_items() -> Vec<PresentationItemV2> {
++    vec![
++        PresentationItemV2::Message {
++            id: MessageId::new("msg-a1"),
++            lazy: false,
++            content: crate::protocol::watch::WatchMessage {
++                thread: crate::protocol::ids::ThreadId::new("t1"),
++                thread_name: None,
++                sender: Some(SeatId::new("s2")),
++                sender_name: None,
++                author_role: None,
++                relays_user: false,
++                user_intent: None,
++                body: "hello \"q\"".into(),
++                body_len: 9,
++                truncated: false,
++                ack_required: true,
++            },
++        },
++        PresentationItemV2::Attention {
++            epoch: "1".into(),
++            attention_version: 11,
++            text: "herdr-threads: attention".into(),
++        },
++    ]
++}
++fn modern_reply(
++    items: Vec<PresentationItemV2>,
++    token: Option<&str>,
++    version: u64,
++    step: InjectionStep,
++    offered: Vec<MessageId>,
++) -> Result<CommandResult, ApiError> {
+     use crate::protocol::delivery::DeliveryPageV2;
++    let text = crate::delivery::presentation::presentation_hook_text(&items);
++    let bytes = serde_json::to_vec(&step.render(&text)).unwrap();
+     Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(
+         DeliveryPageV2 {
+-            attention_version: 11,
+-            text: TEXT.into(),
+-            offered: vec![MessageId::new("msg-a1")],
++            attention_version: version,
++            output_bytes: if items.is_empty() {
++                0
++            } else {
++                bytes.len() as u32
++            },
++            render: PresentationRenderSelection::Hook {
++                selector: step.presentation_selector(),
++            },
++            text,
++            offered,
+             truncated: vec![],
+             more: false,
+-            presentation_token: Some(token.into()),
+-            invitations: vec![],
+-            messages: vec![],
++            presentation_token: token.map(str::to_owned),
++            emitted_controls: crate::delivery::presentation::emitted_controls(&items),
++            items,
+         },
+     )))
+ }
++fn modern_page(token: &str) -> Result<CommandResult, ApiError> {
++    modern_reply(
++        modern_items(),
++        Some(token),
++        11,
++        InjectionStep::SystemMessage,
++        vec![MessageId::new("msg-a1")],
++    )
++}
++fn modern_system_output() -> Vec<u8> {
++    serde_json::to_vec(&InjectionStep::SystemMessage.render(
++        &crate::delivery::presentation::presentation_hook_text(&modern_items()),
++    ))
++    .unwrap()
++}
+ fn modern_fake(replies: Vec<Result<CommandResult, ApiError>>) -> Fake {
+     let mut fake = Fake::with(replies);
+     fake.modern = true;
+@@ -1909,7 +2164,7 @@ fn postflush_confirmation_loss_keeps_state_replayable_after_restart() {
+         Some(&failed),
+         &rt,
+     );
+-    assert_eq!(prepared.stdout, fixture_bytes("output-system-message.json"));
++    assert_eq!(prepared.stdout, modern_system_output());
+     assert!(!rig.state_file().exists());
+     complete_step(
+         &prepared.completion.unwrap().0,
+@@ -2127,7 +2382,7 @@ fn probation_confirmation_loss_keeps_the_retry_available() {
+         Some(&replay),
+         &rt,
+     );
+-    assert_eq!(prepared.stdout, fixture_bytes("output-system-message.json"));
++    assert_eq!(prepared.stdout, modern_system_output());
+     complete_step(
+         &prepared.completion.unwrap().0,
+         &replay,
+@@ -2194,6 +2449,7 @@ fn expired_probation_maintenance_remains_independent_of_page_emission() {
+ fn typed_completion_fits_two_maximal_admitted_records_and_escaped_claim_fields() {
+     let mut state = ConversationState {
+         seen_attention_version: Some(u64::MAX),
++        seen_presentation_epoch: Some(u64::MAX.to_string()),
+         turn: u64::MAX,
+         injected_this_turn: true,
+         generation: Some(u64::MAX),
+@@ -2261,6 +2517,12 @@ fn typed_completion_fits_two_maximal_admitted_records_and_escaped_claim_fields()
+         claim: original,
+         previous_digest: Some("f".repeat(64)),
+         presentation_token: Some("a".repeat(32)),
++        emitted_controls: (0..32)
++            .map(|_| PresentationControlStampV2::Attention {
++                epoch: u64::MAX.to_string(),
++                version: u64::MAX,
++            })
++            .collect(),
+         now_ms: u64::MAX,
+         existed: true,
+     };
+@@ -2294,3 +2556,250 @@ fn typed_completion_fits_two_maximal_admitted_records_and_escaped_claim_fields()
+         "probation's own4KiB cap is enforced"
+     );
+ }
++
++fn passive_invitation_item() -> PresentationItemV2 {
++    PresentationItemV2::Invitation {
++        id: crate::protocol::ids::InvitationId::new("i-passive"),
++        content: crate::protocol::watch::WatchInvitation {
++            thread: crate::protocol::ids::ThreadId::new("t-passive"),
++            thread_name: None,
++            body: "topic\ngoal: goal\nnext: herdr-threads accept t-passive".into(),
++            truncated: false,
++            wakes: false,
++            topic_revision: Some("1".into()),
++            command_context_epoch: Some("0".into()),
++        },
++    }
++}
++
++#[test]
++fn v2_invitation_only_empty_and_unchanged_pages_never_cache_current_metadata_as_seen() {
++    let rig = Rig::new();
++    let mut state = ConversationState {
++        seen_attention_version: Some(55),
++        seen_presentation_epoch: Some("9007199254740993".into()),
++        generation: Some(0),
++        ..Default::default()
++    };
++    state.save(&rig.state_file());
++    let token = "a".repeat(32);
++    let fake = modern_fake(vec![
++        modern_reply(
++            vec![passive_invitation_item()],
++            Some(&token),
++            999,
++            InjectionStep::SystemMessage,
++            vec![],
++        ),
++        Ok(CommandResult::DeliveryPresentationConfirmedV2(
++            DeliveryPresentationConfirmationV2::AlreadyConfirmed,
++        )),
++    ]);
++    let prepared = rig.prepare(
++        "PreInvocation",
++        json!({"invocationNum": 0}),
++        Some(&fake),
++        &runtime(1000, &ident("a")),
++    );
++    assert!(!prepared.stdout.is_empty());
++    complete_step(
++        &prepared.completion.unwrap().0,
++        &fake,
++        &rig.state,
++        Instant::now() + Duration::from_secs(30),
++    );
++    assert_eq!(rig.conversation().seen_attention_version, Some(55));
++    assert_eq!(
++        rig.conversation().seen_presentation_epoch.as_deref(),
++        Some("9007199254740993")
++    );
++    for reply in [
++        modern_reply(vec![], None, 1000, InjectionStep::SystemMessage, vec![]),
++        Ok(CommandResult::DeliveryPulledV2(
++            DeliveryPullReplyV2::Unchanged {
++                attention_version: 1001,
++            },
++        )),
++    ] {
++        let before = std::fs::read(rig.state_file()).unwrap();
++        let fake = modern_fake(vec![reply]);
++        let prepared = rig.prepare(
++            "PreInvocation",
++            json!({"invocationNum": 0}),
++            Some(&fake),
++            &runtime(1000, &ident("a")),
++        );
++        assert!(prepared.stdout.is_empty() && prepared.completion.is_none());
++        assert_eq!(std::fs::read(rig.state_file()).unwrap(), before);
++        assert_eq!(fake.calls().len(), 1);
++    }
++}
++
++#[test]
++fn emitted_v2_controls_apply_exact_epochs_and_old_replay_cannot_resurrect_a_clear() {
++    let rig = Rig::new();
++    let newer = "9007199254740995";
++    let mut state = ConversationState {
++        seen_attention_version: Some(88),
++        seen_presentation_epoch: Some(newer.into()),
++        generation: Some(0),
++        ..Default::default()
++    };
++    state.save(&rig.state_file());
++    for (item, expected_version, expected_epoch) in [
++        (
++            PresentationItemV2::AttentionCleared {
++                epoch: "9007199254740993".into(),
++                attention_version: 55,
++            },
++            Some(88),
++            newer,
++        ),
++        (
++            PresentationItemV2::Attention {
++                epoch: "9007199254740993".into(),
++                attention_version: 55,
++                text: "herdr-threads: attention".into(),
++            },
++            Some(88),
++            newer,
++        ),
++        (
++            PresentationItemV2::AttentionCleared {
++                epoch: newer.into(),
++                attention_version: 88,
++            },
++            None,
++            newer,
++        ),
++        (
++            PresentationItemV2::Attention {
++                epoch: newer.into(),
++                attention_version: 88,
++                text: "herdr-threads: attention".into(),
++            },
++            None,
++            newer,
++        ),
++        (
++            PresentationItemV2::Attention {
++                epoch: "9007199254740997".into(),
++                attention_version: 99,
++                text: "herdr-threads: attention".into(),
++            },
++            Some(99),
++            "9007199254740997",
++        ),
++    ] {
++        let fake = modern_fake(vec![
++            modern_reply(
++                vec![item],
++                Some(&"a".repeat(32)),
++                999,
++                InjectionStep::SystemMessage,
++                vec![],
++            ),
++            Ok(CommandResult::DeliveryPresentationConfirmedV2(
++                DeliveryPresentationConfirmationV2::Confirmed,
++            )),
++        ]);
++        let before = rig.conversation();
++        let prepared = rig.prepare(
++            "PreInvocation",
++            json!({"invocationNum": 0}),
++            Some(&fake),
++            &runtime(1000, &ident("a")),
++        );
++        assert_eq!(
++            rig.conversation(),
++            before,
++            "preparing native output is not emission"
++        );
++        complete_step(
++            &prepared.completion.unwrap().0,
++            &fake,
++            &rig.state,
++            Instant::now() + Duration::from_secs(30),
++        );
++        assert_eq!(rig.conversation().seen_attention_version, expected_version);
++        assert_eq!(
++            rig.conversation().seen_presentation_epoch.as_deref(),
++            Some(expected_epoch)
++        );
++    }
++}
++
++#[test]
++fn frozen_reply_codec_overrides_new_local_preference_without_opening_early_probation() {
++    let rig = Rig::new();
++    let identity = ident("a");
++    let mut record = DowngradeRecord::blank(&identity);
++    record.downgrade("abort", 1000);
++    save_downgrade(&rig.state, &record);
++    let fake = modern_fake(vec![
++        modern_page(&"a".repeat(32)),
++        Ok(CommandResult::DeliveryPresentationConfirmedV2(
++            DeliveryPresentationConfirmationV2::Confirmed,
++        )),
++    ]);
++    let prepared = rig.prepare(
++        "PreInvocation",
++        json!({"invocationNum": 0}),
++        Some(&fake),
++        &runtime(1001, &identity),
++    );
++    assert_eq!(
++        prepared.stdout,
++        modern_system_output(),
++        "replay uses frozen supported System codec"
++    );
++    assert!(
++        matches!(&fake.calls()[0], Command::DeliveryPullV2(pull) if pull.render == PresentationRenderRequest::Hook { confirmable_selector: 1, passive_selector: 1 })
++    );
++    complete_step(
++        &prepared.completion.unwrap().0,
++        &fake,
++        &rig.state,
++        Instant::now() + Duration::from_secs(30),
++    );
++    assert_eq!(
++        rig.record(),
++        Some(record),
++        "old frozen System output cannot spend a new early retry"
++    );
++}
++
++#[test]
++fn mismatched_or_unsupported_v2_native_output_is_not_emitted_or_confirmed() {
++    for case in 0..5 {
++        let rig = Rig::new();
++        let Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(mut page))) =
++            modern_page(&"a".repeat(32))
++        else {
++            unreachable!()
++        };
++        match case {
++            0 => page.output_bytes += 1,
++            1 => page.render = PresentationRenderSelection::Hook { selector: 255 },
++            2 => page.render = PresentationRenderSelection::WatchJsonLinesV1,
++            3 => page.emitted_controls.clear(),
++            _ => page.text.push('x'),
++        }
++        let fake = modern_fake(vec![Ok(CommandResult::DeliveryPulledV2(
++            DeliveryPullReplyV2::Page(page),
++        ))]);
++        let prepared = rig.prepare(
++            "PreInvocation",
++            json!({"invocationNum": 0}),
++            Some(&fake),
++            &runtime(1000, &ident("a")),
++        );
++        assert!(prepared.stdout.is_empty() && prepared.completion.is_none());
++        assert_eq!(
++            prepared.diagnostic.as_deref(),
++            Some("presentation codec mismatch")
++        );
++        assert!(!rig.state_file().exists());
++        assert_eq!(fake.calls().len(), 1);
++    }
++}

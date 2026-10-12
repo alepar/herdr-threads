@@ -6,6 +6,7 @@ Builds a real schema from migrations/ in a temp dir; no daemon, Herdr or model i
 
 import argparse
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -805,8 +806,20 @@ class SetupModeTests(unittest.TestCase):
                 else:
                     target = Path(env["CODEX_HOME"]) / "hooks.json"
                     target.parent.mkdir(exist_ok=True)
-                    target.write_text(json.dumps({"hooks": {"SessionStart": [{"hooks": [
-                        {"type": "command", "command": "'x' 'hook' 'codex' # herdr-threads-owner:1"}]}]}}))
+                    groups = []
+                    for event in ("SessionStart", "SubagentStart", "PreToolUse"):
+                        group = {"hooks": [{"type": "command", "command": f"'/x/herdr-threads' 'hook-event' 'codex' '{event}'", "timeout": 10}]}
+                        if event == "PreToolUse":
+                            group["matcher"] = "^Bash$"
+                        digest = hashlib.sha256(json.dumps(group, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                        groups.append({"event": event, "group": group, "fingerprint": "sha256:" + digest})
+                    target.write_text(json.dumps({"hooks": {e["event"]: [e["group"]] for e in groups}}))
+                    manifest = d.root / "hook-ownership.json"
+                    manifest.write_text(json.dumps({"version": 3, "harness": "codex", "scope": "user", "path": str(target),
+                        "installation_id": "0b5e8f3c-1111-4222-8333-444455556666", "phase": "installed", "owned": groups}))
+                    response = json.loads(output)
+                    response["setup"]["manifest"] = str(manifest)
+                    return rc, json.dumps(response), ""
             return rc, output, ""
         d.ht = ht
         return host, d
@@ -843,6 +856,57 @@ class SetupModeTests(unittest.TestCase):
         self.assertIn(f"CODEX_HOME={d.codex_setup_home()}", shell)
         self.assertNotIn("--ignore-user-config", shell)
         self.assertNotIn("hooks.", shell)
+
+    def test_codex_setup_rejects_missing_drifted_duplicate_or_invalid_manifest_evidence(self):
+        for defect in ("missing", "drift", "duplicate", "drifted_duplicate", "identity"):
+            with self.subTest(defect=defect):
+                _, d = self.driver("codex", True, json.dumps({"setup": {"scope": "user"}}))
+                d.args.codex_transport = "none"
+                install = d.ht
+                def damaged(*argv, **kw):
+                    result = install(*argv, **kw)
+                    manifest = d.root / "hook-ownership.json"
+                    if defect == "missing":
+                        manifest.unlink()
+                    elif defect == "identity":
+                        value = json.loads(manifest.read_text())
+                        value["installation_id"] = "not-an-installation-id"
+                        manifest.write_text(json.dumps(value))
+                    else:
+                        path = d.codex_setup_home() / "hooks.json"
+                        value = json.loads(path.read_text())
+                        groups = value["hooks"]["SessionStart"]
+                        if defect == "drift": groups[0]["hooks"][0]["timeout"] = 99
+                        else:
+                            groups.append(json.loads(json.dumps(groups[0])))
+                            if defect == "drifted_duplicate": groups[-1]["hooks"][0]["timeout"] = 99
+                        path.write_text(json.dumps(value))
+                    return result
+                d.ht = damaged
+                self.assertEqual(d.s_hooks()[0], demo.FAIL)
+
+    def test_codex_setup_accepts_exact_legacy_manifest_evidence(self):
+        _, d = self.driver("codex", True, json.dumps({"setup": {"scope": "user"}}))
+        d.args.codex_transport = "none"
+        install = d.ht
+        def historical(*argv, **kw):
+            result = install(*argv, **kw)
+            path = d.root / "hook-ownership.json"
+            manifest = json.loads(path.read_text())
+            manifest["version"] = 2
+            for entry in manifest["owned"]:
+                entry["group"]["hooks"][0]["command"] = (
+                    f"'/x/herdr-threads' 'hook' 'codex' '--event' '{entry['event']}' "
+                    f"# herdr-threads-owner:{manifest['installation_id']}")
+                entry["fingerprint"] = "sha256:" + hashlib.sha256(json.dumps(
+                    entry["group"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            path.write_text(json.dumps(manifest))
+            Path(manifest["path"]).write_text(json.dumps({"hooks": {
+                entry["event"]: [entry["group"]] for entry in manifest["owned"]}}))
+            return result
+        d.ht = historical
+        status, detail, _ = d.s_hooks()
+        self.assertEqual(status, demo.PASS, detail)
 
     def test_codex_cli_setup_without_owned_hooks_fails(self):
         _, d = self.driver("codex", True, json.dumps({"setup": {}}), rc=0)

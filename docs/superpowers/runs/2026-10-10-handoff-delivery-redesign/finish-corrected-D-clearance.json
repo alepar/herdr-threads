@@ -1,0 +1,69 @@
+{
+  "reviewed_inactive_source": "31e5879781904b9ec20ee5ea3cec7517856260f3",
+  "corrected_test_source": "1cf377e9a890fedccbe5b070eacac6f6928e8444",
+  "helper_test_correction": "c4f0eb00cb7b5b943aae5fbd85172c3dc382f7a0",
+  "production_readiness": "inactive source cleared, separate activation release",
+  "active_execution": "NOT RUN",
+  "artifacts": [
+    {
+      "path": "finish-corrected-D-whole-review.md",
+      "sha256": "4357b0c8609732acc9c0feb81f4a8c4ec84da706aa8da3c7cb8f0abeb75c3373"
+    },
+    {
+      "path": "finish-corrected-D-whole-coverage.json",
+      "sha256": "b59d8e05c179b204e59dc8a9ef14c93bd790bad0096f53f86886daa669cae60d"
+    },
+    {
+      "path": "finish-corrected-D-schema-review.md",
+      "sha256": "e9911c3258b54cc5190fd5962bb3ff5cc88889819644dd073a0a68e2d4809e80"
+    },
+    {
+      "path": "finish-corrected-D-schema-coverage.json",
+      "sha256": "c09a0e10ff21ffbf2ad4bb4450f0b533c4567990961ed9aa052de327af051925"
+    },
+    {
+      "path": "finish-corrected-D-interface-review.md",
+      "sha256": "f61a252cf1e9886ae5bfedb43b42d7b712551a686581b0882bf1aab58ee0dd8c"
+    },
+    {
+      "path": "finish-corrected-D-interface-coverage.json",
+      "sha256": "1008b150544f3c4050090a70897851b73083c0a745bfa2d2dd9dd5f2356bc672"
+    },
+    {
+      "path": "finish-corrected-D-whole-lazy-rereview.md",
+      "sha256": "19d12dad1f948b3b726851f325863734c668dc1f14c1219678cf5a0c7f1489af"
+    },
+    {
+      "path": "finish-watch-lazy-oracle-rereview.md",
+      "sha256": "3936db27888cfa9128eef9c62213413959b6963acbfbf2c20f0e77a0a90af3a9"
+    },
+    {
+      "path": "finish-capacity-implementation-rereview.md",
+      "sha256": "044aefeb1aff3e32e9147d0a752fa977f55a375c2c88579cd9f6cf5f4937494a"
+    },
+    {
+      "path": "finish-watch-activation-rereview.md",
+      "sha256": "a6f22dcb63f5b274831a06b992633315f348eee10bdb259d1bb4ae0142bd21f0"
+    },
+    {
+      "path": "finish-leak-scope-task-review.md",
+      "sha256": "9e5b59250988cae0425e01e9e2cfa5e0657357bf0b4d1f84b589edbf40a28059"
+    },
+    {
+      "path": "finish-capacity-successor-evidence.json",
+      "sha256": "85bc1bf1e051e6dee79a7cc70b879933c3a5366ca1fd9622dc98a63ba8797d7b"
+    },
+    {
+      "path": "finish-watch-actual-inactive-evidence.json",
+      "sha256": "049882b031a64775a215e243235c06cd88ff72ebeb1e87222555f7a56a6621c2"
+    }
+  ],
+  "test_application_format_proof": {
+    "path": "tests/integration/mod_delivery.rs",
+    "ours": "31e5879781904b9ec20ee5ea3cec7517856260f3",
+    "helper_base": "0007ada15cdd131d4a358f8929ccd18cfe8dd6a0",
+    "incoming": "c4f0eb00cb7b5b943aae5fbd85172c3dc382f7a0",
+    "normalized_equal": true,
+    "normalized_sha256": "98dfbf06f39421449d1ba00d08d5cd579eeabc8b3c9570ad562d17f6f702ade7"
+  }
+}

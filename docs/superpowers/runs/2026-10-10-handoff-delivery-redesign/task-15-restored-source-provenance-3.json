@@ -1,0 +1,11 @@
+{
+  "workspace": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "target": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "branch": "task-ht-0lo.8.4",
+  "head": "ee1e598c3ee96566ddc9b397185cdc97c8bf6218",
+  "tree": "6ab6831b7972af18ce600b553647db7185c31ccc",
+  "dirty_diff_sha256": "b463b9d72fa1e07bf70be3ba274b35197339229295ace1624f4697277bec7a0f",
+  "source_invalidation_files": 486,
+  "utc": "2026-10-11T08:53:09.022985+00:00",
+  "require_actual_crate_rebuild_and_unique_nonzero_test": true
+}

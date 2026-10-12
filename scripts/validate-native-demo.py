@@ -1352,6 +1352,39 @@ class Driver:
         self.facts.setdefault("codex_launch_homes", {})[name] = {"home": str(home), "auth_source": str(auth)}
         return home
 
+    def codex_owned_hooks(self, path, report):
+        """Verify the CLI's exact ownership evidence without inferring ownership from commands."""
+        try:
+            manifest = json.loads(Path(report["manifest"]).read_text())
+            config = json.loads(path.read_text())
+            identity = manifest["installation_id"]
+            if str(uuid.UUID(identity)) != identity:
+                return False
+            if (manifest.get("version") not in (2, 3) or manifest.get("phase", "installed") != "installed"
+                    or manifest.get("harness") != "codex" or manifest.get("scope") != "user"
+                    or manifest.get("path") != str(path)):
+                return False
+            entries = manifest["owned"]
+            events = ("SessionStart", "SubagentStart", "PreToolUse")
+            if not isinstance(entries, list) or len(entries) != len(events):
+                return False
+            for event in events:
+                recorded = [entry for entry in entries if entry.get("event") == event]
+                if len(recorded) != 1:
+                    return False
+                entry = recorded[0]
+                group = entry["group"]
+                groups = config["hooks"][event]
+                digest = "sha256:" + hashlib.sha256(json.dumps(
+                    group, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+                command = group["hooks"][0]["command"]
+                occurrences = sum(hook.get("command") == command for candidate in groups for hook in candidate["hooks"])
+                if entry["fingerprint"] != digest or groups.count(group) != 1 or occurrences != 1:
+                    return False
+            return True
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError):
+            return False
+
     def s_hooks(self):
         mode = self.args.setup
         fallback = mode == "auto" and not self.facts["cli_surface"]["setup"]["present"]
@@ -1396,11 +1429,7 @@ class Driver:
             transport = ""
             if self.harness == "codex":
                 hooks = self.codex_setup_home() / "hooks.json"
-                try:
-                    owned = "herdr-threads-owner" in hooks.read_text()
-                except OSError:
-                    owned = False
-                if not owned:
+                if not self.codex_owned_hooks(hooks, report):
                     return FAIL, f"setup CLI {argv} rc=0 but wrote no owned hooks into scratch {hooks}: {out.strip()[:300]}", None
                 for name in ("hooks.json", "config.toml"):
                     if (self.codex_setup_home() / name).exists():

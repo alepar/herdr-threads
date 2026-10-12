@@ -1,0 +1,1359 @@
+diff --git a/src/cli/hook.rs b/src/cli/hook.rs
+index 8fe5615f..4dcf3dd4 100644
+--- a/src/cli/hook.rs
++++ b/src/cli/hook.rs
+@@ -270,6 +270,61 @@ pub struct HookOutcome {
+     /// Lazy rows whose complete bodies `stdout` carries, completed only once
+     /// it has been delivered.
+     pub lazy: Option<super::hook_inbox::LazyCommit>,
++    pub step_completion: Option<HookStepCommit>,
++}
++
++/// Adapter completion owns its original route; reconnecting never refreshes the boot fence.
++pub struct HookStepCommit {
++    harness: Harness,
++    payload: HookStepCompletionPayload,
++    state_dir: PathBuf,
++    link: super::hook_inbox::CompletionLink,
++    deadline: Instant,
++}
++impl std::fmt::Debug for HookStepCommit {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("HookStepCommit")
++            .field("harness", &self.harness)
++            .field("state_dir", &self.state_dir)
++            .finish_non_exhaustive()
++    }
++}
++impl PartialEq for HookStepCommit {
++    fn eq(&self, other: &Self) -> bool {
++        self.harness == other.harness
++            && self.payload == other.payload
++            && self.state_dir == other.state_dir
++            && self.link.endpoint == other.link.endpoint
++            && self.link.instance == other.link.instance
++            && self.link.boot == other.link.boot
++            && self.deadline == other.deadline
++    }
++}
++impl Eq for HookStepCommit {}
++impl HookStepCommit {
++    fn commit(self) {
++        if Instant::now() >= self.deadline {
++            return;
++        }
++        let Ok(registration) = registration_for(self.harness) else {
++            return;
++        };
++        let Some(step) = registration.hook_step() else {
++            return;
++        };
++        let client = LocalSocketClient::new(
++            self.link.endpoint,
++            Arc::clone(&self.link.clock),
++            self.link.instance,
++            self.link.boot,
++        );
++        let daemon = HookStepClient {
++            client: &client,
++            clock: self.link.clock.as_ref(),
++            deadline: self.deadline,
++        };
++        step.complete(&self.payload.0, &daemon, &self.state_dir, self.deadline);
++    }
+ }
+ 
+ enum Failure {
+@@ -2867,6 +2922,10 @@ struct HookStepClient<'a> {
+     deadline: Instant,
+ }
+ impl HookStepDaemon for HookStepClient<'_> {
++    fn supports_capability(&self, name: &str) -> bool {
++        self.client
++            .supports_capability(name, &budget(self.deadline, self.clock))
++    }
+     fn call(&self, command: Command) -> Result<CommandResult, ApiError> {
+         self.client
+             .call(command, &budget(self.deadline, self.clock))
+@@ -2898,8 +2957,8 @@ fn run_hook_step(
+             .ok()
+             .and_then(|context| InstancePaths::resolve_read_only(&context).ok())
+             .and_then(|paths| connect_existing(&paths, Arc::new(SystemClock::new())).ok())
+-            .map(|(_, client, _)| client);
+-    let daemon = connected.as_ref().map(|client| HookStepClient {
++            .map(|(_, client, link)| (client, link));
++    let daemon = connected.as_ref().map(|(client, _)| HookStepClient {
+         client,
+         clock,
+         deadline,
+@@ -2907,20 +2966,31 @@ fn run_hook_step(
+     let pane = pane_inputs();
+     let state = args.state_dir.clone().or_else(|| pane.env_state.clone());
+     let host = args.host_endpoint.clone().or_else(|| pane.env_host.clone());
+-    let stdout = step.run(&HookStepContext {
++    let state_dir = adapter_state_dir(args, registration, true);
++    let prepared = step.run_with_completion(&HookStepContext {
+         input,
+         decoded,
+         claim,
+         daemon: daemon.as_ref().map(|daemon| daemon as &dyn HookStepDaemon),
+-        state_dir: adapter_state_dir(args, registration, true),
++        state_dir: state_dir.clone(),
+         command_prefix: cli_prefix(&pane_selectors(state.as_deref(), host.as_deref(), &pane)),
+         deadline,
+     });
++    let step_completion = prepared.completion.and_then(|payload| {
++        Some(HookStepCommit {
++            harness,
++            payload,
++            state_dir: state_dir?,
++            link: connected?.1,
++            deadline,
++        })
++    });
+     HookOutcome {
+-        stdout,
++        stdout: prepared.stdout,
+         diagnostic: None,
+         attention: None,
+         lazy: None,
++        step_completion,
+     }
+ }
+ fn decode_failure_detail(registration: &Registration, error: &DecodeFailure) -> String {
+@@ -2983,6 +3053,7 @@ fn quiet_outcome(detail: String) -> HookOutcome {
+         diagnostic: Some(detail),
+         attention: None,
+         lazy: None,
++        step_completion: None,
+     }
+ }
+ fn child_endpoint_available(args: &HookArgs) -> bool {
+@@ -3202,6 +3273,7 @@ fn run_admitted_hook_since(
+             diagnostic,
+             attention: None,
+             lazy: None,
++            step_completion: None,
+         };
+     }
+     // Verify registration/handle/event before any canonical operation.
+@@ -3305,6 +3377,7 @@ fn run_admitted_hook_since(
+                 diagnostic,
+                 attention: if consumes { attention } else { None },
+                 lazy,
++                step_completion: None,
+             }
+         }
+         Err(Failure::Quiet(detail)) => HookOutcome {
+@@ -3312,6 +3385,7 @@ fn run_admitted_hook_since(
+             diagnostic: Some(detail),
+             attention: None,
+             lazy: None,
++            step_completion: None,
+         },
+         Err(failure @ (Failure::Unavailable(_) | Failure::UnavailableDetail(..))) => {
+             let (reason, detail) = match failure {
+@@ -3342,6 +3416,7 @@ fn run_admitted_hook_since(
+                 diagnostic: Some(detail),
+                 attention: None,
+                 lazy: None,
++                step_completion: None,
+             }
+         }
+     }
+@@ -3417,13 +3492,22 @@ fn read_input_bounded(mut input: impl Read + Send + 'static, bound: Duration) ->
+ 
+ static OUTPUT: Mutex<()> = Mutex::new(());
+ 
++fn write_and_flush(bytes: &[u8], writer: &mut impl Write) -> bool {
++    writer.write_all(bytes).is_ok() && writer.flush().is_ok()
++}
++fn complete_after_emit(delivered: bool, complete: impl FnOnce()) {
++    if delivered {
++        complete();
++    }
++}
++
+ /// Returns whether stdout (if any) was fully written and flushed.
+ fn emit(outcome: &HookOutcome) -> bool {
+     let _guard = OUTPUT.lock().unwrap_or_else(|p| p.into_inner());
+     let mut delivered = true;
+     if !outcome.stdout.is_empty() {
+         let mut stdout = io::stdout().lock();
+-        delivered = stdout.write_all(&outcome.stdout).is_ok() && stdout.flush().is_ok();
++        delivered = write_and_flush(&outcome.stdout, &mut stdout);
+     }
+     if let Some(detail) = &outcome.diagnostic {
+         let _ = writeln!(io::stderr(), "herdr-threads hook: {detail}");
+@@ -3448,6 +3532,7 @@ pub fn parse_failure_outcome(detail: String, env: &HookEnv) -> HookOutcome {
+         diagnostic: (env.herdr_env && env.pane.is_some()).then_some(detail),
+         attention: None,
+         lazy: None,
++        step_completion: None,
+     }
+ }
+ 
+@@ -3635,6 +3720,11 @@ pub fn run_process_with(
+                     error.code
+                 );
+             }
++            complete_after_emit(delivered, || {
++                if let Some(completion) = outcome.step_completion {
++                    completion.commit();
++                }
++            });
+             deadline
+         },
+         |detail| {
+diff --git a/src/harness/adapter.rs b/src/harness/adapter.rs
+index 5fb0e995..8d319809 100644
+--- a/src/harness/adapter.rs
++++ b/src/harness/adapter.rs
+@@ -604,6 +604,35 @@ pub trait HookStep: Send + Sync {
+     /// Complete native stdout for one top-level `Observer` event; empty means none.
+     /// Fails open: every internal error returns empty bytes. Must finish by `context.deadline`.
+     fn run(&self, context: &HookStepContext<'_>) -> Vec<u8>;
++    /// Prepare stdout plus adapter-owned completion, without claiming it was emitted.
++    fn run_with_completion(&self, context: &HookStepContext<'_>) -> HookStepOutput {
++        HookStepOutput {
++            stdout: self.run(context),
++            completion: None,
++        }
++    }
++    /// Invoked only after all prepared stdout was written and flushed. The daemon
++    /// remains pinned to the original instance and boot; failure leaves work replayable.
++    fn complete(
++        &self,
++        _payload: &[u8],
++        _daemon: &dyn HookStepDaemon,
++        _state_dir: &std::path::Path,
++        _deadline: std::time::Instant,
++    ) {
++    }
++}
++/// Private adapter protocol bytes, bounded before any output is emitted.
++#[derive(Debug, PartialEq, Eq)]
++pub struct HookStepCompletionPayload(pub(crate) Vec<u8>);
++impl HookStepCompletionPayload {
++    pub fn new(bytes: Vec<u8>) -> Option<Self> {
++        (bytes.len() <= 65_536).then_some(Self(bytes))
++    }
++}
++pub struct HookStepOutput {
++    pub stdout: Vec<u8>,
++    pub completion: Option<HookStepCompletionPayload>,
+ }
+ pub struct HookStepContext<'a> {
+     pub input: &'a HookInput,
+@@ -620,6 +649,9 @@ pub struct HookStepContext<'a> {
+     pub deadline: std::time::Instant,
+ }
+ pub trait HookStepDaemon {
++    fn supports_capability(&self, _name: &str) -> bool {
++        false
++    }
+     fn call(
+         &self,
+         command: crate::protocol::commands::Command,
+diff --git a/src/harness/agy/delivery.rs b/src/harness/agy/delivery.rs
+index cde59c5b..d835d186 100644
+--- a/src/harness/agy/delivery.rs
++++ b/src/harness/agy/delivery.rs
+@@ -14,15 +14,16 @@
+ use super::{InjectionStep, paths};
+ use crate::{
+     harness::adapter::{
+-        DeliveryMechanism, DeliveryPolicy, HookStep, HookStepContext, HookStepDaemon, IdleWake,
+-        SetupEnvironment,
++        DeliveryMechanism, DeliveryPolicy, HookStep, HookStepCompletionPayload, HookStepContext,
++        HookStepDaemon, HookStepOutput, IdleWake, SetupEnvironment,
+     },
+     protocol::{
+         authority::{COOPERATIVE_HOOK_DELIVERY_PROVENANCE, CallerClaim},
+         commands::Command,
+         delivery::{
+-            DeliveryConfirm, DeliveryConfirmOutcome, DeliveryPull, DeliveryPullReply,
+-            DeliveryRefusalReason,
++            DeliveryConfirm, DeliveryConfirmOutcome, DeliveryPresentationConfirmV2,
++            DeliveryPresentationConfirmationV2, DeliveryPull, DeliveryPullReply,
++            DeliveryPullReplyV2, DeliveryPullV2, DeliveryRefusalReason, PresentationConsumer,
+         },
+         ids::{MessageId, OperationId},
+         results::CommandResult,
+@@ -30,8 +31,9 @@ use crate::{
+ };
+ use serde::{Deserialize, Serialize};
+ use serde_json::{Value, json};
++use sha2::{Digest, Sha256};
+ use std::{
+-    cell::OnceCell,
++    cell::{OnceCell, RefCell},
+     collections::BTreeSet,
+     ffi::OsStr,
+     io::{Read, Seek, SeekFrom},
+@@ -589,7 +591,19 @@ impl Runtime {
+ pub struct AgyHookStep;
+ impl HookStep for AgyHookStep {
+     fn run(&self, context: &HookStepContext<'_>) -> Vec<u8> {
+-        run_step(context, &Runtime::live())
++        self.run_with_completion(context).stdout
++    }
++    fn run_with_completion(&self, context: &HookStepContext<'_>) -> HookStepOutput {
++        run_step_with_completion(context, &Runtime::live())
++    }
++    fn complete(
++        &self,
++        payload: &[u8],
++        daemon: &dyn HookStepDaemon,
++        state_dir: &Path,
++        deadline: Instant,
++    ) {
++        complete_step(payload, daemon, state_dir, deadline);
+     }
+ }
+ 
+@@ -618,11 +632,18 @@ fn parse_payload(context: &HookStepContext<'_>) -> Option<Payload> {
+ 
+ /// Complete native stdout for one top-level `PreInvocation` or `Stop`; empty on any failure.
+ pub fn run_step(context: &HookStepContext<'_>, runtime: &Runtime) -> Vec<u8> {
++    run_step_with_completion(context, runtime).stdout
++}
++fn run_step_with_completion(context: &HookStepContext<'_>, runtime: &Runtime) -> HookStepOutput {
++    let empty = || HookStepOutput {
++        stdout: Vec::new(),
++        completion: None,
++    };
+     let Some(state_dir) = context.state_dir.as_deref() else {
+-        return Vec::new();
++        return empty();
+     };
+     let Some(payload) = parse_payload(context) else {
+-        return Vec::new();
++        return empty();
+     };
+     let step = Step {
+         context,
+@@ -630,14 +651,151 @@ pub fn run_step(context: &HookStepContext<'_>, runtime: &Runtime) -> Vec<u8> {
+         state_dir,
+         payload: &payload,
+         state_path: paths::conversation_state(state_dir, &payload.conversation),
++        completion: RefCell::new(None),
+     };
+-    match context.decoded.metadata.native_event.as_str() {
++    let stdout = match context.decoded.metadata.native_event.as_str() {
+         "PreInvocation" => step.pre_invocation(),
+         "Stop" => {
+             step.stop();
+             Vec::new()
+         }
+         _ => Vec::new(),
++    };
++    HookStepOutput {
++        stdout,
++        completion: step.completion.into_inner(),
++    }
++}
++
++const PRESENTATION_V2: &str = "delivery.presentation_v2";
++// State and optional probation record <=4096 each, six ASCII claim fields
++// <=128 each (<=4608 escaped bytes), three64hex digests, optional32hex token,
++// and fixed keys/u64 scalars (<1024). Nested records are typed objects, not JSON strings.
++// Enforce each component and the final serialized envelope, rather than assuming
++// the private transport cap bounds a nested state or an opaque caller ID.
++const COMPLETION_MAX_BYTES: usize = 16_384;
++#[derive(Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++struct EmissionCompletion {
++    state: ConversationState,
++    probation: Option<DowngradeRecord>,
++    previous_probation_digest: Option<String>,
++    claim: CallerClaim,
++    conversation_key: String,
++    previous_digest: Option<String>,
++    presentation_token: Option<String>,
++    now_ms: u64,
++    existed: bool,
++}
++fn hex_digest(bytes: &[u8]) -> String {
++    Sha256::digest(bytes)
++        .iter()
++        .map(|b| format!("{b:02x}"))
++        .collect()
++}
++fn valid_hex(value: &str, size: usize) -> bool {
++    value.len() == size
++        && value
++            .bytes()
++            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
++}
++fn valid_completion(completion: &EmissionCompletion) -> bool {
++    let claim = &completion.claim;
++    let bounded_id = |id: &str| !id.is_empty() && id.len() <= 128 && id.is_ascii();
++    completion.state.v == 1
++        && completion.state.injected.len() <= MAX_TRACKED
++        && serde_json::to_vec(&completion.state).is_ok_and(|bytes| bytes.len() <= MAX_STATE_BYTES)
++        && completion.probation.as_ref().is_none_or(|record| {
++            record.v == 1
++                && record.probation
++                && serde_json::to_vec(record).is_ok_and(|bytes| bytes.len() <= MAX_STATE_BYTES)
++        })
++        && completion
++            .previous_probation_digest
++            .as_deref()
++            .is_none_or(|v| valid_hex(v, 64))
++        && [
++            claim.instance.as_str(),
++            claim.seat.as_str(),
++            claim.harness.as_str(),
++            claim.native_session.as_str(),
++            claim.execution.as_str(),
++            claim.target.as_str(),
++        ]
++        .into_iter()
++        .all(bounded_id)
++        && claim.role == crate::protocol::authority::CallerRole::TopLevel
++        && valid_hex(&completion.conversation_key, 64)
++        && completion.conversation_key == hex_digest(claim.native_session.as_str().as_bytes())
++        && completion
++            .previous_digest
++            .as_deref()
++            .is_none_or(|v| valid_hex(v, 64))
++        && completion
++            .presentation_token
++            .as_deref()
++            .is_none_or(|v| valid_hex(v, 32))
++        && completion.state.generation == Some(claim.binding_generation)
++}
++fn complete_step(payload: &[u8], daemon: &dyn HookStepDaemon, state_dir: &Path, deadline: Instant) {
++    if payload.len() > COMPLETION_MAX_BYTES || Instant::now() >= deadline {
++        return;
++    }
++    let Ok(mut completion) = serde_json::from_slice::<EmissionCompletion>(payload) else {
++        return;
++    };
++    if !valid_completion(&completion) {
++        return;
++    }
++    if let Some(token) = completion.presentation_token.as_ref() {
++        if !daemon.supports_capability(PRESENTATION_V2) {
++            return;
++        }
++        let reply = daemon.call(Command::DeliveryPresentationConfirmV2(
++            DeliveryPresentationConfirmV2 {
++                claim: completion.claim.clone(),
++                consumer: PresentationConsumer::Hook,
++                token: token.clone(),
++                presentation_lease: None,
++            },
++        ));
++        if !matches!(
++            reply,
++            Ok(CommandResult::DeliveryPresentationConfirmedV2(
++                DeliveryPresentationConfirmationV2::Confirmed
++                    | DeliveryPresentationConfirmationV2::AlreadyConfirmed
++            ))
++        ) {
++            return;
++        }
++    }
++    if Instant::now() >= deadline {
++        return;
++    }
++    // Match the existing historical 128-bit filename; the payload carries a full
++    // digest, never arbitrary filename/path material. It carries no authority.
++    let path = state_dir
++        .join("conversations")
++        .join(format!("{}.json", &completion.conversation_key[..32]));
++    let current = read_capped(&path, MAX_STATE_BYTES).map(|bytes| hex_digest(&bytes));
++    if current != completion.previous_digest {
++        return;
++    }
++    // This detects an observed change, not a lock/CAS: local hints retain
++    // their historical cooperative concurrency limits.
++    if completion.probation.is_some() {
++        let current = read_capped(&downgrade_path(state_dir), MAX_STATE_BYTES)
++            .map(|bytes| hex_digest(&bytes));
++        if current != completion.previous_probation_digest {
++            return;
++        }
++    }
++    if !completion.existed {
++        prune_conversation_states(state_dir, &path, completion.now_ms);
++    }
++    completion.state.save(&path);
++    if let Some(probation) = completion.probation {
++        save_downgrade(state_dir, &probation);
+     }
+ }
+ 
+@@ -647,6 +805,7 @@ struct Step<'a> {
+     state_dir: &'a Path,
+     payload: &'a Payload,
+     state_path: PathBuf,
++    completion: RefCell<Option<HookStepCompletionPayload>>,
+ }
+ 
+ /// Delete regular `*.json` files in `<state_dir>/conversations` (other than `keep`) whose mtime is
+@@ -790,6 +949,8 @@ impl Step<'_> {
+             return Vec::new();
+         };
+         let (mut state, existed) = ConversationState::load(&self.state_path);
++        let previous_digest =
++            read_capped(&self.state_path, MAX_STATE_BYTES).map(|bytes| hex_digest(&bytes));
+         if self.payload.invocation == Some(0) {
+             state.turn += 1;
+             state.injected_this_turn = false;
+@@ -815,18 +976,52 @@ impl Step<'_> {
+             }
+             return Vec::new();
+         }
+-        let reply = daemon.call(Command::DeliveryPull(DeliveryPull {
+-            claim: claim.clone(),
+-            seen_attention_version: state.seen_attention_version,
+-            marker_prefix: self.context.command_prefix.clone(),
+-        }));
+-        let reply = match reply {
+-            Ok(CommandResult::DeliveryPulled(reply)) => reply,
+-            _ => {
+-                if existed {
+-                    state.save(&self.state_path);
++        // Capability discovery precedes every V2 progress/token operation. Old
++        // daemons retain the old pull bytes and historical local-hint semantics.
++        let modern = daemon.supports_capability(PRESENTATION_V2);
++        let (reply, presentation_token) = if modern {
++            match daemon.call(Command::DeliveryPullV2(DeliveryPullV2 {
++                claim: claim.clone(),
++                consumer: PresentationConsumer::Hook,
++                confirmed_token: None,
++                presentation_lease: None,
++                marker_prefix: self.context.command_prefix.clone(),
++            })) {
++                Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page))) => {
++                    let token = page.presentation_token;
++                    (
++                        DeliveryPullReply::Page(crate::protocol::delivery::DeliveryPage {
++                            attention_version: page.attention_version,
++                            text: page.text,
++                            offered: page.offered,
++                            truncated: page.truncated,
++                            more: page.more,
++                        }),
++                        token,
++                    )
++                }
++                Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Unchanged {
++                    attention_version,
++                })) => (DeliveryPullReply::Unchanged { attention_version }, None),
++                Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Refused { reason })) => {
++                    (DeliveryPullReply::Refused { reason }, None)
++                }
++                _ => return Vec::new(),
++            }
++        } else {
++            let reply = daemon.call(Command::DeliveryPull(DeliveryPull {
++                claim: claim.clone(),
++                seen_attention_version: state.seen_attention_version,
++                marker_prefix: self.context.command_prefix.clone(),
++            }));
++            match reply {
++                Ok(CommandResult::DeliveryPulled(reply)) => (reply, None),
++                _ => {
++                    if existed {
++                        state.save(&self.state_path);
++                    }
++                    return Vec::new();
+                 }
+-                return Vec::new();
+             }
+         };
+         match reply {
+@@ -872,23 +1067,56 @@ impl Step<'_> {
+                 } else {
+                     InjectionStep::SystemMessage
+                 };
++                let previous_probation_digest =
++                    read_capped(&downgrade_path(self.state_dir), MAX_STATE_BYTES)
++                        .map(|bytes| hex_digest(&bytes));
++                let mut probation = None;
+                 if confirmable
+                     && record.downgraded_at.is_some()
+                     && !record.probation
+                     && step == InjectionStep::SystemMessage
+                 {
+-                    // The probation turn opens: one systemMessage retry.
++                    // Opening the retry is output-coupled. An un-emitted or
++                    // unconfirmed page cannot spend this one probation turn.
+                     record.probation = true;
+                     record.probation_at = Some(now);
+-                    save_downgrade(self.state_dir, &record);
++                    probation = Some(record);
+                 }
+                 let user = step == InjectionStep::UserMessage;
+                 let output = step.render(&page.text);
+                 let offset = self.transcript_len();
+                 state.record_injection(&page.offered, offset, user);
+-                self.prune_if_new(existed);
+-                state.save(&self.state_path);
+-                serde_json::to_vec(&output).unwrap_or_default()
++                // Apply the existing bounded-state pruning policy before deriving
++                // the payload. No seen/injected/token state is saved during preparation.
++                let _ = state.serialize_bounded();
++                let completion = EmissionCompletion {
++                    state,
++                    probation,
++                    previous_probation_digest,
++                    claim: claim.clone(),
++                    conversation_key: hex_digest(self.payload.conversation.as_bytes()),
++                    previous_digest,
++                    presentation_token,
++                    now_ms: self.runtime.now_ms,
++                    existed,
++                };
++                if !valid_completion(&completion) {
++                    return Vec::new();
++                }
++                let Ok(bytes) = serde_json::to_vec(&completion) else {
++                    return Vec::new();
++                };
++                if bytes.len() > COMPLETION_MAX_BYTES {
++                    return Vec::new();
++                }
++                let Some(payload) = HookStepCompletionPayload::new(bytes) else {
++                    return Vec::new();
++                };
++                let Ok(stdout) = serde_json::to_vec(&output) else {
++                    return Vec::new();
++                };
++                *self.completion.borrow_mut() = Some(payload);
++                stdout
+             }
+         }
+     }
+diff --git a/tests/cli/hook.rs b/tests/cli/hook.rs
+index 7a66fd66..e717dd6c 100644
+--- a/tests/cli/hook.rs
++++ b/tests/cli/hook.rs
+@@ -1825,6 +1825,7 @@ fn hook_parse_error_outside_herdr_is_quiet() {
+             diagnostic: Some("bad argv".into()),
+             attention: None,
+             lazy: None,
++            step_completion: None,
+         }
+     );
+ }
+diff --git a/tests/cli/hook_neutral.rs b/tests/cli/hook_neutral.rs
+index c712ba51..909d0dd5 100644
+--- a/tests/cli/hook_neutral.rs
++++ b/tests/cli/hook_neutral.rs
+@@ -149,3 +149,68 @@ fn parse_failure_report_follows_the_legacy_contract_predicate() {
+         );
+     }
+ }
++
++// Adapter completion is gated by both real writer operations, not by preparation.
++#[test]
++fn adapter_completion_requires_successful_stdout_write_and_flush() {
++    struct Writer {
++        fail_write: bool,
++        fail_flush: bool,
++        bytes: Vec<u8>,
++        flushed: bool,
++    }
++    impl std::io::Write for Writer {
++        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
++            if self.fail_write {
++                return Err(std::io::ErrorKind::BrokenPipe.into());
++            }
++            self.bytes.extend_from_slice(bytes);
++            Ok(bytes.len())
++        }
++        fn flush(&mut self) -> std::io::Result<()> {
++            if self.fail_flush {
++                return Err(std::io::ErrorKind::BrokenPipe.into());
++            }
++            self.flushed = true;
++            Ok(())
++        }
++    }
++    for (fail_write, fail_flush, completed) in [
++        (true, false, false),
++        (false, true, false),
++        (false, false, true),
++    ] {
++        let mut writer = Writer {
++            fail_write,
++            fail_flush,
++            bytes: vec![],
++            flushed: false,
++        };
++        let delivered = write_and_flush(b"native hook output", &mut writer);
++        let mut calls = 0;
++        complete_after_emit(delivered, || {
++            assert!(writer.flushed);
++            assert_eq!(writer.bytes, b"native hook output");
++            calls += 1;
++        });
++        assert_eq!(calls, usize::from(completed));
++    }
++}
++
++#[test]
++fn default_hook_step_completion_is_inert() {
++    struct Existing;
++    impl HookStep for Existing {
++        fn run(&self, _: &HookStepContext<'_>) -> Vec<u8> {
++            b"old native bytes".to_vec()
++        }
++    }
++    struct NoCalls;
++    impl HookStepDaemon for NoCalls {
++        fn call(&self, _: Command) -> Result<CommandResult, ApiError> {
++            panic!("default completion must be inert")
++        }
++    }
++    // The default completion accepts no authority or state from its payload.
++    Existing.complete(b"opaque", &NoCalls, Path::new("/unused"), Instant::now());
++}
+diff --git a/tests/harness/agy_delivery.rs b/tests/harness/agy_delivery.rs
+index dada0a41..adc0c2c3 100644
+--- a/tests/harness/agy_delivery.rs
++++ b/tests/harness/agy_delivery.rs
+@@ -297,12 +297,14 @@ fn unparseable_missing_and_non_file_transcripts_find_nothing() {
+ struct Fake {
+     replies: RefCell<VecDeque<Result<CommandResult, ApiError>>>,
+     calls: RefCell<Vec<Command>>,
++    modern: bool,
+ }
+ impl Fake {
+     fn with(replies: Vec<Result<CommandResult, ApiError>>) -> Self {
+         Self {
+             replies: RefCell::new(replies.into()),
+             calls: RefCell::default(),
++            modern: false,
+         }
+     }
+     fn calls(&self) -> Vec<Command> {
+@@ -321,6 +323,10 @@ impl Fake {
+     }
+ }
+ impl HookStepDaemon for Fake {
++    fn supports_capability(&self, name: &str) -> bool {
++        self.modern && name == PRESENTATION_V2
++    }
++
+     fn call(&self, command: Command) -> Result<CommandResult, ApiError> {
+         self.calls.borrow_mut().push(command);
+         self.replies.borrow_mut().pop_front().unwrap_or_else(|| {
+@@ -393,7 +399,13 @@ impl Rig {
+             .write_all(bytes)
+             .unwrap();
+     }
+-    fn run(&self, event: &str, payload: Value, fake: Option<&Fake>, rt: &Runtime) -> Vec<u8> {
++    fn prepare(
++        &self,
++        event: &str,
++        payload: Value,
++        fake: Option<&Fake>,
++        rt: &Runtime,
++    ) -> HookStepOutput {
+         let mut payload = payload;
+         payload["conversationId"] = json!(CONV);
+         payload["transcriptPath"] = json!(self.transcript.to_str().unwrap());
+@@ -408,7 +420,7 @@ impl Rig {
+             &input,
+         )
+         .unwrap();
+-        run_step(
++        run_step_with_completion(
+             &HookStepContext {
+                 input: &input,
+                 decoded: &decoded,
+@@ -421,6 +433,20 @@ impl Rig {
+             rt,
+         )
+     }
++    fn run(&self, event: &str, payload: Value, fake: Option<&Fake>, rt: &Runtime) -> Vec<u8> {
++        let prepared = self.prepare(event, payload, fake, rt);
++        // These legacy behavior fixtures model a successful native emission.
++        // The explicit un-emitted regression calls HookStep::run directly.
++        if let (Some(payload), Some(fake)) = (prepared.completion, fake) {
++            complete_step(
++                &payload.0,
++                fake,
++                &self.state,
++                Instant::now() + Duration::from_secs(30),
++            );
++        }
++        prepared.stdout
++    }
+     fn pre(&self, invocation: u64, fake: &Fake, rt: &Runtime) -> Vec<u8> {
+         self.run(
+             "PreInvocation",
+@@ -1454,7 +1480,7 @@ mod daemon {
+                 &input,
+             )
+             .unwrap();
+-            run_step(
++            let prepared = run_step_with_completion(
+                 &HookStepContext {
+                     input: &input,
+                     decoded: &decoded,
+@@ -1465,7 +1491,16 @@ mod daemon {
+                     deadline: Instant::now() + Duration::from_secs(30),
+                 },
+                 &rt,
+-            )
++            );
++            if let Some(payload) = prepared.completion {
++                complete_step(
++                    &payload.0,
++                    daemon,
++                    &rig.state,
++                    Instant::now() + Duration::from_secs(30),
++                );
++            }
++            prepared.stdout
+         };
+         let up = Direct(&world.service, false);
+ 
+@@ -1722,3 +1757,540 @@ fn an_existing_conversation_does_not_prune() {
+         "pruning runs only when a file is first created"
+     );
+ }
++/// Preparing a probation injection cannot consume the one retry if stdout never reaches agy.
++#[test]
++fn preparing_probation_does_not_open_it_before_emission() {
++    let rig = Rig::new();
++    let identity = ident("a");
++    let mut record = DowngradeRecord::blank(&identity);
++    record.downgrade("abort", 1000);
++    save_downgrade(&rig.state, &record);
++    let input = HookInput {
++        bytes: serde_json::to_vec(&json!({
++            "conversationId": CONV,
++            "transcriptPath": rig.transcript.to_str().unwrap(),
++            "invocationNum": 0,
++            "initialNumSteps": 1,
++        }))
++        .unwrap(),
++        registered_event: Some("PreInvocation".to_owned()),
++    };
++    let decoded = decode(
++        &AgyAdmission {
++            step: InjectionStep::SystemMessage,
++        },
++        &input,
++    )
++    .unwrap();
++    let fake = offering();
++    let output = run_step(
++        &HookStepContext {
++            input: &input,
++            decoded: &decoded,
++            claim: Some(claim(0)),
++            daemon: Some(&fake),
++            state_dir: Some(rig.state.clone()),
++            command_prefix: vec!["herdr-threads".into()],
++            deadline: Instant::now() + Duration::from_secs(30),
++        },
++        &runtime(1000 + 24 * HOUR, &identity),
++    );
++    assert_eq!(output, fixture_bytes("output-system-message.json"));
++    // Deliberately no write or flush of the returned native bytes.
++    assert_eq!(
++        rig.record(),
++        Some(record),
++        "un-emitted probation must remain available"
++    );
++}
++fn native_escaping_invitation_page() -> String {
++    use crate::delivery::invitation::InvitationContext;
++    let items: Vec<_> = (0..8)
++        .map(|n| {
++            InvitationContext {
++                id: crate::protocol::ids::InvitationId::new(format!("invite-{n}")),
++                thread: crate::protocol::ids::ThreadId::new(format!("thread-{n}")),
++                topic: "\0".repeat(1024),
++                goal: "\0".repeat(1024),
++                episode: 1,
++                topic_revision: 1,
++                command_epoch: 0,
++                confirmation: Some(crate::protocol::commands::InvitationConfirmation::Lazy),
++                deadline: None,
++                required: None,
++            }
++            .render(&["herdr-threads".into()])
++        })
++        .collect();
++    crate::delivery::frame(&items)
++}
++
++#[test]
++fn system_message_native_invitation_frame_respects_final_64k_bound() {
++    let rig = Rig::new();
++    let text = native_escaping_invitation_page();
++    assert!(text.len() < 65_536, "supported canonical plaintext page");
++    let output = rig.pre(
++        0,
++        &Fake::with(vec![page(&[], &text, 11)]),
++        &runtime(1000, &ident("a")),
++    );
++    let native: Value = serde_json::from_slice(&output).unwrap();
++    assert_eq!(
++        native["injectSteps"][0]["systemMessage"]["systemMessage"],
++        text
++    );
++    assert!(
++        output.len() <= 65_536,
++        "final systemMessage frame is {} bytes",
++        output.len()
++    );
++}
++
++#[test]
++fn downgraded_user_message_native_invitation_frame_respects_final_64k_bound() {
++    let rig = Rig::new();
++    let identity = ident("a");
++    let mut record = DowngradeRecord::blank(&identity);
++    record.downgrade("abort", 1000);
++    save_downgrade(&rig.state, &record);
++    let text = native_escaping_invitation_page();
++    assert!(text.len() < 65_536, "supported canonical plaintext page");
++    let output = rig.pre(
++        0,
++        &Fake::with(vec![page(&[], &text, 11)]),
++        &runtime(1001, &identity),
++    );
++    let native: Value = serde_json::from_slice(&output).unwrap();
++    assert_eq!(native["injectSteps"][0]["userMessage"], text);
++    assert!(
++        output.len() <= 65_536,
++        "final userMessage frame is {} bytes",
++        output.len()
++    );
++}
++
++fn modern_page(token: &str) -> Result<CommandResult, ApiError> {
++    use crate::protocol::delivery::DeliveryPageV2;
++    Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(
++        DeliveryPageV2 {
++            attention_version: 11,
++            text: TEXT.into(),
++            offered: vec![MessageId::new("msg-a1")],
++            truncated: vec![],
++            more: false,
++            presentation_token: Some(token.into()),
++            invitations: vec![],
++            messages: vec![],
++        },
++    )))
++}
++fn modern_fake(replies: Vec<Result<CommandResult, ApiError>>) -> Fake {
++    let mut fake = Fake::with(replies);
++    fake.modern = true;
++    fake
++}
++
++#[test]
++fn postflush_confirmation_loss_keeps_state_replayable_after_restart() {
++    let rig = Rig::new();
++    let rt = runtime(1000, &ident("a"));
++    let token = "a".repeat(32);
++    let failed = modern_fake(vec![
++        modern_page(&token),
++        Err(ApiError::new(
++            ErrorCode::InvalidRequest,
++            "lost confirm reply",
++        )),
++    ]);
++    let prepared = rig.prepare(
++        "PreInvocation",
++        json!({"invocationNum": 0}),
++        Some(&failed),
++        &rt,
++    );
++    assert_eq!(prepared.stdout, fixture_bytes("output-system-message.json"));
++    assert!(!rig.state_file().exists());
++    complete_step(
++        &prepared.completion.unwrap().0,
++        &failed,
++        &rig.state,
++        Instant::now() + Duration::from_secs(30),
++    );
++    assert!(
++        !rig.state_file().exists(),
++        "lost confirmation cannot commit seen/injected hints"
++    );
++    // A fresh producer invocation has no saved completion. The canonical outbox
++    // supplies the same token and content; already-confirmed replay is legitimate.
++    let restarted = modern_fake(vec![
++        modern_page(&token),
++        Ok(CommandResult::DeliveryPresentationConfirmedV2(
++            DeliveryPresentationConfirmationV2::AlreadyConfirmed,
++        )),
++    ]);
++    let replay = rig.prepare(
++        "PreInvocation",
++        json!({"invocationNum": 0}),
++        Some(&restarted),
++        &rt,
++    );
++    assert_eq!(replay.stdout, prepared.stdout);
++    complete_step(
++        &replay.completion.unwrap().0,
++        &restarted,
++        &rig.state,
++        Instant::now() + Duration::from_secs(30),
++    );
++    assert_eq!(rig.conversation().seen_attention_version, Some(11));
++    assert_eq!(rig.conversation().injected[0].id, "msg-a1");
++    for fake in [&failed, &restarted] {
++        let calls = fake.calls();
++        assert!(
++            matches!(&calls[0], Command::DeliveryPullV2(pull) if pull.consumer == PresentationConsumer::Hook && pull.presentation_lease.is_none() && pull.claim == claim(0))
++        );
++        assert!(
++            matches!(&calls[1], Command::DeliveryPresentationConfirmV2(confirm) if confirm.token == token && confirm.claim == claim(0) && confirm.presentation_lease.is_none())
++        );
++        assert_eq!(
++            calls.len(),
++            2,
++            "presentation completion never ACKs or accepts"
++        );
++    }
++}
++
++#[test]
++fn stale_confirmation_and_expired_completion_never_save_injected_state() {
++    for result in [
++        DeliveryPresentationConfirmationV2::StaleBinding,
++        DeliveryPresentationConfirmationV2::NotCurrentPage,
++    ] {
++        let rig = Rig::new();
++        let fake = modern_fake(vec![
++            modern_page(&"a".repeat(32)),
++            Ok(CommandResult::DeliveryPresentationConfirmedV2(result)),
++        ]);
++        let prepared = rig.prepare(
++            "PreInvocation",
++            json!({"invocationNum": 0}),
++            Some(&fake),
++            &runtime(1000, &ident("a")),
++        );
++        complete_step(
++            &prepared.completion.unwrap().0,
++            &fake,
++            &rig.state,
++            Instant::now() + Duration::from_secs(30),
++        );
++        assert!(!rig.state_file().exists());
++    }
++    let rig = Rig::new();
++    let fake = offering();
++    let prepared = rig.prepare(
++        "PreInvocation",
++        json!({"invocationNum": 0}),
++        Some(&fake),
++        &runtime(1000, &ident("a")),
++    );
++    complete_step(
++        &prepared.completion.unwrap().0,
++        &fake,
++        &rig.state,
++        Instant::now() - Duration::from_millis(1),
++    );
++    assert!(!rig.state_file().exists());
++    assert_eq!(fake.calls().len(), 1, "expired completion sends no command");
++}
++
++#[test]
++fn postflush_state_hint_does_not_overwrite_an_observed_concurrent_change() {
++    let rig = Rig::new();
++    let fake = offering();
++    let prepared = rig.prepare(
++        "PreInvocation",
++        json!({"invocationNum": 0}),
++        Some(&fake),
++        &runtime(1000, &ident("a")),
++    );
++    let mut changed = ConversationState {
++        turn: 9,
++        seen_attention_version: Some(77),
++        ..Default::default()
++    };
++    changed.save(&rig.state_file());
++    let before = std::fs::read(rig.state_file()).unwrap();
++    complete_step(
++        &prepared.completion.unwrap().0,
++        &fake,
++        &rig.state,
++        Instant::now() + Duration::from_secs(30),
++    );
++    assert_eq!(std::fs::read(rig.state_file()).unwrap(), before);
++}
++
++#[test]
++fn malformed_or_oversized_completion_is_inert() {
++    let rig = Rig::new();
++    let fake = Fake::default();
++    for payload in [vec![b'x'; COMPLETION_MAX_BYTES + 1], b"{}".to_vec()] {
++        complete_step(
++            &payload,
++            &fake,
++            &rig.state,
++            Instant::now() + Duration::from_secs(30),
++        );
++    }
++    assert!(!rig.state_file().exists());
++    assert!(fake.calls().is_empty());
++}
++
++#[test]
++fn probation_opening_is_deferred_until_successful_completion() {
++    let rig = Rig::new();
++    let identity = ident("a");
++    let mut record = DowngradeRecord::blank(&identity);
++    record.downgrade("abort", 1000);
++    save_downgrade(&rig.state, &record);
++    let rt = runtime(1000 + 24 * HOUR, &identity);
++    let fake = offering();
++    let prepared = rig.prepare(
++        "PreInvocation",
++        json!({"invocationNum": 0}),
++        Some(&fake),
++        &rt,
++    );
++    assert_eq!(prepared.stdout, fixture_bytes("output-system-message.json"));
++    assert_eq!(rig.record(), Some(record.clone()));
++    assert!(!rig.state_file().exists());
++    // Dropped output or an expired completion cannot spend the retry.
++    let payload = prepared.completion.unwrap();
++    complete_step(
++        &payload.0,
++        &fake,
++        &rig.state,
++        Instant::now() - Duration::from_millis(1),
++    );
++    assert_eq!(rig.record(), Some(record));
++    assert!(!rig.state_file().exists());
++    complete_step(
++        &payload.0,
++        &fake,
++        &rig.state,
++        Instant::now() + Duration::from_secs(30),
++    );
++    let saved = rig.record().unwrap();
++    assert!(saved.probation);
++    assert_eq!(saved.probation_at, Some(1000 + 24 * HOUR));
++    assert_eq!(rig.conversation().injected[0].id, "msg-a1");
++}
++
++#[test]
++fn probation_confirmation_loss_keeps_the_retry_available() {
++    let rig = Rig::new();
++    let identity = ident("a");
++    let mut record = DowngradeRecord::blank(&identity);
++    record.downgrade("abort", 1000);
++    save_downgrade(&rig.state, &record);
++    let rt = runtime(1000 + 24 * HOUR, &identity);
++    let token = "a".repeat(32);
++    let fake = modern_fake(vec![
++        modern_page(&token),
++        Err(ApiError::new(
++            ErrorCode::InvalidRequest,
++            "confirmation lost",
++        )),
++    ]);
++    let prepared = rig.prepare(
++        "PreInvocation",
++        json!({"invocationNum": 0}),
++        Some(&fake),
++        &rt,
++    );
++    complete_step(
++        &prepared.completion.unwrap().0,
++        &fake,
++        &rig.state,
++        Instant::now() + Duration::from_secs(30),
++    );
++    assert_eq!(rig.record(), Some(record));
++    assert!(!rig.state_file().exists());
++    let replay = modern_fake(vec![
++        modern_page(&token),
++        Ok(CommandResult::DeliveryPresentationConfirmedV2(
++            DeliveryPresentationConfirmationV2::Confirmed,
++        )),
++    ]);
++    let prepared = rig.prepare(
++        "PreInvocation",
++        json!({"invocationNum": 0}),
++        Some(&replay),
++        &rt,
++    );
++    assert_eq!(prepared.stdout, fixture_bytes("output-system-message.json"));
++    complete_step(
++        &prepared.completion.unwrap().0,
++        &replay,
++        &rig.state,
++        Instant::now() + Duration::from_secs(30),
++    );
++    assert!(rig.record().unwrap().probation);
++}
++
++#[test]
++fn probation_completion_preserves_an_observed_changed_downgrade_hint() {
++    let rig = Rig::new();
++    let identity = ident("a");
++    let mut record = DowngradeRecord::blank(&identity);
++    record.downgrade("abort", 1000);
++    save_downgrade(&rig.state, &record);
++    let fake = offering();
++    let prepared = rig.prepare(
++        "PreInvocation",
++        json!({"invocationNum": 0}),
++        Some(&fake),
++        &runtime(1000 + 24 * HOUR, &identity),
++    );
++    record.downgrade("misses", 2000);
++    save_downgrade(&rig.state, &record);
++    let before = std::fs::read(downgrade_path(&rig.state)).unwrap();
++    complete_step(
++        &prepared.completion.unwrap().0,
++        &fake,
++        &rig.state,
++        Instant::now() + Duration::from_secs(30),
++    );
++    assert_eq!(std::fs::read(downgrade_path(&rig.state)).unwrap(), before);
++    assert!(!rig.state_file().exists());
++}
++
++#[test]
++fn expired_probation_maintenance_remains_independent_of_page_emission() {
++    let rig = Rig::new();
++    let identity = ident("a");
++    let mut record = DowngradeRecord::blank(&identity);
++    record.downgrade("abort", 0);
++    record.probation = true;
++    record.probation_at = Some(1000);
++    save_downgrade(&rig.state, &record);
++    let now = 1000 + 24 * HOUR;
++    let prepared = rig.prepare(
++        "PreInvocation",
++        json!({"invocationNum": 0}),
++        Some(&offering()),
++        &runtime(now, &identity),
++    );
++    assert_eq!(prepared.stdout, fixture_bytes("output-user-message.json"));
++    let saved = rig.record().unwrap();
++    assert!(!saved.probation);
++    assert_eq!(saved.downgraded_at, Some(now));
++    assert!(
++        !rig.state_file().exists(),
++        "new page state is still emission-coupled"
++    );
++}
++
++#[test]
++fn typed_completion_fits_two_maximal_admitted_records_and_escaped_claim_fields() {
++    let mut state = ConversationState {
++        seen_attention_version: Some(u64::MAX),
++        turn: u64::MAX,
++        injected_this_turn: true,
++        generation: Some(u64::MAX),
++        injected: (0..MAX_TRACKED)
++            .map(|n| Injected {
++                id: format!("m{n}"),
++                offset: u64::MAX,
++                turn: u64::MAX,
++                user: true,
++            })
++            .collect(),
++        ..Default::default()
++    };
++    // Fill the actual serializer's admitted4KiB state with printable opaque IDs.
++    for n in 0..state.injected.len() {
++        while state.injected[n].id.len() < 128 {
++            state.injected[n].id.push('"');
++            if serde_json::to_vec(&state).unwrap().len() > MAX_STATE_BYTES {
++                state.injected[n].id.pop();
++                break;
++            }
++        }
++    }
++    if serde_json::to_vec(&state).unwrap().len() < MAX_STATE_BYTES {
++        let entry = state
++            .injected
++            .iter_mut()
++            .find(|entry| entry.id.len() < 128)
++            .unwrap();
++        entry.id.push('x');
++    }
++    assert_eq!(state.serialize_bounded().len(), MAX_STATE_BYTES);
++    assert_eq!(state.injected.len(), MAX_TRACKED);
++    let mut record = DowngradeRecord::blank(&Identity {
++        path: "/".into(),
++        inode: u64::MAX,
++        size: u64::MAX,
++        mtime_ns: i64::MAX,
++    });
++    record.downgrade("abort", u64::MAX);
++    record.probation = true;
++    record.probation_at = Some(u64::MAX);
++    let mut quote = true;
++    while serde_json::to_vec(&record).unwrap().len() + 2 <= MAX_STATE_BYTES {
++        // Both characters need escaping; these are admitted historical format
++        // bytes, not a claim that an OS resolves a path at this limit.
++        record.identity.path.push(if quote { '"' } else { '\\' });
++        quote = !quote;
++    }
++    if serde_json::to_vec(&record).unwrap().len() < MAX_STATE_BYTES {
++        record.identity.path.push('x');
++    }
++    assert_eq!(serde_json::to_vec(&record).unwrap().len(), MAX_STATE_BYTES);
++    let mut original = claim(u64::MAX);
++    original.instance = "\0".repeat(128); // String field is checked, never assumed to be an ID type.
++    original.seat = SeatId::new("\"\\".repeat(64));
++    original.execution = ExecutionId::new("\"\\".repeat(64));
++    original.target = HostTargetId::new("\"\\".repeat(64));
++    original.native_session = NativeSessionId::new("a".repeat(128));
++    let mut completion = EmissionCompletion {
++        state,
++        probation: Some(record),
++        previous_probation_digest: Some("f".repeat(64)),
++        conversation_key: hex_digest(original.native_session.as_str().as_bytes()),
++        claim: original,
++        previous_digest: Some("f".repeat(64)),
++        presentation_token: Some("a".repeat(32)),
++        now_ms: u64::MAX,
++        existed: true,
++    };
++    assert!(valid_completion(&completion));
++    let encoded = serde_json::to_vec(&completion).unwrap();
++    assert!(
++        encoded.len() <= COMPLETION_MAX_BYTES,
++        "actual encoded payload {}",
++        encoded.len()
++    );
++    let native: Value = serde_json::from_slice(&encoded).unwrap();
++    assert!(native["state"].is_object() && native["probation"].is_object());
++    assert!(valid_completion(
++        &serde_json::from_slice::<EmissionCompletion>(&encoded).unwrap()
++    ));
++    completion.claim.instance.push('x');
++    assert!(
++        !valid_completion(&completion),
++        "instance String cap is enforced"
++    );
++    completion.claim.instance.pop();
++    completion
++        .probation
++        .as_mut()
++        .unwrap()
++        .identity
++        .path
++        .push('x');
++    assert!(
++        !valid_completion(&completion),
++        "probation's own4KiB cap is enforced"
++    );
++}

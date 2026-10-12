@@ -1,0 +1,3 @@
+# Single phase6 sweep-fix pass evidence
+
+All26 focused controls PASS at validation0b04/tree29f7; exact source selection/commands and scoped leak0 in focused/execution.json. Three independent test defects corrected; production unchanged. First failed compile MessageId diagnostic remains in /private/tmp/ht-sweep-fix-focused-a394. One light CLEAN review each. Per-merge compile-only gates; no merge-time tests. Consumer strict validation/plugin test PASS at dc157; checker initial sandbox ps denial retained, later exact run-id55666b00-bc37-4221-8062-fa7e1712d06f escalated returned no leaked test processes. Consumer files unchanged by these three test/policy fixes. Broad finalC rerun not yet spent: newly announced Main20e7/schema36 requires combined source first.

@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running tests/combined.rs (.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/combined-ccdf0e34a69a440f)
+
+running 1 test
+test lazy_recovery_context::lazy_recovery_prior_durable_ref_on_second_record_failure_pins_journal ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 1.90s
+

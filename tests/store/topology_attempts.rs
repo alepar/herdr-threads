@@ -215,7 +215,7 @@ fn guarded_history_replays_before_current_binding_and_refuses_altered_or_corrupt
 }
 
 #[test]
-fn guarded_retained_result_keeps_the_256kib_ceiling_without_truncation() {
+fn guarded_retained_result_keeps_the_1mib_ceiling_without_truncation() {
     let mut db = fixture();
     let id = identity();
     let request;
@@ -265,7 +265,7 @@ fn guarded_retained_result_keeps_the_256kib_ceiling_without_truncation() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        256 * 1024
+        1024 * 1024
     );
 }
 #[test]

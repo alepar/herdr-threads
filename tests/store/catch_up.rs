@@ -1041,7 +1041,14 @@ fn due_phase_runs_the_stall_scan() {
     )
     .unwrap();
     assert!(matches!(progress.receipts, DuePhaseProgress::Complete));
-    assert_eq!(progress.examined_candidates, 1, "the ended row is counted");
+    assert_eq!(
+        progress.examined_candidates, 0,
+        "session maintenance is not a receipt candidate"
+    );
+    assert_eq!(
+        progress.maintenance_sessions, 1,
+        "the bounded ended session is counted separately"
+    );
     let stalled = row(&f.conn, "s");
     assert_eq!(stalled.state, "ended");
     assert_eq!(stalled.end_reason.as_deref(), Some("stalled"));
@@ -1104,12 +1111,13 @@ fn due_phase_continuation_clears_with_many_ended_lapsed_rows() {
         state = progress.state.clone();
         assert!(matches!(progress.receipts, DuePhaseProgress::Complete));
         assert!(!progress.has_more);
-        let cursor = progress
-            .state
-            .receipts
-            .as_ref()
-            .expect("watermark retained");
-        assert!(cursor.extension_through.is_some());
-        assert!(cursor.extension_after.is_none());
+        assert!(
+            progress.state.receipts.is_none(),
+            "completed ordinary cycles need no redundant lapse watermark"
+        );
+        assert_eq!(
+            progress.maintenance_sessions, 0,
+            "already ended sessions are not revisited as active maintenance"
+        );
     }
 }

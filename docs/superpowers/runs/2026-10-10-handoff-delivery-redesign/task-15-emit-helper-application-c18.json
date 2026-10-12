@@ -1,0 +1,23 @@
+{
+  "tip": "c18f3cea60af3824b059459e6233127c91cbc71c",
+  "base": "ee1e598c3ee96566ddc9b397185cdc97c8bf6218",
+  "agy_test_base": "2f5e1d9e",
+  "review": "Spec CLEAN / Quality CLEAN; parent read before application",
+  "immediate_quiescent_ack_source_hash": "58151e3dba459ed10639b59e3a2de7cc281a4e78a5b243daa9c4d9b0328b24af",
+  "pre_dirty_diff": "0332b7840f0e5056abcecb39f14945f74a2f125e1f35e3facb804c26ad226b20",
+  "patch_sha256": "e54b18d0a04bc0b9675ff88f6ce70989027af2483cd7c2730dbaede985791b9c",
+  "after": {
+    "src/harness/adapter.rs": "014abbd05b1562f92160b2f160c4439cbc86a4b369236060ba80e0e4629bbf88",
+    "src/cli/hook.rs": "e9081b6af2078197d9ab93e615aa84617d1a4730cd3af9202ef1eb61f132469d",
+    "src/harness/agy/delivery.rs": "66653edd96dbbe6bd16f941cc2883a27ecfd17cf51888639af6143df0a6f7215",
+    "tests/cli/hook_neutral.rs": "43da31291a43f586225901e74a13bce7097ef0636e5c7f9a65beb2e6baf6bdba",
+    "tests/harness/agy_delivery.rs": "c39cdf97aa74467d6d2823d31f6511e3cadacef4d6a27c06deff6ee8bed2164e",
+    "tests/cli/hook.rs": "dfbfcc62d46e3295a5c7280b39c99219483aa183a7d54fe646ae60950e018f52",
+    "src/harness/agy/mod.rs": "dc2fd38d112e98ed22b05935a6c9fd448876094f166e467cdc3865515978c091",
+    "src/harness/agy/decode.rs": "d3cbdf5cccbc5a021e4c18f3b26359d2797225aa51bc1f109a5b41c6ea6cf545",
+    "tests/harness/agy_decode.rs": "065429a66e935d30b571e5b3aec613d2f3f7e16d5787e96cda399acdd0e3e150",
+    "src/harness/registry.rs": "43313c7169f63a2155db78237c47be8bbcb01e1acef06a6a5c1e5e83c16d21a1"
+  },
+  "all_final_bytes_match_immutable_tip": true,
+  "only_reviewed_ten_file_patch": true
+}

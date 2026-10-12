@@ -1,0 +1,5 @@
+{
+  "verdict": "REJECT",
+  "severity": "FYI",
+  "evidence": "The factual premises hold: settled-input.md:51 explicitly selects dedicated CLI event entrypoints; :84 introduces hook-event HARNESS EVENT while preserving hook HARNESS --event EVENT, and :86 identifies the UUID comment as the changing command component. Searching the complete artifact for hook, syntax, entrypoint, codec, grammar, UUID, deterministic generation and alternatives finds no distinct semantic requirement that the new spelling satisfies. However, that omission does not establish a material gap against this spec: a dedicated stable public entrypoint is itself an explicit selected design contract, and legacy compatibility is expressly required. The proposed existing-syntax alternative may simplify the design, but the finding demonstrates neither a violated requirement nor significant risk/rework from the additional parser surface. Requiring an exhaustive justification of why another spelling cannot work adds a review criterion the stated contract does not impose."
+}

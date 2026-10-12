@@ -1,0 +1,7 @@
+{"schema":1,"id":"status:0","kind":"status","state":"connected"}
+{"schema":1,"id":"mgWVJ3PZ4","kind":"lazy","thread":"t3e5c6Zio","thread_name":"mod delivery","sender":"sr3EkNRNl","sender_name":"sr3EkNRNl","author_role":"agent","relays_user":false,"user_intent":null,"body":"activation passive lazy","body_len":23,"truncated":false,"ack_required":false}
+{"schema":1,"id":"mR7QHiA8h","kind":"message","thread":"t3e5c6Zio","thread_name":"mod delivery","sender":"sr3EkNRNl","sender_name":"sr3EkNRNl","author_role":"agent","relays_user":false,"user_intent":null,"body":"activation ordinary ACK candidate","body_len":33,"truncated":false,"ack_required":true}
+{"schema":1,"id":"notice:nUQPrt5eo","kind":"notice","warning":"nUQPrt5eo","thread":"activation-warn","body":"informational, no ACK; read: herdr-threads --state-dir /private/tmp/htmd-b2a01494/state body nUQPrt5eo"}
+{"schema":1,"id":"invitation:iEik5qKYL","kind":"invitation","command_context_epoch":"0","topic_revision":"0","thread":"tqBtDPT0Z","thread_name":"activation invitation","body":"activation invitation\ngoal: activation invitation\nnext: herdr-threads --state-dir /private/tmp/htmd-b2a01494/state accept tqBtDPT0Z","truncated":false,"wakes":false}
+{"schema":1,"id":"attention:1","kind":"attention","presentation_epoch":"1","attention_version":8109080586913966177,"text":"herdr-threads: attention pending; run herdr-threads --state-dir /private/tmp/htmd-b2a01494/state inbox"}
+{"schema":1,"id":"attention_cleared:1","kind":"attention_cleared","presentation_epoch":"1","attention_version":8109080586913966177}

@@ -376,15 +376,32 @@ impl Fixture {
             .output()
             .unwrap()
     }
-    /// A second CODEX_HOME holding a copy of the default root's owned hook file as an older
-    /// release wrote it: only `events` registered, no manifest of its own.
+    /// The legacy hook command (`... 'hook' 'codex'`) this fixture's setup reports.
+    fn legacy_base(&self) -> String {
+        let status: serde_json::Value =
+            serde_json::from_slice(&self.run(&["setup-status", "codex", "--json"]).stdout).unwrap();
+        let command = status["setup"]["command"].as_str().unwrap();
+        command
+            .split(" # herdr-threads-owner:")
+            .next()
+            .unwrap()
+            .to_owned()
+    }
+    /// A second CODEX_HOME holding a copy of another setup's hook file as an older release wrote
+    /// it: only `events` registered, each with the legacy owner-marked per-event command, no
+    /// manifest of its own. Group shapes are the current ones with the command swapped.
     fn older_copy(&self, events: &[&str]) -> PathBuf {
+        let base = self.legacy_base();
+        let id = uuid::Uuid::new_v4();
         let mut value: serde_json::Value =
             serde_json::from_slice(&fs::read(self.0.join("codex/hooks.json")).unwrap()).unwrap();
-        value["hooks"]
-            .as_object_mut()
-            .unwrap()
-            .retain(|event, _| events.contains(&event.as_str()));
+        let hooks = value["hooks"].as_object_mut().unwrap();
+        hooks.retain(|event, _| events.contains(&event.as_str()));
+        for (event, groups) in hooks.iter_mut() {
+            groups[0]["hooks"][0]["command"] = serde_json::json!(format!(
+                "{base} '--event' '{event}' # herdr-threads-owner:{id}"
+            ));
+        }
         let copy = self.0.join("codex-copy");
         fs::create_dir_all(&copy).unwrap();
         fs::write(copy.join("hooks.json"), serde_json::to_vec(&value).unwrap()).unwrap();
@@ -418,6 +435,37 @@ fn owners(hooks: &std::path::Path) -> std::collections::BTreeMap<String, Vec<Str
         .collect()
 }
 
+/// Per event, the spelling of each herdr-threads registration: `native` (`hook-event`),
+/// `legacy` (owner-marked) or `other`. Events with no registration are omitted.
+fn spellings(hooks: &std::path::Path) -> std::collections::BTreeMap<String, Vec<&'static str>> {
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(hooks).unwrap()).unwrap();
+    value["hooks"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter_map(|(event, groups)| {
+            let found: Vec<&'static str> = groups
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|group| group["hooks"].as_array().unwrap())
+                .filter_map(|hook| hook["command"].as_str())
+                .filter(|command| command.contains("herdr-threads"))
+                .map(|command| {
+                    if command.contains("herdr-threads-owner:") {
+                        "legacy"
+                    } else if command.contains("'hook-event'") {
+                        "native"
+                    } else {
+                        "other"
+                    }
+                })
+                .collect();
+            (!found.is_empty()).then(|| (event.clone(), found))
+        })
+        .collect()
+}
+
 /// The owner marker the copy's SessionStart group carries.
 fn owner_of(copy: &std::path::Path) -> String {
     owners(&copy.join("hooks.json"))["SessionStart"][0].clone()
@@ -442,7 +490,7 @@ fn installer_and_setup_upgrade_an_older_copied_hook_file_in_place() {
     for older in [&OLDER_CODEX_EVENTS[..], &V090_CODEX_EVENTS[..]] {
         let f = Fixture::new();
         success(&f.install());
-        let declared: Vec<String> = owners(&f.0.join("codex/hooks.json")).into_keys().collect();
+        let declared = spellings(&f.0.join("codex/hooks.json"));
         assert!(declared.len() > older.len(), "{declared:?}");
         let copy = f.older_copy(older);
         let owner = owner_of(&copy);
@@ -453,43 +501,41 @@ fn installer_and_setup_upgrade_an_older_copied_hook_file_in_place() {
             "{}",
             String::from_utf8_lossy(&out.stdout)
         );
-        let after = owners(&copy.join("hooks.json"));
-        assert_eq!(after.keys().cloned().collect::<Vec<_>>(), declared);
-        for markers in after.values() {
-            assert_eq!(markers, std::slice::from_ref(&owner), "{after:?}");
-        }
-        // Rerunning setup is idempotent, and unsetup removes the adopted groups.
+        // Every declared event exactly once, in the current spelling; nothing left beside it.
+        let after = spellings(&copy.join("hooks.json"));
+        assert_eq!(after, declared);
+        let status: serde_json::Value = serde_json::from_slice(
+            &f.run_codex_home(&copy, &["setup-status", "codex", "--json"])
+                .stdout,
+        )
+        .unwrap();
+        assert_eq!(status["setup"]["installed"], true, "{status}");
+        assert_eq!(status["setup"]["adopted"]["owner"], owner, "{status}");
+        assert_eq!(status["setup"]["duplicate_hook"], false, "{status}");
+        // Rerunning setup is idempotent, and unsetup removes the adopted installation.
         let out = f.run_codex_home(&copy, &["setup", "codex"]);
         success(&out);
-        assert_eq!(owners(&copy.join("hooks.json")), after);
+        assert_eq!(spellings(&copy.join("hooks.json")), after);
         success(&f.run_codex_home(&copy, &["unsetup", "codex"]));
-        assert!(owners(&copy.join("hooks.json")).values().all(Vec::is_empty));
+        assert!(spellings(&copy.join("hooks.json")).is_empty());
 
-        // Setup itself on a fresh older copy: an installation naming the added events in
-        // declaration order, never "adopted ... the file was not changed".
+        // Setup itself on a fresh older copy: an installation that rewrote the file (Codex
+        // review again), never "adopted ... the file was not changed".
         let h = Fixture::new();
         success(&h.install());
         let copy = h.older_copy(older);
+        let owner = owner_of(&copy);
         let out = h.run_codex_home(&copy, &["setup", "codex", "--json"]);
         success(&out);
         let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
         let report = &report["setup"];
         assert_eq!(report["action"], "installed", "{report}");
-        assert_eq!(report["adopted"], owner_of(&copy), "{report}");
-        let added: Vec<&str> = report["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .filter(|event| !older.contains(event))
-            .collect();
+        assert_eq!(report["adopted"], owner, "{report}");
         let warnings = report["warnings"].to_string();
-        assert!(
-            warnings.contains(&format!("({})", added.join(", "))),
-            "{added:?} {warnings}"
-        );
+        assert!(warnings.contains("review again"), "{warnings}");
         assert!(!warnings.contains("not changed"), "{warnings}");
         assert_eq!(report["trust"]["status"], "review_required", "{report}");
+        assert_eq!(spellings(&copy.join("hooks.json")), declared);
     }
 
     // A copy whose SubagentStart group runs the hook with another event's argument, or with an
@@ -523,10 +569,23 @@ fn installer_and_setup_upgrade_an_older_copied_hook_file_in_place() {
             Box::new(|c: &str| format!("{} '--verbose'", c.split_once(" # ").unwrap().0)),
         ),
     ];
-    for (edit, apply) in &edits {
+    // Both an older subset and a full current copy: a full copy with one edited group is read
+    // as missing that event unless the edit is recognized.
+    for (edit, apply, full) in edits
+        .iter()
+        .flat_map(|(edit, apply)| [(edit, apply, false), (edit, apply, true)])
+    {
         let w = Fixture::new();
         success(&w.install());
-        let copy = w.older_copy(&OLDER_CODEX_EVENTS);
+        let declared: Vec<String> = spellings(&w.0.join("codex/hooks.json"))
+            .into_keys()
+            .collect();
+        let events: Vec<&str> = if full {
+            declared.iter().map(String::as_str).collect()
+        } else {
+            OLDER_CODEX_EVENTS.to_vec()
+        };
+        let copy = w.older_copy(&events);
         let mut value: serde_json::Value =
             serde_json::from_slice(&fs::read(copy.join("hooks.json")).unwrap()).unwrap();
         let slot = &mut value["hooks"]["SubagentStart"][0]["hooks"][0]["command"];
@@ -551,7 +610,11 @@ fn installer_and_setup_upgrade_an_older_copied_hook_file_in_place() {
             "{}",
             String::from_utf8_lossy(&out.stdout)
         );
-        assert_eq!(fs::read(copy.join("hooks.json")).unwrap(), wrong, "{edit}");
+        assert_eq!(
+            fs::read(copy.join("hooks.json")).unwrap(),
+            wrong,
+            "{edit} full={full}"
+        );
     }
 
     // A copy registered without `--event` is refused with the hand-edit remedy (unsetup does not
@@ -652,24 +715,26 @@ fn installer_refreshes_hooks_beside_a_hand_removed_codex_allowance() {
     assert_eq!(fs::read(&config_path).unwrap(), user);
 }
 
-// Kills: a hook file an earlier release's setup already doubled (a second owned set beside a
-// copied older one) reported as a healthy installation with no warning.
+// Kills: a hook file an earlier release's setup already doubled (a legacy owner-marked group left
+// beside the recorded installation) reported as a healthy installation with no warning.
 #[test]
 fn setup_and_status_flag_a_hook_file_with_doubled_owned_groups() {
     let f = Fixture::new();
     success(&f.install());
+    let base = f.legacy_base();
     let hooks = f.0.join("codex/hooks.json");
     let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&hooks).unwrap()).unwrap();
-    let stray = uuid::Uuid::new_v4().to_string();
-    let group = value["hooks"]["SessionStart"][0].clone();
-    let text = group.to_string();
-    let owner = text.split("herdr-threads-owner:").nth(1).unwrap()[..36].to_owned();
-    let second: serde_json::Value = serde_json::from_str(&text.replace(&owner, &stray)).unwrap();
+    let mut stray = value["hooks"]["SessionStart"][0].clone();
+    stray["hooks"][0]["command"] = serde_json::json!(format!(
+        "{base} '--event' 'SessionStart' # herdr-threads-owner:{}",
+        uuid::Uuid::new_v4()
+    ));
     value["hooks"]["SessionStart"]
         .as_array_mut()
         .unwrap()
-        .insert(0, second);
+        .insert(0, stray);
     fs::write(&hooks, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert_eq!(spellings(&hooks)["SessionStart"], ["legacy", "native"]);
     let status: serde_json::Value =
         serde_json::from_slice(&f.run(&["setup-status", "codex", "--json"]).stdout).unwrap();
     let status = &status["setup"];
@@ -681,11 +746,17 @@ fn setup_and_status_flag_a_hook_file_with_doubled_owned_groups() {
         "{status}"
     );
     let out = f.run(&["setup", "codex", "--json"]);
-    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert!(
-        report["setup"]["warnings"]
-            .to_string()
-            .contains("more than once for SessionStart"),
-        "{report}"
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
     );
+    // Setup's own conflict handling refuses the recorded file holding a foreign registration.
+    assert!(!out.status.success(), "{text}");
+    assert!(
+        text.contains("conflicting herdr-threads registration"),
+        "{text}"
+    );
+    // Never resolved by adding yet another registration.
+    assert_eq!(spellings(&hooks)["SessionStart"], ["legacy", "native"]);
 }

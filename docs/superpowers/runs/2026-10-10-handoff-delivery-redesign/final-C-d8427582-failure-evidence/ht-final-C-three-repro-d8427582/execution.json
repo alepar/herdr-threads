@@ -1,0 +1,70 @@
+{
+  "head": "d8427582d2d0bfca0ed50e5b58f29b130ee12640",
+  "tree": "53d0c453d013d7173a61d363c98b99b26508f5b5",
+  "run_id": "73df30b1-27c4-4d5a-a313-4fea555b0599",
+  "expected": [
+    [
+      "herdr-threads",
+      "daemon::transport::watch_connection::tests::presentation_owner_accepted_wire_carries_the_registered_lease"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window"
+    ],
+    [
+      "herdr-threads",
+      "store::attention::tests::presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settlement"
+    ]
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 0.45216658303979784
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "daemon::transport::watch_connection::tests::presentation_owner_accepted_wire_carries_the_registered_lease"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window"
+    ],
+    [
+      "herdr-threads",
+      "store::attention::tests::presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settlement"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-bc80e388954f6954",
+      "sha256": "28b9452ed3bfdd5508121f58f98fb77f934e936bcd900227181c24c6eb5fb6cc"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 0.9770757920341566,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=daemon::transport::watch_connection::tests::presentation_owner_accepted_wire_carries_the_registered_lease) | test(=service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window) | test(=store::attention::tests::presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settlement)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.20927495800424367,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "73df30b1-27c4-4d5a-a313-4fea555b0599"
+    ]
+  },
+  "leak_exit": 0
+}

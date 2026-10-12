@@ -1,0 +1,107 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 5d95f1ad-df1f-436c-8e22-c4c07d9835ad with nextest profile: default
+    Starting 6 tests across 1 binary (77 tests skipped)
+        FAIL [   1.683s] (1/6) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion
+  stdout ───
+
+    running 1 test
+    test agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion ... FAILED
+
+    failures:
+
+    failures:
+        agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 1.68s
+
+  stderr ───
+    elected daemon.log tail:
+    harness manifest: auto
+    store startup binding evidence: backfilled 0, still lacking 0
+    lane archival: Unsupported: test adapter has no composer-aware archival observation
+    panicked at tests/hook_entrypoint/agy.rs:1936:9:
+    assertion `left == right` failed: the exact durable invitation/control descriptors physically replay
+      left: [Invitation { id: InvitationId("irnjZ7UMe"), content: WatchInvitation { command_context_epoch: Some("0"), topic_revision: Some("0"), thread: ThreadId("t81dwbX1T"), thread_name: Some("registered hook activation"), body: "registered hook activation\ngoal: exact emitted control\ndeadline: 1791763838109\nnext: herdr-threads --state-dir /private/tmp/hk-743972fd31a1/state accept t81dwbX1T", truncated: false, wakes: true } }, Attention { epoch: "1", attention_version: 8109080586913966177, text: "herdr-threads: attention pending; run herdr-threads --state-dir /private/tmp/hk-743972fd31a1/state inbox" }]
+     right: [Notice { warning: MessageId("wbe39b03f-c72e-8742-9bcc-7a6ec6b7ae60"), thread: ThreadId("tS0XIBKGx"), body: "informational, no ACK; read: herdr-threads --state-dir /private/tmp/hk-743972fd31a1/state body wbe39b03f-c72e-8742-9bcc-7a6ec6b7ae60" }, Invitation { id: InvitationId("irnjZ7UMe"), content: WatchInvitation { command_context_epoch: Some("0"), topic_revision: Some("0"), thread: ThreadId("t81dwbX1T"), thread_name: Some("registered hook activation"), body: "registered hook activation\ngoal: exact emitted control\ndeadline: 1791763838109\nnext: herdr-threads --state-dir /private/tmp/hk-743972fd31a1/state accept t81dwbX1T", truncated: false, wakes: true } }, Attention { epoch: "1", attention_version: 8109080586913966177, text: "herdr-threads: attention pending; run herdr-threads --state-dir /private/tmp/hk-743972fd31a1/state inbox" }]
+
+
+        PASS [   0.984s] (2/6) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_lost_completion_preserves_exact_recovery
+        FAIL [   0.479s] (3/6) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_system_hook_round_trip
+  stdout ───
+
+    running 1 test
+    test agy::activation::activation_v2_registered_agy_system_hook_round_trip ... FAILED
+
+    failures:
+
+    failures:
+        agy::activation::activation_v2_registered_agy_system_hook_round_trip
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.47s
+
+  stderr ───
+    elected daemon.log tail:
+    harness manifest: auto
+    store startup binding evidence: backfilled 0, still lacking 0
+    panicked at tests/hook_entrypoint/agy.rs:1396:9:
+    assertion `left == right` failed
+      left: CallerClaim { instance: "10df21d0-3c90-4f08-82f0-6b163bf73844", seat: SeatId("sBxvsdFun"), binding_generation: 1, role: TopLevel, harness: Agent(AgentHarnessId { id: "agy", context_spelling: "Antigravity" }), native_session: NativeSessionId("534e47d6-64b3-4fd6-bd7f-446ceec4d86c"), execution: ExecutionId("184d55d9-1ffb-55f4-9d92-3e20f31a891d"), target: HostTargetId("w9:p1"), agent_id: None, liveness: Some(LivenessFingerprint { pid: 54951, start: 1791763539621094 }) }
+     right: CallerClaim { instance: "10df21d0-3c90-4f08-82f0-6b163bf73844", seat: SeatId("sBxvsdFun"), binding_generation: 1, role: TopLevel, harness: Agent(AgentHarnessId { id: "agy", context_spelling: "Antigravity" }), native_session: NativeSessionId("534e47d6-64b3-4fd6-bd7f-446ceec4d86c"), execution: ExecutionId("184d55d9-1ffb-55f4-9d92-3e20f31a891d"), target: HostTargetId("w9:p1"), agent_id: None, liveness: Some(LivenessFingerprint { pid: 54943, start: 1791763539457883 }) }
+
+
+        FAIL [   0.585s] (4/6) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_user_hook_round_trip
+  stdout ───
+
+    running 1 test
+    test agy::activation::activation_v2_registered_agy_user_hook_round_trip ... FAILED
+
+    failures:
+
+    failures:
+        agy::activation::activation_v2_registered_agy_user_hook_round_trip
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.58s
+
+  stderr ───
+    elected daemon.log tail:
+    harness manifest: auto
+    store startup binding evidence: backfilled 0, still lacking 0
+    panicked at tests/hook_entrypoint/agy.rs:1396:9:
+    assertion `left == right` failed
+      left: CallerClaim { instance: "950d1815-e5b2-4c48-ab5f-90ab86ba33f1", seat: SeatId("sR14c255x"), binding_generation: 1, role: TopLevel, harness: Agent(AgentHarnessId { id: "agy", context_spelling: "Antigravity" }), native_session: NativeSessionId("534e47d6-64b3-4fd6-bd7f-446ceec4d86c"), execution: ExecutionId("52bd5113-bd5d-5eb1-9f51-6c4bb9b661b9"), target: HostTargetId("w9:p1"), agent_id: None, liveness: Some(LivenessFingerprint { pid: 54985, start: 1791763540206235 }) }
+     right: CallerClaim { instance: "950d1815-e5b2-4c48-ab5f-90ab86ba33f1", seat: SeatId("sR14c255x"), binding_generation: 1, role: TopLevel, harness: Agent(AgentHarnessId { id: "agy", context_spelling: "Antigravity" }), native_session: NativeSessionId("534e47d6-64b3-4fd6-bd7f-446ceec4d86c"), execution: ExecutionId("52bd5113-bd5d-5eb1-9f51-6c4bb9b661b9"), target: HostTargetId("w9:p1"), agent_id: None, liveness: Some(LivenessFingerprint { pid: 54977, start: 1791763540039490 }) }
+
+
+        FAIL [   0.552s] (5/6) herdr-threads::hook_entrypoint agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement
+  stdout ───
+
+    running 1 test
+    test agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement ... FAILED
+
+    failures:
+
+    failures:
+        agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.54s
+
+  stderr ───
+    elected daemon.log tail:
+    harness manifest: auto
+    store startup binding evidence: backfilled 0, still lacking 0
+    lane archival: Unsupported: test adapter has no composer-aware archival observation
+    panicked at tests/hook_entrypoint/agy.rs:1549:9:
+    assertion `left == right` failed
+      left: CallerClaim { instance: "1ec6a952-949e-4cfd-8945-7ab49e5a153a", seat: SeatId("sJqRvBw0z"), binding_generation: 1, role: TopLevel, harness: Agent(AgentHarnessId { id: "claude", context_spelling: "Claude" }), native_session: NativeSessionId("origin-session"), execution: ExecutionId("02087d43-22de-5505-8956-375842a96acb"), target: HostTargetId("w9:p2"), agent_id: None, liveness: None }
+     right: CallerClaim { instance: "1ec6a952-949e-4cfd-8945-7ab49e5a153a", seat: SeatId("sJqRvBw0z"), binding_generation: 1, role: TopLevel, harness: Agent(AgentHarnessId { id: "claude", context_spelling: "Claude" }), native_session: NativeSessionId("origin-session"), execution: ExecutionId("02087d43-22de-5505-8956-375842a96acb"), target: HostTargetId("w9:p2"), agent_id: None, liveness: Some(LivenessFingerprint { pid: 55010, start: 1791763540598154 }) }
+
+
+        PASS [   0.931s] (6/6) herdr-threads::hook_entrypoint agy::activation::registered_agy_omitted_or_refused_capability_uses_historical_pull
+────────────
+     Summary [   5.215s] 6 tests run: 2 passed, 4 failed, 77 skipped
+        FAIL [   1.683s] (1/6) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion
+        FAIL [   0.479s] (3/6) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_system_hook_round_trip
+        FAIL [   0.585s] (4/6) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_user_hook_round_trip
+        FAIL [   0.552s] (5/6) herdr-threads::hook_entrypoint agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement
+error: test run failed

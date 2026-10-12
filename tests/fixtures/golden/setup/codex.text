@@ -2,7 +2,13 @@ action: installed
 adopted: none
 codex_config.codex_home: <root>/codex home
 codex_config.layers: []
-command: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook' 'codex' # herdr-threads-owner:<uuid>
+command: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook' 'codex'
+commands.PreToolUse: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'codex' 'PreToolUse'
+commands.SessionEnd: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'codex' 'SessionEnd'
+commands.SessionStart: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'codex' 'SessionStart'
+commands.SubagentStart: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'codex' 'SubagentStart'
+commands.SubagentStop: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'codex' 'SubagentStop'
+commands.UserPromptSubmit: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'codex' 'UserPromptSubmit'
 config_file: <root>/codex home/config.toml
 config_manifest: <root>/state/setup/codex-config-<hash32>.json
 created_config_file: false

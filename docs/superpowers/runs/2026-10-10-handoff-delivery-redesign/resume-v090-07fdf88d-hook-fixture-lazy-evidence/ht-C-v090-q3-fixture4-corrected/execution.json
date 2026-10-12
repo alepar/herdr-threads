@@ -1,0 +1,66 @@
+{
+  "head": "07fdf88da984869eb2908c25f9ff20caf253dc28",
+  "tree": "063aa3709e46e1ed2a21214f763c079d10e86785",
+  "run_id": "f10db36a-02fe-4a97-8fa3-c9d2f6e40a67",
+  "expected": [
+    "service::delivery_pull::tests::presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap",
+    "service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_delivery_confirm_lazy_mixed_and_retained_offer",
+    "service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_mod_ack_lazy_mixed_and_already_settled",
+    "service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_successful_presentation_confirm_is_inert"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 47.71293833304662
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap"
+    ],
+    [
+      "herdr-threads",
+      "service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_delivery_confirm_lazy_mixed_and_retained_offer"
+    ],
+    [
+      "herdr-threads",
+      "service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_mod_ack_lazy_mixed_and_already_settled"
+    ],
+    [
+      "herdr-threads",
+      "service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_successful_presentation_confirm_is_inert"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-bc80e388954f6954",
+      "sha256": "ccb77913ef73615f192802aa3be3b4fc5f910f359f09ac7fc30198bd6122d894"
+    }
+  ],
+  "run": {
+    "exit": 0,
+    "seconds": 0.9241082499502227,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=service::delivery_pull::tests::presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap) | test(=service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_delivery_confirm_lazy_mixed_and_retained_offer) | test(=service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_mod_ack_lazy_mixed_and_already_settled) | test(=service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_successful_presentation_confirm_is_inert)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.2974897080566734,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "f10db36a-02fe-4a97-8fa3-c9d2f6e40a67"
+    ]
+  },
+  "leak_exit": 0
+}

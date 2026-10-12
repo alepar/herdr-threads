@@ -1,0 +1,873 @@
+{
+  "kind": "cold_static_registration_audit_not_seal_not_execution",
+  "preparer_sha256": "d71e0c61650a32776d7031b85fbc6a4ca34e5d273f0c0281b89e0ec96862f514",
+  "runner_sha256": "70a1c545ac1dda7b103f063ca11cb16539dc4d061ee4095d386c7ef4484fb5cf",
+  "historical657_sha256": "c433673ebf52ce5d64b4352f8b9f6d512dcad60edb3a66d5034a7b22f699f3a8",
+  "historical657_exact_keys_preserved": 657,
+  "mandatory_separate_count": 6,
+  "mandatory_separate_keys": [
+    [
+      "combined",
+      "lazy_recovery_context::lazy_recovery_agent_mixed_submission_pins_ambient_journal"
+    ],
+    [
+      "combined",
+      "lazy_recovery_context::lazy_recovery_agent_mixed_submission_pins_journal"
+    ],
+    [
+      "combined",
+      "lazy_recovery_context::lazy_recovery_human_submission_pins_ambient_journal"
+    ],
+    [
+      "combined",
+      "lazy_recovery_context::lazy_recovery_human_submission_pins_journal"
+    ],
+    [
+      "combined",
+      "lazy_recovery_context::lazy_recovery_prior_durable_ref_on_second_record_failure_pins_ambient_journal"
+    ],
+    [
+      "combined",
+      "lazy_recovery_context::lazy_recovery_prior_durable_ref_on_second_record_failure_pins_journal"
+    ]
+  ],
+  "cold_current_selected_static_count": 768,
+  "new_requested_controls_count": 22,
+  "controls": [
+    {
+      "target": "lib",
+      "name": "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/service/normal_unrenderable_controls.rs",
+      "source_function_sha256": "8d444046e204814cc165fa296fef1744ff568e9e4c8a90a449447e6767cf383e",
+      "registration_chain": [
+        {
+          "host": "src/lib.rs",
+          "line": 28,
+          "module": "service",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/service/mod.rs",
+          "line": 5,
+          "module": "delivery_pull",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/service/delivery_pull.rs",
+          "line": 936,
+          "module": "tests",
+          "kind": "external",
+          "attributes": [
+            "#[cfg(all(test, feature = \"test-support\"))]",
+            "#[path = \"../../tests/service/delivery_pull.rs\"]"
+          ]
+        },
+        {
+          "host": "tests/service/delivery_pull.rs",
+          "line": 38,
+          "module": "normal_unrenderable_controls",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"normal_unrenderable_controls.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "lib",
+      "name": "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/service/normal_unrenderable_controls.rs",
+      "source_function_sha256": "d3364e245a3def770ddaa4c34fd2a636f606044ff44d5df9f263b8f6ce02f2ba",
+      "registration_chain": [
+        {
+          "host": "src/lib.rs",
+          "line": 28,
+          "module": "service",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/service/mod.rs",
+          "line": 5,
+          "module": "delivery_pull",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/service/delivery_pull.rs",
+          "line": 936,
+          "module": "tests",
+          "kind": "external",
+          "attributes": [
+            "#[cfg(all(test, feature = \"test-support\"))]",
+            "#[path = \"../../tests/service/delivery_pull.rs\"]"
+          ]
+        },
+        {
+          "host": "tests/service/delivery_pull.rs",
+          "line": 38,
+          "module": "normal_unrenderable_controls",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"normal_unrenderable_controls.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "lib",
+      "name": "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_mixed_page_retains_alone_fitting_lazy_successor",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/service/normal_unrenderable_controls.rs",
+      "source_function_sha256": "197263ea2c236f600177c84348ae66675cac65ad6941546e935e3a48183c48a7",
+      "registration_chain": [
+        {
+          "host": "src/lib.rs",
+          "line": 28,
+          "module": "service",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/service/mod.rs",
+          "line": 5,
+          "module": "delivery_pull",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/service/delivery_pull.rs",
+          "line": 936,
+          "module": "tests",
+          "kind": "external",
+          "attributes": [
+            "#[cfg(all(test, feature = \"test-support\"))]",
+            "#[path = \"../../tests/service/delivery_pull.rs\"]"
+          ]
+        },
+        {
+          "host": "tests/service/delivery_pull.rs",
+          "line": 38,
+          "module": "normal_unrenderable_controls",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"normal_unrenderable_controls.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "lib",
+      "name": "delivery::presentation::sizing_failure_tests::actual_overflow_is_distinct_from_exhaustion_and_invalid_rendering",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "src/delivery/presentation.rs",
+      "source_function_sha256": "08c95a5cf4cfdcd305ff848aeed9b84e697fd156fb4681e8c6b15e6c10ae4ab5",
+      "registration_chain": [
+        {
+          "host": "src/lib.rs",
+          "line": 20,
+          "module": "delivery",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/delivery/mod.rs",
+          "line": 10,
+          "module": "presentation",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/delivery/presentation.rs",
+          "line": 451,
+          "module": "sizing_failure_tests",
+          "kind": "inline",
+          "attributes": [
+            "#[cfg(test)]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "lib",
+      "name": "store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/store/query_work_q4.rs",
+      "source_function_sha256": "eb97c6c1458556b08856fc31d1ceb0dcfa67c3a512f0bf2102d293a4d9458125",
+      "registration_chain": [
+        {
+          "host": "src/lib.rs",
+          "line": 29,
+          "module": "store",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/store/mod.rs",
+          "line": 23,
+          "module": "queries",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/store/queries.rs",
+          "line": 6134,
+          "module": "tests",
+          "kind": "external",
+          "attributes": [
+            "#[cfg(test)]",
+            "#[path = \"../../tests/store/queries.rs\"]"
+          ]
+        },
+        {
+          "host": "tests/store/queries.rs",
+          "line": 6605,
+          "module": "query_work_q4",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"query_work_q4.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "lib",
+      "name": "store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/store/query_work_q4.rs",
+      "source_function_sha256": "96f4b83d56d2fcccbf92593c3337d521205ef30bbe963246a0144484d20e5c85",
+      "registration_chain": [
+        {
+          "host": "src/lib.rs",
+          "line": 29,
+          "module": "store",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/store/mod.rs",
+          "line": 23,
+          "module": "queries",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/store/queries.rs",
+          "line": 6134,
+          "module": "tests",
+          "kind": "external",
+          "attributes": [
+            "#[cfg(test)]",
+            "#[path = \"../../tests/store/queries.rs\"]"
+          ]
+        },
+        {
+          "host": "tests/store/queries.rs",
+          "line": 6605,
+          "module": "query_work_q4",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"query_work_q4.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "lib",
+      "name": "store::queries::tests::query_work_q4::q4_three_event_keys_and_actual_floor_have_constant_sqlite_work",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/store/query_work_q4.rs",
+      "source_function_sha256": "df79e1e098a285b12c92233bafef6063c5dc057ddbff57062b2f1e045353230d",
+      "registration_chain": [
+        {
+          "host": "src/lib.rs",
+          "line": 29,
+          "module": "store",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/store/mod.rs",
+          "line": 23,
+          "module": "queries",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/store/queries.rs",
+          "line": 6134,
+          "module": "tests",
+          "kind": "external",
+          "attributes": [
+            "#[cfg(test)]",
+            "#[path = \"../../tests/store/queries.rs\"]"
+          ]
+        },
+        {
+          "host": "tests/store/queries.rs",
+          "line": 6605,
+          "module": "query_work_q4",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"query_work_q4.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "lib",
+      "name": "store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/store/query_work_q4.rs",
+      "source_function_sha256": "f99d3a336355849a7ce36fdecfcde02389923e37891f1c66f57b607a4c9a1e8d",
+      "registration_chain": [
+        {
+          "host": "src/lib.rs",
+          "line": 29,
+          "module": "store",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/store/mod.rs",
+          "line": 23,
+          "module": "queries",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/store/queries.rs",
+          "line": 6134,
+          "module": "tests",
+          "kind": "external",
+          "attributes": [
+            "#[cfg(test)]",
+            "#[path = \"../../tests/store/queries.rs\"]"
+          ]
+        },
+        {
+          "host": "tests/store/queries.rs",
+          "line": 6605,
+          "module": "query_work_q4",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"query_work_q4.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "lib",
+      "name": "store::queries::tests::query_work_q4::q4_actual_continued_tail_checks_scope_once_and_charges_retirement",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/store/query_work_q4.rs",
+      "source_function_sha256": "728c275524bf45f9858884a7a7607533ba6694b5df5dc0db303ebd139a104e60",
+      "registration_chain": [
+        {
+          "host": "src/lib.rs",
+          "line": 29,
+          "module": "store",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/store/mod.rs",
+          "line": 23,
+          "module": "queries",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/store/queries.rs",
+          "line": 6134,
+          "module": "tests",
+          "kind": "external",
+          "attributes": [
+            "#[cfg(test)]",
+            "#[path = \"../../tests/store/queries.rs\"]"
+          ]
+        },
+        {
+          "host": "tests/store/queries.rs",
+          "line": 6605,
+          "module": "query_work_q4",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"query_work_q4.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "lib",
+      "name": "service::delivery_pull::tests::q4_body_controls::q4_retirement_refusal_controls::modern_lazy_scope_loss_cannot_hide_corrupt_accumulator_or_utf8_offset",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/service/q4_retirement_refusal_controls.rs",
+      "source_function_sha256": "69aef62cfb592d5050065088cd0fda493fe49eb23d8fa2e8fb450bb326afc867",
+      "registration_chain": [
+        {
+          "host": "src/lib.rs",
+          "line": 28,
+          "module": "service",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/service/mod.rs",
+          "line": 5,
+          "module": "delivery_pull",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/service/delivery_pull.rs",
+          "line": 936,
+          "module": "tests",
+          "kind": "external",
+          "attributes": [
+            "#[cfg(all(test, feature = \"test-support\"))]",
+            "#[path = \"../../tests/service/delivery_pull.rs\"]"
+          ]
+        },
+        {
+          "host": "tests/service/delivery_pull.rs",
+          "line": 14470,
+          "module": "q4_body_controls",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"q4_body_controls.rs\"]"
+          ]
+        },
+        {
+          "host": "tests/service/q4_body_controls.rs",
+          "line": 908,
+          "module": "q4_retirement_refusal_controls",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"q4_retirement_refusal_controls.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "lib",
+      "name": "service::delivery_pull::tests::q4_body_controls::q4_retirement_refusal_controls::modern_lazy_retirement_requires_intact_captured_publication_and_recipient_authority",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/service/q4_retirement_refusal_controls.rs",
+      "source_function_sha256": "5d0784cf8b58de292b5dc4fa758a55d7182db179a91ad0e1f676e1a4abb183fe",
+      "registration_chain": [
+        {
+          "host": "src/lib.rs",
+          "line": 28,
+          "module": "service",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/service/mod.rs",
+          "line": 5,
+          "module": "delivery_pull",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/service/delivery_pull.rs",
+          "line": 936,
+          "module": "tests",
+          "kind": "external",
+          "attributes": [
+            "#[cfg(all(test, feature = \"test-support\"))]",
+            "#[path = \"../../tests/service/delivery_pull.rs\"]"
+          ]
+        },
+        {
+          "host": "tests/service/delivery_pull.rs",
+          "line": 14470,
+          "module": "q4_body_controls",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"q4_body_controls.rs\"]"
+          ]
+        },
+        {
+          "host": "tests/service/q4_body_controls.rs",
+          "line": 908,
+          "module": "q4_retirement_refusal_controls",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"q4_retirement_refusal_controls.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "lib",
+      "name": "service::delivery_pull::tests::q4_body_controls::q4_retirement_refusal_controls::public_lazy_continuation_refuses_real_old_episode_audience_loss",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/service/q4_retirement_refusal_controls.rs",
+      "source_function_sha256": "8e789be38faf7f08a466c9e86e3e0d10710e312c3116a410f3ab78f5e4b22a82",
+      "registration_chain": [
+        {
+          "host": "src/lib.rs",
+          "line": 28,
+          "module": "service",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/service/mod.rs",
+          "line": 5,
+          "module": "delivery_pull",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/service/delivery_pull.rs",
+          "line": 936,
+          "module": "tests",
+          "kind": "external",
+          "attributes": [
+            "#[cfg(all(test, feature = \"test-support\"))]",
+            "#[path = \"../../tests/service/delivery_pull.rs\"]"
+          ]
+        },
+        {
+          "host": "tests/service/delivery_pull.rs",
+          "line": 14470,
+          "module": "q4_body_controls",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"q4_body_controls.rs\"]"
+          ]
+        },
+        {
+          "host": "tests/service/q4_body_controls.rs",
+          "line": 908,
+          "module": "q4_retirement_refusal_controls",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"q4_retirement_refusal_controls.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "lib",
+      "name": "service::delivery_pull::tests::q4_body_controls::q4_retirement_refusal_controls::legacy_lazy_tail_keeps_strict_refusal_when_modern_reader_scope_is_lost",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/service/q4_retirement_refusal_controls.rs",
+      "source_function_sha256": "0c3e4e3295e0af85c2c6cc14cf7df7be02e103e060194c4ca9d9e7d06fc02bcc",
+      "registration_chain": [
+        {
+          "host": "src/lib.rs",
+          "line": 28,
+          "module": "service",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/service/mod.rs",
+          "line": 5,
+          "module": "delivery_pull",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/service/delivery_pull.rs",
+          "line": 936,
+          "module": "tests",
+          "kind": "external",
+          "attributes": [
+            "#[cfg(all(test, feature = \"test-support\"))]",
+            "#[path = \"../../tests/service/delivery_pull.rs\"]"
+          ]
+        },
+        {
+          "host": "tests/service/delivery_pull.rs",
+          "line": 14470,
+          "module": "q4_body_controls",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"q4_body_controls.rs\"]"
+          ]
+        },
+        {
+          "host": "tests/service/q4_body_controls.rs",
+          "line": 908,
+          "module": "q4_retirement_refusal_controls",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"q4_retirement_refusal_controls.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "lib",
+      "name": "service::delivery_pull::tests::q4_body_controls::q4_retirement_refusal_controls::modern_lazy_scope_retirement_rolls_back_when_final_private_save_fails",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/service/q4_retirement_refusal_controls.rs",
+      "source_function_sha256": "494cec00a8fef113faed1453228473652092a43da6d33a96d84c020ea8bb736d",
+      "registration_chain": [
+        {
+          "host": "src/lib.rs",
+          "line": 28,
+          "module": "service",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/service/mod.rs",
+          "line": 5,
+          "module": "delivery_pull",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/service/delivery_pull.rs",
+          "line": 936,
+          "module": "tests",
+          "kind": "external",
+          "attributes": [
+            "#[cfg(all(test, feature = \"test-support\"))]",
+            "#[path = \"../../tests/service/delivery_pull.rs\"]"
+          ]
+        },
+        {
+          "host": "tests/service/delivery_pull.rs",
+          "line": 14470,
+          "module": "q4_body_controls",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"q4_body_controls.rs\"]"
+          ]
+        },
+        {
+          "host": "tests/service/q4_body_controls.rs",
+          "line": 908,
+          "module": "q4_retirement_refusal_controls",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"q4_retirement_refusal_controls.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "combined",
+      "name": "direct_send::modern_ordinary_direct_send_requires_receipt_capability_before_any_effect",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/cli/direct_send.rs",
+      "source_function_sha256": "349e1ff02c1eacdc32e74ca8c0b2bf80c1a0e57c370333270e54da55c5ff0fb1",
+      "registration_chain": [
+        {
+          "host": "tests/combined.rs",
+          "line": 128,
+          "module": "direct_send",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"cli/direct_send.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "combined",
+      "name": "direct_send::modern_ordinary_direct_send_with_receipt_capability_commits_exact_ordinary_body",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/cli/direct_send.rs",
+      "source_function_sha256": "01aa50630f3cd9d36d0f6f2cc7cfc7c74324014a66908b7428e16fc9e2c55453",
+      "registration_chain": [
+        {
+          "host": "tests/combined.rs",
+          "line": 128,
+          "module": "direct_send",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"cli/direct_send.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "combined",
+      "name": "direct_send::modern_lazy_direct_send_is_exempt_from_receipt_capability",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/cli/direct_send.rs",
+      "source_function_sha256": "cbbb920afb22af824101d8297cc376eb6137c5268f311a7b3df99a5622958a9c",
+      "registration_chain": [
+        {
+          "host": "tests/combined.rs",
+          "line": 128,
+          "module": "direct_send",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"cli/direct_send.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "combined",
+      "name": "direct_send::pending_historical_ordinary_direct_retry_requires_receipts_without_rewriting_original",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/cli/direct_send.rs",
+      "source_function_sha256": "f7b11667cd29a9d15857be7563fefd394508801b3fcd30e97d65b21ade2b5fce",
+      "registration_chain": [
+        {
+          "host": "tests/combined.rs",
+          "line": 128,
+          "module": "direct_send",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"cli/direct_send.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "combined",
+      "name": "direct_send::historical_lazy_direct_retry_is_exempt_from_receipt_capability",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/cli/direct_send.rs",
+      "source_function_sha256": "e7bf9ff7ec77a31bf836f35a0542f6b70c5ea7e4f3c215911b119eea9a0698f3",
+      "registration_chain": [
+        {
+          "host": "tests/combined.rs",
+          "line": 128,
+          "module": "direct_send",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"cli/direct_send.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "combined",
+      "name": "direct_send::committed_direct_ordinary_output_retry_does_not_require_receipt_capability",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/cli/direct_send.rs",
+      "source_function_sha256": "792619338242434904ba286fcdec19a3da1d543012360853ab75350a46858db0",
+      "registration_chain": [
+        {
+          "host": "tests/combined.rs",
+          "line": 128,
+          "module": "direct_send",
+          "kind": "external",
+          "attributes": [
+            "#[path = \"cli/direct_send.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "lib",
+      "name": "cli::handoff_delivery::tests::historical_none_automatic_existing_retry_requires_receipts_before_effects_and_preserves_origin",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/cli/handoff_delivery.rs",
+      "source_function_sha256": "32ffcdf72e260138e60b1f507bfed6f6be22539b97d3b830849055359e7af96e",
+      "registration_chain": [
+        {
+          "host": "src/lib.rs",
+          "line": 17,
+          "module": "cli",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/cli/mod.rs",
+          "line": 10,
+          "module": "handoff_delivery",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/cli/handoff_delivery.rs",
+          "line": 1993,
+          "module": "tests",
+          "kind": "external",
+          "attributes": [
+            "#[cfg(test)]",
+            "#[path = \"../../tests/cli/handoff_delivery.rs\"]"
+          ]
+        }
+      ]
+    },
+    {
+      "target": "lib",
+      "name": "cli::topology_handoff::tests::live::automatic_live::public_historical_none_new_tab_retry_requires_receipts_before_any_effect_and_preserves_origin",
+      "selection": "focused_nextest",
+      "selector_reason": "actual_composed_author",
+      "source_path": "tests/cli/topology_handoff.rs",
+      "source_function_sha256": "5496342f69ba54c9612c1e9f742c416fcf4a2134e72d3ee0105fc2d87ce49ac7",
+      "registration_chain": [
+        {
+          "host": "src/lib.rs",
+          "line": 17,
+          "module": "cli",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/cli/mod.rs",
+          "line": 35,
+          "module": "topology_handoff",
+          "kind": "external",
+          "attributes": []
+        },
+        {
+          "host": "src/cli/topology_handoff.rs",
+          "line": 2373,
+          "module": "tests",
+          "kind": "external",
+          "attributes": [
+            "#[cfg(test)]",
+            "#[path = \"../../tests/cli/topology_handoff.rs\"]"
+          ]
+        },
+        {
+          "host": "tests/cli/topology_handoff.rs",
+          "line": 522,
+          "module": "live",
+          "kind": "inline",
+          "attributes": []
+        },
+        {
+          "host": "tests/cli/topology_handoff.rs",
+          "line": 5592,
+          "module": "automatic_live",
+          "kind": "inline",
+          "attributes": []
+        }
+      ]
+    }
+  ],
+  "cached_source_unchanged_at_end": true,
+  "patch_needed": false
+}

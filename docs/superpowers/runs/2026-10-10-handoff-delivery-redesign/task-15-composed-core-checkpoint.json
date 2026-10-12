@@ -1,0 +1,115 @@
+{
+  "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "head": "ee1e598c3ee96566ddc9b397185cdc97c8bf6218",
+  "full_source_sha256": "0a01713aa8fef268057668577ece0a56e84d82b503bd86909f4a88d2029b9de6",
+  "dirtydiff_sha256": "b774bcefe38c0f8296b662a8fe7a3ec3d31ba1606b650e68c234561f4aa84316",
+  "file_count": 3531,
+  "compile": {
+    "actual_owned_crate": true,
+    "elapsed": "2m14s",
+    "scope": "66 dirty/untracked Rust inputs source-freshened; multi-file composition; not controlled single-edit incremental",
+    "over_budget": true,
+    "warning": "Controls integration methods dead_code until held relevance wiring; not lint gate"
+  },
+  "results": [
+    {
+      "test": "service::delivery_pull::tests::presentation_confirmation_preserves_original_slots_and_exact_subsets_on_restart",
+      "command": "CARGO_TARGET_DIR=/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib presentation_confirmation_preserves_original_slots_and_exact_subsets_on_restart -- --nocapture",
+      "selected": 1,
+      "summary": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4266 filtered out; finished in 0.22s",
+      "log": "/private/tmp/ht-task15-confirm-composed-second.log",
+      "log_sha256": "3354259d850e34bf259c9b461f902c9cc1e0d4094ca33830551c3aacf7505c1b"
+    },
+    {
+      "test": "service::delivery_pull::tests::presentation_final_watch_codec_counts_escaped_canonical_invitation_batch",
+      "command": "CARGO_TARGET_DIR=/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib presentation_final_watch_codec_counts_escaped_canonical_invitation_batch -- --nocapture",
+      "selected": 1,
+      "summary": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4266 filtered out; finished in 0.12s",
+      "log": "/private/tmp/ht-task15-composed-selected-0.log",
+      "log_sha256": "483bdd36c09103977d7a9e019843b4e2342ccbcce9d41df54937d23fea3049eb"
+    },
+    {
+      "test": "service::delivery_pull::tests::presentation_ordinary_carry_survives_completed_control_partial_and_invitation_priority",
+      "command": "CARGO_TARGET_DIR=/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib presentation_ordinary_carry_survives_completed_control_partial_and_invitation_priority -- --nocapture",
+      "selected": 1,
+      "summary": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4266 filtered out; finished in 0.24s",
+      "log": "/private/tmp/ht-task15-composed-selected-1.log",
+      "log_sha256": "a57bb7f319eac4f9f819e8405267ad88357f5739d17a63fc32bd097272504287"
+    },
+    {
+      "test": "service::delivery_pull::tests::presentation_promoted_lazy_raw_carry_survives_restart_with_frozen_prefix",
+      "command": "CARGO_TARGET_DIR=/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib presentation_promoted_lazy_raw_carry_survives_restart_with_frozen_prefix -- --nocapture",
+      "selected": 1,
+      "summary": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4266 filtered out; finished in 0.17s",
+      "log": "/private/tmp/ht-task15-composed-selected-2.log",
+      "log_sha256": "79cc39d29f5e91dc26ca3c6d9ad581c9b6436ec904a716eba21ee2cfa19d3b69"
+    },
+    {
+      "test": "service::delivery_pull::tests::presentation_raw_carry_serializer_accounting_witness",
+      "command": "CARGO_TARGET_DIR=/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib presentation_raw_carry_serializer_accounting_witness -- --nocapture",
+      "selected": 1,
+      "summary": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4266 filtered out; finished in 0.02s",
+      "log": "/private/tmp/ht-task15-composed-selected-3.log",
+      "log_sha256": "51f27d223371b18794c262ad83639e164bbf7bfc4b2649a328d63ae98875dee0"
+    },
+    {
+      "test": "harness::agy::delivery::tests::daemon::canonical_v2_system_allocated_pages_fit_actual_native_codec",
+      "command": "CARGO_TARGET_DIR=/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib canonical_v2_system_allocated_pages_fit_actual_native_codec -- --nocapture",
+      "selected": 1,
+      "summary": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4266 filtered out; finished in 0.17s",
+      "log": "/private/tmp/ht-task15-composed-selected-4.log",
+      "log_sha256": "5c45e23c56515c815e5f62841889b18ebaa02630c05017a688951e65ab1c4869"
+    },
+    {
+      "test": "harness::agy::delivery::tests::daemon::canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec",
+      "command": "CARGO_TARGET_DIR=/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec -- --nocapture",
+      "selected": 1,
+      "summary": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4266 filtered out; finished in 0.17s",
+      "log": "/private/tmp/ht-task15-composed-selected-5.log",
+      "log_sha256": "764ae0fa4b2ebdf2f5edec08e01423fe25bb8485670ec91750f01060350931bc"
+    },
+    {
+      "test": "harness::agy::delivery::tests::completion_applies_only_the_daemon_acknowledged_captured_control_subset",
+      "command": "CARGO_TARGET_DIR=/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib completion_applies_only_the_daemon_acknowledged_captured_control_subset -- --nocapture",
+      "selected": 1,
+      "summary": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4266 filtered out; finished in 0.03s",
+      "log": "/private/tmp/ht-task15-composed-selected-6.log",
+      "log_sha256": "159b6a6fb2499b7c317edb261f07107ac2fcaac0dfea793eb45f891ddcd37715"
+    },
+    {
+      "test": "harness::agy::delivery::tests::invalid_acknowledged_control_subset_never_saves_hints_or_opens_probation",
+      "command": "CARGO_TARGET_DIR=/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib invalid_acknowledged_control_subset_never_saves_hints_or_opens_probation -- --nocapture",
+      "selected": 1,
+      "summary": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4266 filtered out; finished in 0.04s",
+      "log": "/private/tmp/ht-task15-composed-selected-7.log",
+      "log_sha256": "a69a89b496a56945326534975d2624c6cbead65604b7b90635f494e459a52527"
+    },
+    {
+      "test": "harness::agy::delivery::tests::preparing_probation_does_not_open_it_before_emission",
+      "command": "CARGO_TARGET_DIR=/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib preparing_probation_does_not_open_it_before_emission -- --nocapture",
+      "selected": 1,
+      "summary": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4266 filtered out; finished in 0.01s",
+      "log": "/private/tmp/ht-task15-composed-selected-8.log",
+      "log_sha256": "0146e3c0486730aa8bb52195248c338f42573960de7166f14dd3b01b4681a2d6"
+    },
+    {
+      "test": "harness::agy::delivery::tests::hook_step_does_not_commit_offered_page_before_stdout_emission",
+      "command": "CARGO_TARGET_DIR=/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib hook_step_does_not_commit_offered_page_before_stdout_emission -- --nocapture",
+      "selected": 1,
+      "summary": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4266 filtered out; finished in 0.00s",
+      "log": "/private/tmp/ht-task15-composed-selected-9.log",
+      "log_sha256": "373335f10e1b7b9035fb98cb5d3905e892499144d927c33ee2884850719e262f"
+    }
+  ],
+  "scope_limits": [
+    "Original-slot test uses private fixed-state control fixture, not canonical allocation proof",
+    "Watch escaped batch uses direct store allocation, not actual stdout consumer",
+    "AGY canonical System/User tests use real DomainService allocation, actual native codec and post-flush explicit Confirm",
+    "Capability unadvertised; relevance and WatchV2 loop incomplete"
+  ],
+  "processes_drained": true,
+  "working_directory": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "target_dir": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "leak_run_id": null,
+  "leak_scope": "Focused non-sweep checks; no HT_LEAK_RUN_ID set; no sweep UUID claimed."
+}

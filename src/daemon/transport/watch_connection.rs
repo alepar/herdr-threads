@@ -154,7 +154,21 @@ pub(super) async fn serve(
             .await;
         }
     };
-    let accepted = WatchOutcome::Accepted(WatchAccepted { attention_version });
+    let accepted = WatchOutcome::Accepted(WatchAccepted {
+        attention_version,
+        presentation_lease: advertised_presentation_lease(
+            request.watch.presentation_v2
+                && [
+                    crate::protocol::capabilities::MOD_WATCH,
+                    crate::protocol::capabilities::MOD_WATCH_PRESENTATION_V2,
+                    crate::protocol::capabilities::DELIVERY_PRESENTATION_V2,
+                    crate::protocol::capabilities::BINDING_CURSORS,
+                ]
+                .iter()
+                .all(|capability| crate::protocol::capabilities::ADVERTISED.contains(capability)),
+            handler.watch_presentation_lease(channel),
+        ),
+    });
     if let Err(error) = write(
         &mut stream,
         &reply(&request, &instance, &daemon_boot, accepted),
@@ -226,3 +240,7 @@ async fn unregister(
 #[cfg(test)]
 #[path = "../../../tests/daemon/watch_connection.rs"]
 mod tests;
+
+fn advertised_presentation_lease(active: bool, lease: Option<String>) -> Option<String> {
+    if active { lease } else { None }
+}

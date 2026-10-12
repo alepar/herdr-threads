@@ -1,0 +1,315 @@
+diff --git a/src/harness/agy/delivery.rs b/src/harness/agy/delivery.rs
+index 7ed82fd6..3c78b00e 100644
+--- a/src/harness/agy/delivery.rs
++++ b/src/harness/agy/delivery.rs
+@@ -811,17 +811,37 @@ fn complete_step(payload: &[u8], daemon: &dyn HookStepDaemon, state_dir: &Path,
+                 consumer: PresentationConsumer::Hook,
+                 token: token.clone(),
+                 presentation_lease: None,
++                emitted_controls: completion.emitted_controls.clone(),
+             },
+         ));
++        let Ok(CommandResult::DeliveryPresentationConfirmedV2(reply)) = reply else {
++            return;
++        };
+         if !matches!(
+-            reply,
+-            Ok(CommandResult::DeliveryPresentationConfirmedV2(
+-                DeliveryPresentationConfirmationV2::Confirmed
+-                    | DeliveryPresentationConfirmationV2::AlreadyConfirmed
+-            ))
+-        ) {
++            reply.status,
++            DeliveryPresentationConfirmationV2::Confirmed
++                | DeliveryPresentationConfirmationV2::AlreadyConfirmed
++        ) || reply.acknowledged_controls.len() > MAX_TRACKED
++            || reply
++                .acknowledged_controls
++                .iter()
++                .enumerate()
++                .any(|(index, stamp)| {
++                    !completion.emitted_controls.contains(stamp)
++                        || reply.acknowledged_controls[..index].contains(stamp)
++                        || match stamp {
++                            PresentationControlStampV2::Attention { epoch, .. }
++                            | PresentationControlStampV2::Cleared { epoch, .. } => {
++                                decimal_epoch(epoch).is_none()
++                            }
++                        }
++                })
++        {
+             return;
+         }
++        // Obsolete frozen controls may be retired canonically without a current
++        // seen acknowledgement. Only the exact returned captured subset is a hint.
++        completion.emitted_controls = reply.acknowledged_controls;
+     }
+     if Instant::now() >= deadline {
+         return;
+@@ -1072,7 +1092,6 @@ impl Step<'_> {
+                     confirmable_selector: confirmable_step.presentation_selector(),
+                     passive_selector: passive_step.presentation_selector(),
+                 },
+-                confirmed_token: None,
+                 presentation_lease: None,
+                 marker_prefix: self.context.command_prefix.clone(),
+             })) {
+diff --git a/tests/harness/agy_delivery.rs b/tests/harness/agy_delivery.rs
+index af101436..e5d61549 100644
+--- a/tests/harness/agy_delivery.rs
++++ b/tests/harness/agy_delivery.rs
+@@ -15,7 +15,10 @@ use crate::{
+     protocol::{
+         authority::{CallerRole, Harness},
+         delivery::{DeliveryConfirmItem, DeliveryConfirmReport, DeliveryPage},
+-        delivery::{PresentationItemV2, PresentationRenderSelection},
++        delivery::{
++            DeliveryPresentationConfirmationReplyV2, PresentationItemV2,
++            PresentationRenderSelection,
++        },
+         ids::{ExecutionId, HostTargetId, NativeSessionId, SeatId},
+         results::{ApiError, ErrorCode},
+         time::{CallBudget, MonoInstant},
+@@ -2181,7 +2184,12 @@ fn postflush_confirmation_loss_keeps_state_replayable_after_restart() {
+     let restarted = modern_fake(vec![
+         modern_page(&token),
+         Ok(CommandResult::DeliveryPresentationConfirmedV2(
+-            DeliveryPresentationConfirmationV2::AlreadyConfirmed,
++            DeliveryPresentationConfirmationReplyV2 {
++                status: DeliveryPresentationConfirmationV2::AlreadyConfirmed,
++                acknowledged_controls: crate::delivery::presentation::emitted_controls(
++                    &modern_items(),
++                ),
++            },
+         )),
+     ]);
+     let replay = rig.prepare(
+@@ -2205,7 +2213,7 @@ fn postflush_confirmation_loss_keeps_state_replayable_after_restart() {
+             matches!(&calls[0], Command::DeliveryPullV2(pull) if pull.consumer == PresentationConsumer::Hook && pull.presentation_lease.is_none() && pull.claim == claim(0))
+         );
+         assert!(
+-            matches!(&calls[1], Command::DeliveryPresentationConfirmV2(confirm) if confirm.token == token && confirm.claim == claim(0) && confirm.presentation_lease.is_none())
++            matches!(&calls[1], Command::DeliveryPresentationConfirmV2(confirm) if confirm.token == token && confirm.claim == claim(0) && confirm.presentation_lease.is_none() && confirm.emitted_controls == crate::delivery::presentation::emitted_controls(&modern_items()))
+         );
+         assert_eq!(
+             calls.len(),
+@@ -2224,7 +2232,12 @@ fn stale_confirmation_and_expired_completion_never_save_injected_state() {
+         let rig = Rig::new();
+         let fake = modern_fake(vec![
+             modern_page(&"a".repeat(32)),
+-            Ok(CommandResult::DeliveryPresentationConfirmedV2(result)),
++            Ok(CommandResult::DeliveryPresentationConfirmedV2(
++                DeliveryPresentationConfirmationReplyV2 {
++                    status: result,
++                    acknowledged_controls: vec![],
++                },
++            )),
+         ]);
+         let prepared = rig.prepare(
+             "PreInvocation",
+@@ -2373,7 +2386,12 @@ fn probation_confirmation_loss_keeps_the_retry_available() {
+     let replay = modern_fake(vec![
+         modern_page(&token),
+         Ok(CommandResult::DeliveryPresentationConfirmedV2(
+-            DeliveryPresentationConfirmationV2::Confirmed,
++            DeliveryPresentationConfirmationReplyV2 {
++                status: DeliveryPresentationConfirmationV2::Confirmed,
++                acknowledged_controls: crate::delivery::presentation::emitted_controls(
++                    &modern_items(),
++                ),
++            },
+         )),
+     ]);
+     let prepared = rig.prepare(
+@@ -2592,7 +2610,10 @@ fn v2_invitation_only_empty_and_unchanged_pages_never_cache_current_metadata_as_
+             vec![],
+         ),
+         Ok(CommandResult::DeliveryPresentationConfirmedV2(
+-            DeliveryPresentationConfirmationV2::AlreadyConfirmed,
++            DeliveryPresentationConfirmationReplyV2 {
++                status: DeliveryPresentationConfirmationV2::AlreadyConfirmed,
++                acknowledged_controls: vec![],
++            },
+         )),
+     ]);
+     let prepared = rig.prepare(
+@@ -2691,6 +2712,8 @@ fn emitted_v2_controls_apply_exact_epochs_and_old_replay_cannot_resurrect_a_clea
+             "9007199254740997",
+         ),
+     ] {
++        let acknowledged_controls =
++            crate::delivery::presentation::emitted_controls(std::slice::from_ref(&item));
+         let fake = modern_fake(vec![
+             modern_reply(
+                 vec![item],
+@@ -2700,7 +2723,10 @@ fn emitted_v2_controls_apply_exact_epochs_and_old_replay_cannot_resurrect_a_clea
+                 vec![],
+             ),
+             Ok(CommandResult::DeliveryPresentationConfirmedV2(
+-                DeliveryPresentationConfirmationV2::Confirmed,
++                DeliveryPresentationConfirmationReplyV2 {
++                    status: DeliveryPresentationConfirmationV2::Confirmed,
++                    acknowledged_controls,
++                },
+             )),
+         ]);
+         let before = rig.conversation();
+@@ -2739,7 +2765,12 @@ fn frozen_reply_codec_overrides_new_local_preference_without_opening_early_proba
+     let fake = modern_fake(vec![
+         modern_page(&"a".repeat(32)),
+         Ok(CommandResult::DeliveryPresentationConfirmedV2(
+-            DeliveryPresentationConfirmationV2::Confirmed,
++            DeliveryPresentationConfirmationReplyV2 {
++                status: DeliveryPresentationConfirmationV2::Confirmed,
++                acknowledged_controls: crate::delivery::presentation::emitted_controls(
++                    &modern_items(),
++                ),
++            },
+         )),
+     ]);
+     let prepared = rig.prepare(
+@@ -2803,3 +2834,144 @@ fn mismatched_or_unsupported_v2_native_output_is_not_emitted_or_confirmed() {
+         assert_eq!(fake.calls().len(), 1);
+     }
+ }
++
++#[test]
++fn completion_applies_only_the_daemon_acknowledged_captured_control_subset() {
++    for empty_obsolete in [false, true] {
++        let rig = Rig::new();
++        let mut state = ConversationState {
++            seen_attention_version: Some(7),
++            seen_presentation_epoch: Some("0".into()),
++            generation: Some(0),
++            ..Default::default()
++        };
++        state.save(&rig.state_file());
++        let items = vec![
++            PresentationItemV2::Attention {
++                epoch: "1".into(),
++                attention_version: 11,
++                text: "herdr-threads: attention".into(),
++            },
++            PresentationItemV2::Attention {
++                epoch: "2".into(),
++                attention_version: 22,
++                text: "herdr-threads: attention".into(),
++            },
++        ];
++        let captured = crate::delivery::presentation::emitted_controls(&items);
++        let acknowledged_controls = if empty_obsolete {
++            vec![]
++        } else {
++            vec![captured[0].clone()]
++        };
++        let fake = modern_fake(vec![
++            modern_reply(
++                items,
++                Some(&"a".repeat(32)),
++                999,
++                InjectionStep::SystemMessage,
++                vec![],
++            ),
++            Ok(CommandResult::DeliveryPresentationConfirmedV2(
++                DeliveryPresentationConfirmationReplyV2 {
++                    status: DeliveryPresentationConfirmationV2::AlreadyConfirmed,
++                    acknowledged_controls,
++                },
++            )),
++        ]);
++        let prepared = rig.prepare(
++            "PreInvocation",
++            json!({"invocationNum": 0}),
++            Some(&fake),
++            &runtime(1000, &ident("a")),
++        );
++        assert!(!prepared.stdout.is_empty());
++        let before = std::fs::read(rig.state_file()).unwrap();
++        assert_eq!(rig.conversation().seen_attention_version, Some(7));
++        complete_step(
++            &prepared.completion.unwrap().0,
++            &fake,
++            &rig.state,
++            Instant::now() + Duration::from_secs(30),
++        );
++        assert!(
++            matches!(&fake.calls()[1], Command::DeliveryPresentationConfirmV2(request) if request.emitted_controls == captured)
++        );
++        let saved = rig.conversation();
++        assert_eq!(
++            saved.seen_attention_version,
++            Some(if empty_obsolete { 7 } else { 11 })
++        );
++        assert_eq!(
++            saved.seen_presentation_epoch.as_deref(),
++            Some(if empty_obsolete { "0" } else { "1" })
++        );
++        // The turn/injection hint can change after a valid completion, but current
++        // metadata999 and unacknowledged epoch2 never become seen evidence.
++        assert_ne!(std::fs::read(rig.state_file()).unwrap(), before);
++    }
++}
++
++#[test]
++fn invalid_acknowledged_control_subset_never_saves_hints_or_opens_probation() {
++    let captured = crate::delivery::presentation::emitted_controls(&modern_items())[0].clone();
++    for acknowledged_controls in [
++        vec![captured.clone(), captured.clone()],
++        vec![PresentationControlStampV2::Attention {
++            epoch: "2".into(),
++            version: 11,
++        }],
++        vec![PresentationControlStampV2::Attention {
++            epoch: "1".into(),
++            version: 12,
++        }],
++        vec![PresentationControlStampV2::Cleared {
++            epoch: "1".into(),
++            version: 11,
++        }],
++        vec![PresentationControlStampV2::Attention {
++            epoch: "01".into(),
++            version: 11,
++        }],
++        vec![captured.clone(); 33],
++    ] {
++        let rig = Rig::new();
++        let identity = ident("a");
++        let mut record = DowngradeRecord::blank(&identity);
++        record.downgrade("abort", 1000);
++        save_downgrade(&rig.state, &record);
++        let before = std::fs::read(downgrade_path(&rig.state)).unwrap();
++        let fake = modern_fake(vec![
++            modern_page(&"a".repeat(32)),
++            Ok(CommandResult::DeliveryPresentationConfirmedV2(
++                DeliveryPresentationConfirmationReplyV2 {
++                    status: DeliveryPresentationConfirmationV2::Confirmed,
++                    acknowledged_controls,
++                },
++            )),
++        ]);
++        let prepared = rig.prepare(
++            "PreInvocation",
++            json!({"invocationNum": 0}),
++            Some(&fake),
++            &runtime(1000 + 24 * HOUR, &identity),
++        );
++        assert_eq!(prepared.stdout, modern_system_output());
++        complete_step(
++            &prepared.completion.unwrap().0,
++            &fake,
++            &rig.state,
++            Instant::now() + Duration::from_secs(30),
++        );
++        assert!(!rig.state_file().exists());
++        assert_eq!(std::fs::read(downgrade_path(&rig.state)).unwrap(), before);
++        assert!(
++            matches!(&fake.calls()[1], Command::DeliveryPresentationConfirmV2(request) if request.emitted_controls == vec![captured.clone()])
++        );
++        assert_eq!(
++            fake.calls().len(),
++            2,
++            "invalid result cannot trigger recovery RPC or ACK/accept"
++        );
++    }
++}

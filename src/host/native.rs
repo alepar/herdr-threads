@@ -2553,11 +2553,11 @@ pub(crate) mod tests {
             target: target.clone(),
             harness: Harness::Codex,
             argv: vec!["--no-daemon".into(), "--model".into(), "test model".into()],
-            configured_hook: ConfiguredHook {
+            configured_hook: Some(ConfiguredHook {
                 scope: "project".into(),
                 path: "/tmp/hook".into(),
                 fingerprint: "sha256:test".into(),
-            },
+            }),
             expected_terminal: terminal.clone(),
             expected_generation: 7,
             expected_incarnation: "server-1".into(),
@@ -3340,7 +3340,12 @@ pub(crate) mod tests {
                     "internal" | "mode" | "cancelled" | "expired" | "generation" | "incarnation"
                 );
                 match case {
-                    "internal" => request.configured_hook.fingerprint.clear(),
+                    "internal" => request
+                        .configured_hook
+                        .as_mut()
+                        .unwrap()
+                        .fingerprint
+                        .clear(),
                     "mode" => request.process_hint = !required,
                     "cancelled" => context.budget.cancellation.cancel(),
                     "expired" => context.budget.deadline = MonoInstant(0),

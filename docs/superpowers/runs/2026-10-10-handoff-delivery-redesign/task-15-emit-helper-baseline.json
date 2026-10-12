@@ -1,0 +1,14 @@
+{
+  "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "target": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/emit-helper-15",
+  "base": "ee1e598c",
+  "frozen_files": {
+    "src/harness/adapter.rs": "7817222baa599c700eac688ad7bc66238f9a62f3ce0224409dafae7ec518620c",
+    "src/cli/hook.rs": "b09a91337c38a98d9c27f1d3583f9813fcb5a1e6ac4a7d2c3cab01f46a7b48a7",
+    "src/harness/agy/delivery.rs": "670ecbc800f5251ec9e33dcf863f3dd0426d73ec95f2538b92885519bc794032",
+    "tests/cli/hook_neutral.rs": "c8e1093028b0a4fd7a60212f51dd4ef9ed65a8239394ed5f19169ce770af60cf",
+    "tests/harness/agy_delivery.rs": "819f482c96479766a148f9b9c940ac5ccdb28f47b2ed5acf0f51bf4efda1c92e",
+    "tests/cli/hook.rs": "2bcdcab3e5dad58a13f8bcaa2b70f3da6c3d6df79e87ec0d3b8d8491cd591660"
+  },
+  "ownership": "helpertestonlyinitially; producerREDbeforeproduction"
+}

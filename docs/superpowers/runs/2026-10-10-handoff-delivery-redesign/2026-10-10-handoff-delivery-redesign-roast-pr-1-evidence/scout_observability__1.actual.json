@@ -1,0 +1,12 @@
+{
+  "findings": [
+    {
+      "claim": "The new V2 hook delivery path silently discards persistent presentation errors and codec refusals, so stalled delivery produces the same empty successful hook outcome as a quiet inbox.",
+      "location": "src/harness/agy/delivery.rs:1152",
+      "category": "observability",
+      "external": false,
+      "kind": "ISSUE",
+      "evidence": "PreInvocation initializes diagnostic to None (run_step_with_completion, lines 643-675). The new DeliveryPullV2 match converts Refused to the common reply and returns an empty Vec for every ApiError/unexpected reply (lines 1152-1155); the common Refused branch also returns an empty Vec without setting diagnostic (1173-1180). This is not limited to normal absence or transient unavailability: service/delivery_presentation.rs:143-160 returns NoHookPull when an existing frozen outbox codec was removed or its descriptor key changed, and TRUST-POLICY.md:1677-1679 explicitly says that condition may require binding/operator repair. The new presentation store also returns StoreCorrupt for invalid durable presentation state (store/invitation_content.rs:232-249, 404-412), propagated by the service. Dispatch directly returns presentation_pull, and daemon/transport.rs:533-545 serializes its error into the response rather than recording a separate diagnostic. cli/hook.rs emit only writes stderr when outcome.diagnostic is Some and the process intentionally exits 0. Thus the failure reason already available at the consumer is lost; retries against an unchanged codec/state cannot expose it, unlike the explicit presentation codec mismatch diagnostic used for malformed successful pages. No dashboard or per-message boilerplate is needed: a bounded hook diagnostic for persistent failures would distinguish this condition while preserving empty healthy turns and fail-open exit status. Parent runtime nomination: use the existing agy HookStepDaemon fake with the presentation capability enabled, return DeliveryPullReplyV2::Refused { reason: NoHookPull } (and separately ApiError StoreCorrupt) for DeliveryPullV2, invoke PreInvocation, and assert the outcome reports a bounded diagnostic while stdout remains empty; current code leaves diagnostic None. No runtime commands were executed by this scout."
+    }
+  ]
+}

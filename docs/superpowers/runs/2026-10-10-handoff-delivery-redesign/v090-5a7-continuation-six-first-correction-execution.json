@@ -1,0 +1,77 @@
+{
+  "head": "5a7ce5a3a1e89d95f29582d77cbd0240feb48c20",
+  "tree": "268aa3fd79a206f0de0968f8152e355afb9e22c9",
+  "run_id": "143ebd46-5688-4e91-9adb-82baf27fb189",
+  "expected": [
+    "invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read",
+    "invitation_content::binding_presentation::continued_body_retirement_is_private_and_charged_once",
+    "invitation_content::binding_presentation::continued_pending_body_survives_own_display_cursor",
+    "invitation_content::binding_presentation::continued_unread_body_survives_sibling_full_read",
+    "invitation_content::binding_presentation::continued_body_refuses_corrupt_accumulator_and_missing_authority_without_progress",
+    "invitation_content::binding_presentation::continued_body_retirement_rolls_back_when_final_state_write_fails"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 20.38488175009843
+  },
+  "selected": [
+    [
+      "herdr-threads::combined",
+      "invitation_content::binding_presentation::continued_body_refuses_corrupt_accumulator_and_missing_authority_without_progress"
+    ],
+    [
+      "herdr-threads::combined",
+      "invitation_content::binding_presentation::continued_body_retirement_is_private_and_charged_once"
+    ],
+    [
+      "herdr-threads::combined",
+      "invitation_content::binding_presentation::continued_body_retirement_rolls_back_when_final_state_write_fails"
+    ],
+    [
+      "herdr-threads::combined",
+      "invitation_content::binding_presentation::continued_pending_body_survives_own_display_cursor"
+    ],
+    [
+      "herdr-threads::combined",
+      "invitation_content::binding_presentation::continued_unread_body_survives_sibling_full_read"
+    ],
+    [
+      "herdr-threads::combined",
+      "invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/combined-1ca8fb8a6401d78a",
+      "sha256": "e14ab5e538389e88cb0324f76026b6337e2c9e273f6eef0c6ce7994345d0517d"
+    }
+  ],
+  "run": {
+    "exit": 0,
+    "seconds": 0.7902055000886321,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--test",
+      "combined",
+      "--no-fail-fast",
+      "-E",
+      "test(=invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read) | test(=invitation_content::binding_presentation::continued_body_retirement_is_private_and_charged_once) | test(=invitation_content::binding_presentation::continued_pending_body_survives_own_display_cursor) | test(=invitation_content::binding_presentation::continued_unread_body_survives_sibling_full_read) | test(=invitation_content::binding_presentation::continued_body_refuses_corrupt_accumulator_and_missing_authority_without_progress) | test(=invitation_content::binding_presentation::continued_body_retirement_rolls_back_when_final_state_write_fails)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.2056509170215577,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "143ebd46-5688-4e91-9adb-82baf27fb189"
+    ]
+  },
+  "leak_exit": 0
+}

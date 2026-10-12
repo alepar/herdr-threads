@@ -36,6 +36,18 @@ use std::io::{self, Write};
 /// 7: session-keyed binding claims: CallerClaim gains optional agent_id and liveness fingerprint (ht-54r).
 pub const PROTOCOL_VERSION: u16 = 7;
 pub const MAX_WIRE_FRAME_BYTES: usize = 1_048_576;
+/// Only replies to modern explicitly frozen-policy automatic topology requests use this envelope.
+pub const MAX_AUTOMATIC_RESPONSE_FRAME_BYTES: usize = 2 * MAX_WIRE_FRAME_BYTES;
+
+pub fn automatic_response_request(command: &Command) -> bool {
+    matches!(command, Command::AutomaticBootstrap(request) if request.identity.plan.payload.handoff.policy.is_some())
+}
+pub fn automatic_response_result(result: &Result<CommandResult, ApiError>) -> bool {
+    matches!(
+        result,
+        Ok(CommandResult::AutomaticBootstrap(_) | CommandResult::AutomaticBootstrapReserved(_))
+    )
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WireRequest {
@@ -189,20 +201,36 @@ impl WireResponse {
 
 /// Four-byte big-endian length plus one bounded JSON response frame.
 pub fn encode_wire_response(response: &WireResponse) -> Result<Vec<u8>, ApiError> {
+    encode_wire_response_scoped(response, false)
+}
+
+pub(crate) fn encode_wire_response_scoped(
+    response: &WireResponse,
+    automatic: bool,
+) -> Result<Vec<u8>, ApiError> {
+    let limit = if automatic && automatic_response_result(&response.result) {
+        MAX_AUTOMATIC_RESPONSE_FRAME_BYTES
+    } else {
+        MAX_WIRE_FRAME_BYTES
+    };
     if !result_identity_valid(&response.result, &response.instance, &response.daemon_boot) {
         return Err(ApiError::invalid_request(
             "response result identity or bounds invalid",
         ));
     }
-    let mut writer = BoundedJsonWriter::new(MAX_WIRE_FRAME_BYTES - 4);
+    let mut writer = BoundedJsonWriter::new(limit - 4);
     serde_json::to_writer(&mut writer, response)
         .map_err(|error| ApiError::invalid_request(format!("response encoding failed: {error}")))?;
     let total = writer
         .count
         .checked_add(4)
         .ok_or_else(|| ApiError::invalid_budget("wire frame size overflow"))?;
-    if total > MAX_WIRE_FRAME_BYTES {
-        let mut error = ApiError::invalid_budget("wire frame exceeds 1 MiB");
+    if total > limit {
+        let mut error = ApiError::invalid_budget(if limit == MAX_WIRE_FRAME_BYTES {
+            "wire frame exceeds 1 MiB"
+        } else {
+            "automatic response frame exceeds 2 MiB"
+        });
         error.required_minimum_bytes = u32::try_from(total).ok();
         return Err(error);
     }

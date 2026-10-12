@@ -1,0 +1,37 @@
+--- a/tests/hook_entrypoint/agy.rs
++++ b/tests/hook_entrypoint/agy.rs
+@@ -1639,9 +1639,18 @@
+         assert_eq!(invitation.effective_deadline_at, None);
+         assert_eq!(invitation.episode, 1);
+         assert_eq!(invitation.inviter.as_ref(), Some(&origin.seat));
+-        assert_eq!(sent["thread"], json!(actual.thread));
+-        assert_eq!(sent["selection"]["outcome"], "created");
+-        assert_eq!(sent["selection"]["invitation"], json!(invitation));
++        assert_eq!(
++            sent["version"],
++            herdr_threads::protocol::wire::PROTOCOL_VERSION
++        );
++        let result = sent
++            .get("result")
++            .filter(|result| result.is_object())
++            .expect("versioned direct-send result object");
++        assert_eq!(result["kind"], "message_sent");
++        assert_eq!(result["thread"], json!(actual.thread));
++        assert_eq!(result["selection"]["outcome"], "created");
++        assert_eq!(result["selection"]["invitation"], json!(invitation));
+         assert_eq!(
+             producer
+                 .iter()
+@@ -1667,7 +1676,11 @@
+             send.direct_recipient.as_ref(),
+             Some(&elected.recipient.seat)
+         );
+-        assert_eq!(sent["message"], json!(message));
++        assert_eq!(result["data"], json!(message));
++        assert_eq!(
++            serde_json::from_value::<CommandResult>(result.clone()).unwrap(),
++            CommandResult::MessageSent(message.clone())
++        );
+         assert!(
+             !producer
+                 .iter()

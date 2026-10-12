@@ -1,0 +1,25 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+────────────
+ Nextest run ID f4c66d3a-4515-4654-a242-49f46e279e3c with nextest profile: default
+    Starting 1 test across 1 binary (200 tests skipped)
+        FAIL [  28.563s] (1/1) herdr-threads::integration mod_delivery::activation_v2_watch_full_pending_capacity_parks_until_real_channel_input
+  stdout ───
+
+    running 1 test
+    test mod_delivery::activation_v2_watch_full_pending_capacity_parks_until_real_channel_input ... FAILED
+
+    failures:
+
+    failures:
+        mod_delivery::activation_v2_watch_full_pending_capacity_parks_until_real_channel_input
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 200 filtered out; finished in 28.52s
+
+  stderr ───
+    panicked at tests/integration/mod_delivery.rs:118:9:
+    timed out waiting for all fixture send_attention jobs to complete before Watch
+
+────────────
+     Summary [  28.573s] 1 test run: 0 passed, 1 failed, 200 skipped
+        FAIL [  28.563s] (1/1) herdr-threads::integration mod_delivery::activation_v2_watch_full_pending_capacity_parks_until_real_channel_input
+error: test run failed

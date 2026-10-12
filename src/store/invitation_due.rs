@@ -18,11 +18,12 @@ use super::{
 
 pub const MAX_INVITATION_DUE_BATCH: u16 = 100;
 
-/// Immutable deadline order, capped by the invitation ordinal observed at the
-/// start of a traversal. A new traversal picks up later invitations.
+/// Finite ordinal traversal capped at its initial high water. New invitations
+/// belong to the next traversal, even when their deadlines precede old rows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InvitationDueCursor {
     pub high_water_ordinal: i64,
+    /// Informational last deadline; traversal is ordered only by ordinal.
     pub after_deadline: i64,
     pub after_ordinal: i64,
 }
@@ -47,11 +48,12 @@ pub(crate) struct AdvisoryPage {
     high_water_ordinal: i64,
 }
 
-pub(crate) const INVITATION_DUE_SELECTION: &str = "SELECT i.id, i.deadline_at, i.ordinal FROM invitations i INDEXED BY invitations_effective_pending_unwarned WHERE i.state='pending' AND i.warning_message_id IS NULL AND i.reject_recorded=0 AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) AND (i.deadline_at, i.ordinal)>(?1, ?2) ORDER BY i.deadline_at, i.ordinal LIMIT ?3";
+pub(crate) const INVITATION_DUE_SELECTION: &str = "SELECT i.id, i.deadline_at, i.ordinal FROM invitations i INDEXED BY invitations_confirmation_scan WHERE i.state='pending' AND i.warning_message_id IS NULL AND i.reject_recorded=0 AND (i.confirmation IS NULL OR i.confirmation='require_ack') AND i.ordinal>?1 AND i.ordinal<=?2 ORDER BY i.ordinal LIMIT ?3";
 
 /// Advisory selection does not authorize any transition. It reads at most the
 /// admitted number of physical rows from the pending-unwarned index. The
-/// ordinal high water is checked after this bounded index slice.
+/// ordinal high water bounds the indexed slice before any canonical reread.
+/// Future and cancelled rows count as inspected physical candidates.
 pub(crate) fn select_invitation_due_candidates(
     conn: &Connection,
     after: Option<InvitationDueCursor>,
@@ -64,7 +66,11 @@ pub(crate) fn select_invitation_due_candidates(
         ));
     }
     let high_water_ordinal = match after {
-        Some(cursor) if cursor.high_water_ordinal >= 0 && cursor.after_ordinal >= 0 => {
+        Some(cursor)
+            if cursor.high_water_ordinal >= 0
+                && cursor.after_ordinal >= 0
+                && cursor.after_ordinal <= cursor.high_water_ordinal =>
+        {
             cursor.high_water_ordinal
         }
         Some(_) => {
@@ -81,15 +87,13 @@ pub(crate) fn select_invitation_due_candidates(
             )
             .map_err(store_error)?,
     };
-    let (after_deadline, after_ordinal) = after
-        .map(|cursor| (cursor.after_deadline, cursor.after_ordinal))
-        .unwrap_or((i64::MIN, 0));
+    let after_ordinal = after.map_or(0, |cursor| cursor.after_ordinal);
     let mut statement = conn
         .prepare_cached(INVITATION_DUE_SELECTION)
         .map_err(store_error)?;
     let rows = statement
         .query_map(
-            params![after_deadline, after_ordinal, i64::from(limit)],
+            params![after_ordinal, high_water_ordinal, i64::from(limit)],
             |r| {
                 Ok(AdvisoryInvitation {
                     id: InvitationId::new(r.get::<_, String>(0)?),
@@ -125,7 +129,6 @@ pub(crate) fn apply_invitation_due_candidates(
             let mut inspected = 0u16;
             let mut warnings_added = 0u16;
             let mut last = None;
-            let mut encountered_future = false;
             let mut decision_sequences = HashMap::<String, u64>::new();
             for candidate in &page.candidates {
                 inspected += 1;
@@ -144,8 +147,7 @@ pub(crate) fn apply_invitation_due_candidates(
                     .optional()
                     .map_err(store_error)?;
                 if current.as_ref().is_some_and(|row| row.1 > decision.utc.0) {
-                    encountered_future = true;
-                    break;
+                    continue;
                 }
                 if let Some((instance, _, state, marker, seat_state)) = current {
                     if state != "pending" || marker.is_some() || seat_state == "retired" {
@@ -169,7 +171,7 @@ pub(crate) fn apply_invitation_due_candidates(
                     warnings_added += u16::from(outcome.inserted);
                 }
             }
-            let next = if page.has_more && !encountered_future {
+            let next = if page.has_more {
                 last.map(|(after_deadline, after_ordinal)| InvitationDueCursor {
                     high_water_ordinal: page.high_water_ordinal,
                     after_deadline,

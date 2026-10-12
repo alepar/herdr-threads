@@ -1,0 +1,599 @@
+{
+  "head": "4c4988d9ee937c333d602bac25dca25fc2c07d37",
+  "tree": "1589136ce7568bcd72b0050fa8d947e6f49503ab",
+  "entrypoints": {
+    "src/protocol/delivery.rs": {
+      "sha256": "1f07a5557294d570894c17f238ee52acce8c317afb506ca50860c4028902d7a9",
+      "entrypoints": [
+        {
+          "line": 151,
+          "declaration": "pub fn valid_presentation_token(token: &str) -> bool {"
+        },
+        {
+          "line": 193,
+          "declaration": "fn validate_presentation_scope("
+        },
+        {
+          "line": 376,
+          "declaration": "pub fn valid_presentation_epoch(value: &str) -> bool {"
+        }
+      ]
+    },
+    "src/protocol/watch.rs": {
+      "sha256": "13a9476b396eeefc9b55ee2d1ab4c5cc9fbb1a39537b9d7c02e5dc089600fb42",
+      "entrypoints": []
+    },
+    "src/protocol/capabilities.rs": {
+      "sha256": "1ed0b7340a421d8abfb28c8842ec5c1305fea16a060774d0b1cd8afd2f144f9d",
+      "entrypoints": []
+    },
+    "src/service/delivery_presentation.rs": {
+      "sha256": "3f4b8a06744f58895736c6c70d1eb746a4778732947756df17426c587c940242",
+      "entrypoints": [
+        {
+          "line": 31,
+          "declaration": "pub(super) fn permit(&self, seat: &SeatId) -> Result<Arc<Mutex<()>>, ApiError> {"
+        },
+        {
+          "line": 50,
+          "declaration": "pub(super) fn presentation_pull("
+        },
+        {
+          "line": 233,
+          "declaration": "pub(super) fn presentation_confirm("
+        }
+      ]
+    },
+    "src/store/invitation_content.rs": {
+      "sha256": "523ad2ca9ac8bd4ee048675c9bee8f9fb9df00051474e15fba693d60caab94e1",
+      "entrypoints": [
+        {
+          "line": 16,
+          "declaration": "pub(super) fn record_context_change("
+        },
+        {
+          "line": 43,
+          "declaration": "pub(super) fn record_command_change("
+        },
+        {
+          "line": 167,
+          "declaration": "fn default() -> Self {"
+        },
+        {
+          "line": 232,
+          "declaration": "fn corrupt(detail: impl Into<String>) -> ApiError {"
+        },
+        {
+          "line": 235,
+          "declaration": "fn decode<T: serde::de::DeserializeOwned>(json: &str) -> Result<T, ApiError> {"
+        },
+        {
+          "line": 239,
+          "declaration": "fn partial_state(json: &str) -> Result<HashMap<String, String>, ApiError> {"
+        },
+        {
+          "line": 253,
+          "declaration": "fn partial_json(partial: &HashMap<String, String>) -> Result<String, ApiError> {"
+        },
+        {
+          "line": 259,
+          "declaration": "fn encode<T: Serialize>(value: &T) -> Result<String, ApiError> {"
+        },
+        {
+          "line": 262,
+          "declaration": "fn scope_matches(db: &Connection, claim: &CallerClaim) -> Result<bool, ApiError> {"
+        },
+        {
+          "line": 272,
+          "declaration": "fn load_raw("
+        },
+        {
+          "line": 399,
+          "declaration": "fn load("
+        },
+        {
+          "line": 454,
+          "declaration": "fn save("
+        },
+        {
+          "line": 501,
+          "declaration": "fn hydrate_many("
+        },
+        {
+          "line": 575,
+          "declaration": "pub(super) fn render_selection("
+        },
+        {
+          "line": 612,
+          "declaration": "fn checked_publication_state(state: &State) -> Result<(), ApiError> {"
+        },
+        {
+          "line": 630,
+          "declaration": "fn publication_head(db: &Connection, instance: &str) -> Result<i64, ApiError> {"
+        },
+        {
+          "line": 633,
+          "declaration": "fn advance_ordinary_publications("
+        },
+        {
+          "line": 714,
+          "declaration": "fn control_stamp("
+        },
+        {
+          "line": 739,
+          "declaration": "fn descriptor_mask(len: usize) -> Result<u32, ApiError> {"
+        },
+        {
+          "line": 749,
+          "declaration": "fn checked_masks("
+        },
+        {
+          "line": 767,
+          "declaration": "fn retire_outbox(state: &mut State) -> Result<(), ApiError> {"
+        },
+        {
+          "line": 798,
+          "declaration": "pub(super) fn confirm("
+        },
+        {
+          "line": 927,
+          "declaration": "fn pending_high(db: &Connection, claim: &CallerClaim) -> Result<i64, ApiError> {"
+        },
+        {
+          "line": 930,
+          "declaration": "fn context_high(db: &Connection, claim: &CallerClaim) -> Result<i64, ApiError> {"
+        },
+        {
+          "line": 933,
+          "declaration": "fn initial_candidates("
+        },
+        {
+          "line": 971,
+          "declaration": "fn context_candidates("
+        },
+        {
+          "line": 1037,
+          "declaration": "fn bounded_private_text("
+        },
+        {
+          "line": 1058,
+          "declaration": "fn private_read_error(error: rusqlite::Error) -> ApiError {"
+        },
+        {
+          "line": 1078,
+          "declaration": "fn item("
+        },
+        {
+          "line": 1128,
+          "declaration": "fn revisit_candidates("
+        },
+        {
+          "line": 1265,
+          "declaration": "fn default() -> Self {"
+        },
+        {
+          "line": 1281,
+          "declaration": "fn checked(&self) -> Result<(), ApiError> {"
+        },
+        {
+          "line": 1312,
+          "declaration": "fn open(&mut self, version: u64) -> Result<(), ApiError> {"
+        },
+        {
+          "line": 1344,
+          "declaration": "fn absent(&mut self) {"
+        },
+        {
+          "line": 1358,
+          "declaration": "fn pending(&self) -> Option<crate::protocol::delivery::PresentationControlStampV2> {"
+        },
+        {
+          "line": 1363,
+          "declaration": "fn allocated(&mut self, stamp: &crate::protocol::delivery::PresentationControlStampV2) {"
+        },
+        {
+          "line": 1375,
+          "declaration": "fn applicable(&self, stamp: &crate::protocol::delivery::PresentationControlStampV2) -> bool {"
+        },
+        {
+          "line": 1387,
+          "declaration": "fn confirm(&mut self, stamp: &crate::protocol::delivery::PresentationControlStampV2) {"
+        },
+        {
+          "line": 1424,
+          "declaration": "fn ordinary_carry(json: &str) -> Result<OrdinaryCarry, ApiError> {"
+        },
+        {
+          "line": 1459,
+          "declaration": "pub(super) fn remove_generated_marker("
+        },
+        {
+          "line": 1470,
+          "declaration": "fn ordinary_carry_json(carry: &OrdinaryCarry) -> Result<String, ApiError> {"
+        },
+        {
+          "line": 1476,
+          "declaration": "fn new_token(db: &Connection) -> Result<String, ApiError> {"
+        },
+        {
+          "line": 1495,
+          "declaration": "fn frozen_profile("
+        },
+        {
+          "line": 1534,
+          "declaration": "fn page("
+        },
+        {
+          "line": 1576,
+          "declaration": "fn replay("
+        },
+        {
+          "line": 1657,
+          "declaration": "pub(super) fn pull("
+        },
+        {
+          "line": 2198,
+          "declaration": "fn finish("
+        },
+        {
+          "line": 2218,
+          "declaration": "pub(super) fn refresh("
+        }
+      ]
+    },
+    "src/store/presentation_relevance.rs": {
+      "sha256": "9fc701f4d75961909c846cfd0edad4511a41b394267942c9539905fb413049b9",
+      "entrypoints": [
+        {
+          "line": 61,
+          "declaration": "fn representation(self) -> Option<i64> {"
+        },
+        {
+          "line": 213,
+          "declaration": "fn corrupt(message: &str) -> ApiError {"
+        },
+        {
+          "line": 216,
+          "declaration": "fn id(value: &str) -> bool {"
+        },
+        {
+          "line": 219,
+          "declaration": "fn check(budget: &CallBudget) -> Result<(), ApiError> {"
+        },
+        {
+          "line": 229,
+          "declaration": "fn validate(state: &State) -> Result<(), ApiError> {"
+        },
+        {
+          "line": 316,
+          "declaration": "fn load("
+        },
+        {
+          "line": 350,
+          "declaration": "fn save(db: &Connection, consumer: PresentationConsumer, state: &State) -> Result<(), ApiError> {"
+        },
+        {
+          "line": 361,
+          "declaration": "fn admitted(db: &Connection, claim: &CallerClaim) -> Result<bool, ApiError> {"
+        },
+        {
+          "line": 369,
+          "declaration": "fn fence(db: &Connection) -> Result<i64, ApiError> {"
+        },
+        {
+          "line": 383,
+          "declaration": "fn confirming(db: &Connection, claim: &CallerClaim) -> Result<bool, ApiError> {"
+        },
+        {
+          "line": 386,
+          "declaration": "fn snapshot("
+        },
+        {
+          "line": 436,
+          "declaration": "fn row<T>("
+        },
+        {
+          "line": 453,
+          "declaration": "fn yes(&mut self, cost: u16, sql: &str, p: impl Params) -> Result<bool, ApiError> {"
+        },
+        {
+          "line": 471,
+          "declaration": "fn source_id("
+        },
+        {
+          "line": 496,
+          "declaration": "fn direct(points: &mut Points<'_>, warning: &str) -> Result<Option<Warning>, ApiError> {"
+        },
+        {
+          "line": 499,
+          "declaration": "fn prepared("
+        },
+        {
+          "line": 506,
+          "declaration": "fn native_rejection(points: &mut Points<'_>, warning: &str) -> Result<bool, ApiError> {"
+        },
+        {
+          "line": 512,
+          "declaration": "fn receipt_pending(points: &mut Points<'_>, message: &str, seat: &str) -> Result<bool, ApiError> {"
+        },
+        {
+          "line": 539,
+          "declaration": "fn actionable(points: &mut Points<'_>, warning: &Warning) -> Result<bool, ApiError> {"
+        },
+        {
+          "line": 578,
+          "declaration": "fn recipient("
+        },
+        {
+          "line": 611,
+          "declaration": "fn eligible("
+        },
+        {
+          "line": 689,
+          "declaration": "fn evaluate("
+        },
+        {
+          "line": 805,
+          "declaration": "fn charge_points(work: &mut RelevanceWork, points: &Points<'_>, witness: bool) {"
+        },
+        {
+          "line": 812,
+          "declaration": "fn generic(n: usize) -> bool {"
+        },
+        {
+          "line": 815,
+          "declaration": "fn authority_valid(n: usize, key: Key, authority: Authority, high: i64) -> bool {"
+        },
+        {
+          "line": 825,
+          "declaration": "fn initial_authority(n: usize, key: Key) -> Authority {"
+        },
+        {
+          "line": 832,
+          "declaration": "fn first_judgment("
+        },
+        {
+          "line": 865,
+          "declaration": "fn room(work: &RelevanceWork, seeks: u16, rows: u16) -> bool {"
+        },
+        {
+          "line": 869,
+          "declaration": "fn source_step("
+        },
+        {
+          "line": 915,
+          "declaration": "fn finish_negative(slot: &mut Slot, n: usize, authority: Authority) {"
+        },
+        {
+          "line": 925,
+          "declaration": "fn accept_evaluation("
+        },
+        {
+          "line": 955,
+          "declaration": "fn fallback_step("
+        },
+        {
+          "line": 1054,
+          "declaration": "fn witness("
+        },
+        {
+          "line": 1082,
+          "declaration": "fn next_slot(state: &State, fallback: bool) -> Option<usize> {"
+        },
+        {
+          "line": 1099,
+          "declaration": "fn microstep("
+        },
+        {
+          "line": 1118,
+          "declaration": "fn schedule("
+        },
+        {
+          "line": 1180,
+          "declaration": "fn result(relevance: Relevance, work: RelevanceWork) -> RelevanceProof {"
+        },
+        {
+          "line": 1190,
+          "declaration": "pub(super) fn advance("
+        },
+        {
+          "line": 1279,
+          "declaration": "pub(super) fn revalidate("
+        }
+      ]
+    },
+    "src/delivery/presentation.rs": {
+      "sha256": "367e8bc25bca53b00c8c3977b761fd77a1d3663d941fce4c6a98329d587bc276",
+      "entrypoints": [
+        {
+          "line": 30,
+          "declaration": "pub fn selection(&self, items: &[Item]) -> Selection {"
+        },
+        {
+          "line": 49,
+          "declaration": "pub fn codec(&self, selection: &Selection) -> Option<PresentationCodec> {"
+        },
+        {
+          "line": 72,
+          "declaration": "pub fn emitted_controls(items: &[Item]) -> Vec<Stamp> {"
+        },
+        {
+          "line": 95,
+          "declaration": "pub fn presentation_watch_lines(items: &[Item]) -> Vec<WatchLine> {"
+        },
+        {
+          "line": 148,
+          "declaration": "pub fn presentation_hook_text(items: &[Item]) -> String {"
+        },
+        {
+          "line": 206,
+          "declaration": "pub fn valid_items(items: &[Item]) -> bool {"
+        },
+        {
+          "line": 221,
+          "declaration": "pub fn new(limit: usize) -> Self {"
+        },
+        {
+          "line": 226,
+          "declaration": "fn write(&mut self, buf: &[u8]) -> io::Result<usize> {"
+        },
+        {
+          "line": 234,
+          "declaration": "fn flush(&mut self) -> io::Result<()> {"
+        },
+        {
+          "line": 239,
+          "declaration": "pub fn measure("
+        },
+        {
+          "line": 278,
+          "declaration": "pub fn validate(&self) -> bool {"
+        },
+        {
+          "line": 300,
+          "declaration": "pub fn render_key(&self, prefix: &[String]) -> String {"
+        },
+        {
+          "line": 343,
+          "declaration": "pub fn new() -> Self {"
+        },
+        {
+          "line": 348,
+          "declaration": "pub fn measure("
+        },
+        {
+          "line": 364,
+          "declaration": "pub fn rpc<T: serde::Serialize>(&mut self, value: &T) -> Result<usize, usize> {"
+        },
+        {
+          "line": 378,
+          "declaration": "fn default() -> Self {"
+        },
+        {
+          "line": 403,
+          "declaration": "pub fn descriptor_key(codec: PresentationCodec) -> String {"
+        }
+      ]
+    },
+    "src/cli/hook.rs": {
+      "sha256": "e9081b6af2078197d9ab93e615aa84617d1a4730cd3af9202ef1eb61f132469d",
+      "entrypoints": []
+    },
+    "src/cli/watch.rs": {
+      "sha256": "96ae8d1124adc3f5367b710b643a6263da6d518371d221255913c8a6d6cd8078",
+      "entrypoints": [
+        {
+          "line": 537,
+          "declaration": "fn watch_presentation_loop("
+        }
+      ]
+    },
+    "src/harness/agy/delivery.rs": {
+      "sha256": "6d9ece730b07273d57577b201a41f40e614d910da060de61066d3021198c8089",
+      "entrypoints": []
+    },
+    "src/harness/agy/decode.rs": {
+      "sha256": "d3cbdf5cccbc5a021e4c18f3b26359d2797225aa51bc1f109a5b41c6ea6cf545",
+      "entrypoints": [
+        {
+          "line": 35,
+          "declaration": "pub(crate) fn presentation_selector(self) -> u8 {"
+        },
+        {
+          "line": 41,
+          "declaration": "pub(crate) fn from_presentation_selector(selector: u8) -> Option<Self> {"
+        },
+        {
+          "line": 48,
+          "declaration": "pub(crate) fn presentation_codec(self) -> crate::harness::adapter::PresentationCodec {"
+        },
+        {
+          "line": 63,
+          "declaration": "pub(crate) fn encode_presentation(self, text: &str) -> Option<Vec<u8>> {"
+        }
+      ]
+    },
+    "src/harness/registry.rs": {
+      "sha256": "43313c7169f63a2155db78237c47be8bbcb01e1acef06a6a5c1e5e83c16d21a1",
+      "entrypoints": [
+        {
+          "line": 287,
+          "declaration": "fn presentation_codec(&self, selector: u8) -> Option<PresentationCodec>;"
+        },
+        {
+          "line": 490,
+          "declaration": "fn presentation_codec(&self, selector: u8) -> Option<PresentationCodec> {"
+        },
+        {
+          "line": 1108,
+          "declaration": "pub fn presentation_codec(&self, selector: u8) -> Option<PresentationCodec> {"
+        }
+      ]
+    },
+    "src/service/mod_channels.rs": {
+      "sha256": "72fa24c15470b9ff9e53de187e0f3bcf0ffb64c68aef6dfdcff180b240445984",
+      "entrypoints": [
+        {
+          "line": 522,
+          "declaration": "fn presentation_owner(&self, seat: &SeatId) -> Result<Option<Arc<Mutex<()>>>, ApiError> {"
+        },
+        {
+          "line": 525,
+          "declaration": "fn presentation_lease(&self, channel: ModChannelId) -> Option<String> {"
+        },
+        {
+          "line": 532,
+          "declaration": "fn presentation_owner_live("
+        },
+        {
+          "line": 703,
+          "declaration": "fn record_presentation_attention_push("
+        }
+      ]
+    },
+    "src/service/kicks.rs": {
+      "sha256": "87fdb4b090ec34062daaddc6ce959ffa9361dcdb71c970c481d082e7e9eba130",
+      "entrypoints": []
+    },
+    "src/store/control.rs": {
+      "sha256": "e5de4a66284b6dc5a8f64521a5f800257c921c90b64da928e950d973cc6fe501",
+      "entrypoints": []
+    },
+    "src/store/service_controls.rs": {
+      "sha256": "d869ca90d9ca68283773d58be734b1c531f082d49de54c36cd8510304201f6ff",
+      "entrypoints": []
+    },
+    "src/store/seats.rs": {
+      "sha256": "8afca7e101bbe9bdc713d8ff1e96a3d4d0fbe93e3f9cb628300479d1f75aa062",
+      "entrypoints": [
+        {
+          "line": 4576,
+          "declaration": "pub fn presentation_seat_view("
+        }
+      ]
+    },
+    "src/scheduler/mod.rs": {
+      "sha256": "4ab35b07deadb8c2983e7e793e4e0b931e04239f51480608ea690b639a7e677e",
+      "entrypoints": []
+    },
+    "migrations/0040_invitation_presentation.sql": {
+      "sha256": "a3ba9411ab1c516d200c52a2be089d8428051e531f0926d95a66fbbc360ea8b5",
+      "entrypoints": []
+    },
+    "migrations/0041_presentation_relevance.sql": {
+      "sha256": "0142aa5a67146fbc5bd77380609a86b7f892b32704fb4a2f32f36ba35f3523c7",
+      "entrypoints": []
+    }
+  },
+  "evidence": [
+    "task-15-final-affected-sourcepoint.json",
+    "task-15-healthy-channel-sqlite-sourcepoint.json",
+    "task-15-epoch-startup-cost-correction.md",
+    "task-15-epoch-startup-cost-correction-review.md",
+    "task-15-attention-cleanup-restoration.diff",
+    "task-15-attention-cleanup-restoration.json",
+    "task-15-relevance-corrected-sourcepoint.json",
+    "task-15-stall-confirmation-sourcepoint.json",
+    "task-15-schema-revised41-sourcepoint.json"
+  ]
+}

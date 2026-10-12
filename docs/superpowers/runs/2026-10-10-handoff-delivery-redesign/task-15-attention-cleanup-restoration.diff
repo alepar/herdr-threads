@@ -1,0 +1,118 @@
+--- reviewed367
++++ restored-current
+@@ -2652,6 +2652,8 @@
+         INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES ('prep-relevance-union','union-key','relevance-union-warning','o',1,1,'{}');
+         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('msg-relevance-union','i','relevance-union-other',1,'ordinary','other',0,21);
+         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('prep-relevance-union','msg-relevance-union','i','relevance-union-other',21,0,1,0,0,1);").unwrap();
++    db.execute("UPDATE seats SET unavailability_open=0 WHERE id='o'", [])
++        .unwrap();
+     // This is an explicit retained coexistence fixture, not a claim that the
+     // post-ledger publication producer admits conflicting warning job IDs.
+     assert_eq!(
+@@ -2809,8 +2811,8 @@
+         INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES ('prep-relevance-stale','stale-prepared','relevance-stale-prepared','s',1,1,'{}');
+         INSERT OR IGNORE INTO digest_open_warnings(source,source_ordinal,warning_id,thread_id,affected_seat_id,condition_kind,condition_id,episode) SELECT 'prepared',ordinal,warning_id,'relevance-thread','s','unavailable',warning_key,1 FROM prepared_unavailable_warnings;
+         INSERT OR IGNORE INTO digest_open_warning_recipients(seat_id,warning_id,thread_id,source,source_ordinal) SELECT 's',warning_id,'relevance-thread','prepared',ordinal FROM prepared_unavailable_warnings;
+-        INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) VALUES ('s','relevance-stale-a','relevance-thread',2,0);
+         INSERT INTO work_jobs(id,kind,subject_id,high_water,status) VALUES ('relevance-stale-work-a','send_attention','service-notify:relevance-stale-notify-a',0,'pending'),('relevance-stale-work-b','send_attention','service-notify:relevance-stale-notify-b',0,'failed');").unwrap();
++    assert_eq!(db.query_row("SELECT count(*) FROM digest_programmatic_warnings WHERE seat_id='s' AND warning_id='relevance-stale-a'",[],|r|r.get::<_,i64>(0)).unwrap(),1,"canonical source7 projection already exists");
+     let mut absent = false;
+     let mut rows = 0u64;
+     for _ in 0..13 {
+@@ -2980,22 +2982,22 @@
+     );
+     for value in [Some(i64::MAX), Some(-1), None] {
+         db.execute_batch("BEGIN IMMEDIATE").unwrap();
+-        if value.is_none() {
++        if let Some(value) = value {
++            db.pragma_update(None, "ignore_check_constraints", "ON")
++                .unwrap();
++            db.execute(
++                "UPDATE presentation_warning_fence SET version=?1 WHERE singleton=1",
++                [value],
++            )
++            .unwrap();
++            db.pragma_update(None, "ignore_check_constraints", "OFF")
++                .unwrap();
++        } else {
+             db.execute(
+                 "DELETE FROM presentation_warning_fence WHERE singleton=1",
+                 [],
+             )
+             .unwrap();
+-        } else {
+-            db.pragma_update(None, "ignore_check_constraints", "ON")
+-                .unwrap();
+-            db.execute(
+-                "UPDATE presentation_warning_fence SET version=?1 WHERE singleton=1",
+-                [value.unwrap()],
+-            )
+-            .unwrap();
+-            db.pragma_update(None, "ignore_check_constraints", "OFF")
+-                .unwrap();
+         }
+         assert!(db.execute("INSERT INTO warning_close_sweeps(id,condition_kind,affected_seat_id,after_ordinal,through_ordinal,close_decision_seq,interval_high_water,decision_at) VALUES ('relevance-rejected-sweep','receipt','s',0,1,1,0,1)",[]).is_err());
+         assert_eq!(
+@@ -3133,3 +3135,62 @@
+     }
+     assert!(absent);
+ }
++
++#[test]
++fn presentation_relevance_private_proof_refuses_corruption_without_effects() {
++    use crate::protocol::delivery::PresentationConsumer;
++    let db = relevance_db();
++    relevance_pull(&db);
++    let snapshot = || {
++        db.query_row("SELECT hex(p.proof_json),f.version FROM presentation_warning_proofs p CROSS JOIN presentation_warning_fence f WHERE p.seat_id='s' AND p.consumer='hook'",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).unwrap()
++    };
++    for value in [" ".repeat(32769), "null".into(), "{".into()] {
++        db.execute_batch("BEGIN IMMEDIATE; PRAGMA ignore_check_constraints=ON")
++            .unwrap();
++        db.execute("UPDATE presentation_warning_proofs SET proof_json=?1 WHERE seat_id='s' AND consumer='hook'",[value]).unwrap();
++        db.execute_batch("PRAGMA ignore_check_constraints=OFF")
++            .unwrap();
++        let before = snapshot();
++        let result = crate::store::presentation_relevance::advance(
++            &db,
++            &relevance_claim(),
++            PresentationConsumer::Hook,
++            0,
++            &relevance_budget(),
++        );
++        assert!(
++            matches!(
++                result,
++                Err(crate::protocol::results::ApiError {
++                    code: crate::protocol::results::ErrorCode::StoreCorrupt,
++                    ..
++                })
++            ),
++            "{result:?}"
++        );
++        assert_eq!(snapshot(), before);
++        db.execute_batch("ROLLBACK").unwrap();
++    }
++    db.execute_batch("BEGIN IMMEDIATE; PRAGMA ignore_check_constraints=ON; UPDATE presentation_warning_proofs SET proof_json=CAST(X'80' AS TEXT); PRAGMA ignore_check_constraints=OFF").unwrap();
++    let before = snapshot();
++    let result = crate::store::presentation_relevance::advance(
++        &db,
++        &relevance_claim(),
++        PresentationConsumer::Hook,
++        0,
++        &relevance_budget(),
++    );
++    assert!(matches!(
++        result,
++        Err(crate::protocol::results::ApiError {
++            code: crate::protocol::results::ErrorCode::StoreCorrupt,
++            ..
++        })
++    ));
++    assert_eq!(snapshot(), before);
++    db.execute_batch("ROLLBACK").unwrap();
++    assert!(
++        db.execute("UPDATE presentation_warning_proofs SET proof_json=NULL", [])
++            .is_err()
++    );
++}

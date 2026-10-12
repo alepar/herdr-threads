@@ -1,0 +1,12 @@
+{
+  "worktree": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "head": "ee1e598c3ee96566ddc9b397185cdc97c8bf6218",
+  "tracked_diff_sha256": "e4ad950124dd328f2fc3c8096430c787da102dc850140a81c7707f6e1528950a",
+  "untracked": {
+    "migrations/0040_invitation_presentation.sql": "4a0305b589f1f859b84d70fa6236adf86d6a382eac1288339b1ae7f71affc9bd",
+    "src/delivery/invitation.rs": "bda8bb934836712d432a26c6292ffa434b7f3d74efe271820f51e2a809797a2b",
+    "src/service/delivery_presentation.rs": "8f90fae823438263499ee249359ffd9e679963264bd18a7a8068d9c52011f361",
+    "src/store/invitation_content.rs": "0d054a999e09b9395e246dbc595f6b106184f25b9c48eabcad45c804172cf424"
+  },
+  "state": "quiescent D checkpoint before seventh owned transfer"
+}

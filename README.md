@@ -20,6 +20,20 @@ The installer downloads the latest published release, verifies its SHA-256, inst
 
 Codex requires one-time interactive hook review; without granted permissions it also asks for CLI commands. Follow the installer's next steps and [command approval guide](docs/install.md#codex-command-approvals). Linux archives are experimental: real Herdr integration remains unverified until the [clean-machine rehearsal](docs/release.md#post-merge-follow-on-checklist). Intel macOS archives are cross-built but unexercised; Windows is unsupported.
 
+Handoff invitations are lazy by default. `--require-invite-ack` requests timed acceptance;
+`--invite-deadline SECONDS` also requests it and sets its duration. The addressed handoff body
+always requires a separate message ACK, with `--deadline SECONDS` or the configured receipt
+default, starting at send time even if the recipient never registers or joins. Each missed
+requested deadline records a notification for the original sender. Explicit policy and durations
+freeze with the handoff; omitted numeric defaults resolve once when each canonical child is
+created. Automatic Ensure reports whether it created a pair, reused a pending invitation or
+found a joined recipient, together with the actual retained policy. A different requested
+policy does not replace an existing invitation. Retry preserves those original decisions. Hook readiness is diagnostic; native safety
+checks and harness approval requirements still apply.
+Modern automatic handoffs retain a bounded canonical launch summary. Exact full launch diagnostics
+are optional local artifacts; missing diagnostics never trigger another launch. Aggregate metadata
+and future request sizes are checked before effects, so independent maximum-size inputs may be refused.
+
 ## Try it yourself
 
 Use one Herdr tab with your shell and two empty shell panes. Run the human commands from **your own shell pane**. In steps 3 and 4, ask your existing top-level coordinating agent to run the handoff commands from its own claimed agent pane. Name the two new panes in step 2.
@@ -141,6 +155,8 @@ All handoffs require an original top-level Agent. Automatic handoff ensures the 
 ## A role that survives its session
 
 A **seat** is the role's durable identity; the pane is where its current participant runs. Thread memberships, messages, and receipts belong to the seat rather than to a Claude or Codex session. A pane has one seat and the seat holds one **binding** per agent session (plus one per subagent), each with its own read cursors and liveness, so a second session in the pane never displaces the first: a new session of the same process (`/clear`, resume) supersedes its predecessor, and a session of another process is added beside it. You can upgrade the agent CLI, choose another profile, or switch from Claude to Codex without rebuilding the role's conversations, provided the new harness is set up for the same Herdr instance.
+
+Ordinary agent invitations are lazy by default: `herdr-threads invite THREAD --seat SEAT` leaves a discoverable pending invitation without a timed wake. Add `--require-ack` for an acceptance deadline using the configured duration (five minutes if unset), or `--deadline SECONDS` for an explicit duration. `--lazy` conflicts with either option. Acceptance confirms the invitation automatically; launch and registration do not. A missed deadline notifies the original inviter, including when the recipient never registers. Duplicate pending invitations keep their original policy and deadline. Human/operator invitations and required memberships keep their established semantics.
 
 The seat's threads remain available across restarts. Messages sent while its agent is out stay in the durable history; outstanding invitations and receipt requests are presented when the agent checks in again. Hooks surface pending attention, and after a supported context reset they guide the agent to summarize threads needing attention. `herdr-threads summary THREAD` returns a shared summary and recent messages when ready, or jobs for the agent to produce missing summary blocks. Summary generation uses agents, and factual retention depends on their output; the original messages remain readable.
 

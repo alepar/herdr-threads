@@ -1,0 +1,97 @@
+{
+  "triageDead": false,
+  "scoutsDispatched": 12,
+  "scoutsDead": 0,
+  "unknownLanes": [],
+  "domainsDropped": [],
+  "rawFindings": 17,
+  "dedupedFindings": 17,
+  "dedupeOrphans": 0,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "dedupeDead": false,
+  "panelCount": 12,
+  "spotCount": 5,
+  "promotedCount": 0,
+  "judgeLost": 0,
+  "spotLost": 0,
+  "laneYield": {
+    "correctness": {
+      "found": 2,
+      "confirmed": 1,
+      "unique": 1,
+      "refuted": 1
+    },
+    "security": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "premortem": {
+      "found": 1,
+      "confirmed": 1,
+      "unique": 1,
+      "refuted": 0
+    },
+    "simplicity-design": {
+      "found": 3,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 2
+    },
+    "hot-path-perf": {
+      "found": 1,
+      "confirmed": 1,
+      "unique": 1,
+      "refuted": 0
+    },
+    "concurrency-async": {
+      "found": 1,
+      "confirmed": 1,
+      "unique": 1,
+      "refuted": 0
+    },
+    "data-migrations": {
+      "found": 1,
+      "confirmed": 1,
+      "unique": 1,
+      "refuted": 0
+    },
+    "deploy-safety": {
+      "found": 2,
+      "confirmed": 1,
+      "unique": 1,
+      "refuted": 1
+    },
+    "api-contract": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "observability": {
+      "found": 1,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 1
+    },
+    "testing": {
+      "found": 1,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 1
+    },
+    "hygiene-docs": {
+      "found": 4,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    }
+  },
+  "judgeCompletionPct": 100,
+  "lowCoverage": false,
+  "panelCappedTag": "",
+  "emptyLateRound": false,
+  "convergenceEligible": false
+}

@@ -1,0 +1,69 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID b551c3cc-6772-4b67-bc74-a36992c240eb with nextest profile: default
+    Starting 3 tests across 1 binary (4901 tests skipped)
+        FAIL [   0.333s] (1/3) herdr-threads service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4903 filtered out; finished in 0.32s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display' (56210968) panicked at src/service/../../tests/service/q4_body_controls.rs:541:5:
+    assertion failed: first.items.iter().any(|item|
+            matches!(item,PresentationItemV2::Message { id,lazy:true,content } if
+                id==&message && content.truncated))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.333s] (2/3) herdr-threads service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4903 filtered out; finished in 0.32s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate' (56210966) panicked at src/service/../../tests/service/q4_body_controls.rs:282:10:
+    called `Result::unwrap()` on an `Err` value: UnsafePath
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.335s] (3/3) herdr-threads service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4903 filtered out; finished in 0.32s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer' (56210967) panicked at src/service/../../tests/service/q4_body_controls.rs:282:10:
+    called `Result::unwrap()` on an `Err` value: UnsafePath
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.349s] 3 tests run: 0 passed, 3 failed, 4901 skipped
+        FAIL [   0.333s] (1/3) herdr-threads service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display
+        FAIL [   0.333s] (2/3) herdr-threads service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate
+        FAIL [   0.335s] (3/3) herdr-threads service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer
+error: test run failed

@@ -1,0 +1,2262 @@
+# Review package: d2f62e647aaa18ede5e894bc326cc196a4399cd5..e70091bf8f6dbe03a4d811d1feceda4f4bac8de5
+
+## Commits
+e70091bf Format shared receipt and invitation upgrade fixtures
+75b9cc05 Start ACK receipt deadlines at committed send time
+
+## Files changed
+ TRUST-POLICY.md                       |  26 ++-
+ migrations/0030_receipt_send_time.sql | 163 +++++++++++++++
+ src/cli/mod.rs                        |  40 ++++
+ src/client/service.rs                 | 155 +++++++++++++-
+ src/protocol/capabilities.rs          |   4 +
+ src/store/effective.rs                |  58 +++--
+ src/store/messages.rs                 |   2 +-
+ src/store/schema.rs                   |  90 +++++++-
+ tests/cli/lazy_send.rs                | 102 ++++++++-
+ tests/protocol/capabilities.rs        |  38 +++-
+ tests/store/effective.rs              | 383 +++++++++++++++++++++++++++++++++-
+ tests/store/materialization.rs        |  35 +++-
+ tests/store/receipts.rs               |  18 +-
+ tests/store/schema.rs                 |  19 +-
+ tests/store/service_send.rs           |  76 ++++++-
+ 15 files changed, 1161 insertions(+), 48 deletions(-)
+
+## Diff
+diff --git a/TRUST-POLICY.md b/TRUST-POLICY.md
+index c8c750e2..8b018774 100644
+--- a/TRUST-POLICY.md
++++ b/TRUST-POLICY.md
+@@ -153,21 +153,21 @@ Client-local state (`contexts/`, `intents/`) only selects what to ask; it never
+ | Value | Where | Meaning |
+ |---|---|---|
+ | `cooperative_top_level` | bindings, receipts | The pane's top-level agent claimed the action through its hook-registered check-in. Prompted, not proven: a disobedient child is indistinguishable. |
+ | `cooperative_inbox_display` | receipt action observation | The selected top-level agent's text `inbox` command fully wrote and flushed a bounded page before claiming that its listed complete messages were displayed. It is a cooperative output claim, not proof that the model consumed the text. The receipt retains the binding's `cooperative_top_level` provenance separately. JSON, machine, foreign-seat and other read commands do not make this claim. |
+ | `cooperative_mod_channel` | mod channel registrations only (process-local) | The pane's top-level Claude session, through the bundled herdr-threads mod's `watch` child, opened a delivery channel for the seat's current binding generation. The daemon decides it against A2 (seat resolved and not held, open `cooperative_top_level` binding with harness `claude`, native session equal to the claim's, no stall cooldown, `mod_delivery` on). It grants nothing but receiving deliveries and making `cooperative_mod_delivery` claims for that binding generation. Never on bindings or receipts. |
+ | `cooperative_mod_delivery` | receipt action observation; lazy completion claim | The mod reported that a delivery path's predicate held (spec D6): for an ordinary message, that its full body entered the model's context through the mod (an answered tool result carrying the mod's context, or a `$.prompt.submit` that resolved without `drop`; or, after a plugin reload disposed the instance whose submit was still in flight, a main turn whose prompt carries the mod's frame naming the id, or the completion of the turn that was open when the successor loaded (the engine does not report the disposed instance's submit outcome)); for a lazy row, that it was appended to the transcript (`$.session.append` resolved without `deny`). A cooperative delivery claim, not proof that the model read it. The receipt keeps the binding's `cooperative_top_level` provenance separately. A truncated item never carries it. |
+ | `cooperative_hook_context` | lazy completion claim | A top-level standard native hook wrote and flushed output whose context carried the lazy message's complete body, and the adapter reported that the output carries context (A8). Claimed by `CompleteInboxDelivery.via = hook_context`, which is part of the accountable operation's payload digest (as `AckModDelivered` carries the mod claim); no per-row source is stored. Not proof that the harness ingested it or the model read it. A prefix never carries it. |
+ | `operator_human` | bindings, receipts | A person declared this pane human with `ht human me init` and acted from it. Best effort: refused where the system sees evidence of an agent (A4). |
+ | `cooperative_continuity` | seat rebinds only | The seat was reattached because a resumed harness session id matched (C1). Never on receipts. |
+ | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. |
+-| `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), only on a seat with no open binding, decided against the effective observation (A2). Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, and it starts no availability or receipt timer. |
++| `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), only on a seat with no open binding, decided against the effective observation (A2). Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, and it establishes no availability. Receipt deadlines start at send time independently of this binding. |
+ | `canonical_binding_composer` | archival sample association only | The daemon associated a fresh registered-parser composer read with an already registered cooperative top-level binding after exact canonical binding, structural, activity and timing validation. The harness/session/execution in the association come from that binding; the host does not attest occupancy or current execution. This value authorizes no seat, binding, membership, receipt or invitation transition. |
+ | `daemon_lifecycle` | automatic archive events only | The daemon applied the configured quiet-channel lifecycle policy after complete canonical validation. No actor seat, binding or receipt claim; no membership or continuity change. |
+ | `legacy_local_journal_hint` | handoff archival vetoes only | A bounded read-only scan found a pending compound in this instance's intents directory. It can only prevent automatic archival; it authorizes no action and claims no native execution. |
+ | `derived_summary` | summary blocks only | The block was written by an agent acting for the seat (the top-level agent or a child summary worker, which the CLI cannot tell apart) under the seat's claim, with the model it declared. Never on receipts, never delivery, and never authority for any state change other than storing that block. Submission validation bounds what a block can claim. |
+ 
+ **Recorded message claims.** `messages.author_role` (`human`, `agent`, `service`) and `messages.relays_user`
+ are claims recorded at send time in the deciding transaction: `author_role` is `service` for a programmatic
+ sender, otherwise it comes from the sender's open binding (a `human` harness binding, i.e.
+ `operator_human`, gives `human`; any other binding gives `agent`); a sender with no open binding and seat-less
+ system events record none. Messages written before the
+@@ -371,21 +371,43 @@ millisecond clock cannot order simultaneous decisions within that boundary.
+ 
+ Recovery and human waiver may close many warning conditions. Their canonical decision records
+ one durable close sweep with a frozen condition boundary, recipient decision cutoff, and membership
+ high water; budgeted workers publish one clear transition per condition. A covered condition is
+ logically closed for active-warning queries before its clear event is published. The captured
+ snapshot, rather than worker time, controls clear recipients. A new open in the same thread waits
+ for its prior marked clear to publish, so a blocked send can return `StoreBusy` and require a fresh
+ operation after bounded preparation cleanup. A sweep cannot clear conditions opened after its
+ boundary or claim that an unprocessed clear event was delivered.
+ 
+-**A6. Effective receipt deadlines.** A receipt's effective deadline is the later of its frozen deadline and
++**A6. Effective receipt deadlines.** New durable ACK-required sends freeze their duration
++and original deadline at canonical committed send time plus that duration. This applies to
++unbound, unregistered, unavailable and invited recipients; later registration, acceptance,
++restart or rebind cannot restart the clock. Availability remains observed availability and
++confers no new wake or receipt authority. Lazy delivery and canonical human waivers remain
++free of ACK obligations. The durable per-instance send-time cutover preserves every previously
++running sparse deadline using the earliest canonical availability recorded before the cutover
++and before retirement; stored running deadlines and terminal receipt provenance are preserved.
++Previously dormant obligations derive their deadline from immutable send time and duration.
++
++Modern clients require `messages.send_time_receipts_v1` before a new ACK-required send;
++absent or refused discovery fails explicitly without a legacy fallback. Lazy sends are exempt.
++Accepted mixed-version limit: ordinary CLI and service clients cannot prove that the canonical
++recipient audience is entirely human-waived, so an ordinary send that can create an agent
++obligation conservatively requires the capability, even when its eventual audience is all human.
++The sender's human harness never implies a recipient waiver. Completed retained compound
++results and service journal records remain inspectable unchanged without new send effects.
++Public ordinary CLI operation-status reads require a verified scope unavailable on that wire path,
++so the client cannot recover an exact pending key's committed outcome through that command.
++Ordinary commit-unknown CLI retries and service pending replays without locally retained completion
++conservatively require the capability even if their original send may already have committed. Immutable request bytes, keys, digests and outcomes are never rewritten.
++
++A receipt's effective deadline is the later of its frozen deadline and
+ the `extension_until` of the latest catch-up row for the receipt's (seat, thread). The daemon decides it (A2)
+ from catch-up state the seat itself entered through its accountable claim (a `summary` call that returned
+ work). The first entry, and any entry after a ready or superseded row, grants one p99 job duration;
+ re-entry after a stall grants nothing until a block is stored (the most recent row ended stalled and no
+ block for the thread was stored since), and a repeated call on an active row grants nothing. Otherwise it
+ is extended only by stored summary progress (each newly stored block, and the exit grace after a Ready),
+ never on heuristic evidence, so a stall and re-entry cycle cannot postpone a warning. Frozen deadlines are
+ never rewritten: they stay stored and displayed beside the effective one. Overdue classification, warnings, pending receipts and the soft-deadline poke use the
+ effective deadline.
+ 
+diff --git a/migrations/0030_receipt_send_time.sql b/migrations/0030_receipt_send_time.sql
+new file mode 100644
+index 00000000..248b16e3
+--- /dev/null
++++ b/migrations/0030_receipt_send_time.sql
+@@ -0,0 +1,163 @@
++-- Run with foreign_keys OFF outside the containing transaction.
++-- Preserve original table names, receipt ordinals/rowids and all v28 projections.
++
++CREATE TEMP TABLE receipt_send_time_saved_sequence AS SELECT seq FROM sqlite_sequence WHERE name='receipts';
++
++CREATE TEMP TABLE receipt_send_time_saved_receipts AS SELECT * FROM receipts;
++
++CREATE TEMP TABLE receipt_send_time_saved_state AS SELECT rowid AS preserved_rowid,* FROM receipt_state;
++
++DROP TABLE receipts;
++
++CREATE TABLE receipts (
++    ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
++    message_id TEXT NOT NULL,
++    thread_id TEXT NOT NULL REFERENCES threads(id),
++    seat_id TEXT NOT NULL REFERENCES seats(id),
++    state TEXT NOT NULL CHECK(state IN ('pending', 'acked', 'recipient_retired')),
++    frozen_duration_ms INTEGER NOT NULL CHECK(frozen_duration_ms > 0),
++    available_at INTEGER,
++    deadline_at INTEGER,
++    ack_actor_seat_id TEXT REFERENCES seats(id),
++    ack_generation INTEGER,
++    ack_observation TEXT,
++    acked_at INTEGER,
++    warning_message_id TEXT REFERENCES messages(id),
++    retired_at INTEGER, soft_poked_at INTEGER, ack_required INTEGER NOT NULL DEFAULT 1 CHECK(ack_required IN (0,1)),
++    UNIQUE(message_id, seat_id),
++    FOREIGN KEY(message_id, thread_id) REFERENCES messages(id, thread_id)
++) STRICT;
++
++INSERT INTO receipts(ordinal,message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,warning_message_id,retired_at,soft_poked_at,ack_required) SELECT ordinal,message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,warning_message_id,retired_at,soft_poked_at,ack_required FROM receipt_send_time_saved_receipts;
++
++CREATE INDEX receipts_due ON receipts(deadline_at, ordinal) WHERE state = 'pending' AND deadline_at IS NOT NULL;
++
++CREATE INDEX receipts_message_ordinal ON receipts(message_id, ordinal);
++
++CREATE INDEX receipts_pending_unwarned ON receipts(deadline_at, ordinal) WHERE state='pending' AND deadline_at IS NOT NULL AND warning_message_id IS NULL;
++
++CREATE INDEX receipts_required_due ON receipts(deadline_at,ordinal) WHERE state='pending' AND ack_required=1 AND deadline_at IS NOT NULL AND warning_message_id IS NULL;
++
++CREATE INDEX receipts_required_poke ON receipts(deadline_at,message_id,seat_id) WHERE state='pending' AND ack_required=1 AND deadline_at IS NOT NULL AND available_at IS NOT NULL AND warning_message_id IS NULL AND soft_poked_at IS NULL;
++
++CREATE INDEX receipts_required_seat_pending ON receipts(seat_id,ordinal) WHERE state='pending' AND ack_required=1;
++
++CREATE INDEX receipts_required_thread_pending ON receipts(seat_id,thread_id,ordinal) WHERE state='pending' AND ack_required=1;
++
++CREATE INDEX receipts_seat_state_ordinal ON receipts(seat_id, state, ordinal);
++
++CREATE INDEX receipts_seat_thread_state_ordinal ON receipts(seat_id, thread_id, state, ordinal);
++
++CREATE INDEX receipts_thread_pending_ordinal ON receipts(thread_id, ordinal) WHERE state='pending';
++
++CREATE INDEX receipts_thread_seat_pending ON receipts(seat_id, thread_id, ordinal) WHERE state = 'pending';
++
++CREATE TRIGGER archival_fence_receipts_delete AFTER DELETE ON receipts BEGIN
++ UPDATE archival_instances SET mutation_revision=mutation_revision+1;
++END;
++
++CREATE TRIGGER archival_fence_receipts_insert AFTER INSERT ON receipts BEGIN
++ UPDATE archival_instances SET mutation_revision=mutation_revision+1;
++END;
++
++CREATE TRIGGER archival_fence_receipts_update AFTER UPDATE ON receipts BEGIN
++ UPDATE archival_instances SET mutation_revision=mutation_revision+1;
++END;
++
++CREATE TRIGGER digest_physical_receipt_settled AFTER UPDATE OF state ON receipts WHEN NEW.state!='pending' AND NOT EXISTS (SELECT 1 FROM send_manifests sm JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id WHERE sm.message_id=NEW.message_id AND pr.seat_id=NEW.seat_id)
++BEGIN
++    DELETE FROM digest_open_warnings WHERE condition_kind='receipt' AND condition_id=length(CAST(NEW.message_id AS BLOB))||':'||NEW.message_id||':'||NEW.seat_id;
++END;
++
++CREATE TRIGGER human_receipt_physical_waived AFTER UPDATE OF ack_required ON receipts WHEN NEW.ack_required=0
++BEGIN
++    DELETE FROM digest_open_warnings WHERE condition_kind='receipt' AND condition_id=length(CAST(NEW.message_id AS BLOB))||':'||NEW.message_id||':'||NEW.seat_id;
++END;
++
++CREATE TRIGGER receipts_ordinal_immutable BEFORE UPDATE OF ordinal ON receipts
++BEGIN SELECT RAISE(ABORT, 'receipt ordinal is immutable'); END;
++
++CREATE TRIGGER wake_batches_clear_receipt
++AFTER UPDATE OF state,ack_required ON receipts
++WHEN OLD.state='pending' AND OLD.ack_required=1 AND (NEW.state!='pending' OR NEW.ack_required=0) AND NOT EXISTS(SELECT 1 FROM digest_pending_invitations WHERE seat_id=OLD.seat_id)
++      AND NOT EXISTS(SELECT 1 FROM digest_pending_manifest_receipts WHERE seat_id=OLD.seat_id)
++      AND NOT EXISTS(SELECT 1 FROM receipts WHERE seat_id=OLD.seat_id AND state='pending' AND ack_required=1)
++BEGIN DELETE FROM wake_batches WHERE seat_id=OLD.seat_id; END;
++
++DROP TABLE receipt_state;
++
++CREATE TABLE receipt_state (
++    message_id TEXT NOT NULL,
++    seat_id TEXT NOT NULL REFERENCES seats(id),
++    state TEXT NOT NULL CHECK(state IN ('pending','acked','recipient_retired')),
++    available_at INTEGER,
++    deadline_at INTEGER,
++    ack_actor_seat_id TEXT REFERENCES seats(id),
++    ack_generation INTEGER,
++    ack_observation TEXT,
++    acked_at INTEGER,
++    retired_at INTEGER,
++    warning_message_id TEXT, soft_poked_at INTEGER, ack_required INTEGER NOT NULL DEFAULT 1 CHECK(ack_required IN (0,1)),
++    PRIMARY KEY(message_id, seat_id)
++) STRICT;
++
++INSERT INTO receipt_state(rowid,message_id,seat_id,state,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,retired_at,warning_message_id,soft_poked_at,ack_required) SELECT preserved_rowid,message_id,seat_id,state,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,retired_at,warning_message_id,soft_poked_at,ack_required FROM receipt_send_time_saved_state;
++
++CREATE INDEX receipt_state_pending_due ON receipt_state(deadline_at, message_id, seat_id) WHERE state='pending' AND deadline_at IS NOT NULL AND warning_message_id IS NULL;
++
++CREATE INDEX receipt_state_required_due ON receipt_state(deadline_at,message_id,seat_id) WHERE state='pending' AND ack_required=1 AND deadline_at IS NOT NULL AND warning_message_id IS NULL;
++
++CREATE INDEX receipt_state_required_poke ON receipt_state(deadline_at,message_id,seat_id) WHERE state='pending' AND ack_required=1 AND deadline_at IS NOT NULL AND available_at IS NOT NULL AND warning_message_id IS NULL AND soft_poked_at IS NULL;
++
++CREATE TRIGGER archival_fence_receipt_state_delete AFTER DELETE ON receipt_state BEGIN
++ UPDATE archival_instances SET mutation_revision=mutation_revision+1;
++END;
++
++CREATE TRIGGER archival_fence_receipt_state_insert AFTER INSERT ON receipt_state BEGIN
++ UPDATE archival_instances SET mutation_revision=mutation_revision+1;
++END;
++
++CREATE TRIGGER archival_fence_receipt_state_update AFTER UPDATE ON receipt_state BEGIN
++ UPDATE archival_instances SET mutation_revision=mutation_revision+1;
++END;
++
++CREATE TRIGGER digest_manifest_receipt_materialized AFTER INSERT ON receipt_state WHEN NEW.state='pending'
++BEGIN
++    UPDATE digest_pending_manifest_receipts SET decision_seq=(SELECT decision_seq FROM send_manifests WHERE message_id=NEW.message_id) WHERE seat_id=NEW.seat_id AND preparation_id=(SELECT preparation_id FROM send_manifests WHERE message_id=NEW.message_id);
++END;
++
++CREATE TRIGGER digest_receipt_state_settled_insert AFTER INSERT ON receipt_state WHEN NEW.state!='pending'
++BEGIN
++    DELETE FROM digest_pending_manifest_receipts WHERE seat_id=NEW.seat_id AND preparation_id=(SELECT preparation_id FROM send_manifests WHERE message_id=NEW.message_id);
++    DELETE FROM digest_open_warnings WHERE condition_kind='receipt' AND condition_id=length(CAST(NEW.message_id AS BLOB))||':'||NEW.message_id||':'||NEW.seat_id;
++END;
++
++CREATE TRIGGER digest_receipt_state_settled_update AFTER UPDATE OF state ON receipt_state WHEN NEW.state!='pending'
++BEGIN
++    DELETE FROM digest_pending_manifest_receipts WHERE seat_id=NEW.seat_id AND preparation_id=(SELECT preparation_id FROM send_manifests WHERE message_id=NEW.message_id);
++    DELETE FROM digest_open_warnings WHERE condition_kind='receipt' AND condition_id=length(CAST(NEW.message_id AS BLOB))||':'||NEW.message_id||':'||NEW.seat_id;
++END;
++
++CREATE TRIGGER human_receipt_state_insert_waived AFTER INSERT ON receipt_state WHEN NEW.ack_required=0
++BEGIN
++    DELETE FROM digest_pending_manifest_receipts WHERE seat_id=NEW.seat_id AND preparation_id=(SELECT preparation_id FROM send_manifests WHERE message_id=NEW.message_id);
++    DELETE FROM digest_open_warnings WHERE condition_kind='receipt' AND condition_id=length(CAST(NEW.message_id AS BLOB))||':'||NEW.message_id||':'||NEW.seat_id;
++END;
++
++CREATE TRIGGER human_receipt_state_waived AFTER UPDATE OF ack_required ON receipt_state WHEN NEW.ack_required=0
++BEGIN
++    DELETE FROM digest_pending_manifest_receipts WHERE seat_id=NEW.seat_id AND preparation_id=(SELECT preparation_id FROM send_manifests WHERE message_id=NEW.message_id);
++    DELETE FROM digest_open_warnings WHERE condition_kind='receipt' AND condition_id=length(CAST(NEW.message_id AS BLOB))||':'||NEW.message_id||':'||NEW.seat_id;
++END;
++
++UPDATE sqlite_sequence SET seq=max(seq,COALESCE((SELECT seq FROM receipt_send_time_saved_sequence),0)) WHERE name='receipts';
++
++DROP TABLE receipt_send_time_saved_sequence;
++
++DROP TABLE receipt_send_time_saved_receipts;
++
++DROP TABLE receipt_send_time_saved_state;
++
++CREATE TABLE receipt_send_time_cutovers (instance_id TEXT PRIMARY KEY, historical_decision_seq INTEGER NOT NULL CHECK(historical_decision_seq>=0)) STRICT;
++
++INSERT INTO receipt_send_time_cutovers(instance_id,historical_decision_seq) SELECT id,decision_seq FROM host_instances;
+diff --git a/src/cli/mod.rs b/src/cli/mod.rs
+index 491619f5..f1a5c00e 100644
+--- a/src/cli/mod.rs
++++ b/src/cli/mod.rs
+@@ -2060,20 +2060,29 @@ where
+ {
+     let recipient = matches!(
+         parsed.action,
+         CliAction::Mutation(MutationSpec::Invite { .. }) | CliAction::Wire(_)
+     );
+     let selector = recipient.then(|| parsed.pane_selector.clone()).flatten();
+     if selector.is_none() && parsed.require_ack_panes.is_empty() {
+         return Ok(());
+     }
+     let (instance, client) = connection.get()?;
++    if matches!(
++        &parsed.action,
++        CliAction::Mutation(MutationSpec::Send {
++            delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
++            ..
++        })
++    ) {
++        require_send_time_receipts_capability(client, clock.as_ref())?;
++    }
+     let allocate = |target: crate::protocol::ids::HostTargetId| -> Result<crate::protocol::ids::SeatId, RunError> {
+         let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+         let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
+             &journal, IntentScope::ServiceAllocation { instance: instance.to_string(), target: target.clone() },
+             SemanticMutation::ResolveSeat { target }, clock.utc_now().0,
+             || Err(io::Error::new(io::ErrorKind::PermissionDenied, "recipient resolution has no caller claim")),
+             |command| client.call_definitive(command, &cooperative_budget(clock.as_ref())),
+             &parsed.output, &mut io::sink(),
+         ).map_err(retry_failure)?;
+         match result {
+@@ -2743,20 +2752,25 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
+                 require_join_capability(client, clock)?;
+             }
+             if matches!(&mutation, MutationSpec::Reject { .. }) {
+                 require_rejection_capability(client, clock)?;
+             }
+             let semantic = SemanticMutation::freeze(cooperative_semantic(mutation)?, claim)?;
+             require_invitation_confirmation_capability(client, clock, &semantic)?;
+             if semantic.is_lazy_send() {
+                 require_lazy_send_capability(client, clock)?;
+             }
++            if semantic.kind() == crate::protocol::results::IntentKind::SendMessage
++                && !semantic.is_lazy_send()
++            {
++                require_send_time_receipts_capability(client, clock)?;
++            }
+             retry::run_new_api_to_writer_discarding_rejection(
+                 journal,
+                 scope,
+                 semantic,
+                 clock.utc_now().0,
+                 || unreachable!("frozen cooperative claim"),
+                 |command| client.call_definitive(command, &cooperative_budget(clock)),
+                 &parsed.output,
+                 writer,
+             )
+@@ -2840,20 +2854,25 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
+                 if pending.semantic.kind() == crate::protocol::results::IntentKind::Join {
+                     require_join_capability(client, clock)?;
+                 }
+                 if pending.semantic.kind() == crate::protocol::results::IntentKind::Reject {
+                     require_rejection_capability(client, clock)?;
+                 }
+                 require_invitation_confirmation_capability(client, clock, &pending.semantic)?;
+                 if pending.semantic.is_lazy_send() {
+                     require_lazy_send_capability(client, clock)?;
+                 }
++                if pending.semantic.kind() == crate::protocol::results::IntentKind::SendMessage
++                    && !pending.semantic.is_lazy_send()
++                {
++                    require_send_time_receipts_capability(client, clock)?;
++                }
+                 retry::run_retry_api_to_writer(
+                     journal,
+                     &reference,
+                     &scope,
+                     || unreachable!("frozen cooperative claim"),
+                     |command| client.call(command, &cooperative_budget(clock)),
+                     &parsed.output,
+                     writer,
+                 )
+                 .map_err(retry_failure)?;
+@@ -3032,20 +3051,41 @@ fn require_join_capability<C: LocalClient + ?Sized>(
+     clock: &dyn Clock,
+ ) -> Result<(), RunError> {
+     require_mutation_capability(
+         client,
+         clock,
+         crate::protocol::capabilities::THREAD_JOIN,
+         "joining threads",
+     )
+ }
+ 
++/// Shared preflight for ordinary sends and future handoff delivery consumers.
++/// Discovery failure is unsupported; no mutation may silently use legacy timing.
++pub(crate) fn require_send_time_receipts_capability<C: LocalClient + ?Sized>(
++    client: &C,
++    clock: &dyn Clock,
++) -> Result<(), RunError> {
++    match client.call(Command::Capabilities, &cooperative_budget(clock)) {
++        Ok(CommandResult::Capabilities(list))
++            if list
++                .capabilities
++                .iter()
++                .any(|name| name == crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1) =>
++        {
++            Ok(())
++        }
++        _ => Err(unsupported(
++            "daemon lacks messages.send_time_receipts_v1; use a compatible daemon before sending ACK-required messages",
++        )),
++    }
++}
++
+ fn require_mutation_capability<C: LocalClient + ?Sized>(
+     client: &C,
+     clock: &dyn Clock,
+     capability: &str,
+     action: &str,
+ ) -> Result<(), RunError> {
+     match client.call(Command::Capabilities, &cooperative_budget(clock)) {
+         Ok(CommandResult::Capabilities(list))
+             if list.capabilities.iter().any(|name| name == capability) =>
+         {
+diff --git a/src/client/service.rs b/src/client/service.rs
+index 45e6b1be..f6340eb6 100644
+--- a/src/client/service.rs
++++ b/src/client/service.rs
+@@ -620,20 +620,45 @@ impl PersistentServiceClient {
+             Ok(_) => {
+                 *held = None;
+                 Err(error(ErrorCode::UnknownOutcome, "daemon boot changed"))
+             }
+             Err(error) => {
+                 *held = None;
+                 Err(error)
+             }
+         }
+     }
++    async fn require_send_time_receipts(
++        &self,
++        budget: &CallBudget,
++        daemon_boot: &str,
++    ) -> Result<(), ApiError> {
++        let boot = Uuid::parse_str(daemon_boot)
++            .map_err(|_| error(ErrorCode::UnknownOutcome, "invalid service daemon boot"))?;
++        let client = super::local::LocalSocketClient::new(
++            self.path.clone(),
++            Arc::clone(&self.clock),
++            self.instance,
++            Some(boot),
++        );
++        let supported = matches!(client.call_async(crate::protocol::commands::Command::Capabilities,budget).await,
++            Ok(crate::protocol::results::CommandResult::Capabilities(list)) if list.capabilities.iter().any(|name|name==crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1));
++        if supported {
++            Ok(())
++        } else {
++            Err(error(
++                ErrorCode::Unsupported,
++                "daemon lacks messages.send_time_receipts_v1; use a compatible daemon before sending ACK-required messages",
++            ))
++        }
++    }
++
+     /// Persist the exact envelope, key and payload before its first submission.
+     pub async fn submit(
+         &self,
+         operation: ServiceOperation,
+         budget: &CallBudget,
+     ) -> Result<(OperationId, ServiceResult), ServiceCallError> {
+         let key = operation
+             .operation_key()
+             .cloned()
+             .ok_or_else(|| ServiceCallError::Api {
+@@ -644,20 +669,28 @@ impl PersistentServiceClient {
+             .admit(budget)
+             .await
+             .map_err(|error| ServiceCallError::Api {
+                 error,
+                 pending: None,
+             })?;
+         let session = held.as_mut().ok_or_else(|| ServiceCallError::Api {
+             error: error(ErrorCode::ServiceNotRegistered, "register service first"),
+             pending: None,
+         })?;
++        if matches!(&operation, ServiceOperation::Send(_)) {
++            self.require_send_time_receipts(budget, &session.registration.daemon_boot)
++                .await
++                .map_err(|error| ServiceCallError::Api {
++                    error,
++                    pending: None,
++                })?;
++        }
+         let request = self.request(ServiceRequest::Operation(operation));
+         request.validate().map_err(|detail| ServiceCallError::Api {
+             error: error(ErrorCode::InvalidRequest, detail),
+             pending: None,
+         })?;
+         encode_json(&request).map_err(|_| ServiceCallError::Api {
+             error: error(ErrorCode::InvalidRequest, "request exceeds frame limit"),
+             pending: None,
+         })?;
+         self.remaining(budget)
+@@ -754,20 +787,31 @@ impl PersistentServiceClient {
+             || saved.request.expected_instance != self.instance.to_string()
+         {
+             return Err(ServiceCallError::Api {
+                 error: error(
+                     ErrorCode::Unauthorized,
+                     "service intent authority scope mismatch",
+                 ),
+                 pending: Some(key.clone()),
+             });
+         }
++        if matches!(
++            &saved.request.service,
++            ServiceRequest::Operation(ServiceOperation::Send(_))
++        ) {
++            self.require_send_time_receipts(budget, &session.registration.daemon_boot)
++                .await
++                .map_err(|error| ServiceCallError::Api {
++                    error,
++                    pending: Some(key.clone()),
++                })?;
++        }
+         self.remaining(budget)
+             .map_err(|error| ServiceCallError::Api {
+                 error,
+                 pending: Some(key.clone()),
+             })?;
+         self.send_saved(&mut held, key, &saved.request, budget)
+             .await
+             .map(|(_, result)| result)
+     }
+     async fn send_saved(
+@@ -1754,30 +1798,133 @@ mod tests {
+                 "{register:?}"
+             );
+             respond(&mut stream, &register, BOOT, Ok(registration())).await;
+         });
+         let client = make_client(socket, &root.join("intents"));
+         client.register(&budget()).await.unwrap();
+         server.await.unwrap();
+         fs::remove_dir_all(root).unwrap();
+     }
+ 
++    async fn receipt_capabilities(listener: &UnixListener, supported: bool) {
++        use crate::protocol::{
++            commands::Command,
++            results::{CapabilityList, CommandResult},
++            wire::{WireRequest, WireResponse},
++        };
++        let (mut stream, _) = listener.accept().await.unwrap();
++        let request = WireRequest::decode(&read_frame(&mut stream).await.unwrap()).unwrap();
++        assert_eq!(request.command, Command::Capabilities);
++        let response = WireResponse {
++            version: PROTOCOL_VERSION,
++            request_id: request.request_id,
++            instance: INSTANCE.into(),
++            daemon_boot: BOOT.into(),
++            result: Ok(CommandResult::Capabilities(CapabilityList {
++                capabilities: if supported {
++                    vec!["messages.send_time_receipts_v1".into()]
++                } else {
++                    vec![]
++                },
++            })),
++        };
++        let body = encode_json(&response).unwrap();
++        stream
++            .write_all(&(body.len() as u32).to_be_bytes())
++            .await
++            .unwrap();
++        stream.write_all(&body).await.unwrap();
++    }
++
++    #[tokio::test]
++    async fn service_send_refuses_old_daemon_before_journaling() {
++        let root = temp();
++        fs::create_dir_all(&root).unwrap();
++        let socket = root.join("socket");
++        let listener = UnixListener::bind(&socket).unwrap();
++        let server = tokio::spawn(async move {
++            let (mut stream, _) = listener.accept().await.unwrap();
++            let register = incoming(&mut stream).await;
++            respond(&mut stream, &register, BOOT, Ok(registration())).await;
++            tokio::select! {
++                _ = receipt_capabilities(&listener, false) => {},
++                request = incoming(&mut stream) => panic!("send submitted before discovery: {request:?}"),
++            }
++        });
++        let client = make_client(socket, &root.join("intents"));
++        client.register(&budget()).await.unwrap();
++        let error = client
++            .send(send_request("send-1"), &budget())
++            .await
++            .unwrap_err();
++        assert!(
++            matches!(error, ServiceCallError::Api { error, pending: None } if error.code == ErrorCode::Unsupported && error.detail.contains("messages.send_time_receipts_v1"))
++        );
++        assert!(client.journal().pending().unwrap().is_empty());
++        server.await.unwrap();
++        drop(client);
++        fs::remove_dir_all(root).unwrap();
++    }
++
++    #[tokio::test]
++    async fn pending_service_send_retry_refuses_old_daemon_preserving_bytes() {
++        let root = temp();
++        fs::create_dir_all(&root).unwrap();
++        let socket = root.join("socket");
++        let listener = UnixListener::bind(&socket).unwrap();
++        let server = tokio::spawn(async move {
++            let (mut stream, _) = listener.accept().await.unwrap();
++            let register = incoming(&mut stream).await;
++            respond(&mut stream, &register, BOOT, Ok(registration())).await;
++            tokio::select! {
++                _ = receipt_capabilities(&listener, false) => {},
++                request = incoming(&mut stream) => panic!("retry submitted before discovery: {request:?}"),
++            }
++        });
++        let client = make_client(socket, &root.join("intents"));
++        let registered = client.register(&budget()).await.unwrap();
++        let key = OperationId::new("historical-send");
++        let request = client.request(ServiceRequest::Operation(ServiceOperation::Send(
++            send_request(key.as_str()),
++        )));
++        client
++            .journal
++            .record(
++                &key,
++                &SavedServiceIntent {
++                    author: registered.author,
++                    request: request.clone(),
++                },
++            )
++            .unwrap();
++        let error = client.replay(&key, &budget()).await.unwrap_err();
++        assert!(
++            matches!(error,ServiceCallError::Api { error,pending: Some(pending) } if error.code == ErrorCode::Unsupported && pending == key)
++        );
++        assert_eq!(client.journal.inspect(&key).unwrap().request, request);
++        assert_eq!(client.journal.pending().unwrap(), vec![key]);
++        server.await.unwrap();
++        drop(client);
++        fs::remove_dir_all(root).unwrap();
++    }
++
+     #[tokio::test]
+     async fn typed_send_returns_message_sent() {
+         let root = temp();
+         fs::create_dir_all(&root).unwrap();
+         let socket = root.join("socket");
+         let listener = UnixListener::bind(&socket).unwrap();
+         let server = tokio::spawn(async move {
+             let (mut stream, _) = listener.accept().await.unwrap();
+             let register = incoming(&mut stream).await;
+             respond(&mut stream, &register, BOOT, Ok(registration())).await;
++            receipt_capabilities(&listener, true).await;
+             let send = incoming(&mut stream).await;
+             let ServiceRequest::Operation(ServiceOperation::Send(request)) = &send.service else {
+                 panic!("expected a send frame: {send:?}");
+             };
+             assert_eq!(request.operation, OperationId::new("send-1"));
+             let sent = ServiceMessageSent {
+                 summary: sent_summary(),
+                 author: ServiceAuthorId::new("graph"),
+                 recipient_count: 3,
+                 receipt_duration_millis: 60_000,
+@@ -1793,22 +1940,28 @@ mod tests {
+         let client = make_client(socket, &root.join("intents"));
+         client.register(&budget()).await.unwrap();
+         let (key, sent) = client
+             .send(send_request("send-1"), &budget())
+             .await
+             .unwrap();
+         assert_eq!(key, OperationId::new("send-1"));
+         assert_eq!(sent.recipient_count, 3);
+         assert_eq!(sent.summary.message.as_str(), "m-1");
+         assert!(client.journal().pending().unwrap().is_empty());
+-        assert_eq!(client.journal().completed().unwrap(), vec![key]);
++        assert_eq!(client.journal().completed().unwrap(), vec![key.clone()]);
+         server.await.unwrap();
++        let retained = client.journal().inspect_completed(&key).unwrap();
++        // The daemon/socket is now gone. Completed local presentation must not
++        // perform fresh capability discovery or submit the immutable send again.
++        assert!(matches!(client.replay(&key, &budget()).await,
++            Err(ServiceCallError::Api { error, pending: None }) if error.code == ErrorCode::InvalidRequest && error.detail == "operation already completed"));
++        assert_eq!(client.journal().inspect_completed(&key).unwrap(), retained);
+         fs::remove_dir_all(root).unwrap();
+     }
+ 
+     #[tokio::test]
+     async fn typed_reads_return_payloads_and_reject_mismatched_results() {
+         let root = temp();
+         fs::create_dir_all(&root).unwrap();
+         let socket = root.join("socket");
+         let listener = UnixListener::bind(&socket).unwrap();
+         let server = tokio::spawn(async move {
+diff --git a/src/protocol/capabilities.rs b/src/protocol/capabilities.rs
+index 7b56f310..7514f8f6 100644
+--- a/src/protocol/capabilities.rs
++++ b/src/protocol/capabilities.rs
+@@ -8,20 +8,23 @@ use std::collections::BTreeSet;
+ /// Advertised only by an elected runtime with required scoped observer and canonical deciding handlers.
+ /// Only concrete runtimes enforcing immutable inspected-state recovery advertise this.
+ pub const BOOTSTRAP_INSPECTED_RECOVERY_V1: &str = "handoff.bootstrap_inspected_recovery_v1";
+ 
+ pub const BOOTSTRAP_GUARDED_RESOLUTION_V1: &str = "handoff.bootstrap_guarded_resolution_v1";
+ 
+ pub const PICKER_DIRECTORY_V1: &str = "picker.directory_v1";
+ 
+ pub const HISTORY_FULL_BODIES: &str = "history.full_bodies";
+ pub const HOOK_PARSE_FAILURE_REPORT: &str = "hook.parse_failure_report";
++/// Ordinary send handlers anchor original ACK deadlines to committed send time.
++pub const SEND_TIME_RECEIPTS_V1: &str = "messages.send_time_receipts_v1";
++
+ pub const SERVICE_SEND_V1: &str = "service.send_v1";
+ pub const HARNESS_EVIDENCE_V2: &str = "hook.harness_evidence_v2";
+ pub const HARNESS_EVIDENCE: &str = "hook.harness_evidence";
+ pub const HARNESS_HEALTH_V2: &str = "harness.health_v2";
+ pub const HARNESS_STATES: &str = "harness.states";
+ pub const SEAT_MANAGED_LAUNCH: &str = "seat.managed_launch";
+ pub const PARTICIPANT_LOCATIONS: &str = "participants.locations_v1";
+ 
+ pub const THREAD_JOIN: &str = "thread.join_v1";
+ 
+@@ -50,20 +53,21 @@ pub const MOD_WATCH: &str = "mod.watch_v1";
+ /// ht-p03.12.8; `HOOK_PARSE_FAILURE_REPORT` landed with ht-p03.23;
+ /// `SERVICE_SEND_V1` landed with ht-5nb.2/.3; `HARNESS_EVIDENCE` landed with
+ /// ht-xoc.4; `HARNESS_STATES` landed with ht-xoc.5; `SEAT_MANAGED_LAUNCH`
+ /// landed with ht-5n6; `INBOX_BATCH` landed with compact inbox display ACK.
+ /// Each entry
+ /// has a probe arm in `every_advertised_capability_has_a_handler`.
+ pub const ADVERTISED: &[&str] = &[
+     HISTORY_FULL_BODIES,
+     HOOK_PARSE_FAILURE_REPORT,
+     SERVICE_SEND_V1,
++    SEND_TIME_RECEIPTS_V1,
+     HARNESS_EVIDENCE,
+     HARNESS_EVIDENCE_V2,
+     HARNESS_STATES,
+     HARNESS_HEALTH_V2,
+     SEAT_MANAGED_LAUNCH,
+     INBOX_BATCH,
+     INVITATION_REJECT,
+     THREAD_JOIN,
+     PARTICIPANT_LOCATIONS,
+     PICKER_DIRECTORY_V1,
+diff --git a/src/store/effective.rs b/src/store/effective.rs
+index 97715614..a4c75f13 100644
+--- a/src/store/effective.rs
++++ b/src/store/effective.rs
+@@ -1742,69 +1742,99 @@ pub fn effective_receipt(
+         Option<String>,
+         Option<String>,
+         Option<String>,
+         Option<String>,
+         Option<i64>,
+         Option<String>,
+         Option<i64>,
+         Option<i64>,
+         Option<i64>,
+         i64,
++        Option<i64>,
++        Option<i64>,
++        i64,
+     )>;
+     let logical: LogicalColumns = db.query_row(
+-        "SELECT sm.thread_id, sm.base_sequence, pr.ordinal, sm.decision_seq, sm.decision_at, pr.frozen_duration_ms, pr.eligible_at_snapshot, pr.availability_provenance, rs.state, rs.warning_message_id, rs.ack_actor_seat_id, rs.ack_generation, rs.ack_observation, rs.acked_at, s.retired_at, s.retired_seq, MIN(pr.ack_required,COALESCE(rs.ack_required,1)) \
++        "SELECT sm.thread_id, sm.base_sequence, pr.ordinal, sm.decision_seq, sm.decision_at, pr.frozen_duration_ms, pr.eligible_at_snapshot, pr.availability_provenance, rs.state, rs.warning_message_id, rs.ack_actor_seat_id, rs.ack_generation, rs.ack_observation, rs.acked_at, s.retired_at, s.retired_seq, MIN(pr.ack_required,COALESCE(rs.ack_required,1)), rs.available_at, rs.deadline_at, COALESCE(cut.historical_decision_seq,0) \
+          FROM send_manifests sm JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id \
+          JOIN seats s ON s.id=pr.seat_id \
+          LEFT JOIN receipt_state rs ON rs.message_id=sm.message_id AND rs.seat_id=pr.seat_id \
++         LEFT JOIN receipt_send_time_cutovers cut ON cut.instance_id=sm.instance_id \
+          WHERE sm.message_id=?1 AND pr.seat_id=?2",
+         params![message_id, seat_id],
+-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?, r.get(14)?, r.get(15)?, r.get(16)?)),
++        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?, r.get(14)?, r.get(15)?, r.get(16)?, r.get(17)?, r.get(18)?, r.get(19)?)),
+     ).optional().map_err(store_error)?;
+     if let Some((
+         thread_id,
+         sequence,
+         ordinal,
+         send_seq,
+         send_at,
+         duration,
+         eligible,
+         availability_provenance,
+         state,
+         warning_message_id,
+         ack_actor_seat_id,
+         ack_generation,
+         ack_observation,
+         acked_at,
+         retired_at,
+         retired_seq,
+         ack_required,
++        stored_available_at,
++        stored_deadline_at,
++        historical_cutover,
+     )) = logical
+     {
+         if retired_at.is_some() && retired_seq.is_none() {
+             return Err(api_error(
+                 ErrorCode::StoreCorrupt,
+                 "retired seat lacks decision cutover",
+             ));
+         }
+-        let start =
+-            if eligible == 1 {
+-                Some(send_at)
+-            } else {
+-                db.query_row(
+-                "SELECT decision_at FROM seat_availability WHERE seat_id=?1 AND decision_seq>?2 \
+-                 AND (?3 IS NULL OR decision_seq<?3) ORDER BY decision_seq LIMIT 1",
+-                params![seat_id, send_seq, retired_seq], |r| r.get(0),
++        let first_availability: Option<(i64, i64)> = if eligible == 1 {
++            Some((send_at, send_seq))
++        } else {
++            db.query_row(
++                "SELECT decision_at,decision_seq FROM seat_availability WHERE seat_id=?1 AND decision_seq>?2 AND (?3 IS NULL OR decision_seq<?3) ORDER BY decision_seq LIMIT 1",
++                params![seat_id,send_seq,retired_seq],|r|Ok((r.get(0)?,r.get(1)?)),
+             ).optional().map_err(store_error)?
+-            };
+-        let deadline = start
+-            .map(|at| checked_deadline(UtcMillis(at), duration).map(|d| d.0))
+-            .transpose()?;
++        };
++        let start = stored_available_at.or(first_availability.map(|(at, _)| at));
++        // Only availability already recorded at the upgrade cutover can preserve
++        // a legacy running clock. Later registration must not restart a dormant one.
++        let original_start = if send_seq <= historical_cutover {
++            first_availability
++                .filter(|(_, seq)| *seq <= historical_cutover)
++                .map(|(at, _)| at)
++                .unwrap_or(send_at)
++        } else {
++            send_at
++        };
++        let deadline = match stored_deadline_at {
++            Some(deadline) => Some(deadline),
++            None if state.as_deref().is_some_and(|s| s != "pending")
++                || (send_seq <= historical_cutover
++                    && retired_seq.is_some_and(|seq| seq <= historical_cutover)) =>
++            {
++                stored_available_at
++                    .or(first_availability
++                        .filter(|(_, seq)| {
++                            send_seq > historical_cutover || *seq <= historical_cutover
++                        })
++                        .map(|(at, _)| at))
++                    .map(|at| checked_deadline(UtcMillis(at), duration).map(|d| d.0))
++                    .transpose()?
++            }
++            None => Some(checked_deadline(UtcMillis(original_start), duration)?.0),
++        };
+         let waived = if state.as_deref().is_none_or(|status| status == "pending") {
+             ack_required == 0
+                 || availability_provenance.as_deref() == Some("operator_human")
+                 || human_receipt_waived(db, seat_id, Some(send_seq))?
+         } else {
+             false
+         };
+         return Ok(Some(EffectiveReceipt {
+             source: ReceiptSource::Manifest,
+             message_id: message_id.to_owned(),
+diff --git a/src/store/messages.rs b/src/store/messages.rs
+index c9247ea5..d65e8ba1 100644
+--- a/src/store/messages.rs
++++ b/src/store/messages.rs
+@@ -661,21 +661,21 @@ pub(super) fn stage_recipient(
+     let provenance = schema::effective_registered_availability(tx, recipient, Some(instance))?;
+     let available = provenance.is_some();
+     if expects_ack {
+         *count = count.checked_add(1).ok_or_else(|| {
+             api_error(ErrorCode::SequenceExhausted, "recipient ordinal exhausted")
+         })?;
+         tx.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot,availability_provenance) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+             params![prep_id,thread.as_str(),recipient,*count,duration,available,provenance]).map_err(store_error)?;
+     }
+     // C4: a seat whose binding the pending reconciliation pass will carry is
+-    // not warned about; the carry starts its receipt timer.
++    // not warned about; the carry records availability independently of the send-time deadline.
+     if !available
+         && !schema::carry_pending(tx, recipient, instance)?
+         && schema::effective_membership_state(tx, thread, &SeatId::new(recipient))?
+             .as_ref()
+             .is_some_and(|v| v.state == "joined")
+     {
+         let pending_invitation:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM invitations i WHERE i.thread_id=?1 AND i.seat_id=?2 AND i.state='pending' AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id))",params![thread.as_str(),recipient],|r|r.get(0)).map_err(store_error)?;
+         if !pending_invitation {
+             let episode = schema::ensure_unavailability_episode(tx, &SeatId::new(recipient))?;
+             let key = UnavailableWarningKey {
+diff --git a/src/store/schema.rs b/src/store/schema.rs
+index 5c87cd32..cf111113 100644
+--- a/src/store/schema.rs
++++ b/src/store/schema.rs
+@@ -59,21 +59,22 @@ const V20: &str = include_str!("../../migrations/0020_recent_activity.sql");
+ const V21: &str = include_str!("../../migrations/0021_invitation_rejections.sql");
+ const V22: &str = include_str!("../../migrations/0022_user_message_intent.sql");
+ const V23: &str = include_str!("../../migrations/0023_channel_archival.sql");
+ const V24: &str = include_str!("../../migrations/0024_harness_contract_diagnostics.sql");
+ const V25: &str = include_str!("../../migrations/0025_warning_notice_delivery.sql");
+ const V26: &str = include_str!("../../migrations/0026_lazy_message_delivery.sql");
+ const V27: &str = include_str!("../../migrations/0027_harness_adapters.sql");
+ const V28: &str = include_str!("../../migrations/0028_handoff_topology.sql");
+ const V29: &str = include_str!("../../migrations/0029_invitation_confirmation.sql");
+ 
+-pub(crate) const LATEST_VERSION: i64 = 29;
++const V30: &str = include_str!("../../migrations/0030_receipt_send_time.sql");
++pub(crate) const LATEST_VERSION: i64 = 30;
+ 
+ /// Decode only persisted results, after the caller's digest has matched. Live
+ /// protocol responses still require disposition. Missing original context
+ /// cannot be recovered from today's occupant without inventing historical data.
+ fn decode_stored_result(json: &str) -> Result<CommandResult, ApiError> {
+     let mut value: serde_json::Value = serde_json::from_str(json).map_err(|e| {
+         api_error(
+             ErrorCode::StoreCorrupt,
+             format!("invalid stored result: {e}"),
+         )
+@@ -162,21 +163,21 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
+                 .and_then(|_| conn.execute_batch(V20))
+                 .and_then(|_| conn.execute_batch(V21))
+                 .and_then(|_| conn.execute_batch(V22))
+                 .and_then(|_| conn.execute_batch(V23))
+                 .and_then(|_| conn.execute_batch(V24))
+                 .and_then(|_| conn.execute_batch(V25))
+                 .and_then(|_| conn.execute_batch(V26))
+                 .and_then(|_| conn.execute_batch(V27))
+                 .and_then(|_| conn.execute_batch(V28))
+                 .and_then(|_| conn.execute_batch(V29))
+-                .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
++                .and_then(|_| conn.pragma_update(None, "user_version", 29));
+             match result {
+                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+                 Err(error) => {
+                     let _ = conn.execute_batch("ROLLBACK");
+                     return Err(store_error(error));
+                 }
+             }
+             verify_existing(conn)
+         }
+         1 => {
+@@ -402,21 +403,21 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
+         }
+         16 => {
+             verify_existing_v13_shape(conn)?;
+             verify_existing_v14(conn)?;
+             verify_existing_v15(conn)?;
+             verify_existing_v16(conn)?;
+             migrate_v16_to_v17(conn)?;
+             verify_existing(conn)
+         }
+         17 => verify_existing(conn),
+-        18..=29 => verify_existing(conn),
++        18..=30 => verify_existing(conn),
+         _ => Err(api_error(
+             ErrorCode::IncompatibleSchema,
+             format!("unsupported schema version {version}"),
+         )),
+     }?;
+     if (1..=17).contains(&version) {
+         migrate_v17_to_v18(conn)?;
+     }
+     verify_existing_v18(conn)?;
+     if (1..=18).contains(&version) {
+@@ -589,21 +590,25 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
+                     .map_err(store_error)
+             });
+         match result {
+             Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+             Err(error) => {
+                 let _ = conn.execute_batch("ROLLBACK");
+                 return Err(error);
+             }
+         }
+     }
+-    verify_existing_v29(conn)
++    verify_existing_v29(conn)?;
++    if version <= 29 {
++        migrate_receipts_v29_to_v30(conn)?;
++    }
++    verify_receipt_send_time_schema(conn)
+ }
+ 
+ fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
+     let table: String = conn
+         .query_row(
+             "SELECT sql FROM sqlite_master WHERE type='table' AND name='invitations'",
+             [],
+             |row| row.get(0),
+         )
+         .map_err(store_error)?;
+@@ -634,20 +639,97 @@ fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
+         if actual.as_deref().map(str::trim) != Some(expected) {
+             return Err(api_error(
+                 ErrorCode::IncompatibleSchema,
+                 format!("missing or altered invitation confirmation {kind} {name}"),
+             ));
+         }
+     }
+     Ok(())
+ }
+ 
++fn migrate_receipts_v29_to_v30(conn: &Connection) -> Result<(), ApiError> {
++    if !conn.is_autocommit() {
++        return Err(api_error(
++            ErrorCode::IncompatibleSchema,
++            "receipt upgrade requires autocommit",
++        ));
++    }
++    let foreign_keys: bool = conn
++        .pragma_query_value(None, "foreign_keys", |r| r.get(0))
++        .map_err(store_error)?;
++    conn.pragma_update(None, "foreign_keys", false)
++        .map_err(store_error)?;
++    let result = (|| {
++        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
++        conn.execute_batch(V30).map_err(store_error)?;
++        verify_receipt_send_time_schema(conn)?;
++        let violation: bool = conn
++            .query_row(
++                "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
++                [],
++                |r| r.get(0),
++            )
++            .map_err(store_error)?;
++        if violation {
++            return Err(api_error(
++                ErrorCode::IncompatibleSchema,
++                "receipt upgrade foreign key violation",
++            ));
++        }
++        conn.pragma_update(None, "user_version", 30)
++            .map_err(store_error)?;
++        conn.execute_batch("COMMIT").map_err(store_error)
++    })();
++    if result.is_err() {
++        let _ = conn.execute_batch("ROLLBACK");
++    }
++    let restored = conn
++        .pragma_update(None, "foreign_keys", foreign_keys)
++        .map_err(store_error);
++    result.and(restored)
++}
++
++/// The marker and constraint upgrade commit together before capabilities are served.
++/// Existing instance sequences are captured once; later instances have cutoff zero.
++fn verify_receipt_send_time_schema(conn: &Connection) -> Result<(), ApiError> {
++    let ddl = V30
++        .lines()
++        .filter(|line| !line.trim_start().starts_with("--"))
++        .collect::<Vec<_>>()
++        .join("\n");
++    for statement in ddl
++        .split("\n\n")
++        .map(str::trim)
++        .filter(|s| s.starts_with("CREATE ") && !s.starts_with("CREATE TEMP "))
++    {
++        let sql = statement.trim_end_matches(';');
++        let words = sql.split_whitespace().collect::<Vec<_>>();
++        let kind = words[1].to_ascii_lowercase();
++        let name = words[2];
++        let actual: Option<String> = conn
++            .query_row(
++                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
++                params![kind, name],
++                |r| r.get(0),
++            )
++            .optional()
++            .map_err(store_error)?;
++        if actual.as_deref().map(str::trim) != Some(sql) {
++            return Err(api_error(
++                ErrorCode::IncompatibleSchema,
++                format!("missing or altered receipt send-time {kind} {name}"),
++            ));
++        }
++    }
++    Ok(())
++}
++
+ fn verify_existing_v26(conn: &Connection) -> Result<(), ApiError> {
+     // Compare every lazy object, including trigger bodies with embedded semicolons.
+     let ddl = V26
+         .lines()
+         .filter(|line| !line.trim_start().starts_with("--"))
+         .collect::<Vec<_>>()
+         .join("\n");
+     for statement in ddl
+         .split("\n\n")
+         .map(str::trim)
+diff --git a/tests/cli/lazy_send.rs b/tests/cli/lazy_send.rs
+index 5e834255..84b00f51 100644
+--- a/tests/cli/lazy_send.rs
++++ b/tests/cli/lazy_send.rs
+@@ -89,46 +89,52 @@ impl Fixture {
+         )
+     }
+ }
+ impl Drop for Fixture {
+     fn drop(&mut self) {
+         std::fs::remove_dir_all(&self.root).unwrap();
+     }
+ }
+ struct Client {
+     capability: Result<bool, ErrorCode>,
++    send_time_capability: bool,
+     calls: Mutex<Vec<Command>>,
+ }
+ impl Client {
+     fn new(capability: Result<bool, ErrorCode>) -> Self {
+         Self {
+             capability,
++            send_time_capability: true,
+             calls: Mutex::new(vec![]),
+         }
+     }
+ }
+ impl LocalClient for Client {
+     fn call_with_output(
+         &self,
+         command: Command,
+         _: &herdr_threads::protocol::output::OutputSpec,
+         budget: &CallBudget,
+     ) -> Result<CommandResult, ApiError> {
+         self.call(command, budget)
+     }
+     fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+         self.calls.lock().unwrap().push(command.clone());
+         match command {
+             Command::Capabilities => match self.capability {
+                 Ok(supported) => Ok(CommandResult::Capabilities(CapabilityList {
+                     capabilities: if supported {
+-                        vec!["send.lazy_v1".into()]
++                        let mut names = vec!["send.lazy_v1".into()];
++                        if self.send_time_capability {
++                            names.push("messages.send_time_receipts_v1".into());
++                        }
++                        names
+                     } else {
+                         vec![]
+                     },
+                 })),
+                 Err(ErrorCode::Unsupported) => Err(ApiError::unsupported("old daemon")),
+                 Err(ErrorCode::InvalidRequest) => Err(ApiError::invalid_request("old daemon")),
+                 _ => panic!("unexpected fixture capability"),
+             },
+             Command::SendMessage(_) => Ok(CommandResult::MessageSent(MessageId::new("published"))),
+             _ => panic!("unexpected command: {command:?}"),
+@@ -287,30 +293,30 @@ fn ordinary_send_omits_mode_and_preserves_digest() {
+         panic!("not send")
+     };
+     assert_eq!(send.delivery_mode, DeliveryMode::Ordinary);
+     assert!(
+         serde_json::to_value(command).unwrap()["args"]
+             .as_object()
+             .unwrap()
+             .get("delivery_mode")
+             .is_none()
+     );
+-    let client = Client::new(Ok(false));
++    let client = Client::new(Ok(true));
+     f.run(
+         &["ht", "send", "t1", "--body", "announcement", "--nudge"],
+         &client,
+         &mut Vec::new(),
+     )
+     .unwrap();
+     assert!(matches!(
+         client.calls.lock().unwrap().as_slice(),
+-        [Command::SendMessage(_)]
++        [Command::Capabilities, Command::SendMessage(_)]
+     ));
+ }
+ #[test]
+ fn lazy_send_retry_preserves_frozen_claim_and_mode() {
+     let f = Fixture::new();
+     let client = Client::new(Ok(true));
+     assert!(
+         f.run(
+             &["ht", "send", "t1", "--body", "announcement", "--lazy"],
+             &client,
+@@ -427,10 +433,100 @@ fn lazy_send_default_refuses_deadline_and_explicit_mode_conflicts() {
+         vec!["--lazy", "--deadline", "5"],
+         vec!["--lazy", "--require-ack", "s1"],
+         vec!["--lazy", "--require-ack-pane", "p1"],
+         vec!["--lazy", "--nudge"],
+     ] {
+         let mut argv = vec!["ht", "send", "t1", "--body", "announcement"];
+         argv.extend(options);
+         assert!(parse_argv(argv).is_err());
+     }
+ }
++
++#[test]
++fn ordinary_send_refuses_unsupported_daemon_before_intent() {
++    for capability in [
++        Ok(false),
++        Err(ErrorCode::Unsupported),
++        Err(ErrorCode::InvalidRequest),
++    ] {
++        let f = Fixture::new();
++        let client = Client::new(capability);
++        let result = f.run(
++            &["ht", "send", "t1", "--body", "urgent", "--nudge"],
++            &client,
++            &mut Vec::new(),
++        );
++        let Err(RunError::Api(error)) = result else {
++            panic!("unsupported send was not refused")
++        };
++        assert_eq!(error.code, ErrorCode::Unsupported);
++        assert!(error.detail.contains("messages.send_time_receipts_v1"));
++        assert_eq!(*client.calls.lock().unwrap(), vec![Command::Capabilities]);
++        assert!(
++            f.journal
++                .page(&Default::default())
++                .unwrap()
++                .items
++                .is_empty()
++        );
++    }
++}
++
++#[test]
++fn ordinary_historical_retry_refuses_unsupported_without_rewriting_intent() {
++    for capability in [
++        Ok(false),
++        Err(ErrorCode::Unsupported),
++        Err(ErrorCode::InvalidRequest),
++    ] {
++        let f = Fixture::new();
++        let legacy: SemanticMutation = serde_json::from_str(r#"{"kind":"send_message","thread":"t1","body":"historical body","invited_recipients":[],"deadline_millis":null}"#).unwrap();
++        let reference = f
++            .journal
++            .record(
++                IntentScope::Cooperative {
++                    instance: f.context.instance.to_string(),
++                    seat: herdr_threads::protocol::ids::SeatId::new(f.context.seat.clone()),
++                },
++                SemanticMutation::freeze(legacy, caller_claim(&f.context).unwrap()).unwrap(),
++                0,
++            )
++            .unwrap();
++        let original = f.journal.load(&reference).unwrap();
++        let client = Client::new(capability);
++        let result = f.run(
++            &["ht", "retry", &reference.recovery_ref()],
++            &client,
++            &mut Vec::new(),
++        );
++        assert!(
++            matches!(result,Err(RunError::Api(error)) if error.code==ErrorCode::Unsupported && error.detail.contains("messages.send_time_receipts_v1"))
++        );
++        assert_eq!(*client.calls.lock().unwrap(), vec![Command::Capabilities]);
++        let retained = f.journal.load(&reference).unwrap();
++        assert_eq!(
++            retained.header.semantic_digest,
++            original.header.semantic_digest
++        );
++        assert_eq!(retained.operation, original.operation);
++        assert_eq!(
++            serde_json::to_value(retained.semantic).unwrap(),
++            serde_json::to_value(original.semantic).unwrap()
++        );
++    }
++}
++
++#[test]
++fn lazy_send_does_not_require_send_time_receipts_capability() {
++    let f = Fixture::new();
++    let mut client = Client::new(Ok(true));
++    client.send_time_capability = false;
++    f.run(
++        &["ht", "send", "t1", "--body", "passive"],
++        &client,
++        &mut Vec::new(),
++    )
++    .unwrap();
++    assert!(
++        matches!(client.calls.lock().unwrap().as_slice(),[Command::Capabilities,Command::SendMessage(send)] if send.delivery_mode==DeliveryMode::Lazy)
++    );
++}
+diff --git a/tests/protocol/capabilities.rs b/tests/protocol/capabilities.rs
+index da23bc3f..1f5748aa 100644
+--- a/tests/protocol/capabilities.rs
++++ b/tests/protocol/capabilities.rs
+@@ -264,20 +264,21 @@ fn capability_constants_are_stable() {
+     assert_eq!(HARNESS_STATES, "harness.states");
+     assert_eq!(SEAT_MANAGED_LAUNCH, "seat.managed_launch");
+     assert_eq!(INBOX_BATCH, "inbox.batch_v1");
+     assert_eq!(LAZY_HOOK_DELIVERY, "hook.lazy_delivery_v1");
+     assert_eq!(
+         ADVERTISED,
+         &[
+             "history.full_bodies",
+             "hook.parse_failure_report",
+             "service.send_v1",
++            "messages.send_time_receipts_v1",
+             "hook.harness_evidence",
+             "hook.harness_evidence_v2",
+             "harness.states",
+             "harness.health_v2",
+             "seat.managed_launch",
+             "inbox.batch_v1",
+             "invitation.reject_v1",
+             "thread.join_v1",
+             "participants.locations_v1",
+             "picker.directory_v1",
+@@ -323,22 +324,22 @@ fn every_advertised_capability_has_a_handler() {
+                     crate::test_support::isolation::TestIsolation::new("lazy-capability");
+                 let context = crate::store::connection::StoreContext::new(
+                     isolation.path("store.db"),
+                     Arc::new(FixedClock),
+                 );
+                 context.open_writer().unwrap();
+                 let outcome =
+                     crate::store::queries::query(&context, "probe-instance", &command, &budget());
+                 assert_eq!(outcome.unwrap_err().code, ErrorCode::NotFound);
+             }
+-            LAZY_SEND => {
+-                let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"delivery_mode":"lazy","thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
++            LAZY_SEND | SEND_TIME_RECEIPTS_V1 => {
++                let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"delivery_mode":if *name == LAZY_SEND { "lazy" } else { "ordinary" },"thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                 assert!(command.validate().is_ok());
+                 let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                 assert_eq!(
+                     handler
+                         .handle(command, PeerIdentity::from_kernel(501), &budget())
+                         .unwrap_err()
+                         .code,
+                     ErrorCode::NotFound
+                 );
+             }
+@@ -483,20 +484,21 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
+         .unwrap();
+     let CommandResult::Capabilities(advertised) = result else {
+         panic!("expected a capabilities result, got {result:?}");
+     };
+     assert_eq!(
+         advertised.capabilities,
+         [
+             "history.full_bodies",
+             "hook.parse_failure_report",
+             "service.send_v1",
++            "messages.send_time_receipts_v1",
+             "hook.harness_evidence",
+             "harness.states",
+             "seat.managed_launch",
+             "inbox.batch_v1",
+             "invitation.reject_v1",
+             "thread.join_v1",
+             "participants.locations_v1",
+             "picker.directory_v1",
+             "attention.notice_delivery_v1",
+             "messages.delivery_modes_v1",
+@@ -1692,10 +1694,42 @@ fn invitation_confirmation_wire_preserves_legacy_and_distinguishes_modern_reques
+             modern["args"]["claim"]["harness"] = serde_json::json!("human");
+             let human: Command = serde_json::from_value(modern).unwrap();
+             assert!(human.validate().is_err());
+         } else {
+             modern["args"]["deadline_millis"] = serde_json::json!(10);
+             let conflict: Command = serde_json::from_value(modern).unwrap();
+             assert!(conflict.validate().is_err());
+         }
+     }
+ }
++
++#[test]
++fn public_operation_status_cannot_bypass_send_time_capability_guard() {
++    use crate::{
++        ports::StorePort,
++        protocol::{commands::OperationStatusQuery, ids::OperationId},
++        service::dispatch::DomainService,
++        store::{SqliteStore, StoreSettings, connection::StoreContext},
++    };
++    let isolation = crate::test_support::isolation::TestIsolation::new("ordinary-public-status");
++    let clock: Arc<dyn Clock> = Arc::new(FixedClock);
++    let store: Arc<dyn StorePort> = Arc::new(
++        SqliteStore::new(
++            StoreContext::new(isolation.path("store.db"), clock.clone()),
++            "probe-instance",
++            StoreSettings::default(),
++        )
++        .unwrap(),
++    );
++    let domain = DomainService::new("probe-instance".into(), store, clock);
++    let error = domain
++        .handle(
++            Command::OperationStatus(OperationStatusQuery {
++                operation: OperationId::new("historical-key"),
++            }),
++            PeerIdentity::from_kernel(501),
++            &budget(),
++        )
++        .unwrap_err();
++    assert_eq!(error.code, ErrorCode::Unauthorized);
++    assert_eq!(error.detail, "verified operation scope required");
++}
+diff --git a/tests/store/effective.rs b/tests/store/effective.rs
+index 96df874b..7c31478e 100644
+--- a/tests/store/effective.rs
++++ b/tests/store/effective.rs
+@@ -136,27 +136,71 @@ fn inbox_capture_roundtrips_in_bounded_typed_cursor() {
+     );
+     let mut wrong_scope = cursor;
+     wrong_scope.scope = CursorScope::Directory;
+     assert!(Cursor::decode(&wrong_scope.encode().unwrap()).is_err());
+ }
+ 
+ fn fixture() -> Connection {
+     let db = Connection::open_in_memory().unwrap();
+     db.pragma_update(None, "foreign_keys", "ON").unwrap();
+     schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
++    populate_fixture(&db);
++    db
++}
++
++fn populate_fixture(db: &Connection) {
+     db.execute_batch("\
+         INSERT INTO host_instances(id, created_at, decision_seq) VALUES ('i', 0, 10);\
+         INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('s', 'i', 'resolved', 'native', 1, 0);\
+         INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('t', 'i', 'topic', 'goal', 0, 0);\
+         INSERT INTO send_preparations(id, instance_id, operation_scope, operation_key, digest, thread_id, captured_membership_revision, captured_lifecycle_revision, captured_eligibility_revision, captured_timeline_revision, captured_config_revision, interval_high_water, recipient_high_water, status) VALUES ('p', 'i', 'actor', 'o', zeroblob(32), 't', 0, 0, 0, 0, 0, 0, 1, 'sealed');\
+         INSERT INTO prepared_recipients(preparation_id, thread_id, seat_id, receipt_ordinal, frozen_duration_ms, eligible_at_snapshot) VALUES ('p', 't', 's', 1, 300, 0);\
+     ").unwrap();
++}
++
++fn v28_fixture() -> Connection {
++    let db = Connection::open_in_memory().unwrap();
++    for migration in [
++        include_str!("../../migrations/0001_initial.sql"),
++        include_str!("../../migrations/0002_service_substrate.sql"),
++        include_str!("../../migrations/0003_invitation_cancellations.sql"),
++        include_str!("../../migrations/0004_voluntary_membership.sql"),
++        include_str!("../../migrations/0005_service_notifications.sql"),
++        include_str!("../../migrations/0006_retirement_health.sql"),
++        include_str!("../../migrations/0007_attention_digest.sql"),
++        include_str!("../../migrations/0008_digest_pending_paths.sql"),
++        include_str!("../../migrations/0009_human_occupant.sql"),
++        include_str!("../../migrations/0010_b5_trust_guards.sql"),
++        include_str!("../../migrations/0011_cooperative_only.sql"),
++        include_str!("../../migrations/0012_harness_version_evidence.sql"),
++        include_str!("../../migrations/0013_thread_summaries.sql"),
++        include_str!("../../migrations/0014_catch_up_release.sql"),
++        include_str!("../../migrations/0015_preparation_retention.sql"),
++        include_str!("../../migrations/0016_human_receipt_waivers.sql"),
++        include_str!("../../migrations/0017_wake_batches.sql"),
++        include_str!("../../migrations/0018_warning_conditions.sql"),
++        include_str!("../../migrations/0019_thread_names.sql"),
++        include_str!("../../migrations/0020_recent_activity.sql"),
++        include_str!("../../migrations/0021_invitation_rejections.sql"),
++        include_str!("../../migrations/0022_user_message_intent.sql"),
++        include_str!("../../migrations/0023_channel_archival.sql"),
++        include_str!("../../migrations/0024_harness_contract_diagnostics.sql"),
++        include_str!("../../migrations/0025_warning_notice_delivery.sql"),
++        include_str!("../../migrations/0026_lazy_message_delivery.sql"),
++        include_str!("../../migrations/0027_harness_adapters.sql"),
++        include_str!("../../migrations/0028_handoff_topology.sql"),
++    ] {
++        db.execute_batch(migration).unwrap();
++    }
++    db.pragma_update(None, "user_version", 28).unwrap();
++    db.pragma_update(None, "foreign_keys", true).unwrap();
++    populate_fixture(&db);
+     db
+ }
+ 
+ #[test]
+ fn pending_receipt_for_human_is_not_an_ack_obligation() {
+     let db = fixture();
+     db.execute_batch("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','body',1000,10); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i','p','m','t',10,1000,1,0,1,0); INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES ('s',1,'p','b',0,'human','human','human','operator_human',1000,1000);").unwrap();
+     let receipt = effective_receipt(&db, "m", "s").unwrap().unwrap();
+     assert_eq!(receipt.state, EffectiveReceiptState::NotRequired);
+     assert!(receipt.ack_actor_seat_id.is_none());
+@@ -292,48 +336,48 @@ fn new_unregistered_seat_starts_in_a_real_unavailability_episode() {
+         )
+         .unwrap();
+     assert_eq!(episode, 1);
+     assert!(
+         db.execute("UPDATE seats SET unavailability_episode=0 WHERE id='s'", [])
+             .is_err()
+     );
+ }
+ 
+ #[test]
+-fn unpublished_staging_is_invisible_and_first_later_anchor_is_immutable() {
++fn unpublished_staging_is_invisible_and_send_deadline_survives_availability() {
+     let db = fixture();
+     assert!(effective_receipt(&db, "m", "s").unwrap().is_none());
+     db.execute_batch("\
+         INSERT INTO messages(instance_id,id, thread_id, sequence, kind, body, decision_at, decision_seq) VALUES ('i','m', 't', 1, 'ordinary', 'body', 1000, 10);\
+         INSERT INTO send_manifests(instance_id,preparation_id, message_id, thread_id, decision_seq, decision_at, base_sequence, interval_high_water, recipient_count, warning_count) VALUES ('i','p', 'm', 't', 10, 1000, 1, 0, 1, 0);\
+     ").unwrap();
+     assert!(
+         db.execute(
+             "UPDATE send_manifests SET instance_id='other' WHERE message_id='m'",
+             []
+         )
+         .is_err()
+     );
+     let before = effective_receipt(&db, "m", "s").unwrap().unwrap();
+     assert_eq!(before.thread_id, "t");
+     assert_eq!(before.frozen_duration_ms, 300);
+     assert_eq!(before.source, ReceiptSource::Manifest);
+     assert_eq!(before.warning_message_id, None);
+     assert_eq!(before.available_at, None);
+-    assert_eq!(before.deadline_at, None);
++    assert_eq!(before.deadline_at, Some(1300));
+     db.execute_batch("\
+         INSERT INTO seat_availability(seat_id, decision_seq, decision_at, binding_generation, observation_provenance) VALUES ('s', 11, 1200, 1, 'verified');\
+         INSERT INTO seat_availability(seat_id, decision_seq, decision_at, binding_generation, observation_provenance) VALUES ('s', 12, 500, 1, 'verified');\
+     ").unwrap();
+     let after = effective_receipt(&db, "m", "s").unwrap().unwrap();
+     assert_eq!(after.available_at, Some(1200));
+-    assert_eq!(after.deadline_at, Some(1500));
++    assert_eq!(after.deadline_at, Some(1300));
+     assert_eq!(after.state, EffectiveReceiptState::Pending);
+ }
+ 
+ #[test]
+ fn sparse_ack_and_retirement_preserve_logical_receipt_provenance() {
+     let db = fixture();
+     db.execute_batch("INSERT INTO messages(instance_id,id, thread_id, sequence, kind, body, decision_at, decision_seq) VALUES ('i','m', 't', 1, 'ordinary', 'body', 1000, 10); INSERT INTO send_manifests(instance_id,preparation_id, message_id, thread_id, decision_seq, decision_at, base_sequence, interval_high_water, recipient_count, warning_count) VALUES ('i','p', 'm', 't', 10, 1000, 1, 0, 1, 0); INSERT INTO receipt_state(message_id, seat_id, state, ack_actor_seat_id, ack_generation, ack_observation, acked_at, warning_message_id) VALUES ('m', 's', 'acked', 's', 1, 'proof', 1300, 'warning-id'); UPDATE seats SET state='retired', retired_at=1400, retired_seq=13 WHERE id='s';").unwrap();
+     let receipt = effective_receipt(&db, "m", "s").unwrap().unwrap();
+     assert_eq!(receipt.state, EffectiveReceiptState::Acknowledged);
+     assert_eq!(receipt.ack_actor_seat_id.as_deref(), Some("s"));
+@@ -856,10 +900,343 @@ fn warning_timeline_equals_the_full_timeline_restricted_to_warnings() {
+                 high_water_sequence: 9,
+             }),
+             100,
+         )
+         .unwrap();
+         assert_eq!(ids(&bounded.entries), [("w2".to_string(), 6)]);
+         assert!(!bounded.has_more);
+         assert_eq!(bounded.position.after_sequence, 9);
+     }
+ }
++
++#[test]
++fn manifest_preserves_preexisting_running_deadline() {
++    let db = fixture();
++    db.execute_batch("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','body',1000,10); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i','p','m','t',10,1000,1,0,1,0); INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at) VALUES ('m','s','pending',1200,1500);").unwrap();
++    let receipt = effective_receipt(&db, "m", "s").unwrap().unwrap();
++    assert_eq!(receipt.deadline_at, Some(1500));
++    assert_eq!(receipt.available_at, Some(1200));
++}
++
++#[test]
++fn historical_sparse_running_deadline_survives_semantics_cutover_and_restart() {
++    let db = v28_fixture();
++    db.execute_batch("UPDATE host_instances SET decision_seq=11 WHERE id='i'; INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','body',1000,10); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i','p','m','t',10,1000,1,0,1,0); INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES('s',11,1200,1,'cooperative_top_level');").unwrap();
++    schema::initialize(&db, || UtcMillis(0)).unwrap();
++    assert_eq!(
++        effective_receipt(&db, "m", "s")
++            .unwrap()
++            .unwrap()
++            .deadline_at,
++        Some(1500)
++    );
++    db.execute("UPDATE host_instances SET decision_seq=99 WHERE id='i'", [])
++        .unwrap();
++    schema::initialize(&db, || UtcMillis(999999)).unwrap();
++    assert_eq!(
++        effective_receipt(&db, "m", "s")
++            .unwrap()
++            .unwrap()
++            .deadline_at,
++        Some(1500)
++    );
++    let cutoff: i64 = db
++        .query_row(
++            "SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='i'",
++            [],
++            |r| r.get(0),
++        )
++        .unwrap();
++    assert_eq!(cutoff, 11);
++}
++
++#[test]
++fn historical_dormant_sparse_deadline_does_not_restart_after_cutover() {
++    let db = fixture();
++    db.execute_batch("INSERT INTO receipt_send_time_cutovers(instance_id,historical_decision_seq) VALUES('i',10); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','body',1000,10); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i','p','m','t',10,1000,1,0,1,0);").unwrap();
++    assert_eq!(
++        effective_receipt(&db, "m", "s")
++            .unwrap()
++            .unwrap()
++            .deadline_at,
++        Some(1300)
++    );
++    db.execute_batch("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES('s',11,1200,1,'cooperative_top_level');").unwrap();
++    let receipt = effective_receipt(&db, "m", "s").unwrap().unwrap();
++    assert_eq!(receipt.available_at, Some(1200));
++    assert_eq!(receipt.deadline_at, Some(1300));
++}
++
++fn receipt_upgrade_snapshot(db: &Connection, table: &str) -> Vec<Vec<rusqlite::types::Value>> {
++    let mut statement = db
++        .prepare(&format!("SELECT rowid,* FROM {table} ORDER BY rowid"))
++        .unwrap();
++    let columns = statement.column_count();
++    statement
++        .query_map([], |row| (0..columns).map(|i| row.get(i)).collect())
++        .unwrap()
++        .collect::<Result<_, _>>()
++        .unwrap()
++}
++
++#[test]
++fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_once() {
++    for version in [28, 29] {
++        let db = v28_fixture();
++        if version == 29 {
++            db.execute_batch(include_str!(
++                "../../migrations/0029_invitation_confirmation.sql"
++            ))
++            .unwrap();
++            db.pragma_update(None, "user_version", 29).unwrap();
++            db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('modern','t','s',1,'pending',1,100,50,150,'require_ack','s'),('quiet','t','s',2,'pending',2,100,50,150,'lazy','s');").unwrap();
++        }
++        for (index, (name, state, available, required)) in [
++            ("running", "pending", Some(1200), 1),
++            ("dormant", "pending", None, 1),
++            ("acked", "acked", Some(1200), 1),
++            ("acked_absent", "acked", None, 1),
++            ("retired", "recipient_retired", None, 1),
++            ("waived", "pending", None, 0),
++        ]
++        .into_iter()
++        .enumerate()
++        {
++            db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i',?1,'t',?2,'ordinary','retained body',1000,?2)",rusqlite::params![name,index as i64+1]).unwrap();
++            db.execute("INSERT INTO receipts(ordinal,message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_required,ack_observation) VALUES(?1,?2,'t','s',?3,300,?4,?5,?6,'retained provenance')",rusqlite::params![index as i64+20,name,state,available,available.map(|at|at+300),required]).unwrap();
++            db.execute("INSERT INTO receipt_state(rowid,message_id,seat_id,state,available_at,deadline_at,ack_required,ack_observation) VALUES(?1,?2,'s',?3,?4,?5,?6,'retained provenance')",rusqlite::params![index as i64+40,name,state,available,available.map(|at|at+300),required]).unwrap();
++        }
++        db.execute_batch("UPDATE sqlite_sequence SET seq=99 WHERE name='receipts'; CREATE TABLE receipt_upgrade_child(ordinal INTEGER REFERENCES receipts(ordinal), message_id TEXT, seat_id TEXT, FOREIGN KEY(message_id,seat_id) REFERENCES receipt_state(message_id,seat_id)); INSERT INTO receipt_upgrade_child VALUES(20,'running','s');").unwrap();
++        let tables = [
++            "receipts",
++            "receipt_state",
++            "messages",
++            "send_preparations",
++            "prepared_recipients",
++            "receipt_upgrade_child",
++            "digest_pending_manifest_receipts",
++        ];
++        let before: Vec<_> = tables
++            .iter()
++            .map(|name| receipt_upgrade_snapshot(&db, name))
++            .collect();
++        let objects = |db: &Connection| {
++            let mut statement=db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name IN ('receipts','receipt_state') AND type IN ('trigger','index') AND sql IS NOT NULL ORDER BY name").unwrap();
++            statement
++                .query_map([], |r| r.get::<_, String>(0))
++                .unwrap()
++                .collect::<Result<Vec<_>, _>>()
++                .unwrap()
++        };
++        let old_objects = objects(&db);
++        schema::initialize(&db, || UtcMillis(0)).unwrap();
++        assert_eq!(objects(&db), old_objects);
++        assert_eq!(
++            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
++                .unwrap(),
++            30
++        );
++        for (name, expected) in tables.iter().zip(before) {
++            assert_eq!(receipt_upgrade_snapshot(&db, name), expected, "{name}");
++        }
++        assert_eq!(
++            db.query_row(
++                "SELECT seq FROM sqlite_sequence WHERE name='receipts'",
++                [],
++                |r| r.get::<_, i64>(0)
++            )
++            .unwrap(),
++            99
++        );
++        assert_eq!(
++            db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
++                .get::<_, i64>(
++                0
++            ))
++            .unwrap(),
++            0
++        );
++        assert!(
++            db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
++                .unwrap()
++        );
++        db.execute_batch("UPDATE host_instances SET decision_seq=99; UPDATE receipt_state SET available_at=NULL,deadline_at=1300 WHERE message_id='dormant'; UPDATE receipts SET available_at=NULL,deadline_at=1300 WHERE message_id='dormant';").unwrap();
++        assert!(
++            db.execute("UPDATE receipts SET ordinal=200 WHERE ordinal=20", [])
++                .is_err(),
++            "immutable ordinal trigger lost"
++        );
++        schema::initialize(&db, || UtcMillis(9999)).unwrap();
++        assert_eq!(
++        db.query_row(
++            "SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='i'",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        10
++    );
++        if version == 29 {
++            let invitations: Vec<(String, String, String, i64)> = db.prepare("SELECT id,confirmation,inviter_seat_id,deadline_at FROM invitations ORDER BY id").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().collect::<Result<_, _>>().unwrap();
++            assert_eq!(
++                invitations,
++                [
++                    ("modern".into(), "require_ack".into(), "s".into(), 150),
++                    ("quiet".into(), "lazy".into(), "s".into(), 150)
++                ]
++            );
++            assert!(
++                db.execute(
++                    "UPDATE invitations SET confirmation='lazy' WHERE id='modern'",
++                    []
++                )
++                .is_err()
++            );
++            assert!(
++                db.execute(
++                    "UPDATE invitations SET inviter_seat_id=NULL WHERE id='modern'",
++                    []
++                )
++                .is_err()
++            );
++            let due: Vec<String> = db.prepare("SELECT id FROM invitations INDEXED BY invitations_confirmation_due WHERE state='pending' AND warning_message_id IS NULL AND reject_recorded=0 AND (confirmation IS NULL OR confirmation='require_ack') ORDER BY deadline_at,ordinal").unwrap().query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
++            assert_eq!(due, ["modern"]);
++        }
++    }
++}
++
++#[test]
++fn receipt_send_time_upgrade_failure_rolls_back_constraint_and_cutover_then_retries() {
++    for version in [28, 29] {
++        for foreign_keys in [false, true] {
++            let db = v28_fixture();
++            if version == 29 {
++                db.execute_batch(include_str!(
++                    "../../migrations/0029_invitation_confirmation.sql"
++                ))
++                .unwrap();
++                db.pragma_update(None, "user_version", 29).unwrap();
++            }
++            db.execute_batch(
++                "CREATE TABLE receipt_upgrade_child(ordinal INTEGER REFERENCES receipts(ordinal));",
++            )
++            .unwrap();
++            db.pragma_update(None, "foreign_keys", false).unwrap();
++            db.execute("INSERT INTO receipt_upgrade_child VALUES(999)", [])
++                .unwrap();
++            db.pragma_update(None, "foreign_keys", foreign_keys)
++                .unwrap();
++            assert!(schema::initialize(&db, || UtcMillis(0)).is_err());
++            assert!(db.is_autocommit());
++            assert_eq!(
++                db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
++                    .unwrap(),
++                foreign_keys
++            );
++            assert_eq!(
++                db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
++                    .unwrap(),
++                29
++            );
++            assert_eq!(
++                db.query_row(
++                    "SELECT count(*) FROM sqlite_master WHERE name='receipt_send_time_cutovers'",
++                    [],
++                    |r| r.get::<_, i64>(0)
++                )
++                .unwrap(),
++                0
++            );
++            for table in ["receipts", "receipt_state"] {
++                let ddl: String = db
++                    .query_row(
++                        "SELECT sql FROM sqlite_master WHERE name=?1",
++                        [table],
++                        |r| r.get(0),
++                    )
++                    .unwrap();
++                assert!(ddl.contains("CHECK((available_at IS NULL) = (deadline_at IS NULL))"));
++            }
++            db.execute("DELETE FROM receipt_upgrade_child", []).unwrap();
++            schema::initialize(&db, || UtcMillis(0)).unwrap();
++            assert_eq!(
++                db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
++                    .unwrap(),
++                30
++            );
++            schema::initialize(&db, || UtcMillis(1)).unwrap();
++            assert_eq!(
++                db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
++                    .unwrap(),
++                foreign_keys
++            );
++        }
++    }
++}
++
++#[test]
++fn historical_sparse_retired_before_cutover_preserves_absent_deadline() {
++    let db = v28_fixture();
++    db.execute_batch("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','body',1000,5); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',5,1000,1,0,1,0); UPDATE seats SET state='retired',retired_at=1100,retired_seq=6 WHERE id='s'; INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES('s',11,1200,1,'cooperative_top_level');").unwrap();
++    schema::initialize(&db, || UtcMillis(0)).unwrap();
++    let receipt = effective_receipt(&db, "m", "s").unwrap().unwrap();
++    assert_eq!(receipt.state, EffectiveReceiptState::RecipientRetired);
++    assert_eq!(receipt.deadline_at, None);
++    assert_eq!(receipt.available_at, None);
++}
++
++#[test]
++fn historical_sparse_acknowledged_absent_deadline_survives_upgrade_and_later_availability() {
++    let db = v28_fixture();
++    // A live cooperative binding can ACK before its first registration. On
++    // v28 this leaves both availability and deadline absent at settlement.
++    db.execute_batch("UPDATE host_instances SET host_boot='b',host_epoch=1 WHERE id='i'; UPDATE seats SET target_id='p',target_generation=1 WHERE id='s'; INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','p','b',1,1,1100,'fresh','term-p','inc','coherent_enumeration',1); INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES('s',1,'p','b',1,1,'codex','ns','00000000-0000-4000-8000-0000000000aa','cooperative_top_level',1100,'term-p','inc'); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','retained body',1000,5); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',5,1000,1,0,1,0);").unwrap();
++    let observation = crate::store::control::AccountableActor {
++        harness: crate::protocol::authority::Harness::Codex,
++        native_session: crate::protocol::ids::NativeSessionId::new("ns"),
++        execution: crate::protocol::ids::ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
++        host_boot: crate::protocol::ids::HostBootId::new("b"),
++        target_generation: 1,
++        binding_generation: 1,
++        observed_at_utc: UtcMillis(1100),
++        provenance: "cooperative_top_level",
++    }
++    .observation(1100);
++    db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_actor_seat_id,ack_generation,ack_observation,acked_at) VALUES('m','s','acked','s',1,?1,1100)",[&observation]).unwrap();
++    assert_eq!(
++        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
++            .unwrap(),
++        28
++    );
++    assert_eq!(
++        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
++            .get::<_, i64>(
++            0
++        ))
++        .unwrap(),
++        0
++    );
++    let retained = receipt_upgrade_snapshot(&db, "receipt_state");
++    schema::initialize(&db, || UtcMillis(0)).unwrap();
++    assert_eq!(
++        effective_receipt(&db, "m", "s")
++            .unwrap()
++            .unwrap()
++            .deadline_at,
++        None
++    );
++    // A real later availability event may update observed availability, but it
++    // cannot invent a running clock for a historical acknowledged receipt.
++    db.execute_batch("UPDATE host_instances SET decision_seq=11 WHERE id='i'; UPDATE occupant_bindings SET registered_at=1200 WHERE seat_id='s' AND generation=1; INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES('s',11,1200,1,'cooperative_top_level');").unwrap();
++    schema::initialize(&db, || UtcMillis(1200)).unwrap();
++    let receipt = effective_receipt(&db, "m", "s").unwrap().unwrap();
++    assert_eq!(receipt.state, EffectiveReceiptState::Acknowledged);
++    assert_eq!(receipt.deadline_at, None);
++    assert_eq!(receipt.ack_actor_seat_id.as_deref(), Some("s"));
++    assert_eq!(receipt.ack_generation, Some(1));
++    assert_eq!(
++        receipt.ack_observation.as_deref(),
++        Some(observation.as_str())
++    );
++    assert_eq!(receipt.acked_at, Some(1100));
++    assert_eq!(receipt_upgrade_snapshot(&db, "receipt_state"), retained);
++}
+diff --git a/tests/store/materialization.rs b/tests/store/materialization.rs
+index 4fcc5c91..fdaa4516 100644
+--- a/tests/store/materialization.rs
++++ b/tests/store/materialization.rs
+@@ -110,21 +110,21 @@ fn later_anchor_does_not_restart_timer_or_enqueue_duplicate_attention() {
+             job,
+             WorkAdmission::new(1).unwrap(),
+             &budget(),
+             &clock,
+         )
+         .unwrap()
+         .has_more
+         {}
+     }
+     let times:(Option<i64>,Option<i64>)=db.query_row("SELECT available_at,deadline_at FROM receipt_state WHERE message_id='m' AND seat_id='s1'",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+-    assert_eq!(times, (Some(1200), Some(1500)));
++    assert_eq!(times, (Some(1200), Some(1300)));
+     assert_eq!(
+         db.query_row(
+             "SELECT attention_version FROM wake_work WHERE seat_id='s1'",
+             [],
+             |r| r.get::<_, i64>(0)
+         )
+         .unwrap(),
+         1
+     );
+ }
+@@ -451,21 +451,21 @@ fn published_manifest_warning_and_first_anchor_project_without_new_decision() {
+         &budget(),
+         &clock,
+     )
+     .unwrap()
+     .has_more
+     {}
+     assert_eq!(effective_warning_by_id(&db, "w").unwrap().unwrap(), before);
+     assert_eq!(count(&db, "warning_jobs"), 1);
+     assert_eq!(count(&db, "work_jobs"), 2);
+     let (available,deadline): (Option<i64>,Option<i64>) = db.query_row("SELECT available_at,deadline_at FROM receipt_state WHERE message_id='m' AND seat_id='s1'",[],|r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+-    assert_eq!((available, deadline), (Some(1200), Some(1500)));
++    assert_eq!((available, deadline), (Some(1200), Some(1300)));
+     assert_eq!(count(&db, "messages"), 1);
+ }
+ 
+ #[test]
+ fn warning_job_identity_collision_stops_send_projection_at_same_unit() {
+     let mut db = fixture();
+     db.execute_batch("\
+         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,warning_count,status) VALUES('p','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,0,1,'sealed');\
+         INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES('p','key','w','s1',1,1,'{}');\
+         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','body',1000,10);\
+@@ -841,10 +841,41 @@ fn send_attention_completion_stamps_completed_at() {
+         INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',10,1000,1,0,1,1);\
+         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('send','send_attention','p',3);\
+         INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES('s1',11,1200,1,'verified');\
+     ").unwrap();
+     drive(&mut db, "send");
+     assert_eq!(
+         completed_at(&db, "send"),
+         ("complete".into(), Some(999_999))
+     );
+ }
++
++#[test]
++fn unavailable_send_materializes_due_deadline_without_availability() {
++    let mut db = fixture();
++    db.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('p','i','a','o',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed'); INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('p','t','s1',1,300,0); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','body',1000,10); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',10,1000,1,0,1,0); INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('send','send_attention','p',2);").unwrap();
++    let clock = TestClock(AtomicU64::new(0));
++    let mut complete = false;
++    for _ in 0..3 {
++        let progress = advance_work(
++            &mut db,
++            "send",
++            WorkAdmission::new(1).unwrap(),
++            &budget(),
++            &clock,
++        )
++        .unwrap();
++        assert!(progress.last_error.is_none(), "{:?}", progress.last_error);
++        if !progress.has_more {
++            complete = true;
++            break;
++        }
++    }
++    assert!(
++        complete,
++        "finite unavailable-recipient projection did not terminate"
++    );
++    let times: (Option<i64>,Option<i64>) = db.query_row("SELECT available_at,deadline_at FROM receipt_state WHERE message_id='m' AND seat_id='s1'",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
++    assert_eq!(times, (None, Some(1300)));
++    let due: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM receipt_state INDEXED BY receipt_state_required_due WHERE state='pending' AND ack_required=1 AND warning_message_id IS NULL AND deadline_at<=1300)",[],|r|r.get(0)).unwrap();
++    assert!(due);
++}
+diff --git a/tests/store/receipts.rs b/tests/store/receipts.rs
+index 0ab9fa2b..17ab3156 100644
+--- a/tests/store/receipts.rs
++++ b/tests/store/receipts.rs
+@@ -628,24 +628,24 @@ fn availability_uses_frozen_duration_and_scan_warns_once_at_equality() {
+     let id = match send_prepared(&context, &mut conn, &send, &mut permit(&send), limits).unwrap() {
+         crate::protocol::results::CommandResult::MessageSent(id) => id,
+         _ => panic!(),
+     };
+     conn.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES ('b',3,1100,1,'verified')",[]).unwrap();
+     let effective = crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
+         .unwrap()
+         .unwrap();
+     let duration:i64=conn.query_row("SELECT pr.frozen_duration_ms FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE sm.message_id=?1 AND pr.seat_id='b'",[id.as_str()],|r|r.get(0)).unwrap();
+     let deadline = effective.deadline_at.unwrap();
+-    assert_eq!((duration, deadline), (50, 1150));
+-    conn.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at) VALUES (?1,'b','pending',1100,1150)",[id.as_str()]).unwrap();
++    assert_eq!((duration, deadline), (50, 1050));
++    conn.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at) VALUES (?1,'b','pending',1100,1050)",[id.as_str()]).unwrap();
+     let before_revision: i64 = conn.query_row("SELECT COALESCE((SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind='inbox' AND scope_key='b'),0)", [], |r| r.get(0)).unwrap();
+-    clock.0.store(1150, Ordering::SeqCst);
++    clock.0.store(1050, Ordering::SeqCst);
+     let mut cursor = receipts::ReceiptDueCursor::default();
+     assert_eq!(
+         receipts::scan_due(&context, &mut conn, 10, &mut cursor)
+             .unwrap()
+             .warnings,
+         1
+     );
+     let after_revision: i64 = conn.query_row("SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind='inbox' AND scope_key='b'", [], |r| r.get(0)).unwrap();
+     assert_eq!(after_revision, before_revision + 1);
+     assert_eq!(
+@@ -1053,41 +1053,41 @@ fn unavailable_joined_recipient_gets_one_warning_for_its_episode() {
+         messages::MessageLimits::default(),
+     )
+     .unwrap();
+     let transitions: Vec<(i64, Option<i64>)> = conn.prepare("SELECT opened_seq,cleared_seq FROM warning_conditions WHERE condition_kind='unavailable' ORDER BY ordinal").unwrap().query_map([], |r| Ok((r.get(0)?,r.get(1)?))).unwrap().collect::<Result<_,_>>().unwrap();
+     assert_eq!(transitions.len(), 2);
+     assert!(transitions[0].0 < transitions[0].1.unwrap());
+     assert!(transitions[0].1.unwrap() < transitions[1].0);
+ }
+ 
+ #[test]
+-fn send_does_not_start_timer_from_stale_registered_binding() {
++fn stale_registered_binding_keeps_availability_absent_with_send_time_deadline() {
+     let (context, mut conn, _) = setup();
+     conn.execute("UPDATE occupant_bindings SET host_boot='old',host_epoch=0,target_generation=0,registered_at=0 WHERE seat_id='b'", []).unwrap();
+     let send = send_request(vec![]);
+     let id = match send_prepared(
+         &context,
+         &mut conn,
+         &send,
+         &mut permit(&send),
+         messages::MessageLimits::default(),
+     )
+     .unwrap()
+     {
+         crate::protocol::results::CommandResult::MessageSent(id) => id,
+         _ => panic!(),
+     };
+-    let start = crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
+-        .unwrap()
++    let receipt = crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
+         .unwrap()
+-        .available_at;
+-    assert_eq!(start, None);
++        .unwrap();
++    assert_eq!(receipt.available_at, None);
++    assert_eq!(receipt.deadline_at, Some(301000));
+ }
+ 
+ #[test]
+ fn current_binding_with_bumped_snapshot_generation_is_unavailable_and_warns_once() {
+     let (context, mut conn, _) = setup();
+     // setup() already gives seat b a live cooperative binding on pb and a
+     // fresh observation of pb; register that binding (merge note: main's
+     // fixture inserted both rows itself).
+     conn.execute(
+         "UPDATE occupant_bindings SET registered_at=0 WHERE seat_id='b' AND ended_at IS NULL",
+@@ -1555,21 +1555,21 @@ fn first_anchor_makes_sparse_receipt_due_for_late_ack() {
+     {
+         crate::protocol::results::CommandResult::MessageSent(id) => id,
+         other => panic!("{other:?}"),
+     };
+     conn.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES ('b',3,1500,1,'verified')",[]).unwrap();
+     conn.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES ('b',4,9000,1,'verified')",[]).unwrap();
+     let effective = crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
+         .unwrap()
+         .unwrap();
+     assert_eq!(effective.available_at, Some(1500));
+-    assert_eq!(effective.deadline_at, Some(2000));
++    assert_eq!(effective.deadline_at, Some(1500));
+     clock.0.store(2000, Ordering::SeqCst);
+     let ack = ack_request(vec![id.clone()]);
+     receipts::ack(
+         &context,
+         &mut conn,
+         &crate::protocol::time::CallBudget {
+             deadline: crate::protocol::time::MonoInstant(u64::MAX),
+             cancellation: Default::default(),
+         },
+         &ack,
+diff --git a/tests/store/schema.rs b/tests/store/schema.rs
+index ecfe82d3..64f152d3 100644
+--- a/tests/store/schema.rs
++++ b/tests/store/schema.rs
+@@ -526,34 +526,43 @@ fn v7_upgrade_backfills_only_pending_rows_into_the_digest_projections() {
+ // execution than its current occupant, so it settles nothing there. The
+ // projection is ordered by publication, whatever the recipient insertion
+ // order. Kills: a backfill without the frontier (n1 pending for `s`).
+ // `o`'s result needs occupant scoping in the backfill or in the frontier
+ // read; each alone suffices here, so neither single mutation fails this
+ // test (demonstrated). Read-time scoping is killed by
+ // `programmatic_notices_settle_page_by_page_for_the_current_occupant`.
+ #[test]
+ fn v6_upgrade_carries_the_current_occupant_offer_into_the_notice_frontier() {
+     let db = v6_database();
+-    // Seed only the rows the backfill reads (the publications' preparation
+-    // rows are not needed for it).
+-    db.pragma_update(None, "foreign_keys", "OFF").unwrap();
++    // Keep the old publication graph realizable: publication rows retain their
++    // canonical preparations even though the notice backfill does not read them.
++    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+     db.execute_batch("\
+         INSERT INTO host_instances(id,created_at,decision_seq) VALUES ('i',0,10);\
+         INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0),('o','i','resolved','native',1,0);\
+         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);\
+         INSERT INTO service_authors(id,instance_id,created_at) VALUES ('svc','i',0);\
+         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,event_json,decision_at,author_kind,author_service_id) VALUES ('n1','i','t',1,'warn',3,'{}',0,'programmatic','svc'),('n2','i','t',2,'warn',5,'{}',0,'programmatic','svc');\
++        INSERT INTO service_notification_preparations(id,instance_id,author_id,operation_key,digest,thread_id,membership_revision,lifecycle_revision,interval_high_water,requirement_high_water,recipient_count,status) VALUES ('p1','i','svc','p1',zeroblob(32),'t',0,0,0,0,2,'published'),('p2','i','svc','p2',zeroblob(32),'t',0,0,0,0,2,'published');\
+         INSERT INTO service_notification_publications(preparation_id,message_id,decision_seq,recipient_count) VALUES ('p1','n1',3,2),('p2','n2',5,2);\
+         INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('n2','s',5),('n2','o',5),('n1','s',3),('n1','o',3);\
+         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at) VALUES ('s',1,'ps','b',1,'codex','ns','exec-s','fresh',0),('o',1,'po','b',1,'codex','no','exec-o','fresh',0);\
+         INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES ('s',1,'exec-s',3),('o',1,'predecessor',5);\
+     ").unwrap();
++    assert_eq!(
++        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
++            .get::<_, i64>(
++            0
++        ))
++        .unwrap(),
++        0
++    );
+     schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
+     let pending = |seat: &str| -> Vec<String> {
+         crate::store::attention::seat_pending_warnings(&db, seat, &|| Ok(()))
+             .unwrap()
+             .items
+             .into_iter()
+             .map(|item| item.id)
+             .collect()
+     };
+     assert_eq!(pending("s"), ["n2"]);
+@@ -5680,21 +5689,21 @@ fn user_intent_seed(db: &Connection) {
+ // Catches accidental history rewrites or unequal fresh/upgrade schema shapes.
+ #[test]
+ fn user_intent_schema22_fresh_and_v21_upgrade() {
+     fn snapshots(db: &Connection) -> (Vec<String>, Vec<(String, i64)>) {
+         let rows = [
+             "SELECT json_array(id,author_role,relays_user,author_role_backfilled,body,decision_at) FROM messages ORDER BY id",
+             "SELECT json_array(block_id,ordinal,target_id,new_status,cite_seq) FROM summary_transitions ORDER BY ordinal",
+             "SELECT json_array(id,fetched_at,created_at) FROM summary_jobs ORDER BY id",
+         ].into_iter().flat_map(|sql| db.prepare(sql).unwrap().query_map([], |r| r.get::<_,String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()).collect();
+         let roots = db
+-            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics','lazy_recipients','bootstrap_handoffs','bootstrap_child_keys','bootstrap_attempts','bootstrap_recovery_decisions','bootstrap_attachments','bootstrap_reports') ORDER BY name")
++            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics','lazy_recipients','bootstrap_handoffs','bootstrap_child_keys','bootstrap_attempts','bootstrap_recovery_decisions','bootstrap_attachments','bootstrap_reports','receipt_send_time_cutovers') ORDER BY name")
+             .unwrap()
+             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+             .unwrap()
+             .map(Result::unwrap)
+             .collect();
+         (rows, roots)
+     }
+     fn shape(db: &Connection) -> Vec<(String, String, String)> {
+         db.prepare(
+             "SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name",
+@@ -6247,21 +6256,21 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
+             assert!(db.execute("INSERT INTO harness_contract_diagnostics VALUES(?1,'invalid','0123456789abcdef','SessionStart','field',12,13)",[harness]).is_err(),"{harness}");
+         }
+         let fresh = fresh_db();
+         let catalog = |db: &Connection| {
+             db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").unwrap()
+             .query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?.split_whitespace().collect::<String>().replace('\"',"")))).unwrap().map(Result::unwrap).collect::<Vec<_>>()
+         };
+         assert_eq!(catalog(&db), catalog(&fresh));
+         assert_eq!(
+             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
+-            74
++            75
+         );
+         assert_eq!(
+             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
+             140
+         );
+         assert_eq!(
+             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
+             183
+         );
+     }
+diff --git a/tests/store/service_send.rs b/tests/store/service_send.rs
+index 3cb387a9..5f54d64a 100644
+--- a/tests/store/service_send.rs
++++ b/tests/store/service_send.rs
+@@ -258,38 +258,47 @@ impl Fixture {
+             },
+             operation_scope: None::<OperationReadScope>,
+         };
+         StorePort::query(&self.store, &command, &read, &budget()).unwrap()
+     }
+ 
+     /// Runs the message's `send_attention` job to completion.
+     fn drain(&self, message: &MessageId) {
+         let job = format!("work:send:{}", message.as_str());
+         let mut db = self.db();
+-        loop {
++        let high_water: i64 = db
++            .query_row(
++                "SELECT high_water FROM work_jobs WHERE id=?1",
++                [&job],
++                |r| r.get(0),
++            )
++            .unwrap();
++        for _ in 0..=high_water + 1 {
+             let status: String = db
+                 .query_row("SELECT status FROM work_jobs WHERE id=?1", [&job], |r| {
+                     r.get(0)
+                 })
+                 .unwrap();
+             if status == "complete" {
+                 return;
+             }
+-            materialization::advance_work(
++            let progress = materialization::advance_work(
+                 &mut db,
+                 &job,
+                 DurableWorkAdmission::new(16).unwrap(),
+                 &budget(),
+                 self.store.context.clock(),
+             )
+             .unwrap();
++            assert!(progress.last_error.is_none(), "{:?}", progress.last_error);
+         }
++        panic!("finite send projection did not terminate");
+     }
+ }
+ 
+ #[test]
+ fn service_send_writes_programmatic_ordinary_row() {
+     let f = Fixture::with_joined(&["s1", "s2"]);
+     let sent = f.sent("k1", "hello there", &[]);
+     let id = sent.summary.message.clone();
+     let db = f.db();
+     let row: (String, String, String, Option<String>, String, Option<String>) = db
+@@ -1401,10 +1410,73 @@ fn service_preparation_retention_preserves_resume_and_rebuild_fences() {
+             .unwrap(),
+         None
+     );
+     assert_eq!(
+         db.query_row("SELECT count(*) FROM send_manifests", [], |r| r
+             .get::<_, i64>(0))
+             .unwrap(),
+         1
+     );
+ }
++
++#[test]
++fn new_service_sends_anchor_all_unavailable_audiences_to_send_time() {
++    for state in ["unbound", "unavailable", "managed_launch", "invited"] {
++        let f = Fixture::with_joined(&["s1"]);
++        {
++            let db = f.db();
++            match state {
++                "unbound" => {
++                    db.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
++                        .unwrap();
++                }
++                "unavailable" => {
++                    db.execute(
++                        "UPDATE occupant_bindings SET registered_at=NULL WHERE seat_id='s1'",
++                        [],
++                    )
++                    .unwrap();
++                }
++                "managed_launch" => {
++                    db.execute("UPDATE occupant_bindings SET registered_at=NULL,observation_provenance='managed_launch' WHERE seat_id='s1'", []).unwrap();
++                }
++                "invited" => {
++                    db.execute("UPDATE memberships SET state='invited',voluntary_state='invited' WHERE seat_id='s1'", []).unwrap();
++                    db.execute(
++                        "UPDATE membership_intervals SET left_seq=2 WHERE seat_id='s1'",
++                        [],
++                    )
++                    .unwrap();
++                    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES('v','t','s1',1,'pending',2,0,300,300)",[]).unwrap();
++                }
++                _ => unreachable!(),
++            }
++        }
++        let explicit = if state == "invited" {
++            vec!["s1"]
++        } else {
++            vec![]
++        };
++        let ServiceResult::MessageSent(sent) = f.send("k", "body", &explicit, Some(50)).unwrap()
++        else {
++            panic!()
++        };
++        let id = sent.summary.message;
++        let before = crate::store::effective::effective_receipt(&f.db(), id.as_str(), "s1")
++            .unwrap()
++            .unwrap();
++        assert_eq!(before.deadline_at, Some(150), "{state}");
++        if state != "invited" {
++            assert_eq!(before.available_at, None, "{state}");
++        }
++        f.drain(&id);
++        let db = f.db();
++        let deadline: i64 = db
++            .query_row(
++                "SELECT deadline_at FROM receipt_state WHERE message_id=?1 AND seat_id='s1'",
++                [id.as_str()],
++                |r| r.get(0),
++            )
++            .unwrap();
++        assert_eq!(deadline, 150, "{state}");
++    }
++}

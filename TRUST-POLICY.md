@@ -36,7 +36,7 @@ The vision is therefore **cooperative honesty with conservative continuity**:
    it does not guess, merge, or let a newcomer take a seat's place. Losing a seat strands its threads and
    obligations; misattributing one corrupts the record. Both are worse than a short wait for the operator.
 4. **Decide against one view.** Each decision is made by the daemon, inside one transaction, against one
-   canonical picture of the world: the daemon boot the caller addressed, the seat's current binding, and the
+   canonical picture of the world: the daemon boot the caller addressed, the caller's own canonical binding, and the
    effective host observation. Clients and local files are hints.
 5. **Use only evidence that exists.** A transition may depend only on evidence the production host adapter
    actually produces. Heuristics may suggest; they never move a seat or end a binding.
@@ -188,7 +188,7 @@ records there are replay machinery, never its identity.
 | `operator_human` | bindings, receipts | A person declared this pane human with `ht human me init` and acted from it. Best effort: refused where the system sees evidence of an agent (A4). |
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because a resumed harness session id matched (C1). Never on receipts. |
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. |
-| `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), on any seat, beside whatever bindings the seat already holds, decided against the effective observation (A2). It carries the liveness fingerprint (pid and start time, from host process info) of the one process Herdr reports in the pane's foreground besides its shell; with none or several observable, nothing is recorded. Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, it keeps the seat generation, and it starts no availability or receipt timer. |
+| `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), on any seat, beside whatever bindings the seat already holds, decided against the effective observation (A2). It carries the liveness fingerprint (pid and start time, from host process info) of the one process Herdr reports in the pane's foreground besides its shell; with none or several observable, nothing is recorded. Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, it keeps the seat generation, and it establishes no availability. Receipt deadlines start at send time independently of this binding. |
 | `cooperative_env_session` | binding claims | The CLI or a hook took the caller's session id from its harness environment or hook payload (`CLAUDE_CODE_SESSION_ID`; `CODEX_SESSION_ID` with `CODEX_THREAD_ID`; `HERMES_SESSION_ID`; and the session variable a registered adapter declares in its caller shape, today agy's `ANTIGRAVITY_CONVERSATION_ID`), choosing the innermost harness among the caller's ancestors. Cooperative and prompted, not native attestation. Never on receipts. |
 | `cooperative_hook_agent` | binding claims | herdr-threads' own Claude PreToolUse hook inserted `--agent-id=<agent_id>` into a recognized `herdr-threads`/`ht` command, attributing the call to that subagent. Shapes the hook cannot recognize stay attributed to the parent session. Never on receipts. |
 | `liveness_process_exit` | binding disconnections only | The binding's fingerprinted process (pid and start time) no longer exists, or the pid now has a different start time. Structural evidence; it disconnects the binding and never ends it, moves a seat or merges seats. |
@@ -546,6 +546,20 @@ Declared subagents cannot reject. Required invitations remain service-owner cont
 ask that owner to release the requirement and reread its current state before attempting rejection.
 Reinvitation creates a fresh episode; replay of an old rejection cannot reject that new invitation.
 
+Ordinary agent invitation confirmation is an immutable episode policy. Modern Lazy invitations remain
+pending and discoverable at ordinary inbox/hook opportunities, with no acceptance timer or native/mod
+wake. Their inherited physical duration/deadline columns retain legacy storage timing only; no canonical
+deadline, event, diagnostic or wake projection interprets that timing as a confirmation obligation.
+Explicit RequireAck, and historical invitations whose policy is absent, retain a frozen deadline from
+canonical creation. Registration and launch never accept an invitation or reset its deadline. Only the
+addressed seat's explicit accountable acceptance settles participation; rejection, requirement release
+and retirement retain their existing distinct terminal outcomes. Duplicate pending invitations preserve
+the first policy, timing and inviter; an already joined target creates no new invitation. Required service
+memberships retain their timed participation contract: imposing a requirement on a pending Lazy
+voluntary invitation creates a fresh timed episode and preserves the old invitation, origin and keyed
+outcome. Releasing that requirement leaves the original Lazy invitation discoverable without a timer.
+Explicit human/operator invitation semantics remain separate and unchanged.
+
 **Automatic pair reservation.** `EnsureDirectThread` resolves one immutable canonical channel for
 exactly the caller and recipient seats, under the caller's ordinary `cooperative_top_level` or
 `operator_human` claim and the A2 deciding transaction. Initial creation joins only the caller and
@@ -556,8 +570,24 @@ Explicit leave, rejection and archival require ordinary join/accept/reinvite/reo
 automatic resurrection or replacement. Exact operation replay returns historical selection before
 fresh A2/lifecycle checks; it grants no permission for a new send. Direct markers freeze the exact
 other pair seat independently of ACK requests and are validated at preparation and publication,
-including corrupt participant/audience refusal. Lazy messages retain A8; a first Ensure may separately
-produce ordinary invitation attention and wake. Pair identity remains with its channel history;
+including corrupt participant/audience refusal. Lazy messages retain A8. An absent Ensure creation policy preserves the historical
+initial timed invitation and exact `ThreadCreated` result bytes. Explicit creation policy
+uses a bounded `DirectThreadEnsured` result: canonical thread/recipient, the selection
+outcome (created, existing pending or already joined), and the actual pending
+invitation's ID, episode, confirmation, effective deadline and inviter. This is the
+canonical selection at the original keyed decision; replay never refreshes the
+policy or deadline, and local copies remain hints. Historical NULL confirmation is
+presented as effective RequireAck while preserving its original deadline and NULL
+inviter. A new explicit RequireAck from a Human issuer is refused, matching ordinary
+Invite; existing episodes and historical absent-policy creation remain unchanged.
+The additive `direct_threads.ensure_creation_policy_v1`
+capability admits an explicit frozen initial Lazy or RequireAck policy and optional
+positive duration. Only creation of a new pair applies it; existing pending or joined
+participation keeps its original policy, inviter and deadline, and left/rejected
+participation still requires explicit repair. Modern direct sends and automatic
+handoffs freeze Lazy by default and require this capability before publication or
+canonical/native effects. A requested body ACK has its own send-time deadline and
+cannot accept an invitation or settle participation. Pair identity remains with its channel history;
 there is no seat merge, remapping or generation rollover and no new provenance value.
 
 **Voluntary self-join.** An explicit `join THREAD` enrolls the caller's seat in an active
@@ -612,7 +642,29 @@ for its prior marked clear to publish, so a blocked send can return `StoreBusy` 
 operation after bounded preparation cleanup. A sweep cannot clear conditions opened after its
 boundary or claim that an unprocessed clear event was delivered.
 
-**A6. Effective receipt deadlines.** A receipt's effective deadline is the later of its frozen deadline and
+**A6. Effective receipt deadlines.** New durable ACK-required sends freeze their duration
+and original deadline at canonical committed send time plus that duration. This applies to
+unbound, unregistered, unavailable and invited recipients; later registration, acceptance,
+restart or rebind cannot restart the clock. Availability remains observed availability and
+confers no new wake or receipt authority. Lazy delivery and canonical human waivers remain
+free of ACK obligations. The durable per-instance send-time cutover preserves every previously
+running sparse deadline using the earliest canonical availability recorded before the cutover
+and before retirement; stored running deadlines and terminal receipt provenance are preserved.
+Previously dormant obligations derive their deadline from immutable send time and duration.
+
+Modern clients require `messages.send_time_receipts_v1` before a new ACK-required send;
+absent or refused discovery fails explicitly without a legacy fallback. Lazy sends are exempt.
+Accepted mixed-version limit: ordinary CLI and service clients cannot prove that the canonical
+recipient audience is entirely human-waived, so an ordinary send that can create an agent
+obligation conservatively requires the capability, even when its eventual audience is all human.
+The sender's human harness never implies a recipient waiver. Completed retained compound
+results and service journal records remain inspectable unchanged without new send effects.
+Public ordinary CLI operation-status reads require a verified scope unavailable on that wire path,
+so the client cannot recover an exact pending key's committed outcome through that command.
+Ordinary commit-unknown CLI retries and service pending replays without locally retained completion
+conservatively require the capability even if their original send may already have committed. Immutable request bytes, keys, digests and outcomes are never rewritten.
+
+A receipt's effective deadline is the later of its frozen deadline and
 the `extension_until` of the latest catch-up row for the receipt's (seat, thread). The daemon decides it (A2)
 from catch-up state the seat itself entered through its accountable claim (a `summary` call that returned
 work). The first entry, and any entry after a ready or superseded row, grants one p99 job duration;
@@ -630,23 +682,25 @@ its audience is the members at the rejection decision plus the rejecting seat, n
 Only the exact native warning backed by the retained rejection record is classified this way.
 Historical info rejection events remain unchanged on replay. Rejection notices are passive for every
 recipient: they create no wake, poke, receipt or ACK obligation. A committed check-in, or a
-hook-pull harness's `DeliveryPull` page, settles only the bounded prefix of attributed events it
-carries to the exact checking-in or pulling binding: the notice frontier and the warning offer
-frontier are kept per binding (ht-54r.9), so another session's check-in or lifecycle start neither
-settles nor resets them, and a binding's digest token names that binding. The pull settles before it
-replies, for the connected top-level binding its claim names; nothing is transcript-confirmed and no
-provenance is recorded. The pull's settle refuses unless the carried notices are still exactly that
-binding's unoffered prefix, so a check-in and a pull of one binding never carry the same notice, and a
-notice shows once per binding. The pull's version includes the newest notice pending for that binding,
-so an unchanged reply never hides one; notices never wake. A subagent binding never checks in and
-settles nothing: its hook reads its own binding's digest (unread mail past its own cursor, notices
-above its parent's frontier) and presents it with read-only wording, compared only with its own
-client-local mark (a hint keyed by the binding key, never authority). A caller-bound inbox read
-decides its warning cutoff and informational-notice view against the reading binding's own frontiers
-(a subagent's against its parent's until it has its own), never a sibling's. Seat-level readers (wake,
-receipts, an unbound inbox) follow the seat's newest open top-level binding, a connected one first. The mod channel is
-held per connected top-level binding of a push-channel harness, not per seat. A global decision
-watermark cannot settle uncarried events, including late attribution.
+hook-pull harness's `DeliveryPull` page or a capable Watch presentation page, settles only the
+bounded prefix of attributed events it carries to the exact checking-in or pulling binding:
+the notice frontier and warning offer frontier are kept per binding, so another session's
+check-in or lifecycle start neither settles nor resets them, and a binding's digest token names
+that binding. The pull settles before it replies, for the connected top-level binding its claim
+names; nothing is transcript-confirmed and no provenance is recorded. The pull's settle refuses
+unless the carried notices are still exactly that binding's unoffered prefix. Check-in, Hook
+and capable Watch share that binding's exact notice frontier: fresh allocation carries each
+notice once per binding, while bounded recovery may restream the same frozen outbox token.
+The pull's version includes the newest notice pending for that binding, so an unchanged reply
+never hides one; notices never wake. A subagent binding never checks in and settles nothing:
+its hook reads its own binding's digest (unread mail past its own cursor, notices above its
+parent's frontier) and presents it with read-only wording, compared only with its own client-local
+mark (a hint keyed by the binding key, never authority). A caller-bound inbox read decides its
+warning cutoff and informational-notice view against the reading binding's own frontiers
+(a subagent's against its parent's until it has its own), never a sibling's. Seat-level readers
+(wake, receipts, an unbound inbox) follow the seat's newest open top-level binding, a connected
+one first. The mod channel is held per connected top-level binding of a push-channel harness,
+not per seat. A global decision watermark cannot settle uncarried events, including late attribution.
 History and immutable operation results remain readable. A successor occupant gets its own offers;
 response loss can lose an informational offer after commitment, and so can a hook-pull injection
 that the harness accepts but the model never sees (an agy `systemMessage` that silently misses;
@@ -654,11 +708,31 @@ notices are not transcript-confirmed, ht-7jh); an explicit operation retry
 can present the retained result again. Delivery is neither invitation acceptance nor receipt ACK,
 agreement, adoption or task completion. Logical publication tokens stay unchanged by projection;
 an advertised read-only delivery hint lets hooks drain newly attributed and remaining notice pages.
-Delivery is not a wake. A built-in transition wakes only the affected seat of a still-open
-condition (the hard-deadline backstop for the obligation that seat owes); a clear, and every
-transition about another seat, waits for the member's next check-in offer or hook-pull page. Accepted
-limit: an idle member learns of another seat's overdue or cleared obligation only when its pane next
-checks in or, on a hook-pull harness, at its next turn-start pull. When
+Delivery is not a wake. A built-in transition wakes the affected seat of a still-open
+condition (the hard-deadline backstop for the obligation that seat owes). An invitation deadline-missed
+open transition also wakes its originally recorded native inviter under the same host, composer and mod
+admission guards, even after that inviter leaves the thread or its informational notice was already
+carried by a committed offer. A separate bounded open-condition projection preserves this wake until
+canonical closure; the informational offer remains settled and creates no repeated delivery obligation.
+The open episode freezes its instance and original inviter address; historical
+rows use only their exact canonical invitation-creation event's recorded inviter, never a current member
+or later duplicate caller. Unknown historical/service/operator origins do not manufacture a native seat.
+A still-open receipt deadline condition also wakes every canonical native seat author of its exactly
+associated physical or published-manifest receipts, including authors who left the thread. The shared
+thread/recipient condition retains one open event: later associations add derived origin addresses,
+not new warning events or receipt provenance. Informational offers cannot settle this independent
+open-origin attention. The indexed origin projection persists for all associated authors while any
+required, pending, unwaived receipt remains; settling a subset cannot withdraw another author's
+warning. Final settlement clears it once, passively. Canonical closure alone removes these waking
+addresses. Unknown and programmatic authors create no native seat address. Historical projection
+bootstrap and deadline repair run in bounded transactional turns; durable warning discovery remains
+independent of native wake admission, so composer drafts, active turns and host outages may defer
+key submission indefinitely.
+A clear remains passive. Apart from the canonical origin wakes above, transitions about another
+seat remain passive for other observers and wait for the recipient's next check-in offer or
+hook-pull page. Accepted limit: an idle member who is only a passive observer learns of another
+seat's overdue or cleared obligation only when its pane next checks in or, on a hook-pull harness,
+at its next turn-start pull. When
 more than the bounded window of pending warnings or unoffered notices is visible, narrowing cannot rule
 out an older waking notice (such as a service notice), so the wake keeps its unnarrowed answer and the
 offer probe stays conservative: it may still wake, never silently drop one.
@@ -681,7 +755,9 @@ Only the caller's default text inbox, a standard native hook, a push-channel mod
 been written and flushed. The completion handler validates the current top-level or human canonical
 caller (A2) and exact published addressed message IDs in its deciding transaction; declared subagents
 cannot complete delivery. JSON, machine, explicit-seat reads, history, bodies and summaries remain
-read-only. Local display journals are cooperative hints, never authority. Completion is idempotent
+read-only for Lazy completion. A complete successful own text body display may separately advance only
+the calling binding's read cursor, as specified below; it is not Lazy completion or a receipt ACK.
+Local display journals are cooperative hints, never authority. Completion is idempotent
 presentation bookkeeping: it records no ACK actor, receipt provenance, timeline ACK, agreement,
 instruction adoption, task completion or proof of model consumption. Partial output and changed
 bindings cannot manufacture complete display. Frozen completion retries preserve their original full
@@ -742,9 +818,10 @@ session's transcript (`DeliveryConfirm`), decided by the daemon against A2, rest
 generation, under the `cooperative_hook_delivery` claim (no per-row source is stored). Same presentation-bookkeeping limits. It is the only hook path that completes a hook-pull seat's lazy rows.
 
 **Per-binding read position (`AdvanceCursors`, `InboxQuery.claim`).** An inbox read that carries the caller's
-claim is that binding's own stream: the messages of the seat's joined threads past the binding's cursors, plus
-the seat's open invitations, its still-pending ACK obligations and, for a top-level binding, the seat-wide
-pending pre-join lazy rows (join frontier, below). A display moves only the displaying
+claim is that binding's own stream: the messages of the seat's joined threads past the binding's cursors,
+the narrowly admitted current direct-invitation Lazy stream below, plus the seat's open invitations,
+its still-pending ACK obligations and, for a top-level binding, the seat-wide pending pre-join lazy rows
+(join frontier, below). A display moves only the displaying
 binding's cursors, with the exact message IDs it showed whole. The command is decided in the daemon against
 the canonical view (A2) and resolves the claim to its own binding like any plain cooperative call (it may
 enroll). It is the one write a declared subagent may send, because it changes no seat state: it records no ACK
@@ -771,6 +848,76 @@ Another binding's ACK and an explicit (non-display) `ack` are never such evidenc
 continuation chain begun at an explicit offset counts as whole (the continuation does not record where the
 read began).
 
+**Direct Lazy readers during an invitation.** An exact published Lazy recipient in an immutable
+canonical pair may be read before acceptance in any active invitation episode, not only the first.
+For a binding without its own cursor and an unjoined recipient, admission requires the exact pair
+endpoint/instance, a nonretired seat, current voluntarily invited membership, and its exact pending
+invitation by `(thread,seat,episode)`. Only messages published after that invitation's immutable creation
+decision enter this cursorless stream. Retained `lazy_recipients.state` is not modern binding unread
+authority. Existing own cursors retain their addressed unread stream, including earlier episodes and
+A8-retained work after leave, retirement or archival; the new episode boundary never raises them.
+Joined-reader and frozen legacy-pending rules remain separate and unchanged.
+
+Canonical pair writers make this a bounded current-episode decision. Native, operator and ordinary
+service invitations reuse an active voluntary invitation rather than create parallel active episodes.
+Rejection clears that episode's voluntary invited marker even if raw invited/pending states remain.
+Pairs cannot become service-owned, Required invitations require that ownership, and requirement release
+is the only invitation-cancellation writer. Thus exact current pending invitation plus voluntary invited
+membership excludes canonically rejected/cancelled pair episodes; future writers must preserve this
+implication or revise the predicate and its counted work. This is not a claim about hand-edited stores.
+
+The invitation creation decision is the publication lower bound, not a thread cursor value. When a
+cursorless reader needs a baseline, resolve the invitation's actual timeline event using at most three
+UNIQUE event-key points: `invite:<id>`, `operator_invite:<id>` and `service_invite:<id>:ordinary`.
+Validate instance, thread, kind, source invitation and decision ordering; choose the earliest valid
+thread sequence among these fixed results. A current duplicate Ordinary ServiceInvite returns the
+original invitation without appending another event. Missing or conflicting event authority is an
+error, never a guessed zero/head/timestamp baseline or an invitation-history scan.
+
+An exact currently eligible full display may use this event sequence as a virtual baseline in the
+common cursor walk, through both own `AdvanceCursors` and existing logical Lazy completion entry points.
+Only resulting progress beyond the virtual floor is persisted; an earlier unshown current-episode
+receivable message still blocks progress. Existing cursors start unchanged. A query, partial/failed
+output, machine read, arbitrary message ID or physical V2 presentation confirmation cannot establish
+that baseline. A delayed older-episode display cannot borrow a newer invitation floor. Existing explicit
+published-ID completion authority is preserved with its existing baseline/gap rules where the new
+current-episode baseline is inapplicable. Cursor scope is not evidence that older mail was displayed;
+Lazy completion remains presentation bookkeeping with no ACK, adoption or participation effect.
+
+Accepting this exact active direct invitation preserves every existing own cursor and inserts missing
+open-binding cursors at the event floor, never at the thread head. Capture the floor in the deciding
+transaction before changing membership; acceptance is not display. In the existing open-binding fanout,
+invalidate each affected binding's reader exactly once even if its cursor did not change: joining also
+makes settled addressed ordinary direct messages above the retained baseline newly readable. This
+mixed ordinary/Lazy consequence is intentional because they share a cursor. The helper uses exact
+current binding/seat scope and two fixed Hook/Watch consumer points, increments only matching existing
+private passive-generation/content-version counters, and preserves carry, token, partial body and
+parked progress. No consumer-history scan or sibling substitution is allowed. Checked overflow or any
+failure rolls back invitation, membership/interval, cursor and all tentative private writes together.
+Historical accept replay neither reseeds nor invalidates again. General Join and nonpair acceptance
+retain their head policy; no new binding fanout occurs at publication or reading.
+
+A new binding while the invitation is pending can independently receive that episode's addressed work,
+even if a sibling displayed it. A new binding after acceptance retains normal joined-thread seat-maximum
+or head seeding. These rules do not rewind historical cursors already advanced by prior join or genuine
+display, and do not claim to recover historically skipped bodies. Existing explicit lifecycle
+fast-forward remains the separate accepted Lazy limit described below. No binding-birth heuristic,
+autoaccept, receipt provenance, new schema or deadline is inferred from this reader exception.
+
+For private ordinary presentation only, an intact captured modern Lazy continuation whose current
+reader scope has become inapplicable may retire its exact private body/ordinal instead of blocking
+later episodes. Exact message/instance/Lazy mode, published addressing, captured publication/range,
+canonical binding, and the assembler's matching ID/offset or skip-body state must validate first;
+missing/corrupt authority remains an error. This retirement requires `legacy_pending=0`: modern-scope
+failure alone never discards the independent top-level legacy-pending branch. Public continuation
+remains strict. Advance only that captured Lazy ordinal, clear only its matching body/prefix, and
+charge one existing physical candidate visit plus three scope probes once. Preserve the frozen scan
+version/passive-generation/publication/ordinal capture so that finishing the old scan allows the next
+normal quantum to observe newer publications. Preserve unrelated carry, token, parked state and logical
+offer stamps. Retirement creates no canonical Lazy completion, deletion, receipt, ACK, read cursor,
+acceptance or display evidence; any failure rolls back private progress. Existing private work caps
+remain unchanged, with no history scan, event lookup or new durable state.
+
 **First-contact stats and fast-forward.** Two bounded, informational summaries ride on the response that
 creates or resumes a binding; neither is authority and neither writes a receipt. The lifecycle check-in that
 *enrolls* a binding carries per-thread history counts (at most 8 threads and one count, no summary text), once;
@@ -786,7 +933,8 @@ binding's fast-forward moves only its own cursors. Accepted limit: a binding a p
 already connected when its own lifecycle resume arrives, so that resume is not a reconnect and does not
 fast-forward. The limit covers only a binding a plain call reconnected after a process exit.
 
-**Join frontier and pre-join lazy mail (ht-8y9).** Every transition of a seat into Joined (`accept`,
+**Join frontier and pre-join lazy mail (ht-8y9).** Except for the exact active direct-invitation
+acceptance described above, every transition of a seat into Joined (`accept`,
 `accept-required`, `join`, thread creation and a direct pair's Ensure for its caller) runs one
 deciding-transaction step, `read_cursors::init_for_join`, in this order:
 
@@ -796,8 +944,9 @@ deciding-transaction step, `read_cursors::init_for_join`, in this order:
    still `pending`) is marked seat-pending (`legacy_pending`, the same flag rows carried from before V34 use).
    So a row displayed out of order while a cursor was held behind an undisplayed one (a truncated delivery)
    is never shown again after a join. Nothing else selects the population: not membership intervals and not
-   when the row was addressed. Typically these are a direct send's
-   frozen invited target rows (A8), plus joined-era rows no binding has passed yet.
+   when the row was addressed. These can include retained direct-send target rows reached by a generic Join, plus joined-era
+   rows no binding has passed yet. Exact active direct-invitation acceptance uses its own event floor
+   instead and does not mark this seat-wide population.
 2. *Join-head frontier.* Every open binding of the seat, any role, gets a cursor at the thread head; a higher
    cursor it already has is kept.
 
@@ -827,7 +976,8 @@ the head, so no binding sees them.
 
 ## Accepted limits
 
-Pre-join lazy mail is seat-level, not per binding (join frontier, A8). A seat-pending row is settled for the
+For the generic join frontier (excluding active direct-invitation acceptance above), pre-join lazy
+mail is seat-level, not per binding (A8). A seat-pending row is settled for the
 seat by the first top-level binding that displays it; a sibling top-level binding gets no copy, and a subagent
 never sees it. A join raises every open binding's cursor to the head, so on a rejoin an older sibling skips
 joined-era mail another binding of the seat read or passed. A lazy row at or below the seat's furthest cursor
@@ -836,9 +986,8 @@ is never marked, even when that cursor came from a fast-forward, an ended bindin
 the join. This keeps a mixed opening (lazy and ordinary rows
 interleaved) from re-offering ordinary rows already offered or ACKed as pending receipts, which one per-binding
 cursor cannot express. A human seat's pre-join ordinary messages get no pending-receipt path (unchanged).
-Pinned by `tests/hook_entrypoint.rs`
-`pair_accept_delivers_mixed_opening_mail_once` and `pair_rejoin_with_two_bindings_pins_read_positions` and the
-store test `accepting_a_pair_invitation_keeps_the_opening_messages_unread`.
+The narrow active direct-invitation acceptance exception preserves independent own streams, as
+described above; its mixed-mode read behavior differs from this generic join frontier.
 
 Delivery-only cleanup recovery retains a private, bounded versioned terminal record after
 intent/progress removal. It preserves exact original immutable intent bytes and the genuine
@@ -880,7 +1029,8 @@ completion cannot validate.
 
 Canonical automatic handoff storage retains the full normalized V2 original request,
 including frozen scope, caller, digest, namespace, child keys and any outer launch,
-context and startup template, within 128 KiB of encoded JSON. JSON escaping counts;
+context and startup template, within 128 KiB for historical absent-policy originals
+and 512 KiB for modern explicitly frozen invitation policy originals. JSON escaping counts;
 a syntactically valid plan can exceed this representation ceiling. Shared request
 validation refuses it before local publication or canonical effects; no fields are
 truncated or omitted to make it fit. Exact historical presentation compares this
@@ -889,8 +1039,9 @@ provenance, receipt authority or permission from local data.
 
 The additive V2 automatic topology parent retains the full original agent claim,
 scope, namespace, topology, launch, startup template and delivery payload within
-128 KiB. Its exact typed attachment is derived from that original and canonical
-creation and ordinary resolution; it has the same 128 KiB bound. V2 has no Invite
+128 KiB for historical absent-policy originals or 512 KiB for modern policy
+originals. Its exact typed attachment is derived from that original and canonical
+creation and ordinary resolution; the corresponding original's capacity applies. V2 has no Invite
 phase or wire key. A registered child cannot fall back to unlinked admission.
 Possible-start checks require fresh sealed canonical creation evidence, original
 claim, exact recipient owner and current pair lifecycle; Send success grants no
@@ -900,19 +1051,60 @@ or membership changes. It cannot create another message or launch.
 
 V2 recovery uses the authenticated local-account operator lane and an immutable
 inspection digest. Its request and complete retained historical result each fit
-256 KiB of encoded JSON; escaping and nested copies count. Fresh overflow refuses
+256 KiB for historical absent-policy originals. Modern recovery retains at most
+2 MiB of encoded JSON; escaping and nested copies count. General requests remain
+limited to a framed 1 MiB, including modern recovery requests. Fresh overflow refuses
 atomically. At most one creation/noncreation decision and one subsequent
 cancellation are retained per attempt. Recovery never replaces the original agent
 claim, allocates a seat, proves quiescence or authorizes native submission. An
 unknown attempt cannot become transport-proven not-submitted; an inspected
 noncreation decision starts a distinct attempt while retaining the unknown record.
+Modern automatic public admission checks the aggregate future envelope before local
+publication and the canonical first Begin repeats that check before inserting a
+parent. It derives supported generated startup prompts, frozen template/native argv,
+128-byte escaped opaque identifiers, bounded creation/witness fields, the 4096-byte
+operator reason and every request/result/reservation/recovery/local envelope. Independent
+metadata maxima may therefore be refused even when the body itself is within 65,536
+UTF-8 bytes. No retained identity, body or history is clipped. The framed response
+exception is exactly 2 MiB only for a known AutomaticBootstrap request with a frozen
+modern policy (Some) and its matching result family. Historical absent-policy (None)
+requests retain their preexisting 1 MiB response ceiling, as do every other request,
+response, watch, service and error. The historical 256 KiB canonical recovery-result
+limit is separate: transport does not add a semantic validator for handcrafted
+historical results between 256 KiB and 1 MiB.
+The client chooses its allocation limit from the known request before reading the
+frame body and checks result family plus request/instance/boot and embedded original
+identity correlation.
+
+A modern successful automatic launch canonically retains the explicitly versioned
+`automatic_launch_summary_v1`: truthful started outcome, exact pane/seat/harness and
+composed argv, and a separately named `full_report_digest`. Optional generated
+diagnostics are omitted from this summary. Their exact generated JSON bytes are
+streamed to a private deterministic local artifact after bounded critical started
+progress is synced; the full-report digest hashes those exact bytes, independently
+of the canonical summary digest. The artifact's path, presence marker and hash are
+cooperative local hints, never authority. Critical retry, recovery and completion
+never decode the artifact. A missing, unreadable or unsuccessfully written artifact
+cannot authorize another native submission or invalidate canonical Completed replay.
+A non-Started report uses a distinct bounded local noncompletion observation and
+never becomes a successful canonical completion. Any possible native start keeps the
+existing no-relaunch guard, including IO failure or interruption before summary sync.
+A valid frozen modern original and exact canonical Completed result remain readable
+when child progress and the optional artifact are truly absent. If no real retained
+message ID is available, presentation uses a null message and an explicit unavailable
+marker. It performs no Begin, Ensure, Send, launch or new-capability admission to
+reconstruct one. Existing corrupt or mismatched child records still refuse.
+Historical absent-policy reports, bytes, digests and presentation remain unchanged.
+The generated summary contract covers supported public producers; it is not a
+promise to carry arbitrary externally authored diagnostic JSON through a request.
+
 Live automatic parents protect archival before child registration and on the exact
 selected thread. Completed or cancelled tombstones release only that parent veto;
 replay cannot restore it or cancel a live downstream child fence or journal hint.
 
 Canonical topology storage has encoded-byte ceilings for retained bootstrap envelopes:
-128 KiB for the full frozen identity, creation evidence and attachment; 256 KiB for
-an immutable recovery decision; and 2 MiB for the full completed result, including
+512 KiB for the full frozen identity; 128 KiB for metadata-only creation evidence
+and attachment; 1 MiB for an immutable recovery decision; and 2 MiB for the full completed result, including
 identity, attachment, launcher report and legacy result. The launch report's inner
 JSON retains its independent 1 MiB protocol bound. JSON escaping and repeated nested
 fields count toward the storage ceiling; a protocol-shaped envelope need not fit.
@@ -921,11 +1113,31 @@ reads of oversized or corrupt data must refuse, never present clipped data or gr
 submission permission. Records are never truncated to fit. These limits neither
 change attribution nor authorize from a client-local journal or today's occupant.
 Public preparation also checks the actual serialized request-bearing local progress
-against its existing 128 KiB cap using the observed endpoint witness, before publication,
+against its 512 KiB cap using the observed endpoint witness, before publication,
 Begin or reservation. A canonical maximum-size identity need not fit that larger producer
 envelope. Future native response metadata is not statically known; an unpersistable created
 response conservatively retains possible creation and refuses automatic resubmission.
 Transition writers retain the canonical guards and enforce the same limits.
+Handoff instructions use ordinary message bytes: nonempty UTF-8 up to 65,536 bytes,
+including whitespace and NUL. Exactly one positional, file or stdin source is acquired
+once with a bounded read before publication; the actual body, never its source path,
+is frozen in every compound intent. Topic and goal limits remain independent.
+A maximum six-byte-escaped body occupies 393,216 JSON bytes per occurrence. Delivery
+Send envelopes repeat it in the immutable plan and child request (786,432 bytes before
+metadata); the global wire ceiling remains 1 MiB. Delivery origins are bounded at
+512 KiB and terminal records at 1 MiB: nesting the exact original JSON as a string
+adds a backslash to each body escape (458,752 bytes for that occurrence). Bootstrap
+origins retain their identity-derived bound; linked progress remains 2 MiB and terminal
+records retain their completion-plus-escaped-origin bound. Actual serializer fixtures
+cover these repetitions and historical originals without clipping or recomputing digests.
+Origin capacity is checked before allocator publication, bootstrap identity and
+request-bearing progress before topology effects, and terminal capacity before completion.
+The bounded archival scanner uses these same handoff origin/progress/terminal ceilings;
+its legacy launch-handoff origin shares the 512 KiB body-bearing cap. Generic non-handoff
+record and header caps remain independent, and oversized records still veto coverage.
+Independent oversized metadata and native responses still refuse rather than truncate.
+The schema upgrade rebuilds only the two body-bearing bounded tables, copies their
+historical blobs and operation keys verbatim, and checks foreign keys before commit.
 
 These are decisions, not bugs. Each is safe to rely on only as stated.
 
@@ -1037,8 +1249,19 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   Its only record is a wake-eligible placeholder binding (`managed_launch`, A3) carrying the started process's
   fingerprint: not
   a registration, availability, receipt or authority for any accountable action, and replaced by the agent's
-  first lifecycle check-in. Launch forms without captured hook evidence are refused (implemented for
-  `codex resume`).
+  first lifecycle check-in. Forms outside the captured native launch grammar remain refused
+  (including `codex resume`).
+- **Integration readiness is advisory for launch.** Missing, stale, disabled, untrusted or
+  wrong-profile owned hooks do not authorize attribution and do not alone block a structurally
+  safe selected native launch. No configuration descriptor or fingerprint is invented when none
+  is used. Registration identity, selected native binary/API/profile/home, argv/environment,
+  caller/seat/empty-shell and host guards remain mandatory. Actually used owned configuration
+  retains its exact fingerprint recheck. Hermes also rechecks validated selected native launch
+  inputs: runtime/source/module/interpreter identity, profile/logical and physical home,
+  environment/bootstrap and API evidence. Only the schema3 top-level `enabled`, `disabled`,
+  `config_quality` and `fallback_kind` diagnostic values are excluded from that launch stamp;
+  the complete observation stamp and all schema/fallback rejection rules remain unchanged.
+  Native trust refusal stays a refusal; launch never auto-approves, accepts invitations or ACKs.
 - **Process hints are cooperative recognition input.** A registered launch policy may require Herdr's
   narrow `process_hint` mode, advertised by each compatible start negotiation and fenced to the actual
   local server peer before submission. The request and startup correlation record the requested mode,
@@ -1365,3 +1588,377 @@ inspection or receipt provenance. An incorrect producer claim can permit
 duplicate topology. Error classes, response loss and unknown submission never
 stand in for this claim. Public dispatch remains inert until the actual typed
 transport producer is integrated with all canonical guards.
+
+Receipt warning origins retain the canonical immutable message author interpretation:
+`author_kind='native'` or historical NULL kind with a canonical same-instance actor seat
+and no service author identifies the native origin. NULL kind without an actor seat,
+built-in/service authors, labels and unrelated sparse overlay rows establish no origin.
+This applies to exact receipt marker triggers and bounded historical projection; stored
+message history is never rewritten to manufacture provenance.
+
+Launch setup status failures/unavailable observations are diagnostic and establish no
+owned-hook claim. They do not veto an independently validated native launch. The
+selected binary, native API/profile inputs and fingerprints of configuration actually
+used remain mandatory; incomplete structural observations still refuse submission.
+
+## Bounded invitation presentation (2026-10-11)
+
+Invitation presentation is cooperative FULL OFFER evidence after complete stdout
+write and flush, for both fixed Hook and Watch consumers. It is neither invitation
+acceptance nor a message receipt ACK, transcript proof, or model uptake. A7's
+accepted downstream silent-loss limit still applies. A crash after flush but before
+canonical confirmation can physically replay the same logical allocation.
+
+V2 admission resolves the claim to its own canonical binding under A2: open,
+connected, top-level, matching the adapter/harness and current mapping, with no
+recovery hold. Enrollment provenance is recorded honestly and is not a
+`cooperative_top_level`-only gate. A canonical subagent binding is refused even
+when its incoming claim looks top-level. Watch Pull/Confirm requires the exact
+connected Live channel owner and never reconnects or enrolls a binding. Hook uses
+the same canonical plain-call reconnect decision as ordinary hook delivery:
+only the existing allowed process-exit/migration case with its fingerprint can
+reconnect; superseded/end-event bindings stay disconnected. V2 selects the bounded
+presentation view before and after that decision, not an ordinary digest walk.
+The resolved binding_id passed between service and store is a hint that the store
+rechecks, never caller authority. A per-seat permit may serialize decisions;
+it cannot select a sibling binding or share/replace its durable state.
+
+Canonical progress/outbox rows belong to a resolved `binding_id` and one of two
+fixed consumers, Hook or Watch: at most two durable consumer rows per used binding,
+not per seat. Item bookkeeping is bounded by retained canonical invitation/binding
+pairs times two consumers, plus explicit removed-item cleanup debt. The private
+relevance proof is likewise binding/consumer-owned. Binding history can multiply
+these private rows; there is no seat-count bound or global durable-row cap.
+Stale generation/execution state resets lazily for that binding when visited;
+another binding's turn never resets it. Seat invitations and receipt obligations
+remain shared, while presentation tokens, cursors, carry, controls and notices
+belong to the addressed binding.
+Continued passive calls drain finite cleanup debt; no cleanup progress is promised
+without calls. Context changes coalesce per retained thread: eventual latest context
+requires that thread and relevant render shape to become quiescent; every transient
+revision is not promised. This does not alter invitation/receipt deadline guarantees.
+
+Migration 44 (the former unlanded migration 40) constructs exact ordinal-seek
+indexes over the existing canonical pending-invitation projection. Its index startup cost scales with indexed pending
+rows; it seeds no new projection and rewrites no invitation history. The invitation
+command epoch uses byte-preserving ADD COLUMN with DEFAULT0 and no added CHECK.
+On the actual released STRICT invitation relation, linked SQLite invokes named-table
+quick_check: one-time read validation covers retained invitation rows/types/existing
+CHECK expressions and invitation index pages/bytes, plus catalog/schema work.
+No constant-time, no-row-read or all-retained-table startup guarantee is claimed.
+The earlier outer-VM-only metadata/no-row-validation inference is superseded.
+Deadline processing resumes after healthy migration without deadline resets.
+Canonical readers/writers reject negative epochs and checked increments reject
+exhaustion atomically. New presentation tables enforce their bounded-state constraints.
+
+Private ordinary presentation partial state preserves the inherited 8 KiB body
+limit. Only the current cursor's one incomplete message may be retained; checked
+readers and writers reject multiple entries, invalid message identities, or a
+partial at or above 8192 raw bytes. Its JSON bound is 49415 bytes: at most six
+serialized bytes per raw body byte, twice the128 ASCII-graphic identity bytes,
+and seven object/key/value framing bytes. This private persistence bound does
+not enlarge ordinary display, invitation outbox, final frame, or receipt ACK
+semantics. Corrupt or genuinely oversized records are refused.
+
+
+Private capable-delivery ordinary carry stores at most32 structured <=8KiB presentation bodies with one <=8-argument/4096-byte frozen marker prefix. Its serialized cap is155731 bytes:65536 fetched-page bytes +49146 escaped previous-partial bytes +32*512 metadata +24601 prefix +64 framing. This does not increase model output, canonical body or RPC limits. Marker reconstruction uses only the exact producer-generated suffix and frozen prefix; it is not receipt or identity authority. Checked loads refuse malformed or out-of-contract private records.
+
+
+Ordinary and Lazy publication observation uses a fixed per-binding/fixed-consumer
+cursor over immutable instance publication order. Each admitted pull or passive
+refresh inspects at most100 manifests before recipient filtering, with at most200
+keyed probes and three publication range/head seeks. Each visited manifest first
+probes its exact message key, checking instance, thread, decision sequence and
+ordinary kind while reading immutable delivery mode. A matching message then
+uses one mode-selected recipient point probe by preparation/seat: ordinary reads
+prepared_recipients and matches thread, while Lazy reads lazy_recipients and
+matches message and thread. The canonical manifest supplies the ordinary
+recipient's message association; that recipient relation has no message-id column.
+No effective-receipt read, audience fanout or materialization occurs in this scan.
+This adds100 source visits:
+refresh visits at most160, fresh pull433, plus separately declared indexed probes.
+No publication audience fanout, global output version or native wake is added.
+Initial/rebound consumers may traverse all retained instance publications before
+reaching addressed content. A stable prefix of M rows needs at most ceil(M/100)+2
+successful maintenance quanta; with continuing arrivals, finite predecessor count
+P gives conservative P+2 quanta, followed by existing ordinary output traversal.
+There is no progress guarantee during perpetual admission/storage failure.
+Migration 45 (the former unlanded migration 41) adds four checked default-zero
+private scalar columns; its one-time SQLite validation may inspect each existing
+consumer row per added CHECK (up to 4C row inspections, where C is at most two
+consumer rows per used binding). It does not seed message history/projections or
+reset deadlines. Development stores already stamped with the earlier redesign's
+migration numbers are not claimed to rerun or reinterpret this refinement.
+Existing 155731-byte raw carry, 8KiB ordinary body and final64KiB/RPC bounds
+remain unchanged.
+
+Direct-invitation Lazy reader eligibility adds three exact indexed relation probes per evaluation:
+pair, seat and current invitation, reusing the membership point. It does not seek invitation events in
+the presentation predicate. Lazy due/replay costs at most 14 probes; ordinary remains the maximum 18,
+so due 1803 and carry 579 caps remain unchanged. Known-offer reconciliation reuses the canonical
+message mode/thread/sequence/decision point already read in the same snapshot and removes its duplicate
+message join: first point 1 plus eligibility 9 is at most 10 per key, retaining 256 visits and 2560 probes.
+Exact recipient, manifest message/thread/instance/publication and binding-seat checks remain required;
+client scalars or an uncounted second message lookup cannot substitute for that canonical row.
+Fresh/private Lazy scope checks, including continued-body scope checks, charge three additional probes
+per physically visited candidate, at most 300 across the existing 100-candidate envelope; rejected
+candidates count before filtering. These costs are separate from the unchanged publication-observation
+scan above. Production SQL and actual query plans must establish the exact-key accounting.
+
+Direct acceptance additionally makes N reader-invalidation helper calls within its existing fanout over N open bindings;
+at most 4N indexed relation reads (binding, seat and two consumer points) and 2N exact private
+updates, besides cursor writes. This is fixed work per binding, not constant work for acceptance, and
+is outside presentation caps. Each required cursorless event floor uses only three fixed key points.
+The inherited public Lazy readers may filter many physical rows before LIMIT, seat unread may examine
+multiple connected bindings, and the display walk may cross arbitrarily many nonreceivable messages.
+The episode floor reduces old-history work without making these paths globally bounded; the private
+100-candidate presentation bound is not an end-to-end public-read or completion-mutation guarantee.
+
+A fresh explicit Watch presentation confirmation may record local channel health
+only for an applicable acknowledged Attention and the exact currently Live
+seat/binding_id/generation/native-session/lease owner, checked and written under the same
+registry entry lock. Hook, passive/clear, replay, AlreadyConfirmed and refused
+confirmations do not record or reset that evidence. This timestamp is the
+existing receipt-publication cutoff, not a new stall countdown or receipt ACK.
+The allocator's single-control-per-page invariant makes fresh confirmation
+sufficient to distinguish that first application. Canonical confirmation and
+local registry bookkeeping are not durably atomic: a process crash between them
+may omit health evidence; reconnect/normal operator recovery remains necessary.
+
+Capable presentation relevance uses the union of canonical direct associations
+and prepared representations, including coexistence at the same warning id.
+Positive witnesses use exact current local condition/association authority;
+unrelated canonical mutations must not delay a still-applicable positive witness.
+The global mutation fence is negative-proof invalidation only. Continued unrelated
+writes may keep absence Unknown and delay a clear; they are never recipient output
+or native-wake authority. One bounded advance serves every successful pull/replay;
+explicit confirmation performs no discovery, fallback or revalidation walk.
+Future condition/sweep writers and repairs must preserve the exact successor
+interval chain and invalidate its canonical fence; repairing that chain is not
+an invitation to infer continuity from presentation history or local hints.
+
+Presentation has one current row per binding and fixed Hook/Watch consumer. Its
+outbox contains bounded current nonordinary descriptors, not episode history or
+ordinary-message ACK authority. Topic changes coalesce to eventual latest context
+after updates quiesce; every transient topic revision is not promised. Removal,
+binding changes and output completion use the canonical row/frontier rules.
+An output offer is cooperative physical emission after successful writer flush,
+not evidence that a model read it, accepted an invitation or acknowledged a
+receipt. Exact captured control stamps and bounded applicable acknowledged subsets
+fence local seen/probation updates; stale, foreign, unknown or refused confirmation
+never supplies those effects. Partial retirement preserves original descriptor
+slots until that token's work is complete. Confirmation checks the exact binding,
+consumer, token and captured control masks; a sibling's token is foreign even at
+the same seat and mapping generation. Physical presentation confirmation never
+ACKs a message or advances a binding's read cursor. A sibling binding's ACK cannot
+discard this binding's outbox or still-unread ordinary carry/offers: settled mail
+remains eligible in this binding's own stream, passively, under A8. A sibling's
+settlement alone is not evidence that this binding read it; exact canonical
+addressing, publication and binding-reader checks still decide eligibility.
+
+A pending Hook outbox retains its originally registered codec selection across
+new local System/User preferences. A genuinely removed or drifted codec refuses
+boundedly before allocation/retirement; binding/operator repair may be needed.
+Client hints never select authority or override the immutable canonical token,
+binding, render identity and boot admission. Frame sizing includes the actual
+registered native codec or Watch JSON-line bytes; the final RPC wrapper reserve
+is separate from the 64KiB presentation bound.
+
+
+Capable ordinary delivery parks its existing cursor, carry, partial body and
+captured scan signals byte-for-byte when the 256-offer ledger is full. Due known
+IDs then use exact canonical keys instead of the normal ordinary source: at most
+100 attempts and 32 hydrated candidates per call, charged separately as at most
+1803 keyed relation probes and 100 indexed single-row availability seeks. The
+probe allowance is three setup probes plus 100 attempts at at most 18 probes:
+settled-but-unread ordinary eligibility needs five binding-reader probes beyond
+the prior 13-probe pending-receipt path. Pending ordinary and Lazy branches remain
+bounded by 13 and 14 probes per attempt respectively. This explicitly supersedes
+the former 1303-probe allowance; attempts, hydration and seek counts do not grow.
+Reconciliation separately inspects at most 256 known keys with at most 10 indexed
+probes each: 2560 probes, explicitly replacing the former 1280-probe allowance.
+The additional binding-reader checks keep a sibling's seat-level ACK from
+reclaiming this binding's still-unread offer. Physical discovery433,
+32 blocks/65536 encoded output bytes, sizing352, carry155731 and partial49415
+bounds do not grow. Canonical pending/addressed/publication checks still decide
+eligibility, including this binding's settled-but-unread stream; a missing key
+cannot authorize settlement or an offer-history reset. Physical candidate seeks
+are bounded before canonical filtering, so rejected rows still consume work.
+
+Ordinary carry has its own exact-key revalidation allowance: at most 32 retained
+items, 579 keyed probes (3 setup + 32×18), 32 availability seeks and 32 body
+hydrations. These are separate carry counters, not work hidden inside the
+1803-probe due/replay allowance. A carry quantum performs no normal ordinary-page
+walk. Carry revalidation, logical due, owner replay and a normal ordinary-page
+walk are mutually exclusive ordinary-source modes; their allowances cannot be
+combined to enlarge one mode. Reconciliation and independent bounded passive or
+control work retain their separately declared accounting. These finite allowances
+add no time-budget extension, weaken no cancellation or exact-owner fence, and
+install no progress after refusal or transaction rollback.
+
+A private normal ordinary-page continuation may classify its one captured
+Unread body against the exact binding's display cursor and canonical receipt.
+This separately charges at most 15 keyed probes (five captured-recipient/read
+relations plus ten conservative effective-receipt probes) in
+`ordinary_continuation_key_probes`; existing setup and body hydration remain
+separate. Retirement consumes one of the existing 100 normal candidate visits,
+with no additional source walk, due/replay or carry work. Only positively
+Acknowledged, RecipientRetired or NotRequired receipt authority plus this
+binding's completed cursor may retire that exact captured body. Pending remains
+eligible; missing, mismatched or invalid authority refuses. Captured bounds,
+binding fence and exact partial-byte/skip bookkeeping remain checked, and a
+refusal rolls the private update back. Public inbox cursor validation is
+unchanged; no cursor reset or receipt ACK is implied.
+
+Finite failed-key traversal uses two process-local negative caches (Hook and
+Watch) per retained ledger binding, each at most256 ID/full-offer-stamp pairs,
+scoped to binding_id, execution, ordinary signal, passive publication generation
+and render key. They share the ledger's at-most4096-binding LRU lifetime, with
+at most256 logical offers per binding. Payload per consumer is
+bounded by256*(128 ID bytes + two i64 timestamps + u8 count + bool truncated),
+plus a <=128-byte execution and fixed scope; bounded tree/allocator overhead is
+additional. Successful updates must match the binding_id, ledger incarnation,
+generation and exact current offer stamps. Cache hints never ACK, accept,
+complete lazy display or change offer history, and rollback/refusal installs no
+progress. A different binding, generation rotation, ledger recreation or changed
+scope invalidates the relevant hints; resuming the same binding alone does not
+replace it or reset its offered set. Ordinary continuation uses remaining capacity:
+a completed normal pass at positive capacity is quiet even with missing due
+hints; at zero capacity only unattempted due keys sustain ordinary continuation.
+Independent passive/control/outbox work retains its own continuation.
+
+Accepted render limit: a due ID whose inherited ordinary truncation still cannot
+fit a standalone output is deferred at its unchanged full offer stamp and current
+render/canonical scope, without a logical offer or delivery evidence. A declared
+scope change retries it. Topic-only shortening is not guaranteed to retry until
+such a scope change occurs. This adds no wake timer, delivery guarantee, larger
+output limit or receipt authority.
+
+Accepted normal render limit: at positive post-reconciliation logical capacity,
+a canonically validated normal candidate whose unchanged inherited rendering
+actually exceeds the standalone encoded-output bound on an empty page may be
+deferred for that finite captured normal pass, including a previously unoffered
+ID. An exhausted sizing allowance, nonempty-page failure, invalid authority,
+malformed item or unavailable/drifted codec does not establish this size failure.
+Deferral advances only existing bounded private traversal; it does not change
+the candidate's canonical full body, exact addressing/publication, pending receipt,
+Lazy display state, binding read cursor or any preexisting full logical Offer
+stamp, and allocates no new logical offer. It supplies no ACK, acceptance,
+display, output or presentation-confirmation evidence. Later renderable mail may
+progress in the same capture, and a completed stable pass is quiet once its
+independent work is exhausted. A later independently admitted normal capture
+retries the pending candidate; automatic in-context delivery of its unrenderable
+shape and a new retry wake/timer are not promised. Unknown deferred IDs may remain
+unknown to the model; canonical inbox/history/body inspection remains available.
+No normal per-ID negative cache, body fragment or recovery cursor is introduced;
+existing source, sizing, output, carry, partial and ledger bounds remain unchanged.
+Pre-commit refusal or transaction rollback installs no deferral progress. After a
+successful private commit, response/transport/write/flush loss retains that
+private progress without granting delivery, ACK, display or confirmation authority.
+A caller-visible error with an uncertain commit outcome is not proof of rollback.
+Existing due-cache, owner-replay, capacity parking and downstream-loss limits
+remain unchanged.
+
+
+A newly admitted live Watch owner may physically restream its captured pending
+ordinary offers once per presentation lease, independently of DP5 logical retry
+eligibility. Recovery preserves every full logical Offer stamp, including
+nonzero recorded u8 counts above the three-offer eligibility threshold from
+supported concurrent recording. Canonical exact-key eligibility still decides
+addressing, publication, effective pending receipts, this binding's settled-but-unread
+mail and lazy state. Physical replay is not ACK, read-cursor advancement, lazy
+completion, acceptance, health evidence or native wake outlook; logical due
+continuation excludes only actual logical allocations.
+
+The process-local registry retains at most 64 live-owner worklists globally,
+not per seat or binding, each at most 256 ID/full-stamp pairs plus bounded scope: 256*(128 ID bytes +16 timestamp bytes
++1 count byte +1 truncation byte), a <=128-byte execution, 16-byte incarnation
+and fixed bounded seat/binding_id/generation/native-session/lease bookkeeping;
+bounded tree/allocator overhead is additional. Each live request has one worklist snapshot and the existing bounded logical ledger
+snapshot. The first successful capture is final for that lease even when empty;
+newly arriving offers never refill it. Initialization/progress installs only on
+successful store return; refusal/rollback installs neither. The exact Live lease
+and canonical binding_id, generation, native session and execution fence every
+pull. Grace cannot use replay authority. Replacement starts a fresh pass; ledger incarnation loss abandons remaining work without same-lease refill.
+Removal, disabled/stopped registry and daemon restart discard this local state.
+Successful allocation followed by response/output loss consumes that lease's
+attempt; replacement can recover canonically pending content. Existing downstream
+silent-loss and daemon-restart limits remain unchanged.
+
+Recovery replaces the ordinary source slice: at most 100 exact attempts, 32
+hydrated bodies, 1803 keyed probes (3 + 100×18) and 100 availability seeks.
+Separately bounded reconciliation is 256 known keys/2560 probes. Recovery does
+not also run the 32-item carry revalidation or a normal ordinary-page walk.
+Fresh discovery433, sizing352, 32 blocks/65536 actual encoded bytes, carry155731
+and partial49415 remain unchanged. No normal cursor/carry/partial
+or captured scan tuple advances during replay. Missing or standalone-unrenderable
+keys finish physical attempts without proving settlement or releasing capacity.
+The existing nonordinary outbox must be replayed/confirmed normally before fresh
+ordinary recovery; no Message descriptor enters that outbox. Full stamp and
+incarnation pruning at snapshot/application cannot overwrite newer logical
+history. Recovery leaves current post-store native outlook unchanged, including
+empty, mixed, final and active-recovery outbox/control-only quanta.
+
+
+Canonical reader operations coalesce private presentation invalidation once per
+actually changed binding at their existing transaction boundary. The added
+source-derived envelope per changed operation/binding is one exact BindingId
+lookup statement joining two indexed canonical relations (occupant_bindings and
+seats), two fixed Hook/Watch consumer point reads, and at most two guarded
+consumer updates. No retained binding history or all-consumer scan is added.
+AdvanceCursors coalesces all its thread changes; complete-display coalesces each
+already selected target; first-contact fast-forward coalesces all gaps, including
+gaps beyond its returned-description cap. A historical unbound completion that
+already selects N targets adds N times this envelope; the whole operation has no
+new constant bound. This source accounting is not a measured SQLite VM, elapsed
+time or disk-I/O bound; the physical query controls still require execution.
+
+The exact canonical BindingId owns native session, seat, instance, generation and
+execution; presentation rows have no second native-session field. Only matching
+seat/instance rows whose primary generation/execution or passive-refresh
+generation/execution matches that canonical scope are invalidated. Both-stale or
+foreign rows remain unchanged. The helper updates only checked private passive
+generation and content version counters; it changes no captured scan tuple,
+cursor, carry, partial body, token or logical offer stamp. Zero consumers and
+no-change operations require no private update, including established subagent
+reader use. Counter corruption, exhaustion or later operation failure rolls back
+canonical reader writes and all tentative private updates together. This
+maintenance adds no V2 admission, receipt provenance, ACK, invitation acceptance,
+channel health or native-wake authority.
+
+Successful ordinary-or-Lazy completion may conservatively request a passive
+canonical recheck for the admitted seat's current Live capable channels. The
+registry holds one ephemeral pending bit per entry under its existing global
+64-channel cap; it visits only that seat's currently registered entries, never
+retained presentation rows. Repeated hints coalesce. A retained successful result
+may hint again and establishes no fresh receipt delta; all-refused/error outcomes
+and presentation confirmation do not hint. Registry bookkeeping follows release
+of the canonical writer turn. Hint consumption performs bounded canonical
+delivery work and confers no retry eligibility, offer stamp, reader advancement,
+receipt/acceptance evidence, extra health timestamp or idle-wake permission.
+Existing successful mod ACK health accounting, including AlreadySettled, remains
+separate. Replacement/restart can discard a bit; initial owner drain, ordinary
+canonical eligibility and the existing safety pass retain their own contracts.
+
+Q3 publication observation uses the message-first ordinary/Lazy point SQL above
+without enlarging the 100-manifest/200-probe/three-seek source allowance. The
+production constants are shared with query-plan controls so those controls can
+measure the actual statements, including mixed unrelated prefixes. This source
+accounting is not a measured SQLite VM, elapsed-time or disk-I/O claim; physical
+work still requires execution of those controls. Addressed ordinary publication
+changes only the existing private passive generation/content counters. It does
+not recreate a sibling-settled receipt or change native attention. The subsequent
+canonical pull decides whether content is pending or passive and whether this
+binding's own cursor still needs it.
+
+Watch presentation mode is an explicit per-channel election, advertised by
+mod.watch_presentation_v2 together with the existing generic presentation and
+binding-cursor capabilities. Absent/false election keeps the historical Watch
+wire and aggregate view; only capable Live owners receive presentation leases.
+Worker and direct-producer sends compare their captured channel id and immutable
+mode under the same registry lock as final enqueue and any existing active-push
+health update. A replacement cannot inherit the old owner's frame or health.
+Passive sends and failed enqueue add no health. A closed receiver retains a
+capable owner's recheck bit only while that exact owner remains Live, without an
+immediate retry kick; existing safety passes and reconnect's initial drain retain
+their recovery roles. Enqueue is not socket-flush or model-uptake evidence.

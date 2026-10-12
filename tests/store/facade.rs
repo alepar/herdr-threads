@@ -1623,6 +1623,7 @@ fn public_facade_creates_invites_sends_accepts_acks_and_archives_with_stable_ids
         panic!()
     };
     let invite = Invite {
+        confirmation: None,
         thread: thread.clone(),
         seat: SeatId::new("s2"),
         deadline_millis: Some(1000),
@@ -1859,6 +1860,7 @@ fn join_hint_fixture_inner(
         panic!()
     };
     let invite = Invite {
+        confirmation: None,
         thread: thread.clone(),
         seat: SeatId::new("s2"),
         deadline_millis: Some(1000),

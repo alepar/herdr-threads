@@ -28,13 +28,17 @@ HERDR_SOCKET_PATH (set inside Herdr), else Herdr's defaults when they exist
 ~/.config, then herdr/herdr.sock), else detected with the herdr CLI (`herdr plugin list`,
 `herdr status server`).
 Ambiguity is refused. The installed hook command is
-`<this executable> --state-dir <state> --host-endpoint <socket> hook <harness>`, registered
-for each event with `--event <EVENT>` appended (hooks installed before that keep working;
+`<this executable> --state-dir <state> --host-endpoint <socket> hook-event <harness> <EVENT>`
+for each native event (legacy hook commands keep working;
 `doctor` suggests re-running setup); in any session that is not a pane of that Herdr
 instance it prints nothing, runs no version probe and starts no daemon, and only sends a
 short best-effort evidence note to a daemon already running (gate files under
 <state>/harness/evidence).
-Each harness's ownership manifest lives in <state>/setup/.
+Each harness's ownership manifest lives in <state>/setup/. Native commands use the stable
+hook-event HARNESS EVENT entrypoint with canonical routing. Installation UUIDs remain in the
+manifest, outside shell commands. Equivalent setup retains exact owned groups in place; unrecorded
+identical stable groups are foreign and cause a safe refusal. Setup explicitly migrates recorded
+legacy hooks; status only inspects them. Changed native commands may require review again.
 
 A hook file that already holds exactly this command's hook groups under another setup's
 owner marker (for example a hook file copied with its trust into a second config root) is
@@ -134,7 +138,8 @@ Explicit new threads join the sender; explicit existing threads require a joined
 are 1:1 SEAT_A SEAT_B with sorted IDs. Explicit new topic defaults to Handoff to DISPLAY:
 legacy launch uses the pane display, new-tab uses its label, delivery uses the
 canonical seat ID. Goal defaults to topic. --name names the native agent, not the channel.
-The one quoted body after -- is durable work (1..1024 UTF-8 bytes), never native argv.
+One positional body after --, --file PATH or --stdin supplies durable work (1..65536 UTF-8 bytes), acquired once and frozen exactly, never native argv.
+The body always requires an addressed ACK. --deadline SECONDS sets its independent duration; omitted defaults resolve once at canonical send. Invitations default lazy; --require-invite-ack or --invite-deadline SECONDS requests timed acceptance with an independent deadline. Registration/launch is never acceptance or ACK. The message timer starts at send even without registration or join. Missed requested deadlines notify the original sender.
 Native launch options use repeatable --agent-arg=OPTION; launch -- native arguments
 is unchanged. @OPTS@ prepend optional
 arguments using shell-style quotes and escapes without variable or command
@@ -145,7 +150,7 @@ use Ensure for initial invitation only. Handoff stages a message addressed to th
 recipient; launch modes then perform guarded launch. Startup gets fixed inbox
 instructions, not a second copy of the body. Handoff never accepts or ACKs for
 the recipient, nor declares task adoption or task completion.
-Native execution still needs the selected harness's approval/configuration.
+Native execution respects the selected harness's approval and structural safety; missing/stale/wrong-profile hook readiness is diagnostic.
 
 Committed work survives failure. pending-ops lists the compound reference; retry REF
 resumes exact keyed steps without duplicate messages or invitations. A confirmed

@@ -1,0 +1,63 @@
+# Whole-epic quality review — composed candidate
+
+Date: 2026-10-11. Independent read-only quality review; no PR-roast severity adjudication.
+
+## Immutable identity and authority
+
+- Candidate checkout: `/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/upstream-composition-478ec4a9`.
+- Candidate commit: `b046c123be452957d3f7f10d8fbdc60b18a4533e`.
+- Candidate tree: `ecc9977a535a932b5514ab8820650d1c832691a5`.
+- Comparison Main: `026ad3ab444779216748cc5733e2241e2834ebaf`.
+- Reobserved candidate HEAD/tree at the end of source inspection. `git diff --name-only HEAD -- src migrations integrations/claude/mod/hooks/register.js tests .config` returned no changed paths.
+- Read current user project instructions and candidate AGENTS/TRUST-POLICY. Consumed root/child handoff designs, Task13/14 creation-policy refinements, root's Task15 bounded/framing/explicit-confirm refinements and capacity design, current finish constraints, Watch/C briefs, and parent resume plan. Later accepted startup-cost, fresh requirement episode, explicit-only Confirm and finite owner-replay corrections take precedence over earlier proposal/HOLD prose.
+- Migrations comparison against reviewed B `cdbf3c37e873a2cb571c098450602a53f81a6185` lists only added40/41; migrations1..39 remain byte-identical. Main comparison adds32..41 and changes none of its released1..31 files.
+
+## Verdict
+
+**Scoped static QUALITY PASS.** No supported correctness or trust-boundary defect found in the reviewed whole-epic seams. One nonblocking maintenance observation appears below.
+
+This is a source-review conclusion on the identified candidate, not merge readiness, a fresh runtime result, an exhaustive proof of every SQL trigger, or PR-roast adjudication. Parent promotion requires exact source-blob correspondence; metadata-only promotion must not silently transfer this verdict to changed implementation bytes.
+
+The composed runtime run subsequently failed eight cases; all eight remain open acceptance gates. The separate specification review also found contradictory historical A7 prose. I inspected the narrowly scoped correction `cc686d29416522d1405e79df5c857c95438e819d`: it removes the duplicate affected-seat-only paragraph and qualifies passive observers while preserving canonical origin wake exceptions, fallback and fingerprint semantics. That documentation successor is outside the candidate identity above and is not runtime clearance.
+
+## Coverage and reasoning
+
+| Area | Inspection and conclusion |
+| --- | --- |
+| Canonical authority and transaction boundaries | Traced service admission through fixed Hook/Watch consumers, canonical binding checks, exact Live Watch lease, store scope recheck, render identity, deciding transactions and post-success ledger updates. No client hint becomes receipt, invitation acceptance, seat continuity or operator authority. Pull/Confirm stores run through execute_decision; serialization failure/cancellation can roll back canonical progress before the service installs process-local recovery progress. |
+| Explicit control confirmation | Reviewed original descriptor masks, current/last token matching, whole-request foreign-stamp rejection, exact acknowledged subset and applicability checks. Confirm performs no relevance discovery. Unknown replay withholds Attention while retaining its original token/slot; empty or older subset completion does not acquire later controls. Service health updates require fresh Confirmed applicable Attention and the current Live lease; AlreadyConfirmed/refusal/Hook/passive cases cannot reset health. |
+| Finite Watch owner recovery | Read snapshot/application logic, service locking and ordinary source selection. Capture is process-local and installs only after successful store return. Full stamps and ledger incarnation fence pruning; Live ownership is distinct from reconnect/rebind grace. Physical replay preserves counts/timestamps, including valid counts above logical eligibility. It replaces the ordinary slice, keeps cursor/carry/partial intact, honors the existing nonordinary outbox first and does not put Message descriptors into that outbox. Empty, mixed, final and control-only recovery use the source classification to preserve the current post-store native outlook. |
+| Capacity and bounded work | Reviewed terminal reconciliation, exact-key canonical eligibility, missing-key deferral, positive-capacity continuation, bounded cache validation and merge, and parked normal state. Missing rows cannot release capacity or reset offer history. The unchanged433 physical discovery budget is separate from reconciliation256/1280 and due/recovery100 attempts,32 hydrated bodies,1303 probes/100 seeks. Publication100/200/3, relevance13/26 plus charged probes, output32/65536, carry155731 and partial49415 remain explicit. No new full pending walk, timer, eviction or cap increase was found. |
+| Rendering and model text | Traced registered static codecs, frozen selector/descriptor identity, whole-output JSON/LF sizing, final byte equality, original control stamps and write/flush completion. The allocator uses common projection/sizing functions and the adapter rechecks encoded length. Marker prefixes remain bounded hints. Passive invitation/notice handling in the mod cannot become message ACK or idle wake. New full invitation context includes actual topic/goal/current acceptance command, while ordinary bodies retain8KiB truncation. |
+| Send-time receipts and warning lifecycle | Reviewed effective logical/physical receipt changes, immutable cutover semantics, dormant repair, availability separation, due-driver paired finite cycles, high-water predicates and lending. Existing running deadlines/terminal provenance and A6 extensions remain separate. Receipt/invitation origin warning actionability is independent of informational offer settlement and still uses existing wake admission. |
+| Invitation and service composition | Reviewed modern creation policy, absent-field legacy interpretation, duplicate pair reuse and actual retained selection. Service required attaches preserve Main's exclusion of historically linked requirement invitations and choose a fresh timed episode for a pending Lazy ordinary invitation. Command/context epoch writes are transactional and checked; no policy/deadline/origin rewrite of the older ordinary episode is introduced. Read the corrected fresh-episode regression and current-command integration coverage. |
+| Handoff sources, retries and capabilities | Traced parser/policy propagation, pre-effect capability checks, canonical child validators, automatic Ensure→Send, local journal capacity admission, topology continuation/recovery/terminal presentation and optional diagnostics. Historical optional fields omit cleanly; exact frozen requests are reused. Modern Some-only automatic2MiB replies remain request-family scoped and identity matched; generic/legacy frames retain1MiB. Actual serializers, bounded successful summaries and local-only diagnostic digests account for repeated escaped bodies without turning diagnostics into authority. |
+| Stable hooks and launch | Reviewed event parser/registry validation, stable canonical routing, exact manifest identity/fingerprints, foreign/duplicate/drift refusal, prepared migration and in-place owned replacement. Removing random command comments does not remove ownership records or rewrite native trust. Advisory setup failures no longer veto independently safe native launches; binary/native input and actually-used owned configuration checks remain. Hermes fixed callback/API/profile path and native grammar restrictions remain distinct. |
+| Clean composition and process ownership | Inspected the service_controls conflict result plus related clean merges in protocol/capabilities, dispatch, serializers, store/handoff paths, launch, hooks and nextest. Candidate version/config retains the serialized ALLSLOTS envelope tests. Read owned Watch child/relay/observer teardown: release held gates, shut down relay sockets, join workers, stop owned children, restore isolated descriptors. Scoped leak checker now limits run-id mode to exact tags; it explicitly does not prove absence of untagged children. |
+
+Coverage used the Main→candidate changed-path inventory, production diffs, current functions and callers, and selected regression bodies. Depth concentrated on the paths above; this report does not claim a new exhaustive audit of every unchanged dependency or every migration41 trigger branch.
+
+## Regression quality
+
+The source contains meaningful state-transition checks rather than only renderer self-comparisons:
+
+- C's `agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement` observes the actual parsed Ensure/Send exchanges and installed Hook V2 Pull/Confirm, then independently checks exact canonical invitation, membership, published logical/physical receipt absence, lazy state and wake frontier. It rejects historical fallback in the positive path.
+- Watch elected activation tests use transparent frame observation/faulting and actual stdout; replacement and lost-confirm-response paths retain exact captured ownership/stamps. The producer and plugin replay remain separate proofs, not live-model uptake.
+- Capacity positives issue and actually settle real messages before proving the257th can be offered. Missing keys, full carry, exact due history, partial bodies and positive-slot quieting are separately exercised.
+- Owner tests cover store refusal/error rollback, pre-cancel and cancellation during exact-key work, full stamp concurrent updates, incarnation loss, replacement permit serialization, mixed output and finite unrenderable attempts. The mid-work cancellation regression observes a real completed SQL statement before cancelling.
+- Schema/lineage tests use released populated prefixes and reopen/rollback assertions; they are not merely fresh-schema initialization tests. Existing Main acceptance regressions and the fresh third requirement episode are retained.
+
+I ran no tests, Cargo, builds, plugins, formatter, source gates or process-leak scans. Parent supplied prior actual D314/Main-D8/C2 focused PASS status. The C matrix was pending when this review began; the subsequently inspected `/private/tmp/ht-C-composed-b046c123/execution.json` records the exact candidate HEAD/tree above, 385 focused cases with 377 PASS and 8 FAIL, plus six mandatory cases with six PASS, and overall `run_failed`/exit1. Focused, mandatory and final scoped leak checks each recorded exit0 for run ID `28b15c51-3941-483f-83b0-2ef768028f03`. These are inspected existing artifacts, not checks I executed. No review child processes were started.
+
+Parent's preliminary diagnoses are three automatic permit-expiry failures, two capability expected-list omissions of Ensure, one exact schema catalog fixture failure, one Hook startup without CheckIn, and one capacity waiter expecting a new message. I have not independently validated those causal classifications; none is waived as harmless here. Fixes and reruns remain required even where fixture drift is suspected.
+
+## Nonblocking maintenance observation Q1
+
+`src/delivery/invitation.rs:116` retains public `FrozenInvitation`, its `block/watch` methods, and `block_text/join_blocks` helpers. A repository source/test search finds no callers outside their definitions. Its comment describes bodies stored once in text with offset descriptors, whereas the actual allocator uses `FrozenPresentation { item, context_key }` in `src/store/invitation_content.rs:1497`.
+
+This does not change current runtime behavior. Remove the unused former representation/helpers, or explicitly document a supported external use, in a scoped cleanup. Leaving two apparent outbox representations increases the chance of future maintainers modifying the wrong one. No source edit is requested as a prerequisite to this static PASS.
+
+## Remaining parent gates
+
+Resolve all eight runtime failures with causal evidence and rerun the required exact-candidate validation and scoped leak checks; carry the A7 correction into the final composition. Promote with exact source-blob mapping, run the original PR-roast workflow, and perform required final-tip source/default-feature/incremental-budget checks after final reporting commits. Source-changing fixes require corresponding review updates rather than silent transfer of this static verdict. Retain the original low-coverage qualification and downstream silent-loss/live-native limitations. This review authorizes no deployment, Main merge, push, real-config change or readiness notification.
+

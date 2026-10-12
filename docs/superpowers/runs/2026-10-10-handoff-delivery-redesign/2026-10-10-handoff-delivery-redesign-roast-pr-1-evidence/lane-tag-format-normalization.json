@@ -1,0 +1,5 @@
+{
+  "reason": "Move reporter lane tag after headline so the machine-readable location remains exact file:line; no claim/severity/vote change.",
+  "original": "reporter__1.actual.json",
+  "normalized": "responses/reporter__1.json"
+}

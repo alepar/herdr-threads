@@ -79,6 +79,39 @@ impl LocalClient for Client {
         self.call(c, b)
     }
     fn call(&self, c: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        if let Command::HandoffDelivery(query) = &c {
+            query.validate().unwrap();
+            assert!(matches!(
+                query.action,
+                crate::protocol::handoff::DeliveryAction::Status(_)
+            ));
+            return if *self.completed.lock().unwrap() {
+                Ok(CommandResult::Handoff(
+                    crate::protocol::handoff::HandoffResult {
+                        compound: query.identity().compound,
+                        thread: Some(ThreadId::new("t1")),
+                        state: HandoffState::Completed,
+                    },
+                ))
+            } else {
+                Err(ApiError::new(
+                    ErrorCode::NotFound,
+                    "no canonical completed delivery",
+                ))
+            };
+        }
+        if matches!(c, Command::Capabilities) {
+            return Ok(CommandResult::Capabilities(
+                crate::protocol::results::CapabilityList {
+                    capabilities: crate::protocol::capabilities::ADVERTISED
+                        .iter()
+                        .copied()
+                        .chain([crate::protocol::capabilities::INVITATION_CONFIRMATION_V1])
+                        .map(str::to_owned)
+                        .collect(),
+                },
+            ));
+        }
         self.calls.lock().unwrap().push(c.clone());
         let (key, phase, result) = match c {
             Command::Seats(q) => {
@@ -498,6 +531,9 @@ struct CanonicalInvites {
 }
 impl CanonicalInvites {
     fn new(root: &std::path::Path) -> Self {
+        Self::with_recipient(root, "recipient", "w1:p2")
+    }
+    fn with_recipient(root: &std::path::Path, recipient: &str, target: &str) -> Self {
         let context = crate::store::connection::StoreContext::new(
             root.join("canonical.db"),
             std::sync::Arc::new(TestClock),
@@ -508,7 +544,7 @@ impl CanonicalInvites {
             [],
         )
         .unwrap();
-        for (seat, target) in [("sender", "w1:p1"), ("recipient", "w1:p2")] {
+        for (seat, target) in [("sender", "w1:p1"), (recipient, target)] {
             conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?2,1,1,0)",rusqlite::params![seat,target]).unwrap();
             conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)",[target]).unwrap();
             conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,?2,'b',1,1,'codex','session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-'||?2,'inc')",rusqlite::params![seat,target]).unwrap();
@@ -645,6 +681,7 @@ fn canonical_invitation_loss_and_old_replay_leave_new_episode_pending() {
     let next = client
         .canonical(
             Command::Invite(crate::protocol::commands::Invite {
+                confirmation: None,
                 thread: ThreadId::new(thread.clone()),
                 seat: SeatId::new("recipient"),
                 deadline_millis: None,
@@ -779,6 +816,7 @@ fn canonical_pending_invitation_is_reused_in_existing_channel() {
     let initial = client
         .canonical(
             Command::Invite(crate::protocol::commands::Invite {
+                confirmation: None,
                 thread: thread.clone(),
                 seat: SeatId::new("recipient"),
                 deadline_millis: None,
@@ -900,13 +938,17 @@ impl LocalClient for TerminalClient {
     }
     fn call(&self, c: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
         *self.calls.lock().unwrap() += 1;
-        let Command::BeginHandoff(q) = c else {
+        let Command::HandoffDelivery(query) = c else {
             panic!("terminal retry attempted live effect/read: {c:?}")
         };
-        assert_eq!(q.identity, self.original);
+        query.validate().unwrap();
+        let crate::protocol::handoff::DeliveryAction::Status(identity) = query.action else {
+            panic!("terminal must use read-only exact status")
+        };
+        assert_eq!(identity, self.original);
         Ok(CommandResult::Handoff(
             crate::protocol::handoff::HandoffResult {
-                compound: q.identity.compound,
+                compound: identity.compound,
                 thread: Some(ThreadId::new("t1")),
                 state: HandoffState::Completed,
             },
@@ -1270,12 +1312,19 @@ impl LocalClient for CanonicalDelivery {
         self.call(c, b)
     }
     fn call(&self, c: Command, b: &CallBudget) -> Result<CommandResult, ApiError> {
-        if self.terminal_only {
-            assert!(
-                matches!(c, Command::BeginHandoff(_)),
-                "historical retry attempted {c:?}"
-            );
+        if let Command::HandoffDelivery(query) = &c {
+            assert!(matches!(
+                query.action,
+                crate::protocol::handoff::DeliveryAction::Status(_)
+            ));
+            use crate::ports::BootstrapStorePort;
+            self.base.fake.calls.lock().unwrap().push(c.clone());
+            return self
+                .base
+                .store
+                .delivery_query(&query.plan.payload.namespace, query, b);
         }
+        assert!(!self.terminal_only, "historical retry attempted {c:?}");
         if matches!(
             c,
             Command::BeginHandoff(_)
@@ -1729,37 +1778,89 @@ fn actor_prerequisite_retained_human_delivery_refuses_before_canonical_or_cleanu
             1,
         )
         .unwrap();
+    // Historical delivery v1 admitted this internal Human original before the
+    // guarded Agent-only envelope existed. Produce its old staged/report/terminal
+    // encoding using the unchanged legacy child/fence API, never a new envelope.
     let live_client = Client::new(false);
-    execute(&journal, &reference, &live_client, &TestClock).unwrap();
-    let original = live_client
-        .calls
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|command| match command {
-            Command::BeginHandoff(q) => Some(q.identity.clone()),
-            _ => None,
-        })
-        .unwrap();
+    let pending = journal.load(&reference).unwrap();
+    let human = pending.semantic.frozen_claim().unwrap().clone();
+    let p = plan();
+    let keys = &p.payload.keys;
+    let original = crate::protocol::handoff::HandoffIdentity {
+        compound: keys.compound.clone(),
+        digest: pending.header.semantic_digest,
+        claim: human.clone(),
+        thread: p.payload.channel.thread().cloned(),
+        recipient: p.recipient.clone(),
+        create_key: keys.create.clone(),
+        invite_key: keys.invite.clone(),
+        send_key: keys.send.clone(),
+    };
+    handoff::keyed_fence(
+        &live_client,
+        &TestClock,
+        &original,
+        keys.begin.clone(),
+        false,
+    )
+    .unwrap();
+    let mut staged = handoff::StagedWork::default();
+    handoff::stage_work(
+        handoff::Staging {
+            policy: None,
+            channel: &p.payload.channel,
+            body: &p.payload.body,
+            recipient: &p.recipient,
+            create_key: &keys.create,
+            invite_key: &keys.invite,
+            send_key: &keys.send,
+            skip_joined: true,
+        },
+        &mut staged,
+        &mut "create",
+        &|semantic, key| {
+            Ok(live_client.call(
+                semantic.to_command(key.clone(), Some(human.clone()))?,
+                &super::super::cooperative_budget(&TestClock),
+            )?)
+        },
+        &mut |_| Ok(()),
+        &live_client,
+        &TestClock,
+    )
+    .unwrap();
+    let report = serde_json::json!({"compound":keys.compound,"thread":staged.thread,"recipient":p.recipient,"participation":"invited_pending","outcome":"staged","invitation":staged.invitation,"message":staged.message,"recovery_ref":reference.recovery_ref()});
+    let progress = Progress {
+        staged,
+        report_digest: Some(retained_digest(&report).unwrap()),
+        report: Some(report),
+    };
+    let completed = handoff::keyed_fence(
+        &live_client,
+        &TestClock,
+        &original,
+        keys.complete.clone(),
+        true,
+    )
+    .unwrap();
+    save_terminal(
+        &journal,
+        &reference,
+        &Terminal {
+            version: 1,
+            original: String::from_utf8(journal.snapshot_delivery_origin(&reference).unwrap())
+                .unwrap(),
+            completed,
+            progress_digest: retained_digest(&progress).unwrap(),
+            progress,
+        },
+    )
+    .unwrap();
+    journal.complete(&reference).unwrap();
     let client = TerminalClient {
         original,
         calls: Mutex::new(0),
     };
-    super::super::retry::run_delivery_retry_to_writer(
-        &journal,
-        &reference,
-        super::super::actor_route::InvocationActor::Human,
-        &plan().payload.namespace,
-        &client,
-        &TestClock,
-        &OutputSpec::default(),
-        &mut Vec::new(),
-    )
-    .unwrap();
-    assert!(
-        journal.load(&reference).is_err(),
-        "fixture removes original intent"
-    );
     let path = terminal_path(&journal, &reference);
     let before = std::fs::read(&path).unwrap();
     *client.calls.lock().unwrap() = 0;
@@ -2010,8 +2111,26 @@ impl LocalClient for GuardedCanonical {
                     return Err(ApiError::new(code, "injected participants read failure"));
                 }
             }
+            if self.base.fake.joined
+                && matches!(c, Command::Participants(_) | Command::SeatInspect(_))
+            {
+                return crate::store::queries::query(&self.base.context, "i", &c, b);
+            }
             return self.base.fake.call(c, b);
         };
+        if request.plan.payload.body.len() == 65_536 {
+            let wire = crate::protocol::wire::WireRequest {
+                version: crate::protocol::wire::PROTOCOL_VERSION,
+                request_id: "maximum-body".into(),
+                expected_instance: "00000000-0000-4000-8000-000000000001".into(),
+                expected_boot: None,
+                output: None,
+                command: Command::HandoffDelivery(request.clone()),
+            };
+            let bytes = serde_json::to_vec(&wire).unwrap();
+            assert!(bytes.len() + 4 <= crate::protocol::wire::MAX_WIRE_FRAME_BYTES);
+            crate::protocol::wire::WireRequest::decode(&bytes).unwrap();
+        }
         let canonical = request.plan.payload.namespace.clone();
         let phase = match &request.action {
             DeliveryAction::Status(_) | DeliveryAction::Prepare(_) => {
@@ -2572,6 +2691,903 @@ fn pending_delivery_writer_inspect_argv_parses_as_public_pending_ops() {
 }
 
 #[test]
+fn maximum_escaped_delivery_origin_and_terminal_survive_cleanup_retry() {
+    let temp = TempRoot::new();
+    let journal = Journal::open(temp.0.join("intents")).unwrap();
+    let mut plan = plan();
+    plan.payload.body = "\u{1}".repeat(65_536);
+    let reference = record(&journal, plan.clone());
+    let origin = journal.snapshot_delivery_origin(&reference).unwrap();
+    assert!(origin.len() >= 393_216);
+    assert_eq!(
+        delivery_plan(&Journal::decode_delivery_origin(&reference, &origin).unwrap())
+            .unwrap()
+            .payload
+            .body,
+        "\u{1}".repeat(65_536)
+    );
+    let progress = Progress::default();
+    // The terminal serializer nests the exact original JSON as a string;
+    // every six-byte body escape gains one more backslash.
+    let terminal = Terminal {
+        version: 1,
+        original: String::from_utf8(origin).unwrap(),
+        completed: HandoffResult {
+            compound: plan.payload.keys.compound.clone(),
+            thread: Some(ThreadId::new("t1")),
+            state: HandoffState::Completed,
+        },
+        progress_digest: retained_digest(&progress).unwrap(),
+        progress,
+    };
+    let bytes = serde_json::to_vec(&terminal).unwrap();
+    assert!(bytes.len() >= 458_752);
+    eprintln!(
+        "maximum escaped delivery: origin={} terminal={}",
+        terminal.original.len(),
+        bytes.len()
+    );
+    save_terminal(&journal, &reference, &terminal).unwrap();
+    let saved: Terminal =
+        serde_json::from_slice(&std::fs::read(terminal_path(&journal, &reference)).unwrap())
+            .unwrap();
+    let pending = Journal::decode_delivery_origin(&reference, saved.original.as_bytes()).unwrap();
+    assert_eq!(
+        delivery_plan(&pending).unwrap().payload.body,
+        "\u{1}".repeat(65_536)
+    );
+}
+
+#[test]
+fn maximum_instruction_file_freezes_through_existing_delivery_and_retry() {
+    for body in ["x".repeat(65_536), "\u{1}".repeat(65_536)] {
+        let temp = TempRoot::new();
+        let path = temp.0.join("instructions");
+        std::fs::write(&path, &body).unwrap();
+        let parsed = crate::cli::commands::parse_argv([
+            "ht",
+            "handoff",
+            "--existing",
+            "--seat",
+            "recipient",
+            "--new-thread",
+            "--topic",
+            "review",
+            "--goal",
+            "review changes",
+            "--deadline",
+            "7",
+            "--invite-deadline",
+            "11",
+            "--file",
+            path.to_str().unwrap(),
+        ])
+        .unwrap();
+        let crate::cli::commands::CliAction::TopologyHandoff(request) = parsed.action else {
+            panic!("wrong action")
+        };
+        let mut plan = plan();
+        plan.payload.body = request.body;
+        plan.payload.policy = request.policy;
+        plan.payload.channel = HandoffChannel::New {
+            name: None,
+            topic: "review".into(),
+            goal: "review changes".into(),
+        };
+        let journal = Journal::open(temp.0.join("intents")).unwrap();
+        let reference = publish(&journal, plan.clone(), canonical_claim(), &TestClock).unwrap();
+        let original = journal.snapshot_delivery_origin(&reference).unwrap();
+        std::fs::write(&path, "changed").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let client = GuardedCanonical::new(&temp.0);
+        *client.lose_reply.lock().unwrap() = Some("send");
+        assert!(
+            guarded_retry(&journal, &reference, &plan, &client, true, &mut Vec::new()).is_err()
+        );
+        guarded_retry(&journal, &reference, &plan, &client, true, &mut Vec::new()).unwrap();
+        let conn = client.base.context.open_writer().unwrap();
+        let saved: String = conn
+            .query_row("SELECT body FROM messages WHERE kind='ordinary'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(saved, body);
+        let (confirmation, duration, invite_deadline, receipt) =
+            handoff_policy_canonical_values(&client);
+        assert_eq!((confirmation.as_str(), duration), ("require_ack", 11000));
+        assert_eq!(invite_deadline, receipt.decision_at + 11000);
+        assert_eq!(receipt.frozen_duration_ms, 7000);
+        assert_eq!(receipt.deadline_at, Some(receipt.decision_at + 7000));
+        let frozen = (confirmation, duration, invite_deadline, receipt.deadline_at);
+        let terminal = read_terminal(&journal, &reference).unwrap().unwrap();
+        assert_eq!(terminal.original.as_bytes(), original);
+        guarded_retry(&journal, &reference, &plan, &client, true, &mut Vec::new()).unwrap();
+        assert_eq!(client.counts(), (1, 1, 1));
+        let replay = handoff_policy_canonical_values(&client);
+        assert_eq!((replay.0, replay.1, replay.2, replay.3.deadline_at), frozen);
+    }
+}
+
+fn handoff_policy_advance_work(
+    context: &crate::store::connection::StoreContext,
+    db: &mut rusqlite::Connection,
+) {
+    let budget = CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: crate::protocol::time::Cancellation::default(),
+    };
+    for _ in 0..100 {
+        let jobs: Vec<String> = db
+            .prepare("SELECT id FROM work_jobs WHERE status='pending' ORDER BY ordinal")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        if jobs.is_empty() {
+            return;
+        }
+        for job in jobs {
+            crate::store::materialization::advance_work(
+                db,
+                &job,
+                crate::ports::DurableWorkAdmission::new(16).unwrap(),
+                &budget,
+                context.clock(),
+            )
+            .unwrap();
+        }
+    }
+    panic!("bounded canonical work failed to drain");
+}
+
+// These checks use the canonical deciding delivery handler, not fake child results.
+fn handoff_policy_canonical_values(
+    client: &GuardedCanonical,
+) -> (String, i64, i64, crate::store::effective::EffectiveReceipt) {
+    let db = client.base.context.open_writer().unwrap();
+    let (mode, duration, deadline): (String, i64, i64) = db
+        .query_row(
+            "SELECT confirmation,frozen_duration_ms,deadline_at FROM invitations",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    let message: String = db
+        .query_row("SELECT id FROM messages WHERE kind='ordinary'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let receipt = crate::store::effective::effective_receipt(&db, &message, "recipient")
+        .unwrap()
+        .unwrap();
+    (mode, duration, deadline, receipt)
+}
+
+#[test]
+fn handoff_policy_default_choice_resolves_at_child_creation_then_replay_preserves_deadlines() {
+    use crate::protocol::{commands::InvitationConfirmation, handoff::HandoffPolicy};
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let mut p = plan();
+    p.payload.channel = HandoffChannel::New {
+        name: None,
+        topic: "review".into(),
+        goal: "review changes".into(),
+    };
+    p.payload.policy = Some(HandoffPolicy {
+        deadline_millis: None,
+        invitation_confirmation: InvitationConfirmation::RequireAck,
+        invite_deadline_millis: None,
+    });
+    let reference = record(&journal, p.clone());
+    let original = journal.snapshot_delivery_origin(&reference).unwrap();
+    let mut client = GuardedCanonical::new(&tmp.0);
+    *client.fail_before.lock().unwrap() = Some(("invite", ErrorCode::HostUnavailable));
+    assert!(guarded_retry(&journal, &reference, &p, &client, true, &mut vec![]).is_err());
+    assert_eq!(client.counts(), (1, 0, 0));
+    let settings = |message, invitation| crate::store::StoreSettings {
+        invitation_default_ms: Some(invitation),
+        message_limits: crate::store::messages::MessageLimits {
+            receipt_duration_ms: message,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    client.base.store = crate::store::SqliteStore::new(
+        crate::store::connection::StoreContext::new(
+            tmp.0.join("canonical.db"),
+            std::sync::Arc::new(TestClock),
+        ),
+        "i",
+        settings(13000, 17000),
+    )
+    .unwrap();
+    *client.lose_reply.lock().unwrap() = Some("send");
+    assert!(guarded_retry(&journal, &reference, &p, &client, true, &mut vec![]).is_err());
+    let before = handoff_policy_canonical_values(&client);
+    assert_eq!(
+        (&before.0, before.1, before.3.frozen_duration_ms),
+        (&"require_ack".to_owned(), 17000, 13000)
+    );
+    client.base.store = crate::store::SqliteStore::new(
+        crate::store::connection::StoreContext::new(
+            tmp.0.join("canonical.db"),
+            std::sync::Arc::new(TestClock),
+        ),
+        "i",
+        settings(23000, 29000),
+    )
+    .unwrap();
+    guarded_retry(&journal, &reference, &p, &client, true, &mut vec![]).unwrap();
+    assert_eq!(handoff_policy_canonical_values(&client), before);
+    assert_eq!(
+        read_terminal(&journal, &reference)
+            .unwrap()
+            .unwrap()
+            .original
+            .as_bytes(),
+        original
+    );
+    assert_eq!(client.counts(), (1, 1, 1));
+}
+
+#[test]
+fn handoff_policy_lazy_invitation_still_warns_sender_for_unregistered_ack_required_recipient() {
+    use crate::protocol::{commands::InvitationConfirmation, handoff::HandoffPolicy};
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let mut p = plan();
+    p.payload.channel = HandoffChannel::New {
+        name: None,
+        topic: "review".into(),
+        goal: "review changes".into(),
+    };
+    p.payload.policy = Some(HandoffPolicy {
+        deadline_millis: Some(7000),
+        invitation_confirmation: InvitationConfirmation::Lazy,
+        invite_deadline_millis: None,
+    });
+    let reference = record(&journal, p.clone());
+    let client = GuardedCanonical::new(&tmp.0);
+    guarded_retry(&journal, &reference, &p, &client, true, &mut vec![]).unwrap();
+    let (mode, _, _, receipt) = handoff_policy_canonical_values(&client);
+    assert_eq!(mode, "lazy");
+    assert_eq!(
+        receipt.state,
+        crate::store::effective::EffectiveReceiptState::Pending
+    );
+    assert_eq!(receipt.frozen_duration_ms, 7000);
+    assert_eq!(receipt.available_at, None);
+    assert_eq!(receipt.deadline_at, Some(receipt.decision_at + 7000));
+    struct Due(i64);
+    impl Clock for Due {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(self.0)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(1)
+        }
+    }
+    let context = crate::store::connection::StoreContext::new(
+        tmp.0.join("canonical.db"),
+        std::sync::Arc::new(Due(receipt.deadline_at.unwrap() + 1)),
+    );
+    let mut db = context.open_writer().unwrap();
+    let registered: Option<i64> = db
+        .query_row(
+            "SELECT registered_at FROM occupant_bindings WHERE seat_id='recipient'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(registered, None);
+    handoff_policy_advance_work(&context, &mut db);
+    let mut cursor = crate::store::receipts::ReceiptDueCursor::default();
+    for _ in 0..100 {
+        crate::store::receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+        if crate::store::effective::effective_receipt(&db, &receipt.message_id, "recipient")
+            .unwrap()
+            .unwrap()
+            .warning_message_id
+            .is_some()
+        {
+            break;
+        }
+    }
+    let warned = crate::store::effective::effective_receipt(&db, &receipt.message_id, "recipient")
+        .unwrap()
+        .unwrap();
+    let warning = warned
+        .warning_message_id
+        .expect("unregistered recipient is discovered overdue");
+    let origin: (String, String) = db
+        .query_row(
+            "SELECT seat_id,source_message_id FROM receipt_warning_origins WHERE warning_id=?1",
+            [&warning],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(origin, ("sender".into(), receipt.message_id));
+    assert_eq!(
+        db.query_row("SELECT state FROM invitations", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "pending"
+    );
+}
+
+#[test]
+fn handoff_policy_missing_readiness_guarded_launch_stages_unregistered_body_and_warns_sender() {
+    struct CanonicalLaunch(CanonicalInvites);
+    impl LocalClient for CanonicalLaunch {
+        fn call_with_output(
+            &self,
+            c: Command,
+            _: &OutputSpec,
+            b: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(c, b)
+        }
+        fn call(&self, c: Command, b: &CallBudget) -> Result<CommandResult, ApiError> {
+            match c {
+                Command::BeginHandoff(_)
+                | Command::CompleteHandoff(_)
+                | Command::CreateThread(_)
+                | Command::Invite(_)
+                | Command::SendMessage(_) => self.0.canonical(c, b),
+                _ => self.0.fake.call(c, b),
+            }
+        }
+    }
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let mut client = CanonicalLaunch(CanonicalInvites::with_recipient(
+        &tmp.0,
+        "seat_launch",
+        "w9:p1",
+    ));
+    let (result, submitted, _, records) =
+        super::super::launch::tests::task10_hermes_native_fixture(false, |launcher, launch| {
+            let env = launcher.parts.env.snapshot();
+            let request = handoff::HandoffRequest {
+                automatic: false,
+                policy: Some(crate::protocol::handoff::HandoffPolicy {
+                    deadline_millis: Some(7000),
+                    invitation_confirmation:
+                        crate::protocol::commands::InvitationConfirmation::Lazy,
+                    invite_deadline_millis: None,
+                }),
+                thread: None,
+                thread_name: None,
+                topic: Some("review".into()),
+                goal: Some("review changes".into()),
+                body: "durable body unavailable to native argv".into(),
+                launch,
+            };
+            let output = OutputSpec {
+                context: crate::protocol::output::ContinuationContext {
+                    state_dir: env.state_dir.map(|p| p.display().to_string()),
+                    host: env.host_endpoint.map(|p| p.display().to_string()),
+                },
+                ..Default::default()
+            };
+            handoff::start(
+                &journal,
+                request,
+                canonical_claim(),
+                "peer",
+                &client,
+                launcher,
+                &TestClock,
+                &output,
+                &mut vec![],
+            )
+        });
+    assert!(
+        result.is_ok(),
+        "actual safe Hermes launch with absent owned integration: {result:?}"
+    );
+    assert_eq!(submitted.len(), 1);
+    assert!(submitted[0].configured_hook.is_none());
+    assert!(
+        submitted[0]
+            .argv
+            .iter()
+            .all(|a| !a.contains("durable body unavailable"))
+    );
+    assert_eq!(records.len(), 1);
+    let mut db = client.0.context.open_writer().unwrap();
+    let message: String = db
+        .query_row("SELECT id FROM messages WHERE kind='ordinary'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let receipt = crate::store::effective::effective_receipt(&db, &message, "seat_launch")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        receipt.state,
+        crate::store::effective::EffectiveReceiptState::Pending
+    );
+    assert_eq!(receipt.frozen_duration_ms, 7000);
+    assert_eq!(receipt.available_at, None);
+    assert_eq!(receipt.deadline_at, Some(receipt.decision_at + 7000));
+    let registered: Option<i64> = db
+        .query_row(
+            "SELECT registered_at FROM occupant_bindings WHERE seat_id='seat_launch'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(registered, None);
+    struct Due(i64);
+    impl Clock for Due {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(self.0)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(1)
+        }
+    }
+    let context = crate::store::connection::StoreContext::new(
+        tmp.0.join("canonical.db"),
+        std::sync::Arc::new(Due(receipt.deadline_at.unwrap() + 1)),
+    );
+    handoff_policy_advance_work(&context, &mut db);
+    let mut cursor = crate::store::receipts::ReceiptDueCursor::default();
+    for _ in 0..100 {
+        crate::store::receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+        if crate::store::effective::effective_receipt(&db, &message, "seat_launch")
+            .unwrap()
+            .unwrap()
+            .warning_message_id
+            .is_some()
+        {
+            break;
+        }
+    }
+    let warning = crate::store::effective::effective_receipt(&db, &message, "seat_launch")
+        .unwrap()
+        .unwrap()
+        .warning_message_id
+        .unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT seat_id FROM receipt_warning_origins WHERE warning_id=?1",
+            [&warning],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "sender"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT confirmation||':'||state FROM invitations",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "lazy:pending"
+    );
+    // Fixture already has a cooperative binding but no registration; an actual
+    // accountable ACK is independently authorized and clears the warning normally.
+    let mut claim = canonical_claim();
+    claim.seat = SeatId::new("seat_launch");
+    claim.target = crate::protocol::ids::HostTargetId::new("w9:p1");
+    let ack = crate::protocol::commands::Ack {
+        messages: vec![MessageId::new(&message)],
+        operation: crate::protocol::ids::OperationId::new("late-accountable-ack"),
+        claim,
+    };
+    client.0.store = crate::store::SqliteStore::new(
+        crate::store::connection::StoreContext::new(
+            tmp.0.join("canonical.db"),
+            std::sync::Arc::new(Due(receipt.deadline_at.unwrap() + 2)),
+        ),
+        "i",
+        Default::default(),
+    )
+    .unwrap();
+    client
+        .0
+        .canonical(
+            Command::Ack(ack),
+            &CallBudget {
+                deadline: MonoInstant(u64::MAX),
+                cancellation: crate::protocol::time::Cancellation::default(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        crate::store::effective::effective_receipt(&db, &message, "seat_launch")
+            .unwrap()
+            .unwrap()
+            .state,
+        crate::store::effective::EffectiveReceiptState::Acknowledged
+    );
+    assert_eq!(db.query_row("SELECT count(*) FROM warning_conditions WHERE open_warning_id=?1 AND clear_warning_id IS NOT NULL", [&warning], |r|r.get::<_,i64>(0)).unwrap(),1);
+}
+
+#[test]
+fn handoff_policy_already_joined_unavailable_recipient_warns_without_new_invitation() {
+    use crate::protocol::{
+        commands::{Accept, CreateThread, InvitationConfirmation, Invite},
+        handoff::HandoffPolicy,
+    };
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let mut client = GuardedCanonical::new(&tmp.0);
+    let budget = super::super::cooperative_budget(&TestClock);
+    let CommandResult::ThreadCreated(thread) = client
+        .base
+        .canonical(
+            Command::CreateThread(CreateThread {
+                name: None,
+                topic: "joined".into(),
+                goal: "joined".into(),
+                operation: OperationId::new("prior-create"),
+                claim: canonical_claim(),
+            }),
+            &budget,
+        )
+        .unwrap()
+    else {
+        panic!()
+    };
+    client
+        .base
+        .canonical(
+            Command::Invite(Invite {
+                confirmation: Some(InvitationConfirmation::Lazy),
+                thread: thread.clone(),
+                seat: SeatId::new("recipient"),
+                deadline_millis: None,
+                operation: OperationId::new("prior-invite"),
+                claim: canonical_claim(),
+            }),
+            &budget,
+        )
+        .unwrap();
+    let mut recipient = canonical_claim();
+    recipient.seat = SeatId::new("recipient");
+    recipient.target = crate::protocol::ids::HostTargetId::new("w1:p2");
+    client
+        .base
+        .canonical(
+            Command::Accept(Accept {
+                thread: thread.clone(),
+                operation: OperationId::new("prior-accept"),
+                claim: recipient,
+            }),
+            &budget,
+        )
+        .unwrap();
+    client
+        .base
+        .context
+        .open_writer()
+        .unwrap()
+        .execute(
+            "UPDATE occupant_bindings SET ended_at=1 WHERE seat_id='recipient'",
+            [],
+        )
+        .unwrap();
+    client.base.fake.joined = true; // Reads below are canonical, not this synthetic participant flag.
+    let mut p = plan();
+    p.payload.channel = HandoffChannel::Existing { thread };
+    p.payload.policy = Some(HandoffPolicy {
+        deadline_millis: Some(7000),
+        invitation_confirmation: InvitationConfirmation::Lazy,
+        invite_deadline_millis: None,
+    });
+    let reference = record(&journal, p.clone());
+    guarded_retry(&journal, &reference, &p, &client, true, &mut vec![]).unwrap();
+    assert_eq!(
+        client.counts(),
+        (1, 1, 1),
+        "retain only the prior accepted invitation"
+    );
+    assert!(!client.actions.lock().unwrap().contains(&"invite"));
+    let (_, _, _, receipt) = handoff_policy_canonical_values(&client);
+    assert_eq!(receipt.available_at, None);
+    assert_eq!(receipt.frozen_duration_ms, 7000);
+    assert_eq!(receipt.deadline_at, Some(receipt.decision_at + 7000));
+    struct Due(i64);
+    impl Clock for Due {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(self.0)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(1)
+        }
+    }
+    let context = crate::store::connection::StoreContext::new(
+        tmp.0.join("canonical.db"),
+        std::sync::Arc::new(Due(receipt.deadline_at.unwrap() + 1)),
+    );
+    let mut db = context.open_writer().unwrap();
+    handoff_policy_advance_work(&context, &mut db);
+    let mut cursor = crate::store::receipts::ReceiptDueCursor::default();
+    for _ in 0..100 {
+        crate::store::receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+    }
+    let warning = crate::store::effective::effective_receipt(&db, &receipt.message_id, "recipient")
+        .unwrap()
+        .unwrap()
+        .warning_message_id
+        .unwrap();
+    let origin: (String, String) = db
+        .query_row(
+            "SELECT seat_id,source_message_id FROM receipt_warning_origins WHERE warning_id=?1",
+            [&warning],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(origin, ("sender".into(), receipt.message_id));
+}
+
+#[test]
+fn handoff_policy_completed_canonical_status_bypasses_missing_capabilities_but_pending_refuses() {
+    struct MissingCapabilities<'a>(&'a GuardedCanonical, std::sync::atomic::AtomicUsize);
+    impl LocalClient for MissingCapabilities<'_> {
+        fn call_with_output(
+            &self,
+            c: Command,
+            _: &OutputSpec,
+            b: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(c, b)
+        }
+        fn call(&self, c: Command, b: &CallBudget) -> Result<CommandResult, ApiError> {
+            if matches!(c, Command::Capabilities) {
+                self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Ok(CommandResult::Capabilities(
+                    crate::protocol::results::CapabilityList {
+                        capabilities: vec![],
+                    },
+                ));
+            }
+            assert!(
+                matches!(&c, Command::HandoffDelivery(q) if matches!(q.action, crate::protocol::handoff::DeliveryAction::Status(_))),
+                "only actual canonical read is permitted: {c:?}"
+            );
+            self.0.call(c, b)
+        }
+    }
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let mut p = plan();
+    p.payload.channel = HandoffChannel::New {
+        name: None,
+        topic: "review".into(),
+        goal: "review".into(),
+    };
+    p.payload.policy = Some(crate::protocol::handoff::HandoffPolicy {
+        deadline_millis: Some(7000),
+        invitation_confirmation: crate::protocol::commands::InvitationConfirmation::Lazy,
+        invite_deadline_millis: None,
+    });
+    let reference = record(&journal, p.clone());
+    let base = GuardedCanonical::new(&tmp.0);
+    let missing = MissingCapabilities(&base, std::sync::atomic::AtomicUsize::new(0));
+    let attempt = || {
+        let pending = load_original(&journal, &reference).unwrap();
+        let frozen = FrozenDeliveryClient::new(&missing, &pending).unwrap();
+        retry_to_writer(
+            &journal,
+            &reference,
+            &p.payload.namespace,
+            &frozen,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut vec![],
+        )
+    };
+    assert!(
+        attempt().is_err(),
+        "pending operation needs current semantic capability"
+    );
+    assert_eq!(missing.1.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(base.actions.lock().unwrap().is_empty());
+    assert_eq!(base.counts(), (0, 0, 0));
+    *base.lose_reply.lock().unwrap() = Some("complete");
+    assert!(guarded_retry(&journal, &reference, &p, &base, true, &mut vec![]).is_err());
+    assert_eq!(base.fence(), "completed");
+    base.actions.lock().unwrap().clear();
+    let before = base.counts();
+    assert_eq!(attempt().unwrap()["outcome"], "staged");
+    assert_eq!(
+        missing.1.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "completed presentation performs no capabilities read"
+    );
+    assert!(
+        base.actions.lock().unwrap().is_empty(),
+        "no Begin or child operation after completion"
+    );
+    assert_eq!(base.counts(), before);
+}
+
+// Catches conflating acceptance with ACK, or clearing both origin warnings when
+// only one of a timed handoff's independent obligations has been settled.
+#[test]
+fn timed_handoff_acceptance_and_ack_clear_only_their_own_overdue_condition() {
+    use crate::protocol::{
+        commands::{Accept, Ack, InvitationConfirmation},
+        handoff::HandoffPolicy,
+    };
+    struct At(i64);
+    impl Clock for At {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(self.0)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(1)
+        }
+    }
+    for accept_first in [true, false] {
+        let tmp = TempRoot::new();
+        let journal = Journal::open(tmp.0.join("intents")).unwrap();
+        let mut p = plan();
+        p.payload.channel = HandoffChannel::New {
+            name: None,
+            topic: "timed review".into(),
+            goal: "independent obligations".into(),
+        };
+        let mut client = GuardedCanonical::new(&tmp.0);
+        p.payload.policy = Some(HandoffPolicy {
+            deadline_millis: Some(7000),
+            invitation_confirmation: InvitationConfirmation::RequireAck,
+            invite_deadline_millis: Some(11000),
+        });
+        let reference = record(&journal, p.clone());
+        guarded_retry(&journal, &reference, &p, &client, true, &mut vec![]).unwrap();
+        let (mode, duration, invitation_deadline, receipt) =
+            handoff_policy_canonical_values(&client);
+        assert_eq!(
+            (mode.as_str(), duration, invitation_deadline),
+            ("require_ack", 11000, 11001)
+        );
+        assert_eq!(receipt.deadline_at, Some(7001));
+        assert_eq!(receipt.available_at, None);
+        let context_at = |time| {
+            crate::store::connection::StoreContext::new(
+                tmp.0.join("canonical.db"),
+                std::sync::Arc::new(At(time)),
+            )
+        };
+        let early = context_at(7001);
+        let mut db = early.open_writer().unwrap();
+        handoff_policy_advance_work(&early, &mut db);
+        let mut cursor = crate::store::receipts::ReceiptDueCursor::default();
+        for _ in 0..16 {
+            crate::store::receipts::scan_due(&early, &mut db, 100, &mut cursor).unwrap();
+        }
+        crate::store::invitation_due::scan_invitation_due_batch(&early, &mut db, None, 100)
+            .unwrap();
+        let message_warning =
+            crate::store::effective::effective_receipt(&db, &receipt.message_id, "recipient")
+                .unwrap()
+                .unwrap()
+                .warning_message_id
+                .unwrap();
+        let invitation_warning = |db: &rusqlite::Connection| {
+            db.query_row("SELECT warning_message_id FROM invitations", [], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            invitation_warning(&db),
+            None,
+            "message expiry must not expire the invitation early"
+        );
+        let late = context_at(11001);
+        crate::store::invitation_due::scan_invitation_due_batch(&late, &mut db, None, 100).unwrap();
+        let invitation_warning =
+            invitation_warning(&db).expect("invitation expires independently without registration");
+        assert_ne!(message_warning, invitation_warning);
+        assert_eq!(db.query_row("SELECT count(*) FROM occupant_bindings WHERE seat_id='recipient' AND registered_at IS NOT NULL", [], |r|r.get::<_,i64>(0)).unwrap(), 0);
+        let cleared = |warning: &str| {
+            db.query_row("SELECT clear_warning_id IS NOT NULL FROM warning_conditions WHERE open_warning_id=?1", [warning], |r|r.get::<_,bool>(0)).unwrap()
+        };
+        assert!(!cleared(&message_warning));
+        assert!(!cleared(&invitation_warning));
+        assert_eq!(
+            db.query_row(
+                "SELECT seat_id FROM receipt_warning_origins WHERE warning_id=?1",
+                [&message_warning],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "sender"
+        );
+        let sender_attention = || {
+            crate::store::attention::wake_seat_attention(&db, "sender")
+                .unwrap()
+                .attention
+                .latest_warning_seq
+        };
+        assert!(sender_attention().is_some());
+        client.base.store =
+            crate::store::SqliteStore::new(context_at(11002), "i", Default::default()).unwrap();
+        let mut recipient = canonical_claim();
+        recipient.seat = SeatId::new("recipient");
+        recipient.target = crate::protocol::ids::HostTargetId::new("w1:p2");
+        let thread = ThreadId::new(
+            db.query_row("SELECT id FROM threads", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+        );
+        let accept = Command::Accept(Accept {
+            thread,
+            operation: OperationId::new("independent-accept"),
+            claim: recipient.clone(),
+        });
+        let ack = Command::Ack(Ack {
+            messages: vec![MessageId::new(&receipt.message_id)],
+            operation: OperationId::new("independent-ack"),
+            claim: recipient,
+        });
+        let (first, second) = if accept_first {
+            (accept, ack)
+        } else {
+            (ack, accept)
+        };
+        let budget = CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        };
+        client.base.canonical(first, &budget).unwrap();
+        assert_eq!(cleared(&invitation_warning), accept_first);
+        assert_eq!(cleared(&message_warning), !accept_first);
+        assert!(
+            sender_attention().is_some(),
+            "the other open condition must retain sender attention"
+        );
+        let partial =
+            crate::store::effective::effective_receipt(&db, &receipt.message_id, "recipient")
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            partial.state,
+            if accept_first {
+                crate::store::effective::EffectiveReceiptState::Pending
+            } else {
+                crate::store::effective::EffectiveReceiptState::Acknowledged
+            }
+        );
+        client.base.canonical(second, &budget).unwrap();
+        assert!(cleared(&invitation_warning));
+        assert!(cleared(&message_warning));
+        assert_eq!(sender_attention(), None, "final clears are passive");
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM warning_conditions", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            db.query_row("SELECT state FROM invitations", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "accepted"
+        );
+        let final_receipt =
+            crate::store::effective::effective_receipt(&db, &receipt.message_id, "recipient")
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            final_receipt.state,
+            crate::store::effective::EffectiveReceiptState::Acknowledged
+        );
+        assert_eq!(final_receipt.deadline_at, Some(7001));
+        assert_eq!(final_receipt.frozen_duration_ms, 7000);
+        assert_eq!(client.counts(), (1, 1, 1));
+    }
+}
+
+#[test]
 fn automatic_delivery_preparation_stays_unsupported_before_any_read() {
     let client = Client::new(false);
     let mut request = request();
@@ -2594,144 +3610,6 @@ fn automatic_delivery_preparation_stays_unsupported_before_any_read() {
     .unwrap_err();
     assert!(matches!(error,RunError::Api(ref error) if error.code==ErrorCode::Unsupported));
     assert!(client.calls.lock().unwrap().is_empty());
-}
-
-struct AutomaticPeerClient {
-    supported: bool,
-    calls: Mutex<Vec<Command>>,
-    thread: Mutex<Option<ThreadId>>,
-    sent: Mutex<bool>,
-    completed: Mutex<bool>,
-    lost: Mutex<Option<&'static str>>,
-    rejected: Mutex<bool>,
-    invitations: Mutex<usize>,
-}
-impl AutomaticPeerClient {
-    fn new(supported: bool) -> Self {
-        Self {
-            supported,
-            calls: Mutex::new(vec![]),
-            thread: Mutex::new(None),
-            sent: Mutex::new(false),
-            completed: Mutex::new(false),
-            lost: Mutex::new(None),
-            rejected: Mutex::new(false),
-            invitations: Mutex::new(0),
-        }
-    }
-}
-impl LocalClient for AutomaticPeerClient {
-    fn call_with_output(
-        &self,
-        command: Command,
-        _: &OutputSpec,
-        budget: &CallBudget,
-    ) -> Result<CommandResult, ApiError> {
-        self.call(command, budget)
-    }
-    fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
-        self.calls.lock().unwrap().push(command.clone());
-        match command {
-            Command::Capabilities => Ok(CommandResult::Capabilities(
-                crate::protocol::results::CapabilityList {
-                    capabilities: if self.supported {
-                        vec![crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into()]
-                    } else {
-                        vec![]
-                    },
-                },
-            )),
-            Command::SeatInspect(q) => {
-                assert_eq!(q.seat.as_str(), "recipient");
-                Ok(CommandResult::SeatInspect(inspection()))
-            }
-            Command::Seats(q) => {
-                assert_eq!(q.target.unwrap().as_str(), "w1:p2");
-                Ok(CommandResult::Seats(
-                    serde_json::from_value(page(serde_json::json!([inspection().summary])))
-                        .unwrap(),
-                ))
-            }
-            Command::AutomaticHandoffDelivery(request) => {
-                use crate::protocol::handoff::{AutomaticDeliveryAction, HandoffResult};
-                assert_eq!(request.plan().recipient.as_str(), "recipient");
-                assert_eq!(request.plan().payload.body, "literal '$HOME' work");
-                let keys = &request.plan().payload.keys;
-                let status = |state, thread| {
-                    CommandResult::Handoff(HandoffResult {
-                        compound: keys.compound.clone(),
-                        state,
-                        thread,
-                    })
-                };
-                match &request.action {
-                    AutomaticDeliveryAction::Prepare => {
-                        Ok(CommandResult::SeatResolved(SeatId::new("recipient")))
-                    }
-                    AutomaticDeliveryAction::Status | AutomaticDeliveryAction::Begin { .. } => {
-                        Ok(status(
-                            if *self.completed.lock().unwrap() {
-                                HandoffState::Completed
-                            } else {
-                                HandoffState::Live
-                            },
-                            self.thread.lock().unwrap().clone(),
-                        ))
-                    }
-                    AutomaticDeliveryAction::Ensure(q) => {
-                        assert_eq!(q.operation, keys.ensure);
-                        let mut thread = self.thread.lock().unwrap();
-                        if thread.is_none() {
-                            *self.invitations.lock().unwrap() += 1;
-                            *thread = Some(ThreadId::new("t-pair"));
-                        }
-                        drop(thread);
-                        let mut lost = self.lost.lock().unwrap();
-                        if *lost == Some("ensure") {
-                            *lost = None;
-                            return Err(ApiError::unknown_outcome("Ensure committed; reply lost"));
-                        }
-                        Ok(CommandResult::ThreadCreated(ThreadId::new("t-pair")))
-                    }
-                    AutomaticDeliveryAction::Send(q) => {
-                        assert_eq!(q.operation, keys.send);
-                        assert_eq!(q.thread.as_str(), "t-pair");
-                        assert_eq!(q.direct_recipient.as_ref().unwrap().as_str(), "recipient");
-                        if !*self.sent.lock().unwrap() && *self.rejected.lock().unwrap() {
-                            return Err(ApiError::new(
-                                ErrorCode::MembershipRequired,
-                                "recipient rejected; explicitly reinvite",
-                            ));
-                        }
-                        *self.sent.lock().unwrap() = true;
-                        let mut lost = self.lost.lock().unwrap();
-                        if *lost == Some("send") {
-                            *lost = None;
-                            return Err(ApiError::unknown_outcome("Send committed; reply lost"));
-                        }
-                        Ok(CommandResult::MessageSent(MessageId::new("m-pair")))
-                    }
-                    AutomaticDeliveryAction::Complete { operation } => {
-                        assert_eq!(operation, &keys.complete);
-                        assert!(*self.sent.lock().unwrap());
-                        *self.completed.lock().unwrap() = true;
-                        let mut lost = self.lost.lock().unwrap();
-                        if *lost == Some("complete") {
-                            *lost = None;
-                            return Err(ApiError::unknown_outcome(
-                                "Complete committed; reply lost",
-                            ));
-                        }
-                        Ok(status(
-                            HandoffState::Completed,
-                            Some(ThreadId::new("t-pair")),
-                        ))
-                    }
-                }
-            }
-            other => panic!("automatic existing producer used forbidden command: {other:?}"),
-        }
-    }
 }
 
 #[test]
@@ -3240,4 +4118,420 @@ fn automatic_existing_retry_requires_exact_namespace_path_bytes_before_client() 
     assert!(result.is_err());
     assert!(bytes.is_empty());
     assert_eq!(client.calls.lock().unwrap().len(), before);
+}
+
+struct AutomaticPeerClient {
+    body: String,
+    supported: bool,
+    calls: Mutex<Vec<Command>>,
+    thread: Mutex<Option<ThreadId>>,
+    sent: Mutex<bool>,
+    completed: Mutex<bool>,
+    lost: Mutex<Option<&'static str>>,
+    rejected: Mutex<bool>,
+    invitations: Mutex<usize>,
+}
+impl AutomaticPeerClient {
+    fn new(supported: bool) -> Self {
+        Self {
+            body: "literal '$HOME' work".into(),
+            supported,
+            calls: Mutex::new(vec![]),
+            thread: Mutex::new(None),
+            sent: Mutex::new(false),
+            completed: Mutex::new(false),
+            lost: Mutex::new(None),
+            rejected: Mutex::new(false),
+            invitations: Mutex::new(0),
+        }
+    }
+}
+impl LocalClient for AutomaticPeerClient {
+    fn call_with_output(
+        &self,
+        command: Command,
+        _: &OutputSpec,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(command, budget)
+    }
+    fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        self.calls.lock().unwrap().push(command.clone());
+        match command {
+            Command::Capabilities => Ok(CommandResult::Capabilities(
+                crate::protocol::results::CapabilityList {
+                    capabilities: if self.supported {
+                        vec![
+                            crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into(),
+                            crate::protocol::capabilities::ENSURE_CREATION_POLICY_V1.into(),
+                            crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.into(),
+                            crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.into(),
+                        ]
+                    } else {
+                        vec![]
+                    },
+                },
+            )),
+            Command::SeatInspect(q) => {
+                assert_eq!(q.seat.as_str(), "recipient");
+                Ok(CommandResult::SeatInspect(inspection()))
+            }
+            Command::Seats(q) => {
+                assert_eq!(q.target.unwrap().as_str(), "w1:p2");
+                Ok(CommandResult::Seats(
+                    serde_json::from_value(page(serde_json::json!([inspection().summary])))
+                        .unwrap(),
+                ))
+            }
+            Command::AutomaticHandoffDelivery(request) => {
+                use crate::protocol::handoff::{AutomaticDeliveryAction, HandoffResult};
+                assert_eq!(request.plan().recipient.as_str(), "recipient");
+                assert_eq!(request.plan().payload.body, self.body);
+                let keys = &request.plan().payload.keys;
+                let status = |state, thread| {
+                    CommandResult::Handoff(HandoffResult {
+                        compound: keys.compound.clone(),
+                        state,
+                        thread,
+                    })
+                };
+                match &request.action {
+                    AutomaticDeliveryAction::Prepare => {
+                        Ok(CommandResult::SeatResolved(SeatId::new("recipient")))
+                    }
+                    AutomaticDeliveryAction::Status | AutomaticDeliveryAction::Begin { .. } => {
+                        Ok(status(
+                            if *self.completed.lock().unwrap() {
+                                HandoffState::Completed
+                            } else {
+                                HandoffState::Live
+                            },
+                            self.thread.lock().unwrap().clone(),
+                        ))
+                    }
+                    AutomaticDeliveryAction::Ensure(q) => {
+                        assert_eq!(q.operation, keys.ensure);
+                        let mut thread = self.thread.lock().unwrap();
+                        if thread.is_none() {
+                            *self.invitations.lock().unwrap() += 1;
+                            *thread = Some(ThreadId::new("t-pair"));
+                        }
+                        drop(thread);
+                        let mut lost = self.lost.lock().unwrap();
+                        if *lost == Some("ensure") {
+                            *lost = None;
+                            return Err(ApiError::unknown_outcome("Ensure committed; reply lost"));
+                        }
+                        if let Some(policy) = &q.creation_policy {
+                            use crate::protocol::results::{
+                                DirectThreadEnsureOutcome, DirectThreadEnsured,
+                                DirectThreadInvitation,
+                            };
+                            Ok(CommandResult::DirectThreadEnsured(DirectThreadEnsured {thread:ThreadId::new("t-pair"),recipient:SeatId::new("recipient"),outcome:DirectThreadEnsureOutcome::Created,
+                                invitation:Some(DirectThreadInvitation {id:crate::protocol::ids::InvitationId::new("iv-pair"),episode:1,confirmation:policy.confirmation,
+                                    effective_deadline_at:if policy.confirmation==crate::protocol::commands::InvitationConfirmation::RequireAck {Some(UtcMillis(11001))} else {None},inviter:Some(q.claim.seat.clone())})}))
+                        } else {
+                            Ok(CommandResult::ThreadCreated(ThreadId::new("t-pair")))
+                        }
+                    }
+                    AutomaticDeliveryAction::Send(q) => {
+                        assert_eq!(q.operation, keys.send);
+                        assert_eq!(q.thread.as_str(), "t-pair");
+                        assert_eq!(q.direct_recipient.as_ref().unwrap().as_str(), "recipient");
+                        if !*self.sent.lock().unwrap() && *self.rejected.lock().unwrap() {
+                            return Err(ApiError::new(
+                                ErrorCode::MembershipRequired,
+                                "recipient rejected; explicitly reinvite",
+                            ));
+                        }
+                        *self.sent.lock().unwrap() = true;
+                        let mut lost = self.lost.lock().unwrap();
+                        if *lost == Some("send") {
+                            *lost = None;
+                            return Err(ApiError::unknown_outcome("Send committed; reply lost"));
+                        }
+                        Ok(CommandResult::MessageSent(MessageId::new("m-pair")))
+                    }
+                    AutomaticDeliveryAction::Complete { operation } => {
+                        assert_eq!(operation, &keys.complete);
+                        assert!(*self.sent.lock().unwrap());
+                        *self.completed.lock().unwrap() = true;
+                        let mut lost = self.lost.lock().unwrap();
+                        if *lost == Some("complete") {
+                            *lost = None;
+                            return Err(ApiError::unknown_outcome(
+                                "Complete committed; reply lost",
+                            ));
+                        }
+                        Ok(status(
+                            HandoffState::Completed,
+                            Some(ThreadId::new("t-pair")),
+                        ))
+                    }
+                }
+            }
+            other => panic!("automatic existing producer used forbidden command: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn automatic_existing_max_escaped_body_and_independent_frozen_deadlines() {
+    let body = "\0".repeat(65536);
+    let parsed = super::super::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--existing",
+        "--seat",
+        "recipient",
+        "--deadline",
+        "7",
+        "--invite-deadline",
+        "11",
+        "--",
+        &body,
+    ])
+    .unwrap();
+    let super::super::commands::CliAction::TopologyHandoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let mut client = AutomaticPeerClient::new(true);
+    client.body = body.clone();
+    let topology = crate::host::observation::HostTopology {
+        spaces: vec![],
+        tabs: vec![],
+        panes: vec![],
+    };
+    let namespace = fixture::payload().handoff.namespace;
+    let result = run_automatic_existing(
+        &request,
+        Preparation {
+            claim: &canonical_claim(),
+            namespace: &namespace,
+            topology: &topology,
+            client: &client,
+            clock: &TestClock,
+        },
+        &journal,
+        super::super::actor_route::InvocationActor::Agent,
+        &OutputSpec::default(),
+        &mut vec![],
+    );
+    assert!(result.is_ok(), "maximum exact body refused: {result:?}");
+    let calls = client.calls.lock().unwrap();
+    let send = calls
+        .iter()
+        .find_map(|c| match c {
+            Command::AutomaticHandoffDelivery(q) => match &q.action {
+                crate::protocol::handoff::AutomaticDeliveryAction::Send(v) => Some(v),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(send.body, body);
+    assert_eq!(send.deadline_millis, Some(7000));
+}
+
+// Kills: skipping the receipt negotiation for a retained policy=None original.
+// Discovery is overridden; every execution call uses the existing producer fixture.
+struct ReceiptCapabilityPeer<'a> {
+    inner: &'a AutomaticPeerClient,
+    receipts: bool,
+    calls: Mutex<Vec<Command>>,
+}
+impl LocalClient for ReceiptCapabilityPeer<'_> {
+    fn call_with_output(
+        &self,
+        command: Command,
+        _: &OutputSpec,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(command, budget)
+    }
+    fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
+        self.calls.lock().unwrap().push(command.clone());
+        if matches!(command, Command::Capabilities) {
+            let mut capabilities = vec![crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into()];
+            if self.receipts {
+                capabilities.push(crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.into());
+            }
+            return Ok(CommandResult::Capabilities(
+                crate::protocol::results::CapabilityList { capabilities },
+            ));
+        }
+        self.inner.call(command, budget)
+    }
+}
+
+#[test]
+fn historical_none_automatic_existing_retry_requires_receipts_before_effects_and_preserves_origin()
+{
+    use crate::protocol::handoff::{
+        AutomaticDeliveryAction, AutomaticDeliveryPlan, AutomaticHandoffPayload, AutomaticOriginal,
+    };
+    use sha2::{Digest, Sha256};
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let inner = AutomaticPeerClient::new(true);
+    let namespace = fixture::payload().handoff.namespace;
+    let payload = AutomaticHandoffPayload::new(
+        namespace.clone(),
+        crate::protocol::ids::OperationId::new("retained-receipt-existing"),
+        inner.body.clone(),
+    )
+    .unwrap();
+    let plan = AutomaticDeliveryPlan::new(payload, SeatId::new("recipient")).unwrap();
+    assert!(plan.payload.policy.is_none());
+    let keys = plan.payload.keys.clone();
+    let claim = canonical_claim();
+    let reference = publish_automatic(
+        &journal,
+        AutomaticOriginal::Delivery(Box::new(plan.clone())),
+        claim.clone(),
+        &TestClock,
+    )
+    .unwrap();
+    let original = load_automatic_original(&journal, &reference).unwrap();
+    let bytes = journal.snapshot_automatic_origin(&reference).unwrap();
+    let semantic = serde_json::to_vec(&original.semantic).unwrap();
+    assert!(
+        !String::from_utf8(semantic.clone())
+            .unwrap()
+            .contains("\"policy\"")
+    );
+    assert_eq!(
+        original.header.semantic_digest,
+        format!("{:x}", Sha256::digest(&semantic))
+    );
+    let peer = ReceiptCapabilityPeer {
+        inner: &inner,
+        receipts: false,
+        calls: Mutex::new(vec![]),
+    };
+    let mut parsed =
+        super::super::commands::parse_argv(["ht", "retry", &reference.recovery_ref()]).unwrap();
+    parsed.output = OutputSpec::default();
+    let mut output = Vec::new();
+    assert!(
+        !super::super::topology_runtime::try_completed_with_namespace(
+            &parsed,
+            &journal,
+            &namespace,
+            &peer,
+            &TestClock,
+            &mut output
+        )
+        .unwrap()
+    );
+    assert!(output.is_empty());
+    let result = retry_automatic_to_writer(
+        &journal,
+        &reference,
+        super::super::actor_route::InvocationActor::Agent,
+        &namespace,
+        &peer,
+        None,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut output,
+    );
+    assert!(
+        matches!(result, Err(RunError::Api(ref error)) if error.code == ErrorCode::Unsupported),
+        "pending None original must negotiate receipts: {result:?}"
+    );
+    assert_eq!(
+        journal.snapshot_automatic_origin(&reference).unwrap(),
+        bytes
+    );
+    assert_eq!(
+        load_automatic_original(&journal, &reference)
+            .unwrap()
+            .semantic,
+        original.semantic
+    );
+    assert_eq!(*inner.invitations.lock().unwrap(), 0);
+    assert!(!*inner.sent.lock().unwrap());
+    assert!(!*inner.completed.lock().unwrap());
+    assert!(inner.thread.lock().unwrap().is_none());
+    assert!(
+        peer.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| matches!(c, Command::Capabilities))
+    );
+    assert!(peer.calls.lock().unwrap().iter().all(|c| matches!(c,
+        Command::Capabilities | Command::SeatInspect(_) | Command::Seats(_)) || matches!(c,
+        Command::AutomaticHandoffDelivery(q) if matches!(q.action, AutomaticDeliveryAction::Status))), "refusal permits only discovery/read/status");
+    let capable = ReceiptCapabilityPeer {
+        inner: &inner,
+        receipts: true,
+        calls: Mutex::new(vec![]),
+    };
+    let mut first = Vec::new();
+    retry_automatic_to_writer(
+        &journal,
+        &reference,
+        super::super::actor_route::InvocationActor::Agent,
+        &namespace,
+        &capable,
+        None,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut first,
+    )
+    .unwrap();
+    assert_eq!(*inner.invitations.lock().unwrap(), 1);
+    assert!(*inner.completed.lock().unwrap());
+    for c in capable.calls.lock().unwrap().iter() {
+        if let Command::AutomaticHandoffDelivery(q) = c {
+            assert_eq!(q.plan(), &plan);
+            assert_eq!(q.plan().payload.keys, keys);
+            if let AutomaticDeliveryAction::Ensure(ensure) = &q.action {
+                assert!(ensure.creation_policy.is_none());
+                assert_eq!(ensure.operation, keys.ensure);
+                assert_eq!(ensure.claim, claim);
+            }
+            if let AutomaticDeliveryAction::Send(send) = &q.action {
+                assert_eq!(send.operation, keys.send);
+                assert_eq!(send.body, plan.payload.body);
+                assert_eq!(send.claim, claim);
+            }
+        }
+    }
+    let terminal = load_automatic_terminal(&journal, &reference)
+        .unwrap()
+        .unwrap();
+    assert_eq!(terminal.original.as_bytes(), bytes);
+    let retained =
+        super::super::retry::load_original_for_actor(&journal, &reference.recovery_ref()).unwrap();
+    assert_eq!(retained.semantic, original.semantic);
+    assert_eq!(
+        retained.header.semantic_digest,
+        original.header.semantic_digest
+    );
+    // Actual parsed public completed classifier stays exempt on an old peer.
+    let mut parsed =
+        super::super::commands::parse_argv(["ht", "retry", &reference.recovery_ref()]).unwrap();
+    parsed.output = OutputSpec::default();
+    peer.calls.lock().unwrap().clear();
+    let mut replay = Vec::new();
+    assert!(
+        super::super::topology_runtime::try_completed_with_namespace(
+            &parsed,
+            &journal,
+            &namespace,
+            &peer,
+            &TestClock,
+            &mut replay
+        )
+        .unwrap()
+    );
+    assert_eq!(replay, first);
+    assert!(peer.calls.lock().unwrap().iter().all(|c| matches!(c, Command::Capabilities) || matches!(c,
+        Command::AutomaticHandoffDelivery(q) if matches!(q.action, AutomaticDeliveryAction::Status))));
+    assert_eq!(*inner.invitations.lock().unwrap(), 1);
 }

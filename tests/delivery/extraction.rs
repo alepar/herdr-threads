@@ -100,7 +100,11 @@ fn invitation() -> InboxBatchV2Item {
     InboxBatchV2Item::Invitation {
         thread: ThreadId::new("t1"),
         topic_data: "topic".into(),
+        goal_data: Some("goal".into()),
+        topic_revision: None,
         invitation: InvitationId::new("invitation-1"),
+        confirmation: None,
+        deadline_at: None,
         required_service: None,
     }
 }
@@ -138,6 +142,7 @@ fn ids(events: &[DrainEvent]) -> Vec<String> {
         .iter()
         .map(|event| match event {
             DrainEvent::Item(item) => item.id.as_str().to_owned(),
+            DrainEvent::Invitation(item) => format!("invitation:{}", item.id.as_str()),
             DrainEvent::Attention { version } => format!("attention:{version}"),
             DrainEvent::AttentionCleared { version } => format!("cleared:{version}"),
             DrainEvent::Exhausted => "exhausted".to_owned(),
@@ -307,7 +312,9 @@ fn a_produced_id_is_skipped_by_the_same_assembler() {
 #[test]
 fn push_classifies_every_item_kind() {
     let mut assembler = Assembler::default();
-    assert_eq!(assembler.push(invitation()), Ok(Assembled::Attention));
+    assert!(
+        matches!(assembler.push(invitation()), Ok(Assembled::Invitation(item)) if item.content.wakes)
+    );
     assert_eq!(assembler.push(warning(false)), Ok(Assembled::Attention));
     assert_eq!(
         assembler.push(warning(true)),
@@ -347,7 +354,10 @@ fn invitations_and_warnings_collapse_into_one_attention_per_version() {
     };
     let mut assembler = Assembler::default();
     let (_, first) = drain(&mut Scripted::of(vec![items()]), &mut assembler, 5);
-    assert_eq!(ids(&first), ["m1", "attention:5", "exhausted"]);
+    assert_eq!(
+        ids(&first),
+        ["invitation:invitation-1", "m1", "attention:5", "exhausted"]
+    );
     let (_, same) = drain(&mut Scripted::of(vec![items()]), &mut assembler, 5);
     assert_eq!(ids(&same), ["exhausted"], "same version: nothing new");
     let (_, newer) = drain(&mut Scripted::of(vec![items()]), &mut assembler, 6);
@@ -369,7 +379,10 @@ fn a_drain_that_finds_nothing_pending_retracts_the_last_attention() {
         &mut assembler,
         5,
     );
-    assert_eq!(ids(&got), ["attention:5", "exhausted"]);
+    assert_eq!(
+        ids(&got),
+        ["invitation:invitation-1", "attention:5", "exhausted"]
+    );
     let (_, got) = drain(
         &mut Scripted::of(vec![vec![whole("m1", "hi")]]),
         &mut assembler,
@@ -497,4 +510,64 @@ fn lazy_and_service_items_carry_their_own_names() {
     let plain = item_of(&events[1]);
     assert!(!plain.message.ack_required, "no ack_candidate");
     assert_eq!(plain.message.sender_name.as_deref(), Some("sender"));
+}
+
+#[test]
+fn invitation_context_carries_goal_or_requires_inspection_before_acceptance() {
+    for goal in [
+        Some("Decide whether this review belongs to your remit"),
+        None,
+    ] {
+        let mut encoded = serde_json::to_value(invitation()).unwrap();
+        if let Some(goal) = goal {
+            encoded["goal_data"] = serde_json::Value::String(goal.into());
+        } else {
+            encoded.as_object_mut().unwrap().remove("goal_data");
+        }
+        let item: InboxBatchV2Item = serde_json::from_value(encoded).unwrap();
+        let Assembled::Invitation(item) = Assembler::default().push(item).unwrap() else {
+            panic!("invitation content is required")
+        };
+        if let Some(goal) = goal {
+            assert!(item.content.body.contains(goal), "{}", item.content.body);
+        } else {
+            let inspect = item
+                .content
+                .body
+                .find("thread show")
+                .expect("old or byte-constrained goal omission requires inspection");
+            let accept = item.content.body.find("accept").unwrap();
+            assert!(
+                inspect < accept,
+                "inspection precedes acceptance: {}",
+                item.content.body
+            );
+        }
+    }
+}
+
+#[test]
+fn an_omitted_invitation_goal_is_incomplete_until_full_context_at_the_same_revision() {
+    let mut assembler = Assembler::default();
+    let mut encoded = serde_json::to_value(invitation()).unwrap();
+    encoded.as_object_mut().unwrap().remove("goal_data");
+    encoded["topic_revision"] = serde_json::json!(7);
+    encoded["confirmation"] = serde_json::json!("lazy");
+    let omitted = serde_json::from_value(encoded.clone()).unwrap();
+    let Assembled::Invitation(item) = assembler.push(omitted).unwrap() else {
+        panic!("the inspection continuation must be offered")
+    };
+    assert!(
+        item.content.truncated,
+        "an omitted goal is not whole decision context"
+    );
+    assert!(assembler.invitation_displays.is_empty());
+    encoded["goal_data"] = serde_json::json!("review recipient remit");
+    let full: InboxBatchV2Item = serde_json::from_value(encoded).unwrap();
+    let Assembled::Invitation(item) = assembler.push(full.clone()).unwrap() else {
+        panic!("the same revision must permit its newly available full goal")
+    };
+    assert!(!item.content.truncated);
+    assert!(item.content.body.contains("goal: review recipient remit"));
+    assert!(matches!(assembler.push(full), Ok(Assembled::Duplicate)));
 }

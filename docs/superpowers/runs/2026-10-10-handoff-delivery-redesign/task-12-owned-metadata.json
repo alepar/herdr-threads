@@ -1,0 +1,123 @@
+{
+  "final_head": "e196ae1140499612d63bddc43a1624b70d004c62",
+  "final_tree": "6ab6831b7972af18ce600b553647db7185c31ccc",
+  "package": "herdr-threads",
+  "version": "0.8.0",
+  "manifest": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/Cargo.toml",
+  "targets": [
+    {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "herdr_threads",
+      "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "crate_types": [
+        "bin"
+      ],
+      "name": "herdr-threads",
+      "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/src/main.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": false,
+      "test": true
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "crate_types": [
+        "bin"
+      ],
+      "name": "combined",
+      "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/combined.rs",
+      "edition": "2024",
+      "required-features": [
+        "test-support"
+      ],
+      "doc": false,
+      "doctest": false,
+      "test": true
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "crate_types": [
+        "bin"
+      ],
+      "name": "hook_entrypoint",
+      "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/hook_entrypoint.rs",
+      "edition": "2024",
+      "required-features": [
+        "test-support"
+      ],
+      "doc": false,
+      "doctest": false,
+      "test": true
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "crate_types": [
+        "bin"
+      ],
+      "name": "integration",
+      "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/integration.rs",
+      "edition": "2024",
+      "required-features": [
+        "test-support"
+      ],
+      "doc": false,
+      "doctest": false,
+      "test": true
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "crate_types": [
+        "bin"
+      ],
+      "name": "package",
+      "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/package.rs",
+      "edition": "2024",
+      "required-features": [
+        "test-support"
+      ],
+      "doc": false,
+      "doctest": false,
+      "test": true
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "crate_types": [
+        "bin"
+      ],
+      "name": "service",
+      "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/service.rs",
+      "edition": "2024",
+      "required-features": [
+        "test-support"
+      ],
+      "doc": false,
+      "doctest": false,
+      "test": true
+    }
+  ],
+  "target_directory": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target"
+}

@@ -521,12 +521,11 @@ fn run_hook_traced(
     record(started, HookPhase::CommandBuildStart);
     // A native hook runs under its harness: the shim gives the installed command line a `claude`,
     // `codex` or `hermes` parent, which is where the hook takes its liveness fingerprint from.
-    let mut words = command.split_whitespace();
+    let words = shlex::split(command).expect("native hook shell argv");
     let harness = words
-        .by_ref()
-        .find(|word| word.trim_matches('\'') == "hook")
-        .and_then(|_| words.next())
-        .map_or("claude", |word| word.trim_matches('\''));
+        .windows(2)
+        .find(|pair| matches!(pair[0].as_str(), "hook" | "hook-event"))
+        .map_or("claude", |pair| pair[1].as_str());
     let mut command_line = herdr_threads::test_support::harness_shim::under_harness(
         harness,
         Path::new("/bin/sh"),
@@ -1687,11 +1686,12 @@ fn cooperative_seat_on_own_target_startup_clear_resume_register_session_bindings
     );
 }
 
-// ht-8y9: a first-contact pair whose opening mail interleaves lazy and ordinary messages.
-// Before the accept only the invitation and the ordinary (receipt) messages are offered. The
-// accept delivers each lazy opening message once and never re-offers an ordinary one the seat
-// ACKed; a still-pending one stays on the page only as the pending receipt every new page carries.
+// Q4: current direct-invitation Lazy work is visible before acceptance. Ordinary
+// pending bodies are also shown, but their unjoined display does not move a cursor.
+// The explicit ACK below is not display evidence: acceptance preserves that gap,
+// so settled ordinary and later Lazy bodies remain in this binding's own stream.
 #[test]
+// Keep the upstream registration key; direct acceptance preserves the actual reader gap.
 fn pair_accept_delivers_mixed_opening_mail_once() {
     let fx = Fixture::start();
     let started = fx.hook("w9:p1", &start("sess-1"));
@@ -1735,19 +1735,37 @@ fn pair_accept_delivers_mixed_opening_mail_once() {
     for (body, n) in [
         ("ordinary-acked", 1),
         ("ordinary-pending", 1),
-        ("lazy-open", 0),
-        ("lazy-middle", 0),
-        ("lazy-last", 0),
+        ("lazy-open", 1),
+        ("lazy-middle", 1),
+        ("lazy-last", 1),
     ] {
         assert_eq!(times(&before, body), n, "before accept, {body}: {before}");
     }
+    let read_position = || {
+        fx.count(&format!(
+        "SELECT c.seq FROM binding_cursors c JOIN occupant_bindings b ON b.binding_id=c.binding_id WHERE b.seat_id='seat' AND b.native_session='sess-1' AND c.thread_id='{thread}'"
+    ))
+    };
+    let lazy_open = fx.count(&format!(
+        "SELECT sequence FROM messages WHERE thread_id='{thread}' AND body='lazy-open'"
+    ));
+    assert_eq!(
+        read_position(),
+        lazy_open,
+        "unjoined ordinary display does not pass its cursor gap"
+    );
     fx.cooperative("seat", "w9:p1", &["ack", &acked]);
     fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+    assert_eq!(
+        read_position(),
+        lazy_open,
+        "acceptance preserves the existing reader cursor"
+    );
     let after = hook("after accept");
     for (body, n) in [
-        ("ordinary-acked", 0),
+        ("ordinary-acked", 1),
         ("ordinary-pending", 1),
-        ("lazy-open", 1),
+        ("lazy-open", 0),
         ("lazy-middle", 1),
         ("lazy-last", 1),
     ] {
@@ -1757,15 +1775,13 @@ fn pair_accept_delivers_mixed_opening_mail_once() {
     assert_eq!(
         fx.count("SELECT count(*) FROM lazy_recipients WHERE legacy_pending=1"),
         0,
-        "the displaying hook settles the pre-join lazy rows"
+        "direct acceptance never replaces this binding stream with seat-wide legacy rows"
     );
 }
 
 // ht-8y9: leave, reinvite and rejoin with two bindings of the seat at distinct read positions.
-// Mail addressed while the seat was joined keeps per-binding cursors; a rejoin raises a cursor
-// to the head (as before ht-8y9), so binding B skips joined-era mail binding A already read.
-// Lazy mail addressed while the seat was not joined is pending at seat level: the first
-// top-level binding that displays it settles it for the seat, like a receipt.
+// Q4 direct invitation acceptance preserves each established cursor, including across rejoin.
+// Both readers retain their own opening mail; one binding's display does not consume its sibling's stream.
 #[test]
 fn pair_rejoin_with_two_bindings_pins_read_positions() {
     let fx = Fixture::start();
@@ -1796,11 +1812,11 @@ fn pair_rejoin_with_two_bindings_pins_read_positions() {
     direct("first-contact");
     let thread = fx.count_text("SELECT thread_id FROM direct_threads");
     fx.cooperative("seat", "w9:p1", &["accept", &thread]);
-    // Pre-join lazy mail: A displays it first and settles it for the seat.
+    // Direct acceptance preserves both readers; A's display leaves B's copy unread.
     let a = pull("sess-1");
     assert!(shows(&a, "first-contact"), "{a}");
     let b = pull("sess-b");
-    assert!(!shows(&b, "first-contact"), "{b}");
+    assert!(shows(&b, "first-contact"), "{b}");
     // Joined-era mail: A reads it, B does not.
     direct("joined-era");
     let a = pull("sess-1");
@@ -1818,15 +1834,17 @@ fn pair_rejoin_with_two_bindings_pins_read_positions() {
     fx.cooperative("seat", "w9:p1", &["leave", &thread]);
     fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
     direct("rejoin-open");
+    let before_reaccept = (cursor("sess-1"), cursor("sess-b"));
     fx.cooperative("seat", "w9:p1", &["accept", &thread]);
-    // B now pulls first: the rejoin raised its cursor past joined-era (read by A), and it
-    // takes the pre-join rejoin-open for the seat.
+    assert_eq!((cursor("sess-1"), cursor("sess-b")), before_reaccept);
+    // B now pulls first: its retained cursor still owns joined-era and rejoin-open.
+    // A independently receives rejoin-open, without repeating joined-era.
     let b = pull("sess-b");
-    assert!(!shows(&b, "joined-era"), "{b}");
+    assert!(shows(&b, "joined-era"), "{b}");
     assert!(shows(&b, "rejoin-open"), "{b}");
     let a = pull("sess-1");
     assert!(!shows(&a, "joined-era"), "{a}");
-    assert!(!shows(&a, "rejoin-open"), "{a}");
+    assert!(shows(&a, "rejoin-open"), "{a}");
     // Mail after the rejoin reaches both bindings through their cursors.
     direct("after-rejoin");
     for session in ["sess-1", "sess-b"] {
@@ -5279,6 +5297,18 @@ mod continuity {
     impl Drop for Fixture {
         fn drop(&mut self) {
             self.stop_daemon();
+            // run_elected redirected process stdio into this private log. Its
+            // joined shutdown restores the descriptors and drains the reader;
+            // only then replay a failure diagnostic before deleting the root.
+            if std::thread::panicking()
+                && let Ok(log) = fs::read(self.instance_dir.join("daemon.log"))
+            {
+                let tail = &log[log.len().saturating_sub(8 * 1024)..];
+                let mut stderr = std::io::stderr().lock();
+                let _ = stderr.write_all(b"elected daemon.log tail:\n");
+                let _ = stderr.write_all(tail);
+                let _ = stderr.write_all(b"\n");
+            }
             let _ = fs::remove_dir_all(&self.root);
         }
     }
@@ -6578,6 +6608,134 @@ fn clear_and_codex_compact_emit_recovery_text_but_startup_and_tool_calls_do_not(
         "SessionStart"
     );
     assert_recovery("codex compact", &context_of(&compact));
+}
+
+// Catches stable shell commands missing the actual native entrypoint/codec,
+// and undeclared pairs touching the daemon before being refused.
+#[test]
+fn native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_before_effects() {
+    use herdr_threads::cli::hook::installed_event_argv;
+    use herdr_threads::harness::setup::native_event_command;
+    let fx = Fixture::start();
+    let command = |harness, event| {
+        native_event_command(
+            &installed_event_argv(
+                BIN,
+                Some(fx.state.to_str().unwrap()),
+                Some(fx.host.to_str().unwrap()),
+                harness,
+                event,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    for (harness, pane, session, payload) in [
+        (
+            Harness::Claude,
+            "w9:p1",
+            "stable-claude",
+            start("stable-claude"),
+        ),
+        (
+            Harness::Codex,
+            "w9:p3",
+            "stable-codex",
+            Payload::session_start("stable-codex", "startup")
+                .codex("turn")
+                .bytes(),
+        ),
+    ] {
+        let before = fx.check_ins.load(Ordering::SeqCst);
+        let started = run_hook(&command(harness, "SessionStart"), pane, &fx.host, &payload);
+        assert_eq!(started.code, Some(0), "{}", started.stderr);
+        assert!(
+            !started.stdout.is_empty(),
+            "{harness:?}: {}",
+            started.stderr
+        );
+        assert_eq!(
+            started.context()["hookSpecificOutput"]["hookEventName"],
+            "SessionStart"
+        );
+        assert!(fx.check_ins.load(Ordering::SeqCst) > before);
+        let payload = if harness == Harness::Claude {
+            tool(session)
+        } else {
+            Payload::pre_tool_use(session, "ls").codex("turn").bytes()
+        };
+        let before = fx.digests.load(Ordering::SeqCst);
+        let tool = run_hook(&command(harness, "PreToolUse"), pane, &fx.host, &payload);
+        assert_eq!(tool.code, Some(0), "{}", tool.stderr);
+        assert!(tool.stderr.is_empty(), "{}", tool.stderr);
+        assert!(fx.digests.load(Ordering::SeqCst) > before);
+    }
+    let child = serde_json::to_vec(&serde_json::json!({
+        "hook_event_name":"SubagentStart", "session_id":"stable-codex", "turn_id":"child-turn",
+        "agent_id":"child", "agent_type":"worker", "transcript_path":null,
+        "cwd":"/tmp", "model":"gpt-test", "permission_mode":"default",
+    }))
+    .unwrap();
+    let child_command = command(Harness::Codex, "SubagentStart");
+    let child_result = run_hook(&child_command, "w9:p3", &fx.host, &child);
+    assert_eq!(child_result.code, Some(0));
+    assert!(child_result.stderr.is_empty(), "{}", child_result.stderr);
+    assert_eq!(
+        child_result.context()["hookSpecificOutput"]["hookEventName"],
+        "SubagentStart"
+    );
+    // Malforming a required child field proves this surface reaches the child
+    // codec, rather than quietly ignoring every payload for the event.
+    let mut malformed: serde_json::Value = serde_json::from_slice(&child).unwrap();
+    malformed.as_object_mut().unwrap().remove("agent_id");
+    let refused = run_hook(
+        &child_command,
+        "w9:p3",
+        &fx.host,
+        &serde_json::to_vec(&malformed).unwrap(),
+    );
+    assert!(
+        refused.stderr.contains("unsupported hook payload"),
+        "{}",
+        refused.stderr
+    );
+
+    let before = (
+        fx.check_ins.load(Ordering::SeqCst),
+        fx.digests.load(Ordering::SeqCst),
+        fx.parse_failures.load(Ordering::SeqCst),
+    );
+    for (harness, event) in [("claude", "Bogus"), ("codex", "Bogus")] {
+        let argv = [
+            BIN,
+            "--state-dir",
+            fx.state.to_str().unwrap(),
+            "--host-endpoint",
+            fx.host.to_str().unwrap(),
+            "hook-event",
+            harness,
+            event,
+        ]
+        .map(str::to_owned);
+        let raw = herdr_threads::harness::setup::shell_command(&argv).unwrap();
+        // Unknown registration is refused from argv before the hook reads stdin.
+        let refused = run_hook(&raw, "w9:p1", &fx.host, &[]);
+        assert_eq!(refused.code, Some(0));
+        assert!(refused.stdout.is_empty());
+        assert!(
+            refused.stderr.contains("undeclared hook event"),
+            "{}",
+            refused.stderr
+        );
+    }
+    assert_eq!(
+        before,
+        (
+            fx.check_ins.load(Ordering::SeqCst),
+            fx.digests.load(Ordering::SeqCst),
+            fx.parse_failures.load(Ordering::SeqCst)
+        )
+    );
 }
 
 // Catches PATH admission in real callbacks and routing mismatches that mutate executions.

@@ -1,0 +1,12 @@
+{
+  "workspace": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.8.4",
+  "head": "ee1e598c3ee96566ddc9b397185cdc97c8bf6218",
+  "branch": "task-ht-0lo.8.4",
+  "dirty_diff_sha256": "8bba4f1d2ba929dcf6fd0cf1af253f31ed334ff60c82e4e78f3b80699e06f8c8",
+  "untracked_sha256": {
+    "migrations/0040_invitation_presentation.sql": "4a0305b589f1f859b84d70fa6236adf86d6a382eac1288339b1ae7f71affc9bd",
+    "src/delivery/invitation.rs": "bda8bb934836712d432a26c6292ffa434b7f3d74efe271820f51e2a809797a2b",
+    "src/store/invitation_content.rs": "3353cd40d20a2ea72421b379ff5ed667f61a69724091fbc2b4d18b1d37d6cebd"
+  },
+  "status": " M TRUST-POLICY.md\n M integrations/claude/mod/hooks/register.js\n M integrations/claude/mod/tests/delivery.test.ts\n M src/cli/launch.rs\n M src/cli/watch.rs\n M src/daemon/transport/watch_connection.rs\n M src/delivery/assemble.rs\n M src/delivery/ledger.rs\n M src/delivery/mod.rs\n M src/delivery/page.rs\n M src/harness/agy/launch.rs\n M src/harness/agy/paths.rs\n M src/ports.rs\n M src/protocol/commands.rs\n M src/protocol/delivery.rs\n M src/protocol/output_compact.rs\n M src/protocol/results.rs\n M src/protocol/watch.rs\n M src/scheduler/mod.rs\n M src/service/delivery_pull.rs\n M src/service/mod_channels.rs\n M src/store/attention.rs\n M src/store/control.rs\n M src/store/mod.rs\n M src/store/queries.rs\n M src/store/schema.rs\n M src/store/seats.rs\n M src/store/service_controls.rs\n M tests/cli/launch.rs\n M tests/cli/lazy_display.rs\n M tests/cli/output.rs\n M tests/cli/watch.rs\n M tests/daemon/watch_connection.rs\n M tests/delivery/extraction.rs\n M tests/fixtures/agy/plugin/hooks.json\n M tests/harness/agy_launch.rs\n M tests/harness/agy_setup.rs\n M tests/hook_entrypoint/agy.rs\n M tests/integration/agy_sweep.rs\n M tests/protocol/delivery.rs\n M tests/protocol/lazy_inbox_v2.rs\n M tests/protocol/watch.rs\n M tests/service/delivery_pull.rs\n M tests/service/mod_channels.rs\n M tests/store/control.rs\n M tests/store/queries.rs\n?? migrations/0040_invitation_presentation.sql\n?? src/delivery/invitation.rs\n?? src/store/invitation_content.rs\n"
+}

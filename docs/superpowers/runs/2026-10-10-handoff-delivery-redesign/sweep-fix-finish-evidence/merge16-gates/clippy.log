@@ -1,0 +1,3 @@
+nice: setpriority: Operation not permitted
+    Checking herdr-threads v0.9.0 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 20.58s

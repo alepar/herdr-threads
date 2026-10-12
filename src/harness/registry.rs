@@ -289,6 +289,7 @@ trait ErasedAdapter: Send + Sync {
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy>;
     fn composer_policy(&self) -> Option<&dyn ComposerPolicy>;
     fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence;
+    fn presentation_codec(&self, selector: u8) -> Option<PresentationCodec>;
     fn hook_step(&self) -> Option<&dyn HookStep>;
     fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy>;
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy>;
@@ -505,6 +506,9 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     }
     fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence {
         self.0.local_evidence(request)
+    }
+    fn presentation_codec(&self, selector: u8) -> Option<PresentationCodec> {
+        self.0.presentation_codec(selector)
     }
     fn hook_step(&self) -> Option<&dyn HookStep> {
         self.0.hook_step()
@@ -975,7 +979,7 @@ impl Registration {
                 "launch setup status belongs to a different scope",
             ));
         }
-        super::launch::owned_launch_hook(status)?;
+        // Integration readiness is advisory; the provider checks any hook it actually uses.
         self.launch_policy()
             .ok_or_else(|| {
                 ApiError::new(
@@ -1113,7 +1117,7 @@ impl Registration {
                 "prelaunch status scope mismatch",
             ));
         }
-        super::launch::owned_launch_hook(status)?;
+        // Integration readiness is advisory; the provider checks any hook it actually uses.
         self.launch_policy()
             .ok_or_else(|| crate::protocol::results::ApiError::unsupported("launch unavailable"))?
             .prepare_prelaunch(request, scope, handle.state.as_ref(), status, probe, budget)
@@ -1135,6 +1139,9 @@ impl Registration {
     }
     pub fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence {
         self.adapter.local_evidence(request)
+    }
+    pub fn presentation_codec(&self, selector: u8) -> Option<PresentationCodec> {
+        self.adapter.presentation_codec(selector)
     }
     pub fn hook_step(&self) -> Option<&dyn HookStep> {
         self.adapter.hook_step()

@@ -1,0 +1,20 @@
+{
+  "source_head": "31e5879781904b9ec20ee5ea3cec7517856260f3",
+  "run_id": "7c89af80-6f17-4168-a24b-9c14098cf775",
+  "selected": 5,
+  "passed": 0,
+  "failed": 5,
+  "runtime_seconds": 0.547,
+  "meaningful_red": "all five fail actual elected Capabilities missing delivery.presentation_v2 before activation setup at tests/integration/mod_delivery.rs:556",
+  "scoped_leak_exit": 0,
+  "logs": [
+    {
+      "path": "/private/tmp/ht-finish-watch-actual-inactive.log",
+      "sha256": "9dd2ba5f36955c80de02dd0579e8406a5f4d1ab91e60fd71f9fc482b10f6d7bb"
+    },
+    {
+      "path": "/private/tmp/ht-finish-watch-actual-inactive-leaks.log",
+      "sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e"
+    }
+  ]
+}

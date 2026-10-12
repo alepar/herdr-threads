@@ -1,0 +1,801 @@
+# Review package: ae922aba412bf69f457818ecba8341e224f339b4..50c397f4196002cca4e8ee65557da049f974fd02
+
+## Commits
+50c397f4 Preserve open inviter wake after informational offer
+
+## Files changed
+ TRUST-POLICY.md                               |   5 +-
+ migrations/0031_invitation_warning_origin.sql |  29 +++++
+ src/store/attention.rs                        |  53 +++++++-
+ src/store/schema.rs                           |  96 +++++++++++++--
+ src/store/wake.rs                             |   7 +-
+ tests/store/control.rs                        | 170 ++++++++++++++++++++++++++
+ tests/store/invitation_due.rs                 | 131 ++++++++++++++++++++
+ tests/store/schema.rs                         |   4 +-
+ 8 files changed, 478 insertions(+), 17 deletions(-)
+
+## Diff
+diff --git a/TRUST-POLICY.md b/TRUST-POLICY.md
+index 251ade8a..d6ea2f1f 100644
+--- a/TRUST-POLICY.md
++++ b/TRUST-POLICY.md
+@@ -413,21 +413,24 @@ recipient: they create no wake, poke, receipt or ACK obligation. A committed che
+ the bounded prefix of attributed events it carries to the exact current binding generation and
+ execution. A global decision watermark cannot settle uncarried events, including late attribution.
+ History and immutable operation results remain readable. A successor occupant gets its own offers;
+ response loss can lose an informational offer after commitment, and an explicit operation retry
+ can present the retained result again. Delivery is neither invitation acceptance nor receipt ACK,
+ agreement, adoption or task completion. Logical publication tokens stay unchanged by projection;
+ an advertised read-only delivery hint lets hooks drain newly attributed and remaining notice pages.
+ Delivery is not a wake. A built-in transition wakes the affected seat of a still-open
+ condition (the hard-deadline backstop for the obligation that seat owes). An invitation deadline-missed
+ open transition also wakes its originally recorded native inviter under the same host, composer and mod
+-admission guards, even after that inviter leaves the thread. The episode freezes that address; historical
++admission guards, even after that inviter leaves the thread or its informational notice was already
++carried by a committed offer. A separate bounded open-condition projection preserves this wake until
++canonical closure; the informational offer remains settled and creates no repeated delivery obligation.
++The open episode freezes its instance and original inviter address; historical
+ rows use only their exact canonical invitation-creation event's recorded inviter, never a current member
+ or later duplicate caller. Unknown historical/service/operator origins do not manufacture a native seat.
+ A clear remains passive, as do transitions about another seat for other observers; they wait for the
+ recipient's next check-in offer. Accepted limit: an idle
+ member learns of another seat's overdue or cleared obligation only when its pane next checks in. When
+ more than the bounded window of pending warnings or unoffered notices is visible, narrowing cannot rule
+ out an older waking notice (such as a service notice), so the wake keeps its unnarrowed answer and the
+ offer probe stays conservative: it may still wake, never silently drop one.
+ The same rule decides a live Claude mod channel's attention: the daemon counts only waking warnings in
+ the channel's attention fingerprint (with the same saturated fallback) and marks each other pending
+diff --git a/migrations/0031_invitation_warning_origin.sql b/migrations/0031_invitation_warning_origin.sql
+new file mode 100644
+index 00000000..245725b3
+--- /dev/null
++++ b/migrations/0031_invitation_warning_origin.sql
+@@ -0,0 +1,29 @@
++-- Open invitation-condition wake is independent of informational delivery.
++-- These addresses freeze for this open episode, including historical evidence.
++ALTER TABLE warning_conditions ADD COLUMN invitation_originator_instance_id TEXT REFERENCES host_instances(id);
++ALTER TABLE warning_conditions ADD COLUMN invitation_originator_seat_id TEXT REFERENCES seats(id)
++    CHECK((invitation_originator_instance_id IS NULL) = (invitation_originator_seat_id IS NULL));
++
++WITH origins AS (
++    SELECT c.ordinal,t.instance_id,
++        coalesce(i.inviter_seat_id,(SELECT json_extract(m.event_json,'$.actor_seat') FROM messages m
++            WHERE m.event_key='invite:'||i.id AND m.source_invitation_id=i.id AND m.thread_id=i.thread_id
++            AND m.kind='info' AND json_extract(m.event_json,'$.action')='invite'
++            AND json_extract(m.event_json,'$.invitation')=i.id AND json_extract(m.event_json,'$.seat')=i.seat_id)) AS seat_id
++    FROM warning_conditions c JOIN invitations i ON i.id=c.condition_id AND i.thread_id=c.thread_id
++    JOIN threads t ON t.id=i.thread_id
++    JOIN messages warning ON warning.id=c.open_warning_id AND warning.kind='warn'
++        AND warning.source_invitation_id=i.id AND warning.thread_id=i.thread_id
++    WHERE c.condition_kind='invitation' AND c.clear_warning_id IS NULL
++)
++UPDATE warning_conditions SET (invitation_originator_instance_id,invitation_originator_seat_id) =
++    (SELECT o.instance_id,o.seat_id FROM origins o JOIN seats s ON s.id=o.seat_id AND s.instance_id=o.instance_id
++     WHERE o.ordinal=warning_conditions.ordinal)
++WHERE condition_kind='invitation' AND clear_warning_id IS NULL;
++
++CREATE INDEX warning_conditions_invitation_origin ON warning_conditions(invitation_originator_instance_id,invitation_originator_seat_id,ordinal)
++    WHERE condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id IS NOT NULL;
++
++CREATE TRIGGER warning_conditions_invitation_origin_immutable BEFORE UPDATE OF invitation_originator_instance_id,invitation_originator_seat_id ON warning_conditions
++WHEN NEW.invitation_originator_instance_id IS NOT OLD.invitation_originator_instance_id OR NEW.invitation_originator_seat_id IS NOT OLD.invitation_originator_seat_id
++BEGIN SELECT RAISE(ABORT, 'invitation warning origin is immutable'); END;
+diff --git a/src/store/attention.rs b/src/store/attention.rs
+index b82f902b..c3ea7630 100644
+--- a/src/store/attention.rs
++++ b/src/store/attention.rs
+@@ -1119,34 +1119,70 @@ pub struct WakeSeatAttention {
+ /// nothing for them. Other warnings keep their judged actionability. Unique
+ /// index probes only.
+ pub fn warning_wakes_seat(
+     db: &Connection,
+     seat_id: &str,
+     warning_id: &str,
+ ) -> Result<bool, ApiError> {
+     if effective::is_invitation_rejection_notice(db, warning_id)? {
+         return Ok(false);
+     }
+-    let invitation:Option<String>=db.query_row("SELECT condition_id FROM warning_conditions WHERE open_warning_id=?1 AND condition_kind='invitation' AND clear_warning_id IS NULL",[warning_id],|r|r.get(0)).optional().map_err(store_error)?;
+-    if let Some(invitation) = invitation
+-        && effective::invitation_originator(db, &invitation)?.as_deref() == Some(seat_id)
+-    {
++    let origin: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1 AND condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id=?2)",params![warning_id,seat_id],|r|r.get(0)).map_err(store_error)?;
++    if origin {
+         return Ok(true);
+     }
+     db.query_row(
+         "SELECT CASE WHEN EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1) OR EXISTS(SELECT 1 FROM warning_conditions WHERE clear_warning_id=?1) THEN EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1 AND affected_seat_id=?2 AND clear_warning_id IS NULL) ELSE 1 END",
+         params![warning_id, seat_id],
+         |r| r.get(0),
+     )
+     .map_err(store_error)
+ }
+ 
++/// Open invitation conditions addressed to their frozen original inviter.
++/// This separate bounded source ignores informational notice offers. The
++/// instance/seat/ordinal partial index excludes all closed historical rows.
++pub fn open_invitation_origin_warnings(
++    db: &Connection,
++    seat_id: &str,
++) -> Result<PendingSet, ApiError> {
++    let instance: Option<String> = db
++        .query_row(
++            "SELECT instance_id FROM seats WHERE id=?1 AND state!='retired'",
++            [seat_id],
++            |r| r.get(0),
++        )
++        .optional()
++        .map_err(store_error)?;
++    let Some(instance) = instance else {
++        return Ok(PendingSet::default());
++    };
++    let window: Vec<PendingItem> = rows(
++        db,
++        "SELECT c.open_warning_id,c.thread_id,c.opened_seq,m.event_offset FROM (SELECT open_warning_id,thread_id,opened_seq FROM warning_conditions INDEXED BY warning_conditions_invitation_origin WHERE invitation_originator_instance_id=?1 AND invitation_originator_seat_id=?2 AND condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id IS NOT NULL ORDER BY ordinal DESC LIMIT ?3) c JOIN messages m ON m.id=c.open_warning_id",
++        params![instance, seat_id, WINDOW_SQL],
++        |r| {
++            Ok(PendingItem {
++                id: r.get(0)?,
++                thread_id: r.get(1)?,
++                key: (r.get(2)?, r.get(3)?),
++            })
++        },
++    )?;
++    let mut gather = Gather::default();
++    gather.window(window.len());
++    for item in window {
++        gather.add(item);
++    }
++    Ok(gather.finish())
++}
++
+ /// Narrow a seat's pending-warning set to the warnings that wake it
+ /// (`warning_wakes_seat`). A saturated walk can hide an older waking notice (a
+ /// service notice behind a full window of other seats' transitions).
+ /// Narrowing it to nothing would turn that unknown into "no warning" and skip
+ /// the conservative offer probe, so a saturated set with no waking item keeps
+ /// the unnarrowed answer instead. Native wake (`wake_seat_attention`) and the
+ /// mod channel's attention fingerprint (`seats::mod_seat_view`) share it.
+ pub fn wake_warnings(
+     db: &Connection,
+     seat_id: &str,
+@@ -1154,21 +1190,28 @@ pub fn wake_warnings(
+ ) -> Result<PendingSet, ApiError> {
+     let mut wakes = Vec::with_capacity(warnings.items.len());
+     for item in &warnings.items {
+         if warning_wakes_seat(db, seat_id, &item.id)? {
+             wakes.push(item.clone());
+         }
+     }
+     if !(wakes.is_empty() && warnings.saturated) {
+         warnings.items = wakes;
+     }
+-    Ok(warnings)
++    let origins = open_invitation_origin_warnings(db, seat_id)?;
++    let mut gather = Gather {
++        steps: warnings.work_steps + origins.work_steps,
++        ..Gather::default()
++    };
++    gather.merge(&warnings);
++    gather.merge(&origins);
++    Ok(gather.finish())
+ }
+ 
+ /// The wake attention of one seat, from the newest-first per-source walks
+ /// and canonical judges (`effective_receipt`, `is_warning_recipient`,
+ /// `warning_condition_actionable`), with warnings narrowed to those that
+ /// wake the seat (`warning_wakes_seat`): O(`WINDOW` x sources), independent
+ /// of retained history. Call it inside the caller's read transaction; the
+ /// decision sequence is read first, so the walks see at least that state.
+ pub fn wake_seat_attention(db: &Connection, seat_id: &str) -> Result<WakeSeatAttention, ApiError> {
+     let decision_seq: i64 = db
+diff --git a/src/store/schema.rs b/src/store/schema.rs
+index c1c0270d..45674de7 100644
+--- a/src/store/schema.rs
++++ b/src/store/schema.rs
+@@ -61,21 +61,23 @@ const V22: &str = include_str!("../../migrations/0022_user_message_intent.sql");
+ const V23: &str = include_str!("../../migrations/0023_channel_archival.sql");
+ const V24: &str = include_str!("../../migrations/0024_harness_contract_diagnostics.sql");
+ const V25: &str = include_str!("../../migrations/0025_warning_notice_delivery.sql");
+ const V26: &str = include_str!("../../migrations/0026_lazy_message_delivery.sql");
+ const V27: &str = include_str!("../../migrations/0027_harness_adapters.sql");
+ const V28: &str = include_str!("../../migrations/0028_handoff_topology.sql");
+ const V29: &str = include_str!("../../migrations/0029_invitation_confirmation.sql");
+ 
+ const V30: &str = include_str!("../../migrations/0030_invitation_lifecycle.sql");
+ 
+-pub(crate) const LATEST_VERSION: i64 = 30;
++const V31: &str = include_str!("../../migrations/0031_invitation_warning_origin.sql");
++
++pub(crate) const LATEST_VERSION: i64 = 31;
+ 
+ /// Decode only persisted results, after the caller's digest has matched. Live
+ /// protocol responses still require disposition. Missing original context
+ /// cannot be recovered from today's occupant without inventing historical data.
+ fn decode_stored_result(json: &str) -> Result<CommandResult, ApiError> {
+     let mut value: serde_json::Value = serde_json::from_str(json).map_err(|e| {
+         api_error(
+             ErrorCode::StoreCorrupt,
+             format!("invalid stored result: {e}"),
+         )
+@@ -165,20 +167,21 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
+                 .and_then(|_| conn.execute_batch(V21))
+                 .and_then(|_| conn.execute_batch(V22))
+                 .and_then(|_| conn.execute_batch(V23))
+                 .and_then(|_| conn.execute_batch(V24))
+                 .and_then(|_| conn.execute_batch(V25))
+                 .and_then(|_| conn.execute_batch(V26))
+                 .and_then(|_| conn.execute_batch(V27))
+                 .and_then(|_| conn.execute_batch(V28))
+                 .and_then(|_| conn.execute_batch(V29))
+                 .and_then(|_| conn.execute_batch(V30))
++                .and_then(|_| conn.execute_batch(V31))
+                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
+             match result {
+                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+                 Err(error) => {
+                     let _ = conn.execute_batch("ROLLBACK");
+                     return Err(store_error(error));
+                 }
+             }
+             verify_existing(conn)
+         }
+@@ -405,21 +408,21 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
+         }
+         16 => {
+             verify_existing_v13_shape(conn)?;
+             verify_existing_v14(conn)?;
+             verify_existing_v15(conn)?;
+             verify_existing_v16(conn)?;
+             migrate_v16_to_v17(conn)?;
+             verify_existing(conn)
+         }
+         17 => verify_existing(conn),
+-        18..=30 => verify_existing(conn),
++        18..=31 => verify_existing(conn),
+         _ => Err(api_error(
+             ErrorCode::IncompatibleSchema,
+             format!("unsupported schema version {version}"),
+         )),
+     }?;
+     if (1..=17).contains(&version) {
+         migrate_v17_to_v18(conn)?;
+     }
+     verify_existing_v18(conn)?;
+     if (1..=18).contains(&version) {
+@@ -611,21 +614,95 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
+                     .map_err(store_error)
+             });
+         match result {
+             Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+             Err(error) => {
+                 let _ = conn.execute_batch("ROLLBACK");
+                 return Err(error);
+             }
+         }
+     }
+-    verify_existing_v30(conn)
++    verify_existing_v30(conn)?;
++    if (1..=30).contains(&version) {
++        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
++        let result = conn
++            .execute_batch(V31)
++            .map_err(store_error)
++            .and_then(|_| verify_existing_v31(conn))
++            .and_then(|_| {
++                conn.pragma_update(None, "user_version", 31)
++                    .map_err(store_error)
++            });
++        match result {
++            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
++            Err(error) => {
++                let _ = conn.execute_batch("ROLLBACK");
++                return Err(error);
++            }
++        }
++    }
++    verify_existing_v31(conn)
++}
++
++fn verify_existing_v31(conn: &Connection) -> Result<(), ApiError> {
++    let table: String = conn
++        .query_row(
++            "SELECT sql FROM sqlite_master WHERE type='table' AND name='warning_conditions'",
++            [],
++            |r| r.get(0),
++        )
++        .map_err(store_error)?;
++    for column in [
++        "invitation_originator_instance_id TEXT REFERENCES host_instances(id)",
++        "invitation_originator_seat_id TEXT REFERENCES seats(id)",
++    ] {
++        if !table.contains(column) {
++            return Err(api_error(
++                ErrorCode::IncompatibleSchema,
++                "missing invitation warning origin column",
++            ));
++        }
++    }
++    let index = V31
++        .split("CREATE INDEX ")
++        .nth(1)
++        .unwrap()
++        .split(';')
++        .next()
++        .unwrap();
++    let trigger = V31
++        .split("CREATE TRIGGER ")
++        .nth(1)
++        .unwrap()
++        .trim()
++        .trim_end_matches(';');
++    for (kind, sql) in [
++        ("index", format!("CREATE INDEX {index}")),
++        ("trigger", format!("CREATE TRIGGER {trigger}")),
++    ] {
++        let name = sql.split_whitespace().nth(2).unwrap();
++        let actual: Option<String> = conn
++            .query_row(
++                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
++                params![kind, name],
++                |r| r.get(0),
++            )
++            .optional()
++            .map_err(store_error)?;
++        if actual.as_deref().map(str::trim) != Some(sql.trim()) {
++            return Err(api_error(
++                ErrorCode::IncompatibleSchema,
++                format!("missing or altered invitation warning origin {kind} {name}"),
++            ));
++        }
++    }
++    Ok(())
+ }
+ 
+ fn verify_existing_v30(conn: &Connection) -> Result<(), ApiError> {
+     let ddl = V30
+         .lines()
+         .filter(|line| !line.trim_start().starts_with("--"))
+         .collect::<Vec<_>>()
+         .join("\n");
+     for statement in ddl.split(';').map(str::trim).filter(|sql| !sql.is_empty()) {
+         let name = statement.split_whitespace().nth(2).unwrap_or_default();
+@@ -3840,35 +3917,38 @@ fn record_overdue_inner(
+                 |r| r.get(0),
+             )
+             .map_err(store_error)?;
+         let interval_high_water: i64 = tx
+             .query_row(
+                 "SELECT COALESCE(MAX(ordinal),0) FROM membership_intervals WHERE thread_id=?1",
+                 [thread.as_str()],
+                 |r| r.get(0),
+             )
+             .map_err(store_error)?;
+-        tx.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES (?1,?2,?3,?4,?5,?6)",
+-            params![condition.0,thread.as_str(),condition.1,seat.as_str(),warning.as_str(),event_seq]).map_err(store_error)?;
++        let origin = source_invitation
++            .as_ref()
++            .map(|id| super::effective::invitation_originator(tx, id.as_str()))
++            .transpose()?
++            .flatten();
++        tx.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq,invitation_originator_instance_id,invitation_originator_seat_id) VALUES (?1,?2,?3,?4,?5,?6,CASE WHEN ?7 IS NOT NULL THEN (SELECT instance_id FROM threads WHERE id=?2) END,?7)",
++            params![condition.0,thread.as_str(),condition.1,seat.as_str(),warning.as_str(),event_seq,origin]).map_err(store_error)?;
+         enqueue_transition_warning(
+             tx,
+             warning.as_str(),
+             event_seq,
+             thread.as_str(),
+             interval_high_water,
+             seat.as_str(),
+             condition.0,
+             None,
+         )?;
+-        if let Some(invitation) = source_invitation.as_ref()
+-            && let Some(origin) = super::effective::invitation_originator(tx, invitation.as_str())?
+-        {
++        if let Some(origin) = origin {
+             tx.execute("INSERT OR IGNORE INTO warning_recipients(warning_id,seat_id,generation) SELECT ?1,id,?3 FROM seats WHERE id=?2 AND state!='retired'",params![warning.as_str(),origin,event_seq]).map_err(store_error)?;
+             tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) SELECT id,4,1 FROM seats WHERE id=?1 AND state!='retired' ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|4,attention_version=attention_version+1",[origin]).map_err(store_error)?;
+         }
+     }
+     Ok(OverdueOutcome {
+         warning: Some(warning),
+         inserted,
+     })
+ }
+ 
+diff --git a/src/store/wake.rs b/src/store/wake.rs
+index 20b76632..a1a14158 100644
+--- a/src/store/wake.rs
++++ b/src/store/wake.rs
+@@ -184,21 +184,26 @@ pub fn load_candidate(
+             for warning in backlog.items {
+                 if super::attention::informational_notice_pending(db, seat.as_str(), &warning.id)?
+                     == Some(true)
+                     && super::attention::warning_wakes_seat(db, seat.as_str(), &warning.id)?
+                 {
+                     unoffered = true;
+                     break;
+                 }
+             }
+         }
+-        if unoffered {
++        // An open origin-addressed condition remains waking after its
++        // informational delivery was carried. Delivery settlement is separate.
++        let open_origin = !super::attention::open_invitation_origin_warnings(db, seat.as_str())?
++            .items
++            .is_empty();
++        if unoffered || open_origin {
+             warning_offer = None;
+         }
+     }
+     let latest_warning_seq = attention.latest_warning_seq.map(nonnegative).transpose()?;
+     let witness = WakeAttentionWitness::from_complete(
+         instance.into(),
+         seat.clone(),
+         nonnegative(decision_seq)?,
+         attention.has_pending_invitation,
+         attention.has_pending_receipt,
+diff --git a/tests/store/control.rs b/tests/store/control.rs
+index 8f6bbc5d..cbd1fcdb 100644
+--- a/tests/store/control.rs
++++ b/tests/store/control.rs
+@@ -10779,10 +10779,180 @@ fn invitation_confirmation_duplicate_caller_cannot_change_origin_policy_deadline
+             [],
+             |r| r.get::<_, i64>(0)
+         )
+         .unwrap(),
+         attention
+     );
+     drop(conn);
+     drop(context);
+     let _ = std::fs::remove_file(path);
+ }
++
++fn invitation_origin_wake_after_notice_offer(mod_path: bool) {
++    use crate::protocol::commands::InvitationConfirmation;
++    use crate::store::attention;
++    let (context, mut conn, path, clock, thread, invitation) =
++        rejection_offer_with_policy(Harness::Codex, Some(InvitationConfirmation::RequireAck));
++    let budget = crate::protocol::time::CallBudget {
++        deadline: MonoInstant(u64::MAX),
++        cancellation: Default::default(),
++    };
++    let leave_command = Leave {
++        thread: thread.clone(),
++        claim: claim("s1"),
++        operation: OperationId::new("offered-origin-left"),
++    };
++    let hash = cooperative_payload_hash("leave", &leave_command).unwrap();
++    leave(
++        &context,
++        &mut conn,
++        &budget,
++        &leave_command,
++        permit(
++            "s1",
++            "offered-origin-left",
++            ObligationRef::Control(thread.clone()),
++            hash,
++            100,
++        ),
++    )
++    .unwrap();
++    clock.0.store(110, Ordering::SeqCst);
++    assert_eq!(
++        crate::store::invitation_due::scan_invitation_due_batch(&context, &mut conn, None, 100)
++            .unwrap()
++            .warnings_added,
++        1
++    );
++    let carried: Vec<_> = attention::notice_offer_page(&conn, "s1", 10)
++        .unwrap()
++        .into_iter()
++        .map(|row| row.notice)
++        .collect();
++    assert_eq!(carried.len(), 1);
++    let tx = conn.transaction().unwrap();
++    tx.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) SELECT 's1',1,'00000000-0000-4000-8000-000000000001',decision_seq FROM host_instances WHERE id='i'", []).unwrap();
++    attention::settle_carried_notices(
++        &tx,
++        "s1",
++        1,
++        "00000000-0000-4000-8000-000000000001",
++        &carried,
++    )
++    .unwrap();
++    tx.commit().unwrap();
++    assert!(
++        attention::notice_offer_page(&conn, "s1", 10)
++            .unwrap()
++            .is_empty(),
++        "committed informational offer must stay settled"
++    );
++    assert!(
++        attention::seat_pending_warnings(&conn, "s1", &|| Ok(()))
++            .unwrap()
++            .items
++            .is_empty(),
++        "open waking condition must not revive informational delivery"
++    );
++    let origin = SeatId::new("s1");
++    if mod_path {
++        let view = crate::store::seats::mod_seat_view(&conn, "i", &origin)
++            .unwrap()
++            .unwrap();
++        assert_eq!(
++            view.fingerprint.other_pending, 1,
++            "mod retains original inviter open condition after notice offer"
++        );
++    } else {
++        let scan = attention::wake_seat_attention(&conn, "s1").unwrap();
++        assert!(
++            scan.attention.latest_warning_seq.is_some(),
++            "native attention retains original inviter open condition after notice offer"
++        );
++        let candidate = crate::store::wake::load_candidate(
++            &conn,
++            "i",
++            &origin,
++            &scan.attention,
++            scan.decision_seq,
++        )
++        .unwrap();
++        assert!(
++            candidate.has_actionable_work(),
++            "committed notice offer cannot gate open condition wake"
++        );
++        assert!(
++            crate::store::wake::reserve(
++                &context,
++                &mut conn,
++                "i",
++                &candidate,
++                uuid::Uuid::new_v4(),
++                30_000
++            )
++            .unwrap()
++            .is_some(),
++            "existing cooperative authority admits the open condition wake"
++        );
++    }
++    clock.0.store(200, Ordering::SeqCst);
++    let acceptance = Accept {
++        thread,
++        claim: claim("s2"),
++        operation: OperationId::new("offered-late-accept"),
++    };
++    let hash = cooperative_payload_hash("accept", &acceptance).unwrap();
++    assert!(matches!(
++        accept(
++            &context,
++            &mut conn,
++            &budget,
++            &acceptance,
++            permit(
++                "s2",
++                "offered-late-accept",
++                ObligationRef::Invitation(invitation),
++                hash,
++                200
++            )
++        )
++        .unwrap(),
++        CommandResult::Accepted(_)
++    ));
++    assert!(
++        attention::wake_seat_attention(&conn, "s1")
++            .unwrap()
++            .attention
++            .latest_warning_seq
++            .is_none(),
++        "late explicit acceptance clears native condition attention"
++    );
++    assert_eq!(
++        crate::store::seats::mod_seat_view(&conn, "i", &origin)
++            .unwrap()
++            .unwrap()
++            .fingerprint
++            .other_pending,
++        0,
++        "clear is passive for mod attention"
++    );
++    let clears = attention::notice_offer_page(&conn, "s1", 10).unwrap();
++    assert_eq!(
++        clears.len(),
++        1,
++        "only the fresh passive clear notice remains deliverable"
++    );
++    assert_ne!(clears[0].notice.warning, carried[0].warning);
++    drop(conn);
++    drop(context);
++    let _ = std::fs::remove_file(path);
++}
++
++#[test]
++fn invitation_confirmation_native_open_condition_survives_committed_notice_offer() {
++    invitation_origin_wake_after_notice_offer(false);
++}
++
++#[test]
++fn invitation_confirmation_mod_open_condition_survives_committed_notice_offer() {
++    invitation_origin_wake_after_notice_offer(true);
++}
+diff --git a/tests/store/invitation_due.rs b/tests/store/invitation_due.rs
+index fcc96aa5..30744f0b 100644
+--- a/tests/store/invitation_due.rs
++++ b/tests/store/invitation_due.rs
+@@ -607,10 +607,141 @@ fn invitation_backlog_restart_reconstructs_progress_without_recipient_activity()
+     assert_eq!(reopened.query_row("SELECT count(*) FROM invitations WHERE id LIKE 'restart-%' AND warning_message_id IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),250);
+     assert_eq!(
+         reopened
+             .query_row("SELECT count(*) FROM occupant_bindings", [], |r| r
+                 .get::<_, i64>(0))
+             .unwrap(),
+         0,
+         "discovery never requires registration"
+     );
+ }
++
++#[test]
++fn invitation_confirmation_prior_schema_upgrade_preserves_exact_open_origins() {
++    let path =
++        std::env::temp_dir().join(format!("invitation-origin-v30-{}.db", uuid::Uuid::new_v4()));
++    let conn = Connection::open(&path).unwrap();
++    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
++    let mut migrations: Vec<_> =
++        std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
++            .unwrap()
++            .map(|entry| entry.unwrap().path())
++            .filter(|path| {
++                path.file_name().unwrap().to_str().unwrap()[..4]
++                    .parse::<u32>()
++                    .is_ok_and(|version| version <= 30)
++            })
++            .collect();
++    migrations.sort();
++    assert_eq!(migrations.len(), 30);
++    for migration in migrations {
++        conn.execute_batch(&std::fs::read_to_string(migration).unwrap())
++            .unwrap();
++    }
++    conn.pragma_update(None, "user_version", 30).unwrap();
++    conn.execute(
++        "INSERT INTO host_instances(id,created_at,decision_seq) VALUES ('host',0,10)",
++        [],
++    )
++    .unwrap();
++    for seat in ["origin", "legacy", "unknown", "seat"] {
++        conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'host','resolved','native',1,0)", [seat]).unwrap();
++    }
++    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('thread','host','topic','goal',0,0)", []).unwrap();
++    for (ordinal, id, recorded, actor) in [
++        (1, "stored", Some("origin"), None),
++        (2, "historical", None, Some("legacy")),
++        (3, "unattributed", None, None),
++    ] {
++        conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,inviter_seat_id) VALUES (?1,'thread','seat',?2,'pending',1,0,100,100,?3)", params![id,ordinal,recorded]).unwrap();
++        if let Some(actor) = actor {
++            crate::store::schema::append_event_once(&conn, crate::store::schema::EventInput {
++                thread: &crate::protocol::ids::ThreadId::new("thread"), key: &format!("invite:{id}"), kind: "info",
++                payload_json: &serde_json::json!({"action":"invite","actor_seat":actor,"seat":"seat","invitation":id}).to_string(), decision_at: UtcMillis(0), source_message: None, source_invitation: Some(&InvitationId::new(id)),
++            }).unwrap();
++        }
++        let (warning, _) = crate::store::schema::append_event_once(
++            &conn,
++            crate::store::schema::EventInput {
++                thread: &crate::protocol::ids::ThreadId::new("thread"),
++                key: &format!("overdue:{id}"),
++                kind: "warn",
++                payload_json: "{}",
++                decision_at: UtcMillis(100),
++                source_message: None,
++                source_invitation: Some(&InvitationId::new(id)),
++            },
++        )
++        .unwrap();
++        let seq: i64 = conn
++            .query_row(
++                "SELECT decision_seq FROM messages WHERE id=?1",
++                [warning.as_str()],
++                |r| r.get(0),
++            )
++            .unwrap();
++        conn.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('invitation','thread',?1,'seat',?2,?3)", params![id, warning.as_str(),seq]).unwrap();
++    }
++    let before: Vec<(String, String)> = {
++        let mut query = conn
++            .prepare("SELECT id,event_json FROM messages ORDER BY ordinal")
++            .unwrap();
++        query
++            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
++            .unwrap()
++            .collect::<Result<_, _>>()
++            .unwrap()
++    };
++    drop(conn);
++    let context = StoreContext::new(path.clone(), Arc::new(TestClock(AtomicI64::new(200))));
++    let conn = context.open_writer().unwrap();
++    for origin in ["origin", "legacy"] {
++        assert!(
++            crate::store::attention::wake_seat_attention(&conn, origin)
++                .unwrap()
++                .attention
++                .latest_warning_seq
++                .is_some(),
++            "prior-schema open origin {origin} must survive upgrade"
++        );
++    }
++    assert!(
++        crate::store::attention::wake_seat_attention(&conn, "unknown")
++            .unwrap()
++            .attention
++            .latest_warning_seq
++            .is_none(),
++        "unknown historical evidence cannot attribute a member"
++    );
++    let after: Vec<(String, String)> = {
++        let mut query = conn
++            .prepare("SELECT id,event_json FROM messages ORDER BY ordinal")
++            .unwrap();
++        query
++            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
++            .unwrap()
++            .collect::<Result<_, _>>()
++            .unwrap()
++    };
++    assert_eq!(before, after, "upgrade never rewrites historical events");
++    let mut conn = conn;
++    let tx = conn.transaction().unwrap();
++    tx.execute("UPDATE invitations SET state='accepted',accepted_at=200,accepted_actor_seat_id='seat',accepted_generation=1,accepted_observation='test-observation' WHERE id='stored'", []).unwrap();
++    crate::store::schema::clear_warning_condition_for_invitation(&tx, "stored", UtcMillis(200))
++        .unwrap();
++    tx.commit().unwrap();
++    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,inviter_seat_id) VALUES ('next-episode','thread','seat',4,'pending',10,100,100,200,'legacy')", []).unwrap();
++    assert!(
++        scan_invitation_due_batch(&context, &mut conn, None, 100)
++            .unwrap()
++            .warnings_added
++            > 0
++    );
++    let next_origin: String = conn.query_row("SELECT invitation_originator_seat_id FROM warning_conditions WHERE condition_id='next-episode' AND clear_warning_id IS NULL", [], |r|r.get(0)).unwrap();
++    assert_eq!(
++        next_origin, "legacy",
++        "new open episode resolves its own origin rather than retaining the prior origin"
++    );
++    drop(conn);
++    drop(context);
++    let _ = std::fs::remove_file(path);
++}
+diff --git a/tests/store/schema.rs b/tests/store/schema.rs
+index 3f5a1877..eb2a4380 100644
+--- a/tests/store/schema.rs
++++ b/tests/store/schema.rs
+@@ -6251,25 +6251,25 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
+             db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").unwrap()
+             .query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?.split_whitespace().collect::<String>().replace('\"',"")))).unwrap().map(Result::unwrap).collect::<Vec<_>>()
+         };
+         assert_eq!(catalog(&db), catalog(&fresh));
+         assert_eq!(
+             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
+             74
+         );
+         assert_eq!(
+             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
+-            143
++            144
+         );
+         assert_eq!(
+             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
+-            183
++            184
+         );
+     }
+ }
+ 
+ // An unpublished adapter schema25 is not the immutable published main25.
+ #[test]
+ fn absorption_rejects_development_adapter25_without_writing() {
+     let db = adapter_historical_database(24);
+     db.execute_batch(include_str!("../../migrations/0027_harness_adapters.sql"))
+         .unwrap();

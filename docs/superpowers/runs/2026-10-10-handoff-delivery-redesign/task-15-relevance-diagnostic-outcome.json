@@ -1,0 +1,19 @@
+{
+  "sourcepoint": "task-15-relevance-diagnostic-sourcepoint.json",
+  "source_sha256": "0505124f338d25b6445b1bc899f97bdf37bba82738317f62a749f421c7d50289",
+  "log": "/private/tmp/ht-task15-relevance-diagnostic-red.log",
+  "log_sha256": "3155d0c7a81e126b95890b2f60ec357ed9ed8f1facffc284537336b963e05e0a",
+  "build_wall": "1m31s",
+  "build_scope": "multi-module/schema registration; overbudget; not controlled incremental",
+  "runtime_seconds": 0.28,
+  "selected": 5,
+  "passed": 2,
+  "behavioral_red": [
+    "presentation_relevance_direct_legacy_survives_canonical_lazy_churn",
+    "presentation_relevance_canonical_receipt_sweep_closes_before_clear_publication"
+  ],
+  "excluded_setup_failure": "presentation_relevance_required_lazy_overlay_tracks_digest_and_requirement: requirement relation mismatch",
+  "diagnostic_production": "25ac known Important; no promotion",
+  "lint": "not run; current incomplete Controls methods dead_code warning retained, no lint PASS claim",
+  "processes_drained": "author reports owned commands drained"
+}

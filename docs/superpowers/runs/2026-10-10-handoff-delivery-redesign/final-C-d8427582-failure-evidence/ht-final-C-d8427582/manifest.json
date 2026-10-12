@@ -1,0 +1,110 @@
+[
+  {
+    "path": "/private/tmp/ht-final-C-d8427582/mandatory-results.json",
+    "sha256": "7bf41f89937d440080272927819c05680032b40dbb373a6c85074503cb20ee96",
+    "bytes": 3699,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-d8427582/mandatory-results.json"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-d8427582/selection-expressions.json",
+    "sha256": "6bd98e9720b85db9bf9c0225832dd1ebbbba49adfc4e1d2c7e356cdb7294072d",
+    "bytes": 258047,
+    "retained": "original by exactpath/hash; selected names/functions retained separately"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-d8427582/nextest-list.stderr.log",
+    "sha256": "8c90acc0494a63036f07bd0f363407ea212ac27c050e27a72d2518572e1882dd",
+    "bytes": 183,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-d8427582/nextest-list.stderr.log"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-d8427582/run-selection.json",
+    "sha256": "b044c584fc49583c444314c23b7d5888a5c6ce44d9449e0e98c96e4a8ac28b18",
+    "bytes": 217642,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-d8427582/run-selection.json"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-d8427582/mandatory-scoped-leaks.log",
+    "sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e",
+    "bytes": 25,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-d8427582/mandatory-scoped-leaks.log"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-d8427582/mandatory-recovery-01.log",
+    "sha256": "b5b6c782bc1bb4a6ff47a4696fee4357f2226e985fe40247cb7712320da6acd9",
+    "bytes": 422,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-d8427582/mandatory-recovery-01.log"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-d8427582/mandatory-recovery-02.log",
+    "sha256": "7ee35f90a38a22daaf5f70108619bb2b1b761711b6b89ad10e1abbba648bb348",
+    "bytes": 414,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-d8427582/mandatory-recovery-02.log"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-d8427582/mandatory-recovery-03.log",
+    "sha256": "0a0b46e658b3154e7f3ee3609f287f22f0ccd2af0edcc187973351effa2acc4b",
+    "bytes": 416,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-d8427582/mandatory-recovery-03.log"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-d8427582/final-scoped-leaks.log",
+    "sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e",
+    "bytes": 25,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-d8427582/final-scoped-leaks.log"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-d8427582/mandatory-recovery-06.log",
+    "sha256": "300695369e997bd42608cddad2f6ba6ea6a2d02f3971091d1e403c4e634b41a1",
+    "bytes": 434,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-d8427582/mandatory-recovery-06.log"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-d8427582/mandatory-recovery-04.log",
+    "sha256": "36f174ec599454b8ac477cbed675c3beed04683fd5141c07111494ae96e5fda4",
+    "bytes": 408,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-d8427582/mandatory-recovery-04.log"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-d8427582/mandatory-recovery-05.log",
+    "sha256": "84dc4af9ce8f97cfdbe6922d59ad355b8742dc610c6ab89cbeec17e546a807ab",
+    "bytes": 442,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-d8427582/mandatory-recovery-05.log"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-d8427582/watch-activation.jsonl",
+    "sha256": "3d4b9494a97c890cdd5ac8b01757a78696ee9122a2a853d721d5538fe2fac277",
+    "bytes": 1571,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-d8427582/watch-activation.jsonl"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-d8427582/nextest-run.log",
+    "sha256": "b64cf978911baa2ede83c93f2affcc0ee6d1c43865920336b876cb9ca50fcd42",
+    "bytes": 113487,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-d8427582/nextest-run.log"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-d8427582/focused-scoped-leaks.log",
+    "sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e",
+    "bytes": 25,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-d8427582/focused-scoped-leaks.log"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-d8427582/nextest-list.json",
+    "sha256": "32fa51f90ab4ccb702a29e70bd5e7050ca181a3fd1cf564bf0701e134ade8f9d",
+    "bytes": 1058255,
+    "retained": "original by exactpath/hash; selected names/functions retained separately"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-d8427582/execution.json",
+    "sha256": "5d6b743e206e42f8a198a1b86e9d9c8fa2e55b3d5b34e1f9caf3ab84ef76dda0",
+    "bytes": 704790,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-d8427582/execution.json"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-d8427582/focused-results.json",
+    "sha256": "7862dbcfff0566a715cf02519ab00865742cbc10070c1cd12175366a1bb9672d",
+    "bytes": 141633,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-d8427582/focused-results.json"
+  }
+]

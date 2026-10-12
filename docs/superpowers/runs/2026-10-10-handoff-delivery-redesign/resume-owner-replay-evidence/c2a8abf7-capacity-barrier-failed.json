@@ -1,0 +1,51 @@
+{
+  "head": "c2a8abf787518913b26e93fa5edf904cb9c2493d",
+  "tree": "43cc3cc4b6092b3f4887f244b8699c2056c22b01",
+  "run_id": "bae3d150-60c6-433f-b9d3-b5a7e87b9667",
+  "expected": [
+    "mod_delivery::activation_v2_watch_full_pending_capacity_parks_until_real_channel_input"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 8.991963292006403
+  },
+  "selected": [
+    [
+      "herdr-threads::integration",
+      "mod_delivery::activation_v2_watch_full_pending_capacity_parks_until_real_channel_input"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/integration-be5d2b55617e1459",
+      "sha256": "11831cc10c8e09437f78362a10ed9599157cb0a76880a3fa5affede383b0f06e"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 27.710986457997933,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--test",
+      "integration",
+      "-E",
+      "test(=mod_delivery::activation_v2_watch_full_pending_capacity_parks_until_real_channel_input)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.1849609159398824,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "bae3d150-60c6-433f-b9d3-b5a7e87b9667"
+    ]
+  },
+  "leak_exit": 0
+}

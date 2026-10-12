@@ -584,6 +584,31 @@ fn embedded_register_js_has_exactly_one_launch_marker() {
     );
 }
 
+// Catches event words leaking into the watch argv and route selectors being
+// dropped when setup switches to stable native event registrations.
+#[test]
+fn launch_prefix_accepts_stable_and_legacy_event_routes() {
+    for tail in [
+        vec!["hook-event", "claude", "SessionStart"],
+        vec!["hook-event", "claude", "PreToolUse"],
+        vec!["hook", "claude", "--event", "SessionStart"],
+    ] {
+        let mut hooks = prefix("/abs/ht");
+        hooks.extend(tail.into_iter().map(str::to_owned));
+        assert_eq!(launch_prefix(&hooks).unwrap(), prefix("/abs/ht"));
+    }
+    for tail in [
+        vec!["hook-event", "codex", "SessionStart"],
+        vec!["hook-event", "claude", "SubagentStart"],
+        vec!["hook-event", "claude"],
+        vec!["hook", "claude", "--event", "Unknown"],
+    ] {
+        let mut hooks = prefix("/abs/ht");
+        hooks.extend(tail.into_iter().map(str::to_owned));
+        assert_eq!(launch_prefix(&hooks), Err(SetupError::Invalid));
+    }
+}
+
 #[test]
 fn launch_prefix_strips_the_hook_tail() {
     let hooks = argv(&[

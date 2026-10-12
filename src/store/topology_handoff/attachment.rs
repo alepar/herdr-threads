@@ -284,14 +284,34 @@ pub(crate) fn validate_selected_child_phase(
             matches!(&identity.payload.handoff.channel,HandoffChannel::New{name,topic,goal} if name==&v.name && topic==&v.topic && goal==&v.goal)
         }
         PermitMutation::Invite(v) => {
-            v.seat == attachment.resolved_seat && v.deadline_millis.is_none()
+            v.seat == attachment.resolved_seat
+                && v.deadline_millis
+                    == identity
+                        .payload
+                        .handoff
+                        .policy
+                        .as_ref()
+                        .and_then(|p| p.invite_deadline_millis)
+                && v.confirmation
+                    == identity
+                        .payload
+                        .handoff
+                        .policy
+                        .as_ref()
+                        .map(|p| p.invitation_confirmation)
         }
         PermitMutation::SendMessage(v) => {
             v.delivery_mode.is_ordinary()
                 && v.direct_recipient.is_none()
                 && v.body == identity.payload.handoff.body
                 && v.invited_recipients == [attachment.resolved_seat.clone()]
-                && v.deadline_millis.is_none()
+                && v.deadline_millis
+                    == identity
+                        .payload
+                        .handoff
+                        .policy
+                        .as_ref()
+                        .and_then(|p| p.deadline_millis)
                 && !v.relays_user
                 && v.user_intent.is_none()
         }

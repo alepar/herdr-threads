@@ -1,0 +1,354 @@
+diff --git a/src/harness/agy/delivery.rs b/src/harness/agy/delivery.rs
+index 604ed5e5..d835d186 100644
+--- a/src/harness/agy/delivery.rs
++++ b/src/harness/agy/delivery.rs
+@@ -668,8 +668,9 @@ fn run_step_with_completion(context: &HookStepContext<'_>, runtime: &Runtime) ->
+ }
+ 
+ const PRESENTATION_V2: &str = "delivery.presentation_v2";
+-// One state <=4096, six ASCII claim fields <=128 each (<=4608 escaped bytes),
+-// two 64hex digests, optional32hex token, and fixed keys/u64 scalars (<1024).
++// State and optional probation record <=4096 each, six ASCII claim fields
++// <=128 each (<=4608 escaped bytes), three64hex digests, optional32hex token,
++// and fixed keys/u64 scalars (<1024). Nested records are typed objects, not JSON strings.
+ // Enforce each component and the final serialized envelope, rather than assuming
+ // the private transport cap bounds a nested state or an opaque caller ID.
+ const COMPLETION_MAX_BYTES: usize = 16_384;
+@@ -677,6 +678,8 @@ const COMPLETION_MAX_BYTES: usize = 16_384;
+ #[serde(deny_unknown_fields)]
+ struct EmissionCompletion {
+     state: ConversationState,
++    probation: Option<DowngradeRecord>,
++    previous_probation_digest: Option<String>,
+     claim: CallerClaim,
+     conversation_key: String,
+     previous_digest: Option<String>,
+@@ -702,6 +705,15 @@ fn valid_completion(completion: &EmissionCompletion) -> bool {
+     completion.state.v == 1
+         && completion.state.injected.len() <= MAX_TRACKED
+         && serde_json::to_vec(&completion.state).is_ok_and(|bytes| bytes.len() <= MAX_STATE_BYTES)
++        && completion.probation.as_ref().is_none_or(|record| {
++            record.v == 1
++                && record.probation
++                && serde_json::to_vec(record).is_ok_and(|bytes| bytes.len() <= MAX_STATE_BYTES)
++        })
++        && completion
++            .previous_probation_digest
++            .as_deref()
++            .is_none_or(|v| valid_hex(v, 64))
+         && [
+             claim.instance.as_str(),
+             claim.seat.as_str(),
+@@ -769,10 +781,22 @@ fn complete_step(payload: &[u8], daemon: &dyn HookStepDaemon, state_dir: &Path,
+     if current != completion.previous_digest {
+         return;
+     }
++    // This detects an observed change, not a lock/CAS: local hints retain
++    // their historical cooperative concurrency limits.
++    if completion.probation.is_some() {
++        let current = read_capped(&downgrade_path(state_dir), MAX_STATE_BYTES)
++            .map(|bytes| hex_digest(&bytes));
++        if current != completion.previous_probation_digest {
++            return;
++        }
++    }
+     if !completion.existed {
+         prune_conversation_states(state_dir, &path, completion.now_ms);
+     }
+     completion.state.save(&path);
++    if let Some(probation) = completion.probation {
++        save_downgrade(state_dir, &probation);
++    }
+ }
+ 
+ struct Step<'a> {
+@@ -1043,15 +1067,20 @@ impl Step<'_> {
+                 } else {
+                     InjectionStep::SystemMessage
+                 };
++                let previous_probation_digest =
++                    read_capped(&downgrade_path(self.state_dir), MAX_STATE_BYTES)
++                        .map(|bytes| hex_digest(&bytes));
++                let mut probation = None;
+                 if confirmable
+                     && record.downgraded_at.is_some()
+                     && !record.probation
+                     && step == InjectionStep::SystemMessage
+                 {
+-                    // The probation turn opens: one systemMessage retry.
++                    // Opening the retry is output-coupled. An un-emitted or
++                    // unconfirmed page cannot spend this one probation turn.
+                     record.probation = true;
+                     record.probation_at = Some(now);
+-                    save_downgrade(self.state_dir, &record);
++                    probation = Some(record);
+                 }
+                 let user = step == InjectionStep::UserMessage;
+                 let output = step.render(&page.text);
+@@ -1062,6 +1091,8 @@ impl Step<'_> {
+                 let _ = state.serialize_bounded();
+                 let completion = EmissionCompletion {
+                     state,
++                    probation,
++                    previous_probation_digest,
+                     claim: claim.clone(),
+                     conversation_key: hex_digest(self.payload.conversation.as_bytes()),
+                     previous_digest,
+diff --git a/tests/harness/agy_delivery.rs b/tests/harness/agy_delivery.rs
+index bfdd268b..adc0c2c3 100644
+--- a/tests/harness/agy_delivery.rs
++++ b/tests/harness/agy_delivery.rs
+@@ -2044,3 +2044,253 @@ fn malformed_or_oversized_completion_is_inert() {
+     assert!(!rig.state_file().exists());
+     assert!(fake.calls().is_empty());
+ }
++
++#[test]
++fn probation_opening_is_deferred_until_successful_completion() {
++    let rig = Rig::new();
++    let identity = ident("a");
++    let mut record = DowngradeRecord::blank(&identity);
++    record.downgrade("abort", 1000);
++    save_downgrade(&rig.state, &record);
++    let rt = runtime(1000 + 24 * HOUR, &identity);
++    let fake = offering();
++    let prepared = rig.prepare(
++        "PreInvocation",
++        json!({"invocationNum": 0}),
++        Some(&fake),
++        &rt,
++    );
++    assert_eq!(prepared.stdout, fixture_bytes("output-system-message.json"));
++    assert_eq!(rig.record(), Some(record.clone()));
++    assert!(!rig.state_file().exists());
++    // Dropped output or an expired completion cannot spend the retry.
++    let payload = prepared.completion.unwrap();
++    complete_step(
++        &payload.0,
++        &fake,
++        &rig.state,
++        Instant::now() - Duration::from_millis(1),
++    );
++    assert_eq!(rig.record(), Some(record));
++    assert!(!rig.state_file().exists());
++    complete_step(
++        &payload.0,
++        &fake,
++        &rig.state,
++        Instant::now() + Duration::from_secs(30),
++    );
++    let saved = rig.record().unwrap();
++    assert!(saved.probation);
++    assert_eq!(saved.probation_at, Some(1000 + 24 * HOUR));
++    assert_eq!(rig.conversation().injected[0].id, "msg-a1");
++}
++
++#[test]
++fn probation_confirmation_loss_keeps_the_retry_available() {
++    let rig = Rig::new();
++    let identity = ident("a");
++    let mut record = DowngradeRecord::blank(&identity);
++    record.downgrade("abort", 1000);
++    save_downgrade(&rig.state, &record);
++    let rt = runtime(1000 + 24 * HOUR, &identity);
++    let token = "a".repeat(32);
++    let fake = modern_fake(vec![
++        modern_page(&token),
++        Err(ApiError::new(
++            ErrorCode::InvalidRequest,
++            "confirmation lost",
++        )),
++    ]);
++    let prepared = rig.prepare(
++        "PreInvocation",
++        json!({"invocationNum": 0}),
++        Some(&fake),
++        &rt,
++    );
++    complete_step(
++        &prepared.completion.unwrap().0,
++        &fake,
++        &rig.state,
++        Instant::now() + Duration::from_secs(30),
++    );
++    assert_eq!(rig.record(), Some(record));
++    assert!(!rig.state_file().exists());
++    let replay = modern_fake(vec![
++        modern_page(&token),
++        Ok(CommandResult::DeliveryPresentationConfirmedV2(
++            DeliveryPresentationConfirmationV2::Confirmed,
++        )),
++    ]);
++    let prepared = rig.prepare(
++        "PreInvocation",
++        json!({"invocationNum": 0}),
++        Some(&replay),
++        &rt,
++    );
++    assert_eq!(prepared.stdout, fixture_bytes("output-system-message.json"));
++    complete_step(
++        &prepared.completion.unwrap().0,
++        &replay,
++        &rig.state,
++        Instant::now() + Duration::from_secs(30),
++    );
++    assert!(rig.record().unwrap().probation);
++}
++
++#[test]
++fn probation_completion_preserves_an_observed_changed_downgrade_hint() {
++    let rig = Rig::new();
++    let identity = ident("a");
++    let mut record = DowngradeRecord::blank(&identity);
++    record.downgrade("abort", 1000);
++    save_downgrade(&rig.state, &record);
++    let fake = offering();
++    let prepared = rig.prepare(
++        "PreInvocation",
++        json!({"invocationNum": 0}),
++        Some(&fake),
++        &runtime(1000 + 24 * HOUR, &identity),
++    );
++    record.downgrade("misses", 2000);
++    save_downgrade(&rig.state, &record);
++    let before = std::fs::read(downgrade_path(&rig.state)).unwrap();
++    complete_step(
++        &prepared.completion.unwrap().0,
++        &fake,
++        &rig.state,
++        Instant::now() + Duration::from_secs(30),
++    );
++    assert_eq!(std::fs::read(downgrade_path(&rig.state)).unwrap(), before);
++    assert!(!rig.state_file().exists());
++}
++
++#[test]
++fn expired_probation_maintenance_remains_independent_of_page_emission() {
++    let rig = Rig::new();
++    let identity = ident("a");
++    let mut record = DowngradeRecord::blank(&identity);
++    record.downgrade("abort", 0);
++    record.probation = true;
++    record.probation_at = Some(1000);
++    save_downgrade(&rig.state, &record);
++    let now = 1000 + 24 * HOUR;
++    let prepared = rig.prepare(
++        "PreInvocation",
++        json!({"invocationNum": 0}),
++        Some(&offering()),
++        &runtime(now, &identity),
++    );
++    assert_eq!(prepared.stdout, fixture_bytes("output-user-message.json"));
++    let saved = rig.record().unwrap();
++    assert!(!saved.probation);
++    assert_eq!(saved.downgraded_at, Some(now));
++    assert!(
++        !rig.state_file().exists(),
++        "new page state is still emission-coupled"
++    );
++}
++
++#[test]
++fn typed_completion_fits_two_maximal_admitted_records_and_escaped_claim_fields() {
++    let mut state = ConversationState {
++        seen_attention_version: Some(u64::MAX),
++        turn: u64::MAX,
++        injected_this_turn: true,
++        generation: Some(u64::MAX),
++        injected: (0..MAX_TRACKED)
++            .map(|n| Injected {
++                id: format!("m{n}"),
++                offset: u64::MAX,
++                turn: u64::MAX,
++                user: true,
++            })
++            .collect(),
++        ..Default::default()
++    };
++    // Fill the actual serializer's admitted4KiB state with printable opaque IDs.
++    for n in 0..state.injected.len() {
++        while state.injected[n].id.len() < 128 {
++            state.injected[n].id.push('"');
++            if serde_json::to_vec(&state).unwrap().len() > MAX_STATE_BYTES {
++                state.injected[n].id.pop();
++                break;
++            }
++        }
++    }
++    if serde_json::to_vec(&state).unwrap().len() < MAX_STATE_BYTES {
++        let entry = state
++            .injected
++            .iter_mut()
++            .find(|entry| entry.id.len() < 128)
++            .unwrap();
++        entry.id.push('x');
++    }
++    assert_eq!(state.serialize_bounded().len(), MAX_STATE_BYTES);
++    assert_eq!(state.injected.len(), MAX_TRACKED);
++    let mut record = DowngradeRecord::blank(&Identity {
++        path: "/".into(),
++        inode: u64::MAX,
++        size: u64::MAX,
++        mtime_ns: i64::MAX,
++    });
++    record.downgrade("abort", u64::MAX);
++    record.probation = true;
++    record.probation_at = Some(u64::MAX);
++    let mut quote = true;
++    while serde_json::to_vec(&record).unwrap().len() + 2 <= MAX_STATE_BYTES {
++        // Both characters need escaping; these are admitted historical format
++        // bytes, not a claim that an OS resolves a path at this limit.
++        record.identity.path.push(if quote { '"' } else { '\\' });
++        quote = !quote;
++    }
++    if serde_json::to_vec(&record).unwrap().len() < MAX_STATE_BYTES {
++        record.identity.path.push('x');
++    }
++    assert_eq!(serde_json::to_vec(&record).unwrap().len(), MAX_STATE_BYTES);
++    let mut original = claim(u64::MAX);
++    original.instance = "\0".repeat(128); // String field is checked, never assumed to be an ID type.
++    original.seat = SeatId::new("\"\\".repeat(64));
++    original.execution = ExecutionId::new("\"\\".repeat(64));
++    original.target = HostTargetId::new("\"\\".repeat(64));
++    original.native_session = NativeSessionId::new("a".repeat(128));
++    let mut completion = EmissionCompletion {
++        state,
++        probation: Some(record),
++        previous_probation_digest: Some("f".repeat(64)),
++        conversation_key: hex_digest(original.native_session.as_str().as_bytes()),
++        claim: original,
++        previous_digest: Some("f".repeat(64)),
++        presentation_token: Some("a".repeat(32)),
++        now_ms: u64::MAX,
++        existed: true,
++    };
++    assert!(valid_completion(&completion));
++    let encoded = serde_json::to_vec(&completion).unwrap();
++    assert!(
++        encoded.len() <= COMPLETION_MAX_BYTES,
++        "actual encoded payload {}",
++        encoded.len()
++    );
++    let native: Value = serde_json::from_slice(&encoded).unwrap();
++    assert!(native["state"].is_object() && native["probation"].is_object());
++    assert!(valid_completion(
++        &serde_json::from_slice::<EmissionCompletion>(&encoded).unwrap()
++    ));
++    completion.claim.instance.push('x');
++    assert!(
++        !valid_completion(&completion),
++        "instance String cap is enforced"
++    );
++    completion.claim.instance.pop();
++    completion
++        .probation
++        .as_mut()
++        .unwrap()
++        .identity
++        .path
++        .push('x');
++    assert!(
++        !valid_completion(&completion),
++        "probation's own4KiB cap is enforced"
++    );
++}

@@ -752,3 +752,6 @@ fn lazy_markers_manifest_warning_history_and_body_render_readonly() {
         "text reads must not mutate canonical state"
     );
 }
+
+#[path = "q5_continuation_public.rs"]
+mod q5_continuation_public;

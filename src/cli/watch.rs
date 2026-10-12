@@ -19,7 +19,9 @@ use crate::{
     ports::LocalClient,
     protocol::{
         authority::CallerClaim,
-        capabilities::{BINDING_CURSORS, MOD_WATCH},
+        capabilities::{
+            BINDING_CURSORS, DELIVERY_PRESENTATION_V2, MOD_WATCH, MOD_WATCH_PRESENTATION_V2,
+        },
         commands::{AckModDelivered, Command, InboxQuery},
         ids::{MessageId, NativeSessionId, OperationId, SeatId},
         pagination::{Page, PageRequest},
@@ -270,6 +272,7 @@ fn open_watch(
     socket: &Path,
     instance: uuid::Uuid,
     claim: CallerClaim,
+    presentation_v2: bool,
 ) -> Result<(WatchReply, SocketConn), OpenError> {
     let mut stream = UnixStream::connect(socket).map_err(|_| OpenError::Unavailable)?;
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -278,7 +281,10 @@ fn open_watch(
         request_id: request_id.clone(),
         expected_instance: instance.to_string(),
         expected_boot: None,
-        watch: WireWatch { claim },
+        watch: WireWatch {
+            claim,
+            presentation_v2,
+        },
     };
     let body = serde_json::to_vec(&request).map_err(|_| OpenError::Other)?;
     stream
@@ -333,10 +339,13 @@ pub(crate) struct WatchSession<'a> {
     pub hint_path: Option<PathBuf>,
 }
 
-/// What the `mod.watch_v1` capability probe learned.
+/// What discovery learned about Watch registration and its presentation mode.
 enum Probe {
-    /// `cursors`: the daemon serves per-binding unread streams (`inbox.binding_cursors_v1`).
-    Supported { cursors: bool },
+    Supported {
+        presentation: bool,
+        /// The daemon serves per-binding unread streams (`inbox.binding_cursors_v1`).
+        cursors: bool,
+    },
     /// The daemon answered, and it has no such feature.
     Unsupported,
     /// The call itself failed (busy, timeout, booting daemon, transport loss): the daemon
@@ -350,8 +359,13 @@ fn probe_mod_watch(client: &dyn LocalClient, budget: &CallBudget) -> Probe {
     match client.call_definitive(Command::Capabilities, budget) {
         Ok(Ok(CommandResult::Capabilities(list))) => {
             if list.capabilities.iter().any(|c| c == MOD_WATCH) {
+                let supports = |name: &str| list.capabilities.iter().any(|c| c == name);
+                let cursors = supports(BINDING_CURSORS);
                 Probe::Supported {
-                    cursors: list.capabilities.iter().any(|c| c == BINDING_CURSORS),
+                    presentation: supports(DELIVERY_PRESENTATION_V2)
+                        && supports(MOD_WATCH_PRESENTATION_V2)
+                        && cursors,
+                    cursors,
                 }
             } else {
                 Probe::Unsupported
@@ -385,15 +399,24 @@ fn run_session_marked(
     mut alive: impl FnMut() -> bool,
 ) -> i32 {
     let mut state = EmitState::new(session.hint_path.clone()).with_command_prefix(command_prefix);
-    let cursors = match probe_mod_watch(session.client, &cooperative_budget(session.clock)) {
-        Probe::Supported { cursors } => cursors,
-        Probe::Unsupported => return refuse(&mut state, out, WatchStatusReason::Unsupported),
-        Probe::Failed => return refuse(&mut state, out, WatchStatusReason::DaemonUnavailable),
-    };
-    let seat = session.claim.seat.clone();
-    // The binding's own stream, only against a daemon that serves it.
+    let (presentation, cursors) =
+        match probe_mod_watch(session.client, &cooperative_budget(session.clock)) {
+            Probe::Supported {
+                presentation,
+                cursors,
+            } => (presentation, cursors),
+            Probe::Unsupported => return refuse(&mut state, out, WatchStatusReason::Unsupported),
+            Probe::Failed => return refuse(&mut state, out, WatchStatusReason::DaemonUnavailable),
+        };
+    // The historical fallback reads this binding's stream only after negotiation.
     let reader = cursors.then(|| session.claim.clone());
-    let (reply, mut conn) = match open_watch(session.socket, session.instance, session.claim) {
+    let seat = session.claim.seat.clone();
+    let (reply, mut conn) = match open_watch(
+        session.socket,
+        session.instance,
+        session.claim.clone(),
+        presentation,
+    ) {
         Ok(opened) => opened,
         Err(OpenError::Unavailable) => {
             return refuse(&mut state, out, WatchStatusReason::DaemonUnavailable);
@@ -406,6 +429,27 @@ fn run_session_marked(
     match reply.outcome {
         WatchOutcome::Refused(refusal) => {
             refuse(&mut state, out, WatchStatusReason::from(refusal.reason))
+        }
+        WatchOutcome::Accepted(accepted)
+            if presentation
+                && accepted
+                    .presentation_lease
+                    .as_deref()
+                    .is_some_and(crate::protocol::delivery::valid_presentation_token) =>
+        {
+            watch_presentation_loop(
+                &mut conn,
+                session.client,
+                session.clock,
+                &session.claim,
+                accepted
+                    .presentation_lease
+                    .as_deref()
+                    .expect("checked lease"),
+                &mut state,
+                out,
+                &mut alive,
+            )
         }
         WatchOutcome::Accepted(accepted) => watch_loop(
             &mut conn,
@@ -509,6 +553,209 @@ fn watch_loop(
     }
 }
 
+/// Capability-and-owner admitted V2 stream. Canonical outbox state owns retry;
+/// only a successfully flushed captured page may be explicitly confirmed.
+#[allow(clippy::too_many_arguments)]
+fn watch_presentation_loop(
+    conn: &mut dyn WatchConn,
+    client: &dyn LocalClient,
+    clock: &dyn Clock,
+    claim: &CallerClaim,
+    lease: &str,
+    state: &mut EmitState,
+    out: &mut dyn Write,
+    alive: &mut dyn FnMut() -> bool,
+) -> i32 {
+    use crate::{
+        delivery::presentation::{self, PresentationRenderProfile},
+        protocol::delivery::{
+            DeliveryPresentationConfirmV2, DeliveryPresentationConfirmationV2, DeliveryPullReplyV2,
+            DeliveryPullV2, PresentationConsumer, PresentationRenderRequest,
+            PresentationRenderSelection,
+        },
+    };
+    let closing =
+        |state: &mut EmitState, out: &mut dyn Write, reason: WatchStatusReason, exit: i32| {
+            if emit_status(
+                state,
+                out,
+                WatchStatus {
+                    state: WatchStatusState::Closing,
+                    reason: Some(reason),
+                    exit: Some(exit),
+                },
+            )
+            .is_err()
+            {
+                0
+            } else {
+                exit
+            }
+        };
+    if emit_status(
+        state,
+        out,
+        WatchStatus {
+            state: WatchStatusState::Connected,
+            reason: None,
+            exit: None,
+        },
+    )
+    .is_err()
+    {
+        return 0;
+    }
+    let mut continuation = false;
+    loop {
+        if !alive() {
+            return 0;
+        }
+        // A Close, owner replacement, EOF or parent cancellation wins before
+        // another bounded continuation quantum. Attention needs no local hint.
+        if continuation {
+            loop {
+                match conn.next_frame(Duration::from_millis(1)) {
+                    Ok(Some(WatchFrame::Attention { .. })) => {}
+                    Ok(Some(WatchFrame::Close { reason })) => {
+                        return closing(state, out, reason.into(), reason.exit_code());
+                    }
+                    Ok(None) => {
+                        return closing(
+                            state,
+                            out,
+                            WatchStatusReason::StreamEnded,
+                            WATCH_EXIT_STREAM_ENDED,
+                        );
+                    }
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                        ) =>
+                    {
+                        break;
+                    }
+                    Err(_) => {
+                        return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
+                    }
+                }
+            }
+        }
+        let result = client.call(
+            Command::DeliveryPullV2(DeliveryPullV2 {
+                claim: claim.clone(),
+                consumer: PresentationConsumer::Watch,
+                render: PresentationRenderRequest::WatchJsonLinesV1,
+                presentation_lease: Some(lease.into()),
+                marker_prefix: state.assembler.command_prefix.clone(),
+            }),
+            &cooperative_budget(clock),
+        );
+        let more = match result {
+            Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Unchanged { .. })) => false,
+            Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page))) => {
+                if page.render != PresentationRenderSelection::WatchJsonLinesV1
+                    || !page.text.is_empty()
+                    || !presentation::valid_items(&page.items)
+                    || page.emitted_controls != presentation::emitted_controls(&page.items)
+                    || crate::protocol::delivery::validate_control_stamps(&page.emitted_controls)
+                        .is_err()
+                    || page
+                        .presentation_token
+                        .as_deref()
+                        .is_some_and(|v| !crate::protocol::delivery::valid_presentation_token(v))
+                    || (!page.emitted_controls.is_empty() && page.presentation_token.is_none())
+                {
+                    return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
+                }
+                let Ok((_, size)) = presentation::measure(
+                    &PresentationRenderProfile::WatchJsonLinesV1,
+                    &page.items,
+                ) else {
+                    return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
+                };
+                if size != page.output_bytes as usize {
+                    return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
+                }
+                let mut bytes = Vec::with_capacity(size);
+                for line in presentation::presentation_watch_lines(&page.items) {
+                    if serde_json::to_writer(&mut bytes, &line).is_err() {
+                        return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
+                    }
+                    bytes.push(b'\n');
+                }
+                if bytes.len() != size {
+                    return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
+                }
+                if !bytes.is_empty() && (out.write_all(&bytes).is_err() || out.flush().is_err()) {
+                    return 0;
+                }
+                if let Some(token) = page.presentation_token {
+                    let result = client.call(
+                        Command::DeliveryPresentationConfirmV2(DeliveryPresentationConfirmV2 {
+                            claim: claim.clone(),
+                            consumer: PresentationConsumer::Watch,
+                            token,
+                            presentation_lease: Some(lease.into()),
+                            emitted_controls: page.emitted_controls.clone(),
+                        }),
+                        &cooperative_budget(clock),
+                    );
+                    match result {
+                        Ok(CommandResult::DeliveryPresentationConfirmedV2(reply))
+                            if reply.validate_for(&page.emitted_controls).is_ok()
+                                && matches!(
+                                    reply.status,
+                                    DeliveryPresentationConfirmationV2::Confirmed
+                                        | DeliveryPresentationConfirmationV2::AlreadyConfirmed
+                                ) => {}
+                        _ => {
+                            return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
+                        }
+                    }
+                }
+                // Local truncation hints are success bookkeeping only, never
+                // canonical confirmation or message ACK authority.
+                for id in &page.truncated {
+                    record_truncated(state, id.as_str());
+                }
+                page.more
+            }
+            _ => return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR),
+        };
+        if more {
+            continuation = true;
+            continue;
+        }
+        continuation = false;
+        loop {
+            if !alive() {
+                return 0;
+            }
+            match conn.next_frame(STREAM_READ_TIMEOUT) {
+                Ok(Some(WatchFrame::Attention { .. })) => break,
+                Ok(Some(WatchFrame::Close { reason })) => {
+                    return closing(state, out, reason.into(), reason.exit_code());
+                }
+                Ok(None) => {
+                    return closing(
+                        state,
+                        out,
+                        WatchStatusReason::StreamEnded,
+                        WATCH_EXIT_STREAM_ENDED,
+                    );
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                    ) => {}
+                Err(_) => return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR),
+            }
+        }
+    }
+}
+
 /// Pages `InboxBatchV2` for the seat through the daemon.
 struct ClientPageSource<'a> {
     client: &'a dyn LocalClient,
@@ -579,9 +826,14 @@ pub(crate) fn drain(
                         },
                     )
                 }
+                DrainEvent::Invitation(item) => WatchLine::new(
+                    format!("invitation:{}", item.id.as_str()),
+                    WatchItem::Invitation(item.content),
+                ),
                 DrainEvent::Attention { version } => WatchLine::new(
                     format!("attention:{version}"),
                     WatchItem::Attention(WatchAttention {
+                        presentation_epoch: None,
                         attention_version: version,
                         text: attention_text.clone(),
                     }),
@@ -589,6 +841,7 @@ pub(crate) fn drain(
                 DrainEvent::AttentionCleared { version } => WatchLine::new(
                     format!("attention_cleared:{version}"),
                     WatchItem::AttentionCleared(WatchAttentionCleared {
+                        presentation_epoch: None,
                         attention_version: version,
                     }),
                 ),
@@ -608,7 +861,6 @@ pub(crate) fn drain(
 
 /// Hint only: remember that this seat was shown a cut body for `id`, so
 /// `watch ack` can refuse it locally. The daemon decides truncation itself.
-#[cfg(test)]
 fn record_truncated(state: &EmitState, id: &str) {
     crate::delivery::assemble::record_truncated(state.assembler.truncation_hint.as_deref(), id);
 }

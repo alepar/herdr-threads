@@ -1,0 +1,11 @@
+{
+  "manifest_method": "sorted compact JSON OBJECT path to sha256",
+  "source_sha256": "0246a774c7effd8f7c5128f3b9873ec3fcf63bc031d564fec158e25684cdb61f",
+  "dirty_diff_sha256": "a86feab4044e317200d0cf860835ce3965af47dd08c977760bc2cfa5dcbba2b9",
+  "files": 3533,
+  "working_directory": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "target_dir": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "log": "/private/tmp/ht-task15-private-all-fields-red.log",
+  "selected_expected": 1,
+  "scope": "Existing V2 private raw ceilings only; no new cap/schema, production still unchanged for new four field assertions"
+}

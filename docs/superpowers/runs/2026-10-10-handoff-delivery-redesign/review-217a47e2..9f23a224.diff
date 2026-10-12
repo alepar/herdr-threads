@@ -1,0 +1,3547 @@
+# Review package: 217a47e21976c223307ca80e14d53e2e4ee7a991..9f23a2249c0e430ec8107a85feed55fd997f940a
+
+## Commits
+9f23a224 Install stable native hooks with exact manifest ownership
+
+## Files changed
+ integrations/claude/README.md           |  11 +
+ integrations/codex/README.md            |  15 +-
+ scripts/canary/test_seam_integration.py |   2 +-
+ scripts/canary/test_tier0_checks.py     |  53 ++-
+ scripts/harness-canary.sh               |  65 +++-
+ scripts/validate-native-demo.py         |  39 +-
+ src/cli/doctor.rs                       |  10 +-
+ src/cli/setup.rs                        |  14 +-
+ src/harness/claude/setup.rs             |  12 +-
+ src/harness/codex/setup.rs              |  43 ++-
+ src/harness/setup.rs                    | 417 ++++++++++++++++++---
+ tests/harness/canary_payloads.rs        |  42 +++
+ tests/harness/setup.rs                  | 638 +++++++++++++++++++++++++++++---
+ tests/native/demo/test_demo_verify.py   |  68 +++-
+ tests/setup_cli.rs                      | 253 ++++++-------
+ 15 files changed, 1393 insertions(+), 289 deletions(-)
+
+## Diff
+diff --git a/integrations/claude/README.md b/integrations/claude/README.md
+index da427bcb..72a4e623 100644
+--- a/integrations/claude/README.md
++++ b/integrations/claude/README.md
+@@ -96,10 +96,21 @@ Budgets are per field. `additionalContext` must fit `min(max_bytes, 4096)` bytes
+ 
+ Claude Code 2.1.284 support is limited to input parsing. A 2.1.284 capture (binary SHA-256 `50a14c2f50f56668380fdda490167f1d3630d5cc18fb8aed3073c2c7ea7314fe`) recorded SessionStart startup and resume, root Bash PreToolUse, and subagent Bash PreToolUse stdin. These are committed under `tests/fixtures/claude-2.1.284/`, and each parses unchanged: Startup, Tool/TopLevel (the rewrite keeps `tool_input.description` in `updatedInput`), Resume, and Tool/Subagent (`{}`). The payloads add keys the adapter does not read (`permission_mode`, `prompt_id`, `tool_input.description`, and the resume cost/cache fields) and carry no native event ID. Hook output application is still pending native verification: whether 2.1.284 honours `updatedInput` or `additionalContext` has not been observed. The clear, compact and permission-denial paths, and coexistence with user-global hooks, are also unobserved for 2.1.284.
+ 
+ Claude Code 2.1.285 (binary SHA-256 `51f09bd1e021d9fa8a1864c179799bd37cb39962a937935c5cf6823398e86db4`) was captured the same way. The four input payloads have the same keys and types as 2.1.284 and are committed under `tests/fixtures/claude-2.1.285/`, where each parses unchanged. A third print-mode run had the hooks return the adapter-shaped output. The transcript recorded both `additionalContext` markers as `hook_additional_context` attachments, and the model repeated them. The rewritten root Bash command executed with the exported token (`ctx=ctx_probe-…`), with `description` preserved. The adapter's own encoder reproduces that exact `updatedInput` (fixture 05). One operational constraint: 2.1.285 permission-checks the *rewritten* command. With only `Bash(echo *)` allowed, the `export HERDR_THREADS_CALLER_CONTEXT=…` prefix was denied as a separate operation. An unattended session therefore needs an allow rule covering that prefix; `Bash(export HERDR_THREADS_CALLER_CONTEXT=*)` was sufficient. Still unobserved for 2.1.285: clear/compact, interactive permission prompts, coexistence with user-global hooks, the Herdr pane, and a qualified model-receipt gate.
+ 
+ Claude Code 2.1.286 (binary SHA-256 `75e3016e9d2570767b08e43a7467d4817a4f149232c169ca295f2c95fef21433`) was captured with the 2.1.285 method (`claude-286-hook-capture`). The four input payloads have the same keys and value types as 2.1.285, the hook environment names are identical, and the payloads are committed under `tests/fixtures/claude-2.1.286/`, where each parses unchanged. The adapter-shaped output run behaved as on 2.1.285: both `additionalContext` markers were recorded as `hook_additional_context` attachments, the rewritten root Bash command executed (`ctx=ctx_probe-c286f4`) with `description` preserved when `Bash(export HERDR_THREADS_CALLER_CONTEXT=*)` was allowed, and it was denied as a separate operation under `Bash(echo *)` alone. The adapter's encoder reproduces that exact `updatedInput` (fixture 05). The same paths as for 2.1.285 remain unobserved.
+ 
+ Claude Code 2.1.287 (binary SHA-256 `6eab8333fe2121553100d8f40bfada384a3e989b94f947e18ba6677a6fcb41ea`) was captured in `claude-compact-capture` with the 2.1.286 method plus a print-mode `/compact`. The startup, resume, root Bash and subagent Bash payloads have the same keys and value types as 2.1.286. The SessionStart `compact` payload (`cwd`, `hook_event_name`, `model`, `prompt_id`, `session_id`, `source`, `transcript_path`; no `agent_id`) is committed with them under `tests/fixtures/claude-2.1.287/`. A hook that returned `additionalContext` on that event had it recorded as a `hook_additional_context` attachment after the compact boundary, and the model repeated the marker. That is the evidence behind the separate `claude-hooks-2.1.287` recipe. Not observed: interactive-TUI compaction and size-triggered auto-compaction.
+ 
+ The [installed lifecycle capture](../../docs/compatibility/claude-lifecycle-probe.md) shows native startup, clear, and resume input and private settings composition. The [Bash probe](../../docs/compatibility/claude-probe.md) shows command rewriting reaching the matching tool invocation. Neither capture proves model receipt, explicit accept/ACK, SQLite receipt rows, installed application entry point, compaction behavior, or all launch modes. Those remain native integration gates under the superseding cooperative trust direction in ht-910.
++
++
++Native setup registers a complete `herdr-threads hook-event HARNESS EVENT` command for each
++owned event, with the canonical state directory and Herdr endpoint pinned. Equivalent setup
++reuses the exact group in place. The private ownership manifest retains the installation UUID,
++exact groups and their SHA-256 fingerprints; the shell command contains no per-install UUID.
++An identical unrecorded stable group is foreign and setup refuses it. Legacy UUID-marked groups
++remain eligible for the existing explicit adoption path. Explicit setup migrates recorded legacy
++registrations recoverably, preserving unrelated settings and group order. Status does not migrate.
++Codex may require native review of changed commands. Hook registration never writes native trust
++or permission grants. Unsetup removes only exact unambiguous owned groups and preserves edited or duplicate groups.
+diff --git a/integrations/codex/README.md b/integrations/codex/README.md
+index caaf62aa..c7bff33e 100644
+--- a/integrations/codex/README.md
++++ b/integrations/codex/README.md
+@@ -58,22 +58,22 @@ additionalContext}` and never `permissionDecision` or `updatedInput`. The
+ live 0.158.0 run (`codex-158-live-hook-capture`) delivered exactly this
+ envelope to the model for SessionStart and Bash PreToolUse, as `developer`
+ messages in the persisted rollout, without blocking the tool call; the adapter
+ tests assert that `encode_event_context` emits the same envelope for those
+ live payloads. SubagentStart output delivery was not exercised, and 0.157.1
+ output delivery was not run natively. `plan_codex_for_version` returns
+ `-c hooks.Event=...` session arguments (a library seam). The public
+ `herdr-threads setup codex` instead installs the same three groups (each with
+ timeout 10) at user level, the way Herdr installs its own Codex hook: appended
+ to `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`) through
+-`install_user_settings(SettingsKind::CodexUser, ..)`, with an ownership marker
+-in each command and a private manifest, so `unsetup codex` removes only them.
++`install_user_settings(SettingsKind::CodexUser, ..)`, with each exact group recorded
++in a private ownership manifest, so `unsetup codex` removes only them.
+ Codex also keeps the hooks of `$CODEX_HOME/config.toml`, `/etc/codex` and
+ trusted project `.codex/` layers (app-server `hooks/list` with a scratch
+ `CODEX_HOME` on 0.157.1, 0.158.0 and 0.159.2); setup reads those only to report
+ them and to refuse when one already holds the exact hook command. Inspection
+ requires the installed groups, including the Bash matcher, to match the
+ declaration. The tool-boundary hook entrypoint (non-durable attention read and
+ coalescing) is owned by the hook layer, not this adapter.
+ 
+ **Hook trust.** Codex runs a user hook only once trusted: `hooks/list` reports a
+ freshly written `hooks.json` hook as `trustStatus: untrusted` (0.159.2, scratch
+@@ -211,10 +211,21 @@ semantics for other executables or configurations. Historical evidence remains i
+ [journal write probe](../../docs/evidence/codex-sandbox-writes-probe/README.md).
+ 
+ `setup codex` still manages that legacy allowance only for the measured versions,
+ using its ownership manifest; other admitted versions get hooks without a new
+ network allowance. The current approved outside-sandbox CLI path does not depend
+ on it, and managed launch no longer refuses an admitted newer version for lacking
+ it. Do not copy the historical network settings as a workaround for permission
+ denial, or infer default-deny from a failed curl request. Details of existing owned
+ settings and cleanup are in the
+ [legacy allowance notes](../../docs/install.md#codex-sandbox-socket-allowance).
++
++
++Native setup registers a complete `herdr-threads hook-event HARNESS EVENT` command for each
++owned event, with the canonical state directory and Herdr endpoint pinned. Equivalent setup
++reuses the exact group in place. The private ownership manifest retains the installation UUID,
++exact groups and their SHA-256 fingerprints; the shell command contains no per-install UUID.
++An identical unrecorded stable group is foreign and setup refuses it. Legacy UUID-marked groups
++remain eligible for the existing explicit adoption path. Explicit setup migrates recorded legacy
++registrations recoverably, preserving unrelated settings and group order. Status does not migrate.
++Codex may require native review of changed commands. Hook registration never writes native trust
++or permission grants. Unsetup removes only exact unambiguous owned groups and preserves edited or duplicate groups.
+diff --git a/scripts/canary/test_seam_integration.py b/scripts/canary/test_seam_integration.py
+index 1301b733..3c72aa78 100644
+--- a/scripts/canary/test_seam_integration.py
++++ b/scripts/canary/test_seam_integration.py
+@@ -245,21 +245,21 @@ class SeamIntegration(unittest.TestCase):
+             self.assertFalse(rust["historical_diagnostic"]["runtime_qualified"])
+             self.assertFalse(rust["historical_diagnostic"]["native_qualified"])
+ 
+         # An expected historical refusal must never hide a real captured
+         # payload's core parser failure.
+         bad = self.t / "bad-core-payload"
+         shutil.copytree(dirs[CLAUDE_BROKEN], bad, symlinks=True)
+         captures = bad / "capture" / "tier0"
+         captures.mkdir(parents=True, exist_ok=True)
+         (captures / "bad.stdin").write_text('{"hook_event_name":"Bogus"}')
+-        (captures / "bad.argv").write_text("hook\nclaude\n--event\nSessionStart\n")
++        (captures / "bad.argv").write_text("hook-event\nclaude\nSessionStart\n")
+         cp = self.gated_cargo(bad, fixture)
+         self.assertNotEqual(cp.returncode, 0, "historical refusal masked core payload error")
+         self.assertIn("capture/tier0/bad.stdin", cp.stdout + cp.stderr)
+         rust = json.loads((bad / "canary-rust.json").read_text())
+         self.assertEqual(rust["historical_diagnostic"]["classification"], "refused")
+         self.assertEqual(rust["observation"], "ok")
+         self.assertFalse(rust["payloads"][0]["ok"])
+ 
+     # -- 3. help/*.txt written by the probe, read by launch_tables
+ 
+diff --git a/scripts/canary/test_tier0_checks.py b/scripts/canary/test_tier0_checks.py
+index 887362d9..da107eb5 100644
+--- a/scripts/canary/test_tier0_checks.py
++++ b/scripts/canary/test_tier0_checks.py
+@@ -1,19 +1,19 @@
+ #!/usr/bin/env python3
+ """Offline shell tests for the tier-0 checks of harness-canary.sh (ht-p03.14.6, nested spec §D3, coverage r2).
+ 
+ The script is sourced with HT_CANARY_SOURCE_ONLY=1 (it stops after its function definitions) and single checks
+ run against a fake probe directory with a fake herdr-threads and a fake cargo. No network, npm install, real
+ cargo or harness. Covered: t0.payload-parse fails on an empty capture/tier0 while t0.hook-fires ran and parses
+ only captures whose argv ends `hook <h>`; after a witness swap and restore t0.unsetup succeeds and nothing it
+ (or doctor) does is captured into capture/tier0."""
+-import os, pathlib, shutil, subprocess, sys
++import os, pathlib, shutil, subprocess, sys, json, hashlib
+ 
+ HERE = pathlib.Path(__file__).resolve().parent
+ # scripts/canary/bisect.py shadows the stdlib `bisect` (needed by `random`, hence `tempfile`) when
+ # `discover -s scripts/canary` puts this directory first on sys.path: import the stdlib ones without it.
+ _saved = list(sys.path)
+ sys.path[:] = [p for p in sys.path if os.path.realpath(p or ".") != str(HERE)]
+ sys.modules.pop("bisect", None)
+ import tempfile, unittest  # noqa: E402
+ sys.path[:] = _saved
+ 
+@@ -133,20 +133,71 @@ build_env "$P"
+ 
+     def test_an_evented_hook_capture_is_parsed(self):
+         # setup registers `hook <harness> --event <NAME>`; a bare word after it is not a hook capture
+         self.capture("1-1", ["--state-dir", "/s", "hook", "claude", "--event", "SessionStart"])
+         (self.p / "fake-cargo-payloads").write_text("")
+         self.bash("HOOK_FIRES_RAN=1; run_check t0.payload-parse")
+         status, detail = self.checks()["t0.payload-parse"]
+         self.assertEqual(status, "pass", detail)
+         self.assertIn("(1 hook capture(s))", detail)
+ 
++    def test_unsetup_assert_detects_stable_owned_command_residue(self):
++        conf = self.p / "home/.codex"
++        conf.mkdir(parents=True)
++        command = "'/x/herdr-threads' 'hook-event' 'codex' 'SessionStart'"
++        (conf / "hooks.json").write_text(json.dumps({"hooks": {"SessionStart": [{"hooks": [{"command": command}]}]}}))
++        setup = self.p / "logs/setup.out"
++        setup.write_text(json.dumps({"setup": {"commands": {"SessionStart": command}}}))
++        report = self.p / "logs/unsetup.out"
++        report.write_text('{"setup":{"action":"removed"}}')
++        result = self.bash(f't0_py unsetup-assert codex "{report}" "{conf}" "{self.p}/absent-before.toml"')
++        self.assertTrue(result.stdout.startswith("fail\t"), result.stdout)
++
++    def test_stable_setup_assert_requires_exact_manifest_owned_groups(self):
++        conf = self.p / "home/.claude"
++        conf.mkdir(parents=True)
++        settings = conf / "settings.json"
++        manifest = self.p / "ownership.json"
++        groups = []
++        for event, matcher in [("SessionStart", None), ("PreToolUse", "Bash")]:
++            group = {"hooks": [{"type": "command", "command": f"'/x/herdr-threads' 'hook-event' 'claude' '{event}'"}]}
++            if matcher:
++                group["matcher"] = matcher
++            digest = hashlib.sha256(json.dumps(group, separators=(",", ":"), sort_keys=True).encode()).hexdigest()
++            groups.append({"event": event, "group": group, "fingerprint": "sha256:" + digest})
++        settings.write_text(json.dumps({"hooks": {e["event"]: [e["group"]] for e in groups}}))
++        manifest.write_text(json.dumps({"version": 3, "harness": "claude", "scope": "user", "path": str(settings),
++            "installation_id": "0b5e8f3c-1111-4222-8333-444455556666", "phase": "installed", "owned": groups}))
++        report = self.p / "setup.json"
++        report.write_text(json.dumps({"setup": {"action": "installed", "manifest": str(manifest),
++            "harness_version": {"admission": "contract_declared", "version": None}}}))
++        result = self.bash(f't0_py setup-assert claude ignored "{report}" "{conf}"')
++        self.assertTrue(result.stdout.startswith("pass\t"), result.stdout)
++        value = json.loads(settings.read_text())
++        duplicate = json.loads(json.dumps(groups[0]["group"]))
++        duplicate["hooks"][0]["timeout"] = 99
++        value["hooks"]["SessionStart"].append(duplicate)
++        settings.write_text(json.dumps(value))
++        result = self.bash(f't0_py setup-assert claude ignored "{report}" "{conf}"')
++        self.assertTrue(result.stdout.startswith("fail\t"), result.stdout)
++        manifest.unlink()
++        result = self.bash(f't0_py setup-assert claude ignored "{report}" "{conf}"')
++        self.assertTrue(result.stdout.startswith("fail\t"), result.stdout)
++
++    def test_stable_native_event_capture_is_parsed(self):
++        self.capture("1-1", ["--state-dir", "/s", "--host-endpoint", "/h", "hook-event", "claude", "SessionStart"])
++        (self.p / "fake-cargo-payloads").write_text("")
++        self.bash("HOOK_FIRES_RAN=1; run_check t0.payload-parse")
++        status, detail = self.checks()["t0.payload-parse"]
++        self.assertEqual(status, "pass", detail)
++        self.assertIn("(1 hook capture(s))", detail)
++
+     def test_malformed_event_registrations_are_not_hook_captures(self):
+         self.capture("1-1", ["hook", "claude", "--event"])
+         self.capture("2-1", ["hook", "claude", "--event", "a b"])
+         self.capture("3-1", ["hook", "claude", "--event", "SessionStart", "extra"])
+         self.capture("4-1", ["hook", "codex", "--event", "SessionStart"])  # another harness
+         self.bash("HOOK_FIRES_RAN=1; run_check t0.payload-parse")
+         status, detail = self.checks()["t0.payload-parse"]
+         self.assertEqual(status, "fail", detail)
+         self.assertIn("no capture whose argv ends 'hook claude'", detail)
+ 
+diff --git a/scripts/harness-canary.sh b/scripts/harness-canary.sh
+index e307b97c..3c2c2cfe 100755
+--- a/scripts/harness-canary.sh
++++ b/scripts/harness-canary.sh
+@@ -447,60 +447,88 @@ chk_t0_config_load() {
+   xrun config-load 30 "$P/bin/codex" features list
+   if [ "$XRC" -eq 0 ]; then CK_STATUS=pass; CK_DETAIL="codex features list exited 0"
+   else CK_STATUS=fail; CK_DETAIL="codex features list exited $XRC: $(tail_of "$LOGS/config-load.err")"; fi
+ }
+ 
+ # ---- tier-0 helpers (§D3)
+ 
+ # t0_py CMD ARGS...: small JSON/capture readers for the checks below; prints a result, exit 0 unless noted.
+ t0_py() {
+   python3 - "$@" <<'PY'
+-import glob, json, os, re, sys
++import glob, hashlib, json, os, re, sys, uuid
+ 
+ cmd, args = sys.argv[1], sys.argv[2:]
+ 
+ 
+ def load(path):
+     try:
+         with open(path, encoding="utf-8") as f:
+             return json.load(f)
+     except (OSError, ValueError):
+         return None
+ 
+ 
+-def owned_groups(doc, event):
++def owned_groups(doc, event, setup, config_path):
++    manifest = load(setup.get("manifest", ""))
++    if not isinstance(manifest, dict):
++        return []
++    try:
++        identity = manifest["installation_id"]
++        if str(uuid.UUID(identity)) != identity:
++            return []
++    except (KeyError, ValueError, TypeError, AttributeError):
++        return []
++    if (manifest.get("version") not in (2, 3) or manifest.get("phase", "installed") != "installed"
++            or manifest.get("path") != config_path or manifest.get("scope") != "user"):
++        return []
+     hooks = doc.get("hooks") if isinstance(doc, dict) else None
+     groups = hooks.get(event) if isinstance(hooks, dict) else None
+-    out = []
+-    for g in groups if isinstance(groups, list) else []:
+-        cmds = [h.get("command", "") for h in g.get("hooks", []) if isinstance(h, dict)] if isinstance(g, dict) else []
+-        if any("herdr-threads-owner:" in c for c in cmds):
+-            out.append(g)
+-    return out
++    recorded = manifest.get("owned")
++    if not isinstance(recorded, list) or manifest.get("harness") != ("claude" if os.path.basename(config_path) == "settings.json" else "codex"):
++        return []
++    entries = [e for e in recorded if isinstance(e, dict) and e.get("event") == event]
++    if len(entries) != 1 or not isinstance(groups, list):
++        return []
++    entry = entries[0]
++    group = entry.get("group")
++    digest = "sha256:" + hashlib.sha256(json.dumps(group, separators=(",", ":"), sort_keys=True, ensure_ascii=False).encode()).hexdigest()
++    command = (group.get("hooks") or [{}])[0].get("command") if isinstance(group, dict) else None
++    occurrences = sum(h.get("command") == command for candidate in groups if isinstance(candidate, dict)
++                      for h in candidate.get("hooks", []) if isinstance(h, dict))
++    if not isinstance(command, str) or entry.get("fingerprint") != digest or groups.count(group) != 1 or occurrences != 1:
++        return []
++    return [group]
+ 
+ 
+ def hook_captures(harness, capdir):
+     """(stdin path, parsed stdin or None) of every capture whose argv ends `hook <harness>` or
+-    `hook <harness> --event <NAME>` (setup registers each hook with its event)."""
++    `hook <harness> --event <NAME>` or stable `hook-event <harness> <NAME>`."""
+     found = []
+     for argv_path in sorted(glob.glob(os.path.join(capdir, "*.argv"))):
+         try:
+             argv = open(argv_path, encoding="utf-8", errors="replace").read().splitlines()
+         except OSError:
+             continue
+         evented = (
+             len(argv) >= 4
+             and argv[-4:-2] == ["hook", harness]
+             and argv[-2] == "--event"
+             and re.fullmatch(r"[A-Za-z0-9]{1,63}", argv[-1]) is not None
+         )
+-        if argv[-2:] != ["hook", harness] and not evented:
++        stable = (
++            len(argv) >= 3
++            and argv[-3:-1] == ["hook-event", harness]
++            and argv[-1] in ({"SessionStart", "PreToolUse"} if harness == "claude"
++                             else {"SessionStart", "SubagentStart", "PreToolUse"} if harness == "codex"
++                             else set())
++        )
++        if argv[-2:] != ["hook", harness] and not evented and not stable:
+             continue
+         stdin_path = argv_path[: -len(".argv")] + ".stdin"
+         try:
+             doc = json.loads(open(stdin_path, encoding="utf-8", errors="replace").read())
+         except (OSError, ValueError):
+             doc = None
+         found.append((stdin_path, doc))
+     return found
+ 
+ 
+@@ -514,30 +542,30 @@ if cmd == "setup-assert":  # HARNESS DIAGNOSTIC_VERSION OUTFILE CONFIGDIR -> `pa
+     elif setup.get("action") != "installed":
+         print(f"fail\tsetup.action is {setup.get('action')!r}, expected 'installed'")
+     elif not isinstance(observation, dict) or observation.get("admission") != "contract_declared":
+         print("fail\tsetup.harness_version must declare the core contract")
+     elif observation.get("version") is not None and not isinstance(observation["version"], str):
+         print("fail\tsetup.harness_version.version must be optional string metadata")
+     # Setup validates core installation; optional runtime metadata does not
+     # qualify it. The independent t0.version check retains diagnostic V.
+     elif harness == "claude":
+         settings = load(os.path.join(confdir, "settings.json"))
+-        pre = [g for g in owned_groups(settings, "PreToolUse") if "Bash" in str(g.get("matcher", ""))]
+-        if not owned_groups(settings, "SessionStart"):
++        pre = [g for g in owned_groups(settings, "PreToolUse", setup, os.path.join(confdir, "settings.json")) if "Bash" in str(g.get("matcher", ""))]
++        if not owned_groups(settings, "SessionStart", setup, os.path.join(confdir, "settings.json")):
+             print("fail\tclaude settings.json has no owned SessionStart group")
+         elif not pre:
+             print("fail\tclaude settings.json has no owned PreToolUse(Bash) group")
+         else:
+             print("pass\tinstalled; owned SessionStart and PreToolUse(Bash) groups present")
+     else:
+         hooks = load(os.path.join(confdir, "hooks.json"))
+-        missing = [e for e in ("SessionStart", "SubagentStart", "PreToolUse") if not owned_groups(hooks, e)]
++        missing = [e for e in ("SessionStart", "SubagentStart", "PreToolUse") if not owned_groups(hooks, e, setup, os.path.join(confdir, "hooks.json"))]
+         if missing:
+             print(f"fail\tcodex hooks.json has no owned group for {', '.join(missing)}")
+         else:
+             print("pass\tinstalled; owned SessionStart, SubagentStart and PreToolUse groups present")
+ elif cmd == "unsetup-assert":  # HARNESS OUTFILE CONFIGDIR PRECONFIG -> `pass|fail<TAB>detail`
+     harness, outfile, confdir, pre = args
+     doc = load(outfile)
+     setup = doc.get("setup") if isinstance(doc, dict) else None
+     if not isinstance(setup, dict):
+         print("fail\tunsetup printed no JSON `setup` object")
+@@ -547,25 +575,34 @@ elif cmd == "unsetup-assert":  # HARNESS OUTFILE CONFIGDIR PRECONFIG -> `pass|fa
+         if os.path.exists(os.path.join(confdir, "settings.json")):
+             print("fail\tclaude settings.json still exists (setup created it, unsetup must delete it)")
+         else:
+             print("pass\tremoved; settings.json absent again")
+     else:
+         hooks_path = os.path.join(confdir, "hooks.json")
+         try:
+             residue = "herdr-threads-owner:" in open(hooks_path, encoding="utf-8", errors="replace").read()
+         except OSError:
+             residue = False
++        installed = load(os.path.join(os.path.dirname(outfile), "setup.out"))
++        commands = installed.get("setup", {}).get("commands", {}) if isinstance(installed, dict) else {}
++        remaining = load(hooks_path)
++        groups = remaining.get("hooks", {}) if isinstance(remaining, dict) else {}
++        residue = residue or any(
++            isinstance(group, dict) and any(isinstance(hook, dict) and hook.get("command") == command
++                for hook in group.get("hooks", []))
++            for event, command in commands.items() for group in groups.get(event, [])
++        )
+         conf = os.path.join(confdir, "config.toml")
+         before = open(pre, "rb").read() if os.path.exists(pre) else None
+         after = open(conf, "rb").read() if os.path.exists(conf) else None
+         if residue:
+-            print("fail\tcodex hooks.json still holds an herdr-threads-owner: command")
++            print("fail\tcodex hooks.json still holds an installed herdr-threads command")
+         elif before != after:
+             print("fail\tcodex config.toml differs from its pre-setup bytes (" + ("absent" if before is None else "present") + " before, " + ("absent" if after is None else "present") + " after)")
+         else:
+             print("pass\tremoved; hooks.json clean and config.toml equals its pre-setup bytes")
+ elif cmd == "hook-captured":  # HARNESS CAPDIR -> exit 0 when a SessionStart startup hook capture exists
+     for _, doc in hook_captures(args[0], args[1]):
+         if isinstance(doc, dict) and doc.get("hook_event_name") == "SessionStart" and doc.get("source") == "startup":
+             sys.exit(0)
+     sys.exit(1)
+ elif cmd == "hook-capture-count":  # HARNESS CAPDIR
+diff --git a/scripts/validate-native-demo.py b/scripts/validate-native-demo.py
+index 30fc4a3c..a5edc96a 100755
+--- a/scripts/validate-native-demo.py
++++ b/scripts/validate-native-demo.py
+@@ -1345,20 +1345,53 @@ class Driver:
+                 if (self.codex_setup_home() / owned).exists() and not (home / owned).exists():
+                     shutil.copy(self.codex_setup_home() / owned, home / owned)
+         home.mkdir(mode=0o700, exist_ok=True)
+         auth = self.codex_source_home(profile_home) / "auth.json"
+         link = home / "auth.json"
+         if not self.dry and not link.exists() and not link.is_symlink() and auth.exists():
+             link.symlink_to(auth)
+         self.facts.setdefault("codex_launch_homes", {})[name] = {"home": str(home), "auth_source": str(auth)}
+         return home
+ 
++    def codex_owned_hooks(self, path, report):
++        """Verify the CLI's exact ownership evidence without inferring ownership from commands."""
++        try:
++            manifest = json.loads(Path(report["manifest"]).read_text())
++            config = json.loads(path.read_text())
++            identity = manifest["installation_id"]
++            if str(uuid.UUID(identity)) != identity:
++                return False
++            if (manifest.get("version") not in (2, 3) or manifest.get("phase", "installed") != "installed"
++                    or manifest.get("harness") != "codex" or manifest.get("scope") != "user"
++                    or manifest.get("path") != str(path)):
++                return False
++            entries = manifest["owned"]
++            events = ("SessionStart", "SubagentStart", "PreToolUse")
++            if not isinstance(entries, list) or len(entries) != len(events):
++                return False
++            for event in events:
++                recorded = [entry for entry in entries if entry.get("event") == event]
++                if len(recorded) != 1:
++                    return False
++                entry = recorded[0]
++                group = entry["group"]
++                groups = config["hooks"][event]
++                digest = "sha256:" + hashlib.sha256(json.dumps(
++                    group, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
++                command = group["hooks"][0]["command"]
++                occurrences = sum(hook.get("command") == command for candidate in groups for hook in candidate["hooks"])
++                if entry["fingerprint"] != digest or groups.count(group) != 1 or occurrences != 1:
++                    return False
++            return True
++        except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError):
++            return False
++
+     def s_hooks(self):
+         mode = self.args.setup
+         fallback = mode == "auto" and not self.facts["cli_surface"]["setup"]["present"]
+         if mode == "auto":
+             mode = "driver" if fallback else "cli"
+         self.facts["setup_mode"] = "driver_fallback" if fallback else mode
+         env = self.setup_env()
+         self.facts["setup_env"] = env
+         if self.harness == "codex":
+             self.facts["codex_setup_profile"] = self.facts.get("codex_profile") or "default"
+@@ -1389,25 +1422,21 @@ class Driver:
+                     pin_claude_autoupdate_off(target)
+                     shutil.copy(target, self.ev / "claude-settings.json")
+                     self.facts["claude_settings"] = str(target)
+                 if HERDR_THREADS_ALLOW not in allow:
+                     legacy = " (it installed only the dead export-prefix rule)" if LEGACY_EXPORT_ALLOW in allow else ""
+                     return FAIL, (f"setup CLI did not install {HERDR_THREADS_ALLOW} in {target}{legacy}; Claude print mode "
+                                   f"would deny every `herdr-threads` ready command (demo-2 P6)"), None
+             transport = ""
+             if self.harness == "codex":
+                 hooks = self.codex_setup_home() / "hooks.json"
+-                try:
+-                    owned = "herdr-threads-owner" in hooks.read_text()
+-                except OSError:
+-                    owned = False
+-                if not owned:
++                if not self.codex_owned_hooks(hooks, report):
+                     return FAIL, f"setup CLI {argv} rc=0 but wrote no owned hooks into scratch {hooks}: {out.strip()[:300]}", None
+                 for name in ("hooks.json", "config.toml"):
+                     if (self.codex_setup_home() / name).exists():
+                         shutil.copy(self.codex_setup_home() / name, self.ev / f"codex-{name}")
+                 problem, transport = self.codex_transport_args(report)
+                 if problem:
+                     return FAIL, problem, None
+             return PASS, (f"setup_mode=cli: owned hooks installed by public setup CLI {argv} into scratch homes "
+                           f"{env}; hook argv {report.get('hook_argv')}{transport}"), None
+         command = shlex.join(self.hook_argv())
+diff --git a/src/cli/doctor.rs b/src/cli/doctor.rs
+index b3f6910d..6d443154 100644
+--- a/src/cli/doctor.rs
++++ b/src/cli/doctor.rs
+@@ -1406,38 +1406,38 @@ fn report_captured(
+         "summary_procedure": if crate::cli::skill::has_summary_procedure(crate::cli::skill::SKILL_MD) {
+             "present"
+         } else {
+             "missing"
+         },
+     });
+     report["result"] = json!(result);
+     (report, code)
+ }
+ 
+-/// The `setup.event_registration` value: `legacy` for hooks installed before per-event
+-/// registration (still working, informational only), else `current`.
++/// The `setup.event_registration` value: `legacy` for shared or UUID-marked native commands
++/// (still working, informational only), else `current`.
+ fn event_registration(legacy: bool) -> &'static str {
+     if legacy { "legacy" } else { "current" }
+ }
+ 
+-/// The informational line for hooks that predate per-event registration. Never a limitation:
++/// The informational line for legacy native commands. Never a limitation:
+ /// the hooks work, so doctor does not turn `degraded` over it.
+ fn legacy_registration_line(harness: &str, setup: &Value) -> Option<String> {
+     (setup["event_registration"] == json!("legacy")).then(|| {
+         let retrust = if harness == "codex" {
+             "; Codex then asks to review (trust) the rewritten hooks again"
+         } else {
+             ""
+         };
+         format!(
+-            "{harness} hooks predate per-event registration (no --event): re-run \
+-             `herdr-threads setup {harness}`{retrust}\n"
++            "{harness} hooks use legacy commands: re-run \
++             `herdr-threads setup {harness}` to migrate to stable hook-event commands{retrust}\n"
+         )
+     })
+ }
+ 
+ fn clean(value: &str) -> String {
+     escape_for_terminal(value, Context::SingleLine).into_owned()
+ }
+ 
+ /// `hooks.<harness>.permissions: <state>`, with the note when there is one.
+ fn permission_line(harness: &str, permissions: &Value) -> String {
+diff --git a/src/cli/setup.rs b/src/cli/setup.rs
+index 146ad4ed..c55fe722 100644
+--- a/src/cli/setup.rs
++++ b/src/cli/setup.rs
+@@ -6,39 +6,39 @@
+ //!
+ //! - Claude: the adapter's declared hook groups (SessionStart and Bash
+ //!   PreToolUse) and the permission allow rule `claude::HERDR_THREADS_ALLOW_RULE`
+ //!   (`Bash(herdr-threads *)`) go into `$CLAUDE_CONFIG_DIR/settings.json`
+ //!   (default `~/.claude/settings.json`), merged with the hooks already there.
+ //! - Codex: the declared hook groups (SessionStart, SubagentStart, Bash
+ //!   PreToolUse) go into `$CODEX_HOME/hooks.json` (default
+ //!   `~/.codex/hooks.json`). No sandbox allowance is installed. Historical
+ //!   config.toml ownership remains inspectable and removable by unsetup.
+ //!
+-//! Every write is owned: groups carry an installation marker, a private
++//! Every write is owned: groups have exact ownership records, a private
+ //! manifest under `<state-dir>/setup/` records exactly what was added, a
+ //! foreign identical entry refuses, files are replaced atomically after an
+ //! unchanged-baseline check, re-running is idempotent, and `unsetup` removes
+ //! only what was added (byte for byte when nothing else changed).
+ //!
+ //! The Herdr instance (plugin state directory and Herdr server socket) is
+ //! `--state-dir` / `--host-endpoint`, else `HERDR_PLUGIN_STATE_DIR` /
+ //! `HERDR_SOCKET_PATH`, else Herdr's default locations when they exist, else
+ //! auto-detected through the `herdr` CLI ([`detect_state_dir`],
+ //! [`detect_host_endpoint`]); see [`super::instance`], which every command
+ //! shares. The installed hook command
+ //! records both, and the hook stays silent in any session that is not a pane
+ //! of that instance.
+ //!
+ //! Setup resolves the selected executable without invoking it and declares
+ //! the registered contract. Runtime metadata and native delivery remain unknown.
+ //! The installed hook command is exactly the hook entrypoint's
+-//! [`hook::installed_argv`], which its `parse_hook_argv` accepts.
++//! [`hook::installed_event_argv`], which its `parse_hook_argv` accepts.
+ 
+ pub(crate) mod foreground;
+ 
+ use super::{RunError, hook};
+ #[cfg(test)]
+ use crate::harness::{prompt_suggestion, setup::shell_command};
+ use crate::{
+     daemon::paths::RuntimeContext,
+     harness::{claude, codex, context::Harness},
+     protocol::{
+@@ -115,27 +115,31 @@ one. Unless `promptSuggestionEnabled` is already false, `setup claude` (and bare
+ `Disable prompt suggestions? [y/N]` on a terminal and writes `promptSuggestionEnabled: false` only
+ on yes; without a terminal it only advises. --disable-prompt-suggestions / --keep-prompt-suggestions
+ decide without asking. The write is recorded; unsetup reverts it if setup set it.
+ 
+ Herdr instance: --state-dir and --host-endpoint, else HERDR_PLUGIN_STATE_DIR and
+ HERDR_SOCKET_PATH (set inside Herdr), else Herdr's defaults when they exist
+ ($XDG_STATE_HOME or ~/.local/state, then herdr/plugins/herdr-threads; $XDG_CONFIG_HOME or
+ ~/.config, then herdr/herdr.sock), else detected with the herdr CLI (`herdr plugin list`,
+ `herdr status server`).
+ Ambiguity is refused. The installed hook command is
+-`<this executable> --state-dir <state> --host-endpoint <socket> hook <harness>`, registered
+-for each event with `--event <EVENT>` appended (hooks installed before that keep working;
++`<this executable> --state-dir <state> --host-endpoint <socket> hook-event <harness> <EVENT>`
++for each native event (legacy hook commands keep working;
+ `doctor` suggests re-running setup); in any session that is not a pane of that Herdr
+ instance it prints nothing, runs no version probe and starts no daemon, and only sends a
+ short best-effort evidence note to a daemon already running (gate files under
+ <state>/harness/evidence).
+-Each harness's ownership manifest lives in <state>/setup/.
++Each harness's ownership manifest lives in <state>/setup/. Native commands use the stable
++hook-event HARNESS EVENT entrypoint with canonical routing. Installation UUIDs remain in the
++manifest, outside shell commands. Equivalent setup retains exact owned groups in place; unrecorded
++identical stable groups are foreign and cause a safe refusal. Setup explicitly migrates recorded
++legacy hooks; status only inspects them. Changed native commands may require review again.
+ 
+ A hook file that already holds exactly this command's hook groups under another setup's
+ owner marker (for example a hooks.json copied with its trust into a second CODEX_HOME) is
+ adopted: setup records a manifest for it and leaves the file byte-identical (action
+ `adopted`), setup-status and doctor report it installed (adopted), and unsetup removes only
+ those groups from that file.
+ 
+ Setup resolves the selected executable without invoking --version, --help or schema probes.
+ Admission is contract_declared: the registered hook contract is configured, runtime metadata
+ is unknown. Installation does not prove hook delivery, native support or receipt.
+diff --git a/src/harness/claude/setup.rs b/src/harness/claude/setup.rs
+index 3c55de99..f14693ad 100644
+--- a/src/harness/claude/setup.rs
++++ b/src/harness/claude/setup.rs
+@@ -81,42 +81,45 @@ fn hooks_current(env: &SetupEnv, settings: &Path, manifest: &Path) -> bool {
+         return false;
+     };
+     inspect_user_settings_for(
+         SettingsKind::ClaudeUser,
+         settings,
+         manifest,
+         NativeObservation::Unknown,
+         Some(&argv),
+     )
+     .is_ok_and(|inspection| inspection.installed)
+-        && recorded_command(manifest)
+-            .is_some_and(|recorded| recorded.starts_with(&format!("{expected} # ")))
++        && recorded_command(manifest).is_some_and(|recorded| {
++            recorded == expected || recorded.starts_with(&format!("{expected} # "))
++        })
+ }
+ 
+ pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
+     let settings = env.claude_settings()?;
+     env.hook_argv(Harness::Claude)?;
+     let (observed, _) = observe(request, env).map_err(refuse_executable)?;
+     prepare_state(env)?;
+     let manifest = claude_manifest(env, &settings)?;
+     let mut file = OwnedFile::new(settings.clone(), manifest.clone(), b"{}");
+     let mut warnings = Vec::new();
+     // Permissions first: a historical broad rule an earlier hook setup recorded is narrowed (and
+     // its record retired) before the hook installer reads its manifest.
+     // A failure here keeps the hooks out only while the hook record still holds a rule, which
+     // the hook installer cannot proceed past; otherwise it is reported and setup carries on.
+     // A recorded hook command for another executable is refused by the hook installer below
+     // with "nothing was changed": leave the permissions alone so that stays true.
+     let command_moved = shell_command(&env.hook_argv(Harness::Claude)?)
+         .ok()
+         .zip(recorded_command(&manifest))
+-        .is_some_and(|(expected, recorded)| !recorded.starts_with(&format!("{expected} # ")));
++        .is_some_and(|(expected, recorded)| {
++            !(recorded == expected || recorded.starts_with(&format!("{expected} # ")))
++        });
+     let component = permission_component(env, &settings)?;
+     let permissions = if command_moved {
+         component.status()
+     } else {
+         component.apply(PermissionConsent::Undecided)
+     };
+     if let Err(error) = &permissions
+         && crate::harness::setup::recorded_hook_permission(&settings, &manifest)
+             .map_or(true, |record| record.is_some())
+     {
+@@ -161,20 +164,21 @@ pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<V
+             "action": if adopted { "adopted" } else if already { "already_installed" } else { "installed" },
+             "adopted": installed.adopted.then(|| installed.installation_id.clone()),
+             "harness": "claude",
+             "scope": "user",
+             "settings": settings.display().to_string(),
+             "manifest": manifest.display().to_string(),
+             "created_settings": file.created_file,
+             "instance": instance_json(env),
+             "hook_argv": env.hook_argv(Harness::Claude)?,
+             "command": command,
++            "commands": super::super::setup::commands_json(&installed.owned),
+             "events": installed.owned.iter().map(|entry| entry.event.clone()).collect::<Vec<_>>(),
+             "allow_rule": allow_rule_json(allow_rule.as_ref()),
+             "permissions": permissions,
+             "harness_version": observation_json(&Ok((observed, None))),
+             "prompt_suggestions": prompt_suggestions,
+             "mod": delivery_mod,
+             "observed": "unknown",
+             "note": "installed is not observed: run `herdr-threads doctor` for native evidence. \
+                      Claude sessions that run with another CLAUDE_CONFIG_DIR, or with \
+                      --setting-sources excluding `user`, do not load these hooks",
+@@ -572,21 +576,21 @@ pub(crate) fn claude_remove(env: &SetupEnv) -> Result<Value, RunError> {
+         Some(_) => "removed",
+         None => "not_recorded",
+     };
+     remove_user_settings(kind, &settings, &manifest)
+         .map_err(|e| settings_error(e, SetupVerb::Remove, kind, &settings, &manifest))?;
+     report["action"] = json!("removed");
+     report["allow_rule"] = json!(allow_rule);
+     if recorded.adopted {
+         report["adopted"] = json!(recorded.installation_id);
+         report["note"] = json!(
+-            "removed only the adopted hook groups (another setup's owner marker) from this \
++            "removed only the hook groups with the adopted installation identity from this \
+              settings file; that setup's own settings file is unchanged"
+         );
+     }
+     report["deleted_created_settings"] = json!(delete_created(&settings, &manifest, b"{}"));
+     Ok(report)
+ }
+ 
+ fn claude_status(
+     env: &SetupEnv,
+     observation: Result<(Observed, Option<crate::harness::operational::CodexContract>), String>,
+diff --git a/src/harness/codex/setup.rs b/src/harness/codex/setup.rs
+index 389398c4..fa2c5ec8 100644
+--- a/src/harness/codex/setup.rs
++++ b/src/harness/codex/setup.rs
+@@ -162,26 +162,40 @@ pub fn observe_codex_layer(path: &Path, owned_command: &str) -> Option<CodexLaye
+         return Some(layer);
+     }
+     let text = String::from_utf8_lossy(&bytes);
+     layer.events = if path.extension().is_some_and(|ext| ext == "json") {
+         json_hook_events(&bytes)
+     } else {
+         toml_hook_events(&text)
+     };
+     // TOML basic and JSON strings escape `"` and `\` the same way; the shell
+     // form itself uses only single quotes.
+-    let escaped = serde_json::to_string(owned_command).unwrap_or_default();
+-    let escaped = escaped.trim_matches('"');
+-    layer.has_owned_command = text.contains(owned_command) || text.contains(escaped);
++    let contains = |command: &str| {
++        let escaped = serde_json::to_string(command).unwrap_or_default();
++        text.contains(command) || text.contains(escaped.trim_matches('"'))
++    };
++    let stable_commands = shlex::split(owned_command)
++        .and_then(|argv| {
++            lib::native_entries(SettingsKind::CodexUser, &argv)
++                .ok()
++                .flatten()
++        })
++        .unwrap_or_default();
++    layer.has_owned_command = contains(owned_command)
++        || stable_commands.iter().any(|entry| {
++            entry.group["hooks"][0]["command"]
++                .as_str()
++                .is_some_and(contains)
++        });
+     layer.has_other_herdr_threads_hook = !layer.has_owned_command
+         && text.contains("herdr-threads")
+-        && text.contains("'hook' 'codex'");
++        && (text.contains("'hook' 'codex'") || text.contains("'hook-event' 'codex'"));
+     Some(layer)
+ }
+ 
+ /// Every existing Codex config layer file, observed read-only.
+ pub(crate) fn observe_codex_config(env: &SetupEnv, owned_command: &str) -> Vec<CodexLayerFile> {
+     codex_layer_paths(env.codex_home.as_deref(), &env.cwd)
+         .iter()
+         .filter_map(|path| observe_codex_layer(path, owned_command))
+         .collect()
+ }
+@@ -441,40 +455,52 @@ pub const CODEX_TRUST_NOTE: &str = "Codex runs hooks from hooks.json only once y
+      `codex exec` cannot review: trust once interactively, or (scratch only) pass \
+      --dangerously-bypass-hook-trust. Editing or moving a trusted group asks for review again";
+ 
+ /// The trust keys of the owned groups as they sit in `hooks.json` now, and
+ /// whether `config.toml` records a trust hash for each (the hash itself is
+ /// Codex's and is not verified here).
+ pub(crate) fn codex_trust_json(paths: &CodexPaths, command: Option<&str>) -> Value {
+     let Some(command) = command else {
+         return json!({"status": "unknown", "note": CODEX_TRUST_NOTE});
+     };
++    let recorded = lib::read_settings_manifest(&paths.hooks_manifest)
++        .ok()
++        .flatten();
+     let hooks: Value = fs::read(&paths.hooks)
+         .ok()
+         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+         .unwrap_or(Value::Null);
+     let config = fs::read_to_string(&paths.config);
+     let state = config
+         .as_ref()
+         .ok()
+         .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok());
+     let path = paths.hooks.display().to_string();
+     let mut keys = Vec::new();
+     for hook in codex::DECLARATION.owned_hooks {
+         let Some(groups) = hooks["hooks"][hook.event].as_array() else {
+             continue;
+         };
+         for (index, group) in groups.iter().enumerate() {
+             let registered = group["hooks"][0]["command"].as_str();
+-            if registered == Some(command)
+-                || registered == Some(lib::event_command(command, hook.event).as_str())
+-            {
++            if recorded.as_ref().map_or_else(
++                || {
++                    registered == Some(command)
++                        || registered == Some(lib::event_command(command, hook.event).as_str())
++                },
++                |manifest| {
++                    manifest
++                        .owned
++                        .iter()
++                        .any(|entry| entry.event == hook.event && &entry.group == group)
++                },
++            ) {
+                 let key = format!("{path}:{}:{index}:0", snake(hook.event));
+                 let recorded = state.as_ref().is_some_and(|doc| {
+                     doc.get("hooks")
+                         .and_then(|h| h.get("state"))
+                         .and_then(|s| s.get(&key))
+                         .and_then(|e| e.get("trusted_hash"))
+                         .is_some_and(|hash| hash.is_str())
+                 });
+                 keys.push(json!({"key": key, "trust_recorded": recorded}));
+             }
+@@ -798,20 +824,21 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
+         "scope": "user",
+         "hooks_file": paths.hooks.display().to_string(),
+         "config_file": paths.config.display().to_string(),
+         "manifest": paths.hooks_manifest.display().to_string(),
+         "config_manifest": paths.config_manifest.display().to_string(),
+         "created_hooks_file": hooks_file.created_file,
+         "created_config_file": false,
+         "instance": instance_json(env),
+         "hook_argv": env.hook_argv(Harness::Codex)?,
+         "command": command,
++        "commands": lib::commands_json(&installed.owned),
+         "events": installed.owned.iter().map(|entry| entry.event.clone()).collect::<Vec<_>>(),
+         "sandbox": with_unmeasured(
+             allowance_json(inspection.as_ref()),
+             unmeasured
+         ),
+         "trust": codex_trust_json(&paths, command.as_deref()),
+         "permissions": permission_report,
+         "harness_version": observation_json(&Ok((observed, None))),
+         "codex_config": codex_config_json(env, &layers),
+         "observed": "unknown",
+@@ -886,21 +913,21 @@ pub(crate) fn codex_remove(env: &SetupEnv) -> Result<Value, RunError> {
+                          review them again",
+                         entry.event,
+                         groups.len() - at - 1
+                     ));
+                 }
+             }
+         }
+         if recorded.adopted {
+             report["adopted"] = json!(recorded.installation_id);
+             warnings.push(format!(
+-                "removing only the adopted hook groups (owner marker {}) from {}; the setup \
++                "removing only the hook groups with adopted installation identity {} from {}; the setup \
+                  that wrote them keeps its own hooks.json. Codex trusts hooks by position, so \
+                  any group that shifts in this file needs review again",
+                 recorded.installation_id,
+                 paths.hooks.display()
+             ));
+         }
+         remove_user_settings(kind, &paths.hooks, &paths.hooks_manifest).map_err(map)?;
+         report["deleted_created_hooks_file"] =
+             json!(delete_created(&paths.hooks, &paths.hooks_manifest, b"{}"));
+     }
+diff --git a/src/harness/setup.rs b/src/harness/setup.rs
+index 0879c03b..aaf9bb1e 100644
+--- a/src/harness/setup.rs
++++ b/src/harness/setup.rs
+@@ -93,36 +93,61 @@ pub fn native_event_command(event_argv: &[String]) -> Result<String, SetupError>
+         || event_argv[event_argv.len() - 3] != crate::cli::hook::EVENT_SUBCOMMAND
+     {
+         return Err(SetupError::Invalid);
+     }
+     shell_command(event_argv)
+ }
+ 
+ /// The owner marker suffix a marked hook command carries.
+ const OWNER_MARKER: &str = " # herdr-threads-owner:";
+ 
++/// Recognize only a canonical UUID in an actual trailing shell comment. Quoted path text
++/// can contain the marker spelling without carrying installation identity.
++fn owner_marker_index(command: &str) -> Option<usize> {
++    let at = command.rfind(OWNER_MARKER)?;
++    let suffix = &command[at + OWNER_MARKER.len()..];
++    let id = uuid::Uuid::parse_str(suffix).ok()?;
++    if id.to_string() != suffix {
++        return None;
++    }
++    let mut quote = None;
++    let mut escaped = false;
++    for ch in command[..at].chars() {
++        if escaped {
++            escaped = false;
++        } else if ch == '\\' && quote != Some('\'') {
++            escaped = true;
++        } else if quote == Some(ch) {
++            quote = None;
++        } else if quote.is_none() && matches!(ch, '\'' | '"') {
++            quote = Some(ch);
++        }
++    }
++    (quote.is_none() && !escaped).then_some(at)
++}
++
+ /// The hook command registered for `event`: the base command with the two words
+ /// `'--event' '<event>'` inserted after the harness word, which is before the owner
+ /// marker when there is one (else appended).
+ pub(crate) fn event_command(base: &str, event: &str) -> String {
+     let pair = format!(" '--event' '{event}'");
+-    match base.find(OWNER_MARKER) {
++    match owner_marker_index(base) {
+         Some(at) => format!("{}{pair}{}", &base[..at], &base[at..]),
+         None => format!("{base}{pair}"),
+     }
+ }
+ 
+ /// Inverse of [`event_command`]: the base command without its `--event <event>` pair. A command
+ /// that does not carry the pair (a legacy registration) is returned unchanged.
+ pub(crate) fn base_command<'a>(command: &'a str, event: &str) -> Cow<'a, str> {
+     let pair = format!(" '--event' '{event}'");
+-    let end = command.find(OWNER_MARKER).unwrap_or(command.len());
++    let end = owner_marker_index(command).unwrap_or(command.len());
+     match command[..end].strip_suffix(pair.as_str()) {
+         Some(head) => Cow::Owned(format!("{head}{}", &command[end..])),
+         None => Cow::Borrowed(command),
+     }
+ }
+ 
+ /// The user-level hook file an owned installation edits. Both are JSON objects whose `hooks` map
+ /// event names to arrays of matcher groups; only Claude's also carries the owned allow rule.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum SettingsKind {
+@@ -154,20 +179,149 @@ impl SettingsKind {
+     }
+     /// Owned entries derived from the adapter declaration, in declaration order.
+     fn entries(self, command: &str) -> Result<Vec<OwnedEntry>, SetupError> {
+         match self {
+             Self::ClaudeUser => claude_entries(command),
+             Self::CodexUser => codex_entries(command),
+         }
+     }
+ }
+ 
++/// Build complete native commands from the recognized setup route, using the registered
++/// producer for each event. Legacy proposal callers with no hook argv retain their grammar.
++pub(super) fn native_entries(
++    kind: SettingsKind,
++    argv: &[String],
++) -> Result<Option<Vec<OwnedEntry>>, SetupError> {
++    let words = argv
++        .iter()
++        .map(std::ffi::OsString::from)
++        .collect::<Vec<_>>();
++    let parsed = match crate::cli::hook::parse_hook_argv(&words) {
++        Some(Ok(parsed)) => parsed,
++        Some(Err(_)) if argv.iter().any(|a| a == crate::cli::hook::EVENT_SUBCOMMAND) => {
++            return Err(SetupError::Invalid);
++        }
++        _ => return Ok(None),
++    };
++    if parsed.harness.as_str() != kind.harness() {
++        return Err(SetupError::Invalid);
++    }
++    let state = parsed
++        .state_dir
++        .as_ref()
++        .map(|p| p.to_str().ok_or(SetupError::Invalid))
++        .transpose()?;
++    let host = parsed
++        .host_endpoint
++        .as_ref()
++        .map(|p| p.to_str().ok_or(SetupError::Invalid))
++        .transpose()?;
++    let entries = kind
++        .entries(&shell_command(argv)?)?
++        .into_iter()
++        .map(|entry| {
++            let event_argv = crate::cli::hook::installed_event_argv(
++                &argv[0],
++                state,
++                host,
++                parsed.harness,
++                &entry.event,
++            )
++            .map_err(|_| SetupError::Invalid)?;
++            let mut group = entry.group;
++            group["hooks"][0]["command"] = json!(native_event_command(&event_argv)?);
++            owned(&entry.event, group)
++        })
++        .collect::<Result<Vec<_>, _>>()?;
++    Ok(Some(entries))
++}
++
++/// Decode only our canonical shell encoding and the dedicated native grammar. Never infer a
++/// route from arbitrary shell text or strip a suffix from an unrecognized command.
++fn native_route(entry: &OwnedEntry) -> Option<String> {
++    let command = entry_command(entry)?;
++    native_command_route(command, &entry.event)
++}
++
++fn native_command_route(command: &str, event: &str) -> Option<String> {
++    let argv = shlex::split(command)?;
++    if native_event_command(&argv).ok()?.as_str() != command {
++        return None;
++    }
++    let words = argv
++        .iter()
++        .map(std::ffi::OsString::from)
++        .collect::<Vec<_>>();
++    let parsed = crate::cli::hook::parse_hook_argv(&words)?.ok()?;
++    if parsed.event.as_deref() != Some(event) {
++        return None;
++    }
++    shell_command(&crate::cli::hook::installed_argv(
++        &argv[0],
++        parsed.state_dir.as_ref().and_then(|p| p.to_str()),
++        parsed.host_endpoint.as_ref().and_then(|p| p.to_str()),
++        parsed.harness,
++    ))
++    .ok()
++}
++
++/// Exact per-event command strings for diagnostics. This is never an ownership grant.
++pub(crate) fn commands_json(entries: &[OwnedEntry]) -> Value {
++    Value::Object(
++        entries
++            .iter()
++            .filter_map(|e| Some((e.event.clone(), json!(entry_command(e)?))))
++            .collect(),
++    )
++}
++
++fn ownership_route(entries: &[OwnedEntry]) -> Option<String> {
++    let command = shared_command(entries)?;
++    Some(
++        owner_marker_index(&command).map_or_else(|| command.clone(), |at| command[..at].to_owned()),
++    )
++}
++
++/// A recognized registration for our event would execute alongside this installation. Exact
++/// manifest records are the only exceptions; unrelated native commands remain untouched.
++fn conflicting_native_registration(
++    value: &Value,
++    kind: SettingsKind,
++    target: &[OwnedEntry],
++    recorded: &[OwnedEntry],
++) -> bool {
++    target.iter().any(|entry| {
++        value["hooks"][&entry.event]
++            .as_array()
++            .is_some_and(|groups| {
++                groups.iter().any(|group| {
++                    !recorded
++                        .iter()
++                        .any(|owned| owned.event == entry.event && &owned.group == group)
++                        && group["hooks"].as_array().is_some_and(|hooks| {
++                            hooks.iter().any(|hook| {
++                                hook["command"].as_str().is_some_and(|command| {
++                                    native_command_route(command, &entry.event)
++                                        .and_then(|route| shlex::split(&route))
++                                        .is_some_and(|argv| {
++                                            argv.last()
++                                                .is_some_and(|harness| harness == kind.harness())
++                                        })
++                                })
++                            })
++                        })
++                })
++            })
++    })
++}
++
+ pub(crate) fn fingerprint(bytes: &[u8]) -> String {
+     format!("sha256:{:x}", Sha256::digest(bytes))
+ }
+ fn permission_fingerprint(rule: &str) -> String {
+     fingerprint(&serde_json::to_vec(&json!({ "allow": rule })).unwrap_or_default())
+ }
+ /// The allow rule current setup installs.
+ const DECLARED_RULE: &str = super::claude::HERDR_THREADS_ALLOW_RULE;
+ /// The allow rule earlier setups installed; recognized in their manifests only, so re-setup can
+ /// replace and unsetup can remove an owned copy.
+@@ -321,20 +475,23 @@ fn merge(groups: &mut Vec<Value>, entry: &OwnedEntry) -> Result<(), SetupError>
+         return Ok(());
+     }
+     if matches.len() == 1 && matches[0] == &entry.group {
+         return Ok(());
+     }
+     Err(SetupError::Conflict)
+ }
+ /// Compose every hook group the Claude adapter declares (SessionStart and Bash PreToolUse).
+ /// Declaring a hook claims neither native observation nor model-visible delivery.
+ pub fn plan_claude(bytes: &[u8], hook_argv: &[String]) -> Result<JsonSetupPlan, SetupError> {
++    if let Some(entries) = native_entries(SettingsKind::ClaudeUser, hook_argv)? {
++        return compose_json(bytes, &entries, &[]);
++    }
+     let command = shell_command(hook_argv)?;
+     plan_claude_command(bytes, &command)
+ }
+ 
+ /// Owned entries derived from the adapter declaration, in declaration order.
+ fn claude_entries(command: &str) -> Result<Vec<OwnedEntry>, SetupError> {
+     super::claude::declared_hook_groups(command)
+         .into_iter()
+         .map(|(event, group)| owned(event, group))
+         .collect()
+@@ -400,20 +557,31 @@ fn compose_json(
+ /// The entry's own registered command.
+ fn entry_command(entry: &OwnedEntry) -> Option<&str> {
+     entry.group["hooks"][0]["command"].as_str()
+ }
+ 
+ /// The single base hook command shared by every owned entry, if the entries agree on one: each
+ /// entry's command with its own `--event` pair removed. Entries must also be uniformly evented
+ /// or uniformly legacy (no `--event` anywhere).
+ pub fn shared_command(entries: &[OwnedEntry]) -> Option<String> {
+     let first = entries.first()?;
++    if let Some(route) = native_route(first) {
++        return entries
++            .iter()
++            .all(|entry| {
++                entry.group["hooks"]
++                    .as_array()
++                    .is_some_and(|h| h.len() == 1)
++                    && native_route(entry).as_deref() == Some(route.as_str())
++            })
++            .then_some(route);
++    }
+     let base = base_command(entry_command(first)?, &first.event).into_owned();
+     let evented = entry_command(first)? != base;
+     entries
+         .iter()
+         .all(|entry| {
+             let Some(command) = entry_command(entry) else {
+                 return false;
+             };
+             entry.group["hooks"]
+                 .as_array()
+@@ -434,20 +602,25 @@ fn legacy_entries(entries: &[OwnedEntry]) -> Result<Vec<OwnedEntry>, SetupError>
+             let mut group = entry.group.clone();
+             group["hooks"][0]["command"] = json!(base_command(command, &entry.event));
+             owned(&entry.event, group)
+         })
+         .collect()
+ }
+ 
+ /// Whether the entries are exactly what the adapter declares today. Only inspection's
+ /// `installed` and the install/upgrade target ask this question.
+ fn is_current_declaration(kind: SettingsKind, entries: &[OwnedEntry]) -> bool {
++    if let Some(route) = entries.first().and_then(native_route) {
++        return shlex::split(&route)
++            .and_then(|argv| native_entries(kind, &argv).ok().flatten())
++            .is_some_and(|declared| declared == entries);
++    }
+     shared_command(entries)
+         .and_then(|base| kind.entries(&base).ok())
+         .is_some_and(|declared| declared == entries)
+ }
+ 
+ /// Whether the entries are the current declaration as an installation made before per-event
+ /// registration wrote it: no `--event` on any command. Still an installed (working) hook set;
+ /// `setup` upgrades it.
+ fn is_legacy_declaration(kind: SettingsKind, entries: &[OwnedEntry]) -> bool {
+     shared_command(entries)
+@@ -479,21 +652,21 @@ fn recorded_ownership_valid(manifest: &OwnershipManifest) -> bool {
+         && manifest.superseded_permission.as_ref().is_none_or(|old| {
+             manifest.phase == InstallPhase::Prepared
+                 && permission_valid(old)
+                 && !permission_current(old)
+                 && !old.pre_existing
+                 && manifest.permission.as_ref().is_some_and(permission_current)
+         })
+         && (manifest.superseded.is_empty()
+             || (manifest.phase == InstallPhase::Prepared
+                 && recorded_entries_valid(&manifest.superseded)
+-                && shared_command(&manifest.superseded) == shared_command(&manifest.owned)))
++                && ownership_route(&manifest.superseded) == ownership_route(&manifest.owned)))
+ }
+ 
+ /// Entries whose exact recorded group is present under their event.
+ fn exact_present(value: &Value, entries: &[OwnedEntry]) -> Vec<OwnedEntry> {
+     entries
+         .iter()
+         .filter(|entry| {
+             value["hooks"][&entry.event]
+                 .as_array()
+                 .is_some_and(|groups| groups.contains(&entry.group))
+@@ -555,23 +728,44 @@ struct Resume {
+ 
+ /// Plan the step from `current` to a file holding exactly `manifest.owned`: superseded groups from
+ /// an earlier installation are removed only when exact, edited ones conflict, and an independent
+ /// unmarked copy of the hook command refuses publication.
+ fn plan_resume(
+     current: &[u8],
+     manifest: &OwnershipManifest,
+     unmarked_command: &str,
+ ) -> Result<Resume, SetupError> {
+     let value = root(current)?;
+-    shared_command(&manifest.owned).ok_or(SetupError::Invalid)?;
+     let present = exact_present(&value, &manifest.owned);
+     let superseded = exact_present(&value, &manifest.superseded);
++    for entry in manifest.owned.iter().chain(&manifest.superseded) {
++        if has_entry_command(&value, entry) {
++            // Declaration upgrades can change timeout/matcher while retaining a command.
++            // Validate the exact recorded generation actually present, not the absent target.
++            let exact = present
++                .iter()
++                .chain(&superseded)
++                .find(|known| {
++                    known.event == entry.event && entry_command(known) == entry_command(entry)
++                })
++                .ok_or(SetupError::Conflict)?;
++            uninstall_json(current, std::slice::from_ref(exact))?;
++        }
++    }
++    if manifest.version == 3
++        && present
++            .iter()
++            .any(|entry| superseded.iter().any(|old| old.event == entry.event))
++    {
++        return Err(SetupError::Conflict);
++    }
++    shared_command(&manifest.owned).ok_or(SetupError::Invalid)?;
+     let rule = owned_rule(manifest);
+     let rule_count = match manifest.permission.as_ref() {
+         Some(permission) => allow_count(&value, &permission.rule)?,
+         None => 0,
+     };
+     // A pre-existing user rule is never added by setup: its absence cannot be resumed.
+     if manifest.permission.as_ref().is_some_and(|p| p.pre_existing) && rule_count == 0 {
+         return Err(SetupError::Conflict);
+     }
+     let rule_present = rule.filter(|_| rule_count > 0);
+@@ -596,26 +790,31 @@ fn plan_resume(
+                     &manifest.installation_base_bytes,
+                     current,
+                     &manifest.owned,
+                     rule,
+                 )?,
+                 publish: false,
+             });
+         }
+     }
+     if manifest.owned.iter().any(|entry| {
+-        event_has_command(&value, &entry.event, unmarked_command)
+-            || event_has_command(
+-                &value,
+-                &entry.event,
+-                &event_command(unmarked_command, &entry.event),
+-            )
++        value["hooks"][&entry.event]
++            .as_array()
++            .is_some_and(|groups| {
++                groups.iter().any(|group| {
++                    (contains_command(group, unmarked_command)
++                        || contains_command(group, &event_command(unmarked_command, &entry.event)))
++                        && !superseded
++                            .iter()
++                            .any(|old| old.event == entry.event && &old.group == group)
++                })
++            })
+     }) {
+         return Err(SetupError::Conflict);
+     }
+     let mut recorded = superseded.clone();
+     recorded.extend(present);
+     let recorded_base = &manifest.installation_base_bytes;
+     let target_rules: Vec<&str> = rule.into_iter().collect();
+     let unchanged_since_base = (!recorded.is_empty() || !rules_present.is_empty())
+         && !recorded_base.is_empty()
+         && compose_json(recorded_base, &recorded, &rules_present)
+@@ -656,20 +855,43 @@ fn plan_resume(
+                 &uninstall_claude(current, &superseded, &retiring, recorded_base)?,
+                 manifest,
+                 recorded_base,
+             )?
+         };
+         (
+             base,
+             compose_json(&stripped, &manifest.owned, &target_rules)?.proposed_bytes,
+         )
+     };
++    let bytes = if manifest.version == 3 && !superseded.is_empty() {
++        // Replace exact superseded groups in their slots. Unrelated groups retain their native
++        // trust-key indices; an equivalent reinstall never reaches this publication path.
++        let mut replaced = value.clone();
++        for old in &superseded {
++            let groups = replaced["hooks"][&old.event]
++                .as_array_mut()
++                .ok_or(SetupError::Invalid)?;
++            let index = groups
++                .iter()
++                .position(|group| group == &old.group)
++                .ok_or(SetupError::Conflict)?;
++            if let Some(target) = manifest.owned.iter().find(|entry| entry.event == old.event) {
++                groups[index] = target.group.clone();
++            } else {
++                groups.remove(index);
++            }
++        }
++        let replaced = serde_json::to_vec(&replaced).map_err(|_| SetupError::Invalid)?;
++        compose_json(&replaced, &manifest.owned, &target_rules)?.proposed_bytes
++    } else {
++        bytes
++    };
+     let resumed = root(&bytes)?;
+     // An edited superseded group under an event the target no longer owns must not survive.
+     if manifest.superseded.iter().any(|entry| {
+         !manifest.owned.iter().any(|o| o.event == entry.event) && has_entry_command(&resumed, entry)
+     }) {
+         return Err(SetupError::Conflict);
+     }
+     Ok(Resume {
+         bytes,
+         base,
+@@ -769,41 +991,41 @@ pub fn uninstall_json(bytes: &[u8], entries: &[OwnedEntry]) -> Result<Vec<u8>, S
+ /// hooks.json and trusted project layers separately and runs them alongside
+ /// these `-c` values (hooks/list on 0.157.1, 0.158.0 and 0.159.2), so copying
+ /// them in would register them twice. Each session override includes the
+ /// supplied existing groups. hooks.state is untouched and must be measured separately.
+ /// Internal composition shared by contract planning and historical diagnostics.
+ fn plan_codex(
+     existing: &[EventGroups],
+     hook_argv: &[String],
+ ) -> Result<CodexSetupPlan, SetupError> {
+     let command = shell_command(hook_argv)?;
++    let native = native_entries(SettingsKind::CodexUser, hook_argv)?;
+     if existing.len() > 64 {
+         return Err(SetupError::TooLarge);
+     }
+     let mut events = existing.to_vec();
+     let mut seen = std::collections::BTreeSet::new();
+     for event in &events {
+         if !valid_event(&event.event)
+             || !seen.insert(event.event.clone())
+             || event.groups.len() > 128
+         {
+             return Err(SetupError::Invalid);
+         }
+     }
+     let mut owned_entries = Vec::new();
+     // Exactly the adapter's declared context-only hook groups. The Bash
+     // PreToolUse group carries tool-boundary attention context; the gated
+     // invocation rewrite is never part of any installed group.
+     for hook in codex::DECLARATION.owned_hooks {
+         let name = hook.event;
+-        let mut group =
+-            json!({"hooks":[{"type":"command","command":event_command(&command, name)}]});
++        let mut group = json!({"hooks":[{"type":"command","command": native.as_ref().and_then(|entries| entries.iter().find(|e| e.event == name)).and_then(entry_command).map(str::to_owned).unwrap_or_else(|| event_command(&command, name))}]});
+         if let Some(matcher) = hook.matcher {
+             group["matcher"] = json!(matcher);
+         }
+         let entry = owned(name, group)?;
+         if let Some(event) = events.iter_mut().find(|event| event.event == name) {
+             merge(&mut event.groups, &entry)?;
+         } else {
+             events.push(EventGroups {
+                 event: name.into(),
+                 groups: vec![entry.group.clone()],
+@@ -956,33 +1178,32 @@ pub enum NativeObservation {
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct HookInspection {
+     pub installed: bool,
+     pub observed: NativeObservation,
+     /// Present only for an exact, owned installation; suitable for managed launch.
+     pub configured_hook: Option<ConfiguredHook>,
+     /// Claude only: the allow rule an earlier setup recorded and whether it is present now.
+     pub allow_rule: Option<AllowRuleInspection>,
+-    /// The owned groups belong to another setup's installation (they carry its owner marker),
+-    /// adopted for this file: recorded by a manifest, or found by inspection with none yet.
++    /// This file retains an installation identity adopted from another setup's legacy marked
++    /// groups: recorded by a manifest, or found by inspection with none yet.
+     pub adopted: Option<Adoption>,
+-    /// The installed hooks predate per-event registration (no `--event` on their commands): they
+-    /// still work, and `setup` rewrites them. True only for that legacy form.
++    /// The installed hooks use legacy shared or UUID-marked commands: they still work, and
++    /// explicit `setup` migrates them to stable per-event commands.
+     pub legacy_event_registration: bool,
+ }
+ 
+-/// Hook groups of another herdr-threads setup (same hook command, another owner marker) that this
+-/// file holds exactly, e.g. a `hooks.json` copied into a second `CODEX_HOME` with its trust.
++/// Installation identity adopted from exact legacy UUID-marked groups, retained across migration.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct Adoption {
+-    /// The owner marker (installation id) the adopted groups carry.
++    /// The retained installation id, originally carried by the legacy owner marker.
+     pub owner: String,
+     /// A manifest for this file records the adoption (`setup` ran); otherwise inspection found
+     /// the groups with no manifest of this file's own.
+     pub recorded: bool,
+ }
+ 
+ /// Who holds the allow rule an earlier hook setup recorded, until the permission component
+ /// retires the record (current hook setup records none).
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum AllowRuleOwnership {
+@@ -1023,23 +1244,22 @@ pub struct OwnershipManifest {
+     pub superseded: Vec<OwnedEntry>,
+     /// Claude project only: the owned `permissions.allow` rule. Absent in manifests recorded
+     /// before the rule was declared; re-running setup adds it.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub permission: Option<OwnedPermission>,
+     /// Prepared upgrade only: the owned retired rule (`claude::CALLER_CONTEXT_ALLOW_RULE`) that
+     /// the in-flight upgrade removes while `permission` records the declared rule. Removal and
+     /// resumption remove it when present.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub superseded_permission: Option<OwnedPermission>,
+-    /// The owned groups were not written by this installation: they were already in the file,
+-    /// carrying the owner marker `installation_id` of another setup (a copied hook file), and
+-    /// were adopted in place so the file's bytes (and Codex's trust hashes) stay unchanged.
++    /// The installation identity originated in exact legacy marked groups adopted in place.
++    /// A later explicit stable migration retains this provenance while rewriting the commands.
+     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+     pub adopted: bool,
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+ #[serde(rename_all = "lowercase")]
+ pub enum InstallPhase {
+     Prepared,
+     #[default]
+     Installed,
+@@ -1313,65 +1533,92 @@ fn install_user_settings_inner<F: FnOnce()>(
+     expected_base: &[u8],
+     fault: InstallFault,
+     action: F,
+ ) -> Result<OwnershipManifest, SetupError> {
+     let mut action = Some(action);
+     if config.file_name().and_then(|s| s.to_str()) != Some(kind.file_name())
+         || manifest_path == config
+     {
+         return Err(SetupError::Invalid);
+     }
+-    let unmarked_entries = kind.entries(&shell_command(hook_argv)?)?;
++    let native = native_entries(kind, hook_argv)?;
++    let unmarked_entries = native
++        .clone()
++        .unwrap_or(kind.entries(&shell_command(hook_argv)?)?);
+     let unmarked_plan = compose_json(expected_base, &unmarked_entries, &[])?;
+     let unmarked_legacy = legacy_entries(&unmarked_entries)?;
+     if read_manifest(manifest_path)?.is_none() {
+         // A file that already holds exactly this command's groups under another setup's owner
+         // marker is adopted, not given a second set: only a manifest is recorded, and the
+         // recorded-manifest path below then finds the installation complete.
+         if config_bytes(config)? != expected_base {
+             return Err(SetupError::Conflict);
+         }
+         adopt_user_settings(kind, config, manifest_path, hook_argv)?;
+     }
+     if let Some(mut manifest) = read_manifest(manifest_path)? {
+         let expected_command = owned_command(hook_argv, &manifest.installation_id)?;
+-        let expected = kind.entries(&expected_command)?;
++        let expected = native.clone().unwrap_or(kind.entries(&expected_command)?);
+         // Ownership is validated against the manifest's own records. A different hook command
+         // (argv) is not an upgrade: remove the installation first, then set up again.
+         if !manifest_matches(kind, &manifest, config)?
+             || !recorded_ownership_valid(&manifest)
+-            || shared_command(&manifest.owned).as_deref() != Some(expected_command.as_str())
++            || ownership_route(&manifest.owned).as_deref()
++                != Some(shell_command(hook_argv)?.as_str())
+             || manifest.original_bytes != expected_base
+         {
+             return Err(SetupError::Conflict);
+         }
+-        if manifest.installation_id.is_empty()
++        if native.is_none()
++            && manifest.installation_id.is_empty()
+             && (manifest.phase == InstallPhase::Prepared || manifest.owned != expected)
+         {
+             return Err(SetupError::Conflict);
+         }
+         let unmarked_command = shell_command(hook_argv)?;
+         let current = config_bytes(config)?;
++        if native.is_some() {
++            let mut recorded = manifest.owned.clone();
++            recorded.extend(manifest.superseded.iter().cloned());
++            if conflicting_native_registration(&root(&current)?, kind, &expected, &recorded) {
++                return Err(SetupError::Conflict);
++            }
++        }
+         // The permission rule is not part of the hook installation: a manifest that still records
+         // one is first settled by the permission component, which retires the record.
+         if manifest.permission.is_some() || manifest.superseded_permission.is_some() {
+             return Err(SetupError::Conflict);
+         }
+         if manifest.phase == InstallPhase::Installed {
+             // Every recorded owned group must still be exact before anything is claimed.
+             uninstall_json(&current, &manifest.owned)?;
+             if manifest.owned == expected {
+                 return Ok(manifest);
+             }
+             // Upgrade to the current declaration. Prove the target composes before durably
+             // recording the intent, so a conflict leaves both files untouched.
++            if expected.iter().any(|entry| {
++                !manifest.owned.contains(entry)
++                    && !manifest.owned.iter().any(|old| {
++                        old.event == entry.event && entry_command(old) == entry_command(entry)
++                    })
++                    && has_entry_command(&root(&current).unwrap_or(Value::Null), entry)
++            }) {
++                return Err(SetupError::Conflict);
++            }
+             let mut intent = manifest.clone();
++            if native.is_some() {
++                intent.version = 3;
++                if intent.installation_id.is_empty() {
++                    intent.installation_id = uuid::Uuid::new_v4().to_string();
++                }
++            }
+             intent.superseded = manifest
+                 .owned
+                 .iter()
+                 .filter(|entry| !expected.contains(entry))
+                 .cloned()
+                 .collect();
+             intent.owned = expected.clone();
+             intent.phase = InstallPhase::Prepared;
+             plan_resume(&current, &intent, &unmarked_command)?;
+             replace_manifest(manifest_path, &intent)?;
+@@ -1385,20 +1632,23 @@ fn install_user_settings_inner<F: FnOnce()>(
+             // superseded by the current target.
+             for entry in std::mem::take(&mut manifest.owned) {
+                 if !expected.contains(&entry) && !manifest.superseded.contains(&entry) {
+                     if manifest.superseded.iter().any(|s| s.event == entry.event) {
+                         return Err(SetupError::Conflict);
+                     }
+                     manifest.superseded.push(entry);
+                 }
+             }
+             manifest.owned = expected.clone();
++            if native.is_some() {
++                manifest.version = 3;
++            }
+             replace_manifest(manifest_path, &manifest)?;
+         }
+         let resume = plan_resume(&current, &manifest, &unmarked_command)?;
+         if resume.publish {
+             if config_bytes(config)? != current {
+                 return Err(SetupError::Conflict);
+             }
+             write_user_config(config, &current, &resume.bytes)?;
+             if fault == InstallFault::InterruptAfterPublication {
+                 action.take().expect("one fault action")();
+@@ -1409,40 +1659,46 @@ fn install_user_settings_inner<F: FnOnce()>(
+         manifest.installed_fingerprint = fingerprint(&resume.bytes);
+         manifest.installation_base_bytes = resume.base;
+         manifest.superseded.clear();
+         replace_manifest(manifest_path, &manifest)?;
+         return Ok(manifest);
+     }
+     if config_bytes(config)? != expected_base {
+         return Err(SetupError::Conflict);
+     }
+     let baseline: Value = root(expected_base)?;
++    if native.is_some() && conflicting_native_registration(&baseline, kind, &unmarked_entries, &[])
++    {
++        return Err(SetupError::Conflict);
++    }
+     if unmarked_plan
+         .owned
+         .iter()
+         .chain(&unmarked_legacy)
+         .any(|entry| {
+             baseline["hooks"][&entry.event]
+                 .as_array()
+                 .is_some_and(|groups| groups.contains(&entry.group))
+         })
+     {
+         return Err(SetupError::Conflict);
+     }
+     let installation_id = uuid::Uuid::new_v4().to_string();
+     let plan = compose_json(
+         expected_base,
+-        &kind.entries(&owned_command(hook_argv, &installation_id)?)?,
++        &native
++            .clone()
++            .unwrap_or(kind.entries(&owned_command(hook_argv, &installation_id)?)?),
+         &[],
+     )?;
+     let manifest = OwnershipManifest {
+-        version: 2,
++        version: if native.is_some() { 3 } else { 2 },
+         harness: kind.harness().into(),
+         scope: kind.scope().into(),
+         path: config.to_str().ok_or(SetupError::Invalid)?.into(),
+         original_bytes: expected_base.to_vec(),
+         installation_base_bytes: expected_base.to_vec(),
+         installation_id,
+         owned: plan.owned,
+         installed_fingerprint: fingerprint(&plan.proposed_bytes),
+         phase: InstallPhase::Prepared,
+         superseded: Vec::new(),
+@@ -1517,21 +1773,21 @@ fn read_manifest(path: &Path) -> Result<Option<OwnershipManifest>, SetupError> {
+         .is_symlink()
+     {
+         return Err(SetupError::Invalid);
+     }
+     let bytes = fs::read(path).map_err(|_| SetupError::Io)?;
+     if bytes.len() > 16_777_216 {
+         return Err(SetupError::TooLarge);
+     }
+     let manifest: OwnershipManifest =
+         serde_json::from_slice(&bytes).map_err(|_| SetupError::Invalid)?;
+-    if !matches!(manifest.version, 1 | 2) {
++    if !matches!(manifest.version, 1..=3) {
+         return Err(SetupError::Invalid);
+     }
+     Ok(Some(manifest))
+ }
+ 
+ /// The permission rules an earlier Claude hook setup recorded in its manifest.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct RecordedPermission {
+     /// The rules that setup added, which are owned: never a rule the user already held.
+     pub owned: Vec<String>,
+@@ -1619,22 +1875,50 @@ pub fn read_settings_manifest(
+ fn valid_owner_marker(manifest: &OwnershipManifest) -> bool {
+     if manifest.version < 2 {
+         return manifest.installation_id.is_empty();
+     }
+     let Ok(id) = uuid::Uuid::parse_str(&manifest.installation_id) else {
+         return false;
+     };
+     if id.to_string() != manifest.installation_id {
+         return false;
+     }
+-    shared_command(&manifest.owned)
+-        .is_some_and(|command| command.ends_with(&format!(" # herdr-threads-owner:{id}")))
++    let marked = |entries: &[OwnedEntry]| {
++        shared_command(entries)
++            .is_some_and(|command| command.ends_with(&format!(" # herdr-threads-owner:{id}")))
++    };
++    if manifest.version == 3 {
++        manifest
++            .owned
++            .iter()
++            .all(|entry| native_route(entry).is_some())
++            && (manifest.superseded.is_empty()
++                || marked(&manifest.superseded)
++                || manifest
++                    .superseded
++                    .iter()
++                    .all(|entry| native_route(entry).is_some())
++                // v1 manifests recorded exact groups before UUID identity existed. Their
++                // canonical legacy route remains valid evidence during a prepared migration;
++                // the new identity belongs to the stable target, not to the historical group.
++                || shared_command(&manifest.superseded).is_some_and(|command| {
++                    owner_marker_index(&command).is_none()
++                        && shlex::split(&command).is_some_and(|argv| {
++                            shell_command(&argv).is_ok_and(|canonical| canonical == command)
++                                && [SettingsKind::ClaudeUser, SettingsKind::CodexUser]
++                                    .into_iter()
++                                    .any(|kind| native_entries(kind, &argv).is_ok_and(|entries| entries.is_some()))
++                        })
++                }))
++    } else {
++        marked(&manifest.owned)
++    }
+ }
+ 
+ pub fn inspect_user_settings(
+     kind: SettingsKind,
+     config: &Path,
+     manifest_path: &Path,
+     observed: NativeObservation,
+ ) -> Result<HookInspection, SetupError> {
+     inspect_user_settings_for(kind, config, manifest_path, observed, None)
+ }
+@@ -1679,21 +1963,27 @@ pub fn inspect_user_settings_for(
+             allow_rule: None,
+             adopted: None,
+             legacy_event_registration: false,
+         });
+     };
+     if !manifest_matches(kind, &manifest, config)? {
+         return Err(SetupError::Conflict);
+     }
+     let current = config_bytes(config)?;
+     // Installed means every hook the adapter currently declares; an older subset is stale.
+-    let legacy = is_legacy_declaration(kind, &manifest.owned);
++    let legacy = is_legacy_declaration(kind, &manifest.owned)
++        || (manifest.version < 3
++            && ownership_route(&manifest.owned)
++                .and_then(|s| shlex::split(&s))
++                .is_some_and(|argv| {
++                    native_entries(kind, &argv).is_ok_and(|entries| entries.is_some())
++                }));
+     let declaration_valid = recorded_ownership_valid(&manifest)
+         && shared_command(&manifest.owned).is_some_and(|s| !s.is_empty())
+         && (is_current_declaration(kind, &manifest.owned) || legacy);
+     // A rule recorded by an earlier setup stays reported until the permission component
+     // retires the record; current hook setup records none.
+     let allow_rule = manifest.permission.as_ref().map(|p| {
+         let rule = if permission_current(p) {
+             DECLARED_RULE
+         } else {
+             RETIRED_RULE
+@@ -1706,20 +1996,21 @@ pub fn inspect_user_settings_for(
+                 _ => AllowRuleOwnership::Owned,
+             },
+             present: serde_json::from_slice::<Value>(&current)
+                 .ok()
+                 .and_then(|v| allow_count(&v, rule).ok())
+                 .is_some_and(|count| count > 0),
+         }
+     });
+     let installed = manifest.phase == InstallPhase::Installed
+         && declaration_valid
++        && uninstall_json(&current, &manifest.owned).is_ok()
+         && manifest.owned.iter().all(|entry| {
+             serde_json::from_slice::<Value>(&current)
+                 .ok()
+                 .and_then(|v| v["hooks"][&entry.event].as_array().cloned())
+                 .is_some_and(|groups| groups.contains(&entry.group))
+                 && owned(&entry.event, entry.group.clone())
+                     .is_ok_and(|actual| actual.fingerprint == entry.fingerprint)
+         });
+     Ok(HookInspection {
+         installed,
+@@ -2286,22 +2577,22 @@ pub(crate) mod legacy {
+         let argv = env.hook_argv(harness)?;
+         let recorded = owned::read_settings_manifest(&manifest).map_err(|error| {
+             installer_failure(format!("invalid hook ownership manifest: {error:?}"))
+         })?;
+         if let Some(recorded) = recorded {
+             let current = bytes.as_deref().unwrap_or_default();
+             let ownership = (|| -> Result<(), super::SetupError> {
+                 if recorded.phase != owned::InstallPhase::Installed
+                     || !super::manifest_matches(kind, &recorded, &path)?
+                     || !super::recorded_ownership_valid(&recorded)
+-                    || super::shared_command(&recorded.owned).as_deref()
+-                        != Some(super::owned_command(&argv, &recorded.installation_id)?.as_str())
++                    || super::ownership_route(&recorded.owned).as_deref()
++                        != Some(super::shell_command(&argv)?.as_str())
+                 {
+                     return Err(super::SetupError::Conflict);
+                 }
+                 super::uninstall_json(current, &recorded.owned)?;
+                 if kind.manages_permission()
+                     && recorded
+                         .permission
+                         .as_ref()
+                         .is_some_and(super::permission_current)
+                     && super::allow_count(&super::root(current)?, super::DECLARED_RULE)? == 0
+@@ -2774,21 +3065,22 @@ pub(crate) mod legacy {
+                     "the owned herdr-threads hook groups in {settings} were edited or removed, or the \
+                  file changed during removal; nothing was changed. Restore the groups or remove \
+                  them by hand, then delete the manifest {}",
+                     manifest.display()
+                 ),
+             ),
+             (SetupError::Conflict, _) => api(
+                 ErrorCode::Conflict,
+                 format!(
+                     "refused to install into {settings}: it changed during setup, already holds an \
+-                 unowned identical herdr-threads hook, holds an edited owned hook{rule}, or an \
++                 unowned identical herdr-threads hook, holds a conflicting herdr-threads \
++                 registration for the same event, holds an edited owned hook{rule}, or an \
+                  existing installation uses a different hook command (executable, state \
+                  directory or Herdr instance). Run `herdr-threads unsetup {harness}` (or remove \
+                  the unowned hook) and set up again; nothing was changed",
+                     rule = if kind == SettingsKind::ClaudeUser {
+                         format!(
+                             ", lacks the recorded permission allow rule `{}` (removed by hand)",
+                             claude::HERDR_THREADS_ALLOW_RULE
+                         )
+                     } else {
+                         String::new()
+@@ -2818,22 +3110,22 @@ pub(crate) mod legacy {
+         )
+     }
+ 
+     pub(crate) fn adoption_json(adoption: Option<&lib::Adoption>) -> Value {
+         match adoption {
+             None => Value::Null,
+             Some(adoption) => json!({
+                 "owner": adoption.owner,
+                 "recorded": adoption.recorded,
+                 "note": if adoption.recorded {
+-                    "the owned groups carry another setup's owner marker; this file's manifest \
+-                     adopted them in place"
++                    "this file's manifest retains an installation identity adopted from another \
++                     setup's legacy UUID-marked groups"
+                 } else {
+                     "the groups carry another setup's owner marker and match this command exactly \
+                      (a copied hook file); `setup` adopts them without changing the file"
+                 },
+             }),
+         }
+     }
+ 
+     /// With no manifest for this file, adopt another setup's exact groups so `unsetup` can remove
+     /// them; `None` when nothing is adoptable (or the hook command cannot be resolved).
+@@ -2858,21 +3150,21 @@ pub(crate) mod legacy {
+         adopt_user_settings(kind, file, manifest, &argv).map_err(map)
+     }
+ 
+     /// The recorded hook command shared by every owned group: the base command, without the
+     /// `--event <event>` pair each group registers it with.
+     pub(crate) fn recorded_command(manifest: &Path) -> Option<String> {
+         shared_command(&read_settings_manifest(manifest).ok().flatten()?.owned)
+     }
+ 
+     /// Setup output when a recorded registration without `--event` is rewritten to the per-event form.
+-    pub(crate) const EVENT_DOWNGRADE_WARNING: &str = "the hook commands now carry --event; a herdr-threads build \
++    pub(crate) const EVENT_DOWNGRADE_WARNING: &str = "the hook commands now use hook-event; a herdr-threads build \
+      from before per-event registration rejects them, so to downgrade herdr-threads first run \
+      `herdr-threads unsetup <harness>` with this build";
+ 
+     /// Codex trusts hooks by hash, so rewritten commands need review again.
+     pub(crate) const CODEX_RETRUST_WARNING: &str = "Codex trusts hooks by hash: the rewritten hook commands need \
+      review again (the next interactive `codex` start, or /hooks) before Codex runs them";
+ 
+     /// Install the owned hook groups into one user-level hook file.
+     pub(crate) fn install_settings(
+         kind: SettingsKind,
+@@ -2893,50 +3185,58 @@ pub(crate) mod legacy {
+             .then(|| {
+                 inspect_user_settings(kind, &file.path, &file.manifest, NativeObservation::Unknown)
+                     .ok()
+             })
+             .flatten();
+         let already = before
+             .as_ref()
+             .is_some_and(|inspection| inspection.installed);
+         let legacy = before
+             .as_ref()
+-            .is_some_and(|inspection| inspection.legacy_event_registration);
++            .is_some_and(|inspection| inspection.legacy_event_registration)
++            || (recorded.is_none()
++                && matches!(
++                    adoptable_user_settings(kind, &file.path, &argv),
++                    Ok(Some(_))
++                ));
+         if recorded.is_none() {
+             file.prepare()?;
+         }
+         let base = match &recorded {
+             Some(recorded) => recorded.original_bytes.clone(),
+             None => fs::read(&file.path).map_err(|error| {
+                 failed(format!("could not read {}: {error}", file.path.display()))
+             })?,
+         };
++        let previous_bytes = fs::read(&file.path)
++            .map_err(|error| failed(format!("could not read {}: {error}", file.path.display())))?;
+         match install_user_settings(kind, &file.path, &file.manifest, &argv, &base) {
+             Ok(installed) => {
+                 file.record(warnings);
+-                if legacy {
++                let unchanged = fs::read(&file.path).is_ok_and(|bytes| bytes == previous_bytes);
++                if legacy && !unchanged {
+                     let harness = kind.harness();
+                     warnings.push(EVENT_DOWNGRADE_WARNING.replace("<harness>", harness));
+                     if kind == SettingsKind::CodexUser {
+                         warnings.push(CODEX_RETRUST_WARNING.to_owned());
+                     }
+                 }
+                 // Adopted now: this run recorded another setup's groups in place, writing no hook.
+-                let adopted = recorded.is_none() && installed.adopted;
++                let adopted = recorded.is_none() && installed.adopted && unchanged;
+                 if adopted {
+                     warnings.push(adopted_warning(
+                         kind,
+                         &file.path,
+                         &installed.installation_id,
+                     ));
+                 }
+-                Ok((installed, already, adopted))
++                Ok((installed, already && unchanged, adopted))
+             }
+             Err(error) => {
+                 file.undo();
+                 if error == SetupError::Conflict
+                     && let Some(moved) =
+                         moved_binary_conflict(kind, &path, recorded.as_ref(), &argv)
+                 {
+                     return Err(moved);
+                 }
+                 Err(map(error))
+@@ -3032,21 +3332,49 @@ pub(crate) mod legacy {
+             NativeObservation::Unknown,
+             argv.as_deref(),
+         )
+         .map_err(|e| settings_error(e, SetupVerb::Status, kind, settings, &manifest))?;
+         report["installed"] = json!(inspection.installed);
+         report["adopted"] = adoption_json(inspection.adopted.as_ref());
+         if kind == SettingsKind::ClaudeUser {
+             report["allow_rule"] = claude::setup::allow_rule_json(inspection.allow_rule.as_ref());
+         }
+         report["observed"] = json!("unknown");
+-        if let Some(recorded) = read_settings_manifest(&manifest).ok().flatten() {
++        let recorded = read_settings_manifest(&manifest).ok().flatten();
++        let target = recorded
++            .as_ref()
++            .map(|m| m.owned.clone())
++            .or_else(|| {
++                argv.as_ref()
++                    .and_then(|argv| super::native_entries(kind, argv).ok().flatten())
++            })
++            .unwrap_or_default();
++        let owned = recorded
++            .as_ref()
++            .map(|m| {
++                m.owned
++                    .iter()
++                    .chain(&m.superseded)
++                    .cloned()
++                    .collect::<Vec<_>>()
++            })
++            .unwrap_or_default();
++        report["registration_conflict"] = super::config_bytes(settings)
++            .and_then(|bytes| super::root(&bytes))
++            .map(|value| {
++                json!(super::conflicting_native_registration(
++                    &value, kind, &target, &owned
++                ))
++            })
++            .unwrap_or(Value::Null);
++        if let Some(recorded) = recorded {
++            report["commands"] = super::commands_json(&recorded.owned);
+             report["recorded_phase"] = json!(match recorded.phase {
+                 lib::InstallPhase::Prepared => "prepared",
+                 lib::InstallPhase::Installed => "installed",
+             });
+         }
+         if let Some(command) = recorded_command(&manifest) {
+             report["command"] = json!(command);
+         } else if let Some(adoption) = &inspection.adopted
+             && let Some(argv) = &argv
+             && let Ok(command) = shell_command(argv)
+@@ -3057,21 +3385,22 @@ pub(crate) mod legacy {
+             ));
+         }
+         if let Ok(argv) = env.hook_argv(match kind {
+             SettingsKind::ClaudeUser => Harness::Claude,
+             SettingsKind::CodexUser => Harness::Codex,
+         }) && let Ok(expected) = shell_command(&argv)
+         {
+             report["current_command_matches"] = json!(
+                 report["command"]
+                     .as_str()
+-                    .is_some_and(|recorded| recorded.starts_with(&format!("{expected} # ")))
++                    .is_some_and(|recorded| recorded == expected
++                        || recorded.starts_with(&format!("{expected} # ")))
+             );
+         }
+         Ok(())
+     }
+ 
+     pub(crate) fn user_inspection(
+         harness: Harness,
+         env: &SetupEnv,
+     ) -> Result<(PathBuf, lib::HookInspection), String> {
+         let (kind, file) = match harness {
+diff --git a/tests/harness/canary_payloads.rs b/tests/harness/canary_payloads.rs
+index 0fbaccde..31760a7b 100644
+--- a/tests/harness/canary_payloads.rs
++++ b/tests/harness/canary_payloads.rs
+@@ -78,20 +78,30 @@ fn harness_of(name: &str) -> Option<crate::harness::context::Harness> {
+ 
+ /// Whether the witness recorded `<stem>.argv` for a hook invocation of `harness`: its arguments
+ /// (one per line) end `hook <harness>` or `hook <harness> --event NAME` (setup registers each hook
+ /// with its event). Returns `Some(registered event)` for a hook capture (`Some(None)` for the
+ /// legacy form without `--event`), `None` otherwise. A capture without that `.argv` is some other
+ /// herdr-threads invocation (or not a witness capture) and is never parsed as a payload.
+ fn hook_argv_event(stdin_path: &Path, harness: &str) -> Option<Option<String>> {
+     let argv = std::fs::read_to_string(stdin_path.with_extension("argv")).ok()?;
+     let args: Vec<&str> = argv.lines().collect();
+     match args.as_slice() {
++        [.., "hook-event", h, name]
++            if *h == harness
++                && match harness {
++                    "claude" => ["SessionStart", "PreToolUse"].contains(name),
++                    "codex" => ["SessionStart", "SubagentStart", "PreToolUse"].contains(name),
++                    _ => false,
++                } =>
++        {
++            Some(Some((*name).to_owned()))
++        }
+         [.., "hook", h, "--event", name] if *h == harness => Some(Some((*name).to_owned())),
+         [.., "hook", h] if *h == harness => Some(None),
+         _ => None,
+     }
+ }
+ 
+ /// One captured payload: display name, event label, the event its hook was registered for, bytes.
+ struct Captured {
+     name: String,
+     event: String,
+@@ -721,10 +731,42 @@ fn planted_capture_reports_contract_classification() {
+     );
+     assert_eq!(
+         payloads[2]["contract"],
+         serde_json::json!({"kind": "ok", "event": "SessionStart", "field": null})
+     );
+     assert_eq!(
+         run.report["contract_id"],
+         contract_id(contract_for("claude").unwrap())
+     );
+ }
++
++#[test]
++fn stable_capture_argv_is_replayed_only_for_declared_native_events() {
++    let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
++    std::fs::create_dir(&dir).unwrap();
++    let stdin = dir.join("capture.stdin");
++    for (argv, harness, expected) in [
++        (
++            "--state-dir\n/s\n--host-endpoint\n/h\nhook-event\nclaude\nSessionStart\n",
++            "claude",
++            Some(Some("SessionStart".to_owned())),
++        ),
++        (
++            "hook-event\ncodex\nSubagentStart\n",
++            "codex",
++            Some(Some("SubagentStart".to_owned())),
++        ),
++        ("hook-event\nclaude\nSubagentStart\n", "claude", None),
++        ("hook-event\nclaude\nBogus\n", "claude", None),
++        ("hook-event\nclaude\nSessionStart\nextra\n", "claude", None),
++        (
++            "hook\nclaude\n--event\nSessionStart\n",
++            "claude",
++            Some(Some("SessionStart".to_owned())),
++        ),
++        ("hook\nclaude\n", "claude", Some(None)),
++    ] {
++        std::fs::write(stdin.with_extension("argv"), argv).unwrap();
++        assert_eq!(hook_argv_event(&stdin, harness), expected, "{argv}");
++    }
++    std::fs::remove_dir_all(&dir).unwrap();
++}
+diff --git a/tests/harness/setup.rs b/tests/harness/setup.rs
+index 5842ef83..1bf3bdcd 100644
+--- a/tests/harness/setup.rs
++++ b/tests/harness/setup.rs
+@@ -405,21 +405,21 @@ fn codex_user_hooks_install_inspect_and_remove_keep_existing_groups() {
+     assert_eq!(start.len(), 2);
+     assert_eq!(
+         start[0]["hooks"][0]["command"],
+         "bash '/h/herdr-agent-state.sh' session"
+     );
+     assert_eq!(value["hooks"]["PreToolUse"][0]["matcher"], "^Bash$");
+     assert!(
+         value["hooks"]["SubagentStart"][0]["hooks"][0]["command"]
+             .as_str()
+             .unwrap()
+-            .contains("# herdr-threads-owner:")
++            .ends_with("'hook-event' 'codex' 'SubagentStart'")
+     );
+     assert!(value.get("permissions").is_none());
+     let status =
+         inspect_user_settings(kind, &config, &manifest, NativeObservation::Unknown).unwrap();
+     assert!(status.installed);
+     assert!(status.allow_rule.is_none());
+     assert_eq!(status.configured_hook.unwrap().scope, "user");
+     // Idempotent.
+     assert_eq!(
+         install_user_settings(kind, &config, &manifest, &argv, original).unwrap(),
+@@ -2355,34 +2355,27 @@ fn assert_event_per_group(entries: &[OwnedEntry], base: &str) {
+         );
+     }
+ }
+ 
+ #[test]
+ fn claude_setup_registers_event_per_group() {
+     let (dir, config, manifest_path) = claude_scope();
+     fs::write(&config, b"{}").unwrap();
+     let argv = vec!["/x/herdr-threads".into(), "hook".into(), "claude".into()];
+     let manifest = install_claude_user(&config, &manifest_path, &argv, b"{}").unwrap();
+-    let base = format!(
+-        "{} # herdr-threads-owner:{}",
+-        shell_command(&argv).unwrap(),
+-        manifest.installation_id
+-    );
+     assert_eq!(manifest.owned.len(), 2);
+-    assert_event_per_group(&manifest.owned, &base);
+-    assert_eq!(
+-        command_of(&manifest.owned[0]),
+-        format!(
+-            "'/x/herdr-threads' 'hook' 'claude' '--event' 'SessionStart' # herdr-threads-owner:{}",
+-            manifest.installation_id
+-        )
+-    );
++    for entry in &manifest.owned {
++        assert_eq!(
++            command_of(entry),
++            format!("'/x/herdr-threads' 'hook-event' 'claude' '{}'", entry.event)
++        );
++    }
+     // The file carries exactly the recorded groups.
+     let installed: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+     for entry in &manifest.owned {
+         assert_eq!(installed["hooks"][&entry.event], json!([entry.group]));
+     }
+     remove_claude_user(&config, &manifest_path).unwrap();
+     fs::remove_dir_all(dir).unwrap();
+ }
+ 
+ #[test]
+@@ -2391,46 +2384,47 @@ fn codex_setup_registers_event_per_group() {
+     fs::write(&config, b"{}").unwrap();
+     let argv = vec!["/x/herdr-threads".into(), "hook".into(), "codex".into()];
+     let manifest = install_user_settings(
+         SettingsKind::CodexUser,
+         &config,
+         &manifest_path,
+         &argv,
+         b"{}",
+     )
+     .unwrap();
+-    let base = format!(
+-        "{} # herdr-threads-owner:{}",
+-        shell_command(&argv).unwrap(),
+-        manifest.installation_id
+-    );
+     let events: Vec<&str> = manifest.owned.iter().map(|e| e.event.as_str()).collect();
+     assert_eq!(events, ["SessionStart", "SubagentStart", "PreToolUse"]);
+-    assert_event_per_group(&manifest.owned, &base);
++    for entry in &manifest.owned {
++        assert_eq!(
++            command_of(entry),
++            format!("'/x/herdr-threads' 'hook-event' 'codex' '{}'", entry.event)
++        );
++    }
+     fs::remove_dir_all(dir).unwrap();
+ }
+ 
+ #[test]
+ fn codex_session_plan_registers_event_per_group() {
+     let argv: Vec<String> = vec!["/x/herdr-threads".into(), "hook".into(), "codex".into()];
+     let plan = plan_codex_for_version(&[], &argv, &pinned()).unwrap();
+-    let base = shell_command(&argv).unwrap();
+     assert_eq!(plan.owned.len(), 3);
+     for entry in &plan.owned {
+-        assert_eq!(command_of(entry), event_command(&base, &entry.event));
+-        assert!(command_of(entry).ends_with(&format!(" '--event' '{}'", entry.event)));
++        assert_eq!(
++            command_of(entry),
++            format!("'/x/herdr-threads' 'hook-event' 'codex' '{}'", entry.event)
++        );
+     }
+     // The session `-c` overrides carry the evented commands.
+     let flags = plan.session_config.join("\n");
+     for event in ["SessionStart", "SubagentStart", "PreToolUse"] {
+         assert!(
+-            flags.contains(&format!("'hook' 'codex' '--event' '{event}'")),
++            flags.contains(&format!("'hook-event' 'codex' '{event}'")),
+             "{event}: {flags}"
+         );
+     }
+ }
+ 
+ #[test]
+ fn event_command_and_base_command_round_trip() {
+     let marker = " # herdr-threads-owner:0b5e8f3c-1111-4222-8333-444455556666";
+     let quoted = "'/x/it'\\''s here/herdr-threads' 'hook' 'claude'";
+     for base in [
+@@ -2454,38 +2448,21 @@ fn event_command_and_base_command_round_trip() {
+             assert_eq!(base_command(&base, event), base.as_str());
+             assert_eq!(base_command(&evented, "Stop"), evented.as_str());
+         }
+     }
+ }
+ 
+ /// Rewrites a current installation into the form made before per-event registration: every
+ /// `--event` pair removed from the settings and the manifest's recorded groups, with consistent
+ /// fingerprints.
+ fn downgrade_to_legacy_registration(config: &std::path::Path, manifest_path: &std::path::Path) {
+-    let mut manifest = read_manifest_file(manifest_path);
+-    let mut text = String::from_utf8(fs::read(config).unwrap()).unwrap();
+-    for entry in &mut manifest.owned {
+-        let pair = format!(" '--event' '{}'", entry.event);
+-        assert!(
+-            text.contains(&pair),
+-            "{} not evented in the file",
+-            entry.event
+-        );
+-        text = text.replace(&pair, "");
+-        let command = command_of(entry).replace(&pair, "");
+-        entry.group["hooks"][0]["command"] = json!(command);
+-        entry.fingerprint = group_fingerprint(&entry.group);
+-    }
+-    assert!(!text.contains("--event"));
+-    fs::write(config, text.as_bytes()).unwrap();
+-    manifest.installed_fingerprint = format!("sha256:{:x}", sha2::Sha256::digest(text.as_bytes()));
+-    fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
++    seed_uuid_registration(config, manifest_path, false);
+ }
+ 
+ #[test]
+ fn legacy_install_is_installed_but_flagged() {
+     for (kind, harness_word) in [
+         (SettingsKind::ClaudeUser, "claude"),
+         (SettingsKind::CodexUser, "codex"),
+     ] {
+         let (dir, config, manifest_path) = if kind == SettingsKind::ClaudeUser {
+             claude_scope()
+@@ -2528,21 +2505,21 @@ fn legacy_install_is_installed_but_flagged() {
+ fn a_mixed_event_registration_is_neither_current_nor_legacy() {
+     let (dir, config, manifest_path) = claude_scope();
+     fs::write(&config, b"{}").unwrap();
+     let argv = vec!["/x/herdr-threads".into(), "hook".into(), "claude".into()];
+     install_claude_user(&config, &manifest_path, &argv, b"{}").unwrap();
+     // Strip the pair from the SessionStart group only.
+     let mut manifest = read_manifest_file(&manifest_path);
+     let mut text = String::from_utf8(fs::read(&config).unwrap()).unwrap();
+     let entry = &mut manifest.owned[0];
+     assert_eq!(entry.event, "SessionStart");
+-    let pair = " '--event' 'SessionStart'";
++    let pair = " 'SessionStart'";
+     text = text.replace(pair, "");
+     entry.group["hooks"][0]["command"] = json!(command_of(entry).replace(pair, ""));
+     entry.fingerprint = group_fingerprint(&entry.group);
+     fs::write(&config, text.as_bytes()).unwrap();
+     manifest.installed_fingerprint = format!("sha256:{:x}", sha2::Sha256::digest(text.as_bytes()));
+     fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+     let status = inspect_claude_user(&config, &manifest_path, NativeObservation::Unknown).unwrap();
+     assert!(!status.installed && !status.legacy_event_registration);
+     fs::remove_dir_all(dir).unwrap();
+ }
+@@ -2569,45 +2546,45 @@ fn setup_upgrades_legacy_registration() {
+             harness_word.into(),
+         ];
+         install_user_settings(kind, &config, &manifest_path, &argv, user_hooks).unwrap();
+         downgrade_to_legacy_registration(&config, &manifest_path);
+         let legacy_owned = read_manifest_file(&manifest_path).owned;
+ 
+         let upgraded =
+             install_user_settings(kind, &config, &manifest_path, &argv, user_hooks).unwrap();
+         assert_eq!(upgraded.phase, InstallPhase::Installed);
+         assert!(upgraded.superseded.is_empty());
+-        let base = format!(
+-            "{} # herdr-threads-owner:{}",
+-            shell_command(&argv).unwrap(),
+-            upgraded.installation_id
+-        );
+-        assert_event_per_group(&upgraded.owned, &base);
++        for entry in &upgraded.owned {
++            assert_eq!(
++                command_of(entry),
++                format!(
++                    "'/x/herdr-threads' 'hook-event' '{harness_word}' '{}'",
++                    entry.event
++                )
++            );
++        }
+         assert_ne!(upgraded.owned, legacy_owned);
+         // No legacy group is left behind: every owned group of each event is the evented one.
+         let value: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+         let text = String::from_utf8(fs::read(&config).unwrap()).unwrap();
+         for legacy in &legacy_owned {
+             let legacy_command = command_of(legacy);
+             let groups = value["hooks"][&legacy.event].as_array().unwrap();
+             assert!(
+                 groups
+                     .iter()
+                     .all(|g| g["hooks"][0]["command"] != json!(legacy_command)),
+                 "{} still has its legacy group",
+                 legacy.event
+             );
+         }
+-        assert_eq!(
+-            text.matches("herdr-threads-owner:").count(),
+-            upgraded.owned.len()
+-        );
++        assert_eq!(text.matches("herdr-threads-owner:").count(), 0);
+         let status =
+             inspect_user_settings(kind, &config, &manifest_path, NativeObservation::Unknown)
+                 .unwrap();
+         assert!(status.installed && !status.legacy_event_registration);
+         // The user's own hooks survive, and uninstall removes everything added.
+         remove_user_settings(kind, &config, &manifest_path).unwrap();
+         let after: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+         let before: Value = serde_json::from_slice(user_hooks).unwrap();
+         assert_eq!(after["other"], before["other"]);
+         assert_eq!(after["hooks"].get("Stop"), before["hooks"].get("Stop"));
+@@ -2620,28 +2597,29 @@ fn setup_upgrades_legacy_registration() {
+         fs::remove_dir_all(dir).unwrap();
+     }
+ }
+ 
+ #[test]
+ fn adoption_finds_evented_marked_copy() {
+     let (dir, config, manifest_path) = codex_scope();
+     let (other_dir, other_config, other_manifest) = codex_scope();
+     fs::write(&config, b"{}").unwrap();
+     let argv: Vec<String> = vec!["/x/herdr-threads".into(), "hook".into(), "codex".into()];
+-    let installed = install_user_settings(
++    install_user_settings(
+         SettingsKind::CodexUser,
+         &config,
+         &manifest_path,
+         &argv,
+         b"{}",
+     )
+     .unwrap();
++    let installed = seed_uuid_registration(&config, &manifest_path, true);
+     // A second CODEX_HOME holding a byte copy of the hooks file (trust travels with it).
+     fs::copy(&config, &other_config).unwrap();
+     let adoptable = adoptable_user_settings(SettingsKind::CodexUser, &other_config, &argv)
+         .unwrap()
+         .expect("an exact evented marked copy is adoptable");
+     assert_eq!(adoptable.installation_id, installed.installation_id);
+     assert_event_per_group(
+         &adoptable.owned,
+         &format!(
+             "{} # herdr-threads-owner:{}",
+@@ -2866,10 +2844,562 @@ fn user_config_without_settings_is_still_backed_up() {
+     for empty in [&b""[..], b"{}", b" {\n}\n"] {
+         fs::write(&config, empty).unwrap();
+         write_user_config(&config, empty, b"{\"a\":1}").unwrap();
+         assert_eq!(fs::read(&config).unwrap(), b"{\"a\":1}");
+     }
+     let mut expected = vec![b"".to_vec(), b"{}".to_vec(), b" {\n}\n".to_vec()];
+     expected.sort();
+     assert_eq!(user_config_backups(&config), expected);
+     fs::remove_dir_all(dir).unwrap();
+ }
++
++/// Stable reinstall must reuse exact owned groups at their current positions. A UUID belongs
++/// in the private manifest, never in native command/trust-key identity.
++#[test]
++fn stable_owned_reinstall_preserves_identity_positions_and_foreign_groups() {
++    for (kind, harness) in [
++        (SettingsKind::ClaudeUser, "claude"),
++        (SettingsKind::CodexUser, "codex"),
++    ] {
++        let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
++        fs::create_dir(&dir).unwrap();
++        let config = dir.join(kind.file_name());
++        let manifest_path = dir.join("ownership.json");
++        let base = br#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"before"}]}]},"unrelated":17}"#;
++        fs::write(&config, base).unwrap();
++        let argv = vec![
++            "/x/herdr-threads".into(),
++            "--state-dir".into(),
++            "/route state".into(),
++            "--host-endpoint".into(),
++            "/route.sock".into(),
++            "hook".into(),
++            harness.into(),
++        ];
++        let first = install_user_settings(kind, &config, &manifest_path, &argv, base).unwrap();
++        assert!(!first.installation_id.is_empty());
++        for entry in &first.owned {
++            assert_eq!(
++                command_of(entry),
++                format!(
++                    "'/x/herdr-threads' '--state-dir' '/route state' '--host-endpoint' '/route.sock' 'hook-event' '{harness}' '{}'",
++                    entry.event
++                )
++            );
++        }
++        let mut changed: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
++        changed["hooks"]["SessionStart"]
++            .as_array_mut()
++            .unwrap()
++            .push(json!({"hooks":[{"type":"command","command":"after"}]}));
++        let current = serde_json::to_vec(&changed).unwrap();
++        fs::write(&config, &current).unwrap();
++        let again = install_user_settings(kind, &config, &manifest_path, &argv, base).unwrap();
++        assert_eq!(again.installation_id, first.installation_id);
++        assert_eq!(again.owned, first.owned);
++        assert_eq!(fs::read(&config).unwrap(), current);
++        assert!(
++            inspect_user_settings(kind, &config, &manifest_path, NativeObservation::Unknown)
++                .unwrap()
++                .installed
++        );
++        remove_user_settings(kind, &config, &manifest_path).unwrap();
++        let removed: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
++        assert_eq!(removed["unrelated"], 17);
++        assert_eq!(
++            removed["hooks"]["SessionStart"].as_array().unwrap().len(),
++            2
++        );
++        fs::remove_dir_all(&dir).unwrap();
++    }
++}
++
++/// Exact identical commands without this file's manifest remain foreign. Setup and status
++/// cannot steal them; a recorded owned group edited by its user cannot be removed.
++#[test]
++fn stable_foreign_identical_and_owned_drift_are_preserved() {
++    for (kind, harness) in [
++        (SettingsKind::ClaudeUser, "claude"),
++        (SettingsKind::CodexUser, "codex"),
++    ] {
++        let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
++        fs::create_dir(&dir).unwrap();
++        let config = dir.join(kind.file_name());
++        let manifest_path = dir.join("ownership.json");
++        let argv = vec!["/x/herdr-threads".into(), "hook".into(), harness.into()];
++        fs::write(&config, b"{}").unwrap();
++        let first = install_user_settings(kind, &config, &manifest_path, &argv, b"{}").unwrap();
++        let foreign = fs::read(&config).unwrap();
++        fs::remove_file(&manifest_path).unwrap();
++        assert_eq!(
++            install_user_settings(kind, &config, &manifest_path, &argv, &foreign),
++            Err(SetupError::Conflict)
++        );
++        assert!(!manifest_path.exists());
++        assert_eq!(fs::read(&config).unwrap(), foreign);
++        assert!(
++            !inspect_user_settings_for(
++                kind,
++                &config,
++                &manifest_path,
++                NativeObservation::Unknown,
++                Some(&argv)
++            )
++            .unwrap()
++            .installed
++        );
++        fs::write(&manifest_path, serde_json::to_vec(&first).unwrap()).unwrap();
++        for index in [0, 1] {
++            let mut duplicate: Value = serde_json::from_slice(&foreign).unwrap();
++            let group = duplicate["hooks"]["SessionStart"][0].clone();
++            duplicate["hooks"]["SessionStart"]
++                .as_array_mut()
++                .unwrap()
++                .insert(index, group);
++            let bytes = serde_json::to_vec(&duplicate).unwrap();
++            fs::write(&config, &bytes).unwrap();
++            assert_eq!(
++                install_user_settings(kind, &config, &manifest_path, &argv, b"{}"),
++                Err(SetupError::Conflict)
++            );
++            assert_eq!(
++                remove_user_settings(kind, &config, &manifest_path),
++                Err(SetupError::Conflict)
++            );
++            assert!(
++                !inspect_user_settings(kind, &config, &manifest_path, NativeObservation::Unknown)
++                    .unwrap()
++                    .installed
++            );
++            assert_eq!(fs::read(&config).unwrap(), bytes);
++        }
++        let mut drift: Value = serde_json::from_slice(&foreign).unwrap();
++        drift["hooks"]["SessionStart"][0]["hooks"][0]["timeout"] = json!(99);
++        let drift = serde_json::to_vec(&drift).unwrap();
++        fs::write(&config, &drift).unwrap();
++        assert_eq!(
++            install_user_settings(kind, &config, &manifest_path, &argv, b"{}"),
++            Err(SetupError::Conflict)
++        );
++        assert_eq!(
++            remove_user_settings(kind, &config, &manifest_path),
++            Err(SetupError::Conflict)
++        );
++        assert_eq!(fs::read(&config).unwrap(), drift);
++        fs::remove_dir_all(&dir).unwrap();
++    }
++}
++
++/// Seed a genuinely recorded historical installation, rather than depending on today's
++/// producer to emit yesterday's bytes. Manifest and every group fingerprint agree.
++fn seed_uuid_registration(
++    config: &std::path::Path,
++    manifest_path: &std::path::Path,
++    evented: bool,
++) -> OwnershipManifest {
++    let mut manifest = read_manifest_file(manifest_path);
++    let harness = manifest.harness.clone();
++    let mut settings: Value = serde_json::from_slice(&fs::read(config).unwrap()).unwrap();
++    for entry in &mut manifest.owned {
++        let old_group = entry.group.clone();
++        let event = if evented {
++            format!(" '--event' '{}'", entry.event)
++        } else {
++            String::new()
++        };
++        entry.group["hooks"][0]["command"] = json!(format!(
++            "'/x/herdr-threads' 'hook' '{harness}'{event} # herdr-threads-owner:{}",
++            manifest.installation_id
++        ));
++        entry.fingerprint = group_fingerprint(&entry.group);
++        let groups = settings["hooks"][&entry.event].as_array_mut().unwrap();
++        let index = groups.iter().position(|g| g == &old_group).unwrap();
++        groups[index] = entry.group.clone();
++    }
++    manifest.version = 2;
++    let bytes = serde_json::to_vec(&settings).unwrap();
++    manifest.installed_fingerprint = format!("sha256:{:x}", sha2::Sha256::digest(&bytes));
++    fs::write(config, bytes).unwrap();
++    fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
++    manifest
++}
++
++/// Only explicit setup migrates old owned groups. Durable intent/publication interruptions
++/// recover with the same identity and preserve unrelated groups in their original order.
++#[test]
++fn stable_uuid_and_shared_migration_recovers_and_preserves_order() {
++    for kind in [SettingsKind::ClaudeUser, SettingsKind::CodexUser] {
++        for evented in [false, true] {
++            for fault in [
++                InstallFault::None,
++                InstallFault::InterruptAfterIntent,
++                InstallFault::InterruptAfterPublication,
++            ] {
++                let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
++                fs::create_dir(&dir).unwrap();
++                let config = dir.join(kind.file_name());
++                let manifest_path = dir.join("ownership.json");
++                let argv = vec![
++                    "/x/herdr-threads".into(),
++                    "hook".into(),
++                    kind.harness().into(),
++                ];
++                fs::write(&config, b"{}").unwrap();
++                install_user_settings(kind, &config, &manifest_path, &argv, b"{}").unwrap();
++                let legacy = seed_uuid_registration(&config, &manifest_path, evented);
++                let mut settings: Value =
++                    serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
++                let groups = settings["hooks"]["SessionStart"].as_array_mut().unwrap();
++                groups.insert(0, json!({"hooks":[{"type":"command","command":"before"}]}));
++                groups.push(json!({"hooks":[{"type":"command","command":"after"}]}));
++                settings["unrelated"] = json!({"keep":true});
++                fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
++                let before = fs::read(&config).unwrap();
++                let status = inspect_user_settings(
++                    kind,
++                    &config,
++                    &manifest_path,
++                    NativeObservation::Unknown,
++                )
++                .unwrap();
++                assert!(status.installed);
++                assert_eq!(fs::read(&config).unwrap(), before, "status cannot migrate");
++                let result = install_user_settings_with_fault(
++                    kind,
++                    &config,
++                    &manifest_path,
++                    &argv,
++                    b"{}",
++                    fault,
++                    || {},
++                );
++                if fault != InstallFault::None {
++                    assert_eq!(result, Err(SetupError::Io));
++                }
++                let migrated =
++                    install_user_settings(kind, &config, &manifest_path, &argv, b"{}").unwrap();
++                assert_eq!(migrated.installation_id, legacy.installation_id);
++                assert!(migrated.superseded.is_empty());
++                for entry in &migrated.owned {
++                    assert_eq!(
++                        command_of(entry),
++                        format!(
++                            "'/x/herdr-threads' 'hook-event' '{}' '{}'",
++                            kind.harness(),
++                            entry.event
++                        )
++                    );
++                }
++                let current: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
++                assert_eq!(
++                    current["hooks"]["SessionStart"][0],
++                    settings["hooks"]["SessionStart"][0]
++                );
++                assert_eq!(
++                    current["hooks"]["SessionStart"][2],
++                    settings["hooks"]["SessionStart"][2]
++                );
++                remove_user_settings(kind, &config, &manifest_path).unwrap();
++                let removed: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
++                assert_eq!(removed["unrelated"], json!({"keep":true}));
++                assert_eq!(
++                    removed["hooks"]["SessionStart"].as_array().unwrap().len(),
++                    2
++                );
++                fs::remove_dir_all(&dir).unwrap();
++            }
++        }
++    }
++}
++
++#[test]
++fn stable_codex_layer_command_is_identified_without_adoption() {
++    let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
++    fs::create_dir(&dir).unwrap();
++    let config = dir.join("config.toml");
++    fs::write(&config, "[[hooks.SessionStart]]\nhooks = [{ type = \"command\", command = \"'/x/herdr-threads' '--state-dir' '/route' 'hook-event' 'codex' 'SessionStart'\" }]\n").unwrap();
++    let matching = crate::harness::codex::setup::observe_codex_layer(
++        &config,
++        "'/x/herdr-threads' '--state-dir' '/route' 'hook' 'codex'",
++    )
++    .unwrap();
++    assert!(
++        matching.has_owned_command,
++        "an identical registered event in another layer would execute twice"
++    );
++    let other = crate::harness::codex::setup::observe_codex_layer(
++        &config,
++        "'/x/herdr-threads' '--state-dir' '/other' 'hook' 'codex'",
++    )
++    .unwrap();
++    assert!(!other.has_owned_command);
++    assert!(other.has_other_herdr_threads_hook);
++    fs::remove_dir_all(dir).unwrap();
++}
++
++#[test]
++fn stable_same_event_foreign_route_conflicts_without_config_changes() {
++    for kind in [SettingsKind::ClaudeUser, SettingsKind::CodexUser] {
++        let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
++        fs::create_dir(&dir).unwrap();
++        let config = dir.join(kind.file_name());
++        let manifest = dir.join("ownership.json");
++        let base = serde_json::to_vec(&json!({"unrelated": 19, "hooks":{"SessionStart":[{"hooks":[{"type":"command","command":format!("'/x/herdr-threads' '--state-dir' '/foreign' 'hook-event' '{}' 'SessionStart'", kind.harness())}]}]}})).unwrap();
++        fs::write(&config, &base).unwrap();
++        let argv = vec![
++            "/x/herdr-threads".into(),
++            "--state-dir".into(),
++            "/route".into(),
++            "hook".into(),
++            kind.harness().into(),
++        ];
++        assert_eq!(
++            install_user_settings(kind, &config, &manifest, &argv, &base),
++            Err(SetupError::Conflict)
++        );
++        assert_eq!(fs::read(&config).unwrap(), base);
++        assert!(!manifest.exists());
++        fs::remove_dir_all(dir).unwrap();
++    }
++    for kind in [SettingsKind::ClaudeUser, SettingsKind::CodexUser] {
++        let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
++        fs::create_dir(&dir).unwrap();
++        let config = dir.join(kind.file_name());
++        let manifest = dir.join("ownership.json");
++        let argv = vec![
++            "/x/herdr-threads".into(),
++            "--state-dir".into(),
++            "/route".into(),
++            "hook".into(),
++            kind.harness().into(),
++        ];
++        fs::write(&config, b"{}").unwrap();
++        install_user_settings(kind, &config, &manifest, &argv, b"{}").unwrap();
++        let recorded = fs::read(&manifest).unwrap();
++        let mut value: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
++        value["hooks"]["SessionStart"].as_array_mut().unwrap().push(json!({"hooks":[{"type":"command","command":format!("'/x/herdr-threads' '--state-dir' '/foreign' 'hook-event' '{}' 'SessionStart'", kind.harness())}]}));
++        let current = serde_json::to_vec(&value).unwrap();
++        fs::write(&config, &current).unwrap();
++        assert_eq!(
++            install_user_settings(kind, &config, &manifest, &argv, b"{}"),
++            Err(SetupError::Conflict)
++        );
++        assert_eq!(fs::read(&config).unwrap(), current);
++        assert_eq!(fs::read(&manifest).unwrap(), recorded);
++        let status_manifest =
++            legacy::manifest_path(&dir, &format!("{}-user", kind.harness()), &config);
++        fs::create_dir_all(status_manifest.parent().unwrap()).unwrap();
++        fs::write(&status_manifest, &recorded).unwrap();
++        let env = crate::cli::setup::SetupEnv {
++            home: Some(dir.as_os_str().to_owned()),
++            declared_environment: Default::default(),
++            executable: "/x/herdr-threads".into(),
++            state_dir: Some(dir.clone()),
++            cwd: dir.clone(),
++            path: None,
++            codex_home: Some(dir.clone()),
++            claude_config_dir: Some(dir.clone()),
++            host_endpoint: Some(dir.join("host.sock")),
++            instance_source: Value::Null,
++        };
++        let mut status = json!({});
++        legacy::settings_status(kind, &env, &config, &mut status).unwrap();
++        assert_eq!(
++            status["installed"], true,
++            "the exact owned registration still exists"
++        );
++        assert_eq!(status["registration_conflict"], true, "{status}");
++        assert_eq!(
++            fs::read(&config).unwrap(),
++            current,
++            "status must only inspect"
++        );
++        assert_eq!(fs::read(&manifest).unwrap(), recorded);
++        // Unsetup can still remove this installation's exact groups without touching the foreign route.
++        remove_user_settings(kind, &config, &manifest).unwrap();
++        let remaining: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
++        assert_eq!(
++            remaining["hooks"]["SessionStart"].as_array().unwrap().len(),
++            1
++        );
++        assert!(
++            remaining["hooks"]["SessionStart"][0]["hooks"][0]["command"]
++                .as_str()
++                .unwrap()
++                .contains("'/foreign'")
++        );
++        fs::remove_dir_all(dir).unwrap();
++    }
++}
++
++#[test]
++fn stable_quoted_owner_marker_text_is_not_an_ownership_suffix() {
++    let (dir, config, manifest) = claude_scope();
++    fs::write(&config, b"{}").unwrap();
++    let argv = vec![
++        "/x/ # herdr-threads-owner:literal/threads".into(),
++        "--state-dir".into(),
++        "/state/ # herdr-threads-owner:literal".into(),
++        "hook".into(),
++        "claude".into(),
++    ];
++    let first =
++        install_user_settings(SettingsKind::ClaudeUser, &config, &manifest, &argv, b"{}").unwrap();
++    let bytes = fs::read(&config).unwrap();
++    let again =
++        install_user_settings(SettingsKind::ClaudeUser, &config, &manifest, &argv, b"{}").unwrap();
++    assert_eq!(again.owned, first.owned);
++    assert_eq!(again.installation_id, first.installation_id);
++    assert_eq!(fs::read(&config).unwrap(), bytes);
++    remove_user_settings(SettingsKind::ClaudeUser, &config, &manifest).unwrap();
++    assert_eq!(fs::read(&config).unwrap(), b"{}");
++    fs::remove_dir_all(dir).unwrap();
++}
++
++#[test]
++fn stable_v1_shared_owned_migration_after_intent_recovers() {
++    for kind in [SettingsKind::ClaudeUser, SettingsKind::CodexUser] {
++        let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
++        fs::create_dir(&dir).unwrap();
++        let config = dir.join(kind.file_name());
++        let manifest_path = dir.join("ownership.json");
++        let argv = vec![
++            "/x/herdr-threads".into(),
++            "hook".into(),
++            kind.harness().into(),
++        ];
++        fs::write(&config, b"{}").unwrap();
++        install_user_settings(kind, &config, &manifest_path, &argv, b"{}").unwrap();
++        let mut legacy = seed_uuid_registration(&config, &manifest_path, false);
++        let mut value: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
++        for entry in &mut legacy.owned {
++            let command = format!("'/x/herdr-threads' 'hook' '{}'", kind.harness());
++            entry.group["hooks"][0]["command"] = json!(command);
++            entry.fingerprint = group_fingerprint(&entry.group);
++            value["hooks"][&entry.event] = json!([entry.group]);
++        }
++        legacy.version = 1;
++        legacy.installation_id.clear();
++        let bytes = serde_json::to_vec(&value).unwrap();
++        legacy.installed_fingerprint = format!("sha256:{:x}", sha2::Sha256::digest(&bytes));
++        fs::write(&config, bytes).unwrap();
++        fs::write(&manifest_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
++        assert_eq!(
++            install_user_settings_with_fault(
++                kind,
++                &config,
++                &manifest_path,
++                &argv,
++                b"{}",
++                InstallFault::InterruptAfterIntent,
++                || {}
++            ),
++            Err(SetupError::Io)
++        );
++        let migrated = install_user_settings(kind, &config, &manifest_path, &argv, b"{}").unwrap();
++        assert!(!migrated.installation_id.is_empty());
++        assert_eq!(migrated.version, 3);
++        remove_user_settings(kind, &config, &manifest_path).unwrap();
++        assert_eq!(fs::read(&config).unwrap(), b"{}");
++        fs::remove_dir_all(dir).unwrap();
++    }
++}
++
++#[test]
++fn stable_migration_result_is_not_reported_unchanged_and_warns_for_retrust() {
++    use crate::cli::setup::{SetupEnv, SetupVerb};
++    use crate::harness::setup::legacy::{OwnedFile, install_settings};
++    for recorded in [true, false] {
++        let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
++        fs::create_dir(&dir).unwrap();
++        let config = dir.join("hooks.json");
++        let manifest_path = dir.join("ownership.json");
++        let env = SetupEnv {
++            home: Some(dir.as_os_str().to_owned()),
++            declared_environment: Default::default(),
++            executable: "/x/herdr-threads".into(),
++            state_dir: Some(dir.clone()),
++            cwd: dir.clone(),
++            path: None,
++            codex_home: Some(dir.clone()),
++            claude_config_dir: None,
++            host_endpoint: Some(dir.join("host.sock")),
++            instance_source: Value::Null,
++        };
++        let argv = env
++            .hook_argv(crate::harness::context::Harness::Codex)
++            .unwrap();
++        fs::write(&config, b"{}").unwrap();
++        let mut legacy = install_user_settings(
++            SettingsKind::CodexUser,
++            &config,
++            &manifest_path,
++            &argv,
++            b"{}",
++        )
++        .unwrap();
++        let mut value: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
++        for entry in &mut legacy.owned {
++            let command = format!(
++                "{} '--event' '{}' # herdr-threads-owner:{}",
++                shell_command(&argv).unwrap(),
++                entry.event,
++                legacy.installation_id
++            );
++            entry.group["hooks"][0]["command"] = json!(command);
++            entry.fingerprint = group_fingerprint(&entry.group);
++            value["hooks"][&entry.event] = json!([entry.group]);
++        }
++        legacy.version = 2;
++        let before = serde_json::to_vec(&value).unwrap();
++        legacy.installed_fingerprint = format!("sha256:{:x}", sha2::Sha256::digest(&before));
++        fs::write(&config, &before).unwrap();
++        if recorded {
++            fs::write(&manifest_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
++        } else {
++            fs::remove_file(&manifest_path).unwrap();
++        }
++        let mut file = OwnedFile::new(config.clone(), manifest_path.clone(), b"{}");
++        let mut warnings = Vec::new();
++        let (migrated, already, adopted_unchanged) = install_settings(
++            SettingsKind::CodexUser,
++            SetupVerb::Install,
++            &env,
++            &mut file,
++            &mut warnings,
++        )
++        .unwrap();
++        assert_ne!(fs::read(&config).unwrap(), before);
++        assert_eq!(migrated.installation_id, legacy.installation_id);
++        assert!(
++            !already && !adopted_unchanged,
++            "changed registrations cannot claim unchanged results: {already}/{adopted_unchanged}"
++        );
++        assert!(
++            warnings
++                .iter()
++                .any(|w| w.contains("rewritten hook commands need")),
++            "{warnings:?}"
++        );
++        remove_user_settings(SettingsKind::CodexUser, &config, &manifest_path).unwrap();
++        fs::remove_dir_all(dir).unwrap();
++    }
++}
++
++#[test]
++fn stable_legacy_marker_boundary_ignores_quoted_path_text() {
++    let argv = vec![
++        "/x/ # herdr-threads-owner:quoted".into(),
++        "hook".into(),
++        "claude".into(),
++    ];
++    let base = shell_command(&argv).unwrap();
++    let suffix = " # herdr-threads-owner:0b5e8f3c-1111-4222-8333-444455556666";
++    assert_eq!(
++        event_command(&base, "SessionStart"),
++        format!("{base} '--event' 'SessionStart'")
++    );
++    let marked = format!("{base}{suffix}");
++    let evented = format!("{base} '--event' 'SessionStart'{suffix}");
++    assert_eq!(event_command(&marked, "SessionStart"), evented);
++    assert_eq!(base_command(&evented, "SessionStart"), marked);
++}
+diff --git a/tests/native/demo/test_demo_verify.py b/tests/native/demo/test_demo_verify.py
+index 8e8e8b43..aa1946fd 100644
+--- a/tests/native/demo/test_demo_verify.py
++++ b/tests/native/demo/test_demo_verify.py
+@@ -1,18 +1,19 @@
+ """Offline checks that the demo driver's verifier never turns missing or non-model evidence into PASS.
+ 
+ Run: python3 -m unittest tests/native/demo/test_demo_verify.py
+ Builds a real schema from migrations/ in a temp dir; no daemon, Herdr or model is involved.
+ """
+ 
+ import argparse
+ import contextlib
++import hashlib
+ import importlib.util
+ import io
+ import json
+ import os
+ import re
+ from pathlib import Path
+ import signal
+ import sqlite3
+ import tempfile
+ import time
+@@ -798,22 +799,34 @@ class SetupModeTests(unittest.TestCase):
+             host.calls.append(("ht", tag, argv, kw))
+             env = kw.get("extra_env") or {}
+             if argv[:1] == ("setup",) and rc == 0:
+                 if harness == "claude":
+                     target = Path(env["CLAUDE_CONFIG_DIR"]) / "settings.json"
+                     target.parent.mkdir(exist_ok=True)
+                     target.write_text(json.dumps({"permissions": {"allow": allow or [demo.HERDR_THREADS_ALLOW]}}))
+                 else:
+                     target = Path(env["CODEX_HOME"]) / "hooks.json"
+                     target.parent.mkdir(exist_ok=True)
+-                    target.write_text(json.dumps({"hooks": {"SessionStart": [{"hooks": [
+-                        {"type": "command", "command": "'x' 'hook' 'codex' # herdr-threads-owner:1"}]}]}}))
++                    groups = []
++                    for event in ("SessionStart", "SubagentStart", "PreToolUse"):
++                        group = {"hooks": [{"type": "command", "command": f"'/x/herdr-threads' 'hook-event' 'codex' '{event}'", "timeout": 10}]}
++                        if event == "PreToolUse":
++                            group["matcher"] = "^Bash$"
++                        digest = hashlib.sha256(json.dumps(group, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
++                        groups.append({"event": event, "group": group, "fingerprint": "sha256:" + digest})
++                    target.write_text(json.dumps({"hooks": {e["event"]: [e["group"]] for e in groups}}))
++                    manifest = d.root / "hook-ownership.json"
++                    manifest.write_text(json.dumps({"version": 3, "harness": "codex", "scope": "user", "path": str(target),
++                        "installation_id": "0b5e8f3c-1111-4222-8333-444455556666", "phase": "installed", "owned": groups}))
++                    response = json.loads(output)
++                    response["setup"]["manifest"] = str(manifest)
++                    return rc, json.dumps(response), ""
+             return rc, output, ""
+         d.ht = ht
+         return host, d
+ 
+     def test_claude_cli_setup_uses_public_argv_and_scratch_homes(self):
+         host, d = self.driver("claude", True, json.dumps({"setup": {"action": "installed", "hook_argv": ["x"]}}))
+         status, detail, _ = d.s_hooks()
+         self.assertEqual(status, demo.PASS, detail)
+         self.assertEqual(d.facts["setup_mode"], "cli")
+         call = [c for c in host.calls if c[1] == "setup:cli"][0]
+@@ -837,20 +850,71 @@ class SetupModeTests(unittest.TestCase):
+         status, detail, _ = d.s_hooks()
+         self.assertEqual(status, demo.PASS, detail)
+         argv = [c for c in host.calls if c[1] == "setup:cli"][0][2]
+         self.assertEqual(list(argv), ["setup", "codex", "--with-permissions"])
+         self.assertEqual(d.facts["codex_hook_args"], ["-c", "sandbox_workspace_write.network_access=false"])
+         shell, _, _ = d.launch_command("initial")
+         self.assertIn(f"CODEX_HOME={d.codex_setup_home()}", shell)
+         self.assertNotIn("--ignore-user-config", shell)
+         self.assertNotIn("hooks.", shell)
+ 
++    def test_codex_setup_rejects_missing_drifted_duplicate_or_invalid_manifest_evidence(self):
++        for defect in ("missing", "drift", "duplicate", "drifted_duplicate", "identity"):
++            with self.subTest(defect=defect):
++                _, d = self.driver("codex", True, json.dumps({"setup": {"scope": "user"}}))
++                d.args.codex_transport = "none"
++                install = d.ht
++                def damaged(*argv, **kw):
++                    result = install(*argv, **kw)
++                    manifest = d.root / "hook-ownership.json"
++                    if defect == "missing":
++                        manifest.unlink()
++                    elif defect == "identity":
++                        value = json.loads(manifest.read_text())
++                        value["installation_id"] = "not-an-installation-id"
++                        manifest.write_text(json.dumps(value))
++                    else:
++                        path = d.codex_setup_home() / "hooks.json"
++                        value = json.loads(path.read_text())
++                        groups = value["hooks"]["SessionStart"]
++                        if defect == "drift": groups[0]["hooks"][0]["timeout"] = 99
++                        else:
++                            groups.append(json.loads(json.dumps(groups[0])))
++                            if defect == "drifted_duplicate": groups[-1]["hooks"][0]["timeout"] = 99
++                        path.write_text(json.dumps(value))
++                    return result
++                d.ht = damaged
++                self.assertEqual(d.s_hooks()[0], demo.FAIL)
++
++    def test_codex_setup_accepts_exact_legacy_manifest_evidence(self):
++        _, d = self.driver("codex", True, json.dumps({"setup": {"scope": "user"}}))
++        d.args.codex_transport = "none"
++        install = d.ht
++        def historical(*argv, **kw):
++            result = install(*argv, **kw)
++            path = d.root / "hook-ownership.json"
++            manifest = json.loads(path.read_text())
++            manifest["version"] = 2
++            for entry in manifest["owned"]:
++                entry["group"]["hooks"][0]["command"] = (
++                    f"'/x/herdr-threads' 'hook' 'codex' '--event' '{entry['event']}' "
++                    f"# herdr-threads-owner:{manifest['installation_id']}")
++                entry["fingerprint"] = "sha256:" + hashlib.sha256(json.dumps(
++                    entry["group"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
++            path.write_text(json.dumps(manifest))
++            Path(manifest["path"]).write_text(json.dumps({"hooks": {
++                entry["event"]: [entry["group"]] for entry in manifest["owned"]}}))
++            return result
++        d.ht = historical
++        status, detail, _ = d.s_hooks()
++        self.assertEqual(status, demo.PASS, detail)
++
+     def test_codex_cli_setup_without_owned_hooks_fails(self):
+         _, d = self.driver("codex", True, json.dumps({"setup": {}}), rc=0)
+         d.ht = lambda *argv, tag, **kw: (0, json.dumps({"setup": {}}), "")
+         self.assertEqual(d.s_hooks()[0], demo.FAIL)
+ 
+     def test_cli_refusal_fails_not_falls_back(self):
+         _, d = self.driver("claude", True, "", rc=4)
+         self.assertEqual(d.s_hooks()[0], demo.FAIL)
+ 
+     def test_absent_cli_falls_back_with_label(self):
+diff --git a/tests/setup_cli.rs b/tests/setup_cli.rs
+index 68358e03..fe420fd3 100644
+--- a/tests/setup_cli.rs
++++ b/tests/setup_cli.rs
+@@ -462,21 +462,22 @@ fn installed_command_is_the_hook_entrypoint_argv() {
+         .collect::<Vec<_>>()
+         .join(" ");
+     let settings: serde_json::Value =
+         serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
+     for event in ["SessionStart", "PreToolUse"] {
+         let command = settings["hooks"][event][0]["hooks"][0]["command"]
+             .as_str()
+             .unwrap();
+         assert!(
+             command.starts_with(&format!(
+-                "{quoted} '--event' '{event}' # herdr-threads-owner:"
++                "{} '{event}'",
++                quoted.replace("'hook' 'claude'", "'hook-event' 'claude'")
+             )),
+             "{event}: {command}"
+         );
+     }
+     assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+ }
+ 
+ /// Setup creates an absent `settings.json` (and its config directory) as
+ /// `{}` and unsetup deletes exactly what setup created. Kills: refusing a
+ /// user without settings, and leaving a created `{}` file or directory.
+@@ -760,21 +761,22 @@ fn codex_setup_installs_user_hooks_and_unsetup_restores_bytes() {
+         "bash '/h/herdr-agent-state.sh' session"
+     );
+     let command = owned_codex_command(&s);
+     for event in ["SessionStart", "SubagentStart", "PreToolUse"] {
+         let groups = hooks["hooks"][event].as_array().unwrap();
+         let owned = groups.last().unwrap()["hooks"][0]["command"]
+             .as_str()
+             .unwrap();
+         assert!(
+             owned.starts_with(&format!(
+-                "{command} '--event' '{event}' # herdr-threads-owner:"
++                "{} '{event}'",
++                command.replace("'hook' 'codex'", "'hook-event' 'codex'")
+             )),
+             "{event}: {owned}"
+         );
+     }
+     assert_eq!(hooks["hooks"]["PreToolUse"][0]["matcher"], "^Bash$");
+     let trust = report["trust"]["hooks"].as_array().unwrap();
+     let keys: Vec<&str> = trust.iter().map(|k| k["key"].as_str().unwrap()).collect();
+     let file = s.hooks().display().to_string();
+     assert_eq!(
+         keys,
+@@ -936,28 +938,32 @@ fn codex_setup_keeps_existing_user_hooks_in_their_own_layers() {
+         serde_json::from_slice(&fs::read(codex_home.join("hooks.json")).unwrap()).unwrap();
+     let child = hooks["hooks"]["SubagentStart"].as_array().unwrap();
+     assert_eq!(child.len(), 2);
+     assert_eq!(child[0]["hooks"][0]["command"], "hcom child");
+     assert_eq!(hooks["hooks"]["Stop"][0]["hooks"][0]["command"], "x");
+     let command = owned_codex_command(&s);
+     for event in ["SessionStart", "SubagentStart", "PreToolUse"] {
+         let groups = hooks["hooks"][event].as_array().unwrap();
+         let owned: Vec<_> = groups
+             .iter()
+-            .filter(|g| g.to_string().contains("herdr-threads-owner"))
++            .filter(|g| {
++                g["hooks"][0]["command"]
++                    .as_str()
++                    .is_some_and(|c| c.contains("'hook-event' 'codex'"))
++            })
+             .collect();
+         assert_eq!(owned.len(), 1, "{event}");
+         assert!(
+             owned[0]["hooks"][0]["command"]
+                 .as_str()
+                 .unwrap()
+-                .starts_with(&command),
++                .starts_with(&command.replace("'hook' 'codex'", "'hook-event' 'codex'")),
+             "{event}"
+         );
+         assert!(!owned[0].to_string().contains("hcom"), "{event}");
+     }
+     assert_eq!(
+         fs::read_to_string(codex_home.join("config.toml")).unwrap(),
+         config_toml
+     );
+     assert_eq!(tree(&repo), before_repo, "project changed");
+     assert!(!s.home.join(".codex").exists());
+@@ -1551,153 +1557,61 @@ fn bare_setup_exits_nonzero_only_for_a_failed_harness() {
+     for verb in ["setup", "unsetup"] {
+         let no_state = s.command(&s.root).arg(verb).output().unwrap();
+         assert_eq!(no_state.status.code(), Some(2), "{verb}");
+         assert!(
+             text(&no_state.stderr).contains("state directory unknown"),
+             "{verb}"
+         );
+     }
+ }
+ 
+-/// A set-up `hooks.json` copied (with its Codex trust) into a second
+-/// CODEX_HOME carries the first installation's owner marker. Status and
+-/// doctor report it installed (adopted), setup adopts it without changing a
+-/// byte, re-setup is idempotent, and unsetup there removes only that file's
+-/// adopted groups while the first CODEX_HOME keeps its installation. Kills:
+-/// reporting the copy as not installed, adding a second marked set (which
+-/// changes Codex's trust hashes), unsetup touching the other CODEX_HOME, and
+-/// adopting a copy whose command really differs.
++/// Copying stable hooks into another profile does not copy the private ownership evidence.
++/// Status, setup and unsetup preserve the foreign bytes in both profiles.
+ #[test]
+-fn copied_codex_hooks_are_adopted_without_changing_bytes() {
++fn copied_stable_codex_hooks_remain_foreign_without_manifest() {
+     let s = Scratch::new();
+     s.harness("codex", "codex-cli 0.158.0");
+     fs::create_dir(&s.codex_home).unwrap();
+     let mine =
+         br#"{"hooks":{"SessionStart":[{"hooks":[{"command":"echo mine","type":"command"}]}]}}"#;
+     fs::write(s.hooks(), mine).unwrap();
+     let setup = s.run(&["setup", "codex", "--json"]);
+     assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+     let first = fs::read(s.hooks()).unwrap();
+ 
+     // The second profile: the set-up hooks.json copied byte for byte.
+     let profile = s.root.join("profile codex-1");
+     fs::create_dir(&profile).unwrap();
+     let copied = profile.join("hooks.json");
+     fs::write(&copied, &first).unwrap();
+     let run = |args: &[&str]| s.run_env(&s.root, Some(&profile), args);
+ 
+     let status = json(&run(&["--json", "setup-status", "codex"]));
+-    assert_eq!(status["installed"], true, "{status}");
+-    assert_eq!(status["adopted"]["recorded"], false, "{status}");
+-    assert_eq!(status["current_command_matches"], true, "{status}");
+-    let owner = status["adopted"]["owner"].as_str().unwrap().to_owned();
+-    assert!(
+-        status["command"]
+-            .as_str()
+-            .unwrap()
+-            .ends_with(&format!("# herdr-threads-owner:{owner}"))
+-    );
+-    let text_status = text(&run(&["setup-status"]).stdout);
+-    assert!(
+-        text_status.contains("codex: installed (adopted from another setup)"),
+-        "{text_status}"
+-    );
+-
+-    let doctor = run(&["--json", "doctor"]);
+-    let report: serde_json::Value = serde_json::from_slice(&doctor.stdout)
+-        .unwrap_or_else(|e| panic!("{e}: {}", text(&doctor.stderr)));
+-    let doctor = &report["doctor"];
+-    assert_eq!(
+-        doctor["hooks"]["codex"]["setup"]["installed"], true,
+-        "{doctor}"
+-    );
+-    assert_eq!(doctor["hooks"]["codex"]["setup"]["adopted"]["owner"], owner);
++    assert_eq!(status["installed"], false, "{status}");
++    assert!(status["adopted"].is_null(), "{status}");
++    let refused = run(&["setup", "codex", "--json"]);
++    assert!(!refused.status.success(), "{}", text(&refused.stdout));
+     assert!(
+-        doctor["limitations"]
+-            .as_array()
+-            .unwrap()
+-            .iter()
+-            .all(|l| !l.as_str().unwrap().contains("hooks are not installed")),
+-        "{doctor}"
++        text(&refused.stderr).contains("unowned identical"),
++        "{}",
++        text(&refused.stderr)
+     );
+-
+-    let adopt = run(&["setup", "codex", "--json"]);
+-    assert_eq!(adopt.status.code(), Some(0), "{}", text(&adopt.stderr));
+-    let adopt = json(&adopt);
+-    assert_eq!(adopt["action"], "adopted", "{adopt}");
+-    assert_eq!(adopt["adopted"], owner);
+     assert_eq!(fs::read(&copied).unwrap(), first);
+-    let again = json(&run(&["setup", "codex", "--json"]));
+-    assert_eq!(again["action"], "already_installed", "{again}");
++    let removed = run(&["unsetup", "codex", "--json"]);
++    assert!(removed.status.success(), "{}", text(&removed.stderr));
+     assert_eq!(fs::read(&copied).unwrap(), first);
+-    let status = json(&run(&["--json", "setup-status", "codex"]));
+-    assert_eq!(status["installed"], true);
+-    assert_eq!(status["adopted"]["recorded"], true);
+-
+-    let unsetup = run(&["unsetup", "codex", "--json"]);
+-    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
+-    let unsetup = json(&unsetup);
+-    assert_eq!(unsetup["action"], "removed");
+-    assert_eq!(unsetup["adopted"], owner);
+-    assert!(
+-        unsetup["warnings"]
+-            .as_array()
+-            .unwrap()
+-            .iter()
+-            .any(|w| w.as_str().unwrap().contains("review again")),
+-        "{unsetup}"
+-    );
+-    assert_eq!(fs::read(&copied).unwrap(), mine);
+-    // The first CODEX_HOME keeps its installation untouched.
+-    assert_eq!(fs::read(s.hooks()).unwrap(), first);
+-    assert_eq!(
+-        json(&s.run(&["--json", "setup-status", "codex"]))["installed"],
+-        true
+-    );
+-
+-    // Unsetup with no prior setup in the profile also removes only the copy.
+-    fs::write(&copied, &first).unwrap();
+-    let direct = json(&run(&["unsetup", "codex", "--json"]));
+-    assert_eq!(direct["action"], "removed", "{direct}");
+-    assert_eq!(fs::read(&copied).unwrap(), mine);
+-    assert_eq!(fs::read(s.hooks()).unwrap(), first);
+-
+-    // A copy whose command really differs (another state directory) is not
+-    // adopted: status stays not installed and setup installs its own set.
+-    let foreign = String::from_utf8(first.clone())
+-        .unwrap()
+-        .replace(&s.state.display().to_string(), "/elsewhere/state");
+-    fs::write(&copied, &foreign).unwrap();
+-    let status = json(&run(&["--json", "setup-status", "codex"]));
+-    assert_eq!(status["installed"], false, "{status}");
+-    assert!(status["adopted"].is_null());
+-    let doctor = run(&["--json", "doctor"]);
+-    let doctor: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
+-    assert_eq!(
+-        doctor["doctor"]["hooks"]["codex"]["setup"]["installed"],
+-        false
+-    );
+-    assert!(doctor["doctor"]["hooks"]["codex"]["setup"]["adopted"].is_null());
+-    let installed = json(&run(&["setup", "codex", "--json"]));
+-    assert_eq!(installed["action"], "installed", "{installed}");
+-    assert!(installed["adopted"].is_null());
+-    let unsetup = json(&run(&["unsetup", "codex", "--json"]));
+-    assert_eq!(unsetup["action"], "removed");
+-    assert_eq!(fs::read(&copied).unwrap(), foreign.as_bytes());
+     assert_eq!(fs::read(s.hooks()).unwrap(), first);
+ }
+ 
+-/// The Claude counterpart: a copied settings.json is reported installed
+-/// (adopted), adopted byte-identically, and unsetup removes only its hook
+-/// groups. Kills: Claude adoption duplicating groups or touching user rules.
++/// The Claude counterpart preserves copied stable groups and user rules as foreign.
+ #[test]
+-fn copied_claude_settings_are_adopted_without_changing_bytes() {
++fn copied_stable_claude_settings_remain_foreign_without_manifest() {
+     let s = Scratch::new();
+     s.harness("claude", "2.1.284 (Claude Code)");
+     fs::create_dir(&s.claude_config).unwrap();
+     fs::write(s.settings(), ORIGINAL).unwrap();
+     let setup = s.run(&["setup", "claude", "--json"]);
+     assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+     let first = fs::read(s.settings()).unwrap();
+ 
+     let profile = s.root.join("claude profile");
+     fs::create_dir(&profile).unwrap();
+@@ -1712,39 +1626,33 @@ fn copied_claude_settings_are_adopted_without_changing_bytes() {
+                     AsRef::<std::ffi::OsStr>::as_ref(&&s.state),
+                     std::ffi::OsStr::new("--host-endpoint"),
+                     AsRef::<std::ffi::OsStr>::as_ref(&s.host()),
+                 ],
+                 args,
+             ))
+             .output()
+             .unwrap()
+     };
+     let status = json(&run(&["--json", "setup-status", "claude"]));
+-    assert_eq!(status["installed"], true, "{status}");
+-    assert_eq!(status["adopted"]["recorded"], false);
+-    let adopt = json(&run(&["setup", "claude", "--json"]));
+-    assert_eq!(adopt["action"], "adopted", "{adopt}");
+-    assert!(adopt["allow_rule"].is_null(), "{adopt}");
+-    assert_eq!(fs::read(&copied).unwrap(), first);
+-    let unsetup = json(&run(&["unsetup", "claude", "--json"]));
+-    assert_eq!(unsetup["action"], "removed", "{unsetup}");
+-    assert_eq!(unsetup["allow_rule"], "not_recorded");
+-    let left: serde_json::Value = serde_json::from_slice(&fs::read(&copied).unwrap()).unwrap();
+-    assert_eq!(
+-        left["permissions"]["allow"],
+-        serde_json::json!(["Bash(ls:*)"])
+-    );
++    assert_eq!(status["installed"], false, "{status}");
++    assert!(status["adopted"].is_null(), "{status}");
++    let refused = run(&["setup", "claude", "--json"]);
++    assert!(!refused.status.success(), "{}", text(&refused.stdout));
+     assert!(
+-        !String::from_utf8(fs::read(&copied).unwrap())
+-            .unwrap()
+-            .contains("herdr-threads-owner")
++        text(&refused.stderr).contains("unowned identical"),
++        "{}",
++        text(&refused.stderr)
+     );
++    assert_eq!(fs::read(&copied).unwrap(), first);
++    let removed = run(&["unsetup", "claude", "--json"]);
++    assert!(removed.status.success(), "{}", text(&removed.stderr));
++    assert_eq!(fs::read(&copied).unwrap(), first);
+     assert_eq!(fs::read(s.settings()).unwrap(), first);
+ }
+ 
+ /// Kills loss of historical allowance inspection/removal or foreign base bytes.
+ #[test]
+ fn legacy_codex_allowance_status_and_unsetup_preserve_foreign_bytes() {
+     let s = Scratch::new();
+     s.harness("codex", "codex-cli 0.159.3");
+     fs::create_dir(&s.codex_home).unwrap();
+     let config = s.codex_home.join("config.toml");
+@@ -1810,21 +1718,21 @@ fn versionless_setup_upgrades_owned_hooks_with_large_legacy_allowance_manifest()
+     let out = s.run(&["setup", "codex", "--json"]);
+     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+     assert_eq!(fs::read(&config).unwrap(), config_before);
+     assert_eq!(fs::read(&manifest).unwrap(), manifest_before);
+     assert_ne!(fs::read(s.hooks()).unwrap(), hooks_before);
+     let hooks: serde_json::Value = serde_json::from_slice(&fs::read(s.hooks()).unwrap()).unwrap();
+     for event in ["SessionStart", "SubagentStart", "PreToolUse"] {
+         let command = hooks["hooks"][event][0]["hooks"][0]["command"]
+             .as_str()
+             .unwrap();
+-        assert!(command.contains(&format!(" '--event' '{event}'")));
++        assert!(command.ends_with(&format!(" 'hook-event' 'codex' '{event}'")));
+     }
+     assert_eq!(s.run(&["unsetup", "codex"]).status.code(), Some(0));
+     assert_eq!(fs::read_to_string(&config).unwrap(), original);
+ }
+ 
+ /// Wave 17 (ht-p03.15): other `features.network_proxy` keys the user already had stay as they
+ /// are, and setup, setup-status and doctor each name every one (enabling network access for
+ /// the sandbox makes them effective). Kills: a warning-free setup that quietly widens
+ /// `dangerously_allow_all_unix_sockets`, and a doctor that misses the recorded keys.
+ #[test]
+@@ -2208,32 +2116,54 @@ fn downgrade_to_legacy(s: &Scratch, kind: &str, file: &Path) {
+             path.extension().is_some_and(|ext| ext == "json")
+                 && path.file_name().is_some_and(|name| {
+                     let name = name.to_string_lossy();
+                     name.starts_with(kind) && !name.ends_with(".created.json")
+                 })
+         })
+         .expect("manifest");
+     let mut manifest: serde_json::Value =
+         serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+     let mut settings = fs::read_to_string(file).unwrap();
++    let identity = manifest["installation_id"].as_str().unwrap().to_owned();
++    manifest["version"] = serde_json::json!(2);
+     let shown = manifest.to_string();
+     for entry in manifest["owned"]
+         .as_array_mut()
+         .unwrap_or_else(|| panic!("no owned list in {manifest_path:?}: {shown}"))
+     {
+-        let pair = format!(" '--event' '{}'", entry["event"].as_str().unwrap());
+-        assert!(settings.contains(&pair), "{pair} missing from {settings}");
+-        settings = settings.replace(&pair, "");
+-        let command = entry["group"]["hooks"][0]["command"]
++        let event = entry["event"].as_str().unwrap();
++        let old = entry["group"]["hooks"][0]["command"]
+             .as_str()
+             .unwrap()
+-            .replace(&pair, "");
++            .to_owned();
++        let native = format!(
++            "'hook-event' '{}' '{event}'",
++            if kind == "claude-user" {
++                "claude"
++            } else {
++                "codex"
++            }
++        );
++        assert!(old.contains(&native), "{old}");
++        let legacy = old.replace(
++            &native,
++            &format!(
++                "'hook' '{}'",
++                if kind == "claude-user" {
++                    "claude"
++                } else {
++                    "codex"
++                }
++            ),
++        );
++        let command = format!("{legacy} # herdr-threads-owner:{identity}");
++        settings = settings.replace(&old, &command);
+         entry["group"]["hooks"][0]["command"] = serde_json::json!(command);
+         entry["fingerprint"] = serde_json::json!(format!(
+             "sha256:{:x}",
+             Sha256::digest(serde_json::to_vec(&entry["group"]).unwrap())
+         ));
+     }
+     assert!(!settings.contains("--event"));
+     fs::write(file, settings.as_bytes()).unwrap();
+     manifest["installed_fingerprint"] =
+         serde_json::json!(format!("sha256:{:x}", Sha256::digest(settings.as_bytes())));
+@@ -2258,63 +2188,61 @@ fn doctor_flags_legacy_event_registration_without_degrading() {
+         "a fresh install warns about nothing: {}",
+         text(&setup.stdout)
+     );
+ 
+     let current = json_doctor(&s);
+     assert_eq!(current["hooks"]["claude"]["setup"]["installed"], true);
+     assert_eq!(
+         current["hooks"]["claude"]["setup"]["event_registration"],
+         "current"
+     );
+-    assert!(
+-        !text(&s.run(&["doctor", "--debug"]).stdout).contains("predate per-event registration")
+-    );
++    assert!(!text(&s.run(&["doctor", "--debug"]).stdout).contains("use legacy commands"));
+ 
+     downgrade_claude_to_legacy(&s);
+     let legacy = json_doctor(&s);
+     assert_eq!(
+         legacy["hooks"]["claude"]["setup"]["installed"], true,
+         "{legacy}"
+     );
+     assert_eq!(
+         legacy["hooks"]["claude"]["setup"]["event_registration"],
+         "legacy"
+     );
+     assert_eq!(legacy["limitations"], current["limitations"], "{legacy}");
+     assert_eq!(legacy["result"], current["result"]);
+-    let line = "claude hooks predate per-event registration (no --event): re-run \
+-                `herdr-threads setup claude`\n";
++    let line = "claude hooks use legacy commands: re-run \
++                `herdr-threads setup claude` to migrate to stable hook-event commands\n";
+     assert!(text(&s.run(&["doctor", "--debug"]).stdout).contains(line));
+ 
+-    // Re-running setup rewrites the hooks with --event: doctor is back to current.
++    // Re-running setup migrates the hooks to stable entrypoints: doctor is back to current.
+     let again = s.run(&["setup", "claude"]);
+     assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
+     assert!(
+         text(&again.stdout).contains(
+-            "warning: the hook commands now carry --event; a herdr-threads build from \
++            "warning: the hook commands now use hook-event; a herdr-threads build from \
+              before per-event registration rejects them, so to downgrade herdr-threads first \
+              run `herdr-threads unsetup claude` with this build\n"
+         ),
+         "{}",
+         text(&again.stdout)
+     );
+     assert!(!text(&again.stdout).contains("Codex trusts hooks by hash"));
+     let after = json_doctor(&s);
+     assert_eq!(after["hooks"]["claude"]["setup"]["installed"], true);
+     assert_eq!(
+         after["hooks"]["claude"]["setup"]["event_registration"],
+         "current"
+     );
+     assert!(
+         fs::read_to_string(s.settings())
+             .unwrap()
+-            .contains("'--event' 'SessionStart'")
++            .contains("'hook-event' 'claude' 'SessionStart'")
+     );
+ }
+ 
+ // ---------------------------------------------------------------------------
+ // Claude prompt suggestions (ht-6jt). Children are never on a terminal here,
+ // so the bare command is the non-interactive path; the y/N question itself is
+ // covered in src/cli/setup.rs (`settle_prompt_suggestions`).
+ // ---------------------------------------------------------------------------
+ 
+ const SUGGESTION_KEY: &str = "promptSuggestionEnabled";
+@@ -2534,33 +2462,33 @@ fn codex_legacy_registration_rerun_warns_about_retrust() {
+     s.harness("codex", "codex-cli 0.158.0");
+     fs::create_dir(&s.codex_home).unwrap();
+     let setup = s.run(&["setup", "codex"]);
+     assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+     assert!(!text(&setup.stdout).contains("carry --event"));
+ 
+     downgrade_to_legacy(&s, "codex-user", &s.hooks());
+     let doctor = text(&s.run(&["doctor", "--debug"]).stdout);
+     assert!(
+         doctor.contains(
+-            "codex hooks predate per-event registration (no --event): re-run \
+-             `herdr-threads setup codex`; Codex then asks to review (trust) the rewritten hooks \
++            "codex hooks use legacy commands: re-run \
++             `herdr-threads setup codex` to migrate to stable hook-event commands; Codex then asks to review (trust) the rewritten hooks \
+              again\n"
+         ),
+         "{doctor}"
+     );
+ 
+     let again = s.run(&["setup", "codex"]);
+     assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
+     let out = text(&again.stdout);
+     assert!(
+         out.contains(
+-            "warning: the hook commands now carry --event; a herdr-threads build from \
++            "warning: the hook commands now use hook-event; a herdr-threads build from \
+              before per-event registration rejects them, so to downgrade herdr-threads first \
+              run `herdr-threads unsetup codex` with this build\n"
+         ),
+         "{out}"
+     );
+     assert!(
+         out.contains(
+             "warning: Codex trusts hooks by hash: the rewritten hook commands need \
+              review again (the next interactive `codex` start, or /hooks) before Codex runs them\n"
+         ),
+@@ -4965,10 +4893,47 @@ fn permission_consent_grants_revokes_and_unsetup_restores() {
+             .count()
+     };
+     let before = backups();
+     let regrant = s.run(&["setup", "claude", "--with-permissions"]);
+     assert_eq!(backups(), before + 1);
+     assert_eq!(regrant.status.code(), Some(0), "{}", text(&regrant.stderr));
+     let unsetup = s.run(&["unsetup", "claude"]);
+     assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
+     assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
+ }
++
++#[test]
++fn stable_codex_reinstall_status_preserves_trust_records_and_group_indices() {
++    let s = Scratch::new();
++    s.harness("codex", "codex-cli 0.158.0");
++    fs::create_dir(&s.codex_home).unwrap();
++    let config = s.codex_home.join("config.toml");
++    let native_trust = "model = \"mine\"\n[hooks.state.\"foreign:session_start:0:0\"]\ntrusted_hash = \"retain-me\"\n";
++    fs::write(&config, native_trust).unwrap();
++    let first = s.run(&["setup", "codex", "--json"]);
++    assert!(first.status.success(), "{}", text(&first.stderr));
++    let first_report = json(&first);
++    let mut hooks: serde_json::Value =
++        serde_json::from_slice(&fs::read(s.hooks()).unwrap()).unwrap();
++    hooks["hooks"]["SessionStart"]
++        .as_array_mut()
++        .unwrap()
++        .push(serde_json::json!({"hooks":[{"type":"command","command":"after"}]}));
++    let bytes = serde_json::to_vec(&hooks).unwrap();
++    fs::write(s.hooks(), &bytes).unwrap();
++    let again = s.run(&["setup", "codex", "--json"]);
++    assert!(again.status.success(), "{}", text(&again.stderr));
++    assert_eq!(fs::read(s.hooks()).unwrap(), bytes);
++    assert_eq!(fs::read_to_string(&config).unwrap(), native_trust);
++    let status = json(&s.run(&["setup-status", "codex", "--json"]));
++    assert_eq!(status["commands"], first_report["commands"]);
++    assert_eq!(status["current_command_matches"], true);
++    assert_eq!(status["trust"]["hooks"], first_report["trust"]["hooks"]);
++    for event in ["SessionStart", "SubagentStart", "PreToolUse"] {
++        assert_eq!(
++            status["commands"][event],
++            hooks["hooks"][event][0]["hooks"][0]["command"]
++        );
++    }
++    assert!(s.run(&["unsetup", "codex"]).status.success());
++    assert_eq!(fs::read_to_string(&config).unwrap(), native_trust);
++}

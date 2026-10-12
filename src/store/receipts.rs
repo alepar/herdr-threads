@@ -596,11 +596,18 @@ fn settle_pending(
             )
             .map_err(store_error)?;
         if manifest {
-            tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,ack_binding_id) VALUES (?1,?2,'acked',?3,?4,?2,?5,?6,?7,?8) ON CONFLICT(message_id,seat_id) DO UPDATE SET state='acked',ack_actor_seat_id=excluded.ack_actor_seat_id,ack_generation=excluded.ack_generation,ack_observation=excluded.ack_observation,acked_at=excluded.acked_at,ack_binding_id=excluded.ack_binding_id WHERE receipt_state.state='pending'",
-                params![id.as_str(),seat.as_str(),receipt.available_at,receipt.deadline_at,binding_generation as i64,observation,decision.utc.0,binding.as_str()]).map_err(store_error)?;
+            tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,ack_binding_id) VALUES (?1,?2,'acked',?3,?4,?2,?5,?6,?7,?9) ON CONFLICT(message_id,seat_id) DO UPDATE SET state='acked',deadline_at=CASE WHEN ?8 THEN COALESCE(receipt_state.deadline_at,excluded.deadline_at) ELSE receipt_state.deadline_at END,ack_actor_seat_id=excluded.ack_actor_seat_id,ack_generation=excluded.ack_generation,ack_observation=excluded.ack_observation,acked_at=excluded.acked_at,ack_binding_id=excluded.ack_binding_id WHERE receipt_state.state='pending'",
+                params![id.as_str(),seat.as_str(),receipt.available_at,receipt.deadline_at,binding_generation as i64,observation,decision.utc.0,receipt.state==EffectiveReceiptState::Pending,binding.as_str()]).map_err(store_error)?;
         } else {
-            tx.execute("UPDATE receipts SET state='acked',ack_actor_seat_id=?1,ack_generation=?2,ack_observation=?3,acked_at=?4,ack_binding_id=?6 WHERE message_id=?5 AND seat_id=?1 AND state='pending'",
-                params![seat.as_str(),binding_generation as i64,observation,decision.utc.0,id.as_str(),binding.as_str()]).map_err(store_error)?;
+            // Persist the original projected clock before changing its state.
+            // Catch-up's extended deadline is separate; waivers gain no clock.
+            let pending_deadline = if receipt.state == EffectiveReceiptState::Pending {
+                receipt.deadline_at
+            } else {
+                None
+            };
+            tx.execute("UPDATE receipts SET state='acked',deadline_at=COALESCE(deadline_at,?6),ack_actor_seat_id=?1,ack_generation=?2,ack_observation=?3,acked_at=?4,ack_binding_id=?7 WHERE message_id=?5 AND seat_id=?1 AND state='pending'",
+                params![seat.as_str(),binding_generation as i64,observation,decision.utc.0,id.as_str(),pending_deadline,binding.as_str()]).map_err(store_error)?;
         }
     }
     for thread in by_thread.keys() {
@@ -660,7 +667,8 @@ pub struct ReceiptDueCursor {
     pub high_water_ordinal: i64,
     pub after_deadline: Option<i64>,
     pub after_ordinal: i64,
-    pub sparse_high_water_rowid: i64,
+    pub sparse_high_water_ordinal: i64,
+    pub sparse_after_ordinal: i64,
     pub sparse_after_deadline: Option<i64>,
     pub sparse_after_message: Option<String>,
     pub sparse_after_seat: Option<String>,
@@ -686,8 +694,95 @@ pub struct DueScanResult {
     pub next_ordinal: i64,
 }
 
-/// Scans pending, unmarked deadline rows through the partial due index. A
-/// timer materializer inserts newly anchored logical receipts into this index.
+pub(crate) const PHYSICAL_DUE_SELECTION: &str = "SELECT ordinal,message_id,seat_id,deadline_at FROM receipts INDEXED BY receipts_required_due_ordinal WHERE state='pending' AND ack_required=1 AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT ?4";
+
+fn project_receipt_origin(
+    tx: &Connection,
+    table: &str,
+    message: &str,
+    seat: &str,
+) -> Result<(), ApiError> {
+    debug_assert!(matches!(table, "receipts" | "receipt_state"));
+    let publication = if table == "receipt_state" {
+        "JOIN send_manifests sm ON sm.message_id=r.message_id AND sm.instance_id=m.instance_id AND sm.thread_id=m.thread_id JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id AND pr.seat_id=r.seat_id AND pr.thread_id=m.thread_id"
+    } else {
+        ""
+    };
+    tx.execute(&format!("INSERT OR IGNORE INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id) SELECT m.instance_id,m.actor_seat_id,c.open_warning_id,m.id FROM {table} r JOIN messages m ON m.id=r.message_id AND (m.author_kind='native' OR m.author_kind IS NULL) AND m.author_service_id IS NULL {publication} JOIN seats s ON s.id=m.actor_seat_id AND s.instance_id=m.instance_id JOIN warning_conditions c ON c.open_warning_id=r.warning_message_id AND c.condition_kind='receipt' AND c.clear_warning_id IS NULL AND c.thread_id=m.thread_id AND c.affected_seat_id=r.seat_id WHERE r.message_id=?1 AND r.seat_id=?2"),params![message,seat]).map_err(store_error)?;
+    Ok(())
+}
+
+/// All upgrade producers share one allowance. Producer-local Task5 completion
+/// remains intact; only this durable combined marker emits the global reset.
+fn repair_receipt_discovery(
+    tx: &Connection,
+    limit: u16,
+) -> Result<super::materialization::ReceiptBackfillResult, ApiError> {
+    let deadlines = super::materialization::backfill_receipt_deadlines_in(tx, limit)?;
+    let (mut physical,physical_high,mut sparse,sparse_high,completed):(i64,i64,i64,i64,bool)=tx.query_row("SELECT physical_after,physical_high_water,sparse_after,sparse_high_water,completed FROM receipt_discovery_backfill WHERE singleton=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(store_error)?;
+    let mut inspected = deadlines.inspected;
+    if !completed {
+        for (table, after, high) in [
+            ("receipts", &mut physical, physical_high),
+            ("receipt_state", &mut sparse, sparse_high),
+        ] {
+            if inspected == limit || *after == high {
+                continue;
+            }
+            let ordinal = if table == "receipts" {
+                "ordinal"
+            } else {
+                "rowid"
+            };
+            let rows: Vec<(i64, String, String)> = {
+                let mut statement=tx.prepare(&format!("SELECT {ordinal},message_id,seat_id FROM {table} WHERE {ordinal}>?1 AND {ordinal}<=?2 ORDER BY {ordinal} LIMIT ?3")).map_err(store_error)?;
+                statement
+                    .query_map(params![*after, high, limit - inspected], |r| {
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                    })
+                    .map_err(store_error)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(store_error)?
+            };
+            let count = u16::try_from(rows.len()).map_err(|_| {
+                api_error(
+                    ErrorCode::StoreCorrupt,
+                    "receipt discovery repair batch too large",
+                )
+            })?;
+            let short = count < limit - inspected;
+            inspected += count;
+            for (at, message, seat) in rows {
+                project_receipt_origin(tx, table, &message, &seat)?;
+                if table == "receipt_state" {
+                    tx.execute("INSERT INTO receipt_due_sparse(message_id,seat_id,deadline_at) SELECT message_id,seat_id,deadline_at FROM receipt_state WHERE message_id=?1 AND seat_id=?2 AND state='pending' AND ack_required=1 AND deadline_at IS NOT NULL AND warning_message_id IS NULL ON CONFLICT(message_id,seat_id) DO UPDATE SET deadline_at=excluded.deadline_at",params![message,seat]).map_err(store_error)?;
+                }
+                *after = at;
+            }
+            if short {
+                *after = high;
+            }
+        }
+    }
+    let deadline_complete: bool = tx
+        .query_row(
+            "SELECT completed FROM receipt_deadline_backfill WHERE singleton=1",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let now_complete = deadline_complete && physical == physical_high && sparse == sparse_high;
+    tx.execute("UPDATE receipt_discovery_backfill SET physical_after=?1,sparse_after=?2,completed=?3 WHERE singleton=1",params![physical,sparse,now_complete]).map_err(store_error)?;
+    Ok(super::materialization::ReceiptBackfillResult {
+        inspected,
+        more: !now_complete,
+        completed: !completed && now_complete,
+    })
+}
+
+/// Scans pending, unmarked deadline rows through the partial due index.
+/// Historical repair and due discovery share the total row allowance and
+/// transaction. Repair cannot monopolize ordinary due work at the normal100 cap.
 pub fn scan_due(
     context: &StoreContext,
     conn: &mut Connection,
@@ -703,36 +798,46 @@ pub fn scan_due(
     let current = cursor.clone();
     let (result, next) = context.execute_decision(conn,
         |tx| {
-            let physical_high = if current.high_water_ordinal == 0 {
+            let repair = repair_receipt_discovery(tx,limit.div_ceil(2))?;
+            let current = if repair.completed {
+                ReceiptDueCursor { extension:current.extension.clone(),..ReceiptDueCursor::default() }
+            } else { current };
+            let due_limit = limit-repair.inspected;
+            let fresh = current.high_water_ordinal == 0 && current.sparse_high_water_ordinal == 0;
+            let physical_high = if fresh {
                 tx.query_row("SELECT COALESCE(MAX(ordinal),0) FROM receipts", [], |r| r.get::<_,i64>(0)).map_err(store_error)?
             } else { current.high_water_ordinal };
-            let sparse_high = if current.sparse_high_water_rowid == 0 {
-                tx.query_row("SELECT COALESCE(MAX(rowid),0) FROM receipt_state", [], |r| r.get::<_,i64>(0)).map_err(store_error)?
-            } else { current.sparse_high_water_rowid };
-            let has_sparse:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM receipt_state INDEXED BY receipt_state_required_due WHERE state='pending' AND ack_required=1 AND deadline_at IS NOT NULL AND warning_message_id IS NULL)",[],|r|r.get(0)).map_err(store_error)?;
-            let physical_cap = if has_sparse { if current.next_sparse {limit/2} else {limit.div_ceil(2)} } else {limit};
-            let mut physical=Vec::new();
-            if physical_cap>0 {
-                let mut stmt=tx.prepare("SELECT ordinal,message_id,seat_id,deadline_at FROM receipts INDEXED BY receipts_required_due WHERE state='pending' AND ack_required=1 AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND (?1 IS NULL OR deadline_at>?1 OR (deadline_at=?1 AND ordinal>?2)) ORDER BY deadline_at,ordinal LIMIT ?3").map_err(store_error)?;
-                physical=stmt.query_map(params![current.after_deadline,current.after_ordinal,i64::from(physical_cap)],|r|Ok((r.get::<_,i64>(0)?,MessageId::new(r.get::<_,String>(1)?),SeatId::new(r.get::<_,String>(2)?),r.get::<_,i64>(3)?))).map_err(store_error)?.collect::<Result<Vec<_>,_>>().map_err(store_error)?;
-            }
-            let sparse_cap=limit-u16::try_from(physical.len()).map_err(|_|api_error(ErrorCode::StoreCorrupt,"physical due batch too large"))?;
-            let mut sparse=Vec::new();
-            if sparse_cap>0 {
-                let mut stmt=tx.prepare("SELECT rowid,message_id,seat_id,deadline_at FROM receipt_state INDEXED BY receipt_state_required_due WHERE state='pending' AND ack_required=1 AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND (?1 IS NULL OR deadline_at>?1 OR (deadline_at=?1 AND (message_id>?2 OR (message_id=?2 AND seat_id>?3)))) ORDER BY deadline_at,message_id,seat_id LIMIT ?4").map_err(store_error)?;
-                sparse=stmt.query_map(params![current.sparse_after_deadline,current.sparse_after_message,current.sparse_after_seat,i64::from(sparse_cap)],|r|Ok((r.get::<_,i64>(0)?,MessageId::new(r.get::<_,String>(1)?),SeatId::new(r.get::<_,String>(2)?),r.get::<_,i64>(3)?))).map_err(store_error)?.collect::<Result<Vec<_>,_>>().map_err(store_error)?;
-            }
-            Ok((physical_high,sparse_high,physical_cap,sparse_cap,physical,sparse))
+            let sparse_high = if fresh {
+                tx.query_row("SELECT COALESCE(MAX(ordinal),0) FROM receipt_due_sparse", [], |r| r.get::<_,i64>(0)).map_err(store_error)?
+            } else { current.sparse_high_water_ordinal };
+            let physical_page = |after_deadline: Option<i64>, after_ordinal:i64, cap:u16| -> Result<Vec<(i64,MessageId,SeatId,i64)>,ApiError> {
+                let mut stmt=tx.prepare(PHYSICAL_DUE_SELECTION).map_err(store_error)?;
+                stmt.query_map(params![after_deadline,after_ordinal,physical_high,i64::from(cap)],|r|Ok((r.get::<_,i64>(0)?,MessageId::new(r.get::<_,String>(1)?),SeatId::new(r.get::<_,String>(2)?),r.get::<_,i64>(3)?))).map_err(store_error)?.collect::<Result<Vec<_>,_>>().map_err(store_error)
+            };
+            let physical_cap=due_limit.div_ceil(2);
+            let mut physical=physical_page(current.after_deadline,current.after_ordinal,physical_cap)?;
+            let sparse_cap=due_limit-u16::try_from(physical.len()).map_err(|_|api_error(ErrorCode::StoreCorrupt,"physical due batch too large"))?;
+            let mut stmt=tx.prepare("SELECT ordinal,message_id,seat_id,deadline_at FROM receipt_due_sparse WHERE ordinal>?1 AND ordinal<=?2 ORDER BY ordinal LIMIT ?3").map_err(store_error)?;
+            let sparse=stmt.query_map(params![current.sparse_after_ordinal,sparse_high,i64::from(sparse_cap)],|r|Ok((r.get::<_,i64>(0)?,MessageId::new(r.get::<_,String>(1)?),SeatId::new(r.get::<_,String>(2)?),r.get::<_,i64>(3)?))).map_err(store_error)?.collect::<Result<Vec<_>,_>>().map_err(store_error)?;
+            // A short sparse page lends its unused allowance back to physical
+            // discovery. Every query uses the captured high water before LIMIT.
+            let remaining=due_limit-u16::try_from(physical.len()+sparse.len()).map_err(|_|api_error(ErrorCode::StoreCorrupt,"due batch too large"))?;
+            let physical_full=physical_cap>0 && physical.len()==usize::from(physical_cap);
+            let physical_more=if remaining>0 && physical_full {
+                let last=physical.last().unwrap();
+                let extra=physical_page(Some(last.3),last.0,remaining)?;
+                let full=extra.len()==usize::from(remaining);
+                physical.extend(extra);
+                full
+            } else {physical_full};
+            let sparse_more=sparse_cap>0 && sparse.len()==usize::from(sparse_cap);
+            Ok((repair,current,due_limit,physical_high,sparse_high,physical_more,sparse_more,physical,sparse))
         },
-        |tx, decision, (physical_high,sparse_high,physical_cap,sparse_cap,physical,sparse)| {
+        |tx, decision, (repair,current,due_limit,physical_high,sparse_high,physical_more,sparse_more,physical,sparse)| {
             let mut inserted=0u16;
-            let inspected=u16::try_from(physical.len()+sparse.len()).map_err(|_|api_error(ErrorCode::StoreCorrupt,"due batch too large"))?;
+            let inspected=repair.inspected+u16::try_from(physical.len()+sparse.len()).map_err(|_|api_error(ErrorCode::StoreCorrupt,"due batch too large"))?;
             let physical_after=physical.last().map(|v|(v.3,v.0));
-            let sparse_after=sparse.last().map(|v|(v.3,v.1.as_str().to_owned(),v.2.as_str().to_owned()));
-            let physical_future=physical.iter().any(|v|v.3>decision.utc.0);
-            let sparse_future=sparse.iter().any(|v|v.3>decision.utc.0);
-            let physical_more=physical_cap>0 && physical.len()==usize::from(physical_cap) && !physical_future;
-            let sparse_more=sparse_cap>0 && sparse.len()==usize::from(sparse_cap) && !sparse_future;
+            let sparse_after=sparse.last().map(|v|(v.0,v.3,v.1.as_str().to_owned(),v.2.as_str().to_owned()));
             for (source_high,candidates) in [(physical_high,physical),(sparse_high,sparse)] {
                 for (ordinal,message,seat,deadline) in candidates {
                     let receipt=effective::effective_receipt(tx,message.as_str(),seat.as_str())?;
@@ -747,15 +852,16 @@ pub fn scan_due(
                     }
                 }
             }
-            let more=physical_more||sparse_more;
+            let more=repair.more||physical_more||sparse_more||due_limit==0;
             let next=if more {ReceiptDueCursor{
                 high_water_ordinal:physical_high,
                 after_deadline:physical_after.map(|v|v.0).or(current.after_deadline),
                 after_ordinal:physical_after.map(|v|v.1).unwrap_or(current.after_ordinal),
-                sparse_high_water_rowid:sparse_high,
-                sparse_after_deadline:sparse_after.as_ref().map(|v|v.0).or(current.sparse_after_deadline),
-                sparse_after_message:sparse_after.as_ref().map(|v|v.1.clone()).or(current.sparse_after_message.clone()),
-                sparse_after_seat:sparse_after.map(|v|v.2).or(current.sparse_after_seat.clone()),
+                sparse_high_water_ordinal:sparse_high,
+                sparse_after_ordinal:sparse_after.as_ref().map(|v|v.0).unwrap_or(current.sparse_after_ordinal),
+                sparse_after_deadline:sparse_after.as_ref().map(|v|v.1).or(current.sparse_after_deadline),
+                sparse_after_message:sparse_after.as_ref().map(|v|v.2.clone()).or(current.sparse_after_message.clone()),
+                sparse_after_seat:sparse_after.map(|v|v.3).or(current.sparse_after_seat.clone()),
                 next_sparse:!current.next_sparse,
                 extension:current.extension.clone(),
             }} else {ReceiptDueCursor{extension:current.extension.clone(),..ReceiptDueCursor::default()}};

@@ -1,0 +1,110 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+────────────
+ Nextest run ID 632145ee-b9f5-437c-abfa-ac754815a185 with nextest profile: default
+    Starting 6 tests across 1 binary (719 tests skipped)
+        FAIL [   0.318s] (1/6) herdr-threads::combined invitation_content::binding_presentation::continued_body_retirement_is_private_and_charged_once
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::continued_body_retirement_is_private_and_charged_once ... FAILED
+
+    failures:
+
+    failures:
+        invitation_content::binding_presentation::continued_body_retirement_is_private_and_charged_once
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 724 filtered out; finished in 0.31s
+
+  stderr ───
+
+    thread 'invitation_content::binding_presentation::continued_body_retirement_is_private_and_charged_once' (55326667) panicked at tests/store/invitation_content.rs:1262:14:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: InvalidCursor, detail: "continued body is not captured addressed content", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.318s] (2/6) herdr-threads::combined invitation_content::binding_presentation::continued_body_refuses_corrupt_accumulator_and_missing_authority_without_progress
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::continued_body_refuses_corrupt_accumulator_and_missing_authority_without_progress ... FAILED
+
+    failures:
+
+    failures:
+        invitation_content::binding_presentation::continued_body_refuses_corrupt_accumulator_and_missing_authority_without_progress
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 724 filtered out; finished in 0.31s
+
+  stderr ───
+
+    thread 'invitation_content::binding_presentation::continued_body_refuses_corrupt_accumulator_and_missing_authority_without_progress' (55326666) panicked at tests/store/invitation_content.rs:1354:13:
+    assertion `left == right` failed
+      left: InvalidCursor
+     right: StoreCorrupt
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.326s] (3/6) herdr-threads::combined invitation_content::binding_presentation::continued_pending_body_survives_own_display_cursor
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::continued_pending_body_survives_own_display_cursor ... FAILED
+
+    failures:
+
+    failures:
+        invitation_content::binding_presentation::continued_pending_body_survives_own_display_cursor
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 724 filtered out; finished in 0.32s
+
+  stderr ───
+
+    thread 'invitation_content::binding_presentation::continued_pending_body_survives_own_display_cursor' (55326665) panicked at tests/store/invitation_content.rs:1293:14:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: InvalidCursor, detail: "continued body is not captured addressed content", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.338s] (4/6) herdr-threads::combined invitation_content::binding_presentation::continued_unread_body_survives_sibling_full_read
+        FAIL [   0.338s] (5/6) herdr-threads::combined invitation_content::binding_presentation::continued_body_retirement_rolls_back_when_final_state_write_fails
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::continued_body_retirement_rolls_back_when_final_state_write_fails ... FAILED
+
+    failures:
+
+    failures:
+        invitation_content::binding_presentation::continued_body_retirement_rolls_back_when_final_state_write_fails
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 724 filtered out; finished in 0.32s
+
+  stderr ───
+
+    thread 'invitation_content::binding_presentation::continued_body_retirement_rolls_back_when_final_state_write_fails' (55326669) panicked at tests/store/invitation_content.rs:1384:14:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: InvalidCursor, detail: "continued body is not captured addressed content", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.338s] (6/6) herdr-threads::combined invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read ... FAILED
+
+    failures:
+
+    failures:
+        invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 724 filtered out; finished in 0.33s
+
+  stderr ───
+
+    thread 'invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read' (55326668) panicked at tests/store/invitation_content.rs:1110:69:
+    a legitimate same-binding full read must not wedge private presentation continuation: ApiError { code: InvalidCursor, detail: "continued body is not captured addressed content", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.342s] 6 tests run: 1 passed, 5 failed, 719 skipped
+        FAIL [   0.318s] (1/6) herdr-threads::combined invitation_content::binding_presentation::continued_body_retirement_is_private_and_charged_once
+        FAIL [   0.318s] (2/6) herdr-threads::combined invitation_content::binding_presentation::continued_body_refuses_corrupt_accumulator_and_missing_authority_without_progress
+        FAIL [   0.326s] (3/6) herdr-threads::combined invitation_content::binding_presentation::continued_pending_body_survives_own_display_cursor
+        FAIL [   0.338s] (5/6) herdr-threads::combined invitation_content::binding_presentation::continued_body_retirement_rolls_back_when_final_state_write_fails
+        FAIL [   0.338s] (6/6) herdr-threads::combined invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read
+error: test run failed

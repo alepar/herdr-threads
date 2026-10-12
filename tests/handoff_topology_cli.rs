@@ -498,23 +498,28 @@ impl Fixture {
                 &budget,
             )
             .unwrap();
-        // A writer turn stages only a prefix when its 5 ms quantum runs out
-        // (a loaded machine): stage the rest in the following turns, as
-        // `reconcile` does, or the seal sees an incomplete target set.
-        let admission_limit = DurableWorkAdmission::new(16).unwrap();
-        let mut staged = 0usize;
-        while staged < snapshot.targets.len() {
+        // A writer turn can commit a prefix when its quantum expires. Honor
+        // that progress before sealing, under the original overall budget.
+        let mut offset = 0u64;
+        let mut targets = &snapshot.targets[..];
+        while !targets.is_empty() {
+            let batch = &targets[..targets.len().min(16)];
             let progress = store
                 .stage_snapshot_targets(
                     &stage.id,
-                    staged as u64,
-                    &snapshot.targets[staged..],
-                    admission_limit,
+                    offset,
+                    batch,
+                    DurableWorkAdmission::new(16).unwrap(),
                     &budget,
                 )
                 .unwrap();
-            assert!(progress.visited > 0, "snapshot staging must advance");
-            staged += usize::from(progress.visited);
+            let visited = usize::from(progress.visited);
+            offset += visited as u64;
+            assert!(
+                visited > 0 && visited <= batch.len() && progress.stage.staged_targets == offset,
+                "snapshot staging did not advance exactly"
+            );
+            targets = &targets[visited..];
         }
         store.seal_snapshot_stage(&stage.id, &budget).unwrap();
         store.publish_snapshot_stage(&stage.id, &budget).unwrap();

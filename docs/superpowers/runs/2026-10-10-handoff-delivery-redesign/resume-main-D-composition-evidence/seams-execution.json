@@ -1,0 +1,97 @@
+{
+  "head": "7c4753208f46b27e8483427ceeeb44a89760b916",
+  "staged_tree": "524ec3a1f68232565e4c32aeb786c14c76d13064",
+  "source_before": {
+    "head": "7c4753208f46b27e8483427ceeeb44a89760b916",
+    "merge_head": "f7aa1cc2a02de47ebb381191f1a2bb219048538c",
+    "index_sha256": "af201928a7209b00819440b86b5e7ff617d3502ea459a277e8c10ec6e9f87483",
+    "staged_diff_sha256": "364b190a5eb4b73cd4c27f12bc0b64489b0ff0d99665e05db8c227eeb099f20e"
+  },
+  "run_id": "250d7450-dda6-44e2-8100-8359d6fa28ba",
+  "expected": [
+    "store::control::tests::same_invitation_requirement_attach_release_replacement_has_distinct_context_epochs",
+    "store::control::tests::managed_required_reattach_preserves_upgraded_ordinary_invitation_and_history",
+    "store::control::tests::service_requirement_uses_an_independent_episode_without_mutating_native_lazy_invitation",
+    "store::control::tests::required_then_independent_ordinary_acceptance_keeps_one_join_interval",
+    "store::control::tests::native_ordinary_offer_after_required_offer_can_be_accepted_after_join",
+    "store::control::tests::managed_required_upgrade_preserves_deadline_and_demands_native_revision",
+    "store::control::tests::managed_required_controls_preserve_left_history_and_independent_ordinary_invite",
+    "store::control::tests::managed_release_cancels_only_required_invitation_and_replay_retains_history"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 183.80282916710712
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "store::control::tests::managed_release_cancels_only_required_invitation_and_replay_retains_history"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::managed_required_controls_preserve_left_history_and_independent_ordinary_invite"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::managed_required_reattach_preserves_upgraded_ordinary_invitation_and_history"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::managed_required_upgrade_preserves_deadline_and_demands_native_revision"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::native_ordinary_offer_after_required_offer_can_be_accepted_after_join"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::required_then_independent_ordinary_acceptance_keeps_one_join_interval"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::same_invitation_requirement_attach_release_replacement_has_distinct_context_epochs"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::service_requirement_uses_an_independent_episode_without_mutating_native_lazy_invitation"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-1cbaa8be764c5987",
+      "sha256": "3d7db5f5babb814af14f787a37485d3457577c85e52046db59c8056b5e0fc397"
+    }
+  ],
+  "run": {
+    "exit": 0,
+    "seconds": 0.5478497080039233,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "-E",
+      "test(=store::control::tests::same_invitation_requirement_attach_release_replacement_has_distinct_context_epochs) | test(=store::control::tests::managed_required_reattach_preserves_upgraded_ordinary_invitation_and_history) | test(=store::control::tests::service_requirement_uses_an_independent_episode_without_mutating_native_lazy_invitation) | test(=store::control::tests::required_then_independent_ordinary_acceptance_keeps_one_join_interval) | test(=store::control::tests::native_ordinary_offer_after_required_offer_can_be_accepted_after_join) | test(=store::control::tests::managed_required_upgrade_preserves_deadline_and_demands_native_revision) | test(=store::control::tests::managed_required_controls_preserve_left_history_and_independent_ordinary_invite) | test(=store::control::tests::managed_release_cancels_only_required_invitation_and_replay_retains_history)"
+    ]
+  },
+  "source_after": {
+    "head": "7c4753208f46b27e8483427ceeeb44a89760b916",
+    "merge_head": "f7aa1cc2a02de47ebb381191f1a2bb219048538c",
+    "index_sha256": "af201928a7209b00819440b86b5e7ff617d3502ea459a277e8c10ec6e9f87483",
+    "staged_diff_sha256": "364b190a5eb4b73cd4c27f12bc0b64489b0ff0d99665e05db8c227eeb099f20e"
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 3.1277787920553237,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "250d7450-dda6-44e2-8100-8359d6fa28ba"
+    ]
+  },
+  "leak_exit": 0
+}

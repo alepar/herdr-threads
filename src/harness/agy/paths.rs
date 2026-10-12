@@ -81,7 +81,7 @@ pub fn conversation_state(state: &Path, conversation_id: &str) -> PathBuf {
 }
 
 /// The registered hook command for one event:
-/// `'<exe>' '--state-dir' S '--host-endpoint' H 'hook' 'agy' '--event' '<E>'`.
+/// `'<exe>' '--state-dir' S '--host-endpoint' H 'hook-event' 'agy' '<E>'`.
 pub fn hook_command(env: &SetupEnvironment, event: AgyEvent) -> Result<String, SetupFailure> {
     let invalid = |detail: &str| SetupFailure::Invalid(format!("agy: {detail}"));
     let executable = env
@@ -106,7 +106,13 @@ pub fn hook_command(env: &SetupEnvironment, event: AgyEvent) -> Result<String, S
             .map_err(|error| SetupFailure::Invalid(error.to_string()))?,
     )
     .into();
-    let argv = crate::cli::hook::installed_argv(executable, Some(state), Some(host), harness);
-    let base = setup::shell_command(&argv).map_err(|_| invalid("hook command is not valid"))?;
-    Ok(setup::event_command(&base, event.as_str()))
+    let argv = crate::cli::hook::installed_event_argv(
+        executable,
+        Some(state),
+        Some(host),
+        harness,
+        event.as_str(),
+    )
+    .map_err(|_| invalid("hook command is not valid"))?;
+    setup::native_event_command(&argv).map_err(|_| invalid("hook command is not valid"))
 }

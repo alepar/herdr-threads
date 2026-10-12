@@ -1,0 +1,32 @@
+[
+  {
+    "path": "/private/tmp/ht-final-C-three-repro-d8427582/run.log",
+    "sha256": "1c1e6ecc336dc93bc5c057976f2e866a2c9463c091cedff002d73031995022ce",
+    "bytes": 3961,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-three-repro-d8427582/run.log"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-three-repro-d8427582/list.stderr",
+    "sha256": "84665cd69cf2ee7880b9da312b6d9f0bb8c946832af82968c8d8f3e5516808c3",
+    "bytes": 73,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-three-repro-d8427582/list.stderr"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-three-repro-d8427582/list.json",
+    "sha256": "e54c41f13e129cc6a8ee58fa56fff814b99ebf44c5e72e7d97ead134746af278",
+    "bytes": 878066,
+    "retained": "original by exactpath/hash; selected names/functions retained separately"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-three-repro-d8427582/leaks.log",
+    "sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e",
+    "bytes": 25,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-three-repro-d8427582/leaks.log"
+  },
+  {
+    "path": "/private/tmp/ht-final-C-three-repro-d8427582/execution.json",
+    "sha256": "ec1df0b1735828eb6c9131f4c389703d0c81d466a7c200591b747219502ecca7",
+    "bytes": 2399,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/final-C-d8427582-failure-evidence/ht-final-C-three-repro-d8427582/execution.json"
+  }
+]

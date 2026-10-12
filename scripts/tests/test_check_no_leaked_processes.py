@@ -35,11 +35,46 @@ def rules(result):
     return [rule for _, rule in result]
 
 
+def leak_candidates(run_tag):
+    tag = {} if run_tag is None else {"HT_LEAK_RUN_ID": run_tag}
+    return [
+        proc(pid=101, env={**tag, "HT_TEST_OWNER": "4242"}),
+        proc(pid=102, env={**tag, "HERDR_THREADS_TEST_OWNER_PID": "4242"}),
+        proc(pid=103, argv0="/w/target/debug/herdr-threads", env=tag),
+        proc(pid=104, cwd="/w/target/tmp/x", env=tag),
+        proc(pid=105, command="/usr/local/bin/herdr server",
+             env={**tag, "HOME": "/tmp/ih.ab12/home"}),
+        proc(pid=106, command="/x/herdr-threads daemon run --state-dir /tmp/ht-x/state",
+             env=tag),
+    ]
+
+
 class ClassifyTests(unittest.TestCase):
     def test_run_id_tag_is_a_leak(self):
         p = proc(env={"HT_LEAK_RUN_ID": "r1"})
         self.assertEqual(rules(run([p], run_id="r1")), ["run-id"])
         self.assertEqual(run([p], run_id="r2"), [])
+
+    def test_run_id_scope_ignores_foreign_and_untagged_leaks(self):
+        for tag in (None, "foreign-run", "r10"):
+            for p in leak_candidates(tag):
+                with self.subTest(tag=tag, pid=p.pid):
+                    self.assertEqual(run([p], run_id="r1"), [])
+
+    def test_run_id_scope_reports_matching_leaks(self):
+        self.assertEqual(
+            rules(run(leak_candidates("r1"), run_id="r1")),
+            ["run-id", "run-id", "run-id", "run-id", "run-id", "run-id"],
+        )
+
+    def test_no_run_id_preserves_global_leak_rules(self):
+        for tag in (None, "foreign-run", "r1"):
+            with self.subTest(tag=tag):
+                self.assertEqual(
+                    rules(run(leak_candidates(tag))),
+                    ["dead-owner", "dead-owner", "artifact", "artifact",
+                     "orphan-temp", "orphan-temp"],
+                )
 
     def test_dead_owner_tag_is_a_leak(self):
         for key in ("HT_TEST_OWNER", "HERDR_THREADS_TEST_OWNER_PID"):
@@ -96,6 +131,20 @@ class ClassifyTests(unittest.TestCase):
         p = proc(pid=55, env={"HT_LEAK_RUN_ID": "r1"})
         self.assertEqual(run([p], run_id="r1", exclude=[55]), [])
         self.assertEqual(rules(run([p], run_id="r1")), ["run-id"])
+
+    def test_scoped_scan_excludes_self_ancestors_and_explicit_pids(self):
+        procs = [
+            proc(pid=10, ppid=20, env={"HT_LEAK_RUN_ID": "r1"}),
+            proc(pid=20, ppid=30, env={"HT_LEAK_RUN_ID": "r1"}),
+            proc(pid=30, env={"HT_LEAK_RUN_ID": "r1"}),
+            proc(pid=40, env={"HT_LEAK_RUN_ID": "r1"}),
+            proc(pid=50, env={"HT_LEAK_RUN_ID": "r1"}),
+        ]
+        exclude = leakcheck.ancestors(procs, 10) | {40}
+        self.assertEqual(
+            [(p.pid, rule) for p, rule in run(procs, run_id="r1", exclude=exclude)],
+            [(50, "run-id")],
+        )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,17 @@
+{
+  "findings": [
+    {
+      "claim": "The bounded-time warning promise assumes the due-work scheduler can drain historical and live overdue obligations within a bounded delay, but the design establishes neither a workload bound nor a scheduling latency bound.",
+      "location": "Root Goal; Message deadline contract; Risks and mitigations; task ht-0lo.1.3",
+      "category": "feasibility",
+      "external": false,
+      "evidence": "The goal promises a \"bounded-time warning\" and the message contract says \"Already expired rows become due on the normal bounded scan.\" The risk section acknowledges an \"upgrade-time warning burst\" and prescribes only \"bound scan work\"; ht-0lo.1.3 likewise requires a \"bounded warning burst.\" Bounded work per scan limits resource consumption, but does not bound how many scans an obligation waits behind an arbitrarily large upgrade backlog or a continuing arrival stream. The artifact gives no maximum pending workload, minimum scan service rate, fairness rule, or maximum detection lag, and its validation names functional expiry scenarios rather than backlog latency. This leaves the load-bearing latency premise unverified even with the daemon running and native wake deferral excluded.",
+      "kind": "UNVERIFIED-ASSUMPTION",
+      "spike": {
+        "question": "Under what supported backlog and arrival rate is overdue-warning detection bounded, including immediately after historical migration?",
+        "cheapest_test": "Seed a large sparse and physical legacy backlog, continuously add newly due obligations, and measure maximum warning-detection lag and daemon responsiveness using the intended bounded scan configuration.",
+        "kill_criteria": "Any supported workload can starve a due obligation or exceed the declared detection-lag bound; define the supported load/latency contract and scheduler fairness before claiming bounded-time detection."
+      }
+    }
+  ]
+}

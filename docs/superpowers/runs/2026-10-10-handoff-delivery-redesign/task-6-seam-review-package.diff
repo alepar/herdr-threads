@@ -1,0 +1,3713 @@
+# Review package: eac576409d850720b62ac3363598ed6edb0fe730..HEAD
+
+## Commits
+3f9167bd Compose invitation lifecycle after receipt and handoff migrations
+97b485fb Discover open inviter conditions after notice settlement
+2186877f Preserve open inviter wake after informational offer
+782a46cf Activate immutable invitation confirmation lifecycle
+
+## Files changed
+ TRUST-POLICY.md                               |  28 +-
+ migrations/0033_invitation_lifecycle.sql      |  13 +
+ migrations/0034_invitation_warning_origin.sql |  29 +
+ src/daemon/control.rs                         |   3 +
+ src/protocol/output_compact.rs                |   5 +
+ src/protocol/results.rs                       |  12 +
+ src/store/attention.rs                        |  99 +++-
+ src/store/control.rs                          |  42 +-
+ src/store/effective.rs                        |  12 +
+ src/store/invitation_due.rs                   |  28 +-
+ src/store/queries.rs                          |  52 +-
+ src/store/schema.rs                           | 127 ++++-
+ src/store/seats.rs                            |   9 +-
+ src/store/service_controls.rs                 |  17 +-
+ src/store/topology_handoff/attachment.rs      |   6 +-
+ src/store/wake.rs                             |  11 +-
+ tests/cli/lazy_display.rs                     |   2 +
+ tests/cli/watch.rs                            |   2 +
+ tests/integration/channel_activation.rs       |   4 +-
+ tests/protocol/capabilities.rs                |  25 +-
+ tests/store/control.rs                        | 764 +++++++++++++++++++++++++-
+ tests/store/effective.rs                      |  33 +-
+ tests/store/handoff_fences.rs                 |   4 +-
+ tests/store/invitation_due.rs                 | 463 +++++++++++++++-
+ tests/store/lazy26_prerequisite.rs            |   8 +-
+ tests/store/lazy_inbox.rs                     |  42 ++
+ tests/store/lazy_schema.rs                    |   2 +-
+ tests/store/schema.rs                         |   4 +-
+ tests/store/topology_attachment_guard.rs      |  60 ++
+ tests/store/topology_handoff.rs               |   4 +-
+ tests/store/topology_handoff_schema.rs        |  18 +-
+ tests/store/wake_discovery_cost.rs            |   6 +-
+ 32 files changed, 1826 insertions(+), 108 deletions(-)
+
+## Diff
+diff --git a/TRUST-POLICY.md b/TRUST-POLICY.md
+index 114f1902..b432ede5 100644
+--- a/TRUST-POLICY.md
++++ b/TRUST-POLICY.md
+@@ -319,20 +319,34 @@ The service never ACKs, accepts or rejects invitations and is never a receipt re
+ An ordinary invitation rejection is the addressed seat's explicit, accountable decision about one
+ invitation episode, with a nonblank reason of at most 4096 UTF-8 bytes. It retains the actor seat, binding
+ generation, timestamp and existing `cooperative_top_level` or `operator_human` observation in an immutable
+ ledger. New rejections publish an attributed native warning event in the thread; historical info
+ events remain unchanged on replay (A7). Rejection settles only that invitation's attention and warning
+ condition: never a message ACK or waiver, an acceptance, or a fabricated join/leave interval.
+ Declared subagents cannot reject. Required invitations remain service-owner controlled; a recipient must
+ ask that owner to release the requirement and reread its current state before attempting rejection.
+ Reinvitation creates a fresh episode; replay of an old rejection cannot reject that new invitation.
+ 
++Ordinary agent invitation confirmation is an immutable episode policy. Modern Lazy invitations remain
++pending and discoverable at ordinary inbox/hook opportunities, with no acceptance timer or native/mod
++wake. Their inherited physical duration/deadline columns retain legacy storage timing only; no canonical
++deadline, event, diagnostic or wake projection interprets that timing as a confirmation obligation.
++Explicit RequireAck, and historical invitations whose policy is absent, retain a frozen deadline from
++canonical creation. Registration and launch never accept an invitation or reset its deadline. Only the
++addressed seat's explicit accountable acceptance settles participation; rejection, requirement release
++and retirement retain their existing distinct terminal outcomes. Duplicate pending invitations preserve
++the first policy, timing and inviter; an already joined target creates no new invitation. Required service
++memberships retain their timed participation contract: imposing a requirement on a pending Lazy
++voluntary invitation creates a fresh timed episode and preserves the old invitation, origin and keyed
++outcome. Releasing that requirement leaves the original Lazy invitation discoverable without a timer.
++Explicit human/operator invitation semantics remain separate and unchanged.
++
+ **Voluntary self-join.** An explicit `join THREAD` enrolls the caller's seat in an active
+ thread of its instance under the ordinary A2 deciding transaction and its existing
+ `cooperative_top_level` or `operator_human` claim. The immutable native-authored join
+ info event retains actor seat, binding generation, observation provenance and decision
+ time; the membership interval starts at that event's canonical decision sequence.
+ It creates no invitation, invitation acceptance, receipt ACK or binding. A pending
+ ordinary invitation requires explicit acceptance or rejection first; a pending required
+ invitation requires exact-revision `accept-required`. Join cannot accept, release or alter
+ a service requirement. An already joined seat is a settled no-op. Leaving and joining
+ again creates a fresh interval without changing historical recipient snapshots or
+@@ -418,23 +432,31 @@ its audience is the members at the rejection decision plus the rejecting seat, n
+ Only the exact native warning backed by the retained rejection record is classified this way.
+ Historical info rejection events remain unchanged on replay. Rejection notices are passive for every
+ recipient: they create no wake, poke, receipt or ACK obligation. A committed check-in settles only
+ the bounded prefix of attributed events it carries to the exact current binding generation and
+ execution. A global decision watermark cannot settle uncarried events, including late attribution.
+ History and immutable operation results remain readable. A successor occupant gets its own offers;
+ response loss can lose an informational offer after commitment, and an explicit operation retry
+ can present the retained result again. Delivery is neither invitation acceptance nor receipt ACK,
+ agreement, adoption or task completion. Logical publication tokens stay unchanged by projection;
+ an advertised read-only delivery hint lets hooks drain newly attributed and remaining notice pages.
+-Delivery is not a wake. A built-in transition wakes only the affected seat of a still-open
+-condition (the hard-deadline backstop for the obligation that seat owes); a clear, and every
+-transition about another seat, waits for the member's next check-in offer. Accepted limit: an idle
++Delivery is not a wake. A built-in transition wakes the affected seat of a still-open
++condition (the hard-deadline backstop for the obligation that seat owes). An invitation deadline-missed
++open transition also wakes its originally recorded native inviter under the same host, composer and mod
++admission guards, even after that inviter leaves the thread or its informational notice was already
++carried by a committed offer. A separate bounded open-condition projection preserves this wake until
++canonical closure; the informational offer remains settled and creates no repeated delivery obligation.
++The open episode freezes its instance and original inviter address; historical
++rows use only their exact canonical invitation-creation event's recorded inviter, never a current member
++or later duplicate caller. Unknown historical/service/operator origins do not manufacture a native seat.
++A clear remains passive, as do transitions about another seat for other observers; they wait for the
++recipient's next check-in offer. Accepted limit: an idle
+ member learns of another seat's overdue or cleared obligation only when its pane next checks in. When
+ more than the bounded window of pending warnings or unoffered notices is visible, narrowing cannot rule
+ out an older waking notice (such as a service notice), so the wake keeps its unnarrowed answer and the
+ offer probe stays conservative: it may still wake, never silently drop one.
+ The same rule decides a live Claude mod channel's attention: the daemon counts only waking warnings in
+ the channel's attention fingerprint (with the same saturated fallback) and marks each other pending
+ warning `informational` in the inbox batch, so `watch` raises no `attention` line for it.
+ 
+ **A8. Passive lazy delivery bookkeeping.** Recorded `ordinary`/`lazy` delivery mode is immutable and
+ independent of sender role, relay and human intent. A lazy audience is frozen by canonical preparation
+diff --git a/migrations/0033_invitation_lifecycle.sql b/migrations/0033_invitation_lifecycle.sql
+new file mode 100644
+index 00000000..462d1122
+--- /dev/null
++++ b/migrations/0033_invitation_lifecycle.sql
+@@ -0,0 +1,13 @@
++-- Finite pending-confirmation snapshots advance by immutable ordinal, never
++-- by deadline, so new earlier deadlines cannot stretch an existing traversal.
++CREATE INDEX invitations_confirmation_scan ON invitations(ordinal)
++    WHERE state='pending' AND warning_message_id IS NULL AND reject_recorded=0
++    AND (confirmation IS NULL OR confirmation='require_ack');
++
++-- Timed wake windows exclude lazy rows before LIMIT; lazy backlog cannot hide
++-- the timed invitation that needs guarded native/mod delivery.
++CREATE INDEX invitations_confirmation_pending_seat ON invitations(seat_id,created_decision_seq,ordinal)
++    WHERE state='pending' AND (confirmation IS NULL OR confirmation='require_ack');
++
++CREATE INDEX invitations_confirmation_pending_thread ON invitations(seat_id,thread_id,created_decision_seq,ordinal)
++    WHERE state='pending' AND (confirmation IS NULL OR confirmation='require_ack');
+diff --git a/migrations/0034_invitation_warning_origin.sql b/migrations/0034_invitation_warning_origin.sql
+new file mode 100644
+index 00000000..245725b3
+--- /dev/null
++++ b/migrations/0034_invitation_warning_origin.sql
+@@ -0,0 +1,29 @@
++-- Open invitation-condition wake is independent of informational delivery.
++-- These addresses freeze for this open episode, including historical evidence.
++ALTER TABLE warning_conditions ADD COLUMN invitation_originator_instance_id TEXT REFERENCES host_instances(id);
++ALTER TABLE warning_conditions ADD COLUMN invitation_originator_seat_id TEXT REFERENCES seats(id)
++    CHECK((invitation_originator_instance_id IS NULL) = (invitation_originator_seat_id IS NULL));
++
++WITH origins AS (
++    SELECT c.ordinal,t.instance_id,
++        coalesce(i.inviter_seat_id,(SELECT json_extract(m.event_json,'$.actor_seat') FROM messages m
++            WHERE m.event_key='invite:'||i.id AND m.source_invitation_id=i.id AND m.thread_id=i.thread_id
++            AND m.kind='info' AND json_extract(m.event_json,'$.action')='invite'
++            AND json_extract(m.event_json,'$.invitation')=i.id AND json_extract(m.event_json,'$.seat')=i.seat_id)) AS seat_id
++    FROM warning_conditions c JOIN invitations i ON i.id=c.condition_id AND i.thread_id=c.thread_id
++    JOIN threads t ON t.id=i.thread_id
++    JOIN messages warning ON warning.id=c.open_warning_id AND warning.kind='warn'
++        AND warning.source_invitation_id=i.id AND warning.thread_id=i.thread_id
++    WHERE c.condition_kind='invitation' AND c.clear_warning_id IS NULL
++)
++UPDATE warning_conditions SET (invitation_originator_instance_id,invitation_originator_seat_id) =
++    (SELECT o.instance_id,o.seat_id FROM origins o JOIN seats s ON s.id=o.seat_id AND s.instance_id=o.instance_id
++     WHERE o.ordinal=warning_conditions.ordinal)
++WHERE condition_kind='invitation' AND clear_warning_id IS NULL;
++
++CREATE INDEX warning_conditions_invitation_origin ON warning_conditions(invitation_originator_instance_id,invitation_originator_seat_id,ordinal)
++    WHERE condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id IS NOT NULL;
++
++CREATE TRIGGER warning_conditions_invitation_origin_immutable BEFORE UPDATE OF invitation_originator_instance_id,invitation_originator_seat_id ON warning_conditions
++WHEN NEW.invitation_originator_instance_id IS NOT OLD.invitation_originator_instance_id OR NEW.invitation_originator_seat_id IS NOT OLD.invitation_originator_seat_id
++BEGIN SELECT RAISE(ABORT, 'invitation warning origin is immutable'); END;
+diff --git a/src/daemon/control.rs b/src/daemon/control.rs
+index d670c7bd..e9f92c70 100644
+--- a/src/daemon/control.rs
++++ b/src/daemon/control.rs
+@@ -311,20 +311,23 @@ where
+                         .filter(|name| {
+                             (**name != crate::protocol::capabilities::HARNESS_EVIDENCE_V2
+                                 || self.harness_evidence_v2.is_some())
+                                 && (**name != crate::protocol::capabilities::HARNESS_HEALTH_V2
+                                     || self
+                                         .harness_health_v2
+                                         .as_ref()
+                                         .is_some_and(|p| p.has_observations()))
+                         })
+                         .copied()
++                        .chain(std::iter::once(
++                            crate::protocol::capabilities::INVITATION_CONFIRMATION_V1,
++                        ))
+                         .chain(self.bootstrap_guarded.then_some(
+                             crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1,
+                         ))
+                         .chain(self.bootstrap_guarded.then_some(
+                             crate::protocol::capabilities::BOOTSTRAP_INSPECTED_RECOVERY_V1,
+                         ))
+                         .map(str::to_owned)
+                         .collect(),
+                 }))
+             }
+diff --git a/src/protocol/output_compact.rs b/src/protocol/output_compact.rs
+index 40ad6d6b..cf7fa61f 100644
+--- a/src/protocol/output_compact.rs
++++ b/src/protocol/output_compact.rs
+@@ -63,26 +63,30 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
+             if page.items.is_empty() && !page.has_more {
+                 out.push_str("empty\n");
+             }
+             for item in &page.items {
+                 let lazy = matches!(item, InboxBatchV2Item::LazyMessage { .. });
+                 let ordinary = match item {
+                     InboxBatchV2Item::Invitation {
+                         thread,
+                         topic_data,
+                         invitation,
++                        confirmation,
++                        deadline_at,
+                         required_service,
+                     } => InboxBatchItem::Invitation {
+                         thread: thread.clone(),
+                         topic_data: topic_data.clone(),
+                         goal_data: None,
+                         invitation: invitation.clone(),
++                        confirmation: *confirmation,
++                        deadline_at: *deadline_at,
+                         required_service: required_service.clone(),
+                     },
+                     InboxBatchV2Item::Message {
+                         thread,
+                         topic_data,
+                         message,
+                         sequence,
+                         sender,
+                         author_role,
+                         relays_user,
+@@ -162,20 +166,21 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
+                 out.push_str("empty\n");
+             } else {
+                 for item in &page.items {
+                     match item {
+                         InboxBatchItem::Invitation {
+                             thread,
+                             topic_data,
+                             goal_data,
+                             invitation,
+                             required_service,
++                            ..
+                         } => {
+                             out.push_str(&format!(
+                                 "invitation {} {}: {}\n",
+                                 invitation.as_str(),
+                                 thread.as_str(),
+                                 one_line(topic_data)
+                             ));
+                             match goal_data.as_deref().filter(|goal| !goal.is_empty()) {
+                                 Some(goal) => {
+                                     out.push_str(&format!("  goal: {}\n", one_line(goal)))
+diff --git a/src/protocol/results.rs b/src/protocol/results.rs
+index 2e75eb7a..78c4148c 100644
+--- a/src/protocol/results.rs
++++ b/src/protocol/results.rs
+@@ -1045,20 +1045,26 @@ pub struct InboxItem {
+ #[serde(tag = "kind", rename_all = "snake_case")]
+ pub enum InboxBatchItem {
+     Invitation {
+         thread: ThreadId,
+         topic_data: String,
+         /// Complete canonical goal when it fits the selected page. Older
+         /// daemons and byte-constrained pages omit it; inspect before deciding.
+         #[serde(default, skip_serializing_if = "Option::is_none")]
+         goal_data: Option<String>,
+         invitation: InvitationId,
++        /// Frozen modern policy; absent for historical invitation payloads.
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        confirmation: Option<crate::protocol::commands::InvitationConfirmation>,
++        /// Effective modern confirmation deadline; Lazy has no timer.
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        deadline_at: Option<UtcMillis>,
+         required_service: Option<RequiredMembership>,
+     },
+     Message {
+         thread: ThreadId,
+         topic_data: String,
+         message: MessageId,
+         sequence: u64,
+         sender: Option<SeatId>,
+         #[serde(default, skip_serializing_if = "Option::is_none")]
+         author_role: Option<crate::protocol::summary::AuthorRole>,
+@@ -1083,20 +1089,26 @@ pub enum InboxBatchItem {
+ }
+ 
+ /// V2 deliberately leaves every legacy v1 item shape unchanged.
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(tag = "kind", rename_all = "snake_case")]
+ pub enum InboxBatchV2Item {
+     Invitation {
+         thread: ThreadId,
+         topic_data: String,
+         invitation: InvitationId,
++        /// Frozen modern policy; absent for historical invitation payloads.
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        confirmation: Option<crate::protocol::commands::InvitationConfirmation>,
++        /// Effective modern confirmation deadline; Lazy has no timer.
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        deadline_at: Option<UtcMillis>,
+         required_service: Option<RequiredMembership>,
+     },
+     Message {
+         thread: ThreadId,
+         topic_data: String,
+         message: MessageId,
+         sequence: u64,
+         sender: Option<SeatId>,
+         #[serde(default, skip_serializing_if = "Option::is_none")]
+         author_role: Option<crate::protocol::summary::AuthorRole>,
+diff --git a/src/store/attention.rs b/src/store/attention.rs
+index 5d377b3b..d42e2187 100644
+--- a/src/store/attention.rs
++++ b/src/store/attention.rs
+@@ -433,37 +433,65 @@ pub fn add_lazy(
+ /// The seat's pending invitations (optionally in one thread): one `WINDOW`
+ /// walk of `digest_pending_invitations`, newest first by (decision sequence,
+ /// ordinal), up to the host decision sequence `through`. Each windowed row is
+ /// checked against the source row (still pending, not cancelled, seat not
+ /// retired).
+ pub fn pending_invitations(
+     db: &Connection,
+     seat_id: &str,
+     thread: Option<&str>,
+     through: i64,
++) -> Result<PendingSet, ApiError> {
++    invitation_window(db, seat_id, thread, through, false)
++}
++
++/// Only confirming invitations enter native/mod wake. Select their indexed
++/// window before LIMIT so a lazy backlog cannot hide an older timed row.
++pub fn pending_confirming_invitations(
++    db: &Connection,
++    seat_id: &str,
++    thread: Option<&str>,
++    through: i64,
++) -> Result<PendingSet, ApiError> {
++    invitation_window(db, seat_id, thread, through, true)
++}
++
++fn invitation_window(
++    db: &Connection,
++    seat_id: &str,
++    thread: Option<&str>,
++    through: i64,
++    confirming: bool,
+ ) -> Result<PendingSet, ApiError> {
+     const SEAT: &str = "SELECT w.invitation_id,w.thread_id,w.created_decision_seq,w.ordinal,(i.state='pending' AND s.state!='retired' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=w.invitation_id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=w.invitation_id)) FROM (SELECT invitation_id,thread_id,created_decision_seq,ordinal FROM digest_pending_invitations INDEXED BY digest_pending_invitations_seat WHERE seat_id=?1 AND created_decision_seq<=?2 ORDER BY created_decision_seq DESC,ordinal DESC LIMIT ?3) w LEFT JOIN invitations i ON i.id=w.invitation_id LEFT JOIN seats s ON s.id=?1";
+     const THREAD: &str = "SELECT w.invitation_id,w.thread_id,w.created_decision_seq,w.ordinal,(i.state='pending' AND s.state!='retired' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=w.invitation_id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=w.invitation_id)) FROM (SELECT invitation_id,thread_id,created_decision_seq,ordinal FROM digest_pending_invitations INDEXED BY digest_pending_invitations_thread WHERE seat_id=?1 AND thread_id=?4 AND created_decision_seq<=?2 ORDER BY created_decision_seq DESC,ordinal DESC LIMIT ?3) w LEFT JOIN invitations i ON i.id=w.invitation_id LEFT JOIN seats s ON s.id=?1";
++    const TIMED_SEAT: &str = "SELECT w.invitation_id,w.thread_id,w.created_decision_seq,w.ordinal,(s.state!='retired' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=w.invitation_id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=w.invitation_id)) FROM (SELECT id AS invitation_id,thread_id,created_decision_seq,ordinal FROM invitations INDEXED BY invitations_confirmation_pending_seat WHERE seat_id=?1 AND state='pending' AND (confirmation IS NULL OR confirmation='require_ack') AND created_decision_seq<=?2 ORDER BY created_decision_seq DESC,ordinal DESC LIMIT ?3) w LEFT JOIN seats s ON s.id=?1";
++    const TIMED_THREAD: &str = "SELECT w.invitation_id,w.thread_id,w.created_decision_seq,w.ordinal,(s.state!='retired' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=w.invitation_id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=w.invitation_id)) FROM (SELECT id AS invitation_id,thread_id,created_decision_seq,ordinal FROM invitations INDEXED BY invitations_confirmation_pending_thread WHERE seat_id=?1 AND thread_id=?4 AND state='pending' AND (confirmation IS NULL OR confirmation='require_ack') AND created_decision_seq<=?2 ORDER BY created_decision_seq DESC,ordinal DESC LIMIT ?3) w LEFT JOIN seats s ON s.id=?1";
++    let (seat_sql, thread_sql) = if confirming {
++        (TIMED_SEAT, TIMED_THREAD)
++    } else {
++        (SEAT, THREAD)
++    };
+     let map = |r: &rusqlite::Row<'_>| {
+         Ok((
+             r.get::<_, String>(0)?,
+             r.get::<_, String>(1)?,
+             r.get::<_, i64>(2)?,
+             r.get::<_, i64>(3)?,
+             r.get::<_, Option<bool>>(4)?.unwrap_or(false),
+         ))
+     };
+     let window = match thread {
+-        None => rows(db, SEAT, params![seat_id, through, WINDOW_SQL], map)?,
++        None => rows(db, seat_sql, params![seat_id, through, WINDOW_SQL], map)?,
+         Some(thread) => rows(
+             db,
+-            THREAD,
++            thread_sql,
+             params![seat_id, through, WINDOW_SQL, thread],
+             map,
+         )?,
+     };
+     let mut gather = Gather::default();
+     gather.window(window.len());
+     for (id, thread, seq, ordinal, valid) in window {
+         if seq <= 0 || ordinal <= 0 {
+             return Err(api_error(
+                 ErrorCode::StoreCorrupt,
+@@ -1011,24 +1039,24 @@ pub fn seat_pending_warnings(
+ }
+ 
+ /// One O(1) existence probe of a pending access path: the index it must use
+ /// and the statement. `?1` is the seat; the programmatic probe also takes
+ /// `?2`, the seat's offered notice frontier.
+ pub struct WakeProbe {
+     pub index: &'static str,
+     pub sql: &'static str,
+ }
+ 
+-/// The six pending access paths wake discovery probes per live non-human
++/// The seven pending access paths wake discovery probes per live non-human
+ /// seat (spec D2), in probe order. Each is an `INDEXED BY` seat-leading
+ /// existence lookup. `wake_work` is deliberately not probed.
+-pub const WAKE_PROBES: [WakeProbe; 6] = [
++pub const WAKE_PROBES: [WakeProbe; 7] = [
+     WakeProbe {
+         index: "digest_pending_invitations_seat",
+         sql: "SELECT EXISTS(SELECT 1 FROM digest_pending_invitations INDEXED BY digest_pending_invitations_seat WHERE seat_id=?1)",
+     },
+     WakeProbe {
+         index: "digest_pending_manifest_receipts_seat",
+         sql: "SELECT EXISTS(SELECT 1 FROM digest_pending_manifest_receipts INDEXED BY digest_pending_manifest_receipts_seat WHERE seat_id=?1)",
+     },
+     WakeProbe {
+         index: "receipts_required_seat_pending",
+@@ -1039,23 +1067,27 @@ pub const WAKE_PROBES: [WakeProbe; 6] = [
+         sql: "SELECT EXISTS(SELECT 1 FROM digest_open_warning_recipients INDEXED BY digest_open_warning_recipients_seat WHERE seat_id=?1)",
+     },
+     WakeProbe {
+         index: "digest_open_warnings_affected",
+         sql: "SELECT EXISTS(SELECT 1 FROM digest_open_warnings INDEXED BY digest_open_warnings_affected WHERE affected_seat_id=?1)",
+     },
+     WakeProbe {
+         index: "digest_programmatic_warnings_seat",
+         sql: "SELECT EXISTS(SELECT 1 FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_seat WHERE seat_id=?1 AND ordinal>?2)",
+     },
++    WakeProbe {
++        index: "warning_conditions_invitation_origin",
++        sql: "SELECT EXISTS(SELECT 1 FROM warning_conditions INDEXED BY warning_conditions_invitation_origin WHERE invitation_originator_instance_id=(SELECT instance_id FROM seats WHERE id=?1) AND invitation_originator_seat_id=?1 AND condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id IS NOT NULL)",
++    },
+ ];
+ 
+-/// Does any pending access path hold a row for the seat? At most six O(1)
++/// Does any pending access path hold a row for the seat? At most seven O(1)
+ /// probes, stopping at the first hit. A hit is only a reason to examine the
+ /// seat: the canonical judges still decide whether the work is actionable.
+ pub fn seat_has_pending_rows(db: &Connection, seat_id: &str) -> Result<bool, ApiError> {
+     for probe in &WAKE_PROBES {
+         let hit: bool = if probe.index == "digest_programmatic_warnings_seat" {
+             let frontier = notice_frontier(db, seat_id)?;
+             db.prepare_cached(probe.sql)
+                 .map_err(store_error)?
+                 .query_row(params![seat_id, frontier], |r| r.get(0))
+         } else {
+@@ -1078,41 +1110,83 @@ pub struct WakeSeatAttention {
+     pub attention: effective::EffectiveSeatAttention,
+     /// `host_instances.decision_seq`, read once before the walks. It is the
+     /// position `reserve` re-reads and refuses on any change; it is not
+     /// derived from the walked rows (an ACK that settles a receipt adds no
+     /// newer row).
+     pub decision_seq: i64,
+ }
+ 
+ /// May this pending warning wake `seat_id`? A canonical condition transition
+ /// is an informational notice for every member (TRUST-POLICY A7): it wakes
+-/// only the affected seat of a still-open condition, the seat that owes the
+-/// overdue ACK or invitation answer. Other members, and every clear, receive
++/// the affected seat of a still-open condition and the original inviter of an
++/// overdue invitation. Other members, and every clear, receive
+ /// it on their next check-in offer instead of a prompt whose inbox has
+ /// nothing for them. Other warnings keep their judged actionability. Unique
+ /// index probes only.
+ pub fn warning_wakes_seat(
+     db: &Connection,
+     seat_id: &str,
+     warning_id: &str,
+ ) -> Result<bool, ApiError> {
+     if effective::is_invitation_rejection_notice(db, warning_id)? {
+         return Ok(false);
+     }
++    let origin: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1 AND condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id=?2)",params![warning_id,seat_id],|r|r.get(0)).map_err(store_error)?;
++    if origin {
++        return Ok(true);
++    }
+     db.query_row(
+         "SELECT CASE WHEN EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1) OR EXISTS(SELECT 1 FROM warning_conditions WHERE clear_warning_id=?1) THEN EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1 AND affected_seat_id=?2 AND clear_warning_id IS NULL) ELSE 1 END",
+         params![warning_id, seat_id],
+         |r| r.get(0),
+     )
+     .map_err(store_error)
+ }
+ 
++/// Open invitation conditions addressed to their frozen original inviter.
++/// This separate bounded source ignores informational notice offers. The
++/// instance/seat/ordinal partial index excludes all closed historical rows.
++pub fn open_invitation_origin_warnings(
++    db: &Connection,
++    seat_id: &str,
++) -> Result<PendingSet, ApiError> {
++    let instance: Option<String> = db
++        .query_row(
++            "SELECT instance_id FROM seats WHERE id=?1 AND state!='retired'",
++            [seat_id],
++            |r| r.get(0),
++        )
++        .optional()
++        .map_err(store_error)?;
++    let Some(instance) = instance else {
++        return Ok(PendingSet::default());
++    };
++    let window: Vec<PendingItem> = rows(
++        db,
++        "SELECT c.open_warning_id,c.thread_id,c.opened_seq,m.event_offset FROM (SELECT open_warning_id,thread_id,opened_seq FROM warning_conditions INDEXED BY warning_conditions_invitation_origin WHERE invitation_originator_instance_id=?1 AND invitation_originator_seat_id=?2 AND condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id IS NOT NULL ORDER BY ordinal DESC LIMIT ?3) c JOIN messages m ON m.id=c.open_warning_id",
++        params![instance, seat_id, WINDOW_SQL],
++        |r| {
++            Ok(PendingItem {
++                id: r.get(0)?,
++                thread_id: r.get(1)?,
++                key: (r.get(2)?, r.get(3)?),
++            })
++        },
++    )?;
++    let mut gather = Gather::default();
++    gather.window(window.len());
++    for item in window {
++        gather.add(item);
++    }
++    Ok(gather.finish())
++}
++
+ /// Narrow a seat's pending-warning set to the warnings that wake it
+ /// (`warning_wakes_seat`). A saturated walk can hide an older waking notice (a
+ /// service notice behind a full window of other seats' transitions).
+ /// Narrowing it to nothing would turn that unknown into "no warning" and skip
+ /// the conservative offer probe, so a saturated set with no waking item keeps
+ /// the unnarrowed answer instead. Native wake (`wake_seat_attention`) and the
+ /// mod channel's attention fingerprint (`seats::mod_seat_view`) share it.
+ pub fn wake_warnings(
+     db: &Connection,
+     seat_id: &str,
+@@ -1120,40 +1194,47 @@ pub fn wake_warnings(
+ ) -> Result<PendingSet, ApiError> {
+     let mut wakes = Vec::with_capacity(warnings.items.len());
+     for item in &warnings.items {
+         if warning_wakes_seat(db, seat_id, &item.id)? {
+             wakes.push(item.clone());
+         }
+     }
+     if !(wakes.is_empty() && warnings.saturated) {
+         warnings.items = wakes;
+     }
+-    Ok(warnings)
++    let origins = open_invitation_origin_warnings(db, seat_id)?;
++    let mut gather = Gather {
++        steps: warnings.work_steps + origins.work_steps,
++        ..Gather::default()
++    };
++    gather.merge(&warnings);
++    gather.merge(&origins);
++    Ok(gather.finish())
+ }
+ 
+ /// The wake attention of one seat, from the newest-first per-source walks
+ /// and canonical judges (`effective_receipt`, `is_warning_recipient`,
+ /// `warning_condition_actionable`), with warnings narrowed to those that
+ /// wake the seat (`warning_wakes_seat`): O(`WINDOW` x sources), independent
+ /// of retained history. Call it inside the caller's read transaction; the
+ /// decision sequence is read first, so the walks see at least that state.
+ pub fn wake_seat_attention(db: &Connection, seat_id: &str) -> Result<WakeSeatAttention, ApiError> {
+     let decision_seq: i64 = db
+         .query_row(
+             "SELECT h.decision_seq FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1",
+             [seat_id],
+             |r| r.get(0),
+         )
+         .optional()
+         .map_err(store_error)?
+         .ok_or_else(|| api_error(ErrorCode::NotFound, "seat missing"))?;
+-    let invitations = pending_invitations(db, seat_id, None, decision_seq)?;
++    let invitations = pending_confirming_invitations(db, seat_id, None, decision_seq)?;
+     let receipts = pending_receipts(db, seat_id, None)?;
+     let warnings = wake_warnings(db, seat_id, seat_pending_warnings(db, seat_id, &|| Ok(()))?)?;
+     let latest_warning_seq = warnings.items.first().map(|item| item.key.0);
+     Ok(WakeSeatAttention {
+         attention: effective::EffectiveSeatAttention {
+             has_pending_invitation: !invitations.items.is_empty(),
+             has_pending_receipt: !receipts.items.is_empty(),
+             latest_warning_seq,
+             frontier: LogicalAttentionFrontier {
+                 invitation: frontier_key(&invitations)?,
+diff --git a/src/store/control.rs b/src/store/control.rs
+index e062064e..9431dfd4 100644
+--- a/src/store/control.rs
++++ b/src/store/control.rs
+@@ -1517,28 +1517,41 @@ fn create_thread_impl(
+ /// Invite a nonretired seat. A pending episode is immutable, including its
+ /// deadline, even when the caller requests a different duration later.
+ pub fn invite(
+     context: &StoreContext,
+     conn: &mut Connection,
+     budget: &CallBudget,
+     command: &Invite,
+     mut permit: MutationPermit,
+     installation_default_ms: Option<u64>,
+ ) -> Result<CommandResult, ApiError> {
+-    // Activation boundary: replace this refusal only when the canonical lifecycle
+-    // honors confirmation and advertises INVITATION_CONFIRMATION_V1.
+-    if command.confirmation.is_some() {
++    if command.confirmation == Some(crate::protocol::commands::InvitationConfirmation::Lazy)
++        && command.deadline_millis.is_some()
++    {
+         return Err(api_error(
+-            ErrorCode::Unsupported,
+-            "invitation confirmation lifecycle is not active",
++            ErrorCode::InvalidRequest,
++            "lazy invitation conflicts with deadline",
+         ));
+     }
++    if command.confirmation == Some(crate::protocol::commands::InvitationConfirmation::RequireAck)
++        && command.claim.harness == crate::protocol::authority::Harness::Human
++    {
++        return Err(api_error(
++            ErrorCode::InvalidRequest,
++            "human invitation cannot require agent confirmation",
++        ));
++    }
++    let confirmation = command.confirmation.map(|mode| match mode {
++        crate::protocol::commands::InvitationConfirmation::Lazy => "lazy",
++        crate::protocol::commands::InvitationConfirmation::RequireAck => "require_ack",
++    });
++    let timed = confirmation != Some("lazy");
+     let duration = command
+         .deadline_millis
+         .or(installation_default_ms)
+         .unwrap_or(300_000);
+     let duration = i64::try_from(duration)
+         .map_err(|_| api_error(ErrorCode::InvalidRequest, "invitation duration too large"))?;
+     if duration <= 0 {
+         return Err(api_error(
+             ErrorCode::InvalidRequest,
+             "invitation duration must be positive",
+@@ -1645,38 +1658,47 @@ pub fn invite(
+                     |r| r.get(0),
+                 )
+                 .map_err(store_error)?;
+             let created_decision_seq = i64::try_from(schema::next_decision_seq(tx, &instance)?)
+                 .map_err(|_| {
+                     api_error(
+                         ErrorCode::SequenceExhausted,
+                         "invitation decision sequence exhausted",
+                     )
+                 })?;
+-            tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8)",
+-                params![invitation.as_str(), command.thread.as_str(), command.seat.as_str(), episode, decision.utc.0, created_decision_seq, duration, deadline.0]).map_err(store_error)?;
+-            let payload = serde_json::json!({"action":"invite", "actor_seat":caller.as_str(), "seat":command.seat.as_str(),
+-                "invitation":invitation.as_str(), "deadline_at":deadline.0}).to_string();
++            tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8,?9,?10)",
++                params![invitation.as_str(), command.thread.as_str(), command.seat.as_str(), episode, decision.utc.0, created_decision_seq, duration, deadline.0,confirmation,caller.as_str()]).map_err(store_error)?;
++            let mut payload = serde_json::json!({"action":"invite", "actor_seat":caller.as_str(), "seat":command.seat.as_str(),
++                "invitation":invitation.as_str()});
++            if timed {
++                payload["deadline_at"] = serde_json::json!(deadline.0);
++            }
++            if let Some(mode) = confirmation {
++                payload["confirmation"] = serde_json::json!(mode);
++            }
++            let payload = payload.to_string();
+             schema::append_event_once(
+                 tx,
+                 EventInput {
+                     thread: &command.thread,
+                     key: &format!("invite:{}", invitation.as_str()),
+                     kind: "info",
+                     payload_json: &payload,
+                     decision_at: decision.utc,
+                     source_message: None,
+                     source_invitation: Some(&invitation),
+                 },
+             )?;
+             schema::bump_membership_revision(tx, &command.thread)?;
+-            tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES (?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1", [command.seat.as_str()]).map_err(store_error)?;
++            if timed {
++                tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES (?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1", [command.seat.as_str()]).map_err(store_error)?;
++            }
+             let instance: String = tx
+                 .query_row(
+                     "SELECT instance_id FROM seats WHERE id=?1",
+                     [caller.as_str()],
+                     |r| r.get(0),
+                 )
+                 .map_err(store_error)?;
+             schema::bump_filter_revision(tx, &instance, "directory", "all")?;
+             bump_member_directory(tx, &instance, &command.seat)?;
+             schema::bump_filter_revision(tx, &instance, "inbox", command.seat.as_str())?;
+diff --git a/src/store/effective.rs b/src/store/effective.rs
+index 5f84bf92..421f571b 100644
+--- a/src/store/effective.rs
++++ b/src/store/effective.rs
+@@ -1578,20 +1578,32 @@ pub fn effective_warning_by_id(
+     db.query_row(
+         "SELECT m.id, m.thread_id, m.sequence, m.decision_seq, m.event_json, m.source_message_id, w.affected_seat_id \
+          FROM messages m LEFT JOIN warning_jobs w ON w.warning_id=m.id WHERE m.id=?1 AND m.kind='warn'",
+         [id], |r| Ok(EffectiveWarning {
+             id: r.get(0)?, thread_id: r.get(1)?, sequence: r.get(2)?, event_seq: r.get(3)?,
+             event_json: r.get(4)?, source_message_id: r.get(5)?, affected_seat_id: r.get(6)?,
+         }),
+     ).optional().map_err(store_error)
+ }
+ 
++/// Original canonical invitation episode evidence only. Old records with no
++/// recorded native inviter remain unattributed; current membership is no hint.
++pub(crate) fn invitation_originator(
++    db: &Connection,
++    invitation: &str,
++) -> Result<Option<String>, ApiError> {
++    db.query_row(
++        "SELECT coalesce(i.inviter_seat_id,(SELECT json_extract(m.event_json,'$.actor_seat') FROM messages m JOIN seats origin ON origin.id=json_extract(m.event_json,'$.actor_seat') AND origin.instance_id=t.instance_id WHERE m.event_key='invite:'||i.id AND m.source_invitation_id=i.id AND m.thread_id=i.thread_id AND m.kind='info' AND json_extract(m.event_json,'$.action')='invite' AND json_extract(m.event_json,'$.invitation')=i.id AND json_extract(m.event_json,'$.seat')=i.seat_id)) FROM invitations i JOIN threads t ON t.id=i.thread_id WHERE i.id=?1",
++        [invitation],|r|r.get(0),
++    ).optional().map(|row|row.flatten()).map_err(store_error)
++}
++
+ pub fn is_warning_recipient(db: &Connection, id: &str, seat_id: &str) -> Result<bool, ApiError> {
+     let Some(warning) = effective_warning_by_id(db, id)? else {
+         return Ok(false);
+     };
+     let service: bool = db.query_row(
+         "SELECT EXISTS(SELECT 1 FROM service_notification_publications p JOIN service_notification_recipients r ON r.preparation_id=p.preparation_id WHERE p.message_id=?1 AND r.seat_id=?2)",
+         params![id,seat_id], |r|r.get(0)).map_err(store_error)?;
+     if service {
+         return Ok(true);
+     }
+diff --git a/src/store/invitation_due.rs b/src/store/invitation_due.rs
+index 7752df19..08c0ee73 100644
+--- a/src/store/invitation_due.rs
++++ b/src/store/invitation_due.rs
+@@ -11,25 +11,26 @@ use crate::{
+ use rusqlite::{Connection, OptionalExtension, params};
+ use std::collections::HashMap;
+ 
+ use super::{
+     connection::{StoreContext, api_error, store_error},
+     schema::{next_decision_seq, record_overdue_with_decision_seq},
+ };
+ 
+ pub const MAX_INVITATION_DUE_BATCH: u16 = 100;
+ 
+-/// Immutable deadline order, capped by the invitation ordinal observed at the
+-/// start of a traversal. A new traversal picks up later invitations.
++/// Finite ordinal traversal capped at its initial high water. New invitations
++/// belong to the next traversal, even when their deadlines precede old rows.
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub struct InvitationDueCursor {
+     pub high_water_ordinal: i64,
++    /// Informational last deadline; traversal is ordered only by ordinal.
+     pub after_deadline: i64,
+     pub after_ordinal: i64,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ pub struct InvitationDueBatch {
+     pub inspected: u16,
+     pub warnings_added: u16,
+     pub next: Option<InvitationDueCursor>,
+ }
+@@ -40,63 +41,66 @@ pub(crate) struct AdvisoryInvitation {
+     deadline: i64,
+     ordinal: i64,
+ }
+ 
+ pub(crate) struct AdvisoryPage {
+     candidates: Vec<AdvisoryInvitation>,
+     has_more: bool,
+     high_water_ordinal: i64,
+ }
+ 
+-pub(crate) const INVITATION_DUE_SELECTION: &str = "SELECT i.id, i.deadline_at, i.ordinal FROM invitations i INDEXED BY invitations_effective_pending_unwarned WHERE i.state='pending' AND i.warning_message_id IS NULL AND i.reject_recorded=0 AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) AND (i.deadline_at, i.ordinal)>(?1, ?2) ORDER BY i.deadline_at, i.ordinal LIMIT ?3";
++pub(crate) const INVITATION_DUE_SELECTION: &str = "SELECT i.id, i.deadline_at, i.ordinal FROM invitations i INDEXED BY invitations_confirmation_scan WHERE i.state='pending' AND i.warning_message_id IS NULL AND i.reject_recorded=0 AND (i.confirmation IS NULL OR i.confirmation='require_ack') AND i.ordinal>?1 AND i.ordinal<=?2 ORDER BY i.ordinal LIMIT ?3";
+ 
+ /// Advisory selection does not authorize any transition. It reads at most the
+ /// admitted number of physical rows from the pending-unwarned index. The
+-/// ordinal high water is checked after this bounded index slice.
++/// ordinal high water bounds the indexed slice before any canonical reread.
++/// Future and cancelled rows count as inspected physical candidates.
+ pub(crate) fn select_invitation_due_candidates(
+     conn: &Connection,
+     after: Option<InvitationDueCursor>,
+     limit: u16,
+ ) -> Result<AdvisoryPage, ApiError> {
+     if limit == 0 || limit > MAX_INVITATION_DUE_BATCH {
+         return Err(api_error(
+             ErrorCode::InvalidRequest,
+             "invitation due batch limit must be 1..=100",
+         ));
+     }
+     let high_water_ordinal = match after {
+-        Some(cursor) if cursor.high_water_ordinal >= 0 && cursor.after_ordinal >= 0 => {
++        Some(cursor)
++            if cursor.high_water_ordinal >= 0
++                && cursor.after_ordinal >= 0
++                && cursor.after_ordinal <= cursor.high_water_ordinal =>
++        {
+             cursor.high_water_ordinal
+         }
+         Some(_) => {
+             return Err(api_error(
+                 ErrorCode::InvalidRequest,
+                 "invalid invitation due cursor",
+             ));
+         }
+         None => conn
+             .query_row(
+                 "SELECT coalesce(max(ordinal), 0) FROM invitations",
+                 [],
+                 |r| r.get(0),
+             )
+             .map_err(store_error)?,
+     };
+-    let (after_deadline, after_ordinal) = after
+-        .map(|cursor| (cursor.after_deadline, cursor.after_ordinal))
+-        .unwrap_or((i64::MIN, 0));
++    let after_ordinal = after.map_or(0, |cursor| cursor.after_ordinal);
+     let mut statement = conn
+         .prepare_cached(INVITATION_DUE_SELECTION)
+         .map_err(store_error)?;
+     let rows = statement
+         .query_map(
+-            params![after_deadline, after_ordinal, i64::from(limit)],
++            params![after_ordinal, high_water_ordinal, i64::from(limit)],
+             |r| {
+                 Ok(AdvisoryInvitation {
+                     id: InvitationId::new(r.get::<_, String>(0)?),
+                     deadline: r.get(1)?,
+                     ordinal: r.get(2)?,
+                 })
+             },
+         )
+         .map_err(store_error)?;
+     let candidates = rows.collect::<Result<Vec<_>, _>>().map_err(store_error)?;
+@@ -118,41 +122,39 @@ pub(crate) fn apply_invitation_due_candidates(
+     conn: &mut Connection,
+     page: AdvisoryPage,
+ ) -> Result<InvitationDueBatch, ApiError> {
+     context.execute_decision(
+         conn,
+         |_| Ok(()),
+         |tx, decision, _| {
+             let mut inspected = 0u16;
+             let mut warnings_added = 0u16;
+             let mut last = None;
+-            let mut encountered_future = false;
+             let mut decision_sequences = HashMap::<String, u64>::new();
+             for candidate in &page.candidates {
+                 inspected += 1;
+                 last = Some((candidate.deadline, candidate.ordinal));
+                 // Newly inserted invitations belong to a later traversal.
+                 if candidate.ordinal > page.high_water_ordinal {
+                     continue;
+                 }
+                 // Deadline and state are reread; advisory rows can become terminal.
+                 let current: Option<(String, i64, String, Option<String>, String)> = tx
+                     .query_row(
+                         "SELECT t.instance_id, i.deadline_at, CASE WHEN EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) THEN 'rejected' WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END, i.warning_message_id, s.state FROM invitations i JOIN threads t ON t.id=i.thread_id JOIN seats s ON s.id=i.seat_id LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.id=?1",
+                         [candidate.id.as_str()],
+                         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                     )
+                     .optional()
+                     .map_err(store_error)?;
+                 if current.as_ref().is_some_and(|row| row.1 > decision.utc.0) {
+-                    encountered_future = true;
+-                    break;
++                    continue;
+                 }
+                 if let Some((instance, _, state, marker, seat_state)) = current {
+                     if state != "pending" || marker.is_some() || seat_state == "retired" {
+                         continue;
+                     }
+                     let decision_seq = match decision_sequences.get(&instance) {
+                         Some(seq) => *seq,
+                         None => {
+                             let seq = next_decision_seq(tx, &instance)?;
+                             decision_sequences.insert(instance, seq);
+@@ -162,21 +164,21 @@ pub(crate) fn apply_invitation_due_candidates(
+                     let outcome = record_overdue_with_decision_seq(
+                         tx,
+                         &ObligationRef::Invitation(candidate.id.clone()),
+                         &TimeBasis::Decision,
+                         decision.utc,
+                         decision_seq,
+                     )?;
+                     warnings_added += u16::from(outcome.inserted);
+                 }
+             }
+-            let next = if page.has_more && !encountered_future {
++            let next = if page.has_more {
+                 last.map(|(after_deadline, after_ordinal)| InvitationDueCursor {
+                     high_water_ordinal: page.high_water_ordinal,
+                     after_deadline,
+                     after_ordinal,
+                 })
+             } else {
+                 None
+             };
+             Ok(InvitationDueBatch {
+                 inspected,
+diff --git a/src/store/queries.rs b/src/store/queries.rs
+index 908106c5..b9d8fc2d 100644
+--- a/src/store/queries.rs
++++ b/src/store/queries.rs
+@@ -3936,51 +3936,54 @@ fn diagnostics(
+     let mut items = Vec::new();
+     let mut examined = 0usize;
+     let mut stop = StopReason::Complete;
+     while examined < CANDIDATE_LIMIT {
+         if items.len() == q.page.limit as usize {
+             stop = StopReason::Rows;
+             break;
+         }
+         match phase {
+             SearchPhase::Topic => {
+-                type Row = (i64, String, String, String, String, i64);
+-                let row:Option<Row>=db.query_row("SELECT i.ordinal,i.id,i.thread_id,i.seat_id,CASE WHEN EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) THEN 'rejected' WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END,i.deadline_at FROM invitations i LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.ordinal>?1 AND i.ordinal<=?2 ORDER BY i.ordinal LIMIT 1",params![invitation_after as i64,invitation_high as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(|e|db.map_error(e))?;
++                type Row = (i64, String, String, String, String, Option<i64>);
++                let row:Option<Row>=db.query_row("SELECT i.ordinal,i.id,i.thread_id,i.seat_id,CASE WHEN EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) THEN 'rejected' WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END,CASE WHEN i.confirmation='lazy' THEN NULL ELSE i.deadline_at END FROM invitations i LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.ordinal>?1 AND i.ordinal<=?2 ORDER BY i.ordinal LIMIT 1",params![invitation_after as i64,invitation_high as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(|e|db.map_error(e))?;
+                 let Some((ordinal, id, thread, seat, state, deadline)) = row else {
+                     phase = SearchPhase::Body;
+                     continue;
+                 };
+                 examined += 1;
+                 let belongs: bool = db
+                     .query_row(
+                         "SELECT EXISTS(SELECT 1 FROM threads WHERE id=?1 AND instance_id=?2)",
+                         params![thread, instance],
+                         |r| r.get(0),
+                     )
+                     .map_err(|e| db.map_error(e))?;
+                 if belongs
+                     && state == "pending"
+-                    && deadline <= now.0
++                    && deadline.is_some_and(|deadline| deadline <= now.0)
+                     && q.seat.as_ref().is_none_or(|s| s.as_str() == seat)
+                     && q.thread.as_ref().is_none_or(|t| t.as_str() == thread)
+                 {
+                     let retired: bool = db
+                         .query_row(
+                             "SELECT state='retired' FROM seats WHERE id=?1",
+                             [&seat],
+                             |r| r.get(0),
+                         )
+                         .map_err(|e| db.map_error(e))?;
+                     if !retired {
+                         let item = Diagnostic {
+                             subject: format!("overdue_invitation:{id}"),
+-                            detail_data: format!("thread={thread} seat={seat} deadline={deadline}"),
++                            detail_data: format!(
++                                "thread={thread} seat={seat} deadline={}",
++                                deadline.unwrap()
++                            ),
+                         };
+                         let raw = diagnostics_cursor(
+                             instance,
+                             &filter,
+                             phase,
+                             ordinal as u64,
+                             invitation_high,
+                             &receipts,
+                         )?;
+                         items.push(Cand {
+@@ -5008,20 +5011,54 @@ fn batch_fits(
+     )
+ }
+ 
+ fn batch_topic(db: &Connection, thread: &str) -> Result<String, ApiError> {
+     db.query_row("SELECT topic FROM threads WHERE id=?1", [thread], |r| {
+         r.get(0)
+     })
+     .map_err(store_error)
+ }
+ 
++/// Point-read immutable modern invitation metadata after bounded selection.
++/// Legacy rows preserve their old payload shape; Lazy storage timing is inert.
++fn invitation_confirmation_metadata(
++    db: &Connection,
++    invitation: &str,
++) -> Result<
++    (
++        Option<crate::protocol::commands::InvitationConfirmation>,
++        Option<UtcMillis>,
++    ),
++    ApiError,
++> {
++    use crate::protocol::commands::InvitationConfirmation;
++    let (mode, deadline): (Option<String>, i64) = db
++        .query_row(
++            "SELECT confirmation,deadline_at FROM invitations WHERE id=?1",
++            [invitation],
++            |r| Ok((r.get(0)?, r.get(1)?)),
++        )
++        .map_err(store_error)?;
++    match mode.as_deref() {
++        None => Ok((None, None)),
++        Some("lazy") => Ok((Some(InvitationConfirmation::Lazy), None)),
++        Some("require_ack") => Ok((
++            Some(InvitationConfirmation::RequireAck),
++            Some(UtcMillis(deadline)),
++        )),
++        Some(_) => Err(api_error(
++            ErrorCode::StoreCorrupt,
++            "invalid invitation confirmation policy",
++        )),
++    }
++}
++
+ /// One read-only page. The phase walks indexed invitations, effective receipts
+ /// and active warning sources with source-specific captured high waters. A
+ /// receipt's physical projection can appear later without changing its
+ /// manifest identity or moving the captured receipt frontier.
+ fn inbox_batch(
+     db: &QueryConnection,
+     store: &StoreContext,
+     instance: &str,
+     q: &InboxQuery,
+     output: &OutputSpec,
+@@ -5177,25 +5214,29 @@ fn inbox_batch(
+                             r.state == crate::protocol::service::RequirementState::Pending
+                                 && r.invitation.as_str() == id
+                         });
+                         let (topic_data, goal_data): (String, String) = db
+                             .query_row(
+                                 "SELECT topic,goal FROM threads WHERE id=?1",
+                                 [&thread],
+                                 |r| Ok((r.get(0)?, r.get(1)?)),
+                             )
+                             .map_err(store_error)?;
++                        let (confirmation, deadline_at) =
++                            invitation_confirmation_metadata(db, &id)?;
+                         Some(InboxBatchItem::Invitation {
+                             thread: ThreadId::new(thread),
+                             topic_data,
+                             goal_data: Some(goal_data),
+                             invitation: crate::protocol::ids::InvitationId::new(id),
++                            confirmation,
++                            deadline_at,
+                             required_service,
+                         })
+                     } else {
+                         None
+                     }
+                 } else {
+                     after.after_ordinal = 1;
+                     None
+                 }
+             }
+@@ -6184,24 +6225,27 @@ mod inbox_v2 {
+                 let item = if pending {
+                     let required_service = super::super::service_substrate::current_requirement(
+                         db,
+                         &ThreadId::new(&thread),
+                         seat,
+                     )?
+                     .filter(|r| {
+                         r.state == crate::protocol::service::RequirementState::Pending
+                             && r.invitation.as_str() == id
+                     });
++                    let (confirmation, deadline_at) = invitation_confirmation_metadata(db, &id)?;
+                     Some(Item::Invitation {
+                         thread: ThreadId::new(&thread),
+                         topic_data: batch_topic(db, &thread)?,
+                         invitation: crate::protocol::ids::InvitationId::new(id),
++                        confirmation,
++                        deadline_at,
+                         required_service,
+                     })
+                 } else {
+                     None
+                 };
+                 Ok((item, 1))
+             }
+             Source::Receipts => {
+                 let slice = scan_effective_receipts(
+                     db,
+diff --git a/src/store/schema.rs b/src/store/schema.rs
+index bfe411cc..d70ca0ee 100644
+--- a/src/store/schema.rs
++++ b/src/store/schema.rs
+@@ -62,21 +62,23 @@ const V23: &str = include_str!("../../migrations/0023_channel_archival.sql");
+ const V24: &str = include_str!("../../migrations/0024_harness_contract_diagnostics.sql");
+ const V25: &str = include_str!("../../migrations/0025_warning_notice_delivery.sql");
+ const V26: &str = include_str!("../../migrations/0026_lazy_message_delivery.sql");
+ const V27: &str = include_str!("../../migrations/0027_harness_adapters.sql");
+ const V28: &str = include_str!("../../migrations/0028_handoff_topology.sql");
+ const V29: &str = include_str!("../../migrations/0029_invitation_confirmation.sql");
+ 
+ const V30: &str = include_str!("../../migrations/0030_receipt_send_time.sql");
+ const V31: &str = include_str!("../../migrations/0031_handoff_body_bounds.sql");
+ const V32: &str = include_str!("../../migrations/0032_receipt_deadline_backfill.sql");
+-pub(crate) const LATEST_VERSION: i64 = 32;
++const V33: &str = include_str!("../../migrations/0033_invitation_lifecycle.sql");
++const V34: &str = include_str!("../../migrations/0034_invitation_warning_origin.sql");
++pub(crate) const LATEST_VERSION: i64 = 34;
+ 
+ /// Decode only persisted results, after the caller's digest has matched. Live
+ /// protocol responses still require disposition. Missing original context
+ /// cannot be recovered from today's occupant without inventing historical data.
+ fn decode_stored_result(json: &str) -> Result<CommandResult, ApiError> {
+     let mut value: serde_json::Value = serde_json::from_str(json).map_err(|e| {
+         api_error(
+             ErrorCode::StoreCorrupt,
+             format!("invalid stored result: {e}"),
+         )
+@@ -405,21 +407,21 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
+         }
+         16 => {
+             verify_existing_v13_shape(conn)?;
+             verify_existing_v14(conn)?;
+             verify_existing_v15(conn)?;
+             verify_existing_v16(conn)?;
+             migrate_v16_to_v17(conn)?;
+             verify_existing(conn)
+         }
+         17 => verify_existing(conn),
+-        18..=32 => verify_existing(conn),
++        18..=34 => verify_existing(conn),
+         _ => Err(api_error(
+             ErrorCode::IncompatibleSchema,
+             format!("unsupported schema version {version}"),
+         )),
+     }?;
+     if (1..=17).contains(&version) {
+         migrate_v17_to_v18(conn)?;
+     }
+     verify_existing_v18(conn)?;
+     if (1..=18).contains(&version) {
+@@ -618,21 +620,140 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
+             .execute_batch(V32)
+             .and_then(|_| conn.pragma_update(None, "user_version", 32));
+         match result {
+             Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+             Err(error) => {
+                 let _ = conn.execute_batch("ROLLBACK");
+                 return Err(store_error(error));
+             }
+         }
+     }
+-    verify_receipt_deadline_backfill_schema(conn)
++    verify_receipt_deadline_backfill_schema(conn)?;
++    if version <= 32 {
++        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
++        let result = conn
++            .execute_batch(V33)
++            .map_err(store_error)
++            .and_then(|_| verify_invitation_lifecycle_schema(conn))
++            .and_then(|_| {
++                conn.pragma_update(None, "user_version", 33)
++                    .map_err(store_error)
++            });
++        match result {
++            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
++            Err(error) => {
++                let _ = conn.execute_batch("ROLLBACK");
++                return Err(error);
++            }
++        }
++    }
++    verify_invitation_lifecycle_schema(conn)?;
++    if version <= 33 {
++        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
++        let result = conn
++            .execute_batch(V34)
++            .map_err(store_error)
++            .and_then(|_| verify_invitation_warning_origin_schema(conn))
++            .and_then(|_| {
++                conn.pragma_update(None, "user_version", 34)
++                    .map_err(store_error)
++            });
++        match result {
++            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
++            Err(error) => {
++                let _ = conn.execute_batch("ROLLBACK");
++                return Err(error);
++            }
++        }
++    }
++    verify_invitation_warning_origin_schema(conn)
++}
++
++fn verify_invitation_warning_origin_schema(conn: &Connection) -> Result<(), ApiError> {
++    let table: String = conn
++        .query_row(
++            "SELECT sql FROM sqlite_master WHERE type='table' AND name='warning_conditions'",
++            [],
++            |r| r.get(0),
++        )
++        .map_err(store_error)?;
++    for column in [
++        "invitation_originator_instance_id TEXT REFERENCES host_instances(id)",
++        "invitation_originator_seat_id TEXT REFERENCES seats(id)",
++    ] {
++        if !table.contains(column) {
++            return Err(api_error(
++                ErrorCode::IncompatibleSchema,
++                "missing invitation warning origin column",
++            ));
++        }
++    }
++    let index = V34
++        .split("CREATE INDEX ")
++        .nth(1)
++        .unwrap()
++        .split(';')
++        .next()
++        .unwrap();
++    let trigger = V34
++        .split("CREATE TRIGGER ")
++        .nth(1)
++        .unwrap()
++        .trim()
++        .trim_end_matches(';');
++    for (kind, sql) in [
++        ("index", format!("CREATE INDEX {index}")),
++        ("trigger", format!("CREATE TRIGGER {trigger}")),
++    ] {
++        let name = sql.split_whitespace().nth(2).unwrap();
++        let actual: Option<String> = conn
++            .query_row(
++                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
++                params![kind, name],
++                |r| r.get(0),
++            )
++            .optional()
++            .map_err(store_error)?;
++        if actual.as_deref().map(str::trim) != Some(sql.trim()) {
++            return Err(api_error(
++                ErrorCode::IncompatibleSchema,
++                format!("missing or altered invitation warning origin {kind} {name}"),
++            ));
++        }
++    }
++    Ok(())
++}
++
++fn verify_invitation_lifecycle_schema(conn: &Connection) -> Result<(), ApiError> {
++    let ddl = V33
++        .lines()
++        .filter(|line| !line.trim_start().starts_with("--"))
++        .collect::<Vec<_>>()
++        .join("\n");
++    for statement in ddl.split(';').map(str::trim).filter(|sql| !sql.is_empty()) {
++        let name = statement.split_whitespace().nth(2).unwrap_or_default();
++        let actual: Option<String> = conn
++            .query_row(
++                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
++                [name],
++                |r| r.get(0),
++            )
++            .optional()
++            .map_err(store_error)?;
++        if actual.as_deref().map(str::trim) != Some(statement) {
++            return Err(api_error(
++                ErrorCode::IncompatibleSchema,
++                format!("missing or altered invitation lifecycle index {name}"),
++            ));
++        }
++    }
++    Ok(())
+ }
+ 
+ fn verify_receipt_deadline_backfill_schema(conn: &Connection) -> Result<(), ApiError> {
+     let expected = V32
+         .lines()
+         .filter(|line| !line.trim_start().starts_with("--"))
+         .collect::<Vec<_>>()
+         .join("\n");
+     let expected = expected.split(';').next().unwrap().trim();
+     let actual: Option<String> = conn
+diff --git a/src/store/seats.rs b/src/store/seats.rs
+index 901ff987..83a56ebf 100644
+--- a/src/store/seats.rs
++++ b/src/store/seats.rs
+@@ -4642,21 +4642,28 @@ pub fn mod_seat_view(
+         super::attention::wake_warnings(db, seat.as_str(), run.warnings)?.count();
+     let fingerprint = ModFingerprint {
+         attention_version,
+         pending_receipts: digest.receipts.count,
+         max_pending_ordinal: digest
+             .token
+             .receipt
+             .map_or(0, |(seq, _)| i64::try_from(seq).unwrap_or(i64::MAX)),
+         lazy_pending: u64::try_from(lazy_pending).unwrap_or(0),
+         max_lazy_rowid,
+-        other_pending: digest.invitations.count + waking_warnings,
++        other_pending: super::attention::pending_confirming_invitations(
++            db,
++            seat.as_str(),
++            None,
++            i64::MAX,
++        )?
++        .count()
++        .0 + waking_warnings,
+         binding_generation: binding.as_ref().map(|b| b.generation),
+     };
+     Ok(Some(ModSeatView {
+         seat: seat.clone(),
+         retired: state == "retired",
+         continuity_resolved: state == "resolved",
+         state,
+         held,
+         binding,
+         attention_version,
+diff --git a/src/store/service_controls.rs b/src/store/service_controls.rs
+index 69bac38d..79689ae7 100644
+--- a/src/store/service_controls.rs
++++ b/src/store/service_controls.rs
+@@ -322,42 +322,47 @@ fn invite(
+             }));
+         }
+     } else if voluntary == VoluntaryMembershipState::Joined {
+         return Ok(ServiceResult::AlreadyJoined(
+             crate::protocol::results::AlreadyJoined {
+                 thread: v.thread.clone(),
+                 seat: v.seat.clone(),
+             },
+         ));
+     }
+-    let pending:Option<(String,i64,i64)>=tx.query_row(
+-        "SELECT i.id,i.episode,i.created_decision_seq FROM invitations i WHERE i.thread_id=?1 AND i.seat_id=?2 AND i.state='pending' AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) AND NOT EXISTS (SELECT 1 FROM requirement_episodes r WHERE r.invitation_id=i.id AND r.created_decision_seq=i.created_decision_seq) ORDER BY i.episode DESC LIMIT 1",
+-        params![v.thread.as_str(),v.seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(store_error)?;
++    let pending:Option<(String,i64,i64,bool)>=tx.query_row(
++        "SELECT i.id,i.episode,i.created_decision_seq,COALESCE(i.confirmation='lazy',0) FROM invitations i WHERE i.thread_id=?1 AND i.seat_id=?2 AND i.state='pending' AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) AND NOT EXISTS (SELECT 1 FROM requirement_episodes r WHERE r.invitation_id=i.id AND r.created_decision_seq=i.created_decision_seq) ORDER BY i.episode DESC LIMIT 1",
++        params![v.thread.as_str(),v.seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(store_error)?;
+     if v.constraint == InvitationConstraint::Ordinary
+-        && let Some((id, _, _)) = pending
++        && let Some((id, _, _, _)) = pending
+     {
+         let requirement = service_substrate::current_requirement(tx, &v.thread, &v.seat)?
+             .filter(|current| current.invitation.as_str() == id);
+         return Ok(ServiceResult::Invitation(ServiceInvitation {
+             invitation: InvitationId::new(id),
+             requirement,
+         }));
+     }
+     let duration = i64::try_from(v.deadline_millis.or(default_ms).unwrap_or(300_000))
+         .map_err(|_| api_error(ErrorCode::InvalidRequest, "invitation duration too large"))?;
+     if duration <= 0 {
+         return Err(api_error(
+             ErrorCode::InvalidRequest,
+             "invitation duration must be positive",
+         ));
+     }
+-    let new_invitation = pending.is_none() || voluntary == VoluntaryMembershipState::Joined;
++    // A required membership needs its own timed episode when the voluntary
++    // invitation is Lazy. Preserve that invitation's frozen policy and replay.
++    let new_invitation = pending.is_none()
++        || voluntary == VoluntaryMembershipState::Joined
++        || (v.constraint == InvitationConstraint::Required
++            && pending.as_ref().is_some_and(|(_, _, _, lazy)| *lazy));
+     let (invitation, episode, created_seq) = if new_invitation {
+         let episode = next_invitation_episode(tx, &v.thread, &v.seat)?;
+         if v.constraint == InvitationConstraint::Required {
+             if prior.is_none() {
+                 tx.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,?2,?3,'invited','absent')",
+                     params![v.thread.as_str(),v.seat.as_str(),episode]).map_err(store_error)?;
+             } else if prior.as_ref().is_some_and(|(_, state)| state == "left") {
+                 tx.execute("UPDATE memberships SET state='invited',voluntary_state='left' WHERE thread_id=?1 AND seat_id=?2",
+                     params![v.thread.as_str(),v.seat.as_str()]).map_err(store_error)?;
+             }
+@@ -372,21 +377,21 @@ fn invite(
+             tx,
+             prefix::INVITATION,
+             &[("invitations", "id", prefix::INVITATION)],
+         )?);
+         let seq = schema::next_decision_seq(tx, instance)? as i64;
+         let deadline = schema::checked_deadline(at, duration)?;
+         tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8)",
+             params![id.as_str(),v.thread.as_str(),v.seat.as_str(),episode,at.0,seq,duration,deadline.0]).map_err(store_error)?;
+         (id, episode, seq)
+     } else {
+-        let (id, episode, seq) = pending.expect("existing pending invitation");
++        let (id, episode, seq, _) = pending.expect("existing pending invitation");
+         (InvitationId::new(id), episode, seq)
+     };
+     let requirement = if v.constraint == InvitationConstraint::Required {
+         let id = RequirementId::new(crate::store::public_ids::fresh(
+             tx,
+             prefix::REQUIREMENT,
+             &[("requirement_episodes", "id", prefix::REQUIREMENT)],
+         )?);
+         let seq = if new_invitation {
+             created_seq
+diff --git a/src/store/topology_handoff/attachment.rs b/src/store/topology_handoff/attachment.rs
+index d4685641..2fab4b1f 100644
+--- a/src/store/topology_handoff/attachment.rs
++++ b/src/store/topology_handoff/attachment.rs
+@@ -270,21 +270,25 @@ pub(crate) fn validate_selected_child_phase(
+     }
+     let exact = match command {
+         PermitMutation::BeginHandoff(v) => {
+             v.operation == identity.payload.handoff.keys.begin
+                 && same(&attachment.handoff, &v.identity)?
+         }
+         PermitMutation::CreateThread(v) => {
+             matches!(&identity.payload.handoff.channel,HandoffChannel::New{name,topic,goal} if name==&v.name && topic==&v.topic && goal==&v.goal)
+         }
+         PermitMutation::Invite(v) => {
+-            v.seat == attachment.resolved_seat && v.deadline_millis.is_none()
++            // Historical linked payloads freeze no confirmation policy. Task10
++            // replaces this guard together with its frozen policy comparison.
++            v.seat == attachment.resolved_seat
++                && v.deadline_millis.is_none()
++                && v.confirmation.is_none()
+         }
+         PermitMutation::SendMessage(v) => {
+             v.delivery_mode.is_ordinary()
+                 && v.body == identity.payload.handoff.body
+                 && v.invited_recipients == [attachment.resolved_seat.clone()]
+                 && v.deadline_millis.is_none()
+                 && !v.relays_user
+                 && v.user_intent.is_none()
+         }
+         _ => false,
+diff --git a/src/store/wake.rs b/src/store/wake.rs
+index a662471c..a1a14158 100644
+--- a/src/store/wake.rs
++++ b/src/store/wake.rs
+@@ -184,21 +184,26 @@ pub fn load_candidate(
+             for warning in backlog.items {
+                 if super::attention::informational_notice_pending(db, seat.as_str(), &warning.id)?
+                     == Some(true)
+                     && super::attention::warning_wakes_seat(db, seat.as_str(), &warning.id)?
+                 {
+                     unoffered = true;
+                     break;
+                 }
+             }
+         }
+-        if unoffered {
++        // An open origin-addressed condition remains waking after its
++        // informational delivery was carried. Delivery settlement is separate.
++        let open_origin = !super::attention::open_invitation_origin_warnings(db, seat.as_str())?
++            .items
++            .is_empty();
++        if unoffered || open_origin {
+             warning_offer = None;
+         }
+     }
+     let latest_warning_seq = attention.latest_warning_seq.map(nonnegative).transpose()?;
+     let witness = WakeAttentionWitness::from_complete(
+         instance.into(),
+         seat.clone(),
+         nonnegative(decision_seq)?,
+         attention.has_pending_invitation,
+         attention.has_pending_receipt,
+@@ -831,21 +836,21 @@ fn receipt_attention_at(
+     }
+     Ok(receipt.decision_at)
+ }
+ 
+ /// Oldest-first indexed probes keep a saturated newest-first digest from
+ /// anchoring the batch to newer arrivals. Every source retains the same row cap.
+ fn oldest_ordinary_at(db: &Connection, seat: &str, through: i64) -> Result<Option<i64>, ApiError> {
+     let cap = super::attention::WINDOW as i64;
+     let mut earliest = None::<i64>;
+     let mut invitations = db.prepare(
+-        "SELECT i.created_at FROM (SELECT invitation_id FROM digest_pending_invitations INDEXED BY digest_pending_invitations_seat WHERE seat_id=?1 AND created_decision_seq<=?2 ORDER BY created_decision_seq,ordinal LIMIT ?3) w JOIN invitations i ON i.id=w.invitation_id WHERE i.state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id)").map_err(store_error)?;
++        "SELECT i.created_at FROM (SELECT id FROM invitations INDEXED BY invitations_confirmation_pending_seat WHERE seat_id=?1 AND state='pending' AND (confirmation IS NULL OR confirmation='require_ack') AND created_decision_seq<=?2 ORDER BY created_decision_seq,ordinal LIMIT ?3) w JOIN invitations i ON i.id=w.id WHERE i.state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id)").map_err(store_error)?;
+     let dates = invitations
+         .query_map(params![seat, through, cap], |r| r.get::<_, i64>(0))
+         .map_err(store_error)?;
+     for date in dates {
+         let date = date.map_err(store_error)?;
+         earliest = Some(earliest.map_or(date, |prior| prior.min(date)));
+     }
+     let mut hold = super::catch_up::HoldCache::new(seat);
+     for (source, sql) in [
+         (
+@@ -901,21 +906,21 @@ pub fn batch_window(
+ ) -> Result<Option<(crate::protocol::time::UtcMillis, u64)>, ApiError> {
+     if delay_ms == 0 {
+         return Ok(None);
+     }
+     context.execute_decision(db, |tx| {
+         let live: bool = tx.query_row(
+             "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2 AND state!='retired')",
+             params![candidate.seat.as_str(), instance], |r| r.get(0)).map_err(store_error)?;
+         if !live { return Ok((None, false)); }
+         let scan = super::attention::wake_seat_attention(tx, candidate.seat.as_str())?;
+-        let invitations = super::attention::pending_invitations(tx, candidate.seat.as_str(), None, scan.decision_seq)?;
++        let invitations = super::attention::pending_confirming_invitations(tx, candidate.seat.as_str(), None, scan.decision_seq)?;
+         let pending = super::attention::pending_receipts(tx, candidate.seat.as_str(), None)?;
+         let mut first = None::<i64>;
+         let mut urgent = scan.attention.latest_warning_seq.is_some()
+             && !candidate.warning_offered_for_current_occupant();
+         let now = context.clock().utc_now().0;
+         for item in invitations.items {
+             let (created, due): (i64, Option<i64>) = tx.query_row(
+                 "SELECT created_at,deadline_at FROM invitations WHERE id=?1", [&item.id],
+                 |r| Ok((r.get(0)?,r.get(1)?))).map_err(store_error)?;
+             first = Some(first.map_or(created, |prior| prior.min(created)));
+diff --git a/tests/cli/lazy_display.rs b/tests/cli/lazy_display.rs
+index a7f1bbd7..88d69c07 100644
+--- a/tests/cli/lazy_display.rs
++++ b/tests/cli/lazy_display.rs
+@@ -799,20 +799,22 @@ fn continuation_mixed_sources_preserve_invocation() {
+     use herdr_threads::harness::context::Role;
+     let f = Fixture::new();
+     let CommandResult::InboxBatchV2(mut p) = page(0, 4) else {
+         unreachable!()
+     };
+     p.items.extend([
+         InboxBatchV2Item::Invitation {
+             thread: ThreadId::new("invite-thread"),
+             topic_data: "invite".into(),
+             invitation: InvitationId::new("invitation"),
++            confirmation: None,
++            deadline_at: None,
+             required_service: None,
+         },
+         InboxBatchV2Item::Warning {
+             thread: ThreadId::new("warning-thread"),
+             topic_data: "warn".into(),
+             warning: MessageId::new("warning"),
+             sequence: 2,
+             informational: false,
+         },
+         InboxBatchV2Item::Message {
+diff --git a/tests/cli/watch.rs b/tests/cli/watch.rs
+index ae88442a..9681cc38 100644
+--- a/tests/cli/watch.rs
++++ b/tests/cli/watch.rs
+@@ -243,20 +243,22 @@ fn lazy(id: &str, body: &str) -> InboxBatchV2Item {
+         body_end: body.len() as u64,
+         body_len: body.len() as u64,
+     }
+ }
+ 
+ fn invitation() -> InboxBatchV2Item {
+     InboxBatchV2Item::Invitation {
+         thread: ThreadId::new("t1"),
+         topic_data: "topic".into(),
+         invitation: InvitationId::new("invitation-1"),
++        confirmation: None,
++        deadline_at: None,
+         required_service: None,
+     }
+ }
+ 
+ fn warning() -> InboxBatchV2Item {
+     InboxBatchV2Item::Warning {
+         thread: ThreadId::new("t1"),
+         topic_data: "topic".into(),
+         warning: MessageId::new("w1"),
+         sequence: 2,
+diff --git a/tests/integration/channel_activation.rs b/tests/integration/channel_activation.rs
+index 7aebcf05..c4231e3c 100644
+--- a/tests/integration/channel_activation.rs
++++ b/tests/integration/channel_activation.rs
+@@ -204,25 +204,25 @@ fn wait(what: &str, mut check: impl FnMut() -> bool) {
+ #[test]
+ fn channel_activation_real_daemon_loads_fresh_21_and_22_and_owns_archival_lane() {
+     for version in [0, 21, 22] {
+         let w = World::new(version, false);
+         // The boot archival pass may precede canonical host admission, then
+         // park until its 60s safety tick. Resolve a real fixture target before
+         // expecting prompt initialization: this admits qualified host evidence
+         // and the seat_archival insertion kicks the existing archival lane.
+         w.ok(None, &["seat", "resolve", "--pane", "w1:p1"]);
+         let db = w.db();
+-        // The initializer upgrades each historical input to the current schema32.
++        // The initializer upgrades each historical input to the current schema34.
+         assert_eq!(
+             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                 .unwrap(),
+-            32
++            34
+         );
+         wait("archival worker initialization", || {
+             db.query_row(
+                 "SELECT count(*) FROM archival_instances WHERE policy_ms=3600000",
+                 [],
+                 |r| r.get::<_, i64>(0),
+             )
+             .unwrap()
+                 == 1
+         });
+diff --git a/tests/protocol/capabilities.rs b/tests/protocol/capabilities.rs
+index 1f5748aa..00af52cd 100644
+--- a/tests/protocol/capabilities.rs
++++ b/tests/protocol/capabilities.rs
+@@ -498,21 +498,22 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
+             "inbox.batch_v1",
+             "invitation.reject_v1",
+             "thread.join_v1",
+             "participants.locations_v1",
+             "picker.directory_v1",
+             "attention.notice_delivery_v1",
+             "messages.delivery_modes_v1",
+             "send.lazy_v1",
+             "inbox.batch_v2",
+             "mod.watch_v1",
+-            "hook.lazy_delivery_v1"
++            "hook.lazy_delivery_v1",
++            "invitation.confirmation_v1"
+         ]
+     );
+     let caps = Capabilities::from_list(advertised.capabilities);
+     assert!(
+         !caps.supports(HOOK_PARSE_FAILURE_REPORT)
+             || ADVERTISED.contains(&HOOK_PARSE_FAILURE_REPORT)
+     );
+     assert!(!caps.supports(HISTORY_FULL_BODIES) || ADVERTISED.contains(&HISTORY_FULL_BODIES));
+     assert!(!caps.supports(HARNESS_EVIDENCE_V2));
+     assert!(!caps.supports(HARNESS_HEALTH_V2));
+@@ -1225,20 +1226,21 @@ fn v2_capability_is_negotiated_only_with_recorder() {
+         caps.capabilities
+             .iter()
+             .any(|v| v == "hook.harness_evidence_v2")
+     );
+     assert_eq!(
+         caps.capabilities,
+         ADVERTISED
+             .iter()
+             .filter(|name| **name != HARNESS_HEALTH_V2)
+             .copied()
++            .chain(std::iter::once(INVITATION_CONFIRMATION_V1))
+             .collect::<Vec<_>>()
+     );
+     let d = crate::harness::claude::ClaudeAdapter.contracts()[0];
+     let note = crate::protocol::commands::HarnessEvidenceV2 {
+         harness: "claude".into(),
+         domain: "native_payload".into(),
+         origin: d.origin,
+         runtime: Some(
+             crate::harness::runtime::RuntimeIdentity::stable_release(
+                 "2.1.286",
+@@ -1726,10 +1728,31 @@ fn public_operation_status_cannot_bypass_send_time_capability_guard() {
+             Command::OperationStatus(OperationStatusQuery {
+                 operation: OperationId::new("historical-key"),
+             }),
+             PeerIdentity::from_kernel(501),
+             &budget(),
+         )
+         .unwrap_err();
+     assert_eq!(error.code, ErrorCode::Unauthorized);
+     assert_eq!(error.detail, "verified operation scope required");
+ }
++
++#[test]
++fn invitation_confirmation_capability_is_advertised_with_active_lifecycle() {
++    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
++    let CommandResult::Capabilities(reply) = handler
++        .handle(
++            Command::Capabilities,
++            PeerIdentity::from_kernel(501),
++            &budget(),
++        )
++        .unwrap()
++    else {
++        panic!()
++    };
++    assert!(
++        reply
++            .capabilities
++            .iter()
++            .any(|value| value == INVITATION_CONFIRMATION_V1)
++    );
++}
+diff --git a/tests/store/control.rs b/tests/store/control.rs
+index 0755aa4b..af6cd304 100644
+--- a/tests/store/control.rs
++++ b/tests/store/control.rs
+@@ -8813,20 +8813,33 @@ fn rejection_offer() -> (
+ }
+ fn rejection_offer_with_recipient_harness(
+     recipient: Harness,
+ ) -> (
+     StoreContext,
+     Connection,
+     PathBuf,
+     Arc<FixedClock>,
+     ThreadId,
+     InvitationId,
++) {
++    rejection_offer_with_policy(recipient, None)
++}
++fn rejection_offer_with_policy(
++    recipient: Harness,
++    confirmation: Option<crate::protocol::commands::InvitationConfirmation>,
++) -> (
++    StoreContext,
++    Connection,
++    PathBuf,
++    Arc<FixedClock>,
++    ThreadId,
++    InvitationId,
+ ) {
+     let (context, mut conn, path, clock) = bound_fixture_recipient_harness(100, recipient);
+     let budget = crate::protocol::time::CallBudget {
+         deadline: MonoInstant(u64::MAX),
+         cancellation: Default::default(),
+     };
+     let create = CreateThread {
+         name: None,
+         topic: "review".into(),
+         goal: "review only".into(),
+@@ -8844,24 +8857,26 @@ fn rejection_offer_with_recipient_harness(
+             "create",
+             ObligationRef::CheckIn(SeatId::new("s1")),
+             hash,
+             100,
+         ),
+     )
+     .unwrap() else {
+         panic!()
+     };
+     let offer = Invite {
+-        confirmation: None,
++        confirmation,
+         thread: thread.clone(),
+         seat: SeatId::new("s2"),
+-        deadline_millis: Some(10),
++        deadline_millis: (confirmation
++            != Some(crate::protocol::commands::InvitationConfirmation::Lazy))
++        .then_some(10),
+         operation: OperationId::new("invite"),
+         claim: claim("s1"),
+     };
+     let hash = cooperative_payload_hash("invite", &offer).unwrap();
+     let CommandResult::Invitation(invitation) = invite(
+         &context,
+         &mut conn,
+         &budget,
+         &offer,
+         permit(
+@@ -10203,21 +10218,21 @@ fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not()
+ 
+             drop(store);
+             drop(conn);
+             drop(context);
+             let _ = std::fs::remove_file(path);
+         }
+     }
+ }
+ 
+ #[test]
+-fn invitation_confirmation_refuses_wire_semantics_before_lifecycle_activation() {
++fn invitation_confirmation_creates_frozen_policy_and_only_timed_wake() {
+     let (context, mut conn, path, _) = bound_fixture(100);
+     let budget = crate::protocol::time::CallBudget {
+         deadline: MonoInstant(u64::MAX),
+         cancellation: Default::default(),
+     };
+     let create = CreateThread {
+         name: None,
+         topic: "topic".into(),
+         goal: "goal".into(),
+         operation: OperationId::new("create-confirmation"),
+@@ -10233,56 +10248,775 @@ fn invitation_confirmation_refuses_wire_semantics_before_lifecycle_activation()
+             "s1",
+             "create-confirmation",
+             ObligationRef::CheckIn(SeatId::new("s1")),
+             digest,
+             100,
+         ),
+     )
+     .unwrap() else {
+         panic!()
+     };
+-    let before = conn.total_changes();
+-    for confirmation in [
++    for (index, confirmation) in [
+         crate::protocol::commands::InvitationConfirmation::Lazy,
+         crate::protocol::commands::InvitationConfirmation::RequireAck,
+-    ] {
++    ]
++    .into_iter()
++    .enumerate()
++    {
+         let command = Invite {
+             confirmation: Some(confirmation),
+             thread: thread.clone(),
+             seat: SeatId::new("s2"),
+             deadline_millis: None,
+             operation: OperationId::new(format!("invite-{confirmation:?}")),
+             claim: claim("s1"),
+         };
+         let digest = cooperative_payload_hash("invite", &command).unwrap();
+-        let error = invite(
++        let result = invite(
+             &context,
+             &mut conn,
+             &budget,
+             &command,
+             permit(
+                 "s1",
+                 command.operation.as_str(),
+                 ObligationRef::Control(thread.clone()),
+                 digest,
+                 100,
+             ),
+             None,
+         )
+-        .unwrap_err();
+-        assert_eq!(error.code, ErrorCode::Unsupported);
++        .unwrap();
++        let CommandResult::Invitation(invitation) = result else {
++            panic!("expected invitation")
++        };
++        let saved: (Option<String>, Option<String>, i64, i64) = conn.query_row(
++            "SELECT confirmation,inviter_seat_id,frozen_duration_ms,deadline_at FROM invitations WHERE id=?1",
++            [invitation.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
++        assert_eq!(
++            saved,
++            (
++                Some(if index == 0 { "lazy" } else { "require_ack" }.into()),
++                Some("s1".into()),
++                300_000,
++                300_100
++            )
++        );
++        let waking = crate::store::attention::wake_seat_attention(&conn, "s2").unwrap();
++        assert_eq!(waking.attention.has_pending_invitation, index == 1);
++        let digest =
++            crate::store::attention::pending_invitations(&conn, "s2", None, i64::MAX).unwrap();
++        assert_eq!(
++            digest.items.len(),
++            1,
++            "lazy invitations remain discoverable"
++        );
++        // A new episode is needed before changing policy.
++        conn.execute("INSERT INTO invitation_rejections(invitation_id,reason,rejected_at,actor_seat_id,generation,observation) VALUES (?1,'new episode',100,'s2',1,'test-observation')", [invitation.as_str()]).unwrap();
++        conn.execute("DELETE FROM wake_work WHERE seat_id='s2'", [])
++            .unwrap();
+     }
++    drop(conn);
++    drop(context);
++    let _ = std::fs::remove_file(path);
++}
++
++#[test]
++fn invitation_confirmation_required_service_gets_fresh_timed_episode_without_mutating_lazy() {
++    use crate::ports::ServiceAuthorityGate;
++    use crate::protocol::{
++        commands::{InvitationConfirmation, Join},
++        service::*,
++    };
++    use sha2::Digest;
++    let (context, mut conn, path, clock) = bound_fixture(100);
++    let budget = crate::protocol::time::CallBudget {
++        deadline: MonoInstant(u64::MAX),
++        cancellation: Default::default(),
++    };
++    let author = ServiceAuthorId::new(format!("graph:{:x}", sha2::Sha256::digest(b"i")));
++    let gate = GraphGate(author.clone());
++    let connection = gate.register("i", "boot", author).unwrap();
++    let operate = |conn: &mut Connection, op| {
++        crate::store::service_controls::operate(
++            &context,
++            conn,
++            "i",
++            op,
++            &connection,
++            &gate,
++            &budget,
++            None,
++        )
++        .unwrap()
++    };
++    let thread = ThreadId::new("managed-lazy-confirmation");
++    operate(
++        &mut conn,
++        ServiceOperation::EnsureThread(EnsureManagedThread {
++            thread: thread.clone(),
++            topic: "topic".into(),
++            goal: "goal".into(),
++            operation: OperationId::new("ensure-lazy-confirmation"),
++        }),
++    );
++    let join_command = Join {
++        thread: thread.clone(),
++        operation: OperationId::new("join-managed"),
++        claim: claim("s1"),
++    };
++    let hash = cooperative_payload_hash("join", &join_command).unwrap();
++    join(
++        &context,
++        &mut conn,
++        &budget,
++        &join_command,
++        permit(
++            "s1",
++            "join-managed",
++            ObligationRef::Control(thread.clone()),
++            hash,
++            100,
++        ),
++    )
++    .unwrap();
++    let invite_command = Invite {
++        confirmation: Some(InvitationConfirmation::Lazy),
++        thread: thread.clone(),
++        seat: SeatId::new("s2"),
++        deadline_millis: None,
++        operation: OperationId::new("lazy-before-required"),
++        claim: claim("s1"),
++    };
++    let hash = cooperative_payload_hash("invite", &invite_command).unwrap();
++    let CommandResult::Invitation(lazy) = invite(
++        &context,
++        &mut conn,
++        &budget,
++        &invite_command,
++        permit(
++            "s1",
++            "lazy-before-required",
++            ObligationRef::Control(thread.clone()),
++            hash,
++            100,
++        ),
++        None,
++    )
++    .unwrap() else {
++        panic!()
++    };
++    let saved: (String, String, i64, i64) = conn
++        .query_row(
++            "SELECT confirmation,inviter_seat_id,deadline_at,episode FROM invitations WHERE id=?1",
++            [lazy.as_str()],
++            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
++        )
++        .unwrap();
++    let ServiceResult::Invitation(required) = operate(
++        &mut conn,
++        ServiceOperation::Invite(ServiceInvite {
++            thread: thread.clone(),
++            seat: SeatId::new("s2"),
++            constraint: InvitationConstraint::Required,
++            deadline_millis: Some(50),
++            operation: OperationId::new("required-after-lazy"),
++        }),
++    ) else {
++        panic!()
++    };
++    assert_ne!(
++        required.invitation, lazy,
++        "required consent cannot turn an immutable lazy episode into a timed obligation"
++    );
+     assert_eq!(
+-        conn.total_changes(),
+-        before,
+-        "unsupported semantics must not write even operation results"
++        conn.query_row(
++            "SELECT confirmation,inviter_seat_id,deadline_at,episode FROM invitations WHERE id=?1",
++            [lazy.as_str()],
++            |r| Ok((
++                r.get::<_, String>(0)?,
++                r.get::<_, String>(1)?,
++                r.get::<_, i64>(2)?,
++                r.get::<_, i64>(3)?
++            ))
++        )
++        .unwrap(),
++        saved
++    );
++    assert!(
++        crate::store::attention::wake_seat_attention(&conn, "s2")
++            .unwrap()
++            .attention
++            .has_pending_invitation
+     );
++    clock.0.store(150, Ordering::SeqCst);
++    let batch =
++        crate::store::invitation_due::scan_invitation_due_batch(&context, &mut conn, None, 100)
++            .unwrap();
++    assert_eq!(batch.warnings_added, 1);
++    let requirement = required.requirement.unwrap();
++    operate(
++        &mut conn,
++        ServiceOperation::ReleaseRequirement(ReleaseRequirement {
++            thread: thread.clone(),
++            seat: SeatId::new("s2"),
++            requirement: requirement.requirement,
++            operation: OperationId::new("release-fresh-required"),
++        }),
++    );
++    assert!(
++        !crate::store::attention::wake_seat_attention(&conn, "s2")
++            .unwrap()
++            .attention
++            .has_pending_invitation,
++        "release leaves the original lazy episode silent"
++    );
++    let hash = cooperative_payload_hash("invite", &invite_command).unwrap();
+     assert_eq!(
+-        conn.query_row("SELECT count(*) FROM invitations", [], |r| r
+-            .get::<_, i64>(0))
++        invite(
++            &context,
++            &mut conn,
++            &budget,
++            &invite_command,
++            permit(
++                "s1",
++                "lazy-before-required",
++                ObligationRef::Control(thread),
++                hash,
++                150
++            ),
++            None
++        )
++        .unwrap(),
++        CommandResult::Invitation(lazy)
++    );
++    drop(conn);
++    drop(context);
++    let _ = std::fs::remove_file(path);
++}
++
++#[test]
++fn invitation_confirmation_registration_never_settles_or_restarts_and_late_accept_clears() {
++    use crate::protocol::{
++        commands::{CheckIn, CheckInMode, InvitationConfirmation},
++        pagination::{Consistency, Page, StopReason},
++        results::{CheckInContextDisposition, CheckInResult, NoticeOffer},
++    };
++    fn empty<T>() -> Page<T> {
++        Page {
++            items: vec![],
++            next_cursor: None,
++            next_argv: None,
++            high_water_ordinal: 0,
++            scope_revision: None,
++            has_more: false,
++            stop_reason: StopReason::Complete,
++            consistency: Consistency::BoundedLive,
++        }
++    }
++    for registered in [false, true] {
++        let (context, mut conn, path, clock, thread, invitation) =
++            rejection_offer_with_policy(Harness::Codex, Some(InvitationConfirmation::RequireAck));
++        let budget = crate::protocol::time::CallBudget {
++            deadline: MonoInstant(u64::MAX),
++            cancellation: Default::default(),
++        };
++        if registered {
++            let checkin = CheckIn {
++                mode: CheckInMode::Current,
++                claim: claim("s2"),
++                operation: OperationId::new("registration-not-acceptance"),
++            };
++            let hash = crate::store::schema::canonical_digest(
++                &crate::store::seats::check_in_payload(&checkin),
++            )
++            .unwrap();
++            crate::store::seats::register_available(
++                &context,
++                &mut conn,
++                &checkin,
++                None,
++                permit(
++                    "s2",
++                    "registration-not-acceptance",
++                    ObligationRef::CheckIn(SeatId::new("s2")),
++                    hash,
++                    100,
++                ),
++                &budget,
++                |_, seat, seq| {
++                    Ok(CheckInResult {
++                        context_disposition: CheckInContextDisposition::Current,
++                        context: claim(seat.as_str()),
++                        seat: seat.clone(),
++                        offered_through: Some(seq.to_string()),
++                        warning_count: 0,
++                        warning_count_has_more: false,
++                        warnings: empty(),
++                        inbox: empty(),
++                        notices: NoticeOffer::default(),
++                    })
++                },
++            )
++            .unwrap();
++        }
++        let before: (String, i64) = conn
++            .query_row(
++                "SELECT state,deadline_at FROM invitations WHERE id=?1",
++                [invitation.as_str()],
++                |r| Ok((r.get(0)?, r.get(1)?)),
++            )
++            .unwrap();
++        assert_eq!(before, ("pending".into(), 110));
++        let leave_command = Leave {
++            thread: thread.clone(),
++            claim: claim("s1"),
++            operation: OperationId::new("origin-left"),
++        };
++        let hash = cooperative_payload_hash("leave", &leave_command).unwrap();
++        leave(
++            &context,
++            &mut conn,
++            &budget,
++            &leave_command,
++            permit(
++                "s1",
++                "origin-left",
++                ObligationRef::Control(thread.clone()),
++                hash,
++                100,
++            ),
++        )
++        .unwrap();
++        clock.0.store(110, Ordering::SeqCst);
++        assert_eq!(
++            crate::store::invitation_due::scan_invitation_due_batch(&context, &mut conn, None, 100)
++                .unwrap()
++                .warnings_added,
++            1,
++            "registered={registered}"
++        );
++        let warning: String = conn
++            .query_row(
++                "SELECT warning_message_id FROM invitations WHERE id=?1",
++                [invitation.as_str()],
++                |r| r.get(0),
++            )
++            .unwrap();
++        assert!(crate::store::effective::is_warning_recipient(&conn, &warning, "s1").unwrap());
++        assert!(crate::store::attention::warning_wakes_seat(&conn, "s1", &warning).unwrap());
++        clock.0.store(200, Ordering::SeqCst);
++        let acceptance = Accept {
++            thread: thread.clone(),
++            claim: claim("s2"),
++            operation: OperationId::new("late-acceptance"),
++        };
++        let hash = cooperative_payload_hash("accept", &acceptance).unwrap();
++        assert!(matches!(
++            accept(
++                &context,
++                &mut conn,
++                &budget,
++                &acceptance,
++                permit(
++                    "s2",
++                    "late-acceptance",
++                    ObligationRef::Invitation(invitation.clone()),
++                    hash,
++                    200
++                )
++            )
+             .unwrap(),
+-        0
++            CommandResult::Accepted(_)
++        ));
++        assert_eq!(
++            conn.query_row(
++                "SELECT state,deadline_at FROM invitations WHERE id=?1",
++                [invitation.as_str()],
++                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
++            )
++            .unwrap(),
++            ("accepted".into(), 110)
++        );
++        assert!(!crate::store::attention::warning_wakes_seat(&conn, "s1", &warning).unwrap());
++        assert!(
++            !crate::store::attention::wake_seat_attention(&conn, "s2")
++                .unwrap()
++                .attention
++                .has_pending_invitation
++        );
++        drop(conn);
++        drop(context);
++        let _ = std::fs::remove_file(path);
++    }
++}
++
++#[test]
++fn invitation_confirmation_lazy_rejection_still_publishes_attributed_notice() {
++    use crate::protocol::commands::{InvitationConfirmation, Reject};
++    let (context, mut conn, path, clock, thread, invitation) =
++        rejection_offer_with_policy(Harness::Codex, Some(InvitationConfirmation::Lazy));
++    clock.0.store(400_000, Ordering::SeqCst);
++    let command = Reject {
++        thread,
++        invitation: invitation.clone(),
++        reason: "outside my role".into(),
++        operation: OperationId::new("lazy-reject"),
++        claim: claim("s2"),
++    };
++    rejection_call(&context, &mut conn, &command, 400_000).unwrap();
++    assert_eq!(
++        conn.query_row(
++            "SELECT count(*) FROM messages WHERE kind='warn' AND event_key=?1",
++            [format!("reject:{}", invitation.as_str())],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        1
++    );
++    assert_eq!(
++        conn.query_row(
++            "SELECT count(*) FROM warning_conditions WHERE condition_kind='invitation'",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        0,
++        "rejection cannot manufacture a lazy overdue condition"
++    );
++    assert!(
++        !crate::store::attention::seat_pending_warnings(&conn, "s1", &|| Ok(()))
++            .unwrap()
++            .items
++            .is_empty()
+     );
+     drop(conn);
+     drop(context);
+     let _ = std::fs::remove_file(path);
+ }
++
++#[test]
++fn invitation_confirmation_duplicate_caller_cannot_change_origin_policy_deadline_or_wake() {
++    use crate::protocol::commands::{InvitationConfirmation, Join};
++    let (context, mut conn, path, _, thread, invitation) =
++        rejection_offer_with_policy(Harness::Codex, Some(InvitationConfirmation::RequireAck));
++    conn.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s3','i','resolved','native','s3',1,1,0);
++        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','s3','b',1,1,0,'fresh','term-s3','inc','coherent_enumeration',1);
++        INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s3',1,'s3','b',1,1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-s3','inc');").unwrap();
++    let budget = crate::protocol::time::CallBudget {
++        deadline: MonoInstant(u64::MAX),
++        cancellation: Default::default(),
++    };
++    let enrollment = Join {
++        thread: thread.clone(),
++        operation: OperationId::new("other-inviter-join"),
++        claim: claim("s3"),
++    };
++    let hash = cooperative_payload_hash("join", &enrollment).unwrap();
++    join(
++        &context,
++        &mut conn,
++        &budget,
++        &enrollment,
++        permit(
++            "s3",
++            "other-inviter-join",
++            ObligationRef::Control(thread.clone()),
++            hash,
++            100,
++        ),
++    )
++    .unwrap();
++    let attention: i64 = conn
++        .query_row(
++            "SELECT attention_version FROM wake_work WHERE seat_id='s2'",
++            [],
++            |r| r.get(0),
++        )
++        .unwrap();
++    let duplicate = Invite {
++        confirmation: Some(InvitationConfirmation::Lazy),
++        thread: thread.clone(),
++        seat: SeatId::new("s2"),
++        deadline_millis: None,
++        operation: OperationId::new("other-inviter-duplicate"),
++        claim: claim("s3"),
++    };
++    let hash = cooperative_payload_hash("invite", &duplicate).unwrap();
++    assert_eq!(
++        invite(
++            &context,
++            &mut conn,
++            &budget,
++            &duplicate,
++            permit(
++                "s3",
++                "other-inviter-duplicate",
++                ObligationRef::Control(thread),
++                hash,
++                100
++            ),
++            None
++        )
++        .unwrap(),
++        CommandResult::Invitation(invitation.clone())
++    );
++    assert_eq!(
++        conn.query_row(
++            "SELECT confirmation,inviter_seat_id,deadline_at FROM invitations WHERE id=?1",
++            [invitation.as_str()],
++            |r| Ok((
++                r.get::<_, String>(0)?,
++                r.get::<_, String>(1)?,
++                r.get::<_, i64>(2)?
++            ))
++        )
++        .unwrap(),
++        ("require_ack".into(), "s1".into(), 110)
++    );
++    assert_eq!(
++        conn.query_row(
++            "SELECT attention_version FROM wake_work WHERE seat_id='s2'",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        attention
++    );
++    drop(conn);
++    drop(context);
++    let _ = std::fs::remove_file(path);
++}
++
++fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: bool) {
++    use crate::protocol::commands::InvitationConfirmation;
++    use crate::store::attention;
++    let (context, mut conn, path, clock, thread, invitation) =
++        rejection_offer_with_policy(Harness::Codex, Some(InvitationConfirmation::RequireAck));
++    let budget = crate::protocol::time::CallBudget {
++        deadline: MonoInstant(u64::MAX),
++        cancellation: Default::default(),
++    };
++    let leave_command = Leave {
++        thread: thread.clone(),
++        claim: claim("s1"),
++        operation: OperationId::new("offered-origin-left"),
++    };
++    let hash = cooperative_payload_hash("leave", &leave_command).unwrap();
++    leave(
++        &context,
++        &mut conn,
++        &budget,
++        &leave_command,
++        permit(
++            "s1",
++            "offered-origin-left",
++            ObligationRef::Control(thread.clone()),
++            hash,
++            100,
++        ),
++    )
++    .unwrap();
++    clock.0.store(110, Ordering::SeqCst);
++    assert_eq!(
++        crate::store::invitation_due::scan_invitation_due_batch(&context, &mut conn, None, 100)
++            .unwrap()
++            .warnings_added,
++        1
++    );
++    if discovery_path {
++        let warning: String = conn
++            .query_row(
++                "SELECT warning_message_id FROM invitations WHERE id=?1",
++                [invitation.as_str()],
++                |r| r.get(0),
++            )
++            .unwrap();
++        while crate::store::materialization::advance_work(
++            &mut conn,
++            &format!("work:{warning}"),
++            crate::ports::DurableWorkAdmission::new(16).unwrap(),
++            &budget,
++            clock.as_ref(),
++        )
++        .unwrap()
++        .has_more
++        {}
++        let status: String = conn
++            .query_row(
++                "SELECT status FROM warning_jobs WHERE warning_id=?1",
++                [&warning],
++                |r| r.get(0),
++            )
++            .unwrap();
++        assert_eq!(
++            status, "complete",
++            "discovery must not depend on attribution backlog"
++        );
++    }
++    let carried: Vec<_> = attention::notice_offer_page(&conn, "s1", 10)
++        .unwrap()
++        .into_iter()
++        .map(|row| row.notice)
++        .collect();
++    assert_eq!(carried.len(), 1);
++    let tx = conn.transaction().unwrap();
++    tx.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) SELECT 's1',1,'00000000-0000-4000-8000-000000000001',decision_seq FROM host_instances WHERE id='i'", []).unwrap();
++    attention::settle_carried_notices(
++        &tx,
++        "s1",
++        1,
++        "00000000-0000-4000-8000-000000000001",
++        &carried,
++    )
++    .unwrap();
++    tx.commit().unwrap();
++    assert!(
++        attention::notice_offer_page(&conn, "s1", 10)
++            .unwrap()
++            .is_empty(),
++        "committed informational offer must stay settled"
++    );
++    assert!(
++        attention::seat_pending_warnings(&conn, "s1", &|| Ok(()))
++            .unwrap()
++            .items
++            .is_empty(),
++        "open waking condition must not revive informational delivery"
++    );
++    let origin = SeatId::new("s1");
++    let discovery_high = u64::try_from(
++        conn.query_row("SELECT MAX(ordinal) FROM seats", [], |r| r.get::<_, i64>(0))
++            .unwrap(),
++    )
++    .unwrap();
++    if discovery_path {
++        let discovery =
++            crate::store::discover_wake_candidates(&conn, "i", 0, discovery_high, 100, &|| Ok(()))
++                .unwrap();
++        assert!(
++            discovery
++                .items
++                .iter()
++                .any(|candidate| candidate.seat == origin && candidate.has_actionable_work()),
++            "actual native discovery must retain the otherwise-idle left inviter after committed notice offer and completed attribution"
++        );
++    }
++    if mod_path {
++        let view = crate::store::seats::mod_seat_view(&conn, "i", &origin)
++            .unwrap()
++            .unwrap();
++        assert_eq!(
++            view.fingerprint.other_pending, 1,
++            "mod retains original inviter open condition after notice offer"
++        );
++    } else {
++        let scan = attention::wake_seat_attention(&conn, "s1").unwrap();
++        assert!(
++            scan.attention.latest_warning_seq.is_some(),
++            "native attention retains original inviter open condition after notice offer"
++        );
++        let candidate = crate::store::wake::load_candidate(
++            &conn,
++            "i",
++            &origin,
++            &scan.attention,
++            scan.decision_seq,
++        )
++        .unwrap();
++        assert!(
++            candidate.has_actionable_work(),
++            "committed notice offer cannot gate open condition wake"
++        );
++        assert!(
++            crate::store::wake::reserve(
++                &context,
++                &mut conn,
++                "i",
++                &candidate,
++                uuid::Uuid::new_v4(),
++                30_000
++            )
++            .unwrap()
++            .is_some(),
++            "existing cooperative authority admits the open condition wake"
++        );
++    }
++    clock.0.store(200, Ordering::SeqCst);
++    let acceptance = Accept {
++        thread,
++        claim: claim("s2"),
++        operation: OperationId::new("offered-late-accept"),
++    };
++    let hash = cooperative_payload_hash("accept", &acceptance).unwrap();
++    assert!(matches!(
++        accept(
++            &context,
++            &mut conn,
++            &budget,
++            &acceptance,
++            permit(
++                "s2",
++                "offered-late-accept",
++                ObligationRef::Invitation(invitation),
++                hash,
++                200
++            )
++        )
++        .unwrap(),
++        CommandResult::Accepted(_)
++    ));
++    assert!(
++        attention::wake_seat_attention(&conn, "s1")
++            .unwrap()
++            .attention
++            .latest_warning_seq
++            .is_none(),
++        "late explicit acceptance clears native condition attention"
++    );
++    assert_eq!(
++        crate::store::seats::mod_seat_view(&conn, "i", &origin)
++            .unwrap()
++            .unwrap()
++            .fingerprint
++            .other_pending,
++        0,
++        "clear is passive for mod attention"
++    );
++    if discovery_path {
++        let discovery =
++            crate::store::discover_wake_candidates(&conn, "i", 0, discovery_high, 100, &|| Ok(()))
++                .unwrap();
++        assert!(
++            !discovery
++                .items
++                .iter()
++                .any(|candidate| candidate.seat == origin),
++            "passive clear cannot keep the original inviter in native discovery"
++        );
++    }
++    let clears = attention::notice_offer_page(&conn, "s1", 10).unwrap();
++    assert_eq!(
++        clears.len(),
++        1,
++        "only the fresh passive clear notice remains deliverable"
++    );
++    assert_ne!(clears[0].notice.warning, carried[0].warning);
++    drop(conn);
++    drop(context);
++    let _ = std::fs::remove_file(path);
++}
++
++#[test]
++fn invitation_confirmation_native_open_condition_survives_committed_notice_offer() {
++    invitation_origin_wake_after_notice_offer(false, false);
++}
++
++#[test]
++fn invitation_confirmation_mod_open_condition_survives_committed_notice_offer() {
++    invitation_origin_wake_after_notice_offer(true, false);
++}
++
++#[test]
++fn invitation_confirmation_discovery_survives_committed_notice_offer_and_completed_attribution() {
++    invitation_origin_wake_after_notice_offer(false, true);
++}
+diff --git a/tests/store/effective.rs b/tests/store/effective.rs
+index e2d90143..2057eecb 100644
+--- a/tests/store/effective.rs
++++ b/tests/store/effective.rs
+@@ -1093,25 +1093,50 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
+             "prepared_recipients",
+             "send_manifests",
+             "invitations",
+             "receipt_send_time_cutovers",
+         ];
+         let before: Vec<_> = tables
+             .iter()
+             .map(|table| receipt_upgrade_snapshot(&db, table))
+             .collect();
+         let catalog = |db: &Connection| {
+-            db.prepare("SELECT type,name,tbl_name,rootpage,sql FROM sqlite_master WHERE name!='receipt_deadline_backfill' ORDER BY type,name").unwrap()
++            db.prepare("SELECT type,name,tbl_name,rootpage,sql FROM sqlite_master WHERE name NOT IN ('receipt_deadline_backfill','invitations_confirmation_scan','invitations_confirmation_pending_seat','invitations_confirmation_pending_thread','warning_conditions_invitation_origin','warning_conditions_invitation_origin_immutable') ORDER BY type,name").unwrap()
+                 .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, Option<String>>(4)?)))
+                 .unwrap().map(Result::unwrap).collect::<Vec<_>>()
+         };
+         let old_catalog = catalog(&db);
++        // Derive the exact additive warning table declaration from its actual
++        // old DDL. Every old constraint/column and rootpage remains compared.
++        let mut expected_catalog = old_catalog.clone();
++        let warning = expected_catalog
++            .iter_mut()
++            .find(|row| row.1 == "warning_conditions")
++            .unwrap();
++        let expected = Connection::open_in_memory().unwrap();
++        expected
++            .execute_batch(warning.4.as_deref().unwrap())
++            .unwrap();
++        let additions = include_str!("../../migrations/0034_invitation_warning_origin.sql")
++            .split("WITH origins AS")
++            .next()
++            .unwrap();
++        expected.execute_batch(additions).unwrap();
++        warning.4 = Some(
++            expected
++                .query_row(
++                    "SELECT sql FROM sqlite_master WHERE name='warning_conditions'",
++                    [],
++                    |r| r.get::<_, String>(0),
++                )
++                .unwrap(),
++        );
+         // CREATE main table succeeds, but INSERT resolves to the obstructing
+         // temp view. Failure must roll back the newly created main table too.
+         db.execute_batch("CREATE TEMP VIEW receipt_deadline_backfill AS SELECT 1 AS singleton")
+             .unwrap();
+         assert!(schema::initialize(&db, || UtcMillis(0)).is_err());
+         assert!(db.is_autocommit());
+         assert_eq!(
+             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                 .unwrap(),
+             31
+@@ -1141,22 +1166,22 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
+             31
+         );
+         schema::initialize(&db, || UtcMillis(1)).unwrap();
+         assert_eq!(
+             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                 .unwrap(),
+             schema::LATEST_VERSION
+         );
+         assert_eq!(
+             catalog(&db),
+-            old_catalog,
+-            "additive32 preserves every prior object/rootpage"
++            expected_catalog,
++            "composed additive32..34 preserves old definitions/rootpages and adds exact origin columns"
+         );
+         for (table, retained) in tables.iter().zip(&before) {
+             assert_eq!(&receipt_upgrade_snapshot(&db, table), retained, "{table}");
+         }
+         assert_eq!(db.query_row("SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='i'", [], |r| r.get::<_, i64>(0)).unwrap(), 12);
+         let marker = receipt_upgrade_snapshot(&db, "receipt_deadline_backfill");
+         assert_eq!(db.query_row("SELECT physical_after,physical_high_water,prepared_after,prepared_high_water,completed FROM receipt_deadline_backfill WHERE singleton=1", [], |r| Ok((r.get::<_, i64>(0)?,r.get::<_, i64>(1)?,r.get::<_, i64>(2)?,r.get::<_, i64>(3)?,r.get::<_, i64>(4)?))).unwrap(), (0,1,0,2,0));
+         db.execute_batch("UPDATE host_instances SET decision_seq=1000 WHERE id='i'")
+             .unwrap();
+         drop(db);
+@@ -1165,21 +1190,21 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
+             .unwrap();
+         schema::initialize(&db, || UtcMillis(2)).unwrap();
+         assert_eq!(
+             receipt_upgrade_snapshot(&db, "receipt_deadline_backfill"),
+             marker
+         );
+         assert_eq!(
+             receipt_upgrade_snapshot(&db, "receipt_send_time_cutovers"),
+             before[7]
+         );
+-        assert_eq!(catalog(&db), old_catalog);
++        assert_eq!(catalog(&db), expected_catalog);
+         assert_eq!(
+             db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+                 .unwrap(),
+             foreign_keys
+         );
+         assert_eq!(
+             db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+                 .get::<_, i64>(
+                 0
+             ))
+diff --git a/tests/store/handoff_fences.rs b/tests/store/handoff_fences.rs
+index 26a70681..a32dd7df 100644
+--- a/tests/store/handoff_fences.rs
++++ b/tests/store/handoff_fences.rs
+@@ -401,25 +401,25 @@ fn handoff_actual22_upgrade_imports_already_committed_create_then_replays_withou
+     };
+     let historical =
+         serde_json::to_string(&CommandResult::ThreadCreated(ThreadId::new("t"))).unwrap();
+     db.execute("INSERT INTO operations(actor_scope,operation_key,digest,result_json,decided_at) VALUES('seat:s',?1,?2,?3,0)",rusqlite::params![id.create_key.as_str(),cooperative_payload_hash("create_thread",&create).unwrap().as_slice(),historical]).unwrap();
+     let store = SqliteStore::new(
+         StoreContext::new(path, std::sync::Arc::new(Clock)),
+         "i",
+         StoreSettings::default(),
+     )
+     .unwrap();
+-    // The initializer upgrades the historical22 fixture to current schema32.
++    // The initializer upgrades the historical22 fixture to current schema34.
+     assert_eq!(
+         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+             .unwrap(),
+-        32
++        34
+     );
+     let tx = db.transaction().unwrap();
+     let imported = handoff::import_hint(&tx, &id, None, "legacy22", UtcMillis(100)).unwrap();
+     assert_eq!(imported.thread, Some(ThreadId::new("t")));
+     tx.commit().unwrap();
+     let CommandResult::Handoff(result) = mutate(
+         &store,
+         PermitMutation::BeginHandoff(HandoffMutation {
+             identity: id.clone(),
+             operation: OperationId::new("begin"),
+diff --git a/tests/store/invitation_due.rs b/tests/store/invitation_due.rs
+index 15612ba0..462c1d27 100644
+--- a/tests/store/invitation_due.rs
++++ b/tests/store/invitation_due.rs
+@@ -318,36 +318,27 @@ fn due_slice_accepts_the_full_hundred_candidate_admission() {
+     assert_eq!((second.inspected, second.warnings_added), (1, 1));
+ }
+ 
+ #[test]
+ fn interleaved_new_invitations_consume_bounded_slices_and_do_not_starve_old_rows() {
+     let (context, mut conn, _, _) = setup(300);
+     invitation(&conn, "first", 1, 100, "pending");
+     invitation(&conn, "old-second", 2, 300, "pending");
+     let first = scan_invitation_due_batch(&context, &mut conn, None, 1).unwrap();
+     assert_eq!((first.inspected, first.warnings_added), (1, 1));
+-    let mut cursor = first.next;
++    let cursor = first.next;
+     assert!(cursor.is_some());
+ 
+     for i in 0..40 {
+         invitation(&conn, &format!("new-{i}"), 3 + i, 200 + i, "pending");
+     }
+ 
+-    for _ in 0..40 {
+-        let batch = scan_invitation_due_batch(&context, &mut conn, cursor, 1).unwrap();
+-        assert_eq!((batch.inspected, batch.warnings_added), (1, 0));
+-        let next = batch
+-            .next
+-            .expect("physical scan must advance past skipped row");
+-        assert!(next.after_deadline >= cursor.unwrap().after_deadline);
+-        cursor = Some(next);
+-    }
+     let old = scan_invitation_due_batch(&context, &mut conn, cursor, 1).unwrap();
+     assert_eq!((old.inspected, old.warnings_added), (1, 1));
+     assert_eq!(
+         scan_invitation_due_batch(&context, &mut conn, old.next, 1)
+             .unwrap()
+             .inspected,
+         0
+     );
+     assert_eq!(warnings(&conn), 2);
+ }
+@@ -406,10 +397,462 @@ fn failed_page_retries_from_its_original_physical_cursor() {
+     let retried = scan_invitation_due_batch(&context, &mut conn, Some(retry_position), 1).unwrap();
+     assert_eq!((retried.inspected, retried.warnings_added), (1, 1));
+     assert_eq!(
+         scan_invitation_due_batch(&context, &mut conn, retried.next, 1)
+             .unwrap()
+             .inspected,
+         0
+     );
+     assert_eq!(warnings(&conn), 2);
+ }
++
++// Fails if lazy source rows enter either due classification or native/mod attention.
++#[test]
++fn lazy_invitation_is_discoverable_but_never_due_or_waking() {
++    let (context, mut conn, _, _) = setup(1_000);
++    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('origin','host','resolved','native',1,0)", []).unwrap();
++    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('lazy','thread','seat',1,'pending',1,0,100,100,'lazy','origin')", []).unwrap();
++    let batch = scan_invitation_due_batch(&context, &mut conn, None, 100).unwrap();
++    assert_eq!((batch.inspected, batch.warnings_added), (0, 0));
++    let tx = conn.transaction().unwrap();
++    let result = crate::store::schema::record_overdue_if_pending(
++        &tx,
++        &ObligationRef::Invitation(InvitationId::new("lazy")),
++        &TimeBasis::Decision,
++        UtcMillis(1_000),
++    )
++    .unwrap();
++    assert!(
++        !result.inserted,
++        "late acceptance/rejection/retirement must not retrospectively warn a lazy invitation"
++    );
++    tx.commit().unwrap();
++    assert_eq!(
++        crate::store::seats::mod_seat_view(
++            &conn,
++            "host",
++            &crate::protocol::ids::SeatId::new("seat")
++        )
++        .unwrap()
++        .unwrap()
++        .fingerprint
++        .other_pending,
++        0,
++        "lazy invitations must not raise mod attention"
++    );
++    assert!(
++        !crate::store::attention::wake_seat_attention(&conn, "seat")
++            .unwrap()
++            .attention
++            .has_pending_invitation
++    );
++    assert_eq!(
++        crate::store::attention::pending_invitations(&conn, "seat", None, i64::MAX)
++            .unwrap()
++            .items
++            .len(),
++        1
++    );
++}
++
++// Earlier-deadline arrivals must not stretch a finite snapshot's physical scan.
++#[test]
++fn invitation_snapshot_finishes_with_250_initial_rows_despite_continuing_arrivals() {
++    let (context, mut conn, _, _) = setup(1_000);
++    for i in 0..250 {
++        invitation(
++            &conn,
++            &format!("initial-{i}"),
++            i + 1,
++            if i < 100 { 100 } else { 900 },
++            "pending",
++        );
++    }
++    let first = scan_invitation_due_batch(&context, &mut conn, None, 100).unwrap();
++    assert_eq!((first.inspected, first.warnings_added), (100, 100));
++    let mut cursor = first.next;
++    for page in 0..2 {
++        for i in 0..150 {
++            invitation(
++                &conn,
++                &format!("arrival-{page}-{i}"),
++                251 + page * 150 + i,
++                200,
++                "pending",
++            );
++        }
++        let batch = scan_invitation_due_batch(&context, &mut conn, cursor, 100).unwrap();
++        assert!(batch.inspected <= 100);
++        cursor = batch.next;
++    }
++    let initial_warned: i64=conn.query_row("SELECT count(*) FROM invitations WHERE id LIKE 'initial-%' AND warning_message_id IS NOT NULL",[],|r|r.get(0)).unwrap();
++    assert_eq!(initial_warned, 250);
++    assert!(
++        cursor.is_none(),
++        "finite high-water snapshot must finish after three bounded pages"
++    );
++}
++
++#[test]
++fn timed_invitation_warns_original_inviter_after_leaving_and_clear_is_passive() {
++    let (context, mut conn, _, _) = setup(100);
++    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('origin','host','resolved','native',1,0)", []).unwrap();
++    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('timed','thread','seat',1,'pending',1,0,100,100,'require_ack','origin')", []).unwrap();
++    assert_eq!(
++        scan_invitation_due_batch(&context, &mut conn, None, 100)
++            .unwrap()
++            .warnings_added,
++        1
++    );
++    let warning: String = conn
++        .query_row(
++            "SELECT warning_message_id FROM invitations WHERE id='timed'",
++            [],
++            |r| r.get(0),
++        )
++        .unwrap();
++    assert!(crate::store::effective::is_warning_recipient(&conn, &warning, "origin").unwrap());
++    assert!(crate::store::attention::warning_wakes_seat(&conn, "origin", &warning).unwrap());
++    assert!(
++        crate::store::attention::wake_seat_attention(&conn, "origin")
++            .unwrap()
++            .attention
++            .latest_warning_seq
++            .is_some()
++    );
++    let tx = conn.transaction().unwrap();
++    tx.execute("UPDATE invitations SET state='accepted',accepted_at=150,accepted_actor_seat_id='seat',accepted_generation=1,accepted_observation='test-observation' WHERE id='timed'",[]).unwrap();
++    crate::store::schema::clear_warning_condition_for_invitation(&tx, "timed", UtcMillis(150))
++        .unwrap();
++    tx.commit().unwrap();
++    let clear: String = conn
++        .query_row(
++            "SELECT clear_warning_id FROM warning_conditions WHERE condition_id='timed'",
++            [],
++            |r| r.get(0),
++        )
++        .unwrap();
++    assert!(!crate::store::attention::warning_wakes_seat(&conn, "origin", &clear).unwrap());
++    let clear_recipient:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM digest_programmatic_warnings WHERE warning_id=?1 AND seat_id='origin')",[&clear],|r|r.get(0)).unwrap();
++    assert!(
++        clear_recipient,
++        "the left inviter must retain its passive clear notice"
++    );
++    assert!(!crate::store::attention::warning_wakes_seat(&conn, "origin", &warning).unwrap());
++}
++
++#[test]
++fn invitation_due_index_bounds_physical_work_across_lazy_and_future_backlogs() {
++    let (context, mut conn, _, _) = setup(100);
++    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('origin','host','resolved','native',1,0)", []).unwrap();
++    conn.execute("WITH RECURSIVE n(v) AS (SELECT 1 UNION ALL SELECT v+1 FROM n WHERE v<2000) INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) SELECT 'lazy-'||v,'thread','seat',v,'pending',1,0,1,1,'lazy','origin' FROM n",[]).unwrap();
++    for i in 0..250 {
++        invitation(&conn, &format!("future-{i}"), 2001 + i, 1_000, "pending");
++    }
++    invitation(&conn, "last-due", 2251, 100, "pending");
++    let mut cursor = None;
++    let mut inspected = 0;
++    for _ in 0..3 {
++        let batch = scan_invitation_due_batch(&context, &mut conn, cursor, 100).unwrap();
++        inspected += batch.inspected;
++        cursor = batch.next;
++    }
++    assert_eq!(
++        inspected, 251,
++        "lazy rows must be absent from the physical due access path"
++    );
++    assert!(cursor.is_none());
++    assert_eq!(
++        warnings(&conn),
++        1,
++        "future rows cannot end a traversal before a later ordinal that is due"
++    );
++    let mut stmt = conn.prepare(INVITATION_DUE_SELECTION).unwrap();
++    let _: Vec<String> = stmt
++        .query_map(params![0, i64::MAX, 100], |r| r.get(0))
++        .unwrap()
++        .collect::<Result<_, _>>()
++        .unwrap();
++    assert!(
++        stmt.get_status(rusqlite::StatementStatus::VmStep) < 10_000,
++        "bounded index selection must not scan lazy history or sort the backlog"
++    );
++    assert_eq!(stmt.get_status(rusqlite::StatementStatus::Sort), 0);
++}
++
++#[test]
++fn invitation_backlog_restart_reconstructs_progress_without_recipient_activity() {
++    let (context, mut conn, clock, path) = setup(1_000);
++    for i in 0..250 {
++        invitation(&conn, &format!("restart-{i}"), i + 1, 500, "pending");
++    }
++    assert_eq!(
++        scan_invitation_due_batch(&context, &mut conn, None, 100)
++            .unwrap()
++            .warnings_added,
++        100
++    );
++    drop(conn);
++    let restarted = StoreContext::new(path, clock);
++    let mut reopened = restarted.open_writer().unwrap();
++    for i in 0..250 {
++        invitation(&reopened, &format!("future-{i}"), 251 + i, 2_000, "pending");
++    }
++    let mut cursor = None;
++    for _ in 0..4 {
++        let batch = scan_invitation_due_batch(&restarted, &mut reopened, cursor, 100).unwrap();
++        assert!(batch.inspected <= 100);
++        cursor = batch.next;
++    }
++    assert_eq!(warnings(&reopened), 250);
++    assert_eq!(reopened.query_row("SELECT count(*) FROM invitations WHERE id LIKE 'restart-%' AND warning_message_id IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),250);
++    assert_eq!(
++        reopened
++            .query_row("SELECT count(*) FROM occupant_bindings", [], |r| r
++                .get::<_, i64>(0))
++            .unwrap(),
++        0,
++        "discovery never requires registration"
++    );
++}
++
++#[test]
++fn invitation_confirmation_prior_schema_upgrade_preserves_exact_open_origins() {
++    let path =
++        std::env::temp_dir().join(format!("invitation-origin-v33-{}.db", uuid::Uuid::new_v4()));
++    let conn = Connection::open(&path).unwrap();
++    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
++    let mut migrations: Vec<_> =
++        std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
++            .unwrap()
++            .map(|entry| entry.unwrap().path())
++            .filter(|path| {
++                path.file_name().unwrap().to_str().unwrap()[..4]
++                    .parse::<u32>()
++                    .is_ok_and(|version| version <= 33)
++            })
++            .collect();
++    migrations.sort();
++    assert_eq!(migrations.len(), 33);
++    for migration in migrations {
++        conn.execute_batch(&std::fs::read_to_string(migration).unwrap())
++            .unwrap();
++    }
++    conn.pragma_update(None, "user_version", 33).unwrap();
++    drop(conn);
++    let conn = Connection::open(&path).unwrap();
++    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
++    assert_eq!(
++        conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
++            .unwrap(),
++        33
++    );
++    conn.execute(
++        "INSERT INTO host_instances(id,created_at,decision_seq) VALUES ('host',0,10)",
++        [],
++    )
++    .unwrap();
++    for seat in ["origin", "legacy", "unknown", "seat"] {
++        conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'host','resolved','native',1,0)", [seat]).unwrap();
++    }
++    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('thread','host','topic','goal',0,0)", []).unwrap();
++    for (ordinal, id, recorded, actor) in [
++        (1, "stored", Some("origin"), None),
++        (2, "historical", None, Some("legacy")),
++        (3, "unattributed", None, None),
++    ] {
++        conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,inviter_seat_id) VALUES (?1,'thread','seat',?2,'pending',1,0,100,100,?3)", params![id,ordinal,recorded]).unwrap();
++        if let Some(actor) = actor {
++            crate::store::schema::append_event_once(&conn, crate::store::schema::EventInput {
++                thread: &crate::protocol::ids::ThreadId::new("thread"), key: &format!("invite:{id}"), kind: "info",
++                payload_json: &serde_json::json!({"action":"invite","actor_seat":actor,"seat":"seat","invitation":id}).to_string(), decision_at: UtcMillis(0), source_message: None, source_invitation: Some(&InvitationId::new(id)),
++            }).unwrap();
++        }
++        let (warning, _) = crate::store::schema::append_event_once(
++            &conn,
++            crate::store::schema::EventInput {
++                thread: &crate::protocol::ids::ThreadId::new("thread"),
++                key: &format!("overdue:{id}"),
++                kind: "warn",
++                payload_json: "{}",
++                decision_at: UtcMillis(100),
++                source_message: None,
++                source_invitation: Some(&InvitationId::new(id)),
++            },
++        )
++        .unwrap();
++        let seq: i64 = conn
++            .query_row(
++                "SELECT decision_seq FROM messages WHERE id=?1",
++                [warning.as_str()],
++                |r| r.get(0),
++            )
++            .unwrap();
++        conn.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('invitation','thread',?1,'seat',?2,?3)", params![id, warning.as_str(),seq]).unwrap();
++    }
++    let before: Vec<(String, String)> = {
++        let mut query = conn
++            .prepare("SELECT id,event_json FROM messages ORDER BY ordinal")
++            .unwrap();
++        query
++            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
++            .unwrap()
++            .collect::<Result<_, _>>()
++            .unwrap()
++    };
++    drop(conn);
++    let context = StoreContext::new(path.clone(), Arc::new(TestClock(AtomicI64::new(200))));
++    let conn = context.open_writer().unwrap();
++    assert_eq!(
++        conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
++            .unwrap(),
++        34
++    );
++    for origin in ["origin", "legacy"] {
++        assert!(
++            crate::store::attention::wake_seat_attention(&conn, origin)
++                .unwrap()
++                .attention
++                .latest_warning_seq
++                .is_some(),
++            "prior-schema open origin {origin} must survive upgrade"
++        );
++    }
++    assert!(
++        crate::store::attention::wake_seat_attention(&conn, "unknown")
++            .unwrap()
++            .attention
++            .latest_warning_seq
++            .is_none(),
++        "unknown historical evidence cannot attribute a member"
++    );
++    let after: Vec<(String, String)> = {
++        let mut query = conn
++            .prepare("SELECT id,event_json FROM messages ORDER BY ordinal")
++            .unwrap();
++        query
++            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
++            .unwrap()
++            .collect::<Result<_, _>>()
++            .unwrap()
++    };
++    assert_eq!(before, after, "upgrade never rewrites historical events");
++    let mut conn = conn;
++    let tx = conn.transaction().unwrap();
++    tx.execute("UPDATE invitations SET state='accepted',accepted_at=200,accepted_actor_seat_id='seat',accepted_generation=1,accepted_observation='test-observation' WHERE id='stored'", []).unwrap();
++    crate::store::schema::clear_warning_condition_for_invitation(&tx, "stored", UtcMillis(200))
++        .unwrap();
++    tx.commit().unwrap();
++    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,inviter_seat_id) VALUES ('next-episode','thread','seat',4,'pending',10,100,100,200,'legacy')", []).unwrap();
++    assert!(
++        scan_invitation_due_batch(&context, &mut conn, None, 100)
++            .unwrap()
++            .warnings_added
++            > 0
++    );
++    let next_origin: String = conn.query_row("SELECT invitation_originator_seat_id FROM warning_conditions WHERE condition_id='next-episode' AND clear_warning_id IS NULL", [], |r|r.get(0)).unwrap();
++    assert_eq!(
++        next_origin, "legacy",
++        "new open episode resolves its own origin rather than retaining the prior origin"
++    );
++    drop(conn);
++    drop(context);
++    let _ = std::fs::remove_file(path);
++}
++
++// Exercise both transaction boundaries in the composed chain using real prior32.
++#[test]
++fn invitation_confirmation_actual32_upgrade_rolls_back_reopens_and_preserves_receipt_progress() {
++    for (obstruction, failed_version) in [
++        ("invitations_confirmation_pending_seat", 32),
++        ("warning_conditions_invitation_origin", 33),
++    ] {
++        let path =
++            std::env::temp_dir().join(format!("invitation-chain-{}.db", uuid::Uuid::new_v4()));
++        let db = Connection::open(&path).unwrap();
++        let mut paths = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
++            .unwrap()
++            .map(|p| p.unwrap().path())
++            .collect::<Vec<_>>();
++        paths.sort();
++        for (index, migration) in paths.iter().take(32).enumerate() {
++            db.execute_batch(&std::fs::read_to_string(migration).unwrap())
++                .unwrap();
++            db.pragma_update(None, "user_version", index as i64 + 1)
++                .unwrap();
++            if index == 28 {
++                db.execute_batch(
++                    "INSERT INTO host_instances(id,created_at,decision_seq) VALUES('host',0,12)",
++                )
++                .unwrap();
++            }
++        }
++        db.execute_batch("UPDATE host_instances SET decision_seq=99; UPDATE receipt_deadline_backfill SET physical_after=2,physical_high_water=7,prepared_after=3,prepared_high_water=9;
++            INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('seat','host','resolved','native',1,0);
++            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('thread','host','topic','goal',0,0);
++            INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES('retained','thread','seat',1,'pending',1,0,100,100,'require_ack','seat');").unwrap();
++        db.execute_batch(&format!("CREATE TABLE {obstruction}(value TEXT)"))
++            .unwrap();
++        drop(db);
++        let db = Connection::open(&path).unwrap();
++        db.pragma_update(None, "foreign_keys", true).unwrap();
++        assert_eq!(
++            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
++                .unwrap(),
++            32
++        );
++        assert!(crate::store::schema::initialize(&db, || UtcMillis(200)).is_err());
++        assert!(db.is_autocommit());
++        assert_eq!(
++            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
++                .unwrap(),
++            failed_version
++        );
++        assert!(
++            db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
++                .unwrap()
++        );
++        assert_eq!(db.query_row("SELECT count(*) FROM pragma_table_info('warning_conditions') WHERE name LIKE 'invitation_originator_%'", [], |r| r.get::<_,i64>(0)).unwrap(),0);
++        if failed_version == 32 {
++            assert_eq!(
++                db.query_row(
++                    "SELECT count(*) FROM sqlite_master WHERE name='invitations_confirmation_scan'",
++                    [],
++                    |r| r.get::<_, i64>(0)
++                )
++                .unwrap(),
++                0
++            );
++        }
++        drop(db);
++        let db = Connection::open(&path).unwrap();
++        db.pragma_update(None, "foreign_keys", true).unwrap();
++        assert_eq!(
++            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
++                .unwrap(),
++            failed_version
++        );
++        db.execute_batch(&format!("DROP TABLE {obstruction}"))
++            .unwrap();
++        for _ in 0..2 {
++            crate::store::schema::initialize(&db, || UtcMillis(300)).unwrap();
++            assert_eq!(
++                db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
++                    .unwrap(),
++                34
++            );
++            assert_eq!(db.query_row("SELECT physical_after,physical_high_water,prepared_after,prepared_high_water,completed FROM receipt_deadline_backfill", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?))).unwrap(),(2,7,3,9,0));
++            assert_eq!(db.query_row("SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='host'", [], |r| r.get::<_,i64>(0)).unwrap(),12);
++            assert_eq!(db.query_row("SELECT confirmation,inviter_seat_id,deadline_at FROM invitations WHERE id='retained'", [], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?))).unwrap(),("require_ack".into(),"seat".into(),100));
++        }
++        drop(db);
++        let db = Connection::open(&path).unwrap();
++        crate::store::schema::initialize(&db, || UtcMillis(400)).unwrap();
++        assert_eq!(
++            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
++                .unwrap(),
++            34
++        );
++        drop(db);
++        std::fs::remove_file(path).unwrap();
++    }
++}
+diff --git a/tests/store/lazy26_prerequisite.rs b/tests/store/lazy26_prerequisite.rs
+index e055c15e..7b0a2241 100644
+--- a/tests/store/lazy26_prerequisite.rs
++++ b/tests/store/lazy26_prerequisite.rs
+@@ -10,21 +10,21 @@ struct Database {
+ }
+ 
+ impl Database {
+     fn new() -> Self {
+         let directory = std::env::temp_dir().join(format!("ht-lazy26-{}", uuid::Uuid::new_v4()));
+         std::fs::create_dir(&directory).unwrap();
+         Self { directory }
+     }
+ 
+     /// An independent store whose file is a byte copy of this closed one.
+-    /// Creating a Store replays every migration (schema 32), far more than
++    /// Creating a Store replays every migration (schema 34), far more than
+     /// one tamper case costs, so each test creates its fresh store once and
+     /// gives every case its own copy.
+     fn copy(&self) -> Self {
+         let source = self.directory.join("store.db");
+         for suffix in ["-wal", "-journal"] {
+             let mut sidecar = source.clone().into_os_string();
+             sidecar.push(suffix);
+             assert!(
+                 !std::path::Path::new(&sidecar).exists(),
+                 "template store must be closed and checkpointed"
+@@ -100,21 +100,21 @@ fn evidence(db: &Connection) -> Vec<String> {
+         "SELECT json_array(message_id,seat_id,state,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,ack_required) FROM receipts ORDER BY ordinal",
+     ].into_iter().flat_map(|sql| db.prepare(sql).unwrap().query_map([], |row| row.get::<_, String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()).collect()
+ }
+ 
+ // Missing startup registration leaves a new Store unable to record ordinary mode.
+ #[test]
+ fn fresh_store_installs26_and_reopens() {
+     let database = Database::new();
+     drop(database.store().unwrap());
+     let db = database.connection();
+-    assert_eq!(version(&db), 32);
++    assert_eq!(version(&db), 34);
+     for table in ["messages", "send_preparations"] {
+         let default: String = db
+             .query_row(
+                 "SELECT dflt_value FROM pragma_table_info(?1) WHERE name='delivery_mode'",
+                 [table],
+                 |row| row.get(0),
+             )
+             .unwrap();
+         assert_eq!(default, "'ordinary'");
+     }
+@@ -126,21 +126,21 @@ fn fresh_store_installs26_and_reopens() {
+ #[test]
+ fn historical25_store_upgrade_preserves_evidence_and_defaults_modes() {
+     let database = Database::new();
+     database.historical25();
+     let db = database.connection();
+     assert_eq!(version(&db), 25);
+     let before = evidence(&db);
+     drop(db);
+     drop(database.store().unwrap());
+     let db = database.connection();
+-    assert_eq!(version(&db), 32);
++    assert_eq!(version(&db), 34);
+     assert_eq!(evidence(&db), before);
+     for table in ["messages", "send_preparations"] {
+         let mode: String = db
+             .query_row(&format!("SELECT delivery_mode FROM {table}"), [], |row| {
+                 row.get(0)
+             })
+             .unwrap();
+         assert_eq!(mode, "ordinary");
+     }
+     let recipients: i64 = db
+@@ -192,21 +192,21 @@ fn failed26_upgrade_rolls_back_columns_objects_and_version() {
+ fn rejected_on_reopen(database: &Database, description: &str) {
+     let error = match database.store() {
+         Ok(_) => panic!("Store accepted {description}"),
+         Err(error) => error,
+     };
+     assert_eq!(
+         error.code,
+         herdr_threads::protocol::results::ErrorCode::IncompatibleSchema,
+         "{description}: {error:?}"
+     );
+-    assert_eq!(version(&database.connection()), 32);
++    assert_eq!(version(&database.connection()), 34);
+ }
+ 
+ // Omitting the v26 startup audit accepts a removed or weakened immutable guard.
+ #[test]
+ fn reopen_rejects_missing_and_altered_lazy_triggers() {
+     let fresh = Database::fresh();
+     for trigger in [
+         "lazy_preparation_mode_immutable",
+         "lazy_message_mode_immutable",
+         "lazy_message_shape",
+diff --git a/tests/store/lazy_inbox.rs b/tests/store/lazy_inbox.rs
+index b1b7a535..8be4b46c 100644
+--- a/tests/store/lazy_inbox.rs
++++ b/tests/store/lazy_inbox.rs
+@@ -1187,10 +1187,52 @@ fn lazy_inbox_fix_partial_concurrent_ack() {
+             }
+         }
+         cursor = page.next_cursor;
+         if cursor.is_none() {
+             break;
+         }
+     }
+     assert!(found);
+     assert!(cursor.is_none());
+ }
++
++#[test]
++fn invitation_confirmation_inbox_metadata_distinguishes_lazy_timed_and_legacy() {
++    let (_iso, context, conn) = fixture("invitation-metadata");
++    for (index, mode) in [Some("lazy"), Some("require_ack"), None]
++        .into_iter()
++        .enumerate()
++    {
++        conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES (?1,'t','b',?2,'pending',0,1,300,300,?3,CASE WHEN ?3 IS NOT NULL THEN 'a' END)",rusqlite::params![format!("policy-{index}"),index as i64+1,mode]).unwrap();
++    }
++    for command in [
++        Command::InboxBatch(InboxQuery {
++            seat: Some(SeatId::new("b")),
++            page: PageRequest::default(),
++        }),
++        Command::InboxBatchV2(InboxQuery {
++            seat: Some(SeatId::new("b")),
++            page: PageRequest::default(),
++        }),
++    ] {
++        let result = herdr_threads::store::queries::query_with_output(
++            &context,
++            "i",
++            &command,
++            &OutputSpec::default(),
++            &budget(),
++        )
++        .unwrap();
++        let value = serde_json::to_value(&result).unwrap();
++        let items = value["data"]["items"].as_array().unwrap();
++        let find = |id: &str| items.iter().find(|v| v["invitation"] == id).unwrap();
++        assert_eq!(find("policy-0")["confirmation"], "lazy");
++        assert!(find("policy-0").get("deadline_at").is_none());
++        assert_eq!(find("policy-1")["confirmation"], "require_ack");
++        assert_eq!(find("policy-1")["deadline_at"], 300);
++        assert!(find("policy-2").get("confirmation").is_none());
++        assert!(
++            find("policy-2").get("deadline_at").is_none(),
++            "legacy item bytes stay unchanged"
++        );
++    }
++}
+diff --git a/tests/store/lazy_schema.rs b/tests/store/lazy_schema.rs
+index 6043d758..eec87248 100644
+--- a/tests/store/lazy_schema.rs
++++ b/tests/store/lazy_schema.rs
+@@ -18,21 +18,21 @@ fn lazy_schema_upgrade25_defaults_existing_messages_to_ordinary() {
+     schema::initialize(&db, || UtcMillis(0)).unwrap();
+     assert_eq!(
+         db.query_row("SELECT delivery_mode FROM messages WHERE id='m'", [], |r| r
+             .get::<_, String>(0))
+             .unwrap(),
+         "ordinary"
+     );
+     assert_eq!(
+         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+             .unwrap(),
+-        32
++        34
+     );
+ }
+ 
+ use herdr_threads::{
+     protocol::{
+         commands::DeliveryMode,
+         ids::{MessageId, SeatId},
+     },
+     store::lazy_delivery::{self, HighWater},
+ };
+diff --git a/tests/store/schema.rs b/tests/store/schema.rs
+index d3c48d48..31b87b21 100644
+--- a/tests/store/schema.rs
++++ b/tests/store/schema.rs
+@@ -6260,25 +6260,25 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
+             db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").unwrap()
+             .query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?.split_whitespace().collect::<String>().replace('\"',"")))).unwrap().map(Result::unwrap).collect::<Vec<_>>()
+         };
+         assert_eq!(catalog(&db), catalog(&fresh));
+         assert_eq!(
+             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
+             76
+         );
+         assert_eq!(
+             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
+-            140
++            144
+         );
+         assert_eq!(
+             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
+-            183
++            184
+         );
+     }
+ }
+ 
+ // An unpublished adapter schema25 is not the immutable published main25.
+ #[test]
+ fn absorption_rejects_development_adapter25_without_writing() {
+     let db = adapter_historical_database(24);
+     db.execute_batch(include_str!("../../migrations/0027_harness_adapters.sql"))
+         .unwrap();
+diff --git a/tests/store/topology_attachment_guard.rs b/tests/store/topology_attachment_guard.rs
+index e68760fb..ff13697a 100644
+--- a/tests/store/topology_attachment_guard.rs
++++ b/tests/store/topology_attachment_guard.rs
+@@ -662,10 +662,70 @@ fn actual_main_linked_phase_preserves_ordinary_and_rejects_lazy_mode() {
+         before_child
+     );
+     drop(db);
+     drop(context);
+     std::fs::remove_file(path).unwrap();
+     assert!(
+         direct_refusal,
+         "linked frozen Ordinary phase must reject a changed Lazy mode"
+     );
+ }
++
++#[test]
++fn actual_main_linked_phase_rejects_unfrozen_invitation_confirmation() {
++    use crate::protocol::commands::{InvitationConfirmation, Invite, PermitMutation};
++    let (context, mut db, path, id, child) = new_thread_fixture();
++    let create = create_for(&id);
++    let budget = CallBudget {
++        deadline: MonoInstant(u64::MAX),
++        cancellation: Cancellation::default(),
++    };
++    let CommandResult::ThreadCreated(thread) = create_thread_in_namespace(
++        &context,
++        &mut db,
++        &budget,
++        &create,
++        create_permit(&create),
++        &id.payload.handoff.namespace,
++    )
++    .unwrap() else {
++        panic!()
++    };
++    let before = db.total_changes();
++    let mut invite = Invite {
++        confirmation: None,
++        thread,
++        seat: child.recipient.clone(),
++        deadline_millis: None,
++        operation: id.payload.handoff.keys.invite.clone(),
++        claim: id.claim.clone(),
++    };
++    topology_handoff::validate_selected_child_phase(
++        &db,
++        &id.payload.handoff.namespace,
++        &PermitMutation::Invite(invite.clone()),
++        false,
++    )
++    .unwrap();
++    for mode in [
++        InvitationConfirmation::Lazy,
++        InvitationConfirmation::RequireAck,
++    ] {
++        invite.confirmation = Some(mode);
++        let error = topology_handoff::validate_selected_child_phase(
++            &db,
++            &id.payload.handoff.namespace,
++            &PermitMutation::Invite(invite.clone()),
++            false,
++        )
++        .unwrap_err();
++        assert_eq!(error.code, ErrorCode::OperationPayloadMismatch);
++    }
++    assert_eq!(
++        db.total_changes(),
++        before,
++        "policy refusal must precede effects"
++    );
++    drop(db);
++    drop(context);
++    std::fs::remove_file(path).unwrap();
++}
+diff --git a/tests/store/topology_handoff.rs b/tests/store/topology_handoff.rs
+index 2e35049a..bf4a6700 100644
+--- a/tests/store/topology_handoff.rs
++++ b/tests/store/topology_handoff.rs
+@@ -60,21 +60,21 @@ pub(super) fn identity() -> BootstrapIdentity {
+     identity.digest = identity.semantic_digest().unwrap();
+     identity.validate().unwrap();
+     identity
+ }
+ 
+ fn setup(db: &Connection) {
+     schema::initialize(db, || UtcMillis(0)).unwrap();
+     assert_eq!(
+         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+             .unwrap(),
+-        32
++        34
+     );
+     db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0)")
+         .unwrap();
+     thread(db);
+     joined_agent(db);
+ }
+ 
+ /// The database image `setup` produces. Building the schema replays every
+ /// migration and its verification, far more than most cases cost, so each
+ /// test process builds it once; every fixture is a private copy of the image,
+@@ -1324,21 +1324,21 @@ fn current_main_fresh_and_canonical26_upgrade_to_topology28() {
+                 })
+                 .unwrap(),
+             )
+         } else {
+             None
+         };
+         schema::initialize(&db, || UtcMillis(0)).unwrap();
+         assert_eq!(
+             db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+                 .unwrap(),
+-            32
++            34
+         );
+         assert!(
+             db.query_row(
+                 "SELECT name FROM sqlite_master WHERE name='bootstrap_handoffs'",
+                 [],
+                 |r| r.get::<_, String>(0)
+             )
+             .is_ok()
+         );
+         if let Some(saved) = saved {
+diff --git a/tests/store/topology_handoff_schema.rs b/tests/store/topology_handoff_schema.rs
+index 6084bb72..71f4e285 100644
+--- a/tests/store/topology_handoff_schema.rs
++++ b/tests/store/topology_handoff_schema.rs
+@@ -16,21 +16,21 @@ fn historical(version: usize) -> Connection {
+     let images = IMAGES.get_or_init(|| {
+         let db = Connection::open_in_memory().unwrap();
+         let mut paths =
+             std::fs::read_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+                 .unwrap()
+                 .map(|p| p.unwrap().path())
+                 .collect::<Vec<_>>();
+         paths.sort();
+         let mut images = Vec::new();
+         for (applied, path) in std::iter::once(None)
+-            .chain(paths.into_iter().take(32).map(Some))
++            .chain(paths.into_iter().take(34).map(Some))
+             .enumerate()
+         {
+             if let Some(path) = path {
+                 db.execute_batch(&std::fs::read_to_string(path).unwrap())
+                     .unwrap();
+             }
+             db.pragma_update(None, "user_version", applied as i64)
+                 .unwrap();
+             let mut size: ffi::sqlite3_int64 = 0;
+             // SAFETY: serialize the live main schema of our own open connection;
+@@ -76,27 +76,27 @@ fn objects(db: &Connection) -> Vec<(String, String, String)> {
+         "SELECT type,name,sql FROM sqlite_schema WHERE name LIKE 'bootstrap_%' ORDER BY name",
+     )
+     .unwrap()
+     .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+     .unwrap()
+     .map(Result::unwrap)
+     .collect()
+ }
+ #[test]
+ fn registered28_fresh_and_genuine_historical_chains_reopen() {
+-    for previous in [0, 1, 15, 22, 25, 26, 27, 28, 29, 30, 31] {
++    for previous in [0, 1, 15, 22, 25, 26, 27, 28, 29, 30, 31, 32, 33] {
+         let db = historical(previous);
+         schema::initialize(&db, || UtcMillis(0)).unwrap();
+-        assert_eq!(version(&db), 32, "actual {previous}->32");
+-        assert_eq!(objects(&db), objects(&historical(32)));
++        assert_eq!(version(&db), 34, "actual {previous}->34");
++        assert_eq!(objects(&db), objects(&historical(34)));
+         schema::initialize(&db, || UtcMillis(1)).unwrap();
+-        assert_eq!(version(&db), 32);
++        assert_eq!(version(&db), 34);
+     }
+ }
+ #[test]
+ fn registered28_audits_every_table_index_and_complete_trigger_body() {
+     let pristine = historical(28);
+     schema::initialize(&pristine, || UtcMillis(0)).unwrap();
+     for (kind, name, sql) in objects(&pristine) {
+         // Missing objects must fail, including every guard and every lookup index.
+         let db = historical(28);
+         db.execute_batch(&format!("DROP {kind} {name}")).unwrap();
+@@ -196,21 +196,21 @@ fn registered28_preserves25_and26_history_and_rolls_back_late_ddl_failure() {
+                 before_objects,
+                 "no partial tables/indexes/guards"
+             );
+             assert_eq!(evidence(&db), before);
+             let lazy_after: String = db.query_row("SELECT json_array(preparation_id,message_id,thread_id,seat_id,state) FROM lazy_recipients", [], |r| r.get(0)).unwrap();
+             assert_eq!(lazy_before, lazy_after);
+             db.execute_batch("DROP TRIGGER bootstrap_report_retained")
+                 .unwrap();
+         }
+         schema::initialize(&db, || UtcMillis(0)).unwrap();
+-        assert_eq!(version(&db), 32);
++        assert_eq!(version(&db), 34);
+         assert_eq!(evidence(&db), before);
+         let ordinary: String = db
+             .query_row(
+                 "SELECT delivery_mode FROM messages WHERE id='old'",
+                 [],
+                 |r| r.get(0),
+             )
+             .unwrap();
+         assert_eq!(ordinary, "ordinary");
+         if previous == 26 {
+@@ -362,21 +362,21 @@ fn handoff_body_bounds_upgrade_preserves_existing_identity_bytes_and_keys() {
+             )
+             .unwrap();
+             tx.commit().unwrap();
+         }
+         let bytes: Vec<u8> = db
+             .query_row("SELECT identity_json FROM bootstrap_handoffs", [], |r| {
+                 r.get(0)
+             })
+             .unwrap();
+         schema::initialize(&db, || UtcMillis(1)).unwrap();
+-        assert_eq!(version(&db), 32);
++        assert_eq!(version(&db), 34);
+         let retained: Vec<u8> = db
+             .query_row("SELECT identity_json FROM bootstrap_handoffs", [], |r| {
+                 r.get(0)
+             })
+             .unwrap();
+         assert_eq!(retained, bytes);
+         assert_eq!(
+             db.pragma_query_value::<i64, _>(None, "foreign_keys", |r| r.get(0))
+                 .unwrap(),
+             1
+@@ -561,21 +561,21 @@ fn handoff_bounds_upgrade_preserves_populated_completed_and_recovery_history() {
+         let db = Connection::open(&private.0).unwrap();
+         db.pragma_update(None, "foreign_keys", true).unwrap();
+         assert_eq!(version(&db), previous as i64);
+         let old_roots = roots(&db);
+         let old_cutover: Option<i64> = if previous == 30 {
+             db.query_row("SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='i'", [], |r| r.get(0)).optional().unwrap()
+         } else {
+             None
+         };
+         schema::initialize(&db, || UtcMillis(2)).unwrap();
+-        assert_eq!(version(&db), 32);
++        assert_eq!(version(&db), 34);
+         let new_roots = roots(&db);
+         for root in old_roots {
+             assert!(new_roots.contains(&root), "retained root {root:?}");
+         }
+         if previous == 30 {
+             assert_eq!(db.query_row("SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='i'", [], |r| r.get::<_,i64>(0)).optional().unwrap(), old_cutover);
+         }
+         assert_eq!(dump(&db), original);
+         drop(db);
+         let db = Connection::open(&private.0).unwrap();
+@@ -618,21 +618,21 @@ fn handoff_bounds_upgrade_failure_restores_fk_and_retries_without_recapturing_re
+                 foreign_keys
+             );
+             assert_eq!(
+                 objects(&db),
+                 objects(&historical(30)),
+                 "failed31 must retain old bootstrap DDL"
+             );
+             let cutover: Vec<(String, i64)> = db.prepare("SELECT instance_id,historical_decision_seq FROM receipt_send_time_cutovers ORDER BY instance_id").unwrap().query_map([], |r| Ok((r.get(0)?,r.get(1)?))).unwrap().map(Result::unwrap).collect();
+             db.execute_batch("DROP TABLE temp.ht29_handoffs; UPDATE host_instances SET decision_seq=99 WHERE id='i'").unwrap();
+             schema::initialize(&db, || UtcMillis(1)).unwrap();
+-            assert_eq!(version(&db), 32);
++            assert_eq!(version(&db), 34);
+             schema::initialize(&db, || UtcMillis(2)).unwrap();
+             let retained: Vec<(String, i64)> = db.prepare("SELECT instance_id,historical_decision_seq FROM receipt_send_time_cutovers ORDER BY instance_id").unwrap().query_map([], |r| Ok((r.get(0)?,r.get(1)?))).unwrap().map(Result::unwrap).collect();
+             assert_eq!(
+                 retained, cutover,
+                 "retry31 and reopen must never recapture cutover30"
+             );
+             assert_eq!(
+                 db.pragma_query_value::<bool, _>(None, "foreign_keys", |r| r.get(0))
+                     .unwrap(),
+                 foreign_keys
+diff --git a/tests/store/wake_discovery_cost.rs b/tests/store/wake_discovery_cost.rs
+index 39438155..5e947781 100644
+--- a/tests/store/wake_discovery_cost.rs
++++ b/tests/store/wake_discovery_cost.rs
+@@ -193,21 +193,21 @@ fn wake_discovery_scales_with_live_seats_only() {
+         bound(200)
+     );
+     let grown = units(100, BASE.grown("all"));
+     assert!(
+         grown <= bound(100),
+         "10x history at 100 live: {grown} exceeds {}",
+         bound(100)
+     );
+ }
+ 
+-// Kills: any of the seven access paths losing its INDEXED BY pin (a silent fall
++// Kills: any of the nine access paths losing its INDEXED BY pin (a silent fall
+ // back to a scan) or the pinned index no longer serving the query.
+ #[test]
+ fn every_access_path_prepares_indexed_by() {
+     let db = Connection::open_in_memory().unwrap();
+     schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
+     let plan = |sql: &str| -> String {
+         let mut stmt = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+         let n = stmt.parameter_count();
+         let rows = stmt
+             .query_map(
+@@ -218,22 +218,22 @@ fn every_access_path_prepares_indexed_by() {
+         rows.collect::<Result<Vec<_>, _>>().unwrap().join("\n")
+     };
+     let mut paths: Vec<(&str, &str)> = attention::WAKE_PROBES
+         .iter()
+         .map(|p| (p.index, p.sql))
+         .collect();
+     paths.push(("seats_live_ordinal", WAKE_SEAT_WALK));
+     paths.push(("occupant_bindings_current", WAKE_SEAT_WALK));
+     assert_eq!(
+         paths.len(),
+-        8,
+-        "six pending probes, the live seat walk and the human exclusion"
++        9,
++        "seven pending probes, the live seat walk and the human exclusion"
+     );
+     for (index, sql) in paths {
+         assert!(
+             sql.contains(&format!("INDEXED BY {index}")),
+             "{index} is not pinned in: {sql}"
+         );
+         db.prepare(sql)
+             .unwrap_or_else(|e| panic!("{index} does not prepare: {e}"));
+         let detail = plan(sql);
+         assert!(detail.contains(index), "{index} unused by plan:\n{detail}");

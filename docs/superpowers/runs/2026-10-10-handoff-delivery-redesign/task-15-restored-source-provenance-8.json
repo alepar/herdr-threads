@@ -1,0 +1,16 @@
+{
+  "worktree": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "head": "ee1e598c3ee96566ddc9b397185cdc97c8bf6218",
+  "tracked_diff_sha256": "a47f044cda564be488bd691eda3863080e199c932111c4bbf658066ef5c3eb2e",
+  "untracked": {
+    "migrations/0040_invitation_presentation.sql": "4a0305b589f1f859b84d70fa6236adf86d6a382eac1288339b1ae7f71affc9bd",
+    "src/delivery/invitation.rs": "bda8bb934836712d432a26c6292ffa434b7f3d74efe271820f51e2a809797a2b",
+    "src/service/delivery_presentation.rs": "8f90fae823438263499ee249359ffd9e679963264bd18a7a8068d9c52011f361",
+    "src/store/invitation_content.rs": "88e20b3388dad75baacd0e46171a3d2ec58bf8fda1436bf5c4064299e384b173"
+  },
+  "source_content_sha256": "2ef21bf1faf34542a020fcc9934308eaed2c9194a8fb39ca151ff8587efecaf1",
+  "source_preserving_invalidations": 490,
+  "target": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "verified_target_count": 7,
+  "purpose": "eighth quiescent transfer; completed B gate returns D sole Cargo"
+}

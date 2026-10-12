@@ -1,0 +1,2727 @@
+# Review package: 957544e8849a36c5a211820aa5bcd3c4b0c92ea5..1fe52281c2c9ba53269fb0c1772741cc97352995
+
+## Commits
+1fe52281 feat: freeze bounded handoff instruction sources and envelopes
+
+## Files changed
+ TRUST-POLICY.md                           |  26 ++-
+ migrations/0029_handoff_body_bounds.sql   |  68 ++++++++
+ src/archival_legacy.rs                    |  19 ++-
+ src/cli/commands.rs                       |  13 +-
+ src/cli/handoff.rs                        |  14 +-
+ src/cli/handoff_delivery.rs               |  39 ++++-
+ src/cli/journal.rs                        |  23 ++-
+ src/cli/topology_handoff.rs               |   3 +-
+ src/protocol/handoff.rs                   |  86 +++++++++-
+ src/store/schema.rs                       |  69 +++++++-
+ src/store/topology_handoff.rs             |  20 ++-
+ src/store/topology_handoff/persistence.rs |   4 +-
+ tests/cli/handoff.rs                      | 274 +++++++++++++++++++++++++++++-
+ tests/cli/handoff_delivery.rs             | 117 +++++++++++++
+ tests/cli/topology_handoff.rs             | 131 +++++++++++++-
+ tests/handoff_topology_cli.rs             |  32 +++-
+ tests/store/archival_legacy.rs            |  56 +++++-
+ tests/store/topology_attempts.rs          |   4 +-
+ tests/store/topology_handoff.rs           |  49 +++++-
+ tests/store/topology_handoff_schema.rs    | 237 +++++++++++++++++++++++++-
+ 20 files changed, 1222 insertions(+), 62 deletions(-)
+
+## Diff
+diff --git a/TRUST-POLICY.md b/TRUST-POLICY.md
+index c8c750e2..0458e19b 100644
+--- a/TRUST-POLICY.md
++++ b/TRUST-POLICY.md
+@@ -485,35 +485,55 @@ accepts only the verbatim canonical-namespace routing object (valid instance UUI
+ the null-routing form, with identical fallback and suffix; any other routing refuses.
+ So if a symlink component appears in a not-yet-existing namespace suffix, or the host
+ endpoint parent changes, between preparation and launch, the launch-time canonical
+ object differs and that genuine report refuses, without relaunch or data loss.
+ Fresh Root preparation and launch still apply today's native admission and geometry,
+ and refuse before effects when today's composer would differ from frozen V1, so a
+ future composer change stops new Root launches rather than producing reports that
+ completion cannot validate.
+ 
+ Canonical topology storage has encoded-byte ceilings for retained bootstrap envelopes:
+-128 KiB for the full frozen identity, creation evidence and attachment; 256 KiB for
+-an immutable recovery decision; and 2 MiB for the full completed result, including
++512 KiB for the full frozen identity; 128 KiB for metadata-only creation evidence
++and attachment; 1 MiB for an immutable recovery decision; and 2 MiB for the full completed result, including
+ identity, attachment, launcher report and legacy result. The launch report's inner
+ JSON retains its independent 1 MiB protocol bound. JSON escaping and repeated nested
+ fields count toward the storage ceiling; a protocol-shaped envelope need not fit.
+ Oversized writes must refuse before effects and preserve existing records; bounded
+ reads of oversized or corrupt data must refuse, never present clipped data or grant
+ submission permission. Records are never truncated to fit. These limits neither
+ change attribution nor authorize from a client-local journal or today's occupant.
+ Public preparation also checks the actual serialized request-bearing local progress
+-against its existing 128 KiB cap using the observed endpoint witness, before publication,
++against its 512 KiB cap using the observed endpoint witness, before publication,
+ Begin or reservation. A canonical maximum-size identity need not fit that larger producer
+ envelope. Future native response metadata is not statically known; an unpersistable created
+ response conservatively retains possible creation and refuses automatic resubmission.
+ Transition writers retain the canonical guards and enforce the same limits.
++Handoff instructions use ordinary message bytes: nonempty UTF-8 up to 65,536 bytes,
++including whitespace and NUL. Exactly one positional, file or stdin source is acquired
++once with a bounded read before publication; the actual body, never its source path,
++is frozen in every compound intent. Topic and goal limits remain independent.
++A maximum six-byte-escaped body occupies 393,216 JSON bytes per occurrence. Delivery
++Send envelopes repeat it in the immutable plan and child request (786,432 bytes before
++metadata); the global wire ceiling remains 1 MiB. Delivery origins are bounded at
++512 KiB and terminal records at 1 MiB: nesting the exact original JSON as a string
++adds a backslash to each body escape (458,752 bytes for that occurrence). Bootstrap
++origins retain their identity-derived bound; linked progress remains 2 MiB and terminal
++records retain their completion-plus-escaped-origin bound. Actual serializer fixtures
++cover these repetitions and historical originals without clipping or recomputing digests.
++Origin capacity is checked before allocator publication, bootstrap identity and
++request-bearing progress before topology effects, and terminal capacity before completion.
++The bounded archival scanner uses these same handoff origin/progress/terminal ceilings;
++its legacy launch-handoff origin shares the 512 KiB body-bearing cap. Generic non-handoff
++record and header caps remain independent, and oversized records still veto coverage.
++Independent oversized metadata and native responses still refuse rather than truncate.
++The schema upgrade rebuilds only the two body-bearing bounded tables, copies their
++historical blobs and operation keys verbatim, and checks foreign keys before commit.
+ 
+ These are decisions, not bugs. Each is safe to rely on only as stated.
+ 
+ - **Bounded advisory evidence suppression.** Negotiated v2 recording remembers resumed creating-CLI
+   lifecycle suppression with a fixed 8-KiB monotonic hash filter, scoped by harness, session, domain,
+   origin and contract. Hold expiry/eviction cannot forget a recorded suppression during that recorder's
+   lifetime. Hash collisions or saturation may withhold lifecycle milestones from unrelated new sessions;
+   they never grant evidence verification, seat continuity or receipt authority. The filter is in memory
+   and starts empty on daemon restart; suppression does not claim durable session history.
+ 
+diff --git a/migrations/0029_handoff_body_bounds.sql b/migrations/0029_handoff_body_bounds.sql
+new file mode 100644
+index 00000000..440ea81f
+--- /dev/null
++++ b/migrations/0029_handoff_body_bounds.sql
+@@ -0,0 +1,68 @@
++-- Widen only body-bearing bootstrap envelopes. Called with foreign keys off
++-- outside a transaction for an existing populated database. Recreate original
++-- names directly: never rename a referenced table or rewrite retained JSON.
++CREATE TEMP TABLE ht29_handoffs AS SELECT * FROM bootstrap_handoffs;
++CREATE TEMP TABLE ht29_recovery AS SELECT * FROM bootstrap_recovery_decisions;
++DROP TABLE bootstrap_recovery_decisions;
++DROP TABLE bootstrap_handoffs;
++CREATE TABLE bootstrap_handoffs (
++    id INTEGER PRIMARY KEY,
++    instance_id TEXT NOT NULL REFERENCES host_instances(id),
++    state_dir TEXT NOT NULL,
++    host_endpoint TEXT NOT NULL,
++    actor_scope TEXT NOT NULL,
++    compound TEXT NOT NULL,
++    digest TEXT NOT NULL CHECK(length(digest)=64),
++    identity_json BLOB NOT NULL CHECK(length(identity_json)<=524288),
++    create_key TEXT NOT NULL,
++    original_thread TEXT REFERENCES threads(id),
++    thread_id TEXT REFERENCES threads(id),
++    state TEXT NOT NULL CHECK(state IN ('prepared','possible_creation','created','attached','completed','cancelled')),
++    current_attempt INTEGER NOT NULL CHECK(current_attempt BETWEEN 1 AND 4294967295),
++    administrative_revision INTEGER NOT NULL DEFAULT 0 CHECK(administrative_revision>=0),
++    latest_recovery_operation TEXT,
++    created_at INTEGER NOT NULL,
++    terminal_at INTEGER,
++    UNIQUE(instance_id,state_dir,host_endpoint,actor_scope,compound),
++    UNIQUE(id,instance_id,state_dir,host_endpoint,actor_scope),
++    FOREIGN KEY(id,current_attempt) REFERENCES bootstrap_attempts(parent_id,attempt) DEFERRABLE INITIALLY DEFERRED,
++    FOREIGN KEY(id,latest_recovery_operation) REFERENCES bootstrap_recovery_decisions(parent_id,operation) DEFERRABLE INITIALLY DEFERRED,
++    CHECK((state IN ('completed','cancelled'))=(terminal_at IS NOT NULL)),
++    CHECK(original_thread IS NULL OR thread_id IS original_thread)
++) STRICT;
++CREATE TABLE bootstrap_recovery_decisions (
++    parent_id INTEGER NOT NULL REFERENCES bootstrap_handoffs(id),
++    attempt INTEGER NOT NULL,
++    operation TEXT NOT NULL,
++    decision_kind TEXT NOT NULL DEFAULT 'recovery' CHECK(decision_kind IN ('recovery','cancellation')),
++    result_json BLOB NOT NULL CHECK(length(result_json)<=1048576),
++    PRIMARY KEY(parent_id,operation),
++    UNIQUE(parent_id,attempt,decision_kind),
++    FOREIGN KEY(parent_id,attempt) REFERENCES bootstrap_attempts(parent_id,attempt)
++) STRICT;
++INSERT INTO bootstrap_handoffs SELECT * FROM ht29_handoffs;
++INSERT INTO bootstrap_recovery_decisions SELECT * FROM ht29_recovery;
++CREATE INDEX bootstrap_live_thread ON bootstrap_handoffs(thread_id,compound) WHERE state NOT IN ('completed','cancelled');
++CREATE INDEX bootstrap_live_unattached ON bootstrap_handoffs(instance_id,compound) WHERE thread_id IS NULL AND state NOT IN ('completed','cancelled');
++CREATE TRIGGER bootstrap_identity BEFORE UPDATE ON bootstrap_handoffs
++WHEN NEW.id!=OLD.id OR NEW.instance_id!=OLD.instance_id OR NEW.state_dir!=OLD.state_dir
++ OR NEW.host_endpoint!=OLD.host_endpoint OR NEW.actor_scope!=OLD.actor_scope OR NEW.compound!=OLD.compound
++ OR NEW.digest!=OLD.digest OR NEW.identity_json!=OLD.identity_json OR NEW.create_key!=OLD.create_key
++ OR NEW.original_thread IS NOT OLD.original_thread OR NEW.created_at!=OLD.created_at
++BEGIN SELECT RAISE(ABORT,'immutable bootstrap identity'); END;
++CREATE TRIGGER bootstrap_terminal BEFORE UPDATE ON bootstrap_handoffs
++WHEN OLD.state IN ('completed','cancelled') AND (NEW.state!=OLD.state OR NEW.current_attempt!=OLD.current_attempt
++ OR NEW.thread_id IS NOT OLD.thread_id OR NEW.administrative_revision!=OLD.administrative_revision
++ OR NEW.latest_recovery_operation IS NOT OLD.latest_recovery_operation OR NEW.terminal_at IS NOT OLD.terminal_at)
++BEGIN SELECT RAISE(ABORT,'terminal bootstrap is absorbing'); END;
++CREATE TRIGGER bootstrap_retained BEFORE DELETE ON bootstrap_handoffs
++BEGIN SELECT RAISE(ABORT,'bootstrap identity retained'); END;
++CREATE TRIGGER bootstrap_recovery_key AFTER INSERT ON bootstrap_recovery_decisions BEGIN
++ INSERT INTO bootstrap_child_keys SELECT NEW.parent_id,instance_id,state_dir,host_endpoint,actor_scope,NEW.operation,CASE NEW.decision_kind WHEN 'cancellation' THEN 'cancel' ELSE 'recovery' END,NEW.attempt FROM bootstrap_handoffs WHERE id=NEW.parent_id;
++END;
++CREATE TRIGGER bootstrap_recovery_immutable BEFORE UPDATE ON bootstrap_recovery_decisions
++BEGIN SELECT RAISE(ABORT,'immutable bootstrap recovery decision'); END;
++CREATE TRIGGER bootstrap_recovery_retained BEFORE DELETE ON bootstrap_recovery_decisions
++BEGIN SELECT RAISE(ABORT,'bootstrap recovery decisions retained'); END;
++DROP TABLE ht29_handoffs;
++DROP TABLE ht29_recovery;
+diff --git a/src/archival_legacy.rs b/src/archival_legacy.rs
+index 2740cba5..010f059c 100644
+--- a/src/archival_legacy.rs
++++ b/src/archival_legacy.rs
+@@ -1,18 +1,19 @@
+ //! Read-only, bounded legacy journal coverage; local records can only veto expiry.
+ //! Published journal records are immutable and renamed into this directory. Every
+ //! scan restarts on a directory generation change; no allocator or journal API is used.
+ use crate::{
+     cli::{
++        handoff_delivery::MAX_DELIVERY_TERMINAL_BYTES,
+         journal::{
+             IntentHeader, IntentRef, IntentScope, Journal, MAX_BOOTSTRAP_ORIGIN_BYTES,
+-            SemanticMutation,
++            MAX_DELIVERY_ORIGIN_BYTES, SemanticMutation,
+         },
+         topology_handoff,
+     },
+     daemon::paths::InstancePaths,
+     protocol::{
+         handoff::{
+             BootstrapAttachment, BootstrapIdentity, CompletedBootstrapResult, HandoffIdentity,
+             HandoffNamespace,
+         },
+         ids::ThreadId,
+@@ -409,21 +410,21 @@ fn bootstrap_hint(
+         || namespace(&crate::archival_legacy::context(
+             &identity.payload.handoff.namespace,
+         ))? != selected
+         || InstancePaths::resolve_read_only(&runtime)?.database_path != database_path
+     {
+         return Err(io::Error::other("bootstrap selected namespace mismatch"));
+     }
+     let progress = bundle_read(
+         dir,
+         &OsString::from(format!("handoff-{}.progress", reference.operation.as_str())),
+-        128 * 1024,
++        topology_handoff::MAX_BOOTSTRAP_PROGRESS,
+         bytes,
+         budget,
+     )?
+     .map(|progress| validate_bootstrap_progress(&progress, &identity))
+     .transpose()?;
+     let child = bundle_read(
+         dir,
+         &OsString::from(format!(
+             "bootstrap-child-{}.progress",
+             reference.operation.as_str()
+@@ -752,21 +753,21 @@ impl Source {
+                         &mut bundle_budget,
+                         &self.instance,
+                         &self.context,
+                         &self.database_path,
+                         self.deciding_veto.clone(),
+                     );
+                 }
+                 let terminal_reference = terminal_reference(text)?;
+                 let (data, terminal) = if let Some(reference) = &terminal_reference {
+                     let data = dir
+-                        .read(&name, 128 * 1024)?
++                        .read(&name, MAX_DELIVERY_TERMINAL_BYTES)?
+                         .ok_or_else(|| io::Error::other("legacy terminal vanished"))?;
+                     bytes += data.len();
+                     let terminal = read_terminal(dir, reference, &data, &mut bytes)?;
+                     (terminal.original.as_bytes().to_vec(), Some(terminal))
+                 } else {
+                     let data = dir
+                         .read(&name, MAX_BOOTSTRAP_ORIGIN_BYTES)?
+                         .ok_or_else(|| io::Error::other("legacy intent vanished"))?;
+                     bytes += data.len();
+                     (data, None)
+@@ -786,21 +787,25 @@ impl Source {
+                         Some(data),
+                         None,
+                         &mut bytes,
+                         &mut bundle_budget,
+                         &self.instance,
+                         &self.context,
+                         &self.database_path,
+                         self.deciding_veto.clone(),
+                     );
+                 }
+-                if data.len() > RECORD_CAP || split > HEADER_CAP {
++                let record_cap = match header.kind {
++                    IntentKind::Handoff | IntentKind::HandoffDelivery => MAX_DELIVERY_ORIGIN_BYTES,
++                    _ => RECORD_CAP,
++                };
++                if data.len() > record_cap || split > HEADER_CAP {
+                     return Err(io::Error::other("legacy record or header cap"));
+                 }
+                 if !matches!(
+                     header.kind,
+                     IntentKind::Handoff
+                         | IntentKind::HandoffBootstrap
+                         | IntentKind::HandoffDelivery
+                 ) {
+                     return Err(io::Error::other("published noncompound coverage veto"));
+                 }
+@@ -881,21 +886,21 @@ impl Source {
+                 if namespace(&frozen_context)? != namespace(&self.context)? {
+                     return Err(io::Error::other("legacy namespace mismatch"));
+                 }
+                 let progress_name = OsString::from(format!(
+                     "handoff-{}.progress",
+                     header.reference.operation.as_str()
+                 ));
+                 let progress = dir.read(
+                     &progress_name,
+                     if header.kind == IntentKind::HandoffBootstrap {
+-                        128 * 1024
++                        topology_handoff::MAX_BOOTSTRAP_PROGRESS
+                     } else {
+                         RECORD_CAP
+                     },
+                 )?;
+                 if let Some(data) = &progress {
+                     bytes += data.len();
+                 }
+                 match *mutation {
+                     SemanticMutation::Handoff(plan) => {
+                         let progress = progress
+@@ -916,21 +921,21 @@ impl Source {
+                             progress_thread: progress.and_then(|p| p.thread),
+                             source: Some(source),
+                             retained_completion: None,
+                         })
+                     }
+                     SemanticMutation::HandoffDelivery(plan) => {
+                         let terminal = if let Some(terminal) = terminal {
+                             Some(terminal)
+                         } else {
+                             let name = terminal_name(&header.reference);
+-                            dir.read(&name, 128 * 1024)?
++                            dir.read(&name, MAX_DELIVERY_TERMINAL_BYTES)?
+                                 .map(|data| {
+                                     bytes += data.len();
+                                     read_terminal(dir, &header.reference, &data, &mut bytes)
+                                 })
+                                 .transpose()?
+                         };
+                         let progress = if let Some(terminal) = &terminal {
+                             Some(strict::<DeliveryProgress>(&serde_json::to_vec(
+                                 &terminal.progress,
+                             )?)?)
+@@ -1134,21 +1139,21 @@ fn read_terminal(
+         || report
+             != &serde_json::json!({"compound":plan.payload.keys.compound,"thread":staged.thread,"recipient":plan.recipient,"participation":participation,"outcome":"staged","invitation":staged.invitation,"message":staged.message,"recovery_ref":reference.recovery_ref()})
+     {
+         return Err(io::Error::other("invalid retained delivery report"));
+     }
+     let original_name = OsString::from(format!(
+         "{:020}-{}.intent",
+         reference.ordinal,
+         reference.operation.as_str()
+     ));
+-    if let Some(original) = dir.read(&original_name, RECORD_CAP)? {
++    if let Some(original) = dir.read(&original_name, MAX_DELIVERY_ORIGIN_BYTES)? {
+         *bytes += original.len();
+         if original != terminal.original.as_bytes() {
+             return Err(io::Error::other("delivery original contradiction"));
+         }
+     }
+     let progress_name =
+         OsString::from(format!("handoff-{}.progress", reference.operation.as_str()));
+     if let Some(progress) = dir.read(&progress_name, RECORD_CAP)? {
+         *bytes += progress.len();
+         let progress: DeliveryProgress = strict(&progress)?;
+diff --git a/src/cli/commands.rs b/src/cli/commands.rs
+index 058b3bbb..954488bc 100644
+--- a/src/cli/commands.rs
++++ b/src/cli/commands.rs
+@@ -1281,20 +1281,21 @@ struct LaunchArgs {
+     /// seat ID, or `seat-<short seat id>` for a persisted seat). Fitted to
+     /// Herdr's `[a-z][a-z0-9_-]{0,31}`.
+     #[arg(long, value_name = "NAME")]
+     name: Option<String>,
+     /// Native agent arguments, kept byte for byte and in order after `--`.
+     #[arg(last = true, allow_hyphen_values = true, value_name = "AGENT_ARG")]
+     agent_args: Vec<String>,
+ }
+ 
+ #[derive(Args)]
++#[command(group(clap::ArgGroup::new("instruction_source").required(true).multiple(false).args(["body", "file", "stdin"])))]
+ struct HandoffArgs {
+     #[arg(long, conflicts_with_all = ["existing", "tab", "pane", "seat"])]
+     new_tab: Option<String>,
+     #[arg(long)]
+     existing: bool,
+     #[arg(long, requires = "existing", conflicts_with_all = ["pane", "tab", "space"])]
+     seat: Option<String>,
+     #[arg(long, requires = "new_tab")]
+     cwd: Option<std::path::PathBuf>,
+     #[command(flatten)]
+@@ -1317,22 +1318,28 @@ struct HandoffArgs {
+     kind: Option<String>,
+     #[arg(long)]
+     harness_binary: Option<String>,
+     /// Herdr agent name, distinct from --thread-name.
+     #[arg(long)]
+     name: Option<String>,
+     /// Repeat for each native argument (use --agent-arg=-a for flags).
+     #[arg(long = "agent-arg", allow_hyphen_values = true)]
+     agent_args: Vec<String>,
+     /// Exactly one quoted durable message after --; never native argv.
+-    #[arg(last = true, required = true, num_args = 1, allow_hyphen_values = true)]
+-    body: String,
++    #[arg(last = true, num_args = 1, allow_hyphen_values = true)]
++    body: Option<String>,
++    /// Read the complete durable instructions from this UTF-8 file.
++    #[arg(long)]
++    file: Option<String>,
++    /// Read the complete durable instructions from standard input.
++    #[arg(long)]
++    stdin: bool,
+ }
+ 
+ #[derive(Args)]
+ #[command(about = "Administrative inspection assertion for one exact bootstrap attempt; execution requires the guarded daemon capability", group(clap::ArgGroup::new("disposition").required(true).multiple(false).args(["created_pane", "not_created", "cancel"])))]
+ struct RecoveryArgs {
+     reference: String,
+     #[arg(long, required = true)]
+     attempt: u32,
+     #[arg(long)]
+     created_pane: Option<String>,
+@@ -2559,21 +2566,21 @@ fn parse_cli_in_registry(
+             if args
+                 .name
+                 .as_ref()
+                 .is_some_and(|name| crate::ports::sanitize_agent_name(name).is_none())
+             {
+                 return Err(invalid("invalid agent --name"));
+             }
+             if let Some(name) = &args.thread_name {
+                 validate_thread_name(name).map_err(validation_error)?;
+             }
+-            let body = bounded(args.body, "body")?;
++            let body = super::input::read_body(args.body, args.file, args.stdin)?;
+             if args.new_tab.is_some() || args.existing {
+                 if args.existing
+                     && (args.harness_binary.is_some()
+                         || args.name.is_some()
+                         || !args.agent_args.is_empty())
+                 {
+                     return Err(invalid("native launch arguments conflict with --existing"));
+                 }
+                 CliAction::TopologyHandoff(super::topology_handoff::Request {
+                     new_tab: args.new_tab,
+diff --git a/src/cli/handoff.rs b/src/cli/handoff.rs
+index f9c16640..24625426 100644
+--- a/src/cli/handoff.rs
++++ b/src/cli/handoff.rs
+@@ -38,21 +38,23 @@ intentional creation even if its label already exists; it does not focus the tab
+ For --existing, --space and --tab may qualify --pane, but conflict with --seat.
+ Delivery forbids --kind, --harness-binary, --name and --agent-arg and ignores the
+ launch-option environment. An unresolved, held, retired or foreign seat refuses.
+ An unbound resolved seat may receive staged work; this does not establish a
+ working or available session. Delivery reports staged work, not a launch result.
+ 
+ New threads join the sender; existing threads require a joined sender. --thread-name,
+ --topic and --goal apply only to new threads. Topic defaults to Handoff to DISPLAY:
+ legacy launch uses the pane display, new-tab uses its label, delivery uses the
+ canonical seat ID. Goal defaults to topic. --name names the native agent, not the channel.
+-The one quoted body after -- is durable work (1..1024 UTF-8 bytes), never native argv.
++Select exactly one instruction source: a quoted body after --, --file PATH, or --stdin.
++Instructions contain 1..65,536 UTF-8 bytes, preserved exactly as durable work, never native argv.
++Files and stdin are acquired once before publication; retries use the frozen content.
+ Native launch options use repeatable --agent-arg=OPTION; launch -- native arguments
+ is unchanged. HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_CLAUDE_OPTS prepend optional
+ arguments using shell-style quotes and escapes without variable or command
+ expansion. Unset or empty adds nothing. Launch handoff freezes the combined options
+ before preflight; retry uses saved arguments even if the environment changes.
+ Handoff stages an invitation when needed and a message addressed to the exact
+ recipient; launch modes then perform guarded launch. Startup gets fixed inbox
+ instructions, not a second copy of the body. Handoff never accepts or ACKs for
+ the recipient, nor declares task adoption or task completion.
+ Native execution still needs the selected harness's approval/configuration.
+@@ -102,24 +104,26 @@ pub struct HandoffPlan {
+     pub startup_input: Option<crate::harness::adapter::StartupInputTemplate>,
+     pub request: HandoffRequest,
+     pub context: crate::protocol::output::ContinuationContext,
+     pub recipient: SeatId,
+     pub create_key: OperationId,
+     pub invite_key: OperationId,
+     pub send_key: OperationId,
+ }
+ impl HandoffRequest {
+     fn validate(&self) -> io::Result<()> {
+-        for value in std::iter::once(&self.body)
+-            .chain(self.topic.iter())
+-            .chain(self.goal.iter())
+-        {
++        if self.body.is_empty() || self.body.len() > super::input::MAX_BODY_BYTES {
++            return Err(io::Error::other(
++                "handoff body must contain 1..65536 UTF-8 bytes",
++            ));
++        }
++        for value in self.topic.iter().chain(self.goal.iter()) {
+             if value.is_empty() || value.len() > 1024 {
+                 return Err(io::Error::other(
+                     "handoff text must contain 1..1024 UTF-8 bytes",
+                 ));
+             }
+         }
+         if self.thread.is_some()
+             && (self.topic.is_some() || self.goal.is_some() || self.thread_name.is_some())
+         {
+             return Err(io::Error::other("new-thread fields on existing handoff"));
+diff --git a/src/cli/handoff_delivery.rs b/src/cli/handoff_delivery.rs
+index ea437ddb..0af1f9e1 100644
+--- a/src/cli/handoff_delivery.rs
++++ b/src/cli/handoff_delivery.rs
+@@ -594,40 +594,58 @@ fn execute_locked<C: LocalClient + ?Sized>(
+     )? {
+         "joined"
+     } else {
+         "invited_pending"
+     };
+     let report = serde_json::json!({"compound":keys.compound,"thread":staged.thread,"recipient":plan.recipient,"participation":participation,"outcome":"staged","invitation":staged.invitation,"message":staged.message,"recovery_ref":reference.recovery_ref()});
+     observe(observed, "report", &staged);
+     progress.report = Some(report.clone());
+     progress.report_digest = Some(retained_digest(&report)?);
+     handoff::save_progress(journal, reference, &progress)?;
++    // Exact retained terminal capacity is known before canonical completion.
++    // Preserve the original bytes rather than rebuilding its historical JSON.
++    let preview = Terminal {
++        version: 1,
++        original: String::from_utf8(journal.snapshot_delivery_origin(reference)?)
++            .map_err(io::Error::other)?,
++        completed: HandoffResult {
++            compound: identity.compound.clone(),
++            thread: staged.thread.clone(),
++            state: HandoffState::Completed,
++        },
++        progress_digest: retained_digest(&progress)?,
++        progress,
++    };
++    terminal_bytes(&preview)?;
+     observe(observed, "complete", &staged);
+     let completed = handoff::keyed_fence(client, clock, &identity, keys.complete.clone(), true)?;
+-    retained_report(reference, &plan, &completed, &progress)?;
++    retained_report(reference, &plan, &completed, &preview.progress)?;
+     observe(observed, "terminal", &staged);
+     if let Some(observed) = observed.as_mut() {
+         observed.last_observed = Some(completed.clone());
+     }
+     Ok((report, completed))
+ }
+ /// Private cleanup recovery evidence. Retained after cleanup; never live authority.
+ /// The original is the exact historical header/newline/Frozen semantic bytes.
+ #[derive(Debug, Serialize, Deserialize)]
+ #[serde(deny_unknown_fields)]
+ struct Terminal {
+     version: u32,
+     original: String,
+     completed: HandoffResult,
+     progress: Progress,
+     progress_digest: String,
+ }
++// A maximum body consumes 393216 JSON bytes in the original and 458752
++// when that exact JSON is nested as a string. Keep bounded report headroom.
++pub(crate) const MAX_DELIVERY_TERMINAL_BYTES: usize = 1024 * 1024;
+ fn terminal_path(journal: &Journal, reference: &IntentRef) -> std::path::PathBuf {
+     journal.root().join(format!(
+         "delivery-{:020}-{}.terminal",
+         reference.ordinal,
+         reference.operation.as_str()
+     ))
+ }
+ fn delivery_plan(pending: &PendingIntent) -> Result<&DeliveryPlan, RunError> {
+     let SemanticMutation::Frozen { claim, mutation } = &pending.semantic else {
+         return Err(super::invalid_request(
+@@ -653,28 +671,29 @@ fn delivery_plan(pending: &PendingIntent) -> Result<&DeliveryPlan, RunError> {
+ fn read_terminal(journal: &Journal, reference: &IntentRef) -> Result<Option<Terminal>, RunError> {
+     let file = match OpenOptions::new()
+         .read(true)
+         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+         .open(terminal_path(journal, reference))
+     {
+         Ok(file) => file,
+         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+         Err(error) => return Err(error.into()),
+     };
+-    if !file.metadata()?.is_file() || file.metadata()?.len() > 131072 {
++    if !file.metadata()?.is_file() || file.metadata()?.len() > MAX_DELIVERY_TERMINAL_BYTES as u64 {
+         return Err(super::invalid_request(
+             "unsafe or oversized delivery terminal record",
+         ));
+     }
+     let mut bytes = Vec::new();
+-    file.take(131073).read_to_end(&mut bytes)?;
+-    if bytes.len() > 131072 {
++    file.take((MAX_DELIVERY_TERMINAL_BYTES + 1) as u64)
++        .read_to_end(&mut bytes)?;
++    if bytes.len() > MAX_DELIVERY_TERMINAL_BYTES {
+         return Err(super::invalid_request("oversized delivery terminal record"));
+     }
+     let terminal: Terminal = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+     if serde_json::from_slice::<serde_json::Value>(&bytes).map_err(io::Error::other)?
+         != serde_json::to_value(&terminal).map_err(io::Error::other)?
+     {
+         return Err(super::invalid_request(
+             "unexpected delivery terminal fields",
+         ));
+     }
+@@ -707,29 +726,33 @@ fn read_terminal(journal: &Journal, reference: &IntentRef) -> Result<Option<Term
+         if serde_json::to_value(progress).map_err(io::Error::other)?
+             != serde_json::to_value(&terminal.progress).map_err(io::Error::other)?
+         {
+             return Err(super::invalid_request(
+                 "delivery terminal progress contradiction",
+             ));
+         }
+     }
+     Ok(Some(terminal))
+ }
++fn terminal_bytes(terminal: &Terminal) -> Result<Vec<u8>, RunError> {
++    let bytes = serde_json::to_vec(terminal).map_err(io::Error::other)?;
++    if bytes.len() > MAX_DELIVERY_TERMINAL_BYTES {
++        return Err(super::invalid_request("oversized delivery terminal record"));
++    }
++    Ok(bytes)
++}
+ fn save_terminal(
+     journal: &Journal,
+     reference: &IntentRef,
+     terminal: &Terminal,
+ ) -> Result<(), RunError> {
+-    let bytes = serde_json::to_vec(terminal).map_err(io::Error::other)?;
+-    if bytes.len() > 131072 {
+-        return Err(super::invalid_request("oversized delivery terminal record"));
+-    }
++    let bytes = terminal_bytes(terminal)?;
+     let temp = journal
+         .root()
+         .join(format!(".delivery-terminal-{}", uuid::Uuid::new_v4()));
+     let save = || -> io::Result<()> {
+         let mut file = OpenOptions::new()
+             .write(true)
+             .create_new(true)
+             .mode(0o600)
+             .custom_flags(libc::O_NOFOLLOW)
+             .open(&temp)?;
+diff --git a/src/cli/journal.rs b/src/cli/journal.rs
+index fba24d96..b83be4f9 100644
+--- a/src/cli/journal.rs
++++ b/src/cli/journal.rs
+@@ -766,20 +766,21 @@ impl PendingIntent {
+             {
+                 Some(claim)
+             }
+             _ => None,
+         }
+     }
+ }
+ pub type PendingPage = Page<LocalIntent>;
+ // Compact published semantic and header each fit the canonical identity envelope;
+ // fixed reference/digest/header fields have 4096 bytes of additional headroom.
++pub(crate) const MAX_DELIVERY_ORIGIN_BYTES: usize = 512 * 1024;
+ pub(crate) const MAX_BOOTSTRAP_ORIGIN_BYTES: usize =
+     2 * crate::store::topology_handoff::MAX_IDENTITY_BYTES + 4096;
+ pub struct Journal {
+     root: PathBuf,
+ }
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ #[serde(deny_unknown_fields)]
+ struct DisplayedProgress {
+     instance: String,
+@@ -1314,36 +1315,45 @@ impl Journal {
+         &self,
+         scope: IntentScope,
+         semantic: SemanticMutation,
+         created_at_millis: i64,
+         body: Vec<u8>,
+     ) -> io::Result<IntentRef> {
+         let ordinal = self
+             .counter()?
+             .checked_add(1)
+             .ok_or_else(|| invalid("intent allocator exhausted"))?;
+-        self.reserve(ordinal)?;
+         let reference = IntentRef {
+             ordinal,
+             operation: OperationId::new(Uuid::new_v4().to_string()),
+         };
+         let header = IntentHeader {
+             reference: reference.clone(),
+             scope,
+             created_at_millis,
+             kind: semantic.kind(),
+             thread: semantic.thread().cloned(),
+             semantic_digest: format!("{:x}", Sha256::digest(&body)),
+         };
++        let encoded_header = serde_json::to_vec(&header)?;
++        let origin_limit = match header.kind {
++            IntentKind::HandoffDelivery => Some(MAX_DELIVERY_ORIGIN_BYTES),
++            IntentKind::HandoffBootstrap => Some(MAX_BOOTSTRAP_ORIGIN_BYTES),
++            _ => None,
++        };
++        if origin_limit.is_some_and(|limit| encoded_header.len() + body.len() + 2 > limit) {
++            return Err(invalid("handoff origin exceeds retained byte cap"));
++        }
++        self.reserve(ordinal)?;
+         let path = self.root.join(format!(".intent-{}", Uuid::new_v4()));
+         let mut file = private_new(&path)?;
+-        serde_json::to_writer(&mut file, &header)?;
++        file.write_all(&encoded_header)?;
+         file.write_all(b"\n")?;
+         file.write_all(&body)?;
+         file.write_all(b"\n")?;
+         durable_sync(&file)?;
+         fs::rename(path, self.path(&reference))?;
+         // The entry is already visible. A failed durability barrier must not
+         // hide the operation's exact recovery reference from the caller.
+         File::open(&self.root)
+             .and_then(|dir| durable_sync(&dir))
+             .map_err(|error| {
+@@ -1386,31 +1396,36 @@ impl Journal {
+                 return self.load(&header.reference).map(Some);
+             }
+         }
+         Ok(None)
+     }
+     pub fn load(&self, reference: &IntentRef) -> io::Result<PendingIntent> {
+         Self::decode_reader(reference, BufReader::new(File::open(self.path(reference))?))
+     }
+     /// Exact bounded original bytes for delivery-only terminal cleanup recovery.
+     pub(crate) fn snapshot_delivery_origin(&self, reference: &IntentRef) -> io::Result<Vec<u8>> {
+-        self.snapshot_origin(reference, IntentKind::HandoffDelivery, 65536, "delivery")
++        self.snapshot_origin(
++            reference,
++            IntentKind::HandoffDelivery,
++            MAX_DELIVERY_ORIGIN_BYTES,
++            "delivery",
++        )
+     }
+     pub(crate) fn decode_delivery_origin(
+         reference: &IntentRef,
+         bytes: &[u8],
+     ) -> io::Result<PendingIntent> {
+         Self::decode_origin(
+             reference,
+             bytes,
+             IntentKind::HandoffDelivery,
+-            65536,
++            MAX_DELIVERY_ORIGIN_BYTES,
+             "delivery",
+         )
+     }
+     /// Typed bounded bootstrap original; exact historical bytes are retained.
+     pub(crate) fn snapshot_bootstrap_origin(&self, reference: &IntentRef) -> io::Result<Vec<u8>> {
+         self.snapshot_origin(
+             reference,
+             IntentKind::HandoffBootstrap,
+             MAX_BOOTSTRAP_ORIGIN_BYTES,
+             "bootstrap",
+diff --git a/src/cli/topology_handoff.rs b/src/cli/topology_handoff.rs
+index 9f2460f3..b677be52 100644
+--- a/src/cli/topology_handoff.rs
++++ b/src/cli/topology_handoff.rs
+@@ -282,20 +282,21 @@ fn preflight_launch_argv(
+ /// Its local reference is independent of the payload's canonical compound key.
+ /// Failed validation publishes nothing. Retry must load this saved semantic,
+ /// never call prepare again for that operation.
+ pub fn publish(
+     journal: &super::journal::Journal,
+     identity: &crate::protocol::handoff::BootstrapIdentity,
+     created_at_millis: i64,
+ ) -> Result<super::journal::IntentRef, RunError> {
+     use super::journal::{BootstrapPlan, SemanticMutation};
+     identity.validate().map_err(super::invalid_request)?;
++    crate::store::topology_handoff::encode_identity(&identity.payload.handoff.namespace, identity)?;
+     if !identity.payload.cwd.is_dir() {
+         return Err(super::invalid_request(
+             "bootstrap cwd disappeared before publication",
+         ));
+     }
+     let semantic = SemanticMutation::freeze(
+         SemanticMutation::HandoffBootstrap(Box::new(BootstrapPlan {
+             version: 1,
+             payload: identity.payload.clone(),
+         })),
+@@ -759,21 +760,21 @@ fn resolve_and_attach(
+ #[serde(deny_unknown_fields)]
+ pub(crate) struct BootstrapProgress {
+     pub version: u32,
+     pub identity: crate::protocol::handoff::BootstrapIdentity,
+     pub attempt: crate::protocol::handoff::BootstrapAttempt,
+     pub possible_creation: bool,
+     pub request: Option<crate::ports::CreateTabRequest>,
+     pub creation: Option<crate::ports::CreatedTab>,
+     pub not_submitted: bool,
+ }
+-const MAX_BOOTSTRAP_PROGRESS: usize = 128 * 1024;
++pub(crate) const MAX_BOOTSTRAP_PROGRESS: usize = 512 * 1024;
+ fn save_bootstrap_progress(
+     journal: &super::journal::Journal,
+     reference: &super::journal::IntentRef,
+     progress: &BootstrapProgress,
+ ) -> Result<(), RunError> {
+     if serde_json::to_vec(progress)
+         .map_err(std::io::Error::other)?
+         .len()
+         > MAX_BOOTSTRAP_PROGRESS
+     {
+diff --git a/src/protocol/handoff.rs b/src/protocol/handoff.rs
+index 14b768ea..55003708 100644
+--- a/src/protocol/handoff.rs
++++ b/src/protocol/handoff.rs
+@@ -571,21 +571,21 @@ impl HandoffNamespace {
+             || self.host_endpoint.file_name().is_none()
+         {
+             return Err("invalid frozen handoff namespace");
+         }
+         Ok(())
+     }
+ }
+ impl HandoffPayload {
+     pub fn validate(&self) -> Result<(), &'static str> {
+         self.namespace.validate()?;
+-        if !bounded_text(&self.body, 1024) {
++        if self.body.is_empty() || self.body.len() > crate::store::messages::MAX_BODY_BYTES {
+             return Err("invalid handoff body");
+         }
+         if let HandoffChannel::New { name, topic, goal } = &self.channel {
+             if !bounded_text(topic, 1024) || !bounded_text(goal, 1024) {
+                 return Err("invalid new channel text");
+             }
+             if let Some(name) = name {
+                 super::commands::validate_thread_name(name)?;
+             }
+         }
+@@ -1089,20 +1089,104 @@ pub(crate) mod topology_contract_tests {
+                 expected_attempt: attempt,
+                 operation: attempt.operation(&identity().compound, "check").unwrap(),
+                 expected_administrative_revision: 0,
+             })),
+             Command::BootstrapStatus(Box::new(BootstrapStatus {
+                 identity: identity(),
+             })),
+             Command::RecoverBootstrap(Box::new(recovery)),
+         ]
+     }
++    #[test]
++    fn maximum_escaped_body_completion_and_recovery_share_bounded_wire_reply() {
++        for body in ["\u{1}".repeat(65_536), "\0".repeat(65_536), " \n\t".into()] {
++            let mut wrapper = completion();
++            wrapper.identity.payload.handoff.body = body.clone();
++            wrapper.identity.digest = wrapper.identity.semantic_digest().unwrap();
++            wrapper.validate().unwrap();
++            let completed = CompletedBootstrapResult {
++                identity: wrapper.identity.clone(),
++                attachment: wrapper.attachment.clone(),
++                retained: wrapper.retained,
++                legacy_result: HandoffResult {
++                    compound: wrapper.attachment.handoff.compound.clone(),
++                    thread: Some(ThreadId::new("thread")),
++                    state: HandoffState::Completed,
++                },
++            };
++            let mut request = RecoverBootstrap {
++                inspection: None,
++                identity: wrapper.identity.clone(),
++                expected_attempt: BootstrapAttempt::first(),
++                operation: OperationId::new("placeholder"),
++                disposition: BootstrapRecoveryDisposition::CreatedPane {
++                    evidence: created(),
++                    structural_reference: HostCallId::new("inspection"),
++                },
++            };
++            request.operation = request.decision_operation().unwrap();
++            let recovery = BootstrapRecoveryResult {
++                inspection: None,
++                identity: request.identity,
++                attempt: request.expected_attempt,
++                operation: request.operation,
++                disposition: request.disposition,
++                operator_uid: 501,
++                operator_provenance: "operator:local-user:501".into(),
++                creation: Some(created()),
++                state: BootstrapState::Created,
++            };
++            assert!(
++                serde_json::to_vec(&recovery).unwrap().len()
++                    <= crate::store::topology_handoff::MAX_RECOVERY_BYTES
++            );
++            assert!(
++                serde_json::to_vec(&completed).unwrap().len()
++                    <= crate::store::topology_handoff::MAX_COMPLETED_BYTES
++            );
++            let result = BootstrapResult {
++                compound: wrapper.identity.compound,
++                attempt: BootstrapAttempt::first(),
++                attempt_state: BootstrapAttemptState::Created,
++                state: BootstrapState::Completed,
++                creation: Some(created()),
++                attachment: Some(wrapper.attachment),
++                completed: Some(Box::new(completed)),
++                recovery: Some(Box::new(recovery)),
++            };
++            let response = crate::protocol::wire::WireResponse {
++                version: crate::protocol::wire::PROTOCOL_VERSION,
++                request_id: "maximum-body".into(),
++                instance: "00000000-0000-4000-8000-000000000001".into(),
++                daemon_boot: "00000000-0000-4000-8000-000000000002".into(),
++                result: Ok(crate::protocol::results::CommandResult::Bootstrap(
++                    Box::new(result),
++                )),
++            };
++            let wire = crate::protocol::wire::encode_wire_response(&response).unwrap();
++            eprintln!(
++                "maximum body wire reply: body={} frame={}",
++                body.len(),
++                wire.len()
++            );
++            assert!(wire.len() <= crate::protocol::wire::MAX_WIRE_FRAME_BYTES);
++            let decoded: crate::protocol::wire::WireResponse =
++                serde_json::from_slice(&wire[4..]).unwrap();
++            let Ok(crate::protocol::results::CommandResult::Bootstrap(saved)) = decoded.result
++            else {
++                panic!("wrong response")
++            };
++            assert_eq!(saved.completed.unwrap().identity.payload.handoff.body, body);
++            assert_eq!(saved.recovery.unwrap().identity.payload.handoff.body, body);
++        }
++    }
++
+     #[test]
+     fn topology_contract_structural_validation() {
+         assert!(payload().validate().is_ok());
+         let mut bad = payload();
+         bad.focus = true;
+         assert!(bad.validate().is_err(), "focus=true must not be admitted");
+         let mut bad = payload();
+         bad.env.insert("HERDR_PANE_ID".into(), "caller".into());
+         assert!(bad.validate().is_err());
+         let mut bad = payload();
+diff --git a/src/store/schema.rs b/src/store/schema.rs
+index a24969c2..e9b97c30 100644
+--- a/src/store/schema.rs
++++ b/src/store/schema.rs
+@@ -57,21 +57,22 @@ const V18: &str = include_str!("../../migrations/0018_warning_conditions.sql");
+ const V19: &str = include_str!("../../migrations/0019_thread_names.sql");
+ const V20: &str = include_str!("../../migrations/0020_recent_activity.sql");
+ const V21: &str = include_str!("../../migrations/0021_invitation_rejections.sql");
+ const V22: &str = include_str!("../../migrations/0022_user_message_intent.sql");
+ const V23: &str = include_str!("../../migrations/0023_channel_archival.sql");
+ const V24: &str = include_str!("../../migrations/0024_harness_contract_diagnostics.sql");
+ const V25: &str = include_str!("../../migrations/0025_warning_notice_delivery.sql");
+ const V26: &str = include_str!("../../migrations/0026_lazy_message_delivery.sql");
+ const V27: &str = include_str!("../../migrations/0027_harness_adapters.sql");
+ const V28: &str = include_str!("../../migrations/0028_handoff_topology.sql");
+-pub(crate) const LATEST_VERSION: i64 = 28;
++const V29: &str = include_str!("../../migrations/0029_handoff_body_bounds.sql");
++pub(crate) const LATEST_VERSION: i64 = 29;
+ 
+ /// Decode only persisted results, after the caller's digest has matched. Live
+ /// protocol responses still require disposition. Missing original context
+ /// cannot be recovered from today's occupant without inventing historical data.
+ fn decode_stored_result(json: &str) -> Result<CommandResult, ApiError> {
+     let mut value: serde_json::Value = serde_json::from_str(json).map_err(|e| {
+         api_error(
+             ErrorCode::StoreCorrupt,
+             format!("invalid stored result: {e}"),
+         )
+@@ -159,20 +160,21 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
+                 .and_then(|_| conn.execute_batch(V19))
+                 .and_then(|_| conn.execute_batch(V20))
+                 .and_then(|_| conn.execute_batch(V21))
+                 .and_then(|_| conn.execute_batch(V22))
+                 .and_then(|_| conn.execute_batch(V23))
+                 .and_then(|_| conn.execute_batch(V24))
+                 .and_then(|_| conn.execute_batch(V25))
+                 .and_then(|_| conn.execute_batch(V26))
+                 .and_then(|_| conn.execute_batch(V27))
+                 .and_then(|_| conn.execute_batch(V28))
++                .and_then(|_| conn.execute_batch(V29))
+                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
+             match result {
+                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+                 Err(error) => {
+                     let _ = conn.execute_batch("ROLLBACK");
+                     return Err(store_error(error));
+                 }
+             }
+             verify_existing(conn)
+         }
+@@ -399,21 +401,21 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
+         }
+         16 => {
+             verify_existing_v13_shape(conn)?;
+             verify_existing_v14(conn)?;
+             verify_existing_v15(conn)?;
+             verify_existing_v16(conn)?;
+             migrate_v16_to_v17(conn)?;
+             verify_existing(conn)
+         }
+         17 => verify_existing(conn),
+-        18..=28 => verify_existing(conn),
++        18..=29 => verify_existing(conn),
+         _ => Err(api_error(
+             ErrorCode::IncompatibleSchema,
+             format!("unsupported schema version {version}"),
+         )),
+     }?;
+     if (1..=17).contains(&version) {
+         migrate_v17_to_v18(conn)?;
+     }
+     verify_existing_v18(conn)?;
+     if (1..=18).contains(&version) {
+@@ -567,21 +569,25 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
+                     .map_err(store_error)
+             });
+         match result {
+             Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+             Err(error) => {
+                 let _ = conn.execute_batch("ROLLBACK");
+                 return Err(error);
+             }
+         }
+     }
+-    verify_existing_v28(conn)
++    if (1..=28).contains(&version) {
++        verify_existing_v28(conn)?;
++        migrate_v28_to_v29(conn)?;
++    }
++    verify_existing_v29(conn)
+ }
+ 
+ fn verify_existing_v26(conn: &Connection) -> Result<(), ApiError> {
+     // Compare every lazy object, including trigger bodies with embedded semicolons.
+     let ddl = V26
+         .lines()
+         .filter(|line| !line.trim_start().starts_with("--"))
+         .collect::<Vec<_>>()
+         .join("\n");
+     for statement in ddl
+@@ -3913,22 +3919,79 @@ fn verify_existing_v24(conn: &Connection) -> Result<(), ApiError> {
+         if installed.as_deref().map(str::trim) != Some(sql) {
+             return Err(api_error(
+                 ErrorCode::IncompatibleSchema,
+                 format!("missing or altered harness diagnostic {kind} {name}"),
+             ));
+         }
+     }
+     Ok(())
+ }
+ 
++fn migrate_v28_to_v29(conn: &Connection) -> Result<(), ApiError> {
++    // SQLite ignores foreign_keys changes inside a transaction. Disable it
++    // before BEGIN so rebuilding the cyclic parent/recovery tables cannot
++    // delete child rows; verify the complete graph before committing.
++    if !conn.is_autocommit() {
++        return Err(api_error(
++            ErrorCode::IncompatibleSchema,
++            "handoff bounds migration requires an idle connection",
++        ));
++    }
++    let foreign_keys: bool = conn
++        .pragma_query_value(None, "foreign_keys", |r| r.get(0))
++        .map_err(store_error)?;
++    conn.pragma_update(None, "foreign_keys", false)
++        .map_err(store_error)?;
++    let migrate = (|| {
++        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
++        conn.execute_batch(V29).map_err(store_error)?;
++        verify_existing_v29(conn)?;
++        let violation: Option<String> = conn
++            .query_row("PRAGMA foreign_key_check", [], |r| r.get(0))
++            .optional()
++            .map_err(store_error)?;
++        if violation.is_some() {
++            return Err(api_error(
++                ErrorCode::StoreCorrupt,
++                "handoff bounds migration found a foreign-key violation",
++            ));
++        }
++        conn.pragma_update(None, "user_version", 29)
++            .map_err(store_error)?;
++        conn.execute_batch("COMMIT").map_err(store_error)
++    })();
++    if migrate.is_err() && !conn.is_autocommit() {
++        let _ = conn.execute_batch("ROLLBACK");
++    }
++    let restore = conn
++        .pragma_update(None, "foreign_keys", foreign_keys)
++        .map_err(store_error);
++    migrate.and(restore)
++}
++
+ fn verify_existing_v28(conn: &Connection) -> Result<(), ApiError> {
++    verify_bootstrap_ddl(conn, V28)
++}
++fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
+     let ddl = V28
++        .replace(
++            "length(identity_json)<=131072",
++            "length(identity_json)<=524288",
++        )
++        .replace(
++            "length(result_json)<=262144",
++            "length(result_json)<=1048576",
++        );
++    verify_bootstrap_ddl(conn, &ddl)
++}
++fn verify_bootstrap_ddl(conn: &Connection, source: &str) -> Result<(), ApiError> {
++    let ddl = source
+         .lines()
+         .filter(|line| !line.trim_start().starts_with("--"))
+         .collect::<Vec<_>>()
+         .join("\n");
+     // Each top-level CREATE begins on its own line; trigger-body semicolons
+     // remain part of the complete SQL. Preserve constraints, FK clauses,
+     // predicates and quoted literals exactly, as in the archival23 audit.
+     let normalize = |sql: &str| sql.trim().trim_end_matches(';').trim().to_owned();
+     for object in ddl.trim().split("\nCREATE ") {
+         let sql = if object.starts_with("CREATE ") {
+diff --git a/src/store/topology_handoff.rs b/src/store/topology_handoff.rs
+index f2164d8e..5b6a2863 100644
+--- a/src/store/topology_handoff.rs
++++ b/src/store/topology_handoff.rs
+@@ -5,24 +5,24 @@
+ //! Persistence/status never confer submission or receipt authority. The store-only
+ //! attempts API reserves one-use authorization against A2 in its deciding transaction.
+ //! Schema27 is registered; public dispatch requires the equipped runtime. Begin reuses
+ //! existing live mapping/member guards in its caller transaction.
+ use super::connection::api_error;
+ use crate::protocol::{
+     handoff::{BootstrapIdentity, HandoffNamespace},
+     results::{ApiError, ErrorCode},
+ };
+ 
+-/// Retained envelope ceiling, aligned with the existing delivery terminal's
+-/// 131072-byte bound (original journal intent remains independently 64 KiB).
++/// Retained body-bearing identity ceiling, including JSON escaping and metadata.
++/// Local originals and terminal envelopes have separate bounded serializers.
+ /// Encode and retained reads refuse overflow; neither truncates data.
+-pub const MAX_IDENTITY_BYTES: usize = 128 * 1024;
++pub const MAX_IDENTITY_BYTES: usize = 512 * 1024;
+ 
+ /// Encode the entire validated immutable identity in its canonical namespace.
+ /// Frozen paths are compared as supplied bytes, without replay normalization.
+ pub fn encode_identity(
+     canonical: &HandoffNamespace,
+     identity: &BootstrapIdentity,
+ ) -> Result<Vec<u8>, ApiError> {
+     identity
+         .validate()
+         .map_err(|detail| api_error(ErrorCode::InvalidRequest, detail))?;
+@@ -114,20 +114,33 @@ mod tests {
+     fn valid_full_identity_roundtrips_without_losing_frozen_arguments() {
+         let submitted = identity();
+         let canonical = &submitted.payload.handoff.namespace;
+         let encoded = encode_identity(canonical, &submitted).unwrap();
+         let decoded: BootstrapIdentity = serde_json::from_slice(&encoded).unwrap();
+         assert_eq!(decoded.payload.launch.argv, ["--model", "fixed"]);
+         assert_eq!(decoded, submitted);
+         compare_identity(canonical, &encoded, &submitted).unwrap();
+     }
+ 
++    #[test]
++    fn maximum_escaped_body_identity_survives_canonical_encoding() {
++        let mut submitted = identity();
++        submitted.payload.handoff.body = "\u{1}".repeat(65_536);
++        submitted.digest = submitted.semantic_digest().unwrap();
++        let encoded = encode_identity(&submitted.payload.handoff.namespace, &submitted).unwrap();
++        assert!(encoded.len() >= 393_216);
++        eprintln!("maximum escaped canonical identity={}", encoded.len());
++        compare_identity(&submitted.payload.handoff.namespace, &encoded, &submitted).unwrap();
++        let decoded: BootstrapIdentity = serde_json::from_slice(&encoded).unwrap();
++        assert_eq!(decoded.payload.handoff.body, "\u{1}".repeat(65_536));
++    }
++
+     fn refresh(mut submitted: BootstrapIdentity) -> BootstrapIdentity {
+         submitted.digest = submitted.semantic_digest().unwrap();
+         submitted.validate().unwrap();
+         submitted
+     }
+ 
+     #[test]
+     fn copied_compound_refuses_foreign_canonical_namespace_bytes() {
+         let submitted = identity();
+         let retained = serde_json::to_vec(&submitted).unwrap();
+@@ -281,20 +294,21 @@ mod tests {
+             &submitted,
+         )
+         .unwrap();
+     }
+ 
+     #[test]
+     fn envelope_boundary_preserves_valid_full_data_and_refuses_overflow() {
+         let mut submitted = identity();
+         // Escaped argv stays within the protocol's 64 KiB raw argv bound.
+         // This does not assert journal acceptance for a large original intent.
++        submitted.payload.handoff.body = "\u{1}".repeat(65_536);
+         submitted.payload.launch.argv = vec!["\"".repeat(4096); 16];
+         let excess = serde_json::to_vec(&submitted).unwrap().len() - MAX_IDENTITY_BYTES;
+         let last = submitted.payload.launch.argv.last_mut().unwrap();
+         last.truncate(last.len() - excess.div_ceil(2));
+         if !excess.is_multiple_of(2) {
+             last.push('x');
+         }
+         let submitted = refresh(submitted);
+         let canonical = &submitted.payload.handoff.namespace;
+         let encoded = encode_identity(canonical, &submitted).unwrap();
+diff --git a/src/store/topology_handoff/persistence.rs b/src/store/topology_handoff/persistence.rs
+index d48534a6..93b92268 100644
+--- a/src/store/topology_handoff/persistence.rs
++++ b/src/store/topology_handoff/persistence.rs
+@@ -7,28 +7,28 @@ use crate::{
+         ids::{OperationId, ThreadId},
+         results::{ApiError, ErrorCode},
+         time::UtcMillis,
+     },
+     store::connection::{api_error, store_error},
+ };
+ use rusqlite::{Connection, OptionalExtension, Transaction, params};
+ use serde::{Serialize, de::DeserializeOwned};
+ 
+ /// Storage envelope limits, independently enforced without truncating data.
+-/// Identity remains 128 KiB; creation/attachment are also bounded 128 KiB.
++/// Identity is bounded at 512 KiB; creation/attachment remain bounded 128 KiB.
+ /// Recovery includes the identity plus disposition/evidence and operator metadata.
+ /// Completed adds identity, attachment, the <=1 MiB retained report, repeated
+ /// launch argv and legacy result. These are storage ceilings, not a promise that
+ /// every protocol-valid envelope fits; future writers must refuse overflow.
+ pub const MAX_CREATION_BYTES: usize = 128 * 1024;
+ pub const MAX_ATTACHMENT_BYTES: usize = 128 * 1024;
+-pub const MAX_RECOVERY_BYTES: usize = 256 * 1024;
++pub const MAX_RECOVERY_BYTES: usize = 1024 * 1024;
+ pub const MAX_COMPLETED_BYTES: usize = 2 * 1024 * 1024;
+ 
+ pub(super) fn corrupt() -> ApiError {
+     api_error(
+         ErrorCode::StoreCorrupt,
+         "invalid canonical bootstrap records",
+     )
+ }
+ pub(super) fn scope(identity: &BootstrapIdentity) -> String {
+     format!("seat:{}", identity.claim.seat.as_str())
+diff --git a/tests/cli/handoff.rs b/tests/cli/handoff.rs
+index fd1a0342..ad43e739 100644
+--- a/tests/cli/handoff.rs
++++ b/tests/cli/handoff.rs
+@@ -158,29 +158,31 @@ fn request() -> HandoffRequest {
+             target: HostTargetId::new("w1:p2"),
+             harness: crate::harness::context::Harness::Codex,
+             harness_binary: None,
+             argv: vec!["-a".into(), "on-request".into()],
+             name: Some("worker".into()),
+             pane_label: None,
+         },
+     }
+ }
+ struct Client {
++    expected_body: String,
+     joined: bool,
+     already_joined: bool,
+     calls: Mutex<Vec<Command>>,
+     lost: Mutex<Option<&'static str>>,
+     results: Mutex<std::collections::HashMap<String, CommandResult>>,
+ }
+ impl Client {
+     fn new(lost: Option<&'static str>) -> Self {
+         Self {
++            expected_body: "secret durable task".into(),
+             joined: true,
+             already_joined: false,
+             calls: Mutex::new(vec![]),
+             lost: Mutex::new(lost),
+             results: Mutex::new(Default::default()),
+         }
+     }
+ }
+ impl LocalClient for Client {
+     fn call_with_output(
+@@ -240,21 +242,21 @@ impl LocalClient for Client {
+                             thread: q.thread.clone(),
+                             seat: q.seat.clone(),
+                         })
+                     } else {
+                         CommandResult::Invitation(InvitationId::new("i1"))
+                     },
+                 )
+             }
+             Command::SendMessage(q) => {
+                 assert_eq!(q.claim, claim());
+-                assert_eq!(q.body, "secret durable task");
++                assert_eq!(q.body, self.expected_body);
+                 assert_eq!(q.invited_recipients, vec![SeatId::new("recipient")]);
+                 (
+                     q.operation.as_str(),
+                     "send",
+                     CommandResult::MessageSent(MessageId::new("m1")),
+                 )
+             }
+             _ => panic!("unexpected command {command:?}"),
+         };
+         let result = self
+@@ -3776,10 +3778,280 @@ fn frozen_v1_prompt_and_manual_projection_ignore_current_renderer_drift() {
+         "launch",
+         true,
+         false,
+         &claim(),
+     );
+     let manual = report["manual_launch_after_confirming_no_start_argv"]
+         .as_array()
+         .unwrap();
+     assert_eq!(manual.last().unwrap(), &serde_json::json!(v1));
+ }
++
++#[test]
++fn handoff_instruction_sources_preserve_message_bytes_and_exclude_conflicts() {
++    use crate::cli::commands::{CliAction, parse_argv};
++    let (temp, _journal) = journal();
++    let path = temp.0.join("instructions");
++    for body in [
++        " \0\n\r\t".to_owned(),
++        "x".repeat(65_536),
++        "\u{1}".repeat(65_536),
++    ] {
++        std::fs::write(&path, &body).unwrap();
++        for mode in [
++            vec!["--pane", "w1:p2", "--kind", "codex"],
++            vec!["--new-tab", "peer", "--kind", "codex"],
++            vec!["--existing", "--seat", "recipient"],
++        ] {
++            for source in [
++                vec!["--", body.as_str()],
++                vec!["--file", path.to_str().unwrap()],
++            ] {
++                let mut argv = vec!["ht", "handoff", "--thread", "t1"];
++                argv.extend(mode.clone());
++                argv.extend(source);
++                let parsed = parse_argv(argv).expect("valid source must parse");
++                let saved = match parsed.action {
++                    CliAction::Handoff(request) => request.body,
++                    CliAction::TopologyHandoff(request) => request.body,
++                    _ => panic!("wrong action"),
++                };
++                assert_eq!(saved, body);
++            }
++        }
++    }
++    for bytes in [vec![], vec![0xff], vec![b'x'; 65_537]] {
++        std::fs::write(&path, bytes).unwrap();
++        assert!(
++            parse_argv([
++                "ht",
++                "handoff",
++                "--existing",
++                "--seat",
++                "recipient",
++                "--thread",
++                "t1",
++                "--file",
++                path.to_str().unwrap()
++            ])
++            .is_err()
++        );
++    }
++    std::fs::remove_file(&path).unwrap();
++    assert!(
++        parse_argv([
++            "ht",
++            "handoff",
++            "--existing",
++            "--seat",
++            "recipient",
++            "--thread",
++            "t1",
++            "--file",
++            path.to_str().unwrap()
++        ])
++        .is_err()
++    );
++    for source in [
++        vec![],
++        vec!["--stdin", "--", "body"],
++        vec!["--file", "missing", "--stdin"],
++        vec!["--file", "missing", "--", "body"],
++    ] {
++        let mut argv = vec![
++            "ht",
++            "handoff",
++            "--existing",
++            "--seat",
++            "recipient",
++            "--thread",
++            "t1",
++        ];
++        argv.extend(source);
++        assert!(parse_argv(argv).is_err());
++    }
++}
++
++#[test]
++fn handoff_stdin_acquisition_is_bounded_and_preserves_exact_message_bytes() {
++    use crate::cli::input::read_body_from;
++    for body in [
++        " \0\n\r\t".to_owned(),
++        "x".repeat(65_536),
++        "\u{1}".repeat(65_536),
++    ] {
++        let mut input = std::io::Cursor::new(body.as_bytes());
++        assert_eq!(read_body_from(None, None, true, &mut input).unwrap(), body);
++    }
++    for bytes in [vec![], vec![0xff], vec![b'x'; 65_537]] {
++        let mut input = std::io::Cursor::new(bytes);
++        assert!(read_body_from(None, None, true, &mut input).is_err());
++    }
++    let mut input = std::io::Cursor::new(vec![b'x'; 1_000_000]);
++    assert!(read_body_from(None, None, true, &mut input).is_err());
++    assert_eq!(input.position(), 65_537);
++    for body in [" \0\n", "x"] {
++        let request = HandoffRequest {
++            body: body.into(),
++            ..request()
++        };
++        request.validate().unwrap();
++    }
++    let mut request = request();
++    request.body = "x".repeat(65_536);
++    request.validate().unwrap();
++    request.body.push('x');
++    assert!(request.validate().is_err());
++}
++
++#[test]
++fn maximum_instruction_file_freezes_through_explicit_launch_retry() {
++    for body in ["x".repeat(65_536), "\u{1}".repeat(65_536)] {
++        let (temp, journal) = journal();
++        let path = temp.0.join("instructions");
++        std::fs::write(&path, &body).unwrap();
++        let parsed = crate::cli::commands::parse_argv([
++            "ht",
++            "handoff",
++            "--pane",
++            "w1:p2",
++            "--kind",
++            "codex",
++            "--thread",
++            "t1",
++            "--file",
++            path.to_str().unwrap(),
++        ])
++        .unwrap();
++        let crate::cli::commands::CliAction::Handoff(mut r) = parsed.action else {
++            panic!("wrong action")
++        };
++        r.thread = None;
++        r.launch.argv = request().launch.argv;
++        r.topic = Some("review".into());
++        r.goal = Some("review changes".into());
++        let mut client = Client::new(Some("send"));
++        client.expected_body = body.clone();
++        let mut launcher = Launcher::default();
++        assert!(
++            start(
++                &journal,
++                r,
++                claim(),
++                "bob",
++                &client,
++                &mut launcher,
++                &TestClock,
++                &OutputSpec::default(),
++                &mut Vec::new()
++            )
++            .is_err()
++        );
++        let reference = reference(&journal);
++        let original = std::fs::read(journal.root().join(format!(
++            "{:020}-{}.intent",
++            reference.ordinal,
++            reference.operation.as_str()
++        )))
++        .unwrap();
++        std::fs::write(&path, "changed").unwrap();
++        std::fs::remove_file(&path).unwrap();
++        assert_eq!(
++            std::fs::read(journal.root().join(format!(
++                "{:020}-{}.intent",
++                reference.ordinal,
++                reference.operation.as_str()
++            )))
++            .unwrap(),
++            original
++        );
++        resume(
++            &journal,
++            &reference,
++            &scope(),
++            &client,
++            &mut launcher,
++            &TestClock,
++            &OutputSpec::default(),
++            &mut Vec::new(),
++        )
++        .unwrap();
++        assert_eq!(launcher.starts, 1);
++        assert!(
++            launcher
++                .submitted_argv
++                .iter()
++                .all(|arg| !arg.contains(&body) && !arg.contains(path.to_str().unwrap()))
++        );
++        assert!(
++            journal.load(&reference).is_err(),
++            "successful retry cleans the original intent"
++        );
++        let commands = client.calls.lock().unwrap();
++        let sends = commands
++            .iter()
++            .filter_map(|c| {
++                if let Command::SendMessage(q) = c {
++                    Some(q)
++                } else {
++                    None
++                }
++            })
++            .collect::<Vec<_>>();
++        assert_eq!(sends.len(), 2);
++        assert_eq!(sends[0], sends[1]);
++        assert_eq!(sends[0].body, body);
++    }
++}
++
++#[test]
++fn acquired_stdin_survives_retry_after_reader_is_unavailable() {
++    let (_temp, journal) = journal();
++    let body = "\u{1}".repeat(65_536);
++    let acquired = {
++        let mut stdin = std::io::Cursor::new(body.as_bytes());
++        crate::cli::input::read_body_from(None, None, true, &mut stdin).unwrap()
++    };
++    let mut r = request();
++    r.body = acquired;
++    let mut client = Client::new(Some("send"));
++    client.expected_body = body.clone();
++    let mut launcher = Launcher::default();
++    assert!(
++        start(
++            &journal,
++            r,
++            claim(),
++            "bob",
++            &client,
++            &mut launcher,
++            &TestClock,
++            &OutputSpec::default(),
++            &mut Vec::new(),
++        )
++        .is_err()
++    );
++    let reference = reference(&journal);
++    resume(
++        &journal,
++        &reference,
++        &scope(),
++        &client,
++        &mut launcher,
++        &TestClock,
++        &OutputSpec::default(),
++        &mut Vec::new(),
++    )
++    .unwrap();
++    let commands = client.calls.lock().unwrap();
++    let sends = commands
++        .iter()
++        .filter_map(|command| match command {
++            Command::SendMessage(send) => Some(send),
++            _ => None,
++        })
++        .collect::<Vec<_>>();
++    assert_eq!(sends.len(), 2);
++    assert_eq!(sends[0], sends[1]);
++    assert_eq!(sends[0].body, body);
++    assert_eq!(launcher.starts, 1);
++}
+diff --git a/tests/cli/handoff_delivery.rs b/tests/cli/handoff_delivery.rs
+index 6439ab7b..13d45717 100644
+--- a/tests/cli/handoff_delivery.rs
++++ b/tests/cli/handoff_delivery.rs
+@@ -2005,20 +2005,33 @@ impl LocalClient for GuardedCanonical {
+             );
+             if matches!(c, Command::Participants(_)) {
+                 let mut fail = self.fail_before.lock().unwrap();
+                 if fail.as_ref().is_some_and(|(p, _)| *p == "participants") {
+                     let (_, code) = fail.take().unwrap();
+                     return Err(ApiError::new(code, "injected participants read failure"));
+                 }
+             }
+             return self.base.fake.call(c, b);
+         };
++        if request.plan.payload.body.len() == 65_536 {
++            let wire = crate::protocol::wire::WireRequest {
++                version: crate::protocol::wire::PROTOCOL_VERSION,
++                request_id: "maximum-body".into(),
++                expected_instance: "00000000-0000-4000-8000-000000000001".into(),
++                expected_boot: None,
++                output: None,
++                command: Command::HandoffDelivery(request.clone()),
++            };
++            let bytes = serde_json::to_vec(&wire).unwrap();
++            assert!(bytes.len() + 4 <= crate::protocol::wire::MAX_WIRE_FRAME_BYTES);
++            crate::protocol::wire::WireRequest::decode(&bytes).unwrap();
++        }
+         let canonical = request.plan.payload.namespace.clone();
+         let phase = match &request.action {
+             DeliveryAction::Status(_) | DeliveryAction::Prepare(_) => {
+                 return self.base.store.delivery_query(&canonical, &request, b);
+             }
+             DeliveryAction::Begin(_) => "begin",
+             DeliveryAction::Create(_) => "create",
+             DeliveryAction::Invite(_) => "invite",
+             DeliveryAction::Send(_) => "send",
+             DeliveryAction::Complete(_) => "complete",
+@@ -2563,10 +2576,114 @@ fn pending_delivery_writer_inspect_argv_parses_as_public_pending_ops() {
+             assert!(
+                 String::from_utf8_lossy(&bytes).contains(&format!("phase: {case}"))
+                     || (json && pending_frame(&bytes)["phase"] == case),
+                 "{case}: {}",
+                 String::from_utf8_lossy(&bytes)
+             );
+             assert_delivery_inspect_is_public_pending_ops(&plan, json, &bytes);
+         }
+     }
+ }
++
++#[test]
++fn maximum_escaped_delivery_origin_and_terminal_survive_cleanup_retry() {
++    let temp = TempRoot::new();
++    let journal = Journal::open(temp.0.join("intents")).unwrap();
++    let mut plan = plan();
++    plan.payload.body = "\u{1}".repeat(65_536);
++    let reference = record(&journal, plan.clone());
++    let origin = journal.snapshot_delivery_origin(&reference).unwrap();
++    assert!(origin.len() >= 393_216);
++    assert_eq!(
++        delivery_plan(&Journal::decode_delivery_origin(&reference, &origin).unwrap())
++            .unwrap()
++            .payload
++            .body,
++        "\u{1}".repeat(65_536)
++    );
++    let progress = Progress::default();
++    // The terminal serializer nests the exact original JSON as a string;
++    // every six-byte body escape gains one more backslash.
++    let terminal = Terminal {
++        version: 1,
++        original: String::from_utf8(origin).unwrap(),
++        completed: HandoffResult {
++            compound: plan.payload.keys.compound.clone(),
++            thread: Some(ThreadId::new("t1")),
++            state: HandoffState::Completed,
++        },
++        progress_digest: retained_digest(&progress).unwrap(),
++        progress,
++    };
++    let bytes = serde_json::to_vec(&terminal).unwrap();
++    assert!(bytes.len() >= 458_752);
++    eprintln!(
++        "maximum escaped delivery: origin={} terminal={}",
++        terminal.original.len(),
++        bytes.len()
++    );
++    save_terminal(&journal, &reference, &terminal).unwrap();
++    let saved: Terminal =
++        serde_json::from_slice(&std::fs::read(terminal_path(&journal, &reference)).unwrap())
++            .unwrap();
++    let pending = Journal::decode_delivery_origin(&reference, saved.original.as_bytes()).unwrap();
++    assert_eq!(
++        delivery_plan(&pending).unwrap().payload.body,
++        "\u{1}".repeat(65_536)
++    );
++}
++
++#[test]
++fn maximum_instruction_file_freezes_through_existing_delivery_and_retry() {
++    for body in ["x".repeat(65_536), "\u{1}".repeat(65_536)] {
++        let temp = TempRoot::new();
++        let path = temp.0.join("instructions");
++        std::fs::write(&path, &body).unwrap();
++        let parsed = crate::cli::commands::parse_argv([
++            "ht",
++            "handoff",
++            "--existing",
++            "--seat",
++            "recipient",
++            "--new-thread",
++            "--topic",
++            "review",
++            "--goal",
++            "review changes",
++            "--file",
++            path.to_str().unwrap(),
++        ])
++        .unwrap();
++        let crate::cli::commands::CliAction::TopologyHandoff(request) = parsed.action else {
++            panic!("wrong action")
++        };
++        let mut plan = plan();
++        plan.payload.body = request.body;
++        plan.payload.channel = HandoffChannel::New {
++            name: None,
++            topic: "review".into(),
++            goal: "review changes".into(),
++        };
++        let journal = Journal::open(temp.0.join("intents")).unwrap();
++        let reference = publish(&journal, plan.clone(), canonical_claim(), &TestClock).unwrap();
++        let original = journal.snapshot_delivery_origin(&reference).unwrap();
++        std::fs::write(&path, "changed").unwrap();
++        std::fs::remove_file(&path).unwrap();
++        let client = GuardedCanonical::new(&temp.0);
++        *client.lose_reply.lock().unwrap() = Some("send");
++        assert!(
++            guarded_retry(&journal, &reference, &plan, &client, true, &mut Vec::new()).is_err()
++        );
++        guarded_retry(&journal, &reference, &plan, &client, true, &mut Vec::new()).unwrap();
++        let conn = client.base.context.open_writer().unwrap();
++        let saved: String = conn
++            .query_row("SELECT body FROM messages WHERE kind='ordinary'", [], |r| {
++                r.get(0)
++            })
++            .unwrap();
++        assert_eq!(saved, body);
++        let terminal = read_terminal(&journal, &reference).unwrap().unwrap();
++        assert_eq!(terminal.original.as_bytes(), original);
++        guarded_retry(&journal, &reference, &plan, &client, true, &mut Vec::new()).unwrap();
++        assert_eq!(client.counts(), (1, 1, 1));
++    }
++}
+diff --git a/tests/cli/topology_handoff.rs b/tests/cli/topology_handoff.rs
+index cecc7d7f..564c337d 100644
+--- a/tests/cli/topology_handoff.rs
++++ b/tests/cli/topology_handoff.rs
+@@ -438,21 +438,21 @@ fn publication_explicit_cwd_claude_options_and_invalid_inputs() {
+         .is_err()
+     );
+     let file = temp.path().join("file");
+     std::fs::write(&file, "file").unwrap();
+     for r in [
+         Request {
+             cwd: Some(file),
+             ..request()
+         },
+         Request {
+-            body: " ".into(),
++            body: "".into(),
+             ..request()
+         },
+         Request {
+             new_tab: Some(" ".into()),
+             ..request()
+         },
+         Request {
+             kind: None,
+             ..request()
+         },
+@@ -533,31 +533,45 @@ mod live {
+         fault: Fault,
+     }
+     struct Peer {
+         state: Mutex<State>,
+         identity: BootstrapIdentity,
+         journal: std::path::PathBuf,
+         database_path: std::path::PathBuf,
+         reference: super::super::super::journal::IntentRef,
+         native_marker: Option<std::path::PathBuf>,
+         block_native: bool,
++        verify_wire: bool,
+     }
+     impl LocalClient for Peer {
+         fn call_with_output(
+             &self,
+             command: Command,
+             _: &crate::protocol::output::OutputSpec,
+             budget: &CallBudget,
+         ) -> Result<CommandResult, ApiError> {
+             self.call(command, budget)
+         }
+         fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
++            if self.verify_wire {
++                let wire = crate::protocol::wire::WireRequest {
++                    version: crate::protocol::wire::PROTOCOL_VERSION,
++                    request_id: "maximum-body".into(),
++                    expected_instance: "00000000-0000-4000-8000-000000000001".into(),
++                    expected_boot: None,
++                    output: None,
++                    command: command.clone(),
++                };
++                let bytes = serde_json::to_vec(&wire).unwrap();
++                assert!(bytes.len() + 4 <= crate::protocol::wire::MAX_WIRE_FRAME_BYTES);
++                crate::protocol::wire::WireRequest::decode(&bytes).unwrap();
++            }
+             let mut s = self.state.lock().unwrap();
+             let role = match &command {
+                 Command::Capabilities => "capabilities",
+                 Command::BeginBootstrap(_) => "begin",
+                 Command::BootstrapStatus(_) => "status",
+                 Command::ReserveBootstrapAttempt(_) => "reserve",
+                 Command::CheckBootstrapSubmission(_) => "check",
+                 Command::RecordBootstrapCreated(_) => "record",
+                 Command::RecordBootstrapNotSubmitted(_) => "not_submitted",
+                 Command::ResolveBootstrapSeat(_) => "resolve",
+@@ -983,20 +997,21 @@ mod live {
+                 identity.payload.handoff.namespace.host_endpoint = runtime.host_endpoint.clone();
+                 identity.digest = identity.semantic_digest().unwrap();
+                 (paths.instance_dir.join("intents"), paths.database_path)
+             } else {
+                 (
+                     temp.path().join("intents"),
+                     temp.path().join("canonical.db"),
+                 )
+             };
+             if maximal {
++                identity.payload.handoff.body = "\u{1}".repeat(65_536);
+                 identity.payload.launch.argv.push("--config=".into());
+                 let mut created = crate::protocol::handoff::topology_contract_tests::created();
+                 created.witness.endpoint = identity.payload.handoff.namespace.host_endpoint.clone();
+                 created.correlation =
+                     crate::protocol::ids::HostCallId::new("00000000-0000-4000-8000-000000000001");
+                 let sample = BootstrapProgress {
+                     version: 1,
+                     identity: identity.clone(),
+                     attempt: BootstrapAttempt::first(),
+                     possible_creation: true,
+@@ -1064,20 +1079,21 @@ mod live {
+                         calls: vec![],
+                         native_calls: 0,
+                         fault,
+                     }),
+                     identity,
+                     journal: journal_root,
+                     database_path,
+                     reference,
+                     native_marker: None,
+                     block_native: false,
++                    verify_wire: request.body.len() == 65_536,
+                 }),
+                 _temp: temp,
+                 clock,
+                 context,
+                 witness,
+             }
+         }
+         /// Captures the fixture's whole on-disk state (journal, retained
+         /// files, canonical database) and the peer's call log, so a matrix
+         /// can run each case from one shared completed setup instead of
+@@ -2082,21 +2098,25 @@ mod live {
+         let mut maximum_deciding = std::time::Duration::ZERO;
+         let mut maximum_foreground = std::time::Duration::ZERO;
+         loop {
+             let page_start = std::time::Instant::now();
+             let scan = source.scan(|| false).unwrap();
+             maximum_scan = maximum_scan.max(page_start.elapsed());
+             let statistics = source.last_reads;
+             reads += statistics[0];
+             maximum_capacity = maximum_capacity.max(statistics[2]);
+             assert!(statistics[0] <= 4, "one oversized bundle per page");
+-            assert!(statistics[1] <= 5_390_340);
++            assert!(
++                statistics[1] <= 5_390_340,
++                "bundle bytes={} identity={identity} report={report} original={original} submission={submission} child={child} terminal={terminal}",
++                statistics[1]
++            );
+             assert_eq!(
+                 statistics[2],
+                 statistics[1] + statistics[0],
+                 "fixed metadata+1 buffer allocations"
+             );
+             let budget = super::super::super::cooperative_budget(store.clock());
+             let turn = writer.enter_background(&budget, store.clock()).unwrap();
+             let (ready, waiting) = std::sync::mpsc::sync_channel(0);
+             let contender = {
+                 let writer = writer.clone();
+@@ -2267,20 +2287,83 @@ mod live {
+                 progress.attempt = BootstrapAttempt::new(2).unwrap();
+             }
+             save_bootstrap_progress(&f.journal, &f.peer.reference, &progress).unwrap();
+             let scan = composition_scan(&f);
+             assert!(
+                 scan.coverage.is_none(),
+                 "terminal surviving submission {control} contradiction must veto"
+             );
+         }
+     }
++    #[test]
++    fn maximum_instruction_file_freezes_through_bootstrap_completion_and_retry() {
++        for body in ["x".repeat(65_536), "\u{1}".repeat(65_536)] {
++            let source = Temp::new();
++            let path = source.path().join("instructions");
++            std::fs::write(&path, &body).unwrap();
++            let parsed = crate::cli::commands::parse_argv([
++                "ht",
++                "handoff",
++                "--new-tab",
++                "peer",
++                "--kind",
++                "codex",
++                "--thread",
++                "chosen",
++                "--file",
++                path.to_str().unwrap(),
++            ])
++            .unwrap();
++            let crate::cli::commands::CliAction::TopologyHandoff(mut r) = parsed.action else {
++                panic!("wrong handoff route")
++            };
++            r.binary = Some("/bin/quoted path".into());
++            let f = Fixture::with_request(Fault::CompleteBefore, r, Some(vec![]));
++            let original = f
++                .journal
++                .snapshot_bootstrap_origin(&f.peer.reference)
++                .unwrap();
++            std::fs::write(&path, "changed source").unwrap();
++            std::fs::remove_file(&path).unwrap();
++            let mut launcher = DownstreamLauncher::default();
++            let mut output = vec![];
++            assert!(downstream(&f, &mut launcher, &mut output).is_err());
++            f.peer.state.lock().unwrap().db =
++                rusqlite::Connection::open(&f.peer.database_path).unwrap();
++            let result = downstream(&f, &mut launcher, &mut output).unwrap();
++            assert_eq!(result.state, BootstrapState::Completed);
++            assert_eq!(launcher.starts, 1);
++            let state = f.peer.state.lock().unwrap();
++            let saved: String = state
++                .db
++                .query_row("SELECT body FROM messages WHERE body=?1", [&body], |r| {
++                    r.get(0)
++                })
++                .unwrap();
++            assert_eq!(saved, body);
++            drop(state);
++            let terminal = read_terminal(&f.journal, &f.peer.reference)
++                .unwrap()
++                .unwrap();
++            assert_eq!(terminal.original.as_bytes(), original);
++            assert_eq!(terminal.completed.identity.payload.handoff.body, body);
++            let argv = terminal.completed.retained.report["argv"]
++                .as_array()
++                .unwrap();
++            assert!(argv.iter().all(|arg| !arg.as_str().unwrap().contains(&body)
++                && !arg.as_str().unwrap().contains(path.to_str().unwrap())));
++            let mut replay = vec![];
++            downstream(&f, &mut launcher, &mut replay).unwrap();
++            assert_eq!(launcher.starts, 1);
++        }
++    }
++
+     #[test]
+     fn downstream_atomic_completion_runs_exact_child_then_flushes_success() {
+         let f = Fixture::downstream(Fault::None);
+         let mut launcher = DownstreamLauncher::default();
+         let mut output = vec![];
+         let result = downstream(&f, &mut launcher, &mut output).unwrap();
+         assert_eq!(
+             result.state,
+             BootstrapState::Completed,
+             "attachment alone does not complete downstream"
+@@ -4066,20 +4149,21 @@ mod live {
+                 calls: vec![],
+                 native_calls: 0,
+                 fault: Fault::HostReply,
+             }),
+             identity,
+             journal: journal_root,
+             database_path: root.join("canonical.db"),
+             reference,
+             native_marker: Some(root.join("native-calls")),
+             block_native: input["block"].as_bool().unwrap(),
++            verify_wire: false,
+         };
+         let clock = crate::app::SystemClock::new();
+         let context = HostCallContext {
+             budget: super::super::super::cooperative_budget(&clock),
+             expected_boot: Some(
+                 crate::protocol::handoff::topology_contract_tests::created().host_incarnation,
+             ),
+             expected_epoch: Some(1),
+         };
+         let mut witness = crate::protocol::handoff::topology_contract_tests::created().witness;
+@@ -5336,20 +5420,21 @@ mod live {
+             assert_eq!(f.peer.state.lock().unwrap().native_calls, 1, "{change}");
+         }
+     }
+ }
+ 
+ #[test]
+ fn phase13_prepublication_capacity_uses_actual_request_envelope_bound() {
+     let mut identity = crate::protocol::handoff::topology_contract_tests::identity();
+     let witness = crate::protocol::handoff::topology_contract_tests::created().witness;
+     super::preflight_progress_capacity(&identity, &witness).unwrap();
++    identity.payload.handoff.body = "\u{1}".repeat(65_536);
+     identity.payload.launch.argv = vec!["\"".repeat(4096); 16];
+     let excess = serde_json::to_vec(&identity).unwrap().len()
+         - crate::store::topology_handoff::MAX_IDENTITY_BYTES;
+     let last = identity.payload.launch.argv.last_mut().unwrap();
+     last.truncate(last.len() - excess.div_ceil(2));
+     if !excess.is_multiple_of(2) {
+         last.push('x');
+     }
+     identity.digest = identity.semantic_digest().unwrap();
+     let encoded = crate::store::topology_handoff::encode_identity(
+@@ -5428,10 +5513,52 @@ fn fresh_root_preparation_uses_current_admission_and_v1_generated_input() {
+     // Today's composer accepts but launches different argv than frozen V1:
+     // preparation refuses before any publication or durable work.
+     let _drift = crate::harness::launch::current_drift::arm_output("--drifted");
+     let refused = prepared(&request(), temp.path());
+     assert!(
+         format!("{refused:?}").contains("a new bootstrap plan version is required"),
+         "{refused:?}"
+     );
+     assert!(!temp.path().join("intents").exists());
+ }
++
++#[test]
++fn maximum_escaped_bootstrap_survives_origin_and_request_progress() {
++    let temp = Temp::new();
++    let mut request = request();
++    request.body = "\u{1}".repeat(65_536);
++    let identity = prepared(&request, temp.path()).unwrap();
++    let journal = super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
++    let reference = publish(&journal, &identity, 1).unwrap();
++    let origin = journal.snapshot_bootstrap_origin(&reference).unwrap();
++    assert!(origin.len() >= 393_216);
++    let mut created = crate::protocol::handoff::topology_contract_tests::created();
++    created.witness.endpoint = identity.payload.handoff.namespace.host_endpoint.clone();
++    preflight_progress_capacity(&identity, &created.witness).unwrap();
++    let progress = BootstrapProgress {
++        version: 1,
++        identity: identity.clone(),
++        attempt: crate::protocol::handoff::BootstrapAttempt::first(),
++        possible_creation: true,
++        request: Some(crate::ports::CreateTabRequest {
++            correlation: created.correlation,
++            workspace: identity.payload.workspace.clone(),
++            cwd: identity.payload.cwd.clone(),
++            label: identity.payload.label.clone(),
++            focus: identity.payload.focus,
++            env: identity.payload.env.clone(),
++            expected_witness: created.witness,
++        }),
++        creation: None,
++        not_submitted: false,
++    };
++    save_bootstrap_progress(&journal, &reference, &progress).unwrap();
++    eprintln!(
++        "maximum escaped bootstrap: origin={} progress={}",
++        origin.len(),
++        serde_json::to_vec(&progress).unwrap().len()
++    );
++    let loaded = load_bootstrap_progress(&journal, &reference, &identity)
++        .unwrap()
++        .unwrap();
++    assert_eq!(loaded.identity.payload.handoff.body, "\u{1}".repeat(65_536));
++}
+diff --git a/tests/handoff_topology_cli.rs b/tests/handoff_topology_cli.rs
+index 59d3034f..628e4bfa 100644
+--- a/tests/handoff_topology_cli.rs
++++ b/tests/handoff_topology_cli.rs
+@@ -484,29 +484,43 @@ impl Fixture {
+         let admission = store
+             .begin_host_observation(&instance.to_string(), &budget)
+             .unwrap();
+         let snapshot = herdr_threads::ports::HostPort::enumerate_targets(&native, &ctx).unwrap();
+         let stage = store
+             .begin_snapshot_stage(
+                 SnapshotHeader::from_captured(admission, &snapshot).unwrap(),
+                 &budget,
+             )
+             .unwrap();
+-        store
+-            .stage_snapshot_targets(
+-                &stage.id,
+-                0,
+-                &snapshot.targets,
+-                DurableWorkAdmission::new(16).unwrap(),
+-                &budget,
+-            )
+-            .unwrap();
++        // A writer turn can commit a prefix when its quantum expires. Honor
++        // that progress before sealing, under the original overall budget.
++        let mut offset = 0u64;
++        let mut targets = &snapshot.targets[..];
++        while !targets.is_empty() {
++            let batch = &targets[..targets.len().min(16)];
++            let progress = store
++                .stage_snapshot_targets(
++                    &stage.id,
++                    offset,
++                    batch,
++                    DurableWorkAdmission::new(16).unwrap(),
++                    &budget,
++                )
++                .unwrap();
++            let visited = usize::from(progress.visited);
++            offset += visited as u64;
++            assert!(
++                visited > 0 && visited <= batch.len() && progress.stage.staged_targets == offset,
++                "snapshot staging did not advance exactly"
++            );
++            targets = &targets[visited..];
++        }
+         store.seal_snapshot_stage(&stage.id, &budget).unwrap();
+         store.publish_snapshot_stage(&stage.id, &budget).unwrap();
+         let execution = Uuid::new_v4();
+         for (seat, target, terminal) in [
+             ("sender", "w4:p1", "term_1"),
+             ("recipient", "w4:p2", "term_2"),
+         ] {
+             db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,1,'native_current_target',1,1,0)",params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str()]).unwrap();
+         }
+         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES('sender',1,'w4:p1',?1,1,1,'codex','session',?2,'cooperative_top_level',0,0,'term_1',?1)",params![observation.host_boot.as_str(),execution.to_string()]).unwrap();
+diff --git a/tests/store/archival_legacy.rs b/tests/store/archival_legacy.rs
+index c52b1f9c..4078ac6a 100644
+--- a/tests/store/archival_legacy.rs
++++ b/tests/store/archival_legacy.rs
+@@ -129,38 +129,46 @@ pub(super) fn compound(paths: &InstancePaths) -> herdr_threads::cli::journal::In
+ fn compound_in(
+     paths: &InstancePaths,
+     context: ContinuationContext,
+ ) -> herdr_threads::cli::journal::IntentRef {
+     legacy_compound(paths, context, false)
+ }
+ fn legacy_compound(
+     paths: &InstancePaths,
+     context: ContinuationContext,
+     new_thread: bool,
++) -> herdr_threads::cli::journal::IntentRef {
++    legacy_compound_with_body(paths, context, new_thread, "body".into())
++}
++fn legacy_compound_with_body(
++    paths: &InstancePaths,
++    context: ContinuationContext,
++    new_thread: bool,
++    body: String,
+ ) -> herdr_threads::cli::journal::IntentRef {
+     use herdr_threads::{
+         cli::{
+             handoff::{HandoffPlan, HandoffRequest},
+             journal::{IntentScope, Journal, SemanticMutation},
+             launch::LaunchRequest,
+         },
+         protocol::ids::*,
+     };
+     let id = super::handoff_fences::identity();
+     let plan = HandoffPlan {
+         startup_input: None,
+         request: HandoffRequest {
+             thread: (!new_thread).then(|| ThreadId::new("t")),
+             thread_name: None,
+             topic: new_thread.then(|| "literal-topic".into()),
+             goal: new_thread.then(|| "literal-goal".into()),
+-            body: "body".into(),
++            body,
+             launch: LaunchRequest {
+                 target: HostTargetId::new("p"),
+                 harness: serde_json::from_str("\"Codex\"").unwrap(),
+                 harness_binary: None,
+                 argv: vec![],
+                 name: None,
+                 pane_label: None,
+             },
+         },
+         context,
+@@ -440,24 +448,33 @@ fn archival_legacy_captured_hint_cannot_revive_completion() {
+         result.state,
+         herdr_threads::protocol::handoff::HandoffState::Completed
+     );
+     tx.commit().unwrap();
+ }
+ 
+ pub(super) fn modern_compound(
+     paths: &InstancePaths,
+     bootstrap: bool,
+     new_thread: bool,
++) -> herdr_threads::cli::journal::IntentRef {
++    modern_compound_with_body(paths, bootstrap, new_thread, "work".into())
++}
++fn modern_compound_with_body(
++    paths: &InstancePaths,
++    bootstrap: bool,
++    new_thread: bool,
++    body: String,
+ ) -> herdr_threads::cli::journal::IntentRef {
+     use herdr_threads::cli::journal::{BootstrapPlan, DeliveryPlan, Journal, SemanticMutation};
+     use herdr_threads::protocol::handoff::{HandoffChannel, HandoffNamespace};
+     let mut id = super::topology_handoff::identity();
++    id.payload.handoff.body = body;
+     let current = context(paths);
+     id.payload.handoff.namespace = HandoffNamespace {
+         instance: "i".into(),
+         state_dir: current.state_dir.unwrap().into(),
+         host_endpoint: current.host.unwrap().into(),
+     };
+     if new_thread {
+         id.payload.handoff.channel = HandoffChannel::New {
+             name: Some("literal-name".into()),
+             topic: "literal-topic".into(),
+@@ -520,20 +537,57 @@ fn archival_legacy_delivery_uses_its_own_frozen_identity_without_launch() {
+         scan.coverage.is_some(),
+         "valid delivery must establish coverage"
+     );
+     assert_eq!(
+         scan.hints.len(),
+         1,
+         "delivery must protect its exact channel"
+     );
+ }
+ 
++#[test]
++fn maximum_escaped_handoff_bodies_survive_real_archival_origin_and_terminal_loaders() {
++    for mode in ["legacy", "delivery", "bootstrap"] {
++        let (_dir, paths, mut source) = source();
++        let body = "\u{1}".repeat(65_536);
++        let reference = match mode {
++            "legacy" => legacy_compound_with_body(&paths, context(&paths), false, body),
++            "delivery" => modern_compound_with_body(&paths, false, false, body),
++            _ => modern_compound_with_body(&paths, true, false, body),
++        };
++        let file = paths.instance_dir.join("intents").join(format!(
++            "{:020}-{}.intent",
++            reference.ordinal,
++            reference.operation.as_str()
++        ));
++        let original = std::fs::read(&file).unwrap();
++        assert!(original.len() >= 393_216);
++        let scan = complete_scan(&mut source);
++        assert!(
++            scan.coverage.is_some(),
++            "maximum {mode} origin must establish coverage"
++        );
++        assert_eq!(scan.hints.len(), 1);
++        assert_eq!(std::fs::read(&file).unwrap(), original);
++        if mode == "delivery" {
++            let (terminal, bytes) = delivery_terminal(&paths, &reference);
++            assert!(bytes.len() >= 458_752);
++            // Cover both an exact surviving original and terminal-only cleanup.
++            std::fs::write(&file, &original).unwrap();
++            assert!(complete_scan(&mut source).coverage.is_some());
++            std::fs::remove_file(&file).unwrap();
++            assert!(complete_scan(&mut source).coverage.is_some());
++            assert_eq!(std::fs::read(terminal).unwrap(), bytes);
++        }
++    }
++}
++
+ pub(super) fn scanner_store(
+     paths: &InstancePaths,
+ ) -> (herdr_threads::store::SqliteStore, rusqlite::Connection) {
+     use herdr_threads::store::{SqliteStore, StoreSettings, connection::StoreContext};
+     let store = SqliteStore::new(
+         StoreContext::new(
+             paths.database_path.clone(),
+             std::sync::Arc::new(herdr_threads::app::SystemClock::default()),
+         ),
+         "i",
+diff --git a/tests/store/topology_attempts.rs b/tests/store/topology_attempts.rs
+index d306ff80..3fb14ca5 100644
+--- a/tests/store/topology_attempts.rs
++++ b/tests/store/topology_attempts.rs
+@@ -208,21 +208,21 @@ fn guarded_history_replays_before_current_binding_and_refuses_altered_or_corrupt
+     let tx = db.transaction().unwrap();
+     assert_eq!(
+         recover(&tx, &namespace(), &request, 501, UtcMillis(4), None)
+             .unwrap_err()
+             .code,
+         ErrorCode::StoreCorrupt
+     );
+ }
+ 
+ #[test]
+-fn guarded_retained_result_keeps_the_256kib_ceiling_without_truncation() {
++fn guarded_retained_result_keeps_the_1mib_ceiling_without_truncation() {
+     let mut db = fixture();
+     let id = identity();
+     let request;
+     let saved;
+     {
+         let tx = db.transaction().unwrap();
+         topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
+         request = decision(&tx, &id, 1, not_created());
+         saved = recover(&tx, &namespace(), &request, 501, UtcMillis(1), None).unwrap();
+         let mut old_shape = saved.clone();
+@@ -258,21 +258,21 @@ fn guarded_retained_result_keeps_the_256kib_ceiling_without_truncation() {
+         )
+         .is_err()
+     );
+     assert_eq!(
+         tx.query_row(
+             "SELECT length(result_json) FROM bootstrap_recovery_decisions",
+             [],
+             |r| r.get::<_, i64>(0)
+         )
+         .unwrap(),
+-        256 * 1024
++        1024 * 1024
+     );
+ }
+ #[test]
+ fn reserve_is_one_use_and_fresh_submission_checks_a2() {
+     let mut db = fixture();
+     let id = identity();
+     let tx = db.transaction().unwrap();
+     topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
+     let auth = reserve_attempt(&tx, &namespace(), &reserve(&id, 1)).unwrap();
+     assert!(matches!(auth, ReserveBootstrapResult::Authorized { .. }));
+diff --git a/tests/store/topology_handoff.rs b/tests/store/topology_handoff.rs
+index fec972c8..bdcf54ef 100644
+--- a/tests/store/topology_handoff.rs
++++ b/tests/store/topology_handoff.rs
+@@ -60,21 +60,21 @@ pub(super) fn identity() -> BootstrapIdentity {
+     identity.digest = identity.semantic_digest().unwrap();
+     identity.validate().unwrap();
+     identity
+ }
+ 
+ fn setup(db: &Connection) {
+     schema::initialize(db, || UtcMillis(0)).unwrap();
+     assert_eq!(
+         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+             .unwrap(),
+-        28
++        29
+     );
+     db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0)")
+         .unwrap();
+     thread(db);
+     joined_agent(db);
+ }
+ 
+ /// The database image `setup` produces. Building the schema replays every
+ /// migration and its verification, far more than most cases cost, so each
+ /// test process builds it once; every fixture is a private copy of the image,
+@@ -658,20 +658,21 @@ fn bounded_slots_refuse_oversized_or_missing_terminal_reports_without_truncation
+     );
+ }
+ 
+ #[test]
+ fn full_completed_report_with_large_json_escaping_replays_and_rejects_tamper() {
+     use sha2::{Digest, Sha256};
+     let (_directory, path, mut db) = file_fixture();
+     let tx = db.transaction().unwrap();
+     let mut id = identity();
+     id.payload.launch.argv = vec!["\"".repeat(4096); 14];
++    id.payload.handoff.body = "\u{1}".repeat(65_536);
+     id.digest = id.semantic_digest().unwrap();
+     id.validate().unwrap();
+     topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
+     record_created(&tx);
+     let attachment = BootstrapAttachment {
+         attempt: BootstrapAttempt::first(),
+         created: created(),
+         resolve_operation: id.payload.resolve_key.clone(),
+         resolved_seat: SeatId::new("peer"),
+         handoff: HandoffIdentity {
+@@ -1204,20 +1205,64 @@ fn recovery_matching_created_and_cancelled_evidence_survive_reopen() {
+         schema::initialize(&db, || UtcMillis(2)).unwrap();
+         let result = topology_handoff::current(&db, &namespace(), &id)
+             .unwrap()
+             .unwrap();
+         assert_eq!(result.state, state);
+         assert_eq!(result.creation, Some(created()));
+         assert_eq!(result.recovery, Some(Box::new(retained)));
+     }
+ }
+ 
++#[test]
++fn maximum_escaped_body_recovery_survives_reopen() {
++    for cancelled in [false, true] {
++        let (_directory, path, mut db) = file_fixture();
++        let mut id = identity();
++        id.payload.handoff.body = "\u{1}".repeat(65_536);
++        id.digest = id.semantic_digest().unwrap();
++        let tx = db.transaction().unwrap();
++        topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
++        record_created(&tx);
++        let state = if cancelled {
++            BootstrapState::Cancelled
++        } else {
++            BootstrapState::Created
++        };
++        let disposition = if cancelled {
++            cancellation()
++        } else {
++            BootstrapRecoveryDisposition::CreatedPane {
++                evidence: created(),
++                structural_reference: HostCallId::new("inspection"),
++            }
++        };
++        let retained = saved_recovery(&tx, &id, disposition, state, Some(created()));
++        if cancelled {
++            tx.execute(
++                "UPDATE bootstrap_handoffs SET state='cancelled',terminal_at=1 WHERE id=1",
++                [],
++            )
++            .unwrap();
++        }
++        tx.commit().unwrap();
++        drop(db);
++        let db = Connection::open(path).unwrap();
++        schema::initialize(&db, || UtcMillis(2)).unwrap();
++        let result = topology_handoff::current(&db, &namespace(), &id)
++            .unwrap()
++            .unwrap();
++        assert_eq!(result.state, state);
++        assert_eq!(result.creation, Some(created()));
++        assert_eq!(result.recovery, Some(Box::new(retained)));
++    }
++}
++
+ #[path = "topology_attachment.rs"]
+ mod attachment;
+ #[path = "topology_attempts.rs"]
+ mod attempts;
+ 
+ fn current_main_historical26() -> Connection {
+     let db = Connection::open_in_memory().unwrap();
+     db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+     for sql in [
+         include_str!("../../migrations/0001_initial.sql"),
+@@ -1279,21 +1324,21 @@ fn current_main_fresh_and_canonical26_upgrade_to_topology28() {
+                 })
+                 .unwrap(),
+             )
+         } else {
+             None
+         };
+         schema::initialize(&db, || UtcMillis(0)).unwrap();
+         assert_eq!(
+             db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+                 .unwrap(),
+-            28
++            29
+         );
+         assert!(
+             db.query_row(
+                 "SELECT name FROM sqlite_master WHERE name='bootstrap_handoffs'",
+                 [],
+                 |r| r.get::<_, String>(0)
+             )
+             .is_ok()
+         );
+         if let Some(saved) = saved {
+diff --git a/tests/store/topology_handoff_schema.rs b/tests/store/topology_handoff_schema.rs
+index 53c6d251..0c40ee56 100644
+--- a/tests/store/topology_handoff_schema.rs
++++ b/tests/store/topology_handoff_schema.rs
+@@ -16,21 +16,21 @@ fn historical(version: usize) -> Connection {
+     let images = IMAGES.get_or_init(|| {
+         let db = Connection::open_in_memory().unwrap();
+         let mut paths =
+             std::fs::read_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+                 .unwrap()
+                 .map(|p| p.unwrap().path())
+                 .collect::<Vec<_>>();
+         paths.sort();
+         let mut images = Vec::new();
+         for (applied, path) in std::iter::once(None)
+-            .chain(paths.into_iter().take(28).map(Some))
++            .chain(paths.into_iter().take(29).map(Some))
+             .enumerate()
+         {
+             if let Some(path) = path {
+                 db.execute_batch(&std::fs::read_to_string(path).unwrap())
+                     .unwrap();
+             }
+             db.pragma_update(None, "user_version", applied as i64)
+                 .unwrap();
+             let mut size: ffi::sqlite3_int64 = 0;
+             // SAFETY: serialize the live main schema of our own open connection;
+@@ -79,24 +79,24 @@ fn objects(db: &Connection) -> Vec<(String, String, String)> {
+     .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+     .unwrap()
+     .map(Result::unwrap)
+     .collect()
+ }
+ #[test]
+ fn registered28_fresh_and_genuine_historical_chains_reopen() {
+     for previous in [0, 1, 15, 22, 25, 26, 27] {
+         let db = historical(previous);
+         schema::initialize(&db, || UtcMillis(0)).unwrap();
+-        assert_eq!(version(&db), 28, "actual {previous}->28");
+-        assert_eq!(objects(&db), objects(&historical(28)));
++        assert_eq!(version(&db), 29, "actual {previous}->29");
++        assert_eq!(objects(&db), objects(&historical(29)));
+         schema::initialize(&db, || UtcMillis(1)).unwrap();
+-        assert_eq!(version(&db), 28);
++        assert_eq!(version(&db), 29);
+     }
+ }
+ #[test]
+ fn registered28_audits_every_table_index_and_complete_trigger_body() {
+     let pristine = historical(28);
+     schema::initialize(&pristine, || UtcMillis(0)).unwrap();
+     for (kind, name, sql) in objects(&pristine) {
+         // Missing objects must fail, including every guard and every lookup index.
+         let db = historical(28);
+         db.execute_batch(&format!("DROP {kind} {name}")).unwrap();
+@@ -196,21 +196,21 @@ fn registered28_preserves25_and26_history_and_rolls_back_late_ddl_failure() {
+                 before_objects,
+                 "no partial tables/indexes/guards"
+             );
+             assert_eq!(evidence(&db), before);
+             let lazy_after: String = db.query_row("SELECT json_array(preparation_id,message_id,thread_id,seat_id,state) FROM lazy_recipients", [], |r| r.get(0)).unwrap();
+             assert_eq!(lazy_before, lazy_after);
+             db.execute_batch("DROP TRIGGER bootstrap_report_retained")
+                 .unwrap();
+         }
+         schema::initialize(&db, || UtcMillis(0)).unwrap();
+-        assert_eq!(version(&db), 28);
++        assert_eq!(version(&db), 29);
+         assert_eq!(evidence(&db), before);
+         let ordinary: String = db
+             .query_row(
+                 "SELECT delivery_mode FROM messages WHERE id='old'",
+                 [],
+                 |r| r.get(0),
+             )
+             .unwrap();
+         assert_eq!(ordinary, "ordinary");
+         if previous == 26 {
+@@ -322,10 +322,237 @@ fn legacy_key_index_retains_foreign_namespaces_with_bounded_lookup_after_1000_at
+     );
+     assert_eq!(
+         topology_handoff::current(&db, &namespace(), &id)
+             .unwrap()
+             .unwrap()
+             .attempt
+             .get(),
+         1001
+     );
+ }
++
++#[test]
++fn handoff_body_bounds_upgrade_preserves_existing_identity_bytes_and_keys() {
++    let db = historical(28);
++    db.execute_batch(
++        "PRAGMA foreign_keys=ON; INSERT INTO host_instances(id,created_at) VALUES('i',0)",
++    )
++    .unwrap();
++    super::thread(&db);
++    super::joined_agent(&db);
++    assert_eq!(
++        version(&db),
++        28,
++        "seeding must preserve the genuine old schema"
++    );
++    let mut id = identity();
++    id.payload.handoff.channel = herdr_threads::protocol::handoff::HandoffChannel::New {
++        name: None,
++        topic: "topic".into(),
++        goal: "goal".into(),
++    };
++    id.digest = id.semantic_digest().unwrap();
++    {
++        let tx = db.unchecked_transaction().unwrap();
++        herdr_threads::store::topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0))
++            .unwrap();
++        tx.commit().unwrap();
++    }
++    let bytes: Vec<u8> = db
++        .query_row("SELECT identity_json FROM bootstrap_handoffs", [], |r| {
++            r.get(0)
++        })
++        .unwrap();
++    schema::initialize(&db, || UtcMillis(1)).unwrap();
++    assert_eq!(version(&db), 29);
++    let retained: Vec<u8> = db
++        .query_row("SELECT identity_json FROM bootstrap_handoffs", [], |r| {
++            r.get(0)
++        })
++        .unwrap();
++    assert_eq!(retained, bytes);
++    assert_eq!(
++        db.pragma_query_value::<i64, _>(None, "foreign_keys", |r| r.get(0))
++            .unwrap(),
++        1
++    );
++    assert!(
++        herdr_threads::store::topology_handoff::current(&db, &namespace(), &id)
++            .unwrap()
++            .is_some()
++    );
++    let mut max = id;
++    max.compound = herdr_threads::protocol::ids::OperationId::new("maximum");
++    max.payload.handoff.keys.compound = max.compound.clone();
++    max.payload.handoff.keys.begin = herdr_threads::protocol::ids::OperationId::new("max-begin");
++    max.payload.handoff.keys.create = herdr_threads::protocol::ids::OperationId::new("max-create");
++    max.payload.handoff.keys.invite = herdr_threads::protocol::ids::OperationId::new("max-invite");
++    max.payload.handoff.keys.send = herdr_threads::protocol::ids::OperationId::new("max-send");
++    max.payload.handoff.keys.complete =
++        herdr_threads::protocol::ids::OperationId::new("max-complete");
++    max.payload.handoff_key = herdr_threads::protocol::ids::OperationId::new("max-handoff");
++    max.payload.resolve_key = herdr_threads::protocol::ids::OperationId::new("max-resolve");
++    max.payload.attach_key = herdr_threads::protocol::ids::OperationId::new("max-attach");
++    max.payload.linked_complete_key =
++        herdr_threads::protocol::ids::OperationId::new("max-linked-complete");
++    max.payload.handoff.body = "\u{1}".repeat(65_536);
++    max.digest = max.semantic_digest().unwrap();
++    let tx = db.unchecked_transaction().unwrap();
++    herdr_threads::store::topology_handoff::begin_pending(&tx, &namespace(), &max, UtcMillis(2))
++        .unwrap();
++    tx.commit().unwrap();
++    assert!(
++        herdr_threads::store::topology_handoff::current(&db, &namespace(), &max)
++            .unwrap()
++            .is_some()
++    );
++}
++
++#[test]
++fn handoff_bounds_upgrade_preserves_populated_completed_and_recovery_history() {
++    use herdr_threads::protocol::{handoff::*, ids::*};
++    use sha2::{Digest, Sha256};
++    let db = historical(28);
++    db.execute_batch("PRAGMA foreign_keys=ON; INSERT INTO host_instances(id,created_at) VALUES('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0)").unwrap();
++    super::joined_agent(&db);
++    assert_eq!(
++        version(&db),
++        28,
++        "seeding must preserve the genuine old schema"
++    );
++    let id = identity();
++    let tx = db.unchecked_transaction().unwrap();
++    herdr_threads::store::topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0))
++        .unwrap();
++    super::record_created(&tx);
++    let recovery = super::saved_recovery(
++        &tx,
++        &id,
++        BootstrapRecoveryDisposition::CreatedPane {
++            evidence: super::created(),
++            structural_reference: HostCallId::new("inspection"),
++        },
++        BootstrapState::Created,
++        Some(super::created()),
++    );
++    let attachment = BootstrapAttachment {
++        attempt: BootstrapAttempt::first(),
++        created: super::created(),
++        resolve_operation: id.payload.resolve_key.clone(),
++        resolved_seat: SeatId::new("peer"),
++        handoff: HandoffIdentity {
++            compound: id.payload.handoff_key.clone(),
++            digest: "b".repeat(64),
++            claim: id.claim.clone(),
++            thread: Some(ThreadId::new("t")),
++            recipient: SeatId::new("peer"),
++            create_key: id.payload.handoff.keys.create.clone(),
++            invite_key: id.payload.handoff.keys.invite.clone(),
++            send_key: id.payload.handoff.keys.send.clone(),
++        },
++    };
++    attachment.validate(&id).unwrap();
++    let report = serde_json::json!({"outcome":"started","pane":"w:p2","seat":"peer","harness":"codex","argv":id.payload.launch.argv});
++    let completed = CompletedBootstrapResult {
++        identity: id.clone(),
++        attachment: attachment.clone(),
++        retained: LinkedBootstrapReport {
++            thread: ThreadId::new("t"),
++            recipient: SeatId::new("peer"),
++            pane: HostTargetId::new("w:p2"),
++            kind: "launch".into(),
++            launch: id.payload.launch.clone(),
++            report_digest: format!("{:x}", Sha256::digest(serde_json::to_vec(&report).unwrap())),
++            report,
++            terminal: super::created().terminal,
++            host_incarnation: super::created().host_incarnation,
++        },
++        legacy_result: HandoffResult {
++            compound: id.payload.handoff_key.clone(),
++            thread: Some(ThreadId::new("t")),
++            state: HandoffState::Completed,
++        },
++    };
++    completed.retained.validate().unwrap();
++    tx.execute(
++        "INSERT INTO bootstrap_attachments(parent_id,attempt,attachment_json) VALUES(1,1,?1)",
++        [serde_json::to_vec(&attachment).unwrap()],
++    )
++    .unwrap();
++    tx.execute(
++        "INSERT INTO bootstrap_reports(parent_id,completed_json) VALUES(1,?1)",
++        [serde_json::to_vec(&completed).unwrap()],
++    )
++    .unwrap();
++    tx.execute(
++        "UPDATE bootstrap_handoffs SET state='completed',terminal_at=1 WHERE id=1",
++        [],
++    )
++    .unwrap();
++    tx.commit().unwrap();
++    let before = herdr_threads::store::topology_handoff::current(&db, &namespace(), &id)
++        .unwrap()
++        .unwrap();
++    assert_eq!(before.completed, Some(Box::new(completed)));
++    assert_eq!(before.recovery, Some(Box::new(recovery)));
++    let dump = |db: &Connection| {
++        [
++            "bootstrap_handoffs",
++            "bootstrap_attempts",
++            "bootstrap_child_keys",
++            "bootstrap_recovery_decisions",
++            "bootstrap_attachments",
++            "bootstrap_reports",
++        ]
++        .into_iter()
++        .map(|table| {
++            let mut statement = db
++                .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
++                .unwrap();
++            let columns = statement.column_count();
++            statement
++                .query_map([], |row| {
++                    (0..columns)
++                        .map(|column| row.get::<_, rusqlite::types::Value>(column))
++                        .collect::<rusqlite::Result<Vec<_>>>()
++                })
++                .unwrap()
++                .collect::<rusqlite::Result<Vec<_>>>()
++                .unwrap()
++        })
++        .collect::<Vec<_>>()
++    };
++    let original = dump(&db);
++    struct PrivateDb(std::path::PathBuf);
++    impl Drop for PrivateDb {
++        fn drop(&mut self) {
++            let _ = std::fs::remove_file(&self.0);
++        }
++    }
++    let private = PrivateDb(std::env::temp_dir().join(format!(
++        "ht-handoff-bounds-upgrade-{}.db",
++        uuid::Uuid::new_v4()
++    )));
++    db.execute("VACUUM INTO ?1", [private.0.to_str().unwrap()])
++        .unwrap();
++    drop(db);
++    let db = Connection::open(&private.0).unwrap();
++    db.pragma_update(None, "foreign_keys", true).unwrap();
++    assert_eq!(version(&db), 28);
++    schema::initialize(&db, || UtcMillis(2)).unwrap();
++    assert_eq!(dump(&db), original);
++    drop(db);
++    let db = Connection::open(&private.0).unwrap();
++    db.pragma_update(None, "foreign_keys", true).unwrap();
++    schema::initialize(&db, || UtcMillis(3)).unwrap();
++    assert_eq!(
++        herdr_threads::store::topology_handoff::current(&db, &namespace(), &id)
++            .unwrap()
++            .unwrap(),
++        before
++    );
++    assert_eq!(
++        db.pragma_query_value::<i64, _>(None, "foreign_keys", |r| r.get(0))
++            .unwrap(),
++        1
++    );
++}

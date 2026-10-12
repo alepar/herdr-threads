@@ -1,0 +1,13 @@
+{
+  "classification": "TEST ONLY on KNOWN Important diagnostic baseline; UNRUN; NOT CLEAN",
+  "pre_application": {
+    "full_source_sha256": "a097092db1ea5d1bc245abbd24b0f137048ca1670754c3c6588169a307e7d24b",
+    "dirtydiff_sha256": "0fb7dd9495bc6f7222d87b8290bfc25064afae90a6de1eb3fde6c265ce47f3e5",
+    "attention_sha256": "13b189cfc27769b9ebdc3c5dd69a323e7f8ca8f2341727321dad77e096d339b0",
+    "file_count": 3533,
+    "processes_drained": true
+  },
+  "patch_sha256": "c1e6194d747f6bcd46f60ee2e56c48c943da31a06d4422a96bf324695e700090",
+  "final_attention_sha256": "7e31cf4e164a90ac42d0777e67b56a686c8a6783befe08535f9bba6c20324cc5",
+  "checkpoint": "09d65b0c73d293c6574d1a262cabb1e7e65ee871"
+}

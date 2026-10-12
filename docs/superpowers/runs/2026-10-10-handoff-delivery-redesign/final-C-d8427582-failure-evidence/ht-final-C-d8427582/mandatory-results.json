@@ -1,0 +1,111 @@
+{
+  "executed_cases": [
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "lazy_recovery_context::lazy_recovery_agent_mixed_submission_pins_ambient_journal",
+      "status": "ok",
+      "log": "/private/tmp/ht-final-C-d8427582/mandatory-recovery-01.log"
+    },
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "lazy_recovery_context::lazy_recovery_agent_mixed_submission_pins_journal",
+      "status": "ok",
+      "log": "/private/tmp/ht-final-C-d8427582/mandatory-recovery-02.log"
+    },
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "lazy_recovery_context::lazy_recovery_human_submission_pins_ambient_journal",
+      "status": "ok",
+      "log": "/private/tmp/ht-final-C-d8427582/mandatory-recovery-03.log"
+    },
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "lazy_recovery_context::lazy_recovery_human_submission_pins_journal",
+      "status": "ok",
+      "log": "/private/tmp/ht-final-C-d8427582/mandatory-recovery-04.log"
+    },
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "lazy_recovery_context::lazy_recovery_prior_durable_ref_on_second_record_failure_pins_ambient_journal",
+      "status": "ok",
+      "log": "/private/tmp/ht-final-C-d8427582/mandatory-recovery-05.log"
+    },
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "lazy_recovery_context::lazy_recovery_prior_durable_ref_on_second_record_failure_pins_journal",
+      "status": "ok",
+      "log": "/private/tmp/ht-final-C-d8427582/mandatory-recovery-06.log"
+    }
+  ],
+  "executed_count": 6,
+  "passed_count": 6,
+  "missing": [],
+  "extra": [],
+  "duplicates": [],
+  "ignored": [],
+  "errors": [],
+  "evidence_complete": true,
+  "summaries": [
+    {
+      "log": "/private/tmp/ht-final-C-d8427582/mandatory-recovery-01.log",
+      "line": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 740 filtered out; finished in 1.91s",
+      "counts": {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0
+      }
+    },
+    {
+      "log": "/private/tmp/ht-final-C-d8427582/mandatory-recovery-02.log",
+      "line": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 740 filtered out; finished in 1.93s",
+      "counts": {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0
+      }
+    },
+    {
+      "log": "/private/tmp/ht-final-C-d8427582/mandatory-recovery-03.log",
+      "line": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 740 filtered out; finished in 2.23s",
+      "counts": {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0
+      }
+    },
+    {
+      "log": "/private/tmp/ht-final-C-d8427582/mandatory-recovery-04.log",
+      "line": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 740 filtered out; finished in 1.99s",
+      "counts": {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0
+      }
+    },
+    {
+      "log": "/private/tmp/ht-final-C-d8427582/mandatory-recovery-05.log",
+      "line": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 740 filtered out; finished in 1.81s",
+      "counts": {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0
+      }
+    },
+    {
+      "log": "/private/tmp/ht-final-C-d8427582/mandatory-recovery-06.log",
+      "line": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 740 filtered out; finished in 1.85s",
+      "counts": {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0
+      }
+    }
+  ],
+  "selection_policy": "Six independently exact Cargo calls; every result line accounted."
+}

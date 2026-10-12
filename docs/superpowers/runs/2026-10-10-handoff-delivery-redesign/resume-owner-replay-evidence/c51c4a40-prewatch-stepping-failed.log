@@ -1,0 +1,25 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 23fded67-c6d6-412f-9e30-cbf700197251 with nextest profile: default
+    Starting 1 test across 1 binary (200 tests skipped)
+        FAIL [  26.260s] (1/1) herdr-threads::integration mod_delivery::activation_v2_watch_full_pending_capacity_parks_until_real_channel_input
+  stdout ───
+
+    running 1 test
+    test mod_delivery::activation_v2_watch_full_pending_capacity_parks_until_real_channel_input ... FAILED
+
+    failures:
+
+    failures:
+        mod_delivery::activation_v2_watch_full_pending_capacity_parks_until_real_channel_input
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 200 filtered out; finished in 26.25s
+
+  stderr ───
+    panicked at tests/integration/mod_delivery.rs:1565:9:
+    expected an actual queued daemon Attention
+
+────────────
+     Summary [  26.261s] 1 test run: 0 passed, 1 failed, 200 skipped
+        FAIL [  26.260s] (1/1) herdr-threads::integration mod_delivery::activation_v2_watch_full_pending_capacity_parks_until_real_channel_input
+error: test run failed

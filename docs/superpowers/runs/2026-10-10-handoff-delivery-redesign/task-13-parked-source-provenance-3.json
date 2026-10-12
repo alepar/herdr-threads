@@ -1,0 +1,15 @@
+{
+  "recorded_at": "2026-10-11T09:05:41.153079+00:00",
+  "workspace": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/parked--task-ht-0lo.8.2",
+  "head": "4cb157ba1ad5eedfff1632e7986d2878a5af7da8",
+  "head_tree": "d2a70082d89179380ac0b747f7febb8a070346db",
+  "dirty_diff_sha256": "59c14099345a6ea26b11346f8b0dae190e08ebd2f7db672c93e5a678d53bde6b",
+  "status": " M README.md\n M TRUST-POLICY.md\n M integrations/skill/SKILL.md\n M src/cli/direct_send.rs\n M src/cli/handoff.rs\n M src/cli/handoff_delivery.rs\n M src/cli/journal.rs\n M src/cli/topology_handoff.rs\n M src/cli/topology_handoff/automatic.rs\n M src/client/local.rs\n M src/daemon/transport.rs\n M src/protocol/handoff.rs\n M src/protocol/handoff/automatic.rs\n M src/protocol/handoff/automatic_bootstrap.rs\n M src/protocol/results.rs\n M src/protocol/wire.rs\n M src/store/control.rs\n M src/store/handoff/automatic.rs\n M src/store/topology_handoff/automatic.rs\n M tests/cli/direct_send.rs\n M tests/cli/handoff.rs\n M tests/cli/handoff_delivery.rs\n M tests/cli/topology_handoff.rs\n M tests/daemon/transport.rs\n",
+  "cargo_lease": "NONE; D sole Cargo at original warm path; no target/cache used in parked checkout",
+  "pending_actual_reds": [
+    "cli::handoff::tests::automatic_launched_noncompletion_keeps_exact_artifact_and_bounded_progress",
+    "cli::handoff::tests::automatic_launched_oversized_original_refuses_before_recipient_allocation",
+    "protocol::handoff::automatic_contract_tests::automatic_historical_original_capacity_and_exact_bytes_remain_unchanged",
+    "cli::topology_handoff::tests::live::automatic_live::modern_automatic_completed_terminal_rejects_mismatched_selection_hint"
+  ]
+}

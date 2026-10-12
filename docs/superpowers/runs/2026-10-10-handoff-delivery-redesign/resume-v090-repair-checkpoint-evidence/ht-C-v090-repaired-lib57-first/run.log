@@ -1,0 +1,140 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+────────────
+ Nextest run ID 8605b469-bc2e-4016-be2d-22743d09d662 with nextest profile: default
+    Starting 57 tests across 1 binary (4785 tests skipped)
+        PASS [   0.599s] ( 1/57) herdr-threads service::delivery_pull::tests::a_departed_inviter_remains_actionable_after_whole_deadline_warning_until_acceptance
+        PASS [   0.614s] ( 2/57) herdr-threads service::delivery_pull::tests::presentation_capacity_retained_concurrent_offer_count_does_not_refuse_passive_work
+        FAIL [   0.681s] ( 3/57) herdr-threads harness::agy::delivery::tests::daemon::canonical_v2_system_allocated_pages_fit_actual_native_codec
+  stdout ───
+
+    running 1 test
+    test harness::agy::delivery::tests::daemon::canonical_v2_system_allocated_pages_fit_actual_native_codec ... FAILED
+
+    failures:
+
+    failures:
+        harness::agy::delivery::tests::daemon::canonical_v2_system_allocated_pages_fit_actual_native_codec
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.67s
+
+  stderr ───
+
+    thread 'harness::agy::delivery::tests::daemon::canonical_v2_system_allocated_pages_fit_actual_native_codec' (55721472) panicked at src/harness/agy/../../../tests/harness/agy_delivery.rs:1803:25:
+    canonical PullV2 refused: SessionMismatch; pulls=1,pages=0,unchanged=0,invitations=0,last_items=0,last_token=false,last_more=false
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.694s] ( 4/57) herdr-threads service::delivery_pull::tests::departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack
+        PASS [   0.696s] ( 5/57) herdr-threads service::delivery_pull::tests::presentation_capacity_replay_preserves_finite_due_progress_and_positive_slot_quiet
+        PASS [   0.733s] ( 6/57) herdr-threads service::delivery_pull::tests::presentation_capacity_reclaimed_or_initially_free_with_missing_due_keys_quiets
+        FAIL [   0.746s] ( 7/57) herdr-threads harness::agy::delivery::tests::daemon::canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec
+  stdout ───
+
+    running 1 test
+    test harness::agy::delivery::tests::daemon::canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec ... FAILED
+
+    failures:
+
+    failures:
+        harness::agy::delivery::tests::daemon::canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.73s
+
+  stderr ───
+
+    thread 'harness::agy::delivery::tests::daemon::canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec' (55721471) panicked at src/harness/agy/../../../tests/harness/agy_delivery.rs:1803:25:
+    canonical PullV2 refused: SessionMismatch; pulls=1,pages=0,unchanged=0,invitations=0,last_items=0,last_token=false,last_more=false
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.178s] ( 8/57) herdr-threads service::delivery_pull::tests::presentation_capacity_snapshot_validation_scope_and_failed_calls
+        FAIL [   0.794s] ( 9/57) herdr-threads service::delivery_pull::tests::presentation_capacity_due_walk_preserves_partial_body_until_real_ack
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_capacity_due_walk_preserves_partial_body_until_real_ack ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_capacity_due_walk_preserves_partial_body_until_real_ack
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.78s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_capacity_due_walk_preserves_partial_body_until_real_ack' (55721469) panicked at src/service/../../tests/service/delivery_pull.rs:7551:5:
+    fixture full body exceeds bounded continuation reads
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.143s] (10/57) herdr-threads service::delivery_pull::tests::presentation_confirmation_preserves_original_slots_and_exact_subsets_on_restart
+        PASS [   0.134s] (11/57) herdr-threads service::delivery_pull::tests::presentation_current_handler_derives_timed_invitation_attention
+        PASS [   0.836s] (12/57) herdr-threads service::delivery_pull::tests::presentation_capacity_last_slot_parks_unknown_carry_and_only_continues_for_due_keys
+        PASS [   0.145s] (13/57) herdr-threads service::delivery_pull::tests::presentation_final_cleanup_preserves_passive_removal_observation
+        PASS [   0.139s] (14/57) herdr-threads service::delivery_pull::tests::presentation_handler_initial_ordinary_receipt_delivers_body_without_invented_attention
+        PASS [   0.175s] (15/57) herdr-threads service::delivery_pull::tests::presentation_handler_partial_confirmation_retains_canonical_slots_across_restart
+        PASS [   0.173s] (16/57) herdr-threads service::delivery_pull::tests::presentation_handler_published_warn_reopens_at_unchanged_native_version
+        PASS [   0.303s] (17/57) herdr-threads service::delivery_pull::tests::presentation_final_watch_codec_counts_escaped_canonical_invitation_batch
+        FAIL [   0.369s] (18/57) herdr-threads service::delivery_pull::tests::presentation_owner_replay_preserves_partial_body_until_real_ack
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_owner_replay_preserves_partial_body_until_real_ack ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_owner_replay_preserves_partial_body_until_real_ack
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.36s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_owner_replay_preserves_partial_body_until_real_ack' (55721533) panicked at src/service/../../tests/service/delivery_pull.rs:7551:5:
+    fixture full body exceeds bounded continuation reads
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   1.241s] (19/57) herdr-threads service::delivery_pull::tests::presentation_actual_candidate_sizing_and_rpc_wrapper_work_remain_bounded
+        PASS [   0.299s] (20/57) herdr-threads service::delivery_pull::tests::presentation_private_invitation_id_wrong_types_refuse_at_strict_storage_boundary
+        PASS [   0.451s] (21/57) herdr-threads service::delivery_pull::tests::presentation_ordinary_carry_survives_completed_control_partial_and_invitation_priority
+        PASS [   0.595s] (22/57) herdr-threads service::delivery_pull::tests::presentation_handler_clears_unconfirmed_epoch_then_reopens_new_episode
+        PASS [   0.146s] (23/57) herdr-threads service::delivery_pull::tests::presentation_private_skipped_body_requires_exact_retained_cursor
+        PASS [   0.154s] (24/57) herdr-threads service::delivery_pull::tests::presentation_private_watch_cleanup_ids_allow_128_byte_id_without_canonical_owner_changes
+        PASS [   0.446s] (25/57) herdr-threads service::delivery_pull::tests::presentation_private_invitation_ids_allow_exact_128_byte_ids_in_each_reader
+        PASS [   0.267s] (26/57) herdr-threads service::delivery_pull::tests::presentation_private_item_refresh_text_bounds_refuse_before_effects
+        PASS [   0.133s] (27/57) herdr-threads service::delivery_pull::tests::presentation_publication_foreign_refresh_refuses_without_touching_hook_or_watch
+        PASS [   0.288s] (28/57) herdr-threads service::delivery_pull::tests::presentation_private_watch_cleanup_ids_enforce_borrowed_text_bounds_without_effects
+        PASS [   0.293s] (29/57) herdr-threads service::delivery_pull::tests::presentation_publication_generation_overflow_rolls_back_frontier_and_version
+        PASS [   0.409s] (30/57) herdr-threads service::delivery_pull::tests::presentation_promoted_lazy_raw_carry_survives_restart_with_frozen_prefix
+        PASS [   0.285s] (31/57) herdr-threads service::delivery_pull::tests::presentation_publication_invalid_scalars_refuse_before_confirmation_effects
+        PASS [   0.155s] (32/57) herdr-threads service::delivery_pull::tests::presentation_publication_scalar_maximum_roundtrips_without_changing_carry
+        PASS [   0.250s] (33/57) herdr-threads service::delivery_pull::tests::presentation_publication_signal_preserves_active_capture_and_replays_across_restart
+        PASS [   0.763s] (34/57) herdr-threads service::delivery_pull::tests::presentation_private_watch_cleanup_ids_refuse_malformed_identity_without_effects
+        PASS [   1.320s] (35/57) herdr-threads service::delivery_pull::tests::presentation_owner_replay_full_final_page_keeps_logical_due_continuation
+        PASS [   0.359s] (36/57) herdr-threads service::delivery_pull::tests::presentation_publication_walk_counts_foreign_prefix_before_filter_and_progresses
+        PASS [   0.137s] (37/57) herdr-threads service::delivery_pull::tests::presentation_quiet_channel_observes_new_lazy_ordinary_without_wake
+        PASS [   0.168s] (38/57) herdr-threads service::delivery_pull::tests::presentation_quiet_channel_observes_new_ordinary_ack_message
+        PASS [   0.165s] (39/57) herdr-threads service::delivery_pull::tests::presentation_refresh_observes_lazy_context_and_removal_without_consuming_output
+        PASS [   0.144s] (40/57) herdr-threads service::delivery_pull::tests::presentation_refresh_preserves_live_presentation_header_and_outbox_across_rebind
+        PASS [   1.109s] (41/57) herdr-threads service::delivery_pull::tests::presentation_private_state_rejects_typed_corruption_without_confirmation_effects
+        PASS [   0.167s] (42/57) herdr-threads service::delivery_pull::tests::presentation_refresh_stub_allows_actual_watch_full_offer_and_replaced_owner_replay
+        PASS [   1.559s] (43/57) herdr-threads service::delivery_pull::tests::presentation_private_context_cursors_refuse_invalid_thread_ids_before_effects
+        PASS [   0.157s] (44/57) herdr-threads service::delivery_pull::tests::presentation_registry_pass_drives_bounded_passive_refresh_before_full_pull
+        PASS [   0.190s] (45/57) herdr-threads service::delivery_pull::tests::presentation_registered_channel_materializes_each_published_warn_before_drain
+        PASS [   0.153s] (46/57) herdr-threads service::delivery_pull::tests::presentation_v2_replays_one_canonical_invitation_until_emit_confirmation
+        PASS [   0.614s] (47/57) herdr-threads service::delivery_pull::tests::presentation_publication_watch_reconnect_keeps_positive_frontier_without_native_wake
+        PASS [   0.220s] (48/57) herdr-threads service::delivery_pull::tests::presentation_v2_service_requirement_attach_release_fresh_replacement_keeps_exact_commands
+        PASS [   0.186s] (49/57) herdr-threads service::delivery_pull::tests::presentation_watch_fresh_confirmation_records_exact_owner_publication_cutoff_once
+        PASS [   0.415s] (50/57) herdr-threads service::delivery_pull::tests::presentation_two_live_bindings_keep_offer_stamps_replay_and_carry_independent
+        PASS [   0.273s] (51/57) herdr-threads store::connection::tests::v28_upgrade_migrates_bindings_to_session_keyed_v32
+        PASS [   2.246s] (52/57) herdr-threads service::delivery_pull::tests::presentation_confirm_rejects_oversized_private_json_before_decoding
+        PASS [   0.995s] (53/57) herdr-threads store::connection::tests::released_main31_populated_automatic_graph_physically_upgrades_and_reopens
+        PASS [   2.049s] (54/57) herdr-threads service::delivery_pull::tests::presentation_publication_refresh_and_pull_rebind_preserve_each_others_progress
+        PASS [   2.712s] (55/57) herdr-threads service::delivery_pull::tests::presentation_private_invitation_ids_refuse_corruption_in_each_reader_without_effects
+        PASS [   5.143s] (56/57) herdr-threads service::delivery_pull::tests::an_old_visible_invitation_topic_change_survives_a_saturated_newest_window
+        PASS [   5.231s] (57/57) herdr-threads service::delivery_pull::tests::a_finite_invitation_backlog_progresses_beyond_the_whole_display_cache
+────────────
+     Summary [   5.245s] 57 tests run: 53 passed, 4 failed, 4785 skipped
+        FAIL [   0.681s] ( 3/57) herdr-threads harness::agy::delivery::tests::daemon::canonical_v2_system_allocated_pages_fit_actual_native_codec
+        FAIL [   0.746s] ( 7/57) herdr-threads harness::agy::delivery::tests::daemon::canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec
+        FAIL [   0.794s] ( 9/57) herdr-threads service::delivery_pull::tests::presentation_capacity_due_walk_preserves_partial_body_until_real_ack
+        FAIL [   0.369s] (18/57) herdr-threads service::delivery_pull::tests::presentation_owner_replay_preserves_partial_body_until_real_ack
+error: test run failed

@@ -1,0 +1,165 @@
+
+You receive the pooled findings from several adversarial reviewers. Overlapping reviewers
+surface the same issue repeatedly, and some findings matter far more than others. Your job:
+merge duplicates, suggest a severity for each distinct finding, and select which ones the
+rest of the pipeline verifies. You do NOT judge whether a finding is true — that is the
+judges' job. Never invent a finding, and never drop a distinct issue.
+
+## Findings (pooled, raw)
+[
+  {
+    "claim": "The bounded-time warning goal has no specified detection-latency bound or backlog/fairness requirement, so bounded scan batches alone do not establish a bounded delay for each overdue obligation.",
+    "location": "Root design: Goal; Message deadline contract; Risks and mitigations; task ht-0lo.1.3",
+    "category": "completeness",
+    "external": false,
+    "evidence": "The goal promises a 'bounded-time warning'; the contract says expired rows become due on the 'normal bounded scan' and migration must 'materialize/index due work'; the risk mitigation is to 'bound scan work' during an upgrade-time warning burst. These specify bounded work per scan, but no maximum time from a due deadline to durable warning, ordering/fairness guarantee across backlogged receipt/invitation work, or load assumption under which that bound holds. The task tree similarly asks for 'bounded warning burst' without a measurable per-obligation delay. Consequently the central timing promise has no acceptance criterion that distinguishes bounded processing from indefinite delay behind other due work.",
+    "kind": "GAP"
+  },
+  {
+    "claim": "The design leaves unspecified whether a confirmation committed after its deadline but before overdue scanning must create a missed-deadline warning or may settle silently.",
+    "location": "Root design: Message deadline contract and Invitation contract; acceptance and validation",
+    "category": "completeness",
+    "external": false,
+    "evidence": "The receipt contract says 'An overdue warning says confirmation missed its deadline' and 'Late ACK clears the existing warning through normal lifecycle'; the invitation contract says 'Only explicit recipient acceptance settles it automatically' and 'Expiry notifies its originating seat'. The tests exercise expiry then late ACK/acceptance, but no rule or scenario handles deadline < confirmation commit < first due-scan transaction, where no existing warning is available to clear. Both suppressing the warning because the row is now terminal and recording that the deadline was missed fit separate clauses. An atomic transition rule and boundary/race tests are needed to define the externally visible outcome.",
+    "kind": "GAP"
+  },
+  {
+    "claim": "The bounded-time warning promise relies on fair, sufficiently frequent progress through overdue work, but the design specifies neither a detection-lag bound nor a backlog-progress test that establishes that assumption.",
+    "location": "settled-input.md: root Goal, Message deadline contract, Risks and mitigations; task-tree ht-0lo.1.2 and ht-0lo.1.3",
+    "category": "domain:durable-messaging",
+    "external": false,
+    "evidence": "The Goal promises a 'bounded-time warning', and the message contract distinguishes 'bounded deadline detection' from deferred native submission. Historical dormant obligations are backdated and 'Already expired rows become due on the normal bounded scan'; the risk mitigation says to 'bound scan work'. These requirements bound work per scan, but do not state how soon successive scans execute, how a cursor makes fair progress through an upgrade burst, or a maximum delay between an overdue deadline and durable warning creation. The listed tests exercise individual unavailable recipients, restart, and a 'bounded warning burst', without requiring a multi-batch backlog to drain while native wakes remain blocked or newer due work arrives. For the promised detection bound to hold, overdue discovery must continue independently of blocked delivery and make fair progress under a stated workload bound; that assumption is not demonstrated by the artifact.",
+    "kind": "UNVERIFIED-ASSUMPTION",
+    "spike": {
+      "question": "What upper bound on durable warning creation follows from the scanner cadence, batch size, and supported overdue backlog, independently of native wake admission?",
+      "cheapest_test": "Create a historical overdue backlog larger than several scanner batches, block native delivery to its recipients and originators, add new overdue obligations while scanning, and restart between batches; assert every eligible original obligation obtains its durable warning within a declared number of scans.",
+      "kill_criteria": "Reject the bounded-time claim if blocked delivery, restart, or continually arriving due work can prevent any original overdue obligation from being materialized into a warning within the declared supported workload bound."
+    }
+  },
+  {
+    "claim": "The design leaves the ownership policy undefined when a recorded stable hook group is removed and independently recreated with identical bytes while its manifest remains.",
+    "location": "settled-input.md, root design, Stable hook entrypoints and ownership; Risks and mitigations",
+    "category": "domain:native-hook-configuration-ownership",
+    "external": false,
+    "evidence": "The spec says 'Remove the per-install UUID shell comment ... not the manifest installation identity', 'Persist exact installed groups/fingerprints and installation ID in ownership records', 'Existing unmanaged identical groups are foreign: do not adopt, overwrite, remove or treat them as owned', and 'Unsetup removes only exactly owned records'. Consider setup recording group G, then a same-user settings edit deleting G and independently inserting the same stable group at the same position, leaving the manifest intact. Group bytes, position and manifest installation ID match the untouched-install case, but the replacement is independently created. The listed ownership evidence cannot distinguish these histories. The spec does not state an accepted observational-ownership limit or another continuity signal, although it promises conservative foreign-group detection after removing the embedded installation marker. This is a configuration provenance ambiguity, not an adversarial-caller issue.",
+    "kind": "UNVERIFIED-ASSUMPTION",
+    "spike": {
+      "question": "Does ownership intentionally follow exact current configuration plus a retained manifest, including independently recreated identical groups, or must independent replacements remain foreign?",
+      "cheapest_test": "In isolated configuration, install a stable group, retain the manifest, remove and recreate the group byte-for-byte at its original position, then run reinstall and unsetup; compare with an untouched installation.",
+      "kill_criteria": "If the same observations authorize removing the independent replacement while the contract still calls it foreign, the stated ownership guarantee needs an explicit accepted limit or additional continuity mechanism."
+    }
+  },
+  {
+    "claim": "The design does not specify capability negotiation for the changed ordinary-send receipt semantics, so a modern client cannot establish that an older daemon will start an unavailable recipient\u2019s ACK deadline at send time.",
+    "location": "Root spec: Message deadline contract; Invitation contract protocol negotiation; Risks and mitigations",
+    "category": "domain:protocol-evolution-and-data-migrations",
+    "external": false,
+    "evidence": "The message contract promises \u201cFor every new durable ACK-required ordinary send\u201d an original deadline at \u201ccanonical committed send time plus that duration\u201d, including \u201cno binding\u201d and \u201cunavailable binding\u201d. The explicit compatibility mechanism instead appears under invitations: \u201cnegotiate protocol capability/version before any mutation requiring the new representation\u201d; subtree validation likewise requires negotiation for \u201cnew incompatible fields\u201d. Ordinary ACK-required sends need not contain any new invitation field or new representation, yet their old availability-deferred semantics are precisely what this redesign changes. An old daemon can therefore accept a wire-compatible ordinary send while failing the new deadline contract unless a receipt-semantics capability/version gate or an explicit mixed-version limitation is specified. No such gate or mixed-version receipt test is named in the settled artifact.",
+    "kind": "GAP"
+  },
+  {
+    "claim": "The compatibility contract does not explicitly gate ordinary ACK-required sends on support for send-time receipt semantics, leaving a mixed-version client/daemon path that can retain the old availability-dependent timer without rejecting the send.",
+    "location": "Root design: Message deadline contract; Invitation contract capability negotiation; task ht-0lo.1.1",
+    "category": "failure-mode",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "The root requires \"For every new durable ACK-required ordinary send\" a deadline at committed send time, while the explicit negotiation rule is \"before any mutation requiring the new representation\" in the invitation section. The ordinary receipt change is a semantics change using existing immutable send timestamps/durations, and ht-0lo.1.1 owns projection/schema/preparation but specifies no receipt-semantics capability or mixed-version ordinary-send test. An ordinary send need not contain the new invitation representation, so negotiating that representation alone does not prove that its daemon starts dormant receipt timers at send time. The design needs an explicit version/capability refusal covering this behavior as well, or an explicit supported mixed-version limit."
+  },
+  {
+    "claim": "The bounded-time warning promise assumes the bounded due scanners can drain overdue work fast enough during historical backfill, but the design gives no detection-latency bound or load test to establish that assumption.",
+    "location": "Root design: Goal; Message deadline contract; Risks and mitigations; task ht-0lo.1.3",
+    "category": "failure-mode",
+    "external": false,
+    "kind": "UNVERIFIED-ASSUMPTION",
+    "evidence": "The goal promises a \"bounded-time warning\" and the receipt section calls this \"bounded deadline detection\". Historical dormant obligations are all assigned historical send-time deadlines, with already expired rows due on the \"normal bounded scan\". The risk mitigation is only \"bound scan work\", and ht-0lo.1.3 requests a \"bounded warning burst\" without a backlog size, fairness rule, scan cadence, throughput requirement or maximum delay for a new deadline behind the historical backlog. Bounded work per iteration protects the daemon but does not itself establish a bounded delay to creating an individual warning when overdue work accumulates. What must be true is that scanner scheduling and backlog handling retain a stated detection-latency guarantee under the supported history size and new-send rate.",
+    "spike": {
+      "question": "What maximum warning-creation delay is promised while the upgrade backlog is being drained?",
+      "cheapest_test": "Populate a large supported sparse/physical historical dormant-receipt backlog, run the normal capped scanner, inject new short-deadline sends and timed invitations during drainage, and measure their warning-creation delays and normal request latency.",
+      "kill_criteria": "New deadline detection exceeds the declared latency budget or overdue obligations can be starved by continuing work; either change scheduling/backfill or narrow the advertised bounded-time contract."
+    }
+  },
+  {
+    "claim": "The bounded-time warning promise assumes the due-work scheduler can drain historical and live overdue obligations within a bounded delay, but the design establishes neither a workload bound nor a scheduling latency bound.",
+    "location": "Root Goal; Message deadline contract; Risks and mitigations; task ht-0lo.1.3",
+    "category": "feasibility",
+    "external": false,
+    "evidence": "The goal promises a \"bounded-time warning\" and the message contract says \"Already expired rows become due on the normal bounded scan.\" The risk section acknowledges an \"upgrade-time warning burst\" and prescribes only \"bound scan work\"; ht-0lo.1.3 likewise requires a \"bounded warning burst.\" Bounded work per scan limits resource consumption, but does not bound how many scans an obligation waits behind an arbitrarily large upgrade backlog or a continuing arrival stream. The artifact gives no maximum pending workload, minimum scan service rate, fairness rule, or maximum detection lag, and its validation names functional expiry scenarios rather than backlog latency. This leaves the load-bearing latency premise unverified even with the daemon running and native wake deferral excluded.",
+    "kind": "UNVERIFIED-ASSUMPTION",
+    "spike": {
+      "question": "Under what supported backlog and arrival rate is overdue-warning detection bounded, including immediately after historical migration?",
+      "cheapest_test": "Seed a large sparse and physical legacy backlog, continuously add newly due obligations, and measure maximum warning-detection lag and daemon responsiveness using the intended bounded scan configuration.",
+      "kill_criteria": "Any supported workload can starve a due obligation or exceed the declared detection-lag bound; define the supported load/latency contract and scheduler fairness before claiming bounded-time detection."
+    }
+  },
+  {
+    "claim": "The design does not require receipt-semantics negotiation for an ordinary ACK-required send whose unchanged wire representation can still be accepted by a daemon using availability-deferred deadlines.",
+    "location": "Root design: Message deadline contract; Invitation contract capability paragraph; receipt task ht-0lo.1.1",
+    "category": "premortem",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "The root promises \"For every new durable ACK-required ordinary send\" a committed-send-time deadline, including unbound and unavailable recipients. Its receipt migration uses a local \"schema/semantics marker\", while protocol refusal is specified for \"any mutation requiring the new representation\" and task ht-0lo.2.1 owns invitation confirmation capability. No receipt task or acceptance scenario requires an old daemon to reject an unchanged ordinary send when it cannot provide send-time deadlines. Thus the stated negotiation rules leave the mixed-version ordinary-send path unspecified: acceptance of the old wire request need not imply the promised new deadline semantics."
+  },
+  {
+    "claim": "The bounded-time warning guarantee has no defined discovery-latency or fairness requirement when a large historical overdue backlog competes with newly due obligations.",
+    "location": "Root design: Goal, Message deadline contract, Risks and mitigations; task ht-0lo.1.3",
+    "category": "premortem",
+    "external": false,
+    "kind": "UNVERIFIED-ASSUMPTION",
+    "evidence": "The Goal promises a \"bounded-time warning\". Migration makes \"Already expired rows\" due on the \"normal bounded scan\", and the mitigation for the acknowledged \"upgrade-time warning burst\" is to \"bound scan work\". Task ht-0lo.1.3 tests a \"bounded warning burst\". Those clauses bound per-scan work but supply no bound on warning creation delay, backlog size, or scheduling fairness between historical and fresh due work. With more historical overdue obligations than one scan processes, the promised delay depends on backlog and scan ordering; neither is specified or measured by an acceptance condition.",
+    "spike": {
+      "question": "What maximum delay from deadline to durable warning creation is guaranteed while historical backfill and ongoing sends coexist?",
+      "cheapest_test": "Seed an overdue historical backlog substantially larger than one scan batch, continue creating new short-deadline receipts and timed invitations, and measure warning creation delay and eventual discovery for both old and new obligations.",
+      "kill_criteria": "Any due obligation can be perpetually skipped, or the claimed warning-time bound cannot be stated and met under the supported backlog and send rate."
+    }
+  },
+  {
+    "claim": "The design adds a second permanent public hook invocation syntax without establishing why generating stable per-event commands with the existing hook HARNESS --event EVENT syntax cannot satisfy the same contract.",
+    "location": "settled-input.md: root design, Options and decisions item 3; Stable hook entrypoints and ownership; hooks subtree, Stable native event dispatch and command generation",
+    "category": "yagni",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "The design explicitly preserves existing `hook HARNESS --event EVENT` registrations while introducing `herdr-threads hook-event HARNESS EVENT`. Its stated stability rule depends only on executable spelling, canonical route, harness and event; it separately identifies the per-install UUID shell comment as the changing component to remove. The options compare random owner comments, sidecar scripts and dedicated CLI entrypoints, but omit generating deterministic commands through the already event-specific syntax. The hooks task then owns the additional parser/dispatch surface, and registry/help/canary expectations must adopt its command grammar while legacy syntax remains supported. No stated semantic difference between the two invocation forms explains that additional permanent interface. Evaluate the existing syntax with UUID-free manifest-owned command generation before committing to the additional command."
+  }
+]
+
+## Step 1 — Merge
+Combine near-duplicates: findings with the **same location AND the same root claim** are
+one finding. Keep the strongest/most-specific evidence and the union of locations across
+the merged set. Different root claims at the same location are NOT duplicates — keep them
+separate. Preserve each finding's `kind`, `external` flag, and `spike` through the merge.
+
+## Step 2 — Suggest severity
+For each merged finding, suggest one severity:
+- **Blocking:** if unaddressed, the change/design is likely to be wrong, lose data, or
+  fail its core purpose — must fix before proceeding.
+- **Should-fix:** significant risk or rework; address before or soon after merge.
+- **Nit:** real but low-impact.
+- **FYI:** context/observation, no action required.
+
+This is a suggestion only. It routes how much verification depth a finding gets and
+informs the reporter — it does not bind either: judges rate severity independently of
+your suggestion, and the reporter decides the finding's final severity.
+
+## Step 3 — Select
+Keep EVERY finding suggested Blocking or Should-fix — these are never capped. Order the
+remaining Nit/FYI findings by importance, correctness and risk first, and keep only the
+top `50` of them. Count how many Nit/FYI findings were dropped past that cap
+and report it as `beyondCapCount`.
+
+## Output contract (exact — return one JSON object matching this shape, no prose outside it)
+- **findings:** the kept findings (every Blocking/Should-fix, plus the top `50`
+  Nit/FYI). Each finding:
+  - `claim` (string, required)
+  - `location` (string, required)
+  - `category` (string, required)
+  - `external` (boolean, required)
+  - `evidence` (string, required)
+  - `suggestedSeverity`: `"Blocking"` | `"Should-fix"` | `"Nit"` | `"FYI"` (required)
+  - `kind`: `"GAP"` | `"UNVERIFIED-ASSUMPTION"` | `"ISSUE"` (carry through if present)
+  - `spike`: (carry through if present)
+- **beyondCapCount:** integer — the number of Nit/FYI findings dropped past the cap.
+
+Never use `blocker`, `major`, `minor`, `BLOCK`, `REVISE`, or `PASS` — those vocabularies
+are retired. Use only `Blocking | Should-fix | Nit | FYI`.
+
+Write exact result JSON to /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/deduped.json. No other file writes. Do not adjudicate truth; preserve distinct claims. Read settled-input.md if needed for location clarification. Return counts.

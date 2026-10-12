@@ -1,0 +1,22 @@
+{
+  "runner_sha256": "dce287cba7abcd89e0a0fce0ad63af50ac2bf1e333deff5391f7c4d09cbc267f",
+  "scope": "AST-extracted actual command; real private Python children and OS signals; no Cargo or project runtime",
+  "cases": [
+    {
+      "signal": "SIGTERM",
+      "pid": 78266,
+      "exit": -15,
+      "command_owned_cleanup_recorded": true,
+      "owned_group_absent": true,
+      "run_id": "6b912606-adfc-46ec-afca-e046b23b6542"
+    },
+    {
+      "signal": "SIGINT",
+      "pid": 78267,
+      "exit": -15,
+      "command_owned_cleanup_recorded": true,
+      "owned_group_absent": true,
+      "run_id": "dda6e022-06e3-47bf-879a-d678f3d9f9ef"
+    }
+  ]
+}

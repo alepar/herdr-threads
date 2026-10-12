@@ -384,7 +384,9 @@ pub struct ExtensionLapseKey {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceiptSparseCursor {
-    pub high_water_rowid: u64,
+    /// Monotonic ordinal of the maintained sparse candidate projection.
+    pub high_water_ordinal: u64,
+    pub after_ordinal: u64,
     pub after_deadline: Option<UtcMillis>,
     pub after_message: Option<MessageId>,
     pub after_seat: Option<SeatId>,
@@ -392,7 +394,9 @@ pub struct ReceiptSparseCursor {
 }
 impl ReceiptSparseCursor {
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.after_message.is_some() != self.after_seat.is_some() {
+        if self.after_ordinal > self.high_water_ordinal {
+            Err("sparse cursor exceeds captured high water")
+        } else if self.after_message.is_some() != self.after_seat.is_some() {
             Err("incomplete sparse receipt cursor key")
         } else if self.after_message.is_some() != self.after_deadline.is_some() {
             Err("incomplete sparse receipt deadline key")
@@ -406,6 +410,9 @@ pub struct DueScanState {
     pub invitations: Option<DuePhaseCursor>,
     pub receipts: Option<DuePhaseCursor>,
     pub next_phase: DuePhase,
+    /// Completion is retained until both finite class snapshots finish.
+    pub invitations_complete: bool,
+    pub receipts_complete: bool,
 }
 impl Default for DueScanState {
     fn default() -> Self {
@@ -413,6 +420,8 @@ impl Default for DueScanState {
             invitations: None,
             receipts: None,
             next_phase: DuePhase::Invitations,
+            invitations_complete: false,
+            receipts_complete: false,
         }
     }
 }
@@ -462,6 +471,9 @@ pub enum DuePhaseProgress {
 pub struct DueScanProgress {
     pub state: DueScanState,
     pub examined_candidates: u16,
+    /// Separately bounded catch-up session maintenance; never receipt or
+    /// invitation candidate inspection and never a child receipt walk.
+    pub maintenance_sessions: u16,
     pub warnings_added: u16,
     pub invitations: DuePhaseProgress,
     pub receipts: DuePhaseProgress,
@@ -1700,7 +1712,7 @@ pub struct NativeLaunchRequest {
     /// Native agent arguments passed verbatim after Herdr's `agent start ... --`.
     /// The host adapter supplies the Herdr executable, kind, and explicit target.
     pub argv: Vec<String>,
-    pub configured_hook: ConfiguredHook,
+    pub configured_hook: Option<ConfiguredHook>,
     pub expected_terminal: TerminalId,
     pub expected_generation: u64,
     pub expected_incarnation: String,
@@ -1822,12 +1834,14 @@ impl NativeLaunchRequest {
         Self::validate_argv(&self.argv)?;
         if self.expected_incarnation.is_empty()
             || self.expected_incarnation.len() > 128
-            || self.configured_hook.scope.is_empty()
-            || self.configured_hook.scope.len() > 128
-            || self.configured_hook.path.is_empty()
-            || self.configured_hook.path.len() > 1024
-            || self.configured_hook.fingerprint.is_empty()
-            || self.configured_hook.fingerprint.len() > 256
+            || self.configured_hook.as_ref().is_some_and(|hook| {
+                hook.scope.is_empty()
+                    || hook.scope.len() > 128
+                    || hook.path.is_empty()
+                    || hook.path.len() > 1024
+                    || hook.fingerprint.is_empty()
+                    || hook.fingerprint.len() > 256
+            })
         {
             return Err("invalid native launch request: internal host or hook fields out of range");
         }
@@ -2603,8 +2617,21 @@ impl PriorLadder {
 
 /// What the mod watch channel needs to read from the store (spec D2, D7).
 /// A narrow supertrait of [`StorePort`] so the registry can be exercised
-/// against a small fake; read-only, one read transaction per call.
+/// against a small fake. Admission reads remain read-only; passive maintenance
+/// uses a separately bounded canonical write transaction.
 pub trait ModStoreReads: Send + Sync {
+    /// Bounded passive invitation maintenance, independent of allocation,
+    /// counters and the fixed outstanding presentation page.
+    fn presentation_refresh(
+        &self,
+        _seat: &SeatId,
+        _binding: &BindingId,
+        _generation: u64,
+        _native: &str,
+        _budget: &CallBudget,
+    ) -> Result<Option<ModPresentationRefresh>, ApiError> {
+        Ok(None)
+    }
     /// The A2 view of `seat` and one of its bindings, for a watch registration or a channel
     /// check (spec §3 Wake). The seat-level parts (state, hold, digest, invitations, warnings)
     /// are the seat's; the fingerprint also carries the binding's own unread. `None`: no such
@@ -2616,6 +2643,16 @@ pub trait ModStoreReads: Send + Sync {
         binding: ModBindingRef<'_>,
         budget: &CallBudget,
     ) -> Result<Option<ModSeatView>, ApiError>;
+    /// Canonical binding/admission only: presentation reads its pending
+    /// sources through separately budgeted progress, never a legacy digest.
+    fn presentation_seat_view(
+        &self,
+        seat: &SeatId,
+        binding: ModBindingRef<'_>,
+        budget: &CallBudget,
+    ) -> Result<Option<ModSeatView>, ApiError> {
+        self.mod_binding_view(seat, binding, budget)
+    }
     /// The oldest publication time among the seat's ordinary pending receipts
     /// published at or before `at_or_before` whose body is at most
     /// `body_limit` bytes (truncated items never count toward a stall).
@@ -2626,6 +2663,17 @@ pub trait ModStoreReads: Send + Sync {
         body_limit: usize,
         budget: &CallBudget,
     ) -> Result<Option<UtcMillis>, ApiError>;
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ModPresentationRefresh {
+    pub version: u64,
+    pub more: bool,
+    pub context_visits: usize,
+    pub lifecycle_visits: usize,
+    pub ordinary_publication_visits: usize,
+    pub ordinary_publication_probes: usize,
+    pub ordinary_publication_seeks: usize,
 }
 
 /// Which binding of the seat a [`ModStoreReads::mod_binding_view`] read is about.
@@ -2713,6 +2761,9 @@ pub struct ModSeatView {
     /// deliberately not part of `ModFingerprint`: notices never wake and the
     /// mod channel's change detector must not see them.
     pub newest_pending_notice: Option<i64>,
+    /// Recipient-specific bounded invitation content signature. Zero means no
+    /// visible pending invitation. Independent of native/mod wake eligibility.
+    pub pending_invitation_version: u64,
 }
 
 /// One informational notice a hook-pull page carries: the warning, its
@@ -2949,6 +3000,28 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         budget: &CallBudget,
         admission: Option<&crate::service::fair_writer::FairWriter>,
     ) -> Result<ServiceResult, ApiError>;
+    fn presentation_render_selection(
+        &self,
+        _claim: &CallerClaim,
+        _consumer: crate::protocol::delivery::PresentationConsumer,
+        _budget: &CallBudget,
+    ) -> Result<Option<crate::delivery::presentation::FrozenRenderIdentity>, ApiError> {
+        Ok(None)
+    }
+    fn presentation_pull(
+        &self,
+        _input: PresentationInput,
+        _budget: &CallBudget,
+    ) -> Result<PresentationOutput, ApiError> {
+        Err(ApiError::unsupported("presentation unavailable"))
+    }
+    fn presentation_confirm(
+        &self,
+        _request: &crate::protocol::delivery::DeliveryPresentationConfirmV2,
+        _budget: &CallBudget,
+    ) -> Result<crate::protocol::delivery::DeliveryPresentationConfirmationReplyV2, ApiError> {
+        Err(ApiError::unsupported("presentation unavailable"))
+    }
     fn query(
         &self,
         command: &Command,
@@ -2996,6 +3069,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     fn hook_plain_reconnect(
         &self,
         _claim: &CallerClaim,
+        _presentation: bool,
         _budget: &CallBudget,
     ) -> Result<Option<ModSeatView>, ApiError> {
         Ok(None)
@@ -3402,6 +3476,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     fn settle_pulled_notices(
         &self,
         _seat: &SeatId,
+        _binding: &BindingId,
         _generation: u64,
         _native_session: &str,
         _carried: &[crate::protocol::results::WarningRef],
@@ -3725,9 +3800,17 @@ pub struct HostCallContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ModChannelId(pub u64);
 
+/// Immutable delivery contract elected by this Watch registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModChannelMode {
+    Legacy,
+    PresentationV2,
+}
+
 /// A registration the transport has decided against A2 (spec D2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModChannelRegistration {
+    pub mode: ModChannelMode,
     pub seat: SeatId,
     /// The binding that holds the channel (spec §3 Wake): the registry is keyed by it.
     pub binding: BindingId,
@@ -3780,6 +3863,46 @@ pub trait ProcessInfo: Send + Sync {
 /// keyed by binding: every connected top-level binding of a seat may hold its own channel, with
 /// its own deliveries, closes and stall cooldown.
 pub trait ModChannels: Send + Sync {
+    /// Serializes current-owner replacement with presentation allocation and
+    /// confirmation. Inert registries do not provide Watch presentation.
+    fn presentation_owner(
+        &self,
+        _seat: &SeatId,
+    ) -> Result<Option<std::sync::Arc<std::sync::Mutex<()>>>, ApiError> {
+        Ok(None)
+    }
+    /// Only the attached Live channel owns a presentation lease; reconnect
+    /// grace remains exclusively the legacy ACK/wake policy.
+    fn presentation_lease(&self, _channel: ModChannelId) -> Option<String> {
+        None
+    }
+    fn presentation_owner_live(
+        &self,
+        _seat: &SeatId,
+        _binding: &BindingId,
+        _generation: u64,
+        _native_session: &str,
+        _lease: &str,
+    ) -> bool {
+        false
+    }
+    /// Pure bounded snapshot; initialization is committed only after store success.
+    fn presentation_replay_snapshot(
+        &self,
+        _claim: &CallerClaim,
+        _lease: &str,
+        _known: &crate::delivery::ledger::OrdinaryDueSnapshot,
+    ) -> Option<WatchReplaySnapshot> {
+        None
+    }
+    /// Apply successful exact-owner progress against current logical stamps.
+    fn apply_presentation_replay(
+        &self,
+        _snapshot: WatchReplaySnapshot,
+        _completed: &std::collections::BTreeMap<MessageId, crate::delivery::ledger::Offer>,
+        _current: &crate::delivery::ledger::OrdinaryDueSnapshot,
+    ) {
+    }
     /// Register a channel: at most one per binding. A newer one for the same binding replaces
     /// the older (`Close{replaced}`; the seat's other bindings are untouched); a same-binding
     /// registration within reconnect or rebind grace ends the grace (the mod re-acks). Refuses
@@ -3846,6 +3969,22 @@ pub trait ModChannels: Send + Sync {
     }
     /// Push `Attention{version}` to every Live channel of the seat.
     fn notify(&self, _seat: &SeatId, _attention_version: u64) {}
+    /// Successful ordinary or Lazy display/settlement may have changed eligibility.
+    /// A bounded local recheck hint, never receipt, read, wake or health evidence.
+    fn presentation_delivery_may_have_changed(&self, _seat: &SeatId) {}
+    /// Post-emission presentation confirmation for the exact current Live
+    /// Watch owner. This records a receipt-publication cutoff, not an ACK or
+    /// a fresh stall countdown. Unsupported registries remain inert.
+    fn record_presentation_attention_push(
+        &self,
+        _seat: &SeatId,
+        _binding: &BindingId,
+        _binding_generation: u64,
+        _native_session: &str,
+        _lease: &str,
+        _now: UtcMillis,
+    ) {
+    }
     /// An Attention frame was pushed to `binding`'s channel at `now`. Counts only for
     /// that binding's entry, in Live or ReconnectGrace.
     fn record_attention_push(&self, _seat: &SeatId, _binding: &BindingId, _now: UtcMillis) {}
@@ -3993,6 +4132,9 @@ pub trait LocalClient: Send + Sync {
     }
 }
 pub trait LocalService: Send + Sync {
+    fn watch_presentation_lease(&self, _channel: ModChannelId) -> Option<String> {
+        None
+    }
     /// Decide a mod watch registration against A2 and record the channel
     /// (spec D2). Returns the channel id and the seat's attention version.
     /// The default refuses: a service without a registry serves no channel.
@@ -5085,4 +5227,121 @@ pub enum CreateTabOutcome {
     /// Transport-proven zero submission, never inferred from a guessed error.
     NotSubmitted(ApiError),
     OutcomeUnknown(ApiError),
+}
+
+/// One process-local physical recovery pass for an exact live Watch owner.
+/// No body, render state, receipt authority or logical offer is retained here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchReplayScope {
+    pub seat: SeatId,
+    pub binding_id: BindingId,
+    pub generation: u64,
+    pub native_session: String,
+    pub execution: crate::protocol::ids::ExecutionId,
+    pub lease: String,
+    pub incarnation: [u8; 16],
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchReplaySnapshot {
+    pub scope: WatchReplayScope,
+    pub remaining: std::collections::BTreeMap<MessageId, crate::delivery::ledger::Offer>,
+    /// Survives pruning/exhaustion in this call for native-outlook preservation.
+    pub active: bool,
+}
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum OrdinaryPresentationSource {
+    #[default]
+    None,
+    RecoveryControlOnly,
+    Normal,
+    LogicalDue,
+    OwnerReplay,
+}
+impl OrdinaryPresentationSource {
+    pub fn preserves_native_outlook(self) -> bool {
+        matches!(self, Self::OwnerReplay | Self::RecoveryControlOnly)
+    }
+}
+#[derive(Debug, Default, Clone)]
+pub struct WatchReplayProgress {
+    pub snapshot: Option<WatchReplaySnapshot>,
+    pub completed: std::collections::BTreeMap<MessageId, crate::delivery::ledger::Offer>,
+    pub emitted: std::collections::BTreeMap<MessageId, crate::delivery::ledger::Offer>,
+    pub source: OrdinaryPresentationSource,
+}
+
+/// Bounded service-owned hints for ordinary offer coalescing. These grant no
+/// authority and never settle an invitation or message.
+#[derive(Debug, Clone)]
+pub struct PresentationInput {
+    /// Service-resolved binding; store admission independently verifies it.
+    pub binding_id: BindingId,
+    pub owner_replay: Option<WatchReplaySnapshot>,
+    pub ordinary_due_snapshot: Option<crate::delivery::ledger::OrdinaryDueSnapshot>,
+    pub frozen_render: Option<crate::delivery::presentation::FrozenPresentationRender>,
+    pub render_profile: crate::delivery::presentation::PresentationRenderProfile,
+    pub pull: crate::protocol::delivery::DeliveryPullV2,
+    pub attention_version: u64,
+    pub ordinary_version: u64,
+    pub with_attention: bool,
+    pub retry_messages: bool,
+    pub blocked_messages: Vec<MessageId>,
+    pub known_messages: Vec<MessageId>,
+    pub new_message_slots: usize,
+}
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PresentationWork {
+    /// Additional exact direct-episode relations for the private fresh Lazy
+    /// source, including captured continuation: three per physical candidate,
+    /// at most 300. Due/replay/carry account for these in their own counters.
+    pub ordinary_lazy_scope_probes: usize,
+    /// Exact-key logical due or owner replay replaces the normal ordinary slice.
+    /// Both mutually exclusive modes share these keyed costs.
+    pub ordinary_due_key_probes: usize,
+    pub ordinary_due_seeks: usize,
+    pub ordinary_due_hydrated: usize,
+    /// Binding eligibility rechecks for retained ordinary carry, separately
+    /// charged from mutually exclusive due/replay and fresh page walks.
+    /// At most 3 + 32 * 18 keyed probes, 32 seeks and 32 hydrated items.
+    pub ordinary_carry_key_probes: usize,
+    pub ordinary_carry_seeks: usize,
+    pub ordinary_carry_hydrated: usize,
+    /// At most one private normal-walk body continuation: five exact captured
+    /// identity/read-cursor probes plus ten conservative receipt probes. Its
+    /// retirement also consumes one of the normal walk's 100 candidate visits.
+    /// Separate from due/replay, carry, and existing hydration/setup accounting.
+    pub ordinary_continuation_key_probes: usize,
+    /// Snapshot identities checked for explicit canonical terminal evidence.
+    pub offer_reconciliation_visits: usize,
+    /// Fixed indexed relation probes, charged conservatively including misses.
+    pub offer_reconciliation_probes: usize,
+    pub ordinary_publication_visits: usize,
+    pub ordinary_publication_probes: usize,
+    pub ordinary_publication_seeks: usize,
+    pub relevance_calls: usize,
+    pub relevance_sources: usize,
+    pub relevance_fallback: usize,
+    pub relevance_point_probes: usize,
+    pub relevance_seeks: usize,
+    pub relevance_witness_probes: usize,
+    pub output_passes: usize,
+    pub output_bytes: usize,
+    pub rpc_passes: usize,
+    pub rpc_bytes: usize,
+    pub initial: usize,
+    pub context: usize,
+    pub revisit: usize,
+    pub ordinary: usize,
+    pub notices: usize,
+    pub notice_validations: usize,
+    pub replay: usize,
+}
+#[derive(Debug, Clone)]
+pub struct PresentationOutput {
+    pub owner_replay: WatchReplayProgress,
+    pub ordinary_due_update: Option<crate::delivery::ledger::OrdinaryDueSnapshot>,
+    pub reply: crate::protocol::delivery::DeliveryPullReplyV2,
+    pub work: PresentationWork,
+    /// Exact terminal delta from this admitted transaction; never a pending-set snapshot.
+    pub reclaimed_messages: Vec<MessageId>,
 }

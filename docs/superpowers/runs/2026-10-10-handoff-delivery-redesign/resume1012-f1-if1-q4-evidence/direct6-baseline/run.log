@@ -1,0 +1,51 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+────────────
+ Nextest run ID 89bdb0c6-6b70-4892-8866-b6d967c3b8a0 with nextest profile: default
+    Starting 6 tests across 1 binary (735 tests skipped)
+        FAIL [   0.698s] (1/6) herdr-threads::combined direct_send::pending_historical_ordinary_direct_retry_requires_receipts_without_rewriting_original
+  stdout ───
+
+    running 1 test
+    test direct_send::pending_historical_ordinary_direct_retry_requires_receipts_without_rewriting_original ... FAILED
+
+    failures:
+
+    failures:
+        direct_send::pending_historical_ordinary_direct_retry_requires_receipts_without_rewriting_original
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 740 filtered out; finished in 0.68s
+
+  stderr ───
+
+    thread 'direct_send::pending_historical_ordinary_direct_retry_requires_receipts_without_rewriting_original' (57742939) panicked at tests/cli/direct_send.rs:495:5:
+    pending historical ordinary retry must refuse before additional effects: Ok(())
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.698s] (2/6) herdr-threads::combined direct_send::historical_lazy_direct_retry_is_exempt_from_receipt_capability
+        FAIL [   0.699s] (3/6) herdr-threads::combined direct_send::modern_ordinary_direct_send_requires_receipt_capability_before_any_effect
+  stdout ───
+
+    running 1 test
+    test direct_send::modern_ordinary_direct_send_requires_receipt_capability_before_any_effect ... FAILED
+
+    failures:
+
+    failures:
+        direct_send::modern_ordinary_direct_send_requires_receipt_capability_before_any_effect
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 740 filtered out; finished in 0.69s
+
+  stderr ───
+
+    thread 'direct_send::modern_ordinary_direct_send_requires_receipt_capability_before_any_effect' (57742934) panicked at tests/cli/direct_send.rs:253:9:
+    Direct/Ensure without send-time receipts must refuse the new ordinary compound: Ok(())
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.703s] (4/6) herdr-threads::combined direct_send::modern_ordinary_direct_send_with_receipt_capability_commits_exact_ordinary_body
+        PASS [   0.704s] (5/6) herdr-threads::combined direct_send::modern_lazy_direct_send_is_exempt_from_receipt_capability
+        PASS [   1.064s] (6/6) herdr-threads::combined direct_send::committed_direct_ordinary_output_retry_does_not_require_receipt_capability
+────────────
+     Summary [   1.071s] 6 tests run: 4 passed, 2 failed, 735 skipped
+        FAIL [   0.698s] (1/6) herdr-threads::combined direct_send::pending_historical_ordinary_direct_retry_requires_receipts_without_rewriting_original
+        FAIL [   0.699s] (3/6) herdr-threads::combined direct_send::modern_ordinary_direct_send_requires_receipt_capability_before_any_effect
+error: test run failed

@@ -1,0 +1,23 @@
+   Compiling herdr-threads v0.9.0 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/upstream-composition-v090)
+error[E0277]: the trait bound `u64: ToSql` is not satisfied
+    --> src/harness/agy/../../../tests/harness/agy_delivery.rs:1707:17
+     |
+1707 | ...   rusqlite::params![caller.seat.as_str(), caller.harness.as_str(), caller.native_session.as_str(), caller.binding_generation, caller.execution.as_str()],
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `ToSql` is not implemented for `u64`
+     |
+     = help: the following other types implement trait `ToSql`:
+               f32
+               f64
+               i16
+               i32
+               i64
+               i8
+               isize
+               u16
+             and 2 others
+     = note: required for the cast from `&u64` to `&dyn ToSql`
+     = note: this error originates in the macro `rusqlite::params` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `herdr-threads` (lib test) due to 1 previous error
+error: command `/Users/alepar/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --lib --all-features --locked` exited with code 101

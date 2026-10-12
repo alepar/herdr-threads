@@ -1,0 +1,37 @@
+[
+  {
+    "approved": "migrations/0029_invitation_confirmation.sql",
+    "combined": "migrations/0032_invitation_confirmation.sql",
+    "exact_blob": "0a462d353e6c64612560f855b83b04d92ebe0200"
+  },
+  {
+    "approved": "migrations/0030_receipt_send_time.sql",
+    "combined": "migrations/0033_receipt_send_time.sql",
+    "exact_blob": "248b16e3404173d8b3e9f066d070b92164d71355"
+  },
+  {
+    "approved": "migrations/0031_handoff_body_bounds.sql",
+    "combined": "migrations/0034_handoff_body_bounds.sql",
+    "exact_blob": "440ea81fabc92d6ac62e952d63f845ef24d92bd4"
+  },
+  {
+    "approved": "migrations/0032_receipt_deadline_backfill.sql",
+    "combined": "migrations/0035_receipt_deadline_backfill.sql",
+    "exact_blob": "91f7979d78ff6ac5096d0f3304c201e3343bbce5"
+  },
+  {
+    "approved": "migrations/0033_invitation_lifecycle.sql",
+    "combined": "migrations/0036_invitation_lifecycle.sql",
+    "exact_blob": "462d1122e4501d0894ada181a62721a3abb326dd"
+  },
+  {
+    "approved": "migrations/0034_invitation_warning_origin.sql",
+    "combined": "migrations/0037_invitation_warning_origin.sql",
+    "exact_blob": "245725b3e3c6393f2f48d6124ae4a8c833268210"
+  },
+  {
+    "approved": "migrations/0035_receipt_warning_origins.sql",
+    "combined": "migrations/0038_receipt_warning_origins.sql",
+    "exact_blob": "4bbe01db8557964dd21278ce0de3722e5a1a0661"
+  }
+]

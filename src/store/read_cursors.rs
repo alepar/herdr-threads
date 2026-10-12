@@ -167,6 +167,32 @@ pub fn init_for_join(tx: &Connection, seat: &SeatId, thread: &ThreadId) -> Resul
     .map_err(store_error)
 }
 
+/// Direct invitation acceptance retains every established cursor and seeds only
+/// missing open-binding cursors from the captured invitation event sequence.
+/// The eligibility transition invalidates each affected binding once even when
+/// its cursor value did not change. The owner includes this in its one deciding
+/// transaction, so any later binding/counter failure rolls all changes back.
+pub(super) fn init_for_direct_accept(
+    tx: &Connection,
+    seat: &SeatId,
+    thread: &ThreadId,
+    floor: u64,
+) -> Result<usize, ApiError> {
+    let floor = to_i64(floor)?;
+    let bindings: Vec<BindingId> = tx.prepare(
+        "SELECT binding_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY binding_id",
+    ).map_err(store_error)?.query_map([seat.as_str()], |r| r.get::<_, String>(0))
+        .map_err(store_error)?.map(|row| row.map(BindingId::new)).collect::<rusqlite::Result<_>>().map_err(store_error)?;
+    for binding in &bindings {
+        tx.execute(
+            "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES (?1,?2,?3) ON CONFLICT(binding_id,thread_id) DO NOTHING",
+            params![binding.as_str(), thread.as_str(), floor],
+        ).map_err(store_error)?;
+        super::presentation_reader::note_binding_reader_change(tx, binding)?;
+    }
+    Ok(bindings.len())
+}
+
 /// Copy the predecessor's cursors to the successor, keeping any higher cursor the successor
 /// already has. Returns the number of cursors written.
 pub fn copy_lineage(tx: &Connection, from: &BindingId, to: &BindingId) -> Result<usize, ApiError> {
@@ -260,9 +286,29 @@ pub fn advance_through_displayed(
     thread: &ThreadId,
     displayed: &[u64],
 ) -> Result<u64, ApiError> {
-    let current = cursor_for(tx, binding, thread)?.unwrap_or(0);
+    advance_through_displayed_with_change(tx, binding, thread, displayed)
+        .map(|(reached, _)| reached)
+}
+
+/// The display walk's reached sequence and whether its canonical cursor actually changed.
+/// Owning operations coalesce the changed bit across their threads before invalidating private
+/// presentation state; the low-level cursor helpers never perform that maintenance themselves.
+pub(super) fn advance_through_displayed_with_change(
+    tx: &Connection,
+    binding: &BindingId,
+    thread: &ThreadId,
+    displayed: &[u64],
+) -> Result<(u64, bool), ApiError> {
+    let existing = cursor_for(tx, binding, thread)?;
     let Some(seat) = seat_of(tx, binding)? else {
-        return Ok(current);
+        return Ok((existing.unwrap_or(0), false));
+    };
+    let current = match existing {
+        Some(current) => current,
+        None => {
+            super::lazy_delivery::displayed_episode_floor(tx, binding, &seat, thread, displayed)?
+                .unwrap_or(0)
+        }
     };
     let mut stmt = tx
         .prepare(&format!(
@@ -303,10 +349,8 @@ pub fn advance_through_displayed(
         reached = sequence;
     }
     drop(stmt);
-    if reached > current {
-        advance(tx, binding, thread, reached)?;
-    }
-    Ok(reached)
+    let changed = reached > current && advance(tx, binding, thread, reached)?;
+    Ok((reached, changed))
 }
 
 #[cfg(test)]

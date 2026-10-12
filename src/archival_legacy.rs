@@ -3,9 +3,10 @@
 //! scan restarts on a directory generation change; no allocator or journal API is used.
 use crate::{
     cli::{
+        handoff_delivery::MAX_DELIVERY_TERMINAL_BYTES,
         journal::{
             IntentHeader, IntentRef, IntentScope, Journal, MAX_BOOTSTRAP_ORIGIN_BYTES,
-            SemanticMutation,
+            MAX_DELIVERY_ORIGIN_BYTES, SemanticMutation,
         },
         topology_handoff,
     },
@@ -416,7 +417,7 @@ fn bootstrap_hint(
     let progress = bundle_read(
         dir,
         &OsString::from(format!("handoff-{}.progress", reference.operation.as_str())),
-        128 * 1024,
+        topology_handoff::MAX_BOOTSTRAP_PROGRESS,
         bytes,
         budget,
     )?
@@ -759,7 +760,7 @@ impl Source {
                 let terminal_reference = terminal_reference(text)?;
                 let (data, terminal) = if let Some(reference) = &terminal_reference {
                     let data = dir
-                        .read(&name, 128 * 1024)?
+                        .read(&name, MAX_DELIVERY_TERMINAL_BYTES)?
                         .ok_or_else(|| io::Error::other("legacy terminal vanished"))?;
                     bytes += data.len();
                     let terminal = read_terminal(dir, reference, &data, &mut bytes)?;
@@ -793,7 +794,11 @@ impl Source {
                         self.deciding_veto.clone(),
                     );
                 }
-                if data.len() > RECORD_CAP || split > HEADER_CAP {
+                let record_cap = match header.kind {
+                    IntentKind::Handoff | IntentKind::HandoffDelivery => MAX_DELIVERY_ORIGIN_BYTES,
+                    _ => RECORD_CAP,
+                };
+                if data.len() > record_cap || split > HEADER_CAP {
                     return Err(io::Error::other("legacy record or header cap"));
                 }
                 if !matches!(
@@ -888,7 +893,7 @@ impl Source {
                 let progress = dir.read(
                     &progress_name,
                     if header.kind == IntentKind::HandoffBootstrap {
-                        128 * 1024
+                        topology_handoff::MAX_BOOTSTRAP_PROGRESS
                     } else {
                         RECORD_CAP
                     },
@@ -923,7 +928,7 @@ impl Source {
                             Some(terminal)
                         } else {
                             let name = terminal_name(&header.reference);
-                            dir.read(&name, 128 * 1024)?
+                            dir.read(&name, MAX_DELIVERY_TERMINAL_BYTES)?
                                 .map(|data| {
                                     bytes += data.len();
                                     read_terminal(dir, &header.reference, &data, &mut bytes)
@@ -1141,7 +1146,7 @@ fn read_terminal(
         reference.ordinal,
         reference.operation.as_str()
     ));
-    if let Some(original) = dir.read(&original_name, RECORD_CAP)? {
+    if let Some(original) = dir.read(&original_name, MAX_DELIVERY_ORIGIN_BYTES)? {
         *bytes += original.len();
         if original != terminal.original.as_bytes() {
             return Err(io::Error::other("delivery original contradiction"));

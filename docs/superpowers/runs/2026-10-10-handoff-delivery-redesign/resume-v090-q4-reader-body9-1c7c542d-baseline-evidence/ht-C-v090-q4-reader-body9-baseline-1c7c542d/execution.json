@@ -1,0 +1,91 @@
+{
+  "head": "1c7c542d2955cadb905d9aa0bd41685828e43690",
+  "tree": "16bdd39da9be9be204781c9a86f2ce9e98354786",
+  "run_id": "b17475c8-d5a2-46e6-bcf8-3e640570f627",
+  "expected": [
+    "store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor",
+    "store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings",
+    "store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap",
+    "store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog",
+    "store::control::tests::direct_threads::reader_controls::q4_rejection_prevents_cursorless_direct_lazy_revival_or_display_bootstrap",
+    "store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept",
+    "service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer",
+    "service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate",
+    "service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 56.83834712498356
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::reader_controls::q4_rejection_prevents_cursorless_direct_lazy_revival_or_display_bootstrap"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-bc80e388954f6954",
+      "sha256": "68ae4534817245e4b6044574c641ec0b754c3a16eac857ea967ed2c563034883"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 0.592704416019842,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor) | test(=store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings) | test(=store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap) | test(=store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog) | test(=store::control::tests::direct_threads::reader_controls::q4_rejection_prevents_cursorless_direct_lazy_revival_or_display_bootstrap) | test(=store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept) | test(=service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer) | test(=service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate) | test(=service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.35212691593915224,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "b17475c8-d5a2-46e6-bcf8-3e640570f627"
+    ]
+  },
+  "leak_exit": 0
+}

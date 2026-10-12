@@ -1,0 +1,19 @@
+{
+  "head": "f5cf90bfdeff613f4cc0dba4f33179ea63d68986",
+  "parent_checkpoint": "949b69a403d34893ebf108bbf421f981e4cc99c0",
+  "source_only": true,
+  "cargo_run": false,
+  "files": {
+    "src/harness/adapter.rs": "8d8b124ab389962cda56000e1ba99db7142f7c955c9c809e30776a5a20f29549",
+    "src/cli/hook.rs": "7967d3ba7a4d6acc969ea70ca8e57bf7ea2a2aeb707048a96e339c8623b7b03d",
+    "src/harness/agy/delivery.rs": "32b8ef7cc9c18204f06b2b85cb0e1b40b1710322f68d0bdac8dfa69e7a8e5f2e",
+    "tests/cli/hook_neutral.rs": "43da31291a43f586225901e74a13bce7097ef0636e5c7f9a65beb2e6baf6bdba",
+    "tests/harness/agy_delivery.rs": "8fe0bc98ad168210670aa1c8465777e9bd84ad1c71e27f3203a21d5d856302ff",
+    "tests/cli/hook.rs": "dfbfcc62d46e3295a5c7280b39c99219483aa183a7d54fe646ae60950e018f52"
+  },
+  "patches": {
+    "task-15-emit-helper-probation-followup.diff": "50e05f8cc066db967a5375df1040a9e2ec0ee31febed1c7285023b0bdf8d850b",
+    "task-15-emit-helper-final-through-probation.diff": "dac914b3fa1b36ce5fd2653adcd2ec09f6be57add2f710dc2f3c2e20befd82eb",
+    "task-15-emit-helper-final-post-red-through-probation.diff": "26d4fdd3c169f0ae60717cd0e107f9158b74ee8e0bb9e98b6e952335fa84bc16"
+  }
+}

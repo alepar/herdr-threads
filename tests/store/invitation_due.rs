@@ -325,22 +325,13 @@ fn interleaved_new_invitations_consume_bounded_slices_and_do_not_starve_old_rows
     invitation(&conn, "old-second", 2, 300, "pending");
     let first = scan_invitation_due_batch(&context, &mut conn, None, 1).unwrap();
     assert_eq!((first.inspected, first.warnings_added), (1, 1));
-    let mut cursor = first.next;
+    let cursor = first.next;
     assert!(cursor.is_some());
 
     for i in 0..40 {
         invitation(&conn, &format!("new-{i}"), 3 + i, 200 + i, "pending");
     }
 
-    for _ in 0..40 {
-        let batch = scan_invitation_due_batch(&context, &mut conn, cursor, 1).unwrap();
-        assert_eq!((batch.inspected, batch.warnings_added), (1, 0));
-        let next = batch
-            .next
-            .expect("physical scan must advance past skipped row");
-        assert!(next.after_deadline >= cursor.unwrap().after_deadline);
-        cursor = Some(next);
-    }
     let old = scan_invitation_due_batch(&context, &mut conn, cursor, 1).unwrap();
     assert_eq!((old.inspected, old.warnings_added), (1, 1));
     assert_eq!(
@@ -412,4 +403,462 @@ fn failed_page_retries_from_its_original_physical_cursor() {
         0
     );
     assert_eq!(warnings(&conn), 2);
+}
+
+// Fails if lazy source rows enter either due classification or native/mod attention.
+#[test]
+fn lazy_invitation_is_discoverable_but_never_due_or_waking() {
+    let (context, mut conn, _, _) = setup(1_000);
+    let binding = crate::protocol::ids::BindingId::new(conn.query_row(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at) VALUES('seat',1,'recipient-pane','binding-boot',1,'claude','lazy-recipient-session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0) RETURNING binding_id",
+        [],
+        |row| row.get::<_, String>(0),
+    ).unwrap());
+
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('origin','host','resolved','native',1,0)", []).unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('lazy','thread','seat',1,'pending',1,0,100,100,'lazy','origin')", []).unwrap();
+    let batch = scan_invitation_due_batch(&context, &mut conn, None, 100).unwrap();
+    assert_eq!((batch.inspected, batch.warnings_added), (0, 0));
+    let tx = conn.transaction().unwrap();
+    let result = crate::store::schema::record_overdue_if_pending(
+        &tx,
+        &ObligationRef::Invitation(InvitationId::new("lazy")),
+        &TimeBasis::Decision,
+        UtcMillis(1_000),
+    )
+    .unwrap();
+    assert!(
+        !result.inserted,
+        "late acceptance/rejection/retirement must not retrospectively warn a lazy invitation"
+    );
+    tx.commit().unwrap();
+    let mod_view = crate::store::seats::mod_binding_view(
+        &conn,
+        "host",
+        &crate::protocol::ids::SeatId::new("seat"),
+        crate::ports::ModBindingRef::Id(&binding),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(mod_view.binding.as_ref().unwrap().binding_id, binding);
+    assert_eq!(
+        mod_view.fingerprint.other_pending, 0,
+        "lazy invitations must not raise mod attention"
+    );
+    assert!(
+        !crate::store::attention::wake_seat_attention(&conn, "seat")
+            .unwrap()
+            .attention
+            .has_pending_invitation
+    );
+    assert_eq!(
+        crate::store::attention::pending_invitations(&conn, "seat", None, i64::MAX)
+            .unwrap()
+            .items
+            .len(),
+        1
+    );
+}
+
+// Earlier-deadline arrivals must not stretch a finite snapshot's physical scan.
+#[test]
+fn invitation_snapshot_finishes_with_250_initial_rows_despite_continuing_arrivals() {
+    let (context, mut conn, _, _) = setup(1_000);
+    for i in 0..250 {
+        invitation(
+            &conn,
+            &format!("initial-{i}"),
+            i + 1,
+            if i < 100 { 100 } else { 900 },
+            "pending",
+        );
+    }
+    let first = scan_invitation_due_batch(&context, &mut conn, None, 100).unwrap();
+    assert_eq!((first.inspected, first.warnings_added), (100, 100));
+    let mut cursor = first.next;
+    for page in 0..2 {
+        for i in 0..150 {
+            invitation(
+                &conn,
+                &format!("arrival-{page}-{i}"),
+                251 + page * 150 + i,
+                200,
+                "pending",
+            );
+        }
+        let batch = scan_invitation_due_batch(&context, &mut conn, cursor, 100).unwrap();
+        assert!(batch.inspected <= 100);
+        cursor = batch.next;
+    }
+    let initial_warned: i64=conn.query_row("SELECT count(*) FROM invitations WHERE id LIKE 'initial-%' AND warning_message_id IS NOT NULL",[],|r|r.get(0)).unwrap();
+    assert_eq!(initial_warned, 250);
+    assert!(
+        cursor.is_none(),
+        "finite high-water snapshot must finish after three bounded pages"
+    );
+}
+
+#[test]
+fn timed_invitation_warns_original_inviter_after_leaving_and_clear_is_passive() {
+    let (context, mut conn, _, _) = setup(100);
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('origin','host','resolved','native',1,0)", []).unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('timed','thread','seat',1,'pending',1,0,100,100,'require_ack','origin')", []).unwrap();
+    assert_eq!(
+        scan_invitation_due_batch(&context, &mut conn, None, 100)
+            .unwrap()
+            .warnings_added,
+        1
+    );
+    let warning: String = conn
+        .query_row(
+            "SELECT warning_message_id FROM invitations WHERE id='timed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(crate::store::effective::is_warning_recipient(&conn, &warning, "origin").unwrap());
+    assert!(crate::store::attention::warning_wakes_seat(&conn, "origin", &warning).unwrap());
+    assert!(
+        crate::store::attention::wake_seat_attention(&conn, "origin")
+            .unwrap()
+            .attention
+            .latest_warning_seq
+            .is_some()
+    );
+    let tx = conn.transaction().unwrap();
+    tx.execute("UPDATE invitations SET state='accepted',accepted_at=150,accepted_actor_seat_id='seat',accepted_generation=1,accepted_observation='test-observation' WHERE id='timed'",[]).unwrap();
+    crate::store::schema::clear_warning_condition_for_invitation(&tx, "timed", UtcMillis(150))
+        .unwrap();
+    tx.commit().unwrap();
+    let clear: String = conn
+        .query_row(
+            "SELECT clear_warning_id FROM warning_conditions WHERE condition_id='timed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!crate::store::attention::warning_wakes_seat(&conn, "origin", &clear).unwrap());
+    let clear_recipient:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM digest_programmatic_warnings WHERE warning_id=?1 AND seat_id='origin')",[&clear],|r|r.get(0)).unwrap();
+    assert!(
+        clear_recipient,
+        "the left inviter must retain its passive clear notice"
+    );
+    assert!(!crate::store::attention::warning_wakes_seat(&conn, "origin", &warning).unwrap());
+}
+
+#[test]
+fn invitation_due_index_bounds_physical_work_across_lazy_and_future_backlogs() {
+    let (context, mut conn, _, _) = setup(100);
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('origin','host','resolved','native',1,0)", []).unwrap();
+    conn.execute("WITH RECURSIVE n(v) AS (SELECT 1 UNION ALL SELECT v+1 FROM n WHERE v<2000) INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) SELECT 'lazy-'||v,'thread','seat',v,'pending',1,0,1,1,'lazy','origin' FROM n",[]).unwrap();
+    for i in 0..250 {
+        invitation(&conn, &format!("future-{i}"), 2001 + i, 1_000, "pending");
+    }
+    invitation(&conn, "last-due", 2251, 100, "pending");
+    let mut cursor = None;
+    let mut inspected = 0;
+    for _ in 0..3 {
+        let batch = scan_invitation_due_batch(&context, &mut conn, cursor, 100).unwrap();
+        inspected += batch.inspected;
+        cursor = batch.next;
+    }
+    assert_eq!(
+        inspected, 251,
+        "lazy rows must be absent from the physical due access path"
+    );
+    assert!(cursor.is_none());
+    assert_eq!(
+        warnings(&conn),
+        1,
+        "future rows cannot end a traversal before a later ordinal that is due"
+    );
+    let mut stmt = conn.prepare(INVITATION_DUE_SELECTION).unwrap();
+    let _: Vec<String> = stmt
+        .query_map(params![0, i64::MAX, 100], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(
+        stmt.get_status(rusqlite::StatementStatus::VmStep) < 10_000,
+        "bounded index selection must not scan lazy history or sort the backlog"
+    );
+    assert_eq!(stmt.get_status(rusqlite::StatementStatus::Sort), 0);
+}
+
+#[test]
+fn invitation_backlog_restart_reconstructs_progress_without_recipient_activity() {
+    let (context, mut conn, clock, path) = setup(1_000);
+    for i in 0..250 {
+        invitation(&conn, &format!("restart-{i}"), i + 1, 500, "pending");
+    }
+    assert_eq!(
+        scan_invitation_due_batch(&context, &mut conn, None, 100)
+            .unwrap()
+            .warnings_added,
+        100
+    );
+    drop(conn);
+    let restarted = StoreContext::new(path, clock);
+    let mut reopened = restarted.open_writer().unwrap();
+    for i in 0..250 {
+        invitation(&reopened, &format!("future-{i}"), 251 + i, 2_000, "pending");
+    }
+    let mut cursor = None;
+    for _ in 0..4 {
+        let batch = scan_invitation_due_batch(&restarted, &mut reopened, cursor, 100).unwrap();
+        assert!(batch.inspected <= 100);
+        cursor = batch.next;
+    }
+    assert_eq!(warnings(&reopened), 250);
+    assert_eq!(reopened.query_row("SELECT count(*) FROM invitations WHERE id LIKE 'restart-%' AND warning_message_id IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),250);
+    assert_eq!(
+        reopened
+            .query_row("SELECT count(*) FROM occupant_bindings", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0,
+        "discovery never requires registration"
+    );
+}
+
+#[test]
+fn invitation_confirmation_prior_schema_upgrade_preserves_exact_open_origins() {
+    let path =
+        std::env::temp_dir().join(format!("invitation-origin-v33-{}.db", uuid::Uuid::new_v4()));
+    let conn = Connection::open(&path).unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let mut migrations: Vec<_> =
+        std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name().unwrap().to_str().unwrap()[..4]
+                    .parse::<u32>()
+                    .is_ok_and(|version| version <= 36)
+            })
+            .collect();
+    migrations.sort();
+    assert_eq!(migrations.len(), 36);
+    for migration in migrations {
+        conn.execute_batch(&std::fs::read_to_string(migration).unwrap())
+            .unwrap();
+    }
+    conn.pragma_update(None, "user_version", 36).unwrap();
+    drop(conn);
+    let conn = Connection::open(&path).unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    assert_eq!(
+        conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        36
+    );
+    conn.execute(
+        "INSERT INTO host_instances(id,created_at,decision_seq) VALUES ('host',0,10)",
+        [],
+    )
+    .unwrap();
+    for seat in ["origin", "legacy", "unknown", "seat"] {
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'host','resolved','native',1,0)", [seat]).unwrap();
+    }
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('thread','host','topic','goal',0,0)", []).unwrap();
+    for (ordinal, id, recorded, actor) in [
+        (1, "stored", Some("origin"), None),
+        (2, "historical", None, Some("legacy")),
+        (3, "unattributed", None, None),
+    ] {
+        conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,inviter_seat_id) VALUES (?1,'thread','seat',?2,'pending',1,0,100,100,?3)", params![id,ordinal,recorded]).unwrap();
+        if let Some(actor) = actor {
+            crate::store::schema::append_event_once(&conn, crate::store::schema::EventInput {
+                thread: &crate::protocol::ids::ThreadId::new("thread"), key: &format!("invite:{id}"), kind: "info",
+                payload_json: &serde_json::json!({"action":"invite","actor_seat":actor,"seat":"seat","invitation":id}).to_string(), decision_at: UtcMillis(0), source_message: None, source_invitation: Some(&InvitationId::new(id)),
+            }).unwrap();
+        }
+        let (warning, _) = crate::store::schema::append_event_once(
+            &conn,
+            crate::store::schema::EventInput {
+                thread: &crate::protocol::ids::ThreadId::new("thread"),
+                key: &format!("overdue:{id}"),
+                kind: "warn",
+                payload_json: "{}",
+                decision_at: UtcMillis(100),
+                source_message: None,
+                source_invitation: Some(&InvitationId::new(id)),
+            },
+        )
+        .unwrap();
+        let seq: i64 = conn
+            .query_row(
+                "SELECT decision_seq FROM messages WHERE id=?1",
+                [warning.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('invitation','thread',?1,'seat',?2,?3)", params![id, warning.as_str(),seq]).unwrap();
+    }
+    let before: Vec<(String, String)> = {
+        let mut query = conn
+            .prepare("SELECT id,event_json FROM messages ORDER BY ordinal")
+            .unwrap();
+        query
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    drop(conn);
+    let context = StoreContext::new(path.clone(), Arc::new(TestClock(AtomicI64::new(200))));
+    let conn = context.open_writer().unwrap();
+    assert_eq!(
+        conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        39
+    );
+    for origin in ["origin", "legacy"] {
+        assert!(
+            crate::store::attention::wake_seat_attention(&conn, origin)
+                .unwrap()
+                .attention
+                .latest_warning_seq
+                .is_some(),
+            "prior-schema open origin {origin} must survive upgrade"
+        );
+    }
+    assert!(
+        crate::store::attention::wake_seat_attention(&conn, "unknown")
+            .unwrap()
+            .attention
+            .latest_warning_seq
+            .is_none(),
+        "unknown historical evidence cannot attribute a member"
+    );
+    let after: Vec<(String, String)> = {
+        let mut query = conn
+            .prepare("SELECT id,event_json FROM messages ORDER BY ordinal")
+            .unwrap();
+        query
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(before, after, "upgrade never rewrites historical events");
+    let mut conn = conn;
+    let tx = conn.transaction().unwrap();
+    tx.execute("UPDATE invitations SET state='accepted',accepted_at=200,accepted_actor_seat_id='seat',accepted_generation=1,accepted_observation='test-observation' WHERE id='stored'", []).unwrap();
+    crate::store::schema::clear_warning_condition_for_invitation(&tx, "stored", UtcMillis(200))
+        .unwrap();
+    tx.commit().unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,inviter_seat_id) VALUES ('next-episode','thread','seat',4,'pending',10,100,100,200,'legacy')", []).unwrap();
+    assert!(
+        scan_invitation_due_batch(&context, &mut conn, None, 100)
+            .unwrap()
+            .warnings_added
+            > 0
+    );
+    let next_origin: String = conn.query_row("SELECT invitation_originator_seat_id FROM warning_conditions WHERE condition_id='next-episode' AND clear_warning_id IS NULL", [], |r|r.get(0)).unwrap();
+    assert_eq!(
+        next_origin, "legacy",
+        "new open episode resolves its own origin rather than retaining the prior origin"
+    );
+    drop(conn);
+    drop(context);
+    let _ = std::fs::remove_file(path);
+}
+
+// Exercise both transaction boundaries in the composed chain using real prior32.
+#[test]
+fn invitation_confirmation_actual32_upgrade_rolls_back_reopens_and_preserves_receipt_progress() {
+    for (obstruction, failed_version) in [
+        ("invitations_confirmation_pending_seat", 35),
+        ("warning_conditions_invitation_origin", 36),
+    ] {
+        let path =
+            std::env::temp_dir().join(format!("invitation-chain-{}.db", uuid::Uuid::new_v4()));
+        let db = Connection::open(&path).unwrap();
+        let mut paths = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+            .unwrap()
+            .map(|p| p.unwrap().path())
+            .collect::<Vec<_>>();
+        paths.sort();
+        for (index, migration) in paths.iter().take(35).enumerate() {
+            db.execute_batch(&std::fs::read_to_string(migration).unwrap())
+                .unwrap();
+            db.pragma_update(None, "user_version", index as i64 + 1)
+                .unwrap();
+            if index == 31 {
+                db.execute_batch(
+                    "INSERT INTO host_instances(id,created_at,decision_seq) VALUES('host',0,12)",
+                )
+                .unwrap();
+            }
+        }
+        db.execute_batch("UPDATE host_instances SET decision_seq=99; UPDATE receipt_deadline_backfill SET physical_after=2,physical_high_water=7,prepared_after=3,prepared_high_water=9;
+            INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('seat','host','resolved','native',1,0);
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('thread','host','topic','goal',0,0);
+            INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES('retained','thread','seat',1,'pending',1,0,100,100,'require_ack','seat');").unwrap();
+        db.execute_batch(&format!("CREATE TABLE {obstruction}(value TEXT)"))
+            .unwrap();
+        drop(db);
+        let db = Connection::open(&path).unwrap();
+        db.pragma_update(None, "foreign_keys", true).unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            35
+        );
+        assert!(crate::store::schema::initialize(&db, || UtcMillis(200)).is_err());
+        assert!(db.is_autocommit());
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            failed_version
+        );
+        assert!(
+            db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+                .unwrap()
+        );
+        assert_eq!(db.query_row("SELECT count(*) FROM pragma_table_info('warning_conditions') WHERE name LIKE 'invitation_originator_%'", [], |r| r.get::<_,i64>(0)).unwrap(),0);
+        if failed_version == 35 {
+            assert_eq!(
+                db.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE name='invitations_confirmation_scan'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+        }
+        drop(db);
+        let db = Connection::open(&path).unwrap();
+        db.pragma_update(None, "foreign_keys", true).unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            failed_version
+        );
+        db.execute_batch(&format!("DROP TABLE {obstruction}"))
+            .unwrap();
+        for _ in 0..2 {
+            crate::store::schema::initialize(&db, || UtcMillis(300)).unwrap();
+            assert_eq!(
+                db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                39
+            );
+            assert_eq!(db.query_row("SELECT physical_after,physical_high_water,prepared_after,prepared_high_water,completed FROM receipt_deadline_backfill", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?))).unwrap(),(2,7,3,9,0));
+            assert_eq!(db.query_row("SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='host'", [], |r| r.get::<_,i64>(0)).unwrap(),12);
+            assert_eq!(db.query_row("SELECT confirmation,inviter_seat_id,deadline_at FROM invitations WHERE id='retained'", [], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?))).unwrap(),("require_ack".into(),"seat".into(),100));
+        }
+        drop(db);
+        let db = Connection::open(&path).unwrap();
+        crate::store::schema::initialize(&db, || UtcMillis(400)).unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            39
+        );
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
 }

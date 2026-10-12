@@ -571,6 +571,11 @@ pub fn ensure_direct_thread(
     mut permit: MutationPermit,
     installation_default_ms: Option<u64>,
 ) -> Result<CommandResult, ApiError> {
+    if let Some(policy) = &command.creation_policy {
+        policy
+            .validate()
+            .map_err(|e| api_error(ErrorCode::InvalidRequest, e))?;
+    }
     let caller = permit.seat_for_replay_scope().clone();
     let scope = format!("seat:{}", caller.as_str());
     let cooperative = permit.cooperative_metadata();
@@ -595,15 +600,21 @@ pub fn ensure_direct_thread(
                 &ObligationRef::CheckIn(caller.clone()),
                 &digest,
             )?;
-            resolve_direct_pair(
+            let (thread, created) = resolve_direct_pair(
                 tx,
                 decision,
-                &command.claim.instance,
-                &caller,
+                &command.claim,
                 &command.recipient,
+                command.creation_policy.as_ref(),
                 installation_default_ms,
+            )?;
+            direct_pair_selection(
+                tx,
+                thread,
+                &command.recipient,
+                created,
+                command.creation_policy.is_some(),
             )
-            .map(CommandResult::ThreadCreated)
         },
     )
 }
@@ -613,11 +624,13 @@ pub fn ensure_direct_thread(
 pub(crate) fn resolve_direct_pair(
     tx: &Transaction<'_>,
     decision: DecisionInstant,
-    instance: &str,
-    caller: &SeatId,
+    claim: &crate::protocol::authority::CallerClaim,
     recipient: &SeatId,
+    creation_policy: Option<&crate::protocol::commands::EnsureCreationPolicy>,
     installation_default_ms: Option<u64>,
-) -> Result<ThreadId, ApiError> {
+) -> Result<(ThreadId, bool), ApiError> {
+    let instance = claim.instance.as_str();
+    let caller = &claim.seat;
     if caller == recipient {
         return Err(api_error(
             ErrorCode::InvalidRequest,
@@ -642,10 +655,34 @@ pub(crate) fn resolve_direct_pair(
         let thread = ThreadId::new(id);
         direct_pair(tx, &thread)?;
         require_pair_lifecycle(tx, &thread, caller, recipient)?;
-        return Ok(thread);
+        return Ok((thread, false));
     }
-    let duration = i64::try_from(installation_default_ms.unwrap_or(300_000))
-        .map_err(|_| api_error(ErrorCode::InvalidRequest, "invitation duration too large"))?;
+    if let Some(policy) = creation_policy {
+        policy
+            .validate()
+            .map_err(|e| api_error(ErrorCode::InvalidRequest, e))?;
+    }
+    if creation_policy.is_some_and(|p| {
+        p.confirmation == crate::protocol::commands::InvitationConfirmation::RequireAck
+    }) && claim.harness == crate::protocol::authority::Harness::Human
+    {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "human invitation cannot require agent confirmation",
+        ));
+    }
+    let confirmation = creation_policy.map(|p| match p.confirmation {
+        crate::protocol::commands::InvitationConfirmation::Lazy => "lazy",
+        crate::protocol::commands::InvitationConfirmation::RequireAck => "require_ack",
+    });
+    let timed = confirmation != Some("lazy");
+    let duration = i64::try_from(
+        creation_policy
+            .and_then(|p| p.deadline_millis)
+            .or(installation_default_ms)
+            .unwrap_or(300_000),
+    )
+    .map_err(|_| api_error(ErrorCode::InvalidRequest, "invitation duration too large"))?;
     if duration <= 0 {
         return Err(api_error(
             ErrorCode::InvalidRequest,
@@ -691,8 +728,15 @@ pub(crate) fn resolve_direct_pair(
     )?);
     let invited_seq = schema::next_decision_seq(tx, instance)?;
     tx.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES(?1,?2,1,'invited','invited')",params![thread.as_str(),recipient.as_str()]).map_err(store_error)?;
-    tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES(?1,?2,?3,1,'pending',?4,?5,?6,?7)",params![invitation.as_str(),thread.as_str(),recipient.as_str(),decision.utc.0,invited_seq as i64,duration,deadline.0]).map_err(store_error)?;
-    let payload=serde_json::json!({"action":"invite","actor_seat":caller.as_str(),"seat":recipient.as_str(),"invitation":invitation.as_str(),"deadline_at":deadline.0}).to_string();
+    tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES(?1,?2,?3,1,'pending',?4,?5,?6,?7,?8,?9)",params![invitation.as_str(),thread.as_str(),recipient.as_str(),decision.utc.0,invited_seq as i64,duration,deadline.0,confirmation,creation_policy.map(|_| caller.as_str())]).map_err(store_error)?;
+    let mut payload = serde_json::json!({"action":"invite","actor_seat":caller.as_str(),"seat":recipient.as_str(),"invitation":invitation.as_str()});
+    if timed {
+        payload["deadline_at"] = serde_json::json!(deadline.0);
+    }
+    if let Some(mode) = confirmation {
+        payload["confirmation"] = serde_json::json!(mode);
+    }
+    let payload = payload.to_string();
     schema::append_event_once(
         tx,
         EventInput {
@@ -717,8 +761,75 @@ pub(crate) fn resolve_direct_pair(
         bump_member_directory(tx, instance, seat)?;
         schema::bump_filter_revision(tx, instance, "inbox", seat.as_str())?;
     }
-    tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES(?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",[recipient.as_str()]).map_err(store_error)?;
-    Ok(thread)
+    if timed {
+        tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES(?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",[recipient.as_str()]).map_err(store_error)?;
+    }
+    Ok((thread, true))
+}
+
+pub(crate) fn direct_pair_selection(
+    db: &Connection,
+    thread: ThreadId,
+    recipient: &SeatId,
+    created: bool,
+    modern: bool,
+) -> Result<CommandResult, ApiError> {
+    if !modern {
+        return Ok(CommandResult::ThreadCreated(thread));
+    }
+    use crate::protocol::{
+        commands::InvitationConfirmation,
+        results::{DirectThreadEnsureOutcome, DirectThreadEnsured, DirectThreadInvitation},
+    };
+    let membership = super::service_substrate::effective_membership(db, &thread, recipient)?;
+    let (outcome, invitation) = if membership.native_state == Some("joined") {
+        (DirectThreadEnsureOutcome::AlreadyJoined, None)
+    } else if membership.native_state == Some("invited") {
+        let (id,episode,confirmation,deadline,inviter):(String,i64,Option<String>,i64,Option<String>)=db.query_row(
+            "SELECT i.id,i.episode,i.confirmation,i.deadline_at,i.inviter_seat_id FROM invitations i JOIN memberships m ON m.thread_id=i.thread_id AND m.seat_id=i.seat_id AND m.episode=i.episode WHERE i.thread_id=?1 AND i.seat_id=?2 AND i.state='pending'",
+            params![thread.as_str(),recipient.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(store_error)?;
+        let confirmation = match confirmation.as_deref() {
+            Some("lazy") => InvitationConfirmation::Lazy,
+            Some("require_ack") | None => InvitationConfirmation::RequireAck,
+            _ => {
+                return Err(api_error(
+                    ErrorCode::StoreCorrupt,
+                    "invalid direct invitation confirmation",
+                ));
+            }
+        };
+        (
+            if created {
+                DirectThreadEnsureOutcome::Created
+            } else {
+                DirectThreadEnsureOutcome::ExistingPending
+            },
+            Some(DirectThreadInvitation {
+                id: InvitationId::new(id),
+                episode: u64::try_from(episode).map_err(|_| {
+                    api_error(ErrorCode::StoreCorrupt, "invalid direct invitation episode")
+                })?,
+                confirmation,
+                effective_deadline_at: if confirmation == InvitationConfirmation::Lazy {
+                    None
+                } else {
+                    Some(UtcMillis(deadline))
+                },
+                inviter: inviter.map(SeatId::new),
+            }),
+        )
+    } else {
+        return Err(api_error(
+            ErrorCode::Conflict,
+            "direct participant no longer invited or joined",
+        ));
+    };
+    Ok(CommandResult::DirectThreadEnsured(DirectThreadEnsured {
+        thread,
+        recipient: recipient.clone(),
+        outcome,
+        invitation,
+    }))
 }
 
 /// Voluntary self-enrollment, distinct from invitation or requirement consent.
@@ -972,6 +1083,28 @@ pub fn accept(
             if cancelled {
                 return Err(api_error(ErrorCode::Conflict, "invitation was cancelled"));
             }
+            let thread = ThreadId::new(thread);
+            let already_joined = joined_in_thread(tx, &thread, &caller)?;
+            let instance: String = tx
+                .query_row(
+                    "SELECT instance_id FROM seats WHERE id=?1",
+                    [caller.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            // Capture the current episode while the invitation/membership are
+            // still pending/invited. A generic acceptance keeps its head policy.
+            let direct_floor = if already_joined {
+                None
+            } else {
+                super::lazy_delivery::direct_acceptance_floor(
+                    tx,
+                    &instance,
+                    &caller,
+                    &thread,
+                    &invitation,
+                )?
+            };
             schema::record_overdue_if_pending(tx, &obligation, &TimeBasis::Decision, decision.utc)?;
             let generation: i64 = tx
                 .query_row(
@@ -984,15 +1117,6 @@ pub fn accept(
             tx.execute("UPDATE invitations SET state='accepted', accepted_at=?1,accepted_actor_seat_id=?2,accepted_generation=?3,accepted_observation=?4 WHERE id=?5",
                 params![decision.utc.0,caller.as_str(),generation,observation,invitation.as_str()]).map_err(store_error)?;
             schema::clear_warning_condition_for_invitation(tx, invitation.as_str(), decision.utc)?;
-            let thread = ThreadId::new(thread);
-            let already_joined = joined_in_thread(tx, &thread, &caller)?;
-            let instance: String = tx
-                .query_row(
-                    "SELECT instance_id FROM seats WHERE id=?1",
-                    [caller.as_str()],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?;
             let event_seq = schema::next_decision_seq(tx, &instance)?;
             // This invitation needs its own acceptance event even when another
             // invitation already joined the seat. The join interval belongs to
@@ -1009,7 +1133,14 @@ pub fn accept(
                     params![episode,decision.utc.0,thread.as_str(),caller.as_str()]).map_err(store_error)?;
                 tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,?3,?4)",
                     params![thread.as_str(),caller.as_str(),episode,event_seq as i64]).map_err(store_error)?;
-                super::read_cursors::init_for_join(tx, &caller, &thread)?;
+                match direct_floor {
+                    Some(floor) => {
+                        super::read_cursors::init_for_direct_accept(tx, &caller, &thread, floor)?;
+                    }
+                    None => {
+                        super::read_cursors::init_for_join(tx, &caller, &thread)?;
+                    }
+                }
             }
             let payload = serde_json::json!({"action":"accept", "seat":caller.as_str(), "invitation":invitation.as_str()}).to_string();
             schema::append_event_once_with_decision_seq(
@@ -1606,10 +1737,16 @@ pub fn set_topic(
                 )
                 .map_err(store_error)?;
             if old != command.topic {
-                tx.execute("UPDATE threads SET topic=?1,topic_revision=topic_revision+1,updated_at=?2 WHERE id=?3 AND topic_revision<?4",
+                let changed = tx.execute("UPDATE threads SET topic=?1,topic_revision=topic_revision+1,updated_at=?2 WHERE id=?3 AND topic_revision<?4",
                     params![command.topic,at.utc.0,command.thread.as_str(),i64::MAX]).map_err(store_error)?;
+                if changed != 1 {
+                    return Err(api_error(
+                        ErrorCode::SequenceExhausted,
+                        "topic revision exhausted",
+                    ));
+                }
                 let payload=serde_json::json!({"action":"set_topic","actor_seat":caller.as_str(),"topic":command.topic}).to_string();
-                schema::append_event_once(
+                let (event, _) = schema::append_event_once(
                     tx,
                     EventInput {
                         thread: &command.thread,
@@ -1628,6 +1765,24 @@ pub fn set_topic(
                         |r| r.get(0),
                     )
                     .map_err(store_error)?;
+                let seq: i64 = tx
+                    .query_row(
+                        "SELECT decision_seq FROM messages WHERE id=?1",
+                        [event.as_str()],
+                        |r| r.get(0),
+                    )
+                    .map_err(store_error)?;
+                super::invitation_content::record_context_change(
+                    tx,
+                    &instance,
+                    &command.thread,
+                    u64::try_from(seq).map_err(|_| {
+                        api_error(
+                            ErrorCode::StoreCorrupt,
+                            "negative context decision sequence",
+                        )
+                    })?,
+                )?;
                 schema::bump_filter_revision(tx, &instance, "topic", command.thread.as_str())?;
                 schema::bump_filter_revision(tx, &instance, "topic", "all")?;
                 schema::bump_filter_revision(tx, &instance, "directory", "all")?;
@@ -1891,6 +2046,27 @@ pub fn invite(
     mut permit: MutationPermit,
     installation_default_ms: Option<u64>,
 ) -> Result<CommandResult, ApiError> {
+    if command.confirmation == Some(crate::protocol::commands::InvitationConfirmation::Lazy)
+        && command.deadline_millis.is_some()
+    {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "lazy invitation conflicts with deadline",
+        ));
+    }
+    if command.confirmation == Some(crate::protocol::commands::InvitationConfirmation::RequireAck)
+        && command.claim.harness == crate::protocol::authority::Harness::Human
+    {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "human invitation cannot require agent confirmation",
+        ));
+    }
+    let confirmation = command.confirmation.map(|mode| match mode {
+        crate::protocol::commands::InvitationConfirmation::Lazy => "lazy",
+        crate::protocol::commands::InvitationConfirmation::RequireAck => "require_ack",
+    });
+    let timed = confirmation != Some("lazy");
     let duration = command
         .deadline_millis
         .or(installation_default_ms)
@@ -2012,10 +2188,17 @@ pub fn invite(
                         "invitation decision sequence exhausted",
                     )
                 })?;
-            tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8)",
-                params![invitation.as_str(), command.thread.as_str(), command.seat.as_str(), episode, decision.utc.0, created_decision_seq, duration, deadline.0]).map_err(store_error)?;
-            let payload = serde_json::json!({"action":"invite", "actor_seat":caller.as_str(), "seat":command.seat.as_str(),
-                "invitation":invitation.as_str(), "deadline_at":deadline.0}).to_string();
+            tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8,?9,?10)",
+                params![invitation.as_str(), command.thread.as_str(), command.seat.as_str(), episode, decision.utc.0, created_decision_seq, duration, deadline.0,confirmation,caller.as_str()]).map_err(store_error)?;
+            let mut payload = serde_json::json!({"action":"invite", "actor_seat":caller.as_str(), "seat":command.seat.as_str(),
+                "invitation":invitation.as_str()});
+            if timed {
+                payload["deadline_at"] = serde_json::json!(deadline.0);
+            }
+            if let Some(mode) = confirmation {
+                payload["confirmation"] = serde_json::json!(mode);
+            }
+            let payload = payload.to_string();
             schema::append_event_once(
                 tx,
                 EventInput {
@@ -2029,7 +2212,9 @@ pub fn invite(
                 },
             )?;
             schema::bump_membership_revision(tx, &command.thread)?;
-            tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES (?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1", [command.seat.as_str()]).map_err(store_error)?;
+            if timed {
+                tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES (?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1", [command.seat.as_str()]).map_err(store_error)?;
+            }
             let instance: String = tx
                 .query_row(
                     "SELECT instance_id FROM seats WHERE id=?1",
@@ -2436,7 +2621,8 @@ pub fn complete_inbox_delivery(
 /// Advance the caller binding's own cursors over the messages it fully displayed (spec §2). The
 /// claim resolves with the plain trigger (it may enroll); only that binding's cursor moves, so a
 /// subagent claim is accepted: no seat state changes and no receipt is settled. Idempotent per
-/// operation key. Messages of threads the seat has not joined are ignored.
+/// operation key. Unjoined threads remain ignored except exact published addressed Lazy
+/// pair IDs in an existing own stream or the active direct-invitation episode.
 pub fn advance_cursors(
     context: &StoreContext,
     conn: &mut Connection,
@@ -2462,6 +2648,7 @@ pub fn advance_cursors(
                 .binding_id
                 .clone();
             let mut by_thread: std::collections::BTreeMap<String, Vec<u64>> = Default::default();
+            let mut joined_threads: std::collections::BTreeMap<String, bool> = Default::default();
             for id in &request.displayed {
                 let row: Option<(String, i64)> = tx
                     .query_row(
@@ -2474,24 +2661,46 @@ pub fn advance_cursors(
                 let (thread, sequence) = row.ok_or_else(|| {
                     api_error(ErrorCode::InvalidRequest, "displayed message not found")
                 })?;
-                by_thread.entry(thread).or_default().push(sequence as u64);
-            }
-            for (thread, sequences) in by_thread {
-                let joined: bool = tx
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM memberships WHERE thread_id=?1 AND seat_id=?2 AND state='joined')",
-                        params![thread, claim.seat.as_str()],
-                        |r| r.get(0),
-                    )
-                    .map_err(store_error)?;
-                if joined {
-                    super::read_cursors::advance_through_displayed(
+                let joined = match joined_threads.get(&thread) {
+                    Some(joined) => *joined,
+                    None => {
+                        let joined: bool = tx.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM memberships WHERE thread_id=?1 AND seat_id=?2 AND state='joined')",
+                            params![thread, claim.seat.as_str()], |r| r.get(0),
+                        ).map_err(store_error)?;
+                        joined_threads.insert(thread.clone(), joined);
+                        joined
+                    }
+                };
+                // Filter before sequence vectors: a supplied system, ordinary,
+                // foreign or old-episode ID cannot bootstrap a cursorless pair.
+                if joined
+                    || super::lazy_delivery::direct_lazy_display_admitted(
                         tx,
+                        &claim.instance,
+                        &claim.seat,
                         &binding,
-                        &ThreadId::new(thread),
-                        &sequences,
-                    )?;
+                        id,
+                    )?
+                {
+                    let sequence = u64::try_from(sequence).map_err(|_| {
+                        api_error(ErrorCode::StoreCorrupt, "negative message sequence")
+                    })?;
+                    by_thread.entry(thread).or_default().push(sequence);
                 }
+            }
+            let mut reader_changed = false;
+            for (thread, sequences) in by_thread {
+                let (_, changed) = super::read_cursors::advance_through_displayed_with_change(
+                    tx,
+                    &binding,
+                    &ThreadId::new(thread),
+                    &sequences,
+                )?;
+                reader_changed |= changed;
+            }
+            if reader_changed {
+                super::presentation_reader::note_binding_reader_change(tx, &binding)?;
             }
             // An in-turn top-level display of a message whose receipt is still pending, or of a
             // pending invitation, served this occupant (ht-705): the wake candidate owes it no

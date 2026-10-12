@@ -1867,7 +1867,7 @@ fn config8_upgrade_from_a_v0_6_0_database() {
 
     // The new daemon migrates the database on its first start.
     smoke.human(None, &["daemon", "ensure"]).data();
-    assert_eq!(smoke.count("PRAGMA user_version", &[]), 36);
+    assert_eq!(smoke.count("PRAGMA user_version", &[]), 46);
     let migrated = smoke.all_bindings(&seat);
     assert_eq!(migrated.len(), 1, "{migrated:?}");
     assert_eq!(migrated[0].session, "sess-pre");

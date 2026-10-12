@@ -1,0 +1,154 @@
+== claude plugin validate --strict (2.1.296)
+Validating plugin manifest: /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/upstream-composition-v090/integrations/claude/mod/.claude-plugin/plugin.json
+
+  ❯ types ./types/index.d.ts declares on $: nothing (no EngineInterface member)
+  ❯ types ./types/index.d.ts declares state: herdr-threads.turns
+
+Validating hooks: /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/upstream-composition-v090/integrations/claude/mod/hooks/hooks.json
+
+  ❯ ./register.js hooks: session.start, session.end, turn.start, turn.complete, tool.call
+  ❯ ./register.js gating hook without .catch: tool.call
+  ❯ ./register.js calls: $.clock.every, $.env.get, $.fs.write (via buildIo), $.process.run (via buildIo), $.process.spawn (via buildIo), $.prompt.read (via buildIo), $.prompt.submit (via buildIo), $.session.append (via buildIo), $.session.id (via buildIo), $.state.get (via buildIo), $.state.set (via buildIo), $.store.delete (via buildIo), $.store.get (via buildIo), $.store.set (via buildIo), $.ui.log (via buildIo)
+  ❯ ./register.js env writes: nothing
+  ❯ ./register.js env reads: HERDR_THREADS_BIN, HERDR_THREADS_MOD_LEDGER
+  ❯ ./register.js state writes: herdr-threads.turns
+  ❯ ./register.js state reads: herdr-threads.turns
+
+ℹ Advice (does not change the verdict):
+
+  ❯ /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/upstream-composition-v090/integrations/claude/mod/README.md: This README has no line that installs "herdr-threads" from a marketplace. Add the install line, which works in one step on Claude Code 2.1.275 or later. Validate the folder that holds its marketplace.json to have <owner>/<repo> filled in, and the name its marketplace lists it under.
+      /plugin install herdr-threads --marketplace <owner>/<repo>
+
+✔ Validation passed
+== claude plugin test
+
+tests/delivery.test.ts:
+(pass) startup spawns watch with the session id and starts assumed busy [2.63ms]
+(pass) a configured launch prefix is used for watch and watch ack [1.32ms]
+(pass) assumed busy ends at the first main turn.complete [0.30ms]
+(pass) assumed busy ends after 5 s without turn.start when the prompt box reads [0.26ms]
+(pass) assumed busy stays when the prompt box cannot be read or a turn started [0.37ms]
+(pass) recorded state survives a reload: idle state is not assumed busy, an open turn is busy [0.41ms]
+(pass) context attaches only to an answered main tool result [0.66ms]
+(pass) a turn that ends before a tool result delivers by append, then a wake submit [0.37ms]
+(pass) submit is re-checked and never issued while a main turn is open [0.30ms]
+(pass) subagent turn events are ignored [0.25ms]
+(pass) turn.start before the aborted turn.complete of the previous turn [0.33ms]
+(pass) a lost turn.complete leaves a stale id that a later turn clears [0.22ms]
+(pass) post-abort hold lasts until a later non-aborted complete [0.28ms]
+(pass) post-abort hold ends after 120 s idle with an empty prompt box [0.26ms]
+(pass) post-abort hold overrides the draft rule: a draft keeps the hold [0.24ms]
+(pass) Esc at a permission dialog holds the idle submit like an aborted turn [0.33ms]
+(pass) a rejected tool call followed by an answered one in the same turn sets no hold [0.30ms]
+(pass) a subagent rejected tool call sets no hold [0.24ms]
+(pass) a turn.complete with reason aborted holds even when isAborted is false [0.16ms]
+(pass) the rejected flag does not leak into the next turn [0.20ms]
+(pass) a draft in the prompt box delays an idle submit up to 120 s, then it submits [0.23ms]
+(pass) a draft that is cleared lets the submit go at the next tick [0.35ms]
+(pass) one wake submit in flight: later items wait for the next opportunity [0.55ms]
+(pass) a dropped wake submit keeps the items settled and retries only the wake [0.52ms]
+(pass) a rejected wake submit counts as a drop [0.31ms]
+(pass) idle delivery appends the frames, then submits the content-free wake prompt [0.43ms]
+(pass) an append denied while idle submits no wake [0.41ms]
+(pass) lazy rows are appended at once, busy or idle, and acked via append [0.38ms]
+(pass) a message another binding already settled (ack_required false) is appended like a lazy row and never wakes an idle session [0.29ms]
+(pass) a promoted wake_on:all lazy row (message, ack_required false, wakes true) still wakes an idle session [0.39ms]
+(pass) an append with deny keeps the lazy row and is retried later [0.25ms]
+(pass) attention is delivered like a message, never acked, once per version and once per restart [0.60ms]
+(pass) the session-start sequence: an attention item retracted while assumed busy is never submitted [0.22ms]
+(pass) a retraction keeps queued messages [0.23ms]
+(pass) after a retraction the same attention version is delivered again [0.19ms]
+(pass) a retraction does not recall an attention item in flight [0.21ms]
+(pass) a retraction from an ended run is ignored [0.20ms]
+(pass) truncated items are delivered but never acked [0.24ms]
+(pass) per-id ack results: only retryable ids stay for a retry [0.34ms]
+(pass) an already-settled message line is delivered (appended, like a lazy row) and acked [0.24ms]
+(pass) a non-zero ack exit makes every id retryable; a missing line too [0.25ms]
+(pass) a throwing ack leaves ids retryable [0.18ms]
+(pass) retryable ids are retried on any new stream line, after registration and every 30 s [0.31ms]
+(pass) /clear discards the delivered set, resume keeps it and re-acks, /branch starts fresh [0.75ms]
+(pass) the session id is re-read after the session.end handler returns, not during it [0.15ms]
+(pass) delivered-but-unacked ids in $.store are re-acked, not delivered again [0.18ms]
+(pass) acks are capped at 100 ids per watch ack invocation [4.33ms]
+(pass) child exit 0/1/2 restart with backoff 1, 2, 5, 10, 30, 30 s; exit 3 stops until reload [0.46ms]
+(pass) the backoff resets after 60 s connected [0.17ms]
+(pass) after /clear a stale session id is corrected before the next watch start [0.39ms]
+(pass) a changed session id restarts within one tick, not on the ladder; an unchanged one waits [0.16ms]
+(pass) session_mismatch with an unchanged session id follows the backoff ladder [0.34ms]
+(pass) a binding_changed close re-reads the session id at the restart and keeps resume semantics [0.23ms]
+(pass) stale callbacks of a replaced child are ignored [0.13ms]
+(pass) a stall close drops held items: cooldown then a normal turn neither attaches nor submits [0.52ms]
+(pass) child exit with queued items: the reconnect re-stream delivers each item once [0.47ms]
+(pass) an in-flight append across a channel loss: success is delivered, a late deny is discarded unless re-streamed [0.62ms]
+(pass) nothing is delivered before the run reports connected [0.21ms]
+(pass) resume drops the queue; the new run re-streams and delivers once [0.19ms]
+(pass) missing APIs leave the mod inert with a ledger reason [0.29ms]
+(pass) ledger lines carry at, kind, ids, via, turn and reason in decision order [0.36ms]
+(pass) framing: one lead line, one block per item, never a leading slash [0.27ms]
+(pass) framing: relay, role and intent markers follow the sender [0.12ms]
+(pass) framing: header fields are one line [0.06ms]
+(pass) framing: a body line that looks like a header stays indented [0.11ms]
+(pass) framing: every line break in a body is indented [0.23ms]
+(pass) framing: names with line breaks stay on the header line [0.11ms]
+(pass) framing: attention bodies are indented too [0.05ms]
+(pass) framing: names follow their ids, quoted, and are not repeated [0.07ms]
+(pass) framing: a name cannot pass for a marker or a header [0.07ms]
+(pass) a streamed message shows the thread and sender names next to the ids [0.15ms]
+(pass) markers reach every delivery path [0.35ms]
+(pass) the turn record is written through state and survives a reload [0.19ms]
+(pass) register wires session.start to the core and the serialized ledger [42.75ms]
+(pass) register consumes captured active Watch order through passive append and tool context with only eligible ACKs [65.54ms]
+(pass) register appends captured invitation and notice while idle without waking accepting or ACKing them [43.74ms]
+(pass) register consumes captured scoped clear without retracting the queued ordinary message [51.63ms]
+(pass) a predecessor record from an older instance: the successor does not deliver it again and acks it when its turn completes [0.60ms]
+(pass) a successor sees the predecessor turn start: the ids are delivered at that turn.start [0.43ms]
+(pass) a successor recognises a predecessor batch that carried an attention block, and never delivers it again [0.28ms]
+(pass) a predecessor submit whose delivery the predecessor already recorded is not recorded delivered again [0.22ms]
+(pass) a predecessor submit that never produced a turn is delivered after 120 s idle [0.44ms]
+(pass) a user turn.start that does not name the ids keeps the predecessor hold [0.24ms]
+(pass) a disposed core ignores its late append resolution [0.20ms]
+(pass) a resolved wake submit clears the pending wake, and a drop keeps it [0.24ms]
+(pass) a turn that starts after the append clears the pending wake [0.36ms]
+(pass) an aborted turn that starts during the wake state write leaves no wake and no resubmit [0.22ms]
+(pass) a channel loss during the wake state write keeps the wake for the next run [0.25ms]
+(pass) a reload between the append and the wake submits the persisted wake once idle [0.29ms]
+(pass) a reload during the wake state write submits the wake the successor finds [0.21ms]
+(pass) idle delivery writes no submitting record [0.15ms]
+(pass) a submitting record from before this fix still settles by rule (b) [0.17ms]
+(pass) passive invitation enters context without an ACK or an idle wake [0.40ms]
+(pass) a truncated invitation never records a whole display or ACK [0.18ms]
+(pass) a timed invitation may wake but never ACKs as a message [0.16ms]
+(pass) a canonical invitation revision redisplays once under the original identity [0.21ms]
+(pass) decimal invitation revisions preserve every bit through u64 maximum [0.30ms]
+(pass) an omitted goal permits a later whole goal at the same invitation revision [0.23ms]
+(pass) a whole same-revision goal arriving during partial append is retained [0.33ms]
+(pass) command context epochs preserve adjacent large decimals and suppress only unchanged complete context [0.32ms]
+(pass) historical missing command context epoch differs from explicit zero [0.21ms]
+(pass) a changed command context arriving during complete append remains queued [0.28ms]
+(pass) a notice is visible once, passive and never grants ACK or wake authority [0.24ms]
+(pass) notice preserves passive mixed order with lazy rows and invitations [0.27ms]
+(pass) scoped clear removes only its queued epoch and preserves newer attention and unrelated messages [0.22ms]
+(pass) old scoped clear after lost confirmation preserves newer delivered dedupe [0.24ms]
+(pass) scoped clear cannot recall newer attention already in flight [0.20ms]
+(pass) present malformed presentation epochs are ignored without global-clear fallback [0.86ms]
+(pass) legacy omitted epoch retains global clear semantics across modern queued attention [0.15ms]
+(pass) observed stream close drops queued controls and notices while preserving successful in-flight output [0.36ms]
+(pass) a denied notice append remains passive on later idle retries [0.20ms]
+(pass) a queued notice retains passive scheduling while busy tool context preserves active order [0.52ms]
+
+tests/frame_golden.test.ts:
+(pass) frame() output equals the golden for empty [1.62ms]
+(pass) frame() output equals the golden for multiline [0.39ms]
+(pass) frame() output equals the golden for controls [0.28ms]
+(pass) frame() output equals the golden for name-equals-id [0.26ms]
+(pass) frame() output equals the golden for markers [0.29ms]
+(pass) frame() output equals the golden for attention [0.25ms]
+(pass) the golden cases cover every DP2 case [0.42ms]
+(pass) frame() starts with the HEADER golden [0.26ms]
+
+tests/stress.test.ts:
+(pass) randomized stress: no submit during a turn or hold, ids delivered and acked at most once [444.93ms]
+
+ 121 pass
+ 0 fail
+Ran 121 tests across 3 files. [0.63s]

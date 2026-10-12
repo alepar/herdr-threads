@@ -1,0 +1,13 @@
+# Task 15 disjoint JS epoch helper
+
+Owner: fresh delegated implementer, limited to `integrations/claude/mod/hooks/register.js` and `integrations/claude/mod/tests/delivery.test.ts`.
+Workspace: `/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/js-epoch-helper-15`.
+Branch: `helper-ht-0lo.8.4-js-epoch`; copied frozen D baseline commit `0f5d9bd2`. Native workspace created from ee1e598c and moved into owned repo; no Cargo setup/build is appropriate for this Node-only seam. Package and test runner must resolve this exact workspace.
+
+The two baseline blobs were copied after exact SHA256 verification from D: register.js d5e6b204e6e9858692258b0fa41b72e0bd1a2755e0860f3fe4319d907cd4c78b; delivery.test.ts 44974faf681b30f76d5a059615c440c5a8667f69953f2b1c3c5fd25847e1e263. D author freezes these files until helper return. Only the delta AFTER baseline returns to D; do not cherry-pick the copied prior D baseline.
+
+WatchInvitation now adds `command_context_epoch: Option<String>` with serde default/skipNone. It is an exact canonical decimal string like topic_revision. The JS logical context key must include unchanged invitation ID plus exact topic_revision plus exact command_context_epoch. Historical missing epoch differs from explicit string `0`. Never coerce decimal values through Number. Tests must cover adjacent >2^53 values and u64::MAX, unchanged complete suppression, partial-to-full and in-flight queue preservation, and historical missing metadata. Existing no ACK/acceptance synthesis and lazy idle suppression remain. Rust owns tokens, leases and emit/flush confirmation; no JS token authority or protocol redesign.
+
+Use test-driven development: run actual current baseline via `scripts/test-claude-mod`, add focused regression tests and observe meaningful failures before production change, then run actual complete mod tests. Use isolated HOME/CLAUDE_CONFIG_DIR/CODEX_HOME and HT_LEAK_RUN_ID; scoped leak check after tests. A script skip is not a passing test. Do not run Cargo, network/model requests, change real user configs, invoke threads, alter tracker, merge branches or edit other source files. Read applicable skills/repo instructions; commit owned changes with truthful Outside-adapter trailer. Report exact command/counts/RED/GREEN, selected package path, hashes and expected model-visible string size (prefer no new strings). Stop after report and net review package; fresh review precedes D application.
+
+Artifact paths (root integration run directory): `task-15-js-helper-report.md` and `task-15-js-helper.diff`. Full review package is baseline 0f5d9bd2 to final helper HEAD, including test changes. D review must additionally cover composed final Rust/JS decimal serialization and dedupe.

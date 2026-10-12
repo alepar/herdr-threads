@@ -1,0 +1,49 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+────────────
+ Nextest run ID a63f7504-49d6-4eeb-80f8-4b44ce27b563 with nextest profile: default
+    Starting 2 tests across 1 binary (4928 tests skipped)
+        FAIL [   0.407s] (1/2) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4929 filtered out; finished in 0.39s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy' (57549533) panicked at src/service/../../tests/service/normal_unrenderable_controls.rs:151:14:
+    called `Result::unwrap()` on an `Err` value: QueryReturnedNoRows
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.594s] (2/2) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4929 filtered out; finished in 0.58s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy' (57549534) panicked at src/service/../../tests/service/normal_unrenderable_controls.rs:179:5:
+    assertion `left == right` failed: normal unrenderable Lazy carry must not starve later Lazy messages within 16 pulls
+      left: 0
+     right: 4
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.610s] 2 tests run: 0 passed, 2 failed, 4928 skipped
+        FAIL [   0.407s] (1/2) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy
+        FAIL [   0.594s] (2/2) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy
+error: test run failed

@@ -1,0 +1,29 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 086f1f6b-e9f3-4f7e-bc5b-54a5557c41e3 with nextest profile: default
+    Starting 1 test across 1 binary (4894 tests skipped)
+        FAIL [   0.202s] (1/1) herdr-threads service::delivery_pull::tests::presentation_publication_walk_counts_foreign_prefix_before_filter_and_progresses
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_publication_walk_counts_foreign_prefix_before_filter_and_progresses ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_publication_walk_counts_foreign_prefix_before_filter_and_progresses
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4894 filtered out; finished in 0.19s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_publication_walk_counts_foreign_prefix_before_filter_and_progresses' (56180143) panicked at src/service/../../tests/service/delivery_pull.rs:7775:5:
+    assertion `left == right` failed
+      left: (100, 200, 2)
+     right: (100, 100, 2)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.216s] 1 test run: 0 passed, 1 failed, 4894 skipped
+        FAIL [   0.202s] (1/1) herdr-threads service::delivery_pull::tests::presentation_publication_walk_counts_foreign_prefix_before_filter_and_progresses
+error: test run failed

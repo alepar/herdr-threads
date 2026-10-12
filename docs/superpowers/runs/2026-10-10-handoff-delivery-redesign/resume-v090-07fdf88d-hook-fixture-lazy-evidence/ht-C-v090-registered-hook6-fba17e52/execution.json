@@ -1,0 +1,77 @@
+{
+  "head": "fba17e52b5a607c081ffd9e1e78c51f79eec4acf",
+  "tree": "68fd0e88cad46f89d270287b938701f7e2c27ee3",
+  "run_id": "abfac98c-4134-415a-bf50-87daa3016dba",
+  "expected": [
+    "agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion",
+    "agy::activation::activation_v2_registered_agy_lost_completion_preserves_exact_recovery",
+    "agy::activation::activation_v2_registered_agy_system_hook_round_trip",
+    "agy::activation::activation_v2_registered_agy_user_hook_round_trip",
+    "agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement",
+    "agy::activation::registered_agy_omitted_or_refused_capability_uses_historical_pull"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 56.999919374939054
+  },
+  "selected": [
+    [
+      "herdr-threads::hook_entrypoint",
+      "agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion"
+    ],
+    [
+      "herdr-threads::hook_entrypoint",
+      "agy::activation::activation_v2_registered_agy_lost_completion_preserves_exact_recovery"
+    ],
+    [
+      "herdr-threads::hook_entrypoint",
+      "agy::activation::activation_v2_registered_agy_system_hook_round_trip"
+    ],
+    [
+      "herdr-threads::hook_entrypoint",
+      "agy::activation::activation_v2_registered_agy_user_hook_round_trip"
+    ],
+    [
+      "herdr-threads::hook_entrypoint",
+      "agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement"
+    ],
+    [
+      "herdr-threads::hook_entrypoint",
+      "agy::activation::registered_agy_omitted_or_refused_capability_uses_historical_pull"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/hook_entrypoint-a6c34f3f3a02c12c",
+      "sha256": "6dcf9bb6aa0de58864fe45f42155934cc55707eb0858c4fc3de8f4a0fe2de7fd"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 6.33106445800513,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--test",
+      "hook_entrypoint",
+      "--no-fail-fast",
+      "-E",
+      "test(=agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion) | test(=agy::activation::activation_v2_registered_agy_lost_completion_preserves_exact_recovery) | test(=agy::activation::activation_v2_registered_agy_system_hook_round_trip) | test(=agy::activation::activation_v2_registered_agy_user_hook_round_trip) | test(=agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement) | test(=agy::activation::registered_agy_omitted_or_refused_capability_uses_historical_pull)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.24547079205513,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "abfac98c-4134-415a-bf50-87daa3016dba"
+    ]
+  },
+  "leak_exit": 0
+}

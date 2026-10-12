@@ -15,6 +15,9 @@ pub const PICKER_DIRECTORY_V1: &str = "picker.directory_v1";
 
 pub const HISTORY_FULL_BODIES: &str = "history.full_bodies";
 pub const HOOK_PARSE_FAILURE_REPORT: &str = "hook.parse_failure_report";
+/// Ordinary send handlers anchor original ACK deadlines to committed send time.
+pub const SEND_TIME_RECEIPTS_V1: &str = "messages.send_time_receipts_v1";
+
 pub const SERVICE_SEND_V1: &str = "service.send_v1";
 pub const HARNESS_EVIDENCE_V2: &str = "hook.harness_evidence_v2";
 pub const HARNESS_EVIDENCE: &str = "hook.harness_evidence";
@@ -25,12 +28,16 @@ pub const PARTICIPANT_LOCATIONS: &str = "participants.locations_v1";
 
 /// Canonical pair resolution and the independent SendMessage direct audience marker.
 /// Advertise only after transactional pair, enrollment and audience guards are installed.
+pub const ENSURE_CREATION_POLICY_V1: &str = "direct_threads.ensure_creation_policy_v1";
 pub const DIRECT_THREADS_V1: &str = "thread.direct_v1";
 /// Automatic handoff channel selection and exact canonical Ensure child attachment.
 /// Advertise only with the complete automatic handoff deciding adapters.
 pub const AUTOMATIC_HANDOFF_V1: &str = "handoff.automatic_v1";
 
 pub const THREAD_JOIN: &str = "thread.join_v1";
+
+/// Advertise only once canonical invitation lifecycle handlers honor this policy.
+pub const INVITATION_CONFIRMATION_V1: &str = "invitation.confirmation_v1";
 
 pub const INVITATION_REJECT: &str = "invitation.reject_v1";
 
@@ -64,6 +71,10 @@ pub const ATTENTION_NOTICE_DELIVERY: &str = "attention.notice_delivery_v1";
 /// with ht-j16.2.
 pub const MOD_WATCH: &str = "mod.watch_v1";
 
+/// Explicit Watch presentation opt-in and mode-bound Accepted lease.
+/// Advertise only with the complete registration, registry and lease handlers.
+pub const MOD_WATCH_PRESENTATION_V2: &str = "mod.watch_presentation_v2";
+
 /// Hook-pull delivery (`protocol::delivery`, delivery-policy DP4). Defined by the
 /// ht-poh.3.1 seam; its handlers (`service::delivery_pull`) landed with L4.
 pub const DELIVERY_PULL: &str = "delivery.pull_v1";
@@ -80,6 +91,7 @@ pub const ADVERTISED: &[&str] = &[
     HISTORY_FULL_BODIES,
     HOOK_PARSE_FAILURE_REPORT,
     SERVICE_SEND_V1,
+    SEND_TIME_RECEIPTS_V1,
     HARNESS_EVIDENCE,
     HARNESS_EVIDENCE_V2,
     HARNESS_STATES,
@@ -89,6 +101,7 @@ pub const ADVERTISED: &[&str] = &[
     INVITATION_REJECT,
     THREAD_JOIN,
     DIRECT_THREADS_V1,
+    ENSURE_CREATION_POLICY_V1,
     PARTICIPANT_LOCATIONS,
     PICKER_DIRECTORY_V1,
     ATTENTION_NOTICE_DELIVERY,
@@ -96,9 +109,11 @@ pub const ADVERTISED: &[&str] = &[
     LAZY_SEND,
     INBOX_BATCH_V2,
     MOD_WATCH,
+    MOD_WATCH_PRESENTATION_V2,
     SEAT_WAKE_ON_V1,
     DELIVERY_PULL,
     LAZY_HOOK_DELIVERY,
+    DELIVERY_PRESENTATION_V2,
     BINDING_CURSORS,
     BINDING_DIGEST,
     IN_TURN_OFFER,
@@ -130,3 +145,7 @@ impl Capabilities {
 #[cfg(test)]
 #[path = "../../tests/protocol/capabilities.rs"]
 mod tests;
+
+/// Bounded ordered delivery through registered codecs and explicit presentation confirmation.
+/// Consumers retain historical delivery when capability discovery omits this name.
+pub const DELIVERY_PRESENTATION_V2: &str = "delivery.presentation_v2";

@@ -1,0 +1,256 @@
+{
+  "head": "0b04f91ba5fbaf4f5df4819fe8ccda6a704c26a2",
+  "tree": "29f7d42d742fa09a56bf64f9de1648420e2565e3",
+  "run_id": "aa07d15e-4108-41cd-8b65-f16cde5c0b5e",
+  "expected": [
+    [
+      "herdr-threads",
+      "cli::watch::tests::q3_all_watch_mode_capabilities_send_true_and_use_the_accepted_lease"
+    ],
+    [
+      "herdr-threads",
+      "cli::watch::tests::q3_missing_binding_cursors_capability_keeps_old_wire_and_consumer"
+    ],
+    [
+      "herdr-threads",
+      "cli::watch::tests::q3_missing_generic_presentation_capability_keeps_old_wire_and_consumer"
+    ],
+    [
+      "herdr-threads",
+      "cli::watch::tests::q3_missing_watch_mode_capability_keeps_old_wire_and_consumer"
+    ],
+    [
+      "herdr-threads",
+      "daemon::transport::watch_connection::tests::accepted_reply_carries_attention_version_and_the_claim"
+    ],
+    [
+      "herdr-threads",
+      "daemon::transport::watch_connection::tests::legacy_accepted_wire_omits_even_a_registered_presentation_lease"
+    ],
+    [
+      "herdr-threads",
+      "daemon::transport::watch_connection::tests::presentation_owner_accepted_wire_carries_the_registered_lease"
+    ],
+    [
+      "herdr-threads",
+      "protocol::watch::tests::accepted_presentation_lease_survives_new_decoder_and_old_bytes_stay_omitted"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_capacity_last_slot_parks_unknown_carry_and_only_continues_for_due_keys"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_full_pending_carry_reaches_quiet_without_evicting_offers"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers"
+    ],
+    [
+      "herdr-threads",
+      "service::mod_channels::tests::domain::q3_legacy_claim_only_registration_has_no_presentation_lease"
+    ],
+    [
+      "herdr-threads",
+      "service::mod_channels::tests::domain::q3_mixed_same_seat_modes_and_replacement_cannot_borrow_old_leases"
+    ],
+    [
+      "herdr-threads",
+      "store::attention::tests::presentation_capacity_due_exact_keys_have_bounded_actual_sql_plans_and_vm"
+    ],
+    [
+      "herdr-threads",
+      "store::attention::tests::presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settlement"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_private_fresh_excludes_warning_history"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_private_resumed_excludes_warning_history"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_public_and_origin_warning_sources_remain_enabled"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope"
+    ]
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 52.11681254103314
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "cli::watch::tests::q3_all_watch_mode_capabilities_send_true_and_use_the_accepted_lease"
+    ],
+    [
+      "herdr-threads",
+      "cli::watch::tests::q3_missing_binding_cursors_capability_keeps_old_wire_and_consumer"
+    ],
+    [
+      "herdr-threads",
+      "cli::watch::tests::q3_missing_generic_presentation_capability_keeps_old_wire_and_consumer"
+    ],
+    [
+      "herdr-threads",
+      "cli::watch::tests::q3_missing_watch_mode_capability_keeps_old_wire_and_consumer"
+    ],
+    [
+      "herdr-threads",
+      "daemon::transport::watch_connection::tests::accepted_reply_carries_attention_version_and_the_claim"
+    ],
+    [
+      "herdr-threads",
+      "daemon::transport::watch_connection::tests::legacy_accepted_wire_omits_even_a_registered_presentation_lease"
+    ],
+    [
+      "herdr-threads",
+      "daemon::transport::watch_connection::tests::presentation_owner_accepted_wire_carries_the_registered_lease"
+    ],
+    [
+      "herdr-threads",
+      "protocol::watch::tests::accepted_presentation_lease_survives_new_decoder_and_old_bytes_stay_omitted"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_capacity_last_slot_parks_unknown_carry_and_only_continues_for_due_keys"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_full_pending_carry_reaches_quiet_without_evicting_offers"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers"
+    ],
+    [
+      "herdr-threads",
+      "service::mod_channels::tests::domain::q3_legacy_claim_only_registration_has_no_presentation_lease"
+    ],
+    [
+      "herdr-threads",
+      "service::mod_channels::tests::domain::q3_mixed_same_seat_modes_and_replacement_cannot_borrow_old_leases"
+    ],
+    [
+      "herdr-threads",
+      "store::attention::tests::presentation_capacity_due_exact_keys_have_bounded_actual_sql_plans_and_vm"
+    ],
+    [
+      "herdr-threads",
+      "store::attention::tests::presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settlement"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_private_fresh_excludes_warning_history"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_private_resumed_excludes_warning_history"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_public_and_origin_warning_sources_remain_enabled"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-bc80e388954f6954",
+      "sha256": "8546326ca1c3b553454dae42ef336a67549861041045e24fbd1e6def5357563f"
+    }
+  ],
+  "run": {
+    "exit": 0,
+    "seconds": 13.737108833971433,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "--success-output",
+      "immediate",
+      "-E",
+      "test(=cli::watch::tests::q3_all_watch_mode_capabilities_send_true_and_use_the_accepted_lease) | test(=cli::watch::tests::q3_missing_binding_cursors_capability_keeps_old_wire_and_consumer) | test(=cli::watch::tests::q3_missing_generic_presentation_capability_keeps_old_wire_and_consumer) | test(=cli::watch::tests::q3_missing_watch_mode_capability_keeps_old_wire_and_consumer) | test(=daemon::transport::watch_connection::tests::accepted_reply_carries_attention_version_and_the_claim) | test(=daemon::transport::watch_connection::tests::legacy_accepted_wire_omits_even_a_registered_presentation_lease) | test(=daemon::transport::watch_connection::tests::presentation_owner_accepted_wire_carries_the_registered_lease) | test(=protocol::watch::tests::accepted_presentation_lease_survives_new_decoder_and_old_bytes_stay_omitted) | test(=service::delivery_pull::tests::presentation_capacity_last_slot_parks_unknown_carry_and_only_continues_for_due_keys) | test(=service::delivery_pull::tests::presentation_full_pending_carry_reaches_quiet_without_evicting_offers) | test(=service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id) | test(=service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity) | test(=service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers) | test(=service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader) | test(=service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window) | test(=service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers) | test(=service::mod_channels::tests::domain::q3_legacy_claim_only_registration_has_no_presentation_lease) | test(=service::mod_channels::tests::domain::q3_mixed_same_seat_modes_and_replacement_cannot_borrow_old_leases) | test(=store::attention::tests::presentation_capacity_due_exact_keys_have_bounded_actual_sql_plans_and_vm) | test(=store::attention::tests::presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settlement) | test(=store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work) | test(=store::queries::tests::query_work_q4::q4_private_fresh_excludes_warning_history) | test(=store::queries::tests::query_work_q4::q4_private_resumed_excludes_warning_history) | test(=store::queries::tests::query_work_q4::q4_public_and_origin_warning_sources_remain_enabled) | test(=store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers) | test(=store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.20015991700347513,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "aa07d15e-4108-41cd-8b65-f16cde5c0b5e"
+    ]
+  },
+  "leak_exit": 0
+}

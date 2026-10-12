@@ -372,6 +372,10 @@ fn in_turn_presentation_is_sent_only_to_a_daemon_that_records_it() {
     let invite = InboxBatchV2Item::Invitation {
         thread: ThreadId::new("t2"),
         topic_data: "topic".into(),
+        goal_data: None,
+        topic_revision: None,
+        confirmation: None,
+        deadline_at: None,
         invitation: crate::protocol::ids::InvitationId::new("i1"),
         required_service: None,
     };

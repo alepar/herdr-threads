@@ -1,0 +1,25 @@
+{
+  "workspace": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "branch": "task-ht-0lo.8.2",
+  "head": "7d432fe0f4ad3de85c96a029aedfb6e5b5ff5845",
+  "head_tree": "f068c8415584351ff0ad96116dcaafc053cf466e",
+  "dirty_diff_sha256": "74f17d54052bf663ca9f4146e48476cb63c097e587d9434b5a42ac0c375ea0d2",
+  "source_content_sha256": "8297ad69dda78cb4fb57153c42fd2f37cc9cb01c202ac1d4891ce7a565ffca41",
+  "freshness_invalidated_paths": 487,
+  "includes_untracked_source": true,
+  "target": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "target_from_branch": "task-ht-0lo.8.4",
+  "target_source_head": "ee1e598c3ee96566ddc9b397185cdc97c8bf6218",
+  "target_compiled_dirty_hash": "db9c2e209689b945b395866758125398d0b5053765faad0dd954c7ba5e6b55b9",
+  "manifest": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/Cargo.toml",
+  "targets": [
+    "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/src/lib.rs",
+    "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/src/main.rs",
+    "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/combined.rs",
+    "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/hook_entrypoint.rs",
+    "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/integration.rs",
+    "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/package.rs",
+    "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/service.rs"
+  ],
+  "evidence_rule": "actual owned crate Compiling + unique selected tests>0 required"
+}

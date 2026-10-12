@@ -503,15 +503,16 @@ fn host_kinds_and_process_hint() {
 }
 
 #[test]
-fn a_missing_plugin_is_refused_with_the_setup_hint() {
+fn a_missing_plugin_keeps_native_launch_and_the_setup_diagnostic() {
     let fx = Fixture::new();
-    let error = fx.prepare(&["--model", "m"]).err().expect("refused");
-    assert_eq!(error.code, ErrorCode::MissingHook);
-    // The policy itself, handed a status with no installed plugin.
+    let prepared = fx.prepare(&["--model", "m"]).unwrap();
+    assert_eq!(prepared.argv, argv(&["--model", "m"]));
+    assert!(prepared.hook.is_none());
+    // Also exercise the policy directly with the observed missing status.
     let request = fx.request(&[]);
     let scope = fx.scope_for(&request);
     let (_, admitted) = agy_admission();
-    let error = POLICY
+    let prepared = POLICY
         .prepare_launch(
             &request,
             &scope,
@@ -520,43 +521,61 @@ fn a_missing_plugin_is_refused_with_the_setup_hint() {
             &NoProbe,
             &budget(),
         )
-        .err()
-        .expect("refused");
-    assert_eq!(error.code, ErrorCode::MissingHook);
+        .unwrap();
+    assert!(prepared.argv.is_empty());
+    assert!(prepared.hook.is_none());
     assert!(
-        error.detail.contains("run herdr-threads setup agy"),
-        "{}",
-        error.detail
+        prepared.report["agy"]["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning
+                .as_str()
+                .is_some_and(|text| text.contains("run herdr-threads setup agy"))),
+        "{:?}",
+        prepared.report["agy"]["warnings"]
     );
 }
 
 #[test]
-fn a_disabled_plugin_is_refused_with_the_enable_hint() {
+fn a_disabled_plugin_keeps_native_launch_and_the_enable_diagnostic() {
     let fx = Fixture::new();
     fx.setup();
     fx.disable();
     let status = fx.status();
     assert_eq!(status.enabled, Some(false));
-    // Through the registry, as `launch` reaches it.
-    let error = fx.prepare(&[]).err().expect("refused");
+    let prepared = fx.prepare(&[]).unwrap();
+    assert!(prepared.argv.is_empty());
+    assert!(prepared.hook.is_none());
     assert!(
-        error.detail.contains("agy plugin enable herdr-threads"),
-        "{}",
-        error.detail
+        prepared.report["agy"]["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning
+                .as_str()
+                .is_some_and(|text| text.contains("enable the plugin"))),
+        "{:?}",
+        prepared.report["agy"]["warnings"]
     );
-    // The policy itself.
     let request = fx.request(&[]);
     let scope = fx.scope_for(&request);
     let (_, admitted) = agy_admission();
-    let error = POLICY
+    let prepared = POLICY
         .prepare_launch(&request, &scope, &admitted, &status, &NoProbe, &budget())
-        .err()
-        .expect("refused");
-    assert_eq!(error.code, ErrorCode::Conflict);
+        .unwrap();
+    assert!(prepared.argv.is_empty());
+    assert!(prepared.hook.is_none());
     assert!(
-        error.detail.contains("agy plugin enable herdr-threads"),
-        "{}",
-        error.detail
+        prepared.report["agy"]["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning
+                .as_str()
+                .is_some_and(|text| text.contains("enable the plugin"))),
+        "{:?}",
+        prepared.report["agy"]["warnings"]
     );
 }
 
@@ -568,11 +587,13 @@ fn an_installed_current_enabled_plugin_prepares_the_validated_caller_argv() {
     let prepared = fx.prepare(&words).unwrap();
     assert_eq!(prepared.argv, argv(&words));
     let status = fx.status();
-    assert_eq!(prepared.hook, status.configured_hook.clone().unwrap());
-    assert_eq!(prepared.hook.scope, "user");
+    assert_eq!(prepared.hook, status.configured_hook.clone());
+    assert_eq!(prepared.hook.as_ref().unwrap().scope, "user");
     assert!(
         prepared
             .hook
+            .as_ref()
+            .unwrap()
             .path
             .ends_with("plugins/herdr-threads/hooks.json")
     );
@@ -712,5 +733,37 @@ fn launch_notes_name_the_accepted_and_refused_flags() {
         "--remote-control",
     ] {
         assert!(notes.contains(needle), "launch_notes lacks {needle}");
+    }
+}
+
+// Kills: treating plugin readiness as authority to refuse a safe native argv.
+#[test]
+fn advisory_plugin_readiness_keeps_native_launch_available_without_fabricated_hooks() {
+    for condition in ["missing", "stale", "disabled", "unknown"] {
+        let fx = Fixture::new();
+        if condition != "missing" {
+            fx.setup();
+        }
+        match condition {
+            "stale" => std::fs::write(fx.roots.plugin_dir.join("hooks.json"), "{}\n").unwrap(),
+            "disabled" => fx.disable(),
+            "unknown" => std::fs::write(&fx.roots.plugins_config, "invalid json").unwrap(),
+            _ => {}
+        }
+        let prepared = fx
+            .prepare(&["--model", "m"])
+            .unwrap_or_else(|e| panic!("{condition}: {e:?}"));
+        assert_eq!(prepared.argv, argv(&["--model", "m"]));
+        assert!(
+            prepared.hook.is_none(),
+            "{condition}: no owned hook is used"
+        );
+        let unsafe_request = fx.request(&["--print"]);
+        assert!(
+            POLICY
+                .resolve_scope(&unsafe_request, &NoProbe, &budget())
+                .is_err(),
+            "native grammar still applies before preparation"
+        );
     }
 }

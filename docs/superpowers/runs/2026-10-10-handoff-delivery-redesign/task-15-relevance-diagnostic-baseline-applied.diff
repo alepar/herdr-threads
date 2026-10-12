@@ -1,0 +1,2359 @@
+diff --git a/migrations/0041_presentation_relevance.sql b/migrations/0041_presentation_relevance.sql
+new file mode 100644
+index 00000000..141e9877
+--- /dev/null
++++ b/migrations/0041_presentation_relevance.sql
+@@ -0,0 +1,860 @@
++-- Exact pending invitation confirmation overlay. One-time population/index work
++-- scales with retained pending invitations; no runtime repair/bootstrap walker.
++CREATE TABLE presentation_confirming_invitations (
++    seat_id TEXT NOT NULL,
++    invitation_id TEXT NOT NULL,
++    ordinal INTEGER NOT NULL CHECK(ordinal>0),
++    PRIMARY KEY(seat_id,invitation_id)
++) STRICT;
++CREATE INDEX presentation_confirming_invitations_seat ON presentation_confirming_invitations(seat_id,ordinal);
++
++INSERT INTO presentation_confirming_invitations(seat_id,invitation_id,ordinal)
++SELECT d.seat_id,d.invitation_id,d.ordinal FROM digest_pending_invitations d
++JOIN invitations i ON i.id=d.invitation_id AND i.seat_id=d.seat_id
++WHERE i.confirmation IS NULL OR i.confirmation='require_ack'
++ OR EXISTS(SELECT 1 FROM requirement_episodes r WHERE r.invitation_id=i.id AND r.state IN ('pending','accepted'));
++
++CREATE TRIGGER presentation_confirming_digest_insert AFTER INSERT ON digest_pending_invitations
++BEGIN
++    INSERT INTO presentation_confirming_invitations(seat_id,invitation_id,ordinal)
++    SELECT d.seat_id,d.invitation_id,d.ordinal FROM invitations i
++    JOIN digest_pending_invitations d ON d.seat_id=i.seat_id AND d.invitation_id=i.id
++    WHERE i.id=NEW.invitation_id AND (i.confirmation IS NULL OR i.confirmation='require_ack'
++        OR EXISTS(SELECT 1 FROM requirement_episodes r WHERE r.invitation_id=i.id AND r.state IN ('pending','accepted')))
++    ON CONFLICT(seat_id,invitation_id) DO UPDATE SET ordinal=excluded.ordinal;
++END;
++
++CREATE TRIGGER presentation_confirming_digest_delete AFTER DELETE ON digest_pending_invitations
++BEGIN
++    DELETE FROM presentation_confirming_invitations WHERE seat_id=OLD.seat_id AND invitation_id=OLD.invitation_id;
++END;
++
++CREATE TRIGGER presentation_confirming_digest_update AFTER UPDATE ON digest_pending_invitations
++BEGIN
++    DELETE FROM presentation_confirming_invitations WHERE seat_id=OLD.seat_id AND invitation_id=OLD.invitation_id;
++    INSERT INTO presentation_confirming_invitations(seat_id,invitation_id,ordinal)
++    SELECT d.seat_id,d.invitation_id,d.ordinal FROM invitations i
++    JOIN digest_pending_invitations d ON d.seat_id=i.seat_id AND d.invitation_id=i.id
++    WHERE i.id=NEW.invitation_id AND (i.confirmation IS NULL OR i.confirmation='require_ack'
++        OR EXISTS(SELECT 1 FROM requirement_episodes r WHERE r.invitation_id=i.id AND r.state IN ('pending','accepted')))
++    ON CONFLICT(seat_id,invitation_id) DO UPDATE SET ordinal=excluded.ordinal;
++END;
++
++CREATE TRIGGER presentation_confirming_requirement_insert AFTER INSERT ON requirement_episodes
++BEGIN
++    DELETE FROM presentation_confirming_invitations WHERE invitation_id=NEW.invitation_id AND seat_id=(SELECT seat_id FROM invitations WHERE id=NEW.invitation_id);
++    INSERT INTO presentation_confirming_invitations(seat_id,invitation_id,ordinal)
++    SELECT d.seat_id,d.invitation_id,d.ordinal FROM invitations i
++    JOIN digest_pending_invitations d ON d.seat_id=i.seat_id AND d.invitation_id=i.id
++    WHERE i.id=NEW.invitation_id AND (i.confirmation IS NULL OR i.confirmation='require_ack'
++        OR EXISTS(SELECT 1 FROM requirement_episodes r WHERE r.invitation_id=i.id AND r.state IN ('pending','accepted')))
++    ON CONFLICT(seat_id,invitation_id) DO UPDATE SET ordinal=excluded.ordinal;
++END;
++
++CREATE TRIGGER presentation_confirming_requirement_delete AFTER DELETE ON requirement_episodes
++BEGIN
++    DELETE FROM presentation_confirming_invitations WHERE invitation_id=OLD.invitation_id AND seat_id=(SELECT seat_id FROM invitations WHERE id=OLD.invitation_id);
++    INSERT INTO presentation_confirming_invitations(seat_id,invitation_id,ordinal)
++    SELECT d.seat_id,d.invitation_id,d.ordinal FROM invitations i
++    JOIN digest_pending_invitations d ON d.seat_id=i.seat_id AND d.invitation_id=i.id
++    WHERE i.id=OLD.invitation_id AND (i.confirmation IS NULL OR i.confirmation='require_ack'
++        OR EXISTS(SELECT 1 FROM requirement_episodes r WHERE r.invitation_id=i.id AND r.state IN ('pending','accepted')))
++    ON CONFLICT(seat_id,invitation_id) DO UPDATE SET ordinal=excluded.ordinal;
++END;
++
++CREATE TRIGGER presentation_confirming_requirement_update AFTER UPDATE OF invitation_id,state ON requirement_episodes
++BEGIN
++    DELETE FROM presentation_confirming_invitations WHERE invitation_id=OLD.invitation_id AND seat_id=(SELECT seat_id FROM invitations WHERE id=OLD.invitation_id);
++    INSERT INTO presentation_confirming_invitations(seat_id,invitation_id,ordinal)
++    SELECT d.seat_id,d.invitation_id,d.ordinal FROM invitations i
++    JOIN digest_pending_invitations d ON d.seat_id=i.seat_id AND d.invitation_id=i.id
++    WHERE i.id=OLD.invitation_id AND (i.confirmation IS NULL OR i.confirmation='require_ack'
++        OR EXISTS(SELECT 1 FROM requirement_episodes r WHERE r.invitation_id=i.id AND r.state IN ('pending','accepted')))
++    ON CONFLICT(seat_id,invitation_id) DO UPDATE SET ordinal=excluded.ordinal;
++    DELETE FROM presentation_confirming_invitations WHERE invitation_id=NEW.invitation_id AND seat_id=(SELECT seat_id FROM invitations WHERE id=NEW.invitation_id);
++    INSERT INTO presentation_confirming_invitations(seat_id,invitation_id,ordinal)
++    SELECT d.seat_id,d.invitation_id,d.ordinal FROM invitations i
++    JOIN digest_pending_invitations d ON d.seat_id=i.seat_id AND d.invitation_id=i.id
++    WHERE i.id=NEW.invitation_id AND (i.confirmation IS NULL OR i.confirmation='require_ack'
++        OR EXISTS(SELECT 1 FROM requirement_episodes r WHERE r.invitation_id=i.id AND r.state IN ('pending','accepted')))
++    ON CONFLICT(seat_id,invitation_id) DO UPDATE SET ordinal=excluded.ordinal;
++END;
++
++-- Fixed-key indexed physical ranges; judgment happens after LIMIT.
++CREATE INDEX presentation_conditions_affected ON warning_conditions(affected_seat_id,ordinal) WHERE clear_warning_id IS NULL;
++CREATE INDEX presentation_membership_history ON membership_intervals(thread_id,seat_id,ordinal);
++CREATE INDEX presentation_prepared_warning ON prepared_unavailable_warnings(warning_id,ordinal);
++
++-- Exactly one current bounded proof per retained seat/fixed consumer. Its JSON
++-- contains 13 cursor/judgment records and one witness, never a history/map.
++CREATE TABLE presentation_warning_proofs (
++    seat_id TEXT NOT NULL REFERENCES seats(id) ON DELETE CASCADE,
++    consumer TEXT NOT NULL CHECK(consumer IN ('hook','watch')),
++    proof_json TEXT NOT NULL CHECK(length(CAST(proof_json AS BLOB))<=32768 AND json_valid(proof_json)),
++    PRIMARY KEY(seat_id,consumer)
++) STRICT;
++CREATE TRIGGER presentation_warning_proof_reclaim AFTER DELETE ON invitation_presentation_consumers
++BEGIN DELETE FROM presentation_warning_proofs WHERE seat_id=OLD.seat_id AND consumer=OLD.consumer; END;
++
++-- Source/judgment invalidation only: NOT output/native version or wake work.
++CREATE TABLE presentation_warning_fence (
++    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
++    version INTEGER NOT NULL CHECK(version>=0)
++) STRICT;
++INSERT INTO presentation_warning_fence VALUES(1,0);
++
++CREATE TRIGGER presentation_fence_messages_insert AFTER INSERT ON messages
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_messages_update AFTER UPDATE ON messages
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_messages_delete AFTER DELETE ON messages
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_warning_conditions_insert AFTER INSERT ON warning_conditions
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_warning_conditions_update AFTER UPDATE ON warning_conditions
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_warning_conditions_delete AFTER DELETE ON warning_conditions
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_receipt_warning_origins_insert AFTER INSERT ON receipt_warning_origins
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_receipt_warning_origins_update AFTER UPDATE ON receipt_warning_origins
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_receipt_warning_origins_delete AFTER DELETE ON receipt_warning_origins
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_warning_jobs_insert AFTER INSERT ON warning_jobs
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_warning_jobs_update AFTER UPDATE ON warning_jobs
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_warning_jobs_delete AFTER DELETE ON warning_jobs
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_warning_recipients_insert AFTER INSERT ON warning_recipients
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_warning_recipients_update AFTER UPDATE ON warning_recipients
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_warning_recipients_delete AFTER DELETE ON warning_recipients
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_prepared_unavailable_warnings_insert AFTER INSERT ON prepared_unavailable_warnings
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_prepared_unavailable_warnings_update AFTER UPDATE ON prepared_unavailable_warnings
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_prepared_unavailable_warnings_delete AFTER DELETE ON prepared_unavailable_warnings
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_work_jobs_insert AFTER INSERT ON work_jobs
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_work_jobs_update AFTER UPDATE ON work_jobs
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_work_jobs_delete AFTER DELETE ON work_jobs
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_send_preparations_insert AFTER INSERT ON send_preparations
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_send_preparations_update AFTER UPDATE ON send_preparations
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_send_preparations_delete AFTER DELETE ON send_preparations
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_send_manifests_insert AFTER INSERT ON send_manifests
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_send_manifests_update AFTER UPDATE ON send_manifests
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_send_manifests_delete AFTER DELETE ON send_manifests
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_prepared_recipients_insert AFTER INSERT ON prepared_recipients
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_prepared_recipients_update AFTER UPDATE ON prepared_recipients
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_prepared_recipients_delete AFTER DELETE ON prepared_recipients
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_receipt_state_insert AFTER INSERT ON receipt_state
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_receipt_state_update AFTER UPDATE ON receipt_state
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_receipt_state_delete AFTER DELETE ON receipt_state
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_receipts_insert AFTER INSERT ON receipts
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_receipts_update AFTER UPDATE ON receipts
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_receipts_delete AFTER DELETE ON receipts
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_receipt_send_time_cutovers_insert AFTER INSERT ON receipt_send_time_cutovers
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_receipt_send_time_cutovers_update AFTER UPDATE ON receipt_send_time_cutovers
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_receipt_send_time_cutovers_delete AFTER DELETE ON receipt_send_time_cutovers
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_invitations_insert AFTER INSERT ON invitations
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_invitations_update AFTER UPDATE ON invitations
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_invitations_delete AFTER DELETE ON invitations
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_invitation_cancellations_insert AFTER INSERT ON invitation_cancellations
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_invitation_cancellations_update AFTER UPDATE ON invitation_cancellations
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_invitation_cancellations_delete AFTER DELETE ON invitation_cancellations
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_invitation_rejections_insert AFTER INSERT ON invitation_rejections
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_invitation_rejections_update AFTER UPDATE ON invitation_rejections
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_invitation_rejections_delete AFTER DELETE ON invitation_rejections
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_requirement_episodes_insert AFTER INSERT ON requirement_episodes
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_requirement_episodes_update AFTER UPDATE ON requirement_episodes
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_requirement_episodes_delete AFTER DELETE ON requirement_episodes
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_seats_insert AFTER INSERT ON seats
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_seats_update AFTER UPDATE ON seats
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_seats_delete AFTER DELETE ON seats
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_membership_intervals_insert AFTER INSERT ON membership_intervals
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_membership_intervals_update AFTER UPDATE ON membership_intervals
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_membership_intervals_delete AFTER DELETE ON membership_intervals
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_memberships_insert AFTER INSERT ON memberships
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_memberships_update AFTER UPDATE ON memberships
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_memberships_delete AFTER DELETE ON memberships
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_occupant_bindings_insert AFTER INSERT ON occupant_bindings
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_occupant_bindings_update AFTER UPDATE ON occupant_bindings
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_occupant_bindings_delete AFTER DELETE ON occupant_bindings
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_seat_availability_insert AFTER INSERT ON seat_availability
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_seat_availability_update AFTER UPDATE ON seat_availability
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_seat_availability_delete AFTER DELETE ON seat_availability
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_human_receipt_waivers_insert AFTER INSERT ON human_receipt_waivers
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_human_receipt_waivers_update AFTER UPDATE ON human_receipt_waivers
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_human_receipt_waivers_delete AFTER DELETE ON human_receipt_waivers
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_service_notification_publications_insert AFTER INSERT ON service_notification_publications
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_service_notification_publications_update AFTER UPDATE ON service_notification_publications
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_service_notification_publications_delete AFTER DELETE ON service_notification_publications
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_service_notification_recipients_insert AFTER INSERT ON service_notification_recipients
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_service_notification_recipients_update AFTER UPDATE ON service_notification_recipients
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_service_notification_recipients_delete AFTER DELETE ON service_notification_recipients
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_digest_open_warnings_insert AFTER INSERT ON digest_open_warnings
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_digest_open_warnings_update AFTER UPDATE ON digest_open_warnings
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_digest_open_warnings_delete AFTER DELETE ON digest_open_warnings
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_digest_open_warning_recipients_insert AFTER INSERT ON digest_open_warning_recipients
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_digest_open_warning_recipients_update AFTER UPDATE ON digest_open_warning_recipients
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_digest_open_warning_recipients_delete AFTER DELETE ON digest_open_warning_recipients
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_digest_programmatic_warnings_insert AFTER INSERT ON digest_programmatic_warnings
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_digest_programmatic_warnings_update AFTER UPDATE ON digest_programmatic_warnings
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_digest_programmatic_warnings_delete AFTER DELETE ON digest_programmatic_warnings
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
+diff --git a/src/store/presentation_relevance.rs b/src/store/presentation_relevance.rs
+new file mode 100644
+index 00000000..37fc873d
+--- /dev/null
++++ b/src/store/presentation_relevance.rs
+@@ -0,0 +1,1270 @@
++//! Transaction-local exact relevance. This is not an attention/output epoch,
++//! receipt, invitation acceptance, native-wake source, or presentation ledger.
++//! Source ranges are bounded before judgment. Only a coherent exhausted sweep
++//! proves absence; mutations during a sweep are handled at its completion.
++use super::connection::{api_error, store_error};
++use crate::protocol::{
++    authority::{CallerClaim, CallerRole},
++    delivery::PresentationConsumer,
++    results::{ApiError, ErrorCode},
++    time::CallBudget,
++};
++use rusqlite::{Connection, OptionalExtension, Params, params};
++use serde::{Deserialize, Serialize};
++
++const SOURCES: usize = 13;
++const ROW_LIMIT: u16 = 100;
++const SEEK_LIMIT: u16 = 26;
++const POINT_LIMIT: u16 = 64;
++// Each of 13 slots has <=14 nonnegative i64s/bools/enum markers (<700
++// serialized bytes), and one witness has <=8 i64s/markers (<400). The
++// claim has six <=128-byte ASCII-graphic identifiers (<=256 escaped bytes
++// each), bounded enum spelling and u64 generation, and the outer record has
++// <1024 bytes of names/scalars. Thus <13*700+400+6*256+1024=12060 bytes.
++// Keep a power-of-two ceiling with headroom, enforcing fields AND total bytes.
++const PROOF_BYTES: usize = 32768;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(super) enum Relevance {
++    Open,
++    Absent,
++    Unknown,
++}
++#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
++pub(super) struct RelevanceWork {
++    pub sources: u16,
++    pub fallback: u16,
++    pub point_probes: u16,
++    pub highwater_seeks: u16,
++    pub witness_probes: u16,
++}
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(super) struct RelevanceProof {
++    pub relevance: Relevance,
++    pub more: bool,
++    pub work: RelevanceWork,
++}
++#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
++#[serde(deny_unknown_fields)]
++struct Key {
++    ordinal: i64,
++    row: i64,
++}
++#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++enum Judge {
++    Representations {
++        after: i64,
++        published: bool,
++    },
++    Membership {
++        representation: Option<i64>,
++        after: i64,
++        high: i64,
++    },
++}
++#[derive(Debug, Clone, Serialize, Deserialize, Default)]
++#[serde(deny_unknown_fields)]
++struct Slot {
++    high: i64,
++    after: Key,
++    exhausted: bool,
++    candidate: Option<Key>,
++    judge: Option<Judge>,
++}
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++struct Witness {
++    slot: usize,
++    key: Key,
++    representation: Option<i64>,
++    interval: Option<i64>,
++}
++#[derive(Debug, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++struct State {
++    claim: CallerClaim,
++    fence: i64,
++    frontier: i64,
++    native_version: i64,
++    slots: [Slot; SOURCES],
++    source_rotation: usize,
++    fallback_rotation: usize,
++    absent: bool,
++    witness: Option<Witness>,
++}
++#[derive(Clone, Copy)]
++struct Source {
++    table: &'static str,
++    index: &'static str,
++    ordinal: &'static str,
++    predicate: &'static str,
++    id: &'static str,
++}
++// ?1=seat, ?2=instance. All nonunique predicates below are fixed index
++// prefixes. Source identity is frozen by physical rowid, not peer JSON.
++const SOURCE: [Source; SOURCES] = [
++    Source {
++        table: "warning_conditions",
++        index: "presentation_conditions_affected",
++        ordinal: "ordinal",
++        predicate: "affected_seat_id=?1 AND clear_warning_id IS NULL",
++        id: "open_warning_id",
++    },
++    Source {
++        table: "warning_conditions",
++        index: "warning_conditions_invitation_origin",
++        ordinal: "ordinal",
++        predicate: "invitation_originator_instance_id=?2 AND invitation_originator_seat_id=?1 AND condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id IS NOT NULL",
++        id: "open_warning_id",
++    },
++    Source {
++        table: "receipt_warning_origins",
++        index: "receipt_warning_origins_seat",
++        ordinal: "ordinal",
++        predicate: "instance_id=?2 AND seat_id=?1",
++        id: "warning_id",
++    },
++    Source {
++        table: "digest_open_warning_recipients",
++        index: "digest_open_warning_recipients_seat",
++        ordinal: "source_ordinal",
++        predicate: "seat_id=?1 AND source='job'",
++        id: "warning_id",
++    },
++    Source {
++        table: "digest_open_warning_recipients",
++        index: "digest_open_warning_recipients_seat",
++        ordinal: "source_ordinal",
++        predicate: "seat_id=?1 AND source='prepared'",
++        id: "warning_id",
++    },
++    Source {
++        table: "digest_open_warnings",
++        index: "digest_open_warnings_affected",
++        ordinal: "source_ordinal",
++        predicate: "affected_seat_id=?1 AND source='job'",
++        id: "warning_id",
++    },
++    Source {
++        table: "digest_open_warnings",
++        index: "digest_open_warnings_affected",
++        ordinal: "source_ordinal",
++        predicate: "affected_seat_id=?1 AND source='prepared'",
++        id: "warning_id",
++    },
++    Source {
++        table: "digest_programmatic_warnings",
++        index: "digest_programmatic_warnings_seat",
++        ordinal: "ordinal",
++        predicate: "seat_id=?1",
++        id: "warning_id",
++    },
++    Source {
++        table: "warning_jobs",
++        index: "warning_jobs_ready",
++        ordinal: "ordinal",
++        predicate: "status='pending'",
++        id: "warning_id",
++    },
++    Source {
++        table: "warning_jobs",
++        index: "warning_jobs_ready",
++        ordinal: "ordinal",
++        predicate: "status='failed'",
++        id: "warning_id",
++    },
++    Source {
++        table: "work_jobs",
++        index: "work_jobs_ready",
++        ordinal: "ordinal",
++        predicate: "status='pending' AND kind='send_attention'",
++        id: "subject_id",
++    },
++    Source {
++        table: "work_jobs",
++        index: "work_jobs_ready",
++        ordinal: "ordinal",
++        predicate: "status='failed' AND kind='send_attention'",
++        id: "subject_id",
++    },
++    Source {
++        table: "prepared_unavailable_warnings",
++        index: "prepared_unavailable_warnings_ordinal",
++        ordinal: "ordinal",
++        predicate: "1",
++        id: "warning_id",
++    },
++];
++fn corrupt(message: &str) -> ApiError {
++    api_error(ErrorCode::StoreCorrupt, message)
++}
++fn id(value: &str) -> bool {
++    !value.is_empty() && value.len() <= 128 && value.bytes().all(|b| b.is_ascii_graphic())
++}
++fn check(budget: &CallBudget) -> Result<(), ApiError> {
++    if budget.cancellation.is_cancelled() {
++        Err(api_error(
++            ErrorCode::ReadBudgetExhausted,
++            "presentation relevance cancelled",
++        ))
++    } else {
++        Ok(())
++    }
++}
++fn validate(state: &State) -> Result<(), ApiError> {
++    if ![
++        state.claim.instance.as_str(),
++        state.claim.seat.as_str(),
++        state.claim.native_session.as_str(),
++        state.claim.execution.as_str(),
++        state.claim.target.as_str(),
++    ]
++    .into_iter()
++    .all(id)
++        || state.fence < 0
++        || state.frontier < 0
++        || state.native_version < 0
++        || state.source_rotation >= SOURCES
++        || state.fallback_rotation >= SOURCES
++    {
++        return Err(corrupt("invalid relevance proof scope"));
++    }
++    for slot in &state.slots {
++        if slot.high < 0
++            || slot.after.ordinal < 0
++            || slot.after.ordinal > slot.high
++            || slot.after.row < 0
++            || slot
++                .candidate
++                .is_some_and(|k| k.ordinal <= 0 || k.ordinal > slot.high || k.row <= 0)
++            || slot.judge.is_some() != slot.candidate.is_some()
++        {
++            return Err(corrupt("invalid relevance cursor"));
++        }
++        match slot.judge {
++            Some(Judge::Representations { after, .. })
++                if after < 0 || after > state.slots[12].high =>
++            {
++                return Err(corrupt("invalid representation cursor"));
++            }
++            Some(Judge::Membership {
++                representation,
++                after,
++                high,
++            }) if after < 0
++                || high < after
++                || representation.is_some_and(|r| r <= 0 || r > state.slots[12].high) =>
++            {
++                return Err(corrupt("invalid membership cursor"));
++            }
++            _ => {}
++        }
++    }
++    if state.absent
++        && (state.witness.is_some()
++            || state
++                .slots
++                .iter()
++                .any(|slot| !slot.exhausted || slot.candidate.is_some()))
++    {
++        return Err(corrupt("incomplete absent relevance proof"));
++    }
++    if let Some(w) = &state.witness {
++        if w.slot >= SOURCES
++            || w.key.row <= 0
++            || w.key.ordinal <= 0
++            || w.key.ordinal > state.slots[w.slot].high
++            || w.representation
++                .is_some_and(|n| n <= 0 || n > state.slots[12].high)
++            || w.interval.is_some_and(|n| n <= 0)
++        {
++            return Err(corrupt("invalid relevance witness"));
++        }
++    }
++    Ok(())
++}
++fn load(
++    db: &Connection,
++    claim: &CallerClaim,
++    consumer: PresentationConsumer,
++) -> Result<Option<State>, ApiError> {
++    let raw: Option<String> = db
++        .query_row(
++            "SELECT proof_json FROM presentation_warning_proofs WHERE seat_id=?1 AND consumer=?2",
++            params![claim.seat.as_str(), consumer.as_str()],
++            |r| r.get(0),
++        )
++        .optional()
++        .map_err(store_error)?;
++    raw.map(|raw| {
++        if raw.len() > PROOF_BYTES {
++            return Err(corrupt("relevance proof byte bound"));
++        }
++        let state: State =
++            serde_json::from_str(&raw).map_err(|_| corrupt("invalid relevance proof JSON"))?;
++        validate(&state)?;
++        Ok(state)
++    })
++    .transpose()
++}
++fn save(db: &Connection, consumer: PresentationConsumer, state: &State) -> Result<(), ApiError> {
++    validate(state)?;
++    let raw = serde_json::to_string(state).map_err(|_| corrupt("relevance proof encoding"))?;
++    if raw.len() > PROOF_BYTES {
++        return Err(corrupt("relevance proof byte bound"));
++    }
++    db.execute("INSERT INTO presentation_warning_proofs(seat_id,consumer,proof_json) VALUES(?1,?2,?3) ON CONFLICT(seat_id,consumer) DO UPDATE SET proof_json=excluded.proof_json",params![state.claim.seat.as_str(),consumer.as_str(),raw]).map_err(store_error)?;
++    Ok(())
++}
++// Fixed admission probes, outside per-candidate accounting. The presentation
++// caller has already applied its complete A2 admission in this transaction.
++fn admitted(db: &Connection, claim: &CallerClaim) -> Result<bool, ApiError> {
++    let generation = i64::try_from(claim.binding_generation)
++        .map_err(|_| corrupt("relevance generation overflow"))?;
++    if claim.role != CallerRole::TopLevel {
++        return Ok(false);
++    }
++    db.query_row("SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=?3 WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=?3 AND s.target_id=?4 AND b.ended_at IS NULL AND b.native_session=?5 AND b.execution_id=?6 AND b.harness=?7)",params![claim.seat.as_str(),claim.instance,generation,claim.target.as_str(),claim.native_session.as_str(),claim.execution.as_str(),claim.harness.as_str()],|r|r.get(0)).map_err(store_error)
++}
++fn fence(db: &Connection) -> Result<i64, ApiError> {
++    let n: i64 = db
++        .query_row(
++            "SELECT version FROM presentation_warning_fence WHERE singleton=1",
++            [],
++            |r| r.get(0),
++        )
++        .map_err(store_error)?;
++    if n < 0 {
++        Err(corrupt("negative relevance fence"))
++    } else {
++        Ok(n)
++    }
++}
++fn confirming(db: &Connection, claim: &CallerClaim) -> Result<bool, ApiError> {
++    db.query_row("SELECT EXISTS(SELECT 1 FROM presentation_confirming_invitations INDEXED BY presentation_confirming_invitations_seat WHERE seat_id=?1)",[claim.seat.as_str()],|r|r.get(0)).map_err(store_error)
++}
++fn snapshot(
++    db: &Connection,
++    claim: &CallerClaim,
++    frontier: i64,
++    work: &mut RelevanceWork,
++) -> Result<State, ApiError> {
++    let mut state = State {
++        claim: claim.clone(),
++        fence: fence(db)?,
++        frontier,
++        native_version: db
++            .query_row(
++                "SELECT COALESCE((SELECT attention_version FROM wake_work WHERE seat_id=?1),0)",
++                [claim.seat.as_str()],
++                |r| r.get(0),
++            )
++            .map_err(store_error)?,
++        slots: std::array::from_fn(|_| Slot::default()),
++        source_rotation: 0,
++        fallback_rotation: 0,
++        absent: false,
++        witness: None,
++    };
++    for (n, source) in SOURCE.iter().enumerate() {
++        work.highwater_seeks += 1;
++        let sql = format!(
++            "SELECT COALESCE(MAX({}),0) FROM {} INDEXED BY {} WHERE {} AND (?1 IS NOT NULL AND ?2 IS NOT NULL)",
++            source.ordinal, source.table, source.index, source.predicate
++        );
++        let high: i64 = db
++            .query_row(&sql, params![claim.seat.as_str(), claim.instance], |r| {
++                r.get(0)
++            })
++            .map_err(store_error)?;
++        state.slots[n].high = high;
++        if n == 7 {
++            state.slots[n].after.ordinal = frontier.min(high);
++            state.slots[n].after.row = i64::MAX;
++        }
++        state.slots[n].exhausted = state.slots[n].after.ordinal >= high;
++    }
++    validate(&state)?;
++    Ok(state)
++}
++struct Points<'a> {
++    db: &'a Connection,
++    count: u16,
++}
++impl Points<'_> {
++    // Cost includes all PK/UNIQUE joined/result probes, including absent ones.
++    fn row<T>(
++        &mut self,
++        cost: u16,
++        sql: &str,
++        p: impl Params,
++        map: impl FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
++    ) -> Result<Option<T>, ApiError> {
++        self.count = self
++            .count
++            .checked_add(cost)
++            .filter(|n| *n <= POINT_LIMIT)
++            .ok_or_else(|| corrupt("relevance keyed probe bound"))?;
++        self.db
++            .query_row(sql, p, map)
++            .optional()
++            .map_err(store_error)
++    }
++    fn yes(&mut self, cost: u16, sql: &str, p: impl Params) -> Result<bool, ApiError> {
++        Ok(self
++            .row(cost, sql, p, |r| r.get::<_, bool>(0))?
++            .unwrap_or(false))
++    }
++}
++#[derive(Debug)]
++struct Warning {
++    id: String,
++    thread: String,
++    event_seq: i64,
++    source_message: Option<String>,
++    affected: Option<String>,
++    interval_high: Option<i64>,
++    episode: Option<i64>,
++    programmatic: bool,
++}
++fn source_id(
++    points: &mut Points<'_>,
++    claim: &CallerClaim,
++    slot: usize,
++    key: Key,
++) -> Result<Option<String>, ApiError> {
++    let s = SOURCE[slot];
++    let sql = format!(
++        "SELECT {} FROM {} WHERE rowid=?3 AND {} AND {}=?4 AND (?1 IS NOT NULL AND ?2 IS NOT NULL)",
++        s.id, s.table, s.predicate, s.ordinal
++    );
++    let value: Option<String> = points.row(
++        1,
++        &sql,
++        params![claim.seat.as_str(), claim.instance, key.row, key.ordinal],
++        |r| r.get(0),
++    )?;
++    if value
++        .as_deref()
++        .is_some_and(|s| !id(s) && !(slot == 10 || slot == 11))
++    {
++        return Err(corrupt("invalid relevance warning identity"));
++    }
++    Ok(value)
++}
++fn direct(points: &mut Points<'_>, warning: &str) -> Result<Option<Warning>, ApiError> {
++    points.row(2,"SELECT m.id,m.thread_id,m.decision_seq,m.source_message_id,j.affected_seat_id,j.interval_high_water,m.author_kind FROM messages m LEFT JOIN warning_jobs j ON j.warning_id=m.id WHERE m.id=?1 AND m.kind='warn'",[warning],|r|Ok(Warning{id:r.get(0)?,thread:r.get(1)?,event_seq:r.get(2)?,source_message:r.get(3)?,affected:r.get(4)?,interval_high:r.get(5)?,episode:None,programmatic:r.get::<_,Option<String>>(6)?.as_deref()==Some("programmatic")}))
++}
++fn prepared(
++    points: &mut Points<'_>,
++    warning: &str,
++    ordinal: i64,
++) -> Result<Option<Warning>, ApiError> {
++    points.row(2,"SELECT w.warning_id,sm.thread_id,sm.decision_seq,sm.message_id,w.affected_seat_id,sm.interval_high_water,w.unavailability_episode FROM prepared_unavailable_warnings w JOIN send_manifests sm ON sm.preparation_id=w.preparation_id WHERE w.ordinal=?1 AND w.warning_id=?2",params![ordinal,warning],|r|Ok(Warning{id:r.get(0)?,thread:r.get(1)?,event_seq:r.get(2)?,source_message:Some(r.get(3)?),affected:Some(r.get(4)?),interval_high:Some(r.get(5)?),episode:Some(r.get(6)?),programmatic:false}))
++}
++fn native_rejection(points: &mut Points<'_>, warning: &str) -> Result<bool, ApiError> {
++    points.yes(3,"SELECT EXISTS(SELECT 1 FROM messages m JOIN invitation_rejections r ON r.invitation_id=m.source_invitation_id JOIN invitations i ON i.id=r.invitation_id WHERE m.id=?1 AND m.kind='warn' AND m.author_kind='native' AND m.actor_seat_id=r.actor_seat_id AND m.author_service_id IS NULL AND m.thread_id=i.thread_id AND m.event_key='reject:'||r.invitation_id AND m.source_message_id IS NULL AND m.decision_at=r.rejected_at AND json_extract(m.event_json,'$.action')='reject' AND json_extract(m.event_json,'$.seat')=r.actor_seat_id AND json_extract(m.event_json,'$.invitation')=r.invitation_id AND json_extract(m.event_json,'$.reason')=r.reason)",[warning])
++}
++// State-only receipt actionability avoids effective_receipt's timer/availability
++// range; no deadline value is used by this predicate. Logical precedence,
++// terminal-state precedence, human bindings and historical waiver are exact.
++fn receipt_pending(points: &mut Points<'_>, message: &str, seat: &str) -> Result<bool, ApiError> {
++    type Receipt = (String, bool, bool, Option<String>, i64, Option<String>);
++    let logical:Option<Receipt>=points.row(4,"SELECT COALESCE(rs.state,'pending'),s.retired_at IS NOT NULL,MIN(pr.ack_required,COALESCE(rs.ack_required,1))=0,pr.availability_provenance,sm.decision_seq,NULL FROM send_manifests sm JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id AND pr.seat_id=?2 JOIN seats s ON s.id=pr.seat_id LEFT JOIN receipt_state rs ON rs.message_id=sm.message_id AND rs.seat_id=pr.seat_id WHERE sm.message_id=?1",params![message,seat],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
++    let receipt=match logical {
++        Some(r)=>Some(r),
++        None=>points.row(3,"SELECT r.state,s.retired_at IS NOT NULL,r.ack_required=0,NULL,COALESCE(m.decision_seq,0),NULL FROM receipts r JOIN seats s ON s.id=r.seat_id JOIN messages m ON m.id=r.message_id WHERE r.message_id=?1 AND r.seat_id=?2",params![message,seat],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?,
++    };
++    let Some((state, retired, not_required, provenance, seq, _)) = receipt else {
++        return Ok(false);
++    };
++    match state.as_str() {
++        "acked" | "recipient_retired" => return Ok(false),
++        "pending" => {}
++        _ => return Err(corrupt("unknown relevance receipt state")),
++    }
++    if retired || not_required || provenance.as_deref() == Some("operator_human") {
++        return Ok(false);
++    }
++    let human=points.yes(1,"SELECT EXISTS(SELECT 1 FROM occupant_bindings INDEXED BY occupant_bindings_current WHERE seat_id=?1 AND ended_at IS NULL AND harness='human')",[seat])?;
++    let waiver: Option<i64> = points.row(
++        1,
++        "SELECT through_decision_seq FROM human_receipt_waivers WHERE seat_id=?1",
++        [seat],
++        |r| r.get(0),
++    )?;
++    Ok(!human && !waiver.is_some_and(|through| seq <= through))
++}
++fn actionable(points: &mut Points<'_>, warning: &Warning) -> Result<bool, ApiError> {
++    if warning.programmatic
++        && points.yes(
++            1,
++            "SELECT EXISTS(SELECT 1 FROM service_notification_publications WHERE message_id=?1)",
++            [warning.id.as_str()],
++        )?
++    {
++        return Ok(true);
++    }
++    if let Some(episode) = warning.episode {
++        let affected = warning
++            .affected
++            .as_deref()
++            .ok_or_else(|| corrupt("prepared warning affected seat missing"))?;
++        return points.yes(1,"SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND state!='retired' AND unavailability_open=1 AND unavailability_episode=?2)",params![affected,episode]);
++    }
++    let job: Option<(String, String, Option<String>)> = points.row(
++        1,
++        "SELECT condition_kind,condition_id,affected_seat_id FROM warning_jobs WHERE warning_id=?1",
++        [warning.id.as_str()],
++        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
++    )?;
++    let Some((kind, condition, affected)) = job else {
++        return Ok(false);
++    };
++    match kind.as_str() {
++        "invitation"=>points.yes(4,"SELECT EXISTS(SELECT 1 FROM invitations i JOIN seats s ON s.id=i.seat_id WHERE i.id=?1 AND i.state='pending' AND s.state!='retired' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=i.id))",[condition]),
++        "receipt"=>receipt_pending(points,warning.source_message.as_deref().ok_or_else(||corrupt("receipt warning source missing"))?,affected.as_deref().ok_or_else(||corrupt("receipt warning affected missing"))?),
++        "unavailable"=>Err(corrupt("unavailable warning lacks published episode")),
++        _=>Err(corrupt("unknown relevance condition")),
++    }
++}
++#[derive(Clone, Copy)]
++enum Recipient {
++    Yes,
++    No,
++    Intervals { high: i64, cutoff: i64 },
++}
++fn recipient(
++    points: &mut Points<'_>,
++    claim: &CallerClaim,
++    warning: &Warning,
++) -> Result<Recipient, ApiError> {
++    if points.yes(2,"SELECT EXISTS(SELECT 1 FROM service_notification_publications p JOIN service_notification_recipients r ON r.preparation_id=p.preparation_id AND r.seat_id=?2 WHERE p.message_id=?1)",params![warning.id,claim.seat.as_str()])?
++        || points.yes(1,"SELECT EXISTS(SELECT 1 FROM warning_recipients WHERE warning_id=?1 AND seat_id=?2)",params![warning.id,claim.seat.as_str()])? {return Ok(Recipient::Yes);}
++    let Some(high) = warning.interval_high else {
++        return Ok(Recipient::No);
++    };
++    let cutoff: Option<Option<i64>> = points.row(
++        1,
++        "SELECT recipient_cutoff_seq FROM warning_jobs WHERE warning_id=?1",
++        [warning.id.as_str()],
++        |r| r.get(0),
++    )?;
++    let cutoff = cutoff.flatten().unwrap_or(warning.event_seq);
++    let live = points.yes(
++        1,
++        "SELECT retired_seq IS NULL OR retired_seq>?2 FROM seats WHERE id=?1",
++        params![claim.seat.as_str(), cutoff],
++    )?;
++    if !live {
++        return Ok(Recipient::No);
++    }
++    if warning.affected.as_deref() == Some(claim.seat.as_str()) {
++        Ok(Recipient::Yes)
++    } else {
++        Ok(Recipient::Intervals { high, cutoff })
++    }
++}
++// This applies the independent native eligibility rule before generic legacy
++// actionability. Transitions/receipt origins never depend on notice frontier.
++fn eligible(
++    points: &mut Points<'_>,
++    claim: &CallerClaim,
++    warning: &Warning,
++) -> Result<Option<bool>, ApiError> {
++    if native_rejection(points, &warning.id)? {
++        return Ok(Some(false));
++    }
++    let open:Option<(String,Option<String>,Option<String>)>=points.row(1,"SELECT affected_seat_id,clear_warning_id,invitation_originator_seat_id FROM warning_conditions WHERE open_warning_id=?1",[warning.id.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
++    if let Some((affected, clear, origin)) = open {
++        let receipt_origin=points.yes(1,"SELECT EXISTS(SELECT 1 FROM receipt_warning_origins INDEXED BY receipt_warning_origins_exact WHERE instance_id=?1 AND seat_id=?2 AND warning_id=?3)",params![claim.instance,claim.seat.as_str(),warning.id])?;
++        return Ok(Some(
++            clear.is_none()
++                && (affected == claim.seat.as_str()
++                    || origin.as_deref() == Some(claim.seat.as_str())
++                    || receipt_origin),
++        ));
++    }
++    if points.yes(
++        1,
++        "SELECT EXISTS(SELECT 1 FROM warning_conditions WHERE clear_warning_id=?1)",
++        [warning.id.as_str()],
++    )? {
++        return Ok(Some(false));
++    }
++    Ok(None)
++}
++#[derive(Clone, Copy)]
++enum Evaluation {
++    Closed,
++    Open,
++    Membership { high: i64, cutoff: i64 },
++}
++fn evaluate(
++    points: &mut Points<'_>,
++    claim: &CallerClaim,
++    slot: usize,
++    key: Key,
++    representation: Option<i64>,
++    interval: Option<i64>,
++) -> Result<Evaluation, ApiError> {
++    let Some(mut warning_id) = source_id(points, claim, slot, key)? else {
++        return Ok(Evaluation::Closed);
++    };
++    if slot == 10 || slot == 11 {
++        let Some(preparation) = warning_id.strip_prefix("service-notify:") else {
++            return Ok(Evaluation::Closed);
++        };
++        if !id(preparation) {
++            return Err(corrupt("invalid notification preparation identity"));
++        }
++        let publication:Option<String>=points.row(2,"SELECT p.message_id FROM service_notification_publications p JOIN service_notification_recipients r ON r.preparation_id=p.preparation_id AND r.seat_id=?2 WHERE p.preparation_id=?1",params![preparation,claim.seat.as_str()],|r|r.get(0))?;
++        let Some(publication) = publication else {
++            return Ok(Evaluation::Closed);
++        };
++        if points.yes(
++            1,
++            "SELECT EXISTS(SELECT 1 FROM warning_recipients WHERE warning_id=?1 AND seat_id=?2)",
++            params![publication, claim.seat.as_str()],
++        )? {
++            return Ok(Evaluation::Closed);
++        }
++        warning_id = publication;
++    }
++    if slot == 3 || slot == 5 {
++        if !points.yes(
++            1,
++            "SELECT EXISTS(SELECT 1 FROM warning_jobs WHERE ordinal=?1 AND warning_id=?2)",
++            params![key.ordinal, warning_id],
++        )? {
++            return Ok(Evaluation::Closed);
++        }
++    }
++    if slot == 12 {
++        if points.yes(
++            1,
++            "SELECT EXISTS(SELECT 1 FROM warning_jobs WHERE warning_id=?1)",
++            [warning_id.as_str()],
++        )? {
++            return Ok(Evaluation::Closed);
++        }
++        let active=points.yes(2,"SELECT EXISTS(SELECT 1 FROM prepared_unavailable_warnings w JOIN work_jobs j ON j.kind='send_attention' AND j.subject_id=w.preparation_id WHERE w.ordinal=?1 AND j.status IN ('pending','failed'))",[key.ordinal])?;
++        if !active {
++            return Ok(Evaluation::Closed);
++        }
++    }
++    let warning = match representation {
++        Some(ordinal) => prepared(points, &warning_id, ordinal)?,
++        None => direct(points, &warning_id)?,
++    };
++    let Some(warning) = warning else {
++        return Ok(Evaluation::Closed);
++    };
++    if !id(&warning.id)
++        || !id(&warning.thread)
++        || warning.event_seq <= 0
++        || warning.source_message.as_deref().is_some_and(|s| !id(s))
++        || warning.affected.as_deref().is_some_and(|s| !id(s))
++        || warning.interval_high.is_some_and(|n| n < 0)
++    {
++        return Err(corrupt("invalid relevance warning fields"));
++    }
++    if let Some(relevant) = eligible(points, claim, &warning)? {
++        return Ok(if relevant {
++            Evaluation::Open
++        } else {
++            Evaluation::Closed
++        });
++    }
++    // Origin source rows must still have their canonical open association.
++    if slot <= 2 {
++        return Ok(Evaluation::Closed);
++    }
++    if (slot == 10 || slot == 11) && !warning.programmatic {
++        return Ok(Evaluation::Closed);
++    }
++    if !actionable(points, &warning)? {
++        return Ok(Evaluation::Closed);
++    }
++    match recipient(points, claim, &warning)? {
++        Recipient::Yes => Ok(Evaluation::Open),
++        Recipient::No => Ok(Evaluation::Closed),
++        Recipient::Intervals { high, cutoff } => {
++            if let Some(ordinal) = interval {
++                let hit=points.yes(1,"SELECT EXISTS(SELECT 1 FROM membership_intervals WHERE ordinal=?1 AND thread_id=?2 AND seat_id=?3 AND ordinal<=?4 AND joined_seq<=?5 AND (left_seq IS NULL OR left_seq>?5))",params![ordinal,warning.thread,claim.seat.as_str(),high,cutoff])?;
++                Ok(if hit {
++                    Evaluation::Open
++                } else {
++                    Evaluation::Closed
++                })
++            } else {
++                Ok(Evaluation::Membership { high, cutoff })
++            }
++        }
++    }
++}
++fn charge_points(work: &mut RelevanceWork, points: &Points<'_>, witness: bool) {
++    if witness {
++        work.witness_probes += points.count;
++    } else {
++        work.point_probes += points.count;
++    }
++}
++fn first_judgment(
++    db: &Connection,
++    claim: &CallerClaim,
++    n: usize,
++    key: Key,
++    work: &mut RelevanceWork,
++) -> Result<(Option<Judge>, Option<Witness>), ApiError> {
++    if matches!(n, 3 | 5 | 8 | 9) {
++        return Ok((
++            Some(Judge::Representations {
++                after: 0,
++                published: false,
++            }),
++            None,
++        ));
++    }
++    let representation = if matches!(n, 4 | 6 | 12) {
++        Some(key.ordinal)
++    } else {
++        None
++    };
++    let mut points = Points { db, count: 0 };
++    let result = evaluate(&mut points, claim, n, key, representation, None)?;
++    charge_points(work, &points, false);
++    Ok(match result {
++        Evaluation::Closed => (None, None),
++        Evaluation::Open => (
++            None,
++            Some(Witness {
++                slot: n,
++                key,
++                representation,
++                interval: None,
++            }),
++        ),
++        Evaluation::Membership { high, .. } => (
++            Some(Judge::Membership {
++                representation,
++                after: 0,
++                high,
++            }),
++            None,
++        ),
++    })
++}
++fn source_batch(
++    db: &Connection,
++    state: &mut State,
++    n: usize,
++    limit: u16,
++    work: &mut RelevanceWork,
++) -> Result<(), ApiError> {
++    if limit == 0
++        || work.highwater_seeks >= SEEK_LIMIT
++        || state.slots[n].exhausted
++        || state.slots[n].candidate.is_some()
++    {
++        return Ok(());
++    }
++    let s = SOURCE[n];
++    let slot = &state.slots[n];
++    let sql = format!(
++        "SELECT {},rowid FROM {} INDEXED BY {} WHERE {} AND ({},rowid)>(?3,?4) AND {}<=?5 AND (?1 IS NOT NULL AND ?2 IS NOT NULL) ORDER BY {},rowid LIMIT ?6",
++        s.ordinal, s.table, s.index, s.predicate, s.ordinal, s.ordinal, s.ordinal
++    );
++    work.highwater_seeks += 1;
++    let mut stmt = db.prepare_cached(&sql).map_err(store_error)?;
++    let keys = stmt
++        .query_map(
++            params![
++                state.claim.seat.as_str(),
++                state.claim.instance,
++                slot.after.ordinal,
++                slot.after.row,
++                slot.high,
++                limit
++            ],
++            |r| {
++                Ok(Key {
++                    ordinal: r.get(0)?,
++                    row: r.get(1)?,
++                })
++            },
++        )
++        .map_err(store_error)?
++        .collect::<rusqlite::Result<Vec<_>>>()
++        .map_err(store_error)?;
++    work.sources += keys.len() as u16;
++    if keys.is_empty() {
++        state.slots[n].exhausted = true;
++        return Ok(());
++    }
++    let short = keys.len() < usize::from(limit);
++    for key in keys {
++        let (judge, witness) = first_judgment(db, &state.claim, n, key, work)?;
++        state.slots[n].after = key;
++        if let Some(witness) = witness {
++            state.witness = Some(witness);
++        }
++        if let Some(judge) = judge {
++            state.slots[n].candidate = Some(key);
++            state.slots[n].judge = Some(judge);
++            return Ok(());
++        }
++    }
++    if short {
++        state.slots[n].exhausted = true;
++    }
++    Ok(())
++}
++fn finish_negative(slot: &mut Slot, n: usize, representation: Option<i64>) {
++    if matches!(n, 3 | 5 | 8 | 9) {
++        if let Some(after) = representation {
++            slot.judge = Some(Judge::Representations {
++                after,
++                published: true,
++            });
++            return;
++        }
++    }
++    slot.candidate = None;
++    slot.judge = None;
++}
++fn resume(
++    db: &Connection,
++    state: &mut State,
++    n: usize,
++    limit: u16,
++    stable: bool,
++    work: &mut RelevanceWork,
++) -> Result<(), ApiError> {
++    if limit == 0 || work.highwater_seeks >= SEEK_LIMIT {
++        return Ok(());
++    }
++    let Some(key) = state.slots[n].candidate else {
++        return Ok(());
++    };
++    let judge = state.slots[n]
++        .judge
++        .ok_or_else(|| corrupt("missing suspended judgment"))?;
++    let mut points = Points { db, count: 0 };
++    let Some(warning_id) = source_id(&mut points, &state.claim, n, key)? else {
++        charge_points(work, &points, false);
++        state.slots[n].candidate = None;
++        state.slots[n].judge = None;
++        return Ok(());
++    };
++    // One preflight keyed probe belongs to this suspended candidate. Further
++    // per-row judgments get their own <=64-probe allowance. An empty fallback
++    // seek still charges the preflight and one range seek, never a fake row.
++    charge_points(work, &points, false);
++    match judge {
++        Judge::Representations {
++            after,
++            mut published,
++        } => {
++            let high = state.slots[12].high;
++            work.highwater_seeks += 1;
++            let mut stmt=db.prepare_cached("SELECT ordinal FROM prepared_unavailable_warnings INDEXED BY presentation_prepared_warning WHERE warning_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT ?4").map_err(store_error)?;
++            let ordinals = stmt
++                .query_map(params![warning_id, after, high, limit], |r| {
++                    r.get::<_, i64>(0)
++                })
++                .map_err(store_error)?
++                .collect::<rusqlite::Result<Vec<_>>>()
++                .map_err(store_error)?;
++            work.fallback += ordinals.len() as u16;
++            let short = ordinals.len() < usize::from(limit);
++            let mut next = after;
++            for ordinal in ordinals {
++                next = ordinal;
++                let mut points = Points { db, count: 0 };
++                let current_published = prepared(&mut points, &warning_id, ordinal)?.is_some();
++                published |= current_published;
++                let evaluation = if current_published {
++                    Some(evaluate(
++                        &mut points,
++                        &state.claim,
++                        n,
++                        key,
++                        Some(ordinal),
++                        None,
++                    )?)
++                } else {
++                    None
++                };
++                charge_points(work, &points, false);
++                if let Some(evaluation) = evaluation {
++                    match evaluation {
++                        Evaluation::Open => {
++                            state.witness = Some(Witness {
++                                slot: n,
++                                key,
++                                representation: Some(ordinal),
++                                interval: None,
++                            });
++                            state.slots[n].candidate = None;
++                            state.slots[n].judge = None;
++                        }
++                        Evaluation::Closed => continue,
++                        Evaluation::Membership { high, .. } => {
++                            state.slots[n].judge = Some(Judge::Membership {
++                                representation: Some(ordinal),
++                                after: 0,
++                                high,
++                            });
++                        }
++                    }
++                    return Ok(());
++                }
++            }
++            if short || next >= high {
++                let mut points = Points { db, count: 0 };
++                let evaluation = if stable && !published {
++                    evaluate(&mut points, &state.claim, n, key, None, None)?
++                } else {
++                    Evaluation::Closed
++                };
++                charge_points(work, &points, false);
++                match evaluation {
++                    Evaluation::Open => {
++                        state.witness = Some(Witness {
++                            slot: n,
++                            key,
++                            representation: None,
++                            interval: None,
++                        });
++                        state.slots[n].candidate = None;
++                        state.slots[n].judge = None;
++                    }
++                    Evaluation::Closed => {
++                        state.slots[n].candidate = None;
++                        state.slots[n].judge = None;
++                    }
++                    Evaluation::Membership { high, .. } => {
++                        state.slots[n].judge = Some(Judge::Membership {
++                            representation: None,
++                            after: 0,
++                            high,
++                        });
++                    }
++                }
++            } else {
++                state.slots[n].judge = Some(Judge::Representations {
++                    after: next,
++                    published,
++                });
++            }
++        }
++        Judge::Membership {
++            representation,
++            after,
++            high,
++        } => {
++            if matches!(n, 3 | 5 | 8 | 9) && representation.is_none() && !stable {
++                state.slots[n].candidate = None;
++                state.slots[n].judge = None;
++                return Ok(());
++            }
++            let mut points = Points { db, count: 0 };
++            let evaluation = evaluate(&mut points, &state.claim, n, key, representation, None)?;
++            // This is the bounded suspended-candidate preflight, not an
++            // additional source/fallback row or a hidden full re-judgment.
++            charge_points(work, &points, false);
++            let cutoff = match evaluation {
++                Evaluation::Closed => {
++                    finish_negative(&mut state.slots[n], n, representation);
++                    return Ok(());
++                }
++                Evaluation::Open => {
++                    state.witness = Some(Witness {
++                        slot: n,
++                        key,
++                        representation,
++                        interval: None,
++                    });
++                    state.slots[n].candidate = None;
++                    state.slots[n].judge = None;
++                    return Ok(());
++                }
++                Evaluation::Membership { cutoff, .. } => cutoff,
++            };
++            let mut points = Points { db, count: 0 };
++            let warning = match representation {
++                Some(r) => prepared(&mut points, &warning_id, r)?,
++                None => direct(&mut points, &warning_id)?,
++            }
++            .ok_or_else(|| corrupt("judged warning disappeared in transaction"))?;
++            charge_points(work, &points, false);
++            work.highwater_seeks += 1;
++            let mut stmt=db.prepare_cached("SELECT ordinal,joined_seq,left_seq FROM membership_intervals INDEXED BY presentation_membership_history WHERE thread_id=?1 AND seat_id=?2 AND ordinal>?3 AND ordinal<=?4 ORDER BY ordinal LIMIT ?5").map_err(store_error)?;
++            let rows = stmt
++                .query_map(
++                    params![
++                        warning.thread,
++                        state.claim.seat.as_str(),
++                        after,
++                        high,
++                        limit
++                    ],
++                    |r| {
++                        Ok((
++                            r.get::<_, i64>(0)?,
++                            r.get::<_, i64>(1)?,
++                            r.get::<_, Option<i64>>(2)?,
++                        ))
++                    },
++                )
++                .map_err(store_error)?
++                .collect::<rusqlite::Result<Vec<_>>>()
++                .map_err(store_error)?;
++            work.fallback += rows.len() as u16;
++            let short = rows.len() < usize::from(limit);
++            let mut next = after;
++            for (ordinal, joined, left) in rows {
++                next = ordinal;
++                if joined <= cutoff && left.is_none_or(|left| left > cutoff) {
++                    let mut points = Points { db, count: 0 };
++                    let current = evaluate(
++                        &mut points,
++                        &state.claim,
++                        n,
++                        key,
++                        representation,
++                        Some(ordinal),
++                    )?;
++                    charge_points(work, &points, false);
++                    if matches!(current, Evaluation::Open) {
++                        state.witness = Some(Witness {
++                            slot: n,
++                            key,
++                            representation,
++                            interval: Some(ordinal),
++                        });
++                        state.slots[n].candidate = None;
++                        state.slots[n].judge = None;
++                        return Ok(());
++                    }
++                }
++            }
++            if short || next >= high {
++                finish_negative(&mut state.slots[n], n, representation);
++            } else {
++                state.slots[n].judge = Some(Judge::Membership {
++                    representation,
++                    after: next,
++                    high,
++                });
++            }
++        }
++    }
++    Ok(())
++}
++fn witness(
++    db: &Connection,
++    state: &State,
++    frontier: i64,
++    current_fence: i64,
++    work: &mut RelevanceWork,
++) -> Result<bool, ApiError> {
++    let Some(w) = &state.witness else {
++        return Ok(false);
++    };
++    if (w.slot == 7 && w.key.ordinal <= frontier)
++        || (matches!(w.slot, 3 | 5 | 8 | 9)
++            && w.representation.is_none()
++            && state.fence != current_fence)
++    {
++        return Ok(false);
++    }
++    let mut points = Points { db, count: 0 };
++    let current = evaluate(
++        &mut points,
++        &state.claim,
++        w.slot,
++        w.key,
++        w.representation,
++        w.interval,
++    )?;
++    charge_points(work, &points, true);
++    Ok(matches!(current, Evaluation::Open))
++}
++fn result(relevance: Relevance, work: RelevanceWork) -> RelevanceProof {
++    RelevanceProof {
++        relevance,
++        more: relevance == Relevance::Unknown,
++        work,
++    }
++}
++/// The caller holds its deciding transaction and owns complete A2 admission.
++/// Every successful V2 pull path may call this, including replay/control-only.
++pub(super) fn advance(
++    db: &Connection,
++    claim: &CallerClaim,
++    consumer: PresentationConsumer,
++    frontier: i64,
++    budget: &CallBudget,
++) -> Result<RelevanceProof, ApiError> {
++    check(budget)?;
++    if db.is_autocommit() {
++        return Err(corrupt("relevance requires caller transaction"));
++    }
++    if frontier < 0 {
++        return Err(corrupt("negative relevance notice frontier"));
++    }
++    let mut work = RelevanceWork::default();
++    if !admitted(db, claim)? {
++        return Ok(result(Relevance::Unknown, work));
++    }
++    if confirming(db, claim)? {
++        return Ok(result(Relevance::Open, work));
++    }
++    let now = fence(db)?;
++    let prior = load(db, claim, consumer)?;
++    let mut state = match prior {
++        Some(state) if state.claim == *claim => state,
++        _ => snapshot(db, claim, frontier, &mut work)?,
++    };
++    if witness(db, &state, frontier, now, &mut work)? {
++        return Ok(result(Relevance::Open, work));
++    }
++    state.witness = None;
++    if state.absent && state.fence == now && state.frontier == frontier {
++        return Ok(result(Relevance::Absent, work));
++    }
++    if state.absent {
++        state = snapshot(db, claim, frontier, &mut work)?;
++    }
++    // An advancing notice frontier cannot leave an already-settled notice as
++    // a positive witness while this older captured sweep finishes.
++    if frontier >= state.slots[7].after.ordinal {
++        state.slots[7].after.row = i64::MAX;
++    }
++    state.slots[7].after.ordinal = state.slots[7]
++        .after
++        .ordinal
++        .max(frontier.min(state.slots[7].high));
++    if state.slots[7]
++        .candidate
++        .is_some_and(|key| key.ordinal <= frontier)
++    {
++        state.slots[7].candidate = None;
++        state.slots[7].judge = None;
++    }
++    let stable = state.fence == now;
++    // Two independently persisted fair rotations. Reserve50 physical rows for
++    // each family; unused shares are lent only after the reserved passes.
++    for family in 0..4 {
++        let fallback = family % 2 == 1;
++        let reserved = family < 2;
++        let used = work.sources + work.fallback;
++        if used >= ROW_LIMIT || work.highwater_seeks >= SEEK_LIMIT {
++            break;
++        }
++        let mut share = if reserved {
++            50.min(ROW_LIMIT - used)
++        } else {
++            ROW_LIMIT - used
++        };
++        let start = if fallback {
++            state.fallback_rotation
++        } else {
++            state.source_rotation
++        };
++        for offset in 0..SOURCES {
++            check(budget)?;
++            if share == 0 || work.highwater_seeks >= SEEK_LIMIT {
++                break;
++            }
++            let n = (start + offset) % SOURCES;
++            let quota = share.div_ceil((SOURCES - offset) as u16);
++            let before = work.sources + work.fallback;
++            if fallback {
++                resume(db, &mut state, n, quota, stable, &mut work)?;
++            } else {
++                source_batch(db, &mut state, n, quota, &mut work)?;
++            }
++            share -= work.sources + work.fallback - before;
++            if fallback {
++                state.fallback_rotation = (n + 1) % SOURCES;
++            } else {
++                state.source_rotation = (n + 1) % SOURCES;
++            }
++            if state.witness.is_some() {
++                break;
++            }
++        }
++        if state.witness.is_some() {
++            break;
++        }
++    }
++    let relevance = if state.witness.is_some() {
++        Relevance::Open
++    } else if state
++        .slots
++        .iter()
++        .all(|slot| slot.exhausted && slot.candidate.is_none())
++    {
++        if state.fence == now && state.frontier == frontier {
++            state.absent = true;
++            Relevance::Absent
++        } else {
++            // Finish the captured finite sweep before recapture. A full
++            // recapture consumes13 seeks; yield if this call lacks room.
++            if work.highwater_seeks + SOURCES as u16 <= SEEK_LIMIT {
++                state = snapshot(db, claim, frontier, &mut work)?;
++            }
++            Relevance::Unknown
++        }
++    } else {
++        Relevance::Unknown
++    };
++    if work.sources + work.fallback > ROW_LIMIT
++        || work.highwater_seeks > SEEK_LIMIT
++        || work.point_probes > ROW_LIMIT * POINT_LIMIT
++        || work.witness_probes > POINT_LIMIT
++    {
++        return Err(corrupt("relevance total work bound"));
++    }
++    save(db, consumer, &state)?;
++    Ok(result(relevance, work))
++}
++/// Confirmation does not sweep or invoke a nonunique fallback. It may use
++/// only current invitation truth, stable exact absence, or an exact witness.
++pub(super) fn revalidate(
++    db: &Connection,
++    claim: &CallerClaim,
++    consumer: PresentationConsumer,
++    frontier: i64,
++    budget: &CallBudget,
++) -> Result<RelevanceProof, ApiError> {
++    check(budget)?;
++    if db.is_autocommit() || frontier < 0 {
++        return Err(corrupt("relevance requires transaction and valid frontier"));
++    }
++    let now = fence(db)?;
++    let mut work = RelevanceWork::default();
++    if !admitted(db, claim)? {
++        return Ok(result(Relevance::Unknown, work));
++    }
++    if confirming(db, claim)? {
++        return Ok(result(Relevance::Open, work));
++    }
++    let Some(state) = load(db, claim, consumer)? else {
++        return Ok(result(Relevance::Unknown, work));
++    };
++    if state.claim != *claim {
++        return Ok(result(Relevance::Unknown, work));
++    }
++    if witness(db, &state, frontier, now, &mut work)? {
++        return Ok(result(Relevance::Open, work));
++    }
++    if state.absent && state.fence == now && state.frontier == frontier {
++        return Ok(result(Relevance::Absent, work));
++    }
++    Ok(result(Relevance::Unknown, work))
++}
+diff --git a/tests/store/attention.rs b/tests/store/attention.rs
+index 8f903319..8e6a3c1c 100644
+--- a/tests/store/attention.rs
++++ b/tests/store/attention.rs
+@@ -2135,3 +2135,212 @@ fn settle_pulled_notices_refuses_a_stale_generation_another_session_or_a_non_pre
+     );
+     assert_eq!(frontier(), before);
+ }
++
++// The following fixtures exercise the canonical presentation relevance helper.
++// They use this existing private attention host; no public test-only accessor.
++fn relevance_claim() -> crate::protocol::authority::CallerClaim {
++    use crate::protocol::{
++        authority::{CallerClaim, CallerRole, Harness},
++        ids::{ExecutionId, HostTargetId, NativeSessionId},
++    };
++    CallerClaim {
++        instance: "i".into(),
++        seat: SeatId::new("s"),
++        binding_generation: 1,
++        role: CallerRole::TopLevel,
++        harness: Harness::Codex,
++        native_session: NativeSessionId::new("relevance-session"),
++        execution: ExecutionId::new("relevance-execution"),
++        target: HostTargetId::new("pane-s"),
++    }
++}
++fn relevance_db() -> Connection {
++    let db = empty();
++    db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES ('s',1,1,'pane-s','host',1,'codex','relevance-session','relevance-execution','cooperative_top_level',0,0);
++        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('relevance-thread','i','topic','goal',0,0);").unwrap();
++    db
++}
++fn relevance_budget() -> crate::protocol::time::CallBudget {
++    crate::protocol::time::CallBudget {
++        deadline: crate::protocol::time::MonoInstant(u64::MAX),
++        cancellation: Default::default(),
++    }
++}
++fn relevance_pull(db: &Connection) -> crate::store::presentation_relevance::RelevanceProof {
++    use crate::protocol::delivery::PresentationConsumer;
++    db.execute_batch("BEGIN IMMEDIATE").unwrap();
++    let proof = crate::store::presentation_relevance::advance(
++        db,
++        &relevance_claim(),
++        PresentationConsumer::Hook,
++        0,
++        &relevance_budget(),
++    )
++    .unwrap();
++    db.execute_batch("COMMIT").unwrap();
++    assert!(proof.work.sources + proof.work.fallback <= 100);
++    assert!(proof.work.highwater_seeks <= 26);
++    assert!(proof.work.point_probes <= 6400);
++    assert!(proof.work.witness_probes <= 64);
++    proof
++}
++
++#[test]
++fn presentation_relevance_required_lazy_overlay_tracks_digest_and_requirement() {
++    let db = relevance_db();
++    db.execute_batch("INSERT INTO service_authors(id,instance_id,created_at) VALUES ('relevance-service','i',0);
++        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,confirmation,inviter_seat_id) VALUES ('relevance-invite','relevance-thread','s',1,'pending',0,2,100,100,'lazy','o');").unwrap();
++    let count = || {
++        db.query_row(
++            "SELECT count(*) FROM presentation_confirming_invitations WHERE seat_id='s'",
++            [],
++            |r| r.get::<_, i64>(0),
++        )
++        .unwrap()
++    };
++    assert_eq!(count(), 0);
++    db.execute_batch("INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at) VALUES ('relevance-requirement','relevance-thread','s','relevance-service','relevance-invite','pending',3,0);").unwrap();
++    assert_eq!(count(), 1);
++    assert_eq!(
++        relevance_pull(&db).relevance,
++        crate::store::presentation_relevance::Relevance::Open
++    );
++    db.execute_batch("DELETE FROM digest_pending_invitations WHERE seat_id='s' AND invitation_id='relevance-invite';").unwrap();
++    assert_eq!(count(), 0);
++    db.execute_batch("INSERT INTO digest_pending_invitations(seat_id,invitation_id,thread_id,created_decision_seq,ordinal) SELECT seat_id,id,thread_id,created_decision_seq,ordinal FROM invitations WHERE id='relevance-invite';
++        UPDATE requirement_episodes SET state='accepted',accepted_by_seat_id='s',accepted_generation=1,accepted_observation='cooperative',accepted_at=1 WHERE id='relevance-requirement';").unwrap();
++    assert_eq!(
++        count(),
++        1,
++        "accepted requirement remains effective while invitation remains pending"
++    );
++    db.execute_batch("UPDATE requirement_episodes SET state='released',released_at=2 WHERE id='relevance-requirement';").unwrap();
++    assert_eq!(count(), 0);
++}
++
++#[test]
++fn presentation_relevance_quiet_proof_does_not_fence_itself_and_overflow_aborts_writer() {
++    use crate::store::presentation_relevance::Relevance;
++    let db = relevance_db();
++    let fence = || {
++        db.query_row(
++            "SELECT version FROM presentation_warning_fence WHERE singleton=1",
++            [],
++            |r| r.get::<_, i64>(0),
++        )
++        .unwrap()
++    };
++    let before = fence();
++    assert_eq!(relevance_pull(&db).relevance, Relevance::Absent);
++    assert_eq!(
++        fence(),
++        before,
++        "private proof write must not invalidate absence"
++    );
++    let quiet = relevance_pull(&db);
++    assert_eq!(quiet.relevance, Relevance::Absent);
++    assert_eq!(
++        quiet.work.sources + quiet.work.fallback + quiet.work.highwater_seeks,
++        0
++    );
++    assert_eq!(fence(), before);
++    db.execute(
++        "UPDATE presentation_warning_fence SET version=?1 WHERE singleton=1",
++        [i64::MAX],
++    )
++    .unwrap();
++    assert!(db.execute("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('relevance-thread','s','invited')",[]).is_err());
++    assert_eq!(
++        db.query_row(
++            "SELECT count(*) FROM memberships WHERE thread_id='relevance-thread'",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        0
++    );
++    assert_eq!(fence(), i64::MAX);
++}
++
++#[test]
++fn presentation_relevance_walks_retained_membership_and_revalidates_exact_witness() {
++    use crate::{
++        protocol::delivery::PresentationConsumer,
++        store::presentation_relevance::{self, Relevance},
++    };
++    let db = relevance_db();
++    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('relevance-other-invite','relevance-thread','o',1,'pending',0,2,100,100);
++        WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<257)
++        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) SELECT 'unpublished-'||x,20,'relevance-thread',1000000,'o','invitation','relevance-other-invite' FROM n;
++        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('relevance-warning','i','relevance-thread',1,'warn','{}',0,20,1);
++        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('relevance-warning',20,'relevance-thread',1000000,'o','invitation','relevance-other-invite');
++        WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<301)
++        INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq,left_seq) SELECT 'relevance-thread','s',x,CASE WHEN x=301 THEN 1 ELSE 50 END,CASE WHEN x=301 THEN 30 ELSE 60 END FROM n;").unwrap();
++    let mut sources = 0u64;
++    let mut fallback = 0u64;
++    let mut opened = false;
++    for _ in 0..1000 {
++        let proof = relevance_pull(&db);
++        sources += u64::from(proof.work.sources);
++        fallback += u64::from(proof.work.fallback);
++        assert_ne!(
++            proof.relevance,
++            Relevance::Absent,
++            "retained witness has not been exhausted"
++        );
++        if proof.relevance == Relevance::Open {
++            opened = true;
++            break;
++        }
++        assert!(proof.more);
++    }
++    assert!(opened, "finite captured source/history must converge");
++    assert!(
++        sources >= 258 && fallback >= 301,
++        "charge physical candidates including unpublished/invalid ones"
++    );
++    db.execute_batch("BEGIN IMMEDIATE").unwrap();
++    let exact = presentation_relevance::revalidate(
++        &db,
++        &relevance_claim(),
++        PresentationConsumer::Hook,
++        0,
++        &relevance_budget(),
++    )
++    .unwrap();
++    db.execute_batch("COMMIT").unwrap();
++    assert_eq!(exact.relevance, Relevance::Open);
++    assert_eq!(
++        exact.work.sources + exact.work.fallback + exact.work.highwater_seeks,
++        0
++    );
++    assert!(exact.work.witness_probes > 0 && exact.work.witness_probes <= 64);
++    db.execute("UPDATE membership_intervals SET left_seq=2 WHERE thread_id='relevance-thread' AND seat_id='s' AND episode=301",[]).unwrap();
++    db.execute_batch("BEGIN IMMEDIATE").unwrap();
++    let uncertain = presentation_relevance::revalidate(
++        &db,
++        &relevance_claim(),
++        PresentationConsumer::Hook,
++        0,
++        &relevance_budget(),
++    )
++    .unwrap();
++    db.execute_batch("COMMIT").unwrap();
++    assert_eq!(
++        uncertain.relevance,
++        Relevance::Unknown,
++        "lost witness alone is not exact absence"
++    );
++    assert!(uncertain.more);
++    let mut closed = false;
++    for _ in 0..1000 {
++        if relevance_pull(&db).relevance == Relevance::Absent {
++            closed = true;
++            break;
++        }
++    }
++    assert!(
++        closed,
++        "quiescent full proof must converge after witness loss"
++    );
++}

@@ -382,8 +382,20 @@ fn new_thread_fixture() -> (
     BootstrapIdentity,
     HandoffIdentity,
 ) {
+    new_thread_fixture_with_policy(None)
+}
+fn new_thread_fixture_with_policy(
+    policy: Option<HandoffPolicy>,
+) -> (
+    StoreContext,
+    Connection,
+    PathBuf,
+    BootstrapIdentity,
+    HandoffIdentity,
+) {
     let (context, mut db, path, _) = bound_fixture(100);
     let mut id = crate::protocol::handoff::topology_contract_tests::identity();
+    id.payload.handoff.policy = policy;
     id.claim = claim("s1");
     id.scope = crate::cli::journal::IntentScope::Cooperative {
         instance: "i".into(),
@@ -687,6 +699,170 @@ fn actual_main_linked_phase_preserves_ordinary_and_rejects_lazy_mode() {
     );
 }
 
+#[test]
+fn actual_main_linked_phase_rejects_unfrozen_invitation_confirmation() {
+    use crate::protocol::commands::{InvitationConfirmation, Invite, PermitMutation};
+    let (context, mut db, path, id, child) = new_thread_fixture();
+    let create = create_for(&id);
+    let budget = CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Cancellation::default(),
+    };
+    let CommandResult::ThreadCreated(thread) = create_thread_in_namespace(
+        &context,
+        &mut db,
+        &budget,
+        &create,
+        create_permit(&create),
+        &id.payload.handoff.namespace,
+    )
+    .unwrap() else {
+        panic!()
+    };
+    let before = db.total_changes();
+    let mut invite = Invite {
+        confirmation: None,
+        thread,
+        seat: child.recipient.clone(),
+        deadline_millis: None,
+        operation: id.payload.handoff.keys.invite.clone(),
+        claim: id.claim.clone(),
+    };
+    topology_handoff::validate_selected_child_phase(
+        &db,
+        &id.payload.handoff.namespace,
+        &PermitMutation::Invite(invite.clone()),
+        false,
+    )
+    .unwrap();
+    for mode in [
+        InvitationConfirmation::Lazy,
+        InvitationConfirmation::RequireAck,
+    ] {
+        invite.confirmation = Some(mode);
+        let error = topology_handoff::validate_selected_child_phase(
+            &db,
+            &id.payload.handoff.namespace,
+            &PermitMutation::Invite(invite.clone()),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::OperationPayloadMismatch);
+    }
+    assert_eq!(
+        db.total_changes(),
+        before,
+        "policy refusal must precede effects"
+    );
+    drop(db);
+    drop(context);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn handoff_policy_linked_frozen_children_match_both_modes_and_reject_tampering() {
+    use crate::protocol::commands::{
+        DeliveryMode, InvitationConfirmation, Invite, PermitMutation, SendMessage,
+    };
+    for confirmation in [
+        InvitationConfirmation::Lazy,
+        InvitationConfirmation::RequireAck,
+    ] {
+        let invite_duration = (confirmation == InvitationConfirmation::RequireAck).then_some(11000);
+        let (context, mut db, path, id, child) =
+            new_thread_fixture_with_policy(Some(HandoffPolicy {
+                deadline_millis: Some(7000),
+                invitation_confirmation: confirmation,
+                invite_deadline_millis: invite_duration,
+            }));
+        let create = create_for(&id);
+        let budget = CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Cancellation::default(),
+        };
+        let CommandResult::ThreadCreated(thread) = create_thread_in_namespace(
+            &context,
+            &mut db,
+            &budget,
+            &create,
+            create_permit(&create),
+            &id.payload.handoff.namespace,
+        )
+        .unwrap() else {
+            panic!()
+        };
+        let invite = Invite {
+            confirmation: Some(confirmation),
+            thread: thread.clone(),
+            seat: child.recipient.clone(),
+            deadline_millis: invite_duration,
+            operation: id.payload.handoff.keys.invite.clone(),
+            claim: id.claim.clone(),
+        };
+        let send = SendMessage {
+            direct_recipient: None,
+            delivery_mode: DeliveryMode::Ordinary,
+            thread,
+            body: id.payload.handoff.body.clone(),
+            invited_recipients: vec![child.recipient.clone()],
+            deadline_millis: Some(7000),
+            relays_user: false,
+            user_intent: None,
+            operation: id.payload.handoff.keys.send.clone(),
+            claim: id.claim.clone(),
+        };
+        let validate = |mutation: &PermitMutation| {
+            topology_handoff::validate_selected_child_phase(
+                &db,
+                &id.payload.handoff.namespace,
+                mutation,
+                false,
+            )
+        };
+        let before = db.total_changes();
+        validate(&PermitMutation::Invite(invite.clone())).unwrap();
+        validate(&PermitMutation::SendMessage(send.clone())).unwrap();
+        for change in ["confirmation", "duration", "key"] {
+            let mut altered = invite.clone();
+            match change {
+                "confirmation" => {
+                    altered.confirmation = Some(if confirmation == InvitationConfirmation::Lazy {
+                        InvitationConfirmation::RequireAck
+                    } else {
+                        InvitationConfirmation::Lazy
+                    })
+                }
+                "duration" => altered.deadline_millis = Some(19000),
+                _ => altered.operation = id.payload.handoff.keys.send.clone(),
+            }
+            assert!(
+                validate(&PermitMutation::Invite(altered)).is_err(),
+                "{confirmation:?} {change}"
+            );
+        }
+        for change in ["duration", "key", "mode"] {
+            let mut altered = send.clone();
+            match change {
+                "duration" => altered.deadline_millis = Some(13000),
+                "key" => altered.operation = id.payload.handoff.keys.invite.clone(),
+                _ => altered.delivery_mode = DeliveryMode::Lazy,
+            }
+            assert!(
+                validate(&PermitMutation::SendMessage(altered)).is_err(),
+                "{change}"
+            );
+        }
+        assert_eq!(
+            db.total_changes(),
+            before,
+            "phase validation mutates no canonical or native state"
+        );
+        drop(db);
+        drop(context);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
 fn automatic_parent(id: &BootstrapIdentity) -> AutomaticBootstrapIdentity {
     AutomaticBootstrapIdentity::new(
         id.scope.clone(),
@@ -713,6 +889,7 @@ fn automatic_parent(id: &BootstrapIdentity) -> AutomaticBootstrapIdentity {
     )
     .unwrap()
 }
+
 fn automatic_parent_mutate(
     store: &crate::store::SqliteStore,
     id: &AutomaticBootstrapIdentity,
@@ -741,6 +918,7 @@ fn automatic_parent_mutate(
         budget,
     )
 }
+
 fn automatic_parent_created(
     store: &crate::store::SqliteStore,
     id: &AutomaticBootstrapIdentity,
@@ -769,6 +947,7 @@ fn automatic_parent_created(
     )
     .unwrap();
 }
+
 #[test]
 fn automatic_linked_selected_resolve_attach_and_exact_pair_share_canonical_parent() {
     let (_context, db, path, store, observation, budget, old, a) =
@@ -976,6 +1155,7 @@ fn automatic_linked_selected_resolve_attach_and_exact_pair_share_canonical_paren
     drop(db);
     let _ = std::fs::remove_file(path);
 }
+
 #[test]
 fn automatic_linked_registered_child_cannot_fall_back_before_attachment() {
     let (_context, db, path, store, _observation, budget, old, a) =
@@ -1041,9 +1221,10 @@ fn automatic_child_mutate(
         budget,
     )
 }
+
 #[test]
 fn automatic_linked_terminal_reconciles_completed_child_without_reopening_or_relaunch() {
-    use sha2::{Digest, Sha256};
+    use sha2::Digest;
     let (context, mut db, path, store, observation, budget, old, a) =
         attachment_fixture_inner(false, false);
     let id = automatic_parent(&old);
@@ -1195,7 +1376,10 @@ fn automatic_linked_terminal_reconciles_completed_child_without_reopening_or_rel
         pane: attachment.created.root_pane.clone(),
         kind: "launch".into(),
         launch: id.plan.payload.launch.clone(),
-        report_digest: format!("{:x}", Sha256::digest(serde_json::to_vec(&report).unwrap())),
+        report_digest: format!(
+            "{:x}",
+            sha2::Sha256::digest(serde_json::to_vec(&report).unwrap())
+        ),
         report,
         terminal: attachment.created.terminal.clone(),
         host_incarnation: attachment.created.host_incarnation.clone(),
@@ -1476,6 +1660,7 @@ fn automatic_linked_created_recovery_uses_fresh_guard_and_replays_before_current
     drop(db);
     let _ = std::fs::remove_file(path);
 }
+
 #[test]
 fn automatic_linked_created_recovery_refuses_changed_witness_and_lifecycle_without_effects() {
     for changed in ["witness", "lifecycle"] {
@@ -1559,5 +1744,393 @@ fn automatic_linked_created_recovery_refuses_changed_witness_and_lifecycle_witho
         );
         drop(db);
         let _ = std::fs::remove_file(path);
+    }
+}
+
+// Catches released128/256KiB checks rejecting body-bearing automatic records.
+// Public semantic acceptance and canonical loaders are tested by the successor task.
+#[test]
+fn automatic_capacity_actual_serializer_maximum_body_records() {
+    use sha2::Digest;
+    // Use the canonical completion argv relation, not merely report shape validation.
+    // Extended bodies still bypass B-owned admission; small-body control validates publicly.
+    fn retained_report(
+        id: &AutomaticBootstrapIdentity,
+        attachment: &AutomaticBootstrapAttachment,
+    ) -> LinkedBootstrapReport {
+        let AutomaticOriginal::Handoff(child) = &attachment.child.original else {
+            panic!("handoff child")
+        };
+        let p = &id.plan.payload;
+        assert_eq!(child.launch.argv, p.launch.argv);
+        assert_eq!(child.delivery.payload.body, p.handoff.body);
+        assert_eq!(id.digest, id.semantic_digest().unwrap());
+        assert_eq!(
+            attachment.child.digest,
+            attachment
+                .child
+                .original
+                .digest(&attachment.child.claim)
+                .unwrap()
+        );
+        let thread = ThreadId::new("thread");
+        let prompts = crate::cli::handoff::bootstrap_v1::retained_prompts(
+            thread.as_str(),
+            &child.context,
+            &id.claim.instance,
+        );
+        let argv = if let Some(template) = &p.startup_input {
+            template.apply(&p.launch.argv, &prompts[0]).unwrap().0
+        } else {
+            let mut caller = p.launch.argv.clone();
+            caller.push(prompts[0].clone());
+            crate::harness::launch::compose_bootstrap_v1_argv(p.launch.harness, caller).unwrap()
+        };
+        let argv_value = serde_json::json!(argv);
+        let canonical = if let Some(template) = &p.startup_input {
+            prompts.iter().any(|text| {
+                template
+                    .apply(&p.launch.argv, text)
+                    .is_ok_and(|(v, _)| serde_json::json!(v) == argv_value)
+            })
+        } else {
+            crate::cli::handoff::bootstrap_v1::retained_argv_matches(
+                p.launch.harness,
+                &p.launch.argv,
+                thread.as_str(),
+                &child.context,
+                &id.claim.instance,
+                Some(&argv_value),
+            )
+            .unwrap()
+        };
+        assert!(canonical, "actual canonical Complete argv relationship");
+        assert_ne!(
+            argv_value,
+            serde_json::json!(p.launch.argv),
+            "startup inbox prompt is retained"
+        );
+        let report = serde_json::json!({"outcome":"started","pane":attachment.created.root_pane,"seat":attachment.resolved_seat,"harness":p.launch.harness.as_str(),"argv":argv_value});
+        let retained = LinkedBootstrapReport {
+            thread,
+            recipient: attachment.resolved_seat.clone(),
+            pane: attachment.created.root_pane.clone(),
+            kind: "launch".into(),
+            launch: p.launch.clone(),
+            report_digest: format!(
+                "{:x}",
+                sha2::Sha256::digest(serde_json::to_vec(&report).unwrap())
+            ),
+            report,
+            terminal: attachment.created.terminal.clone(),
+            host_incarnation: attachment.created.host_incarnation.clone(),
+        };
+        retained.validate().unwrap();
+        retained
+    }
+    // Flag values preserve the frozen Codex V1 grammar even with many escaped arguments.
+    fn escaped_argv(control_bytes: usize) -> Vec<String> {
+        "\u{1}"
+            .repeat(control_bytes)
+            .as_bytes()
+            .chunks(4088)
+            .map(|v| format!("--model={}", String::from_utf8(v.to_vec()).unwrap()))
+            .collect()
+    }
+    for body in ["x".repeat(65_536), "\u{1}".repeat(65_536)] {
+        let (_context, db, path, store, _observation, _budget, old, a) =
+            attachment_fixture_inner(false, false);
+        let mut id = automatic_parent(&old);
+        let mut attachment = AutomaticBootstrapAttachment::derive(
+            &id,
+            BootstrapAttempt::first(),
+            a.created.clone(),
+            a.resolved_seat.clone(),
+        )
+        .unwrap();
+        let small_retained = retained_report(&id, &attachment);
+        AutomaticBootstrapMutation {
+            identity: id.clone(),
+            action: AutomaticBootstrapAction::Complete {
+                attachment: Box::new(attachment.clone()),
+                retained: small_retained,
+            },
+        }
+        .validate()
+        .unwrap();
+        id.plan.payload.handoff.body = body.clone();
+        id.digest = id.semantic_digest().unwrap();
+        let mut child = serde_json::to_value(&attachment.child).unwrap();
+        fn replace_body(value: &mut serde_json::Value, body: &str) {
+            match value {
+                serde_json::Value::Object(fields) => {
+                    for (key, value) in fields {
+                        if key == "body" {
+                            *value = serde_json::Value::String(body.into());
+                        } else {
+                            replace_body(value, body);
+                        }
+                    }
+                }
+                serde_json::Value::Array(values) => {
+                    for value in values {
+                        replace_body(value, body);
+                    }
+                }
+                _ => {}
+            }
+        }
+        replace_body(&mut child, &body);
+        attachment.child = serde_json::from_value(child).unwrap();
+        attachment.child.digest = attachment
+            .child
+            .original
+            .digest(&attachment.child.claim)
+            .unwrap();
+        let recovery = AutomaticBootstrapRecoveryResult {
+            operation: OperationId::new("capacity-recovery"),
+            attempt: BootstrapAttempt::first(),
+            inspection: BootstrapRecoveryInspection {
+                version: 1,
+                digest: "b".repeat(64),
+            },
+            disposition: AutomaticBootstrapRecoveryDisposition::Cancelled {
+                reason: "inspected".into(),
+                quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
+                attached_child: Some(Box::new(attachment.child.clone())),
+            },
+            operator_uid: 501,
+            operator_provenance: "operator:local-user:501".into(),
+            state: BootstrapState::Cancelled,
+            administrative_revision: 1,
+        };
+        let result = CommandResult::AutomaticBootstrap(Box::new(AutomaticBootstrapResult {
+            identity: id.clone(),
+            state: BootstrapState::Cancelled,
+            attempt: BootstrapAttempt::first(),
+            attempt_state: BootstrapAttemptState::Created,
+            administrative_revision: 1,
+            creation: Some(a.created.clone()),
+            attachment: Some(attachment.clone()),
+            thread: Some(ThreadId::new("thread")),
+            completed: None,
+            recovery: Some(recovery),
+        }));
+        let original = serde_json::to_vec(&id).unwrap();
+        let attached = serde_json::to_vec(&attachment).unwrap();
+        let recovered = serde_json::to_vec(&result).unwrap();
+        let retained = retained_report(&id, &attachment);
+        let request_bytes = |identity: AutomaticBootstrapIdentity, action| {
+            serde_json::to_vec(&crate::protocol::wire::WireRequest {
+                version: crate::protocol::wire::PROTOCOL_VERSION,
+                request_id: "capacity".into(),
+                expected_instance: "00000000-0000-4000-8000-000000000001".into(),
+                expected_boot: Some("00000000-0000-4000-8000-000000000002".into()),
+                output: None,
+                command: crate::protocol::commands::Command::AutomaticBootstrap(Box::new(
+                    AutomaticBootstrapMutation { identity, action },
+                )),
+            })
+            .unwrap()
+        };
+        let complete = request_bytes(
+            id.clone(),
+            AutomaticBootstrapAction::Complete {
+                attachment: Box::new(attachment.clone()),
+                retained: retained.clone(),
+            },
+        );
+        let recover = request_bytes(
+            id.clone(),
+            AutomaticBootstrapAction::Recover {
+                attempt: BootstrapAttempt::first(),
+                inspection: BootstrapRecoveryInspection {
+                    version: 1,
+                    digest: "b".repeat(64),
+                },
+                disposition: AutomaticBootstrapRecoveryDisposition::Cancelled {
+                    reason: "inspected".into(),
+                    quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
+                    attached_child: Some(Box::new(attachment.child.clone())),
+                },
+            },
+        );
+        assert!(complete.len() <= crate::protocol::wire::MAX_WIRE_FRAME_BYTES);
+        assert!(recover.len() <= crate::protocol::wire::MAX_WIRE_FRAME_BYTES);
+        let mut maximum_argv = id.clone();
+        maximum_argv.plan.payload.launch.argv = escaped_argv(16 * 4088);
+        maximum_argv.plan.payload.launch.validate().unwrap();
+        maximum_argv.digest = maximum_argv.semantic_digest().unwrap();
+        let maximum_original = serde_json::to_vec(&maximum_argv).unwrap();
+        let mut maximum_attachment = attachment.clone();
+        let AutomaticOriginal::Handoff(child) = &mut maximum_attachment.child.original else {
+            panic!("handoff child")
+        };
+        child.launch.argv = maximum_argv.plan.payload.launch.argv.clone();
+        maximum_attachment.child.digest = maximum_attachment
+            .child
+            .original
+            .digest(&maximum_attachment.child.claim)
+            .unwrap();
+        let maximum_retained = retained_report(&maximum_argv, &maximum_attachment);
+        let maximum_recover = request_bytes(
+            maximum_argv.clone(),
+            AutomaticBootstrapAction::Recover {
+                attempt: BootstrapAttempt::first(),
+                inspection: BootstrapRecoveryInspection {
+                    version: 1,
+                    digest: "b".repeat(64),
+                },
+                disposition: AutomaticBootstrapRecoveryDisposition::Cancelled {
+                    reason: "\u{1}".repeat(4096),
+                    quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
+                    attached_child: Some(Box::new(maximum_attachment.child.clone())),
+                },
+            },
+        );
+        let maximum_complete = request_bytes(
+            maximum_argv,
+            AutomaticBootstrapAction::Complete {
+                attachment: Box::new(maximum_attachment),
+                retained: maximum_retained,
+            },
+        );
+        eprintln!(
+            "automatic requests escaped={} Complete={} Recover={} maxargv_original={} maxargv_Complete={} maxargv_Recover={}",
+            body.starts_with('\u{1}'),
+            complete.len(),
+            recover.len(),
+            maximum_original.len(),
+            maximum_complete.len(),
+            maximum_recover.len()
+        );
+        if body.starts_with('\u{1}') {
+            assert!(maximum_original.len() > 524288);
+            assert!(db.execute("INSERT INTO automatic_bootstrap_parents(id,instance_id,actor_scope,compound,state_dir,host_endpoint,original_json,state,current_attempt) VALUES(98,'i','seat:sender','too-large','/state','/host',?1,'created',1)",[&maximum_original]).is_err());
+            assert_eq!(
+                db.query_row(
+                    "SELECT count(*) FROM automatic_bootstrap_parents WHERE id=98",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+        }
+        if body.starts_with('\u{1}') {
+            let mut near = id.clone();
+            // Largest six-byte escaped argv addition below the aggregate SQL ceiling.
+            let mut lo = 0_usize;
+            let mut hi = 65536_usize;
+            while lo < hi {
+                let mid = (lo + hi).div_ceil(2);
+                near.plan.payload.launch.argv = escaped_argv(mid);
+                if serde_json::to_vec(&near).unwrap().len() <= 524288 {
+                    lo = mid;
+                } else {
+                    hi = mid - 1;
+                }
+            }
+            near.plan.payload.launch.argv = escaped_argv(lo);
+            near.plan.payload.launch.validate().unwrap();
+            near.digest = near.semantic_digest().unwrap();
+            let mut near_attachment = attachment.clone();
+            let AutomaticOriginal::Handoff(child) = &mut near_attachment.child.original else {
+                panic!("handoff child")
+            };
+            child.launch.argv = near.plan.payload.launch.argv.clone();
+            near_attachment.child.digest = near_attachment
+                .child
+                .original
+                .digest(&near_attachment.child.claim)
+                .unwrap();
+            let near_attachment_bytes = serde_json::to_vec(&near_attachment).unwrap();
+            let near_original = serde_json::to_vec(&near).unwrap();
+            let near_retained = retained_report(&near, &near_attachment);
+            let near_recover = request_bytes(
+                near.clone(),
+                AutomaticBootstrapAction::Recover {
+                    attempt: BootstrapAttempt::first(),
+                    inspection: BootstrapRecoveryInspection {
+                        version: 1,
+                        digest: "b".repeat(64),
+                    },
+                    disposition: AutomaticBootstrapRecoveryDisposition::Cancelled {
+                        reason: "\u{1}".repeat(4096),
+                        quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
+                        attached_child: Some(Box::new(near_attachment.child.clone())),
+                    },
+                },
+            );
+            let near_complete = request_bytes(
+                near,
+                AutomaticBootstrapAction::Complete {
+                    attachment: Box::new(near_attachment),
+                    retained: near_retained,
+                },
+            );
+            eprintln!(
+                "automatic nearaggregate original={} attachment={} Complete={} Recover={} rawargv={}",
+                near_original.len(),
+                near_attachment_bytes.len(),
+                near_complete.len(),
+                near_recover.len(),
+                lo
+            );
+            assert!(near_original.len() <= 524288);
+            assert!(
+                near_complete.len() > crate::protocol::wire::MAX_WIRE_FRAME_BYTES,
+                "SQL capacity alone is not public preflight"
+            );
+        }
+        let wire = serde_json::to_vec(&crate::protocol::wire::WireResponse {
+            version: crate::protocol::wire::PROTOCOL_VERSION,
+            request_id: "capacity".into(),
+            instance: "00000000-0000-4000-8000-000000000001".into(),
+            daemon_boot: "00000000-0000-4000-8000-000000000002".into(),
+            result: Ok(result),
+        })
+        .unwrap();
+        eprintln!(
+            "automatic capacity escaped={} original={} attachment={} recovery={} WireResponse={} framed={}",
+            body.starts_with('\u{1}'),
+            original.len(),
+            attached.len(),
+            recovered.len(),
+            wire.len(),
+            wire.len() + 4
+        );
+        assert!(original.len() <= 524288);
+        assert!(attached.len() <= 524288);
+        assert!(recovered.len() <= 2097152);
+        db.execute("INSERT INTO automatic_bootstrap_parents(id,instance_id,actor_scope,compound,state_dir,host_endpoint,original_json,state,current_attempt) VALUES(99,'i','seat:sender','capacity','/state','/host',?1,'created',1)",[&original]).unwrap();
+        db.execute(
+            "INSERT INTO automatic_bootstrap_attempts VALUES(99,1,'created',0,?1)",
+            [serde_json::to_vec(&a.created).unwrap()],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO automatic_bootstrap_attachments VALUES(99,1,?1)",
+            [&attached],
+        )
+        .unwrap();
+        db.execute("INSERT INTO automatic_bootstrap_recoveries VALUES(99,1,'cancellation','capacity-recovery',1,?1)",[&recovered]).unwrap();
+        assert!(
+            db.execute(
+                "INSERT INTO automatic_bootstrap_reports VALUES(99,?1)",
+                [vec![b'x'; 2097153]]
+            )
+            .is_err()
+        );
+        assert!(
+            db.execute(
+                "INSERT INTO automatic_bootstrap_attempts VALUES(99,2,'created',0,?1)",
+                [vec![b'x'; 131073]]
+            )
+            .is_err()
+        );
+        drop(store);
+        drop(db);
+        std::fs::remove_file(path).unwrap();
     }
 }

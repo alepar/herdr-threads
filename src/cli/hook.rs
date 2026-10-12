@@ -62,6 +62,8 @@ use std::{
 };
 
 pub const SUBCOMMAND: &str = "hook";
+/// Stable per-event native callback surface.
+pub const EVENT_SUBCOMMAND: &str = "hook-event";
 /// Ordinary tool/turn check-in budget, end to end.
 pub const TOOL_BUDGET: Duration = Duration::from_millis(1500);
 /// Startup/resume/clear ensure plus check-in budget, end to end.
@@ -102,6 +104,25 @@ pub fn installed_argv(
     argv.push(SUBCOMMAND.to_owned());
     argv.push(harness.as_str().to_owned());
     argv
+}
+
+/// Complete stable native event argv. Routes must already be canonical, as
+/// supplied by setup's instance resolution. Executable spelling is preserved.
+/// No installation identity or shell ownership marker belongs in these bytes.
+pub fn installed_event_argv(
+    executable: &str,
+    state_dir: Option<&str>,
+    host_endpoint: Option<&str>,
+    harness: Harness,
+    event: &str,
+) -> Result<Vec<String>, String> {
+    let mut argv = installed_argv(executable, state_dir, host_endpoint, harness);
+    let command = argv.len() - 2;
+    argv[command] = EVENT_SUBCOMMAND.to_owned();
+    argv.push(event.to_owned());
+    let words = argv.iter().map(OsString::from).collect::<Vec<_>>();
+    parse_hook_argv(&words).ok_or_else(|| "invalid native event argv".to_owned())??;
+    Ok(argv)
 }
 
 /// `None` when argv does not select the hook subcommand (ordinary CLI parsing
@@ -160,17 +181,18 @@ pub(crate) fn parse_hook_argv_registered(
         }
         match text {
             Some("--json") => index += 1,
-            Some(SUBCOMMAND) => break,
+            Some(SUBCOMMAND | EVENT_SUBCOMMAND) => break,
             _ => return None,
         }
     }
     if let Some(conflict) = conflict {
         return Some(Err(conflict));
     }
+    let dedicated = args[index] == EVENT_SUBCOMMAND;
     let rest = &args[index + 1..];
     let usage = || {
         format!(
-            "usage: herdr-threads hook {} [--event NAME]",
+            "usage: herdr-threads hook-event {} EVENT (legacy: hook HARNESS [--event NAME])",
             registry
                 .registrations()
                 .iter()
@@ -181,19 +203,37 @@ pub(crate) fn parse_hook_argv_registered(
     };
     let words = rest.iter().map(|w| w.to_str()).collect::<Vec<_>>();
     let (id, event) = match words[..] {
-        [Some(id)] => (id, None),
+        [Some(id)] if !dedicated => (id, None),
+        [Some(id), Some(name)] if dedicated => (id, Some(name.to_owned())),
         [Some(id), Some("--event"), Some(name)]
-            if (1..=63).contains(&name.len())
+            if !dedicated
+                && (1..=63).contains(&name.len())
                 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') =>
         {
             (id, Some(name.to_owned()))
         }
         _ => return Some(Err(usage())),
     };
-    let harness = match registry.agent(id) {
-        Ok(id) => crate::harness::registry::OccupantHarness::Agent(id).into(),
+    let agent = match registry.agent(id) {
+        Ok(agent) => agent,
         Err(_) => return Some(Err(usage())),
     };
+    let registered = match registry.by_id(agent) {
+        Ok(registered) => registered,
+        Err(_) => return Some(Err(usage())),
+    };
+    let harness = crate::harness::registry::OccupantHarness::Agent(agent).into();
+    if let Some(event) = &event
+        && !registered.contracts().iter().any(|descriptor| {
+            descriptor
+                .contract
+                .events
+                .iter()
+                .any(|declared| declared.event == event)
+        })
+    {
+        return Some(Err(format!("undeclared hook event {id}/{event}")));
+    }
     Some(Ok(HookArgs {
         state_dir,
         host_endpoint,
@@ -230,6 +270,61 @@ pub struct HookOutcome {
     /// Lazy rows whose complete bodies `stdout` carries, completed only once
     /// it has been delivered.
     pub lazy: Option<super::hook_inbox::LazyCommit>,
+    pub step_completion: Option<HookStepCommit>,
+}
+
+/// Adapter completion owns its original route; reconnecting never refreshes the boot fence.
+pub struct HookStepCommit {
+    harness: Harness,
+    payload: HookStepCompletionPayload,
+    state_dir: PathBuf,
+    link: super::hook_inbox::CompletionLink,
+    deadline: Instant,
+}
+impl std::fmt::Debug for HookStepCommit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HookStepCommit")
+            .field("harness", &self.harness)
+            .field("state_dir", &self.state_dir)
+            .finish_non_exhaustive()
+    }
+}
+impl PartialEq for HookStepCommit {
+    fn eq(&self, other: &Self) -> bool {
+        self.harness == other.harness
+            && self.payload == other.payload
+            && self.state_dir == other.state_dir
+            && self.link.endpoint == other.link.endpoint
+            && self.link.instance == other.link.instance
+            && self.link.boot == other.link.boot
+            && self.deadline == other.deadline
+    }
+}
+impl Eq for HookStepCommit {}
+impl HookStepCommit {
+    fn commit(self) {
+        if Instant::now() >= self.deadline {
+            return;
+        }
+        let Ok(registration) = registration_for(self.harness) else {
+            return;
+        };
+        let Some(step) = registration.hook_step() else {
+            return;
+        };
+        let client = LocalSocketClient::new(
+            self.link.endpoint,
+            Arc::clone(&self.link.clock),
+            self.link.instance,
+            self.link.boot,
+        );
+        let daemon = HookStepClient {
+            client: &client,
+            clock: self.link.clock.as_ref(),
+            deadline: self.deadline,
+        };
+        step.complete(&self.payload.0, &daemon, &self.state_dir, self.deadline);
+    }
 }
 
 enum Failure {
@@ -3082,6 +3177,10 @@ struct HookStepClient<'a> {
     deadline: Instant,
 }
 impl HookStepDaemon for HookStepClient<'_> {
+    fn supports_capability(&self, name: &str) -> bool {
+        self.client
+            .supports_capability(name, &budget(self.deadline, self.clock))
+    }
     fn call(&self, command: Command) -> Result<CommandResult, ApiError> {
         self.client
             .call(command, &budget(self.deadline, self.clock))
@@ -3119,8 +3218,8 @@ fn run_hook_step(
             .ok()
             .and_then(|context| InstancePaths::resolve_read_only(&context).ok())
             .and_then(|paths| connect_existing(&paths, Arc::new(SystemClock::new())).ok())
-            .map(|(_, client, _)| client);
-    let daemon = connected.as_ref().map(|client| HookStepClient {
+            .map(|(_, client, link)| (client, link));
+    let daemon = connected.as_ref().map(|(client, _)| HookStepClient {
         client,
         clock,
         deadline,
@@ -3128,20 +3227,31 @@ fn run_hook_step(
     let pane = pane_inputs();
     let state = args.state_dir.clone().or_else(|| pane.env_state.clone());
     let host = args.host_endpoint.clone().or_else(|| pane.env_host.clone());
-    let stdout = step.run(&HookStepContext {
+    let state_dir = adapter_state_dir(args, registration, true);
+    let prepared = step.run_with_completion(&HookStepContext {
         input,
         decoded,
         claim,
         daemon: daemon.as_ref().map(|daemon| daemon as &dyn HookStepDaemon),
-        state_dir: adapter_state_dir(args, registration, true),
+        state_dir: state_dir.clone(),
         command_prefix: cli_prefix(&pane_selectors(state.as_deref(), host.as_deref(), &pane)),
         deadline,
     });
+    let step_completion = prepared.completion.and_then(|payload| {
+        Some(HookStepCommit {
+            harness,
+            payload,
+            state_dir: state_dir?,
+            link: connected?.1,
+            deadline,
+        })
+    });
     HookOutcome {
-        stdout,
-        diagnostic: None,
+        stdout: prepared.stdout,
+        diagnostic: prepared.diagnostic,
         attention: None,
         lazy: None,
+        step_completion,
     }
 }
 fn decode_failure_detail(registration: &Registration, error: &DecodeFailure) -> String {
@@ -3204,6 +3314,7 @@ fn quiet_outcome(detail: String) -> HookOutcome {
         diagnostic: Some(detail),
         attention: None,
         lazy: None,
+        step_completion: None,
     }
 }
 fn child_endpoint_available(args: &HookArgs) -> bool {
@@ -3507,6 +3618,7 @@ fn run_admitted_hook_since(
             diagnostic,
             attention: None,
             lazy: None,
+            step_completion: None,
         };
     }
     if let (EventRole::TopLevel, EventIntent::Observer, Some(step), Some(input)) = (
@@ -3568,6 +3680,7 @@ fn run_admitted_hook_since(
             diagnostic: diagnostic.or(binding_diagnostic),
             attention: None,
             lazy: None,
+            step_completion: None,
         };
     }
     // Verify registration/handle/event before any canonical operation.
@@ -3681,6 +3794,7 @@ fn run_admitted_hook_since(
                 diagnostic,
                 attention: if consumes { attention } else { None },
                 lazy,
+                step_completion: None,
             }
         }
         // A subagent's routine call is never worth a diagnostic of its own.
@@ -3689,6 +3803,7 @@ fn run_admitted_hook_since(
             diagnostic: (event.role == Role::TopLevel).then_some(detail),
             attention: None,
             lazy: None,
+            step_completion: None,
         },
         Err(failure @ (Failure::Unavailable(_) | Failure::UnavailableDetail(..))) => {
             let (reason, detail) = match failure {
@@ -3719,6 +3834,7 @@ fn run_admitted_hook_since(
                 diagnostic: (event.role == Role::TopLevel).then_some(detail),
                 attention: None,
                 lazy: None,
+                step_completion: None,
             }
         }
     }
@@ -3794,13 +3910,22 @@ fn read_input_bounded(mut input: impl Read + Send + 'static, bound: Duration) ->
 
 static OUTPUT: Mutex<()> = Mutex::new(());
 
+fn write_and_flush(bytes: &[u8], writer: &mut impl Write) -> bool {
+    writer.write_all(bytes).is_ok() && writer.flush().is_ok()
+}
+fn complete_after_emit(delivered: bool, complete: impl FnOnce()) {
+    if delivered {
+        complete();
+    }
+}
+
 /// Returns whether stdout (if any) was fully written and flushed.
 fn emit(outcome: &HookOutcome) -> bool {
     let _guard = OUTPUT.lock().unwrap_or_else(|p| p.into_inner());
     let mut delivered = true;
     if !outcome.stdout.is_empty() {
         let mut stdout = io::stdout().lock();
-        delivered = stdout.write_all(&outcome.stdout).is_ok() && stdout.flush().is_ok();
+        delivered = write_and_flush(&outcome.stdout, &mut stdout);
     }
     if let Some(detail) = &outcome.diagnostic {
         let _ = writeln!(io::stderr(), "herdr-threads hook: {detail}");
@@ -3840,6 +3965,7 @@ pub fn parse_failure_outcome(detail: String, env: &HookEnv) -> HookOutcome {
         diagnostic: (env.herdr_env && env.pane.is_some()).then_some(detail),
         attention: None,
         lazy: None,
+        step_completion: None,
     }
 }
 
@@ -4028,6 +4154,11 @@ pub fn run_process_with(
                     error.code
                 );
             }
+            complete_after_emit(delivered, || {
+                if let Some(completion) = outcome.step_completion {
+                    completion.commit();
+                }
+            });
             deadline
         },
         |detail| {

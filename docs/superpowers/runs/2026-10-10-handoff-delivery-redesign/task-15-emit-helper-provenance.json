@@ -1,0 +1,19 @@
+{
+  "head": "949b69a403d34893ebf108bbf421f981e4cc99c0",
+  "base": "ee1e598c3ee96566ddc9b397185cdc97c8bf6218",
+  "source_only": true,
+  "cargo_run": false,
+  "files": {
+    "src/harness/adapter.rs": "8d8b124ab389962cda56000e1ba99db7142f7c955c9c809e30776a5a20f29549",
+    "src/cli/hook.rs": "7967d3ba7a4d6acc969ea70ca8e57bf7ea2a2aeb707048a96e339c8623b7b03d",
+    "src/harness/agy/delivery.rs": "e824c3411c992045f8da457a91f00f81a4f807363a54a4f203964a55202c1983",
+    "tests/cli/hook_neutral.rs": "43da31291a43f586225901e74a13bce7097ef0636e5c7f9a65beb2e6baf6bdba",
+    "tests/harness/agy_delivery.rs": "c1c87093af317dad8007d21b4d882e7cb806f0a8e280e89f8940fd9bf3d37ef6",
+    "tests/cli/hook.rs": "dfbfcc62d46e3295a5c7280b39c99219483aa183a7d54fe646ae60950e018f52"
+  },
+  "patches": {
+    "task-15-emit-helper.diff": "0d1d440bd08c46399e87a18fb28fd31018e082274b462230c610c38ed4fcaa04",
+    "task-15-emit-helper-post-red.diff": "9611e1df522afa45373ad94fe67cbaad527e246be17e69f2b4005a714722bf07",
+    "task-15-emit-helper-cleared-source.diff": "c9a740e448b53d70c1bbc81ee88ee4a65564199062e4e9f372f2877e57bb8cbc"
+  }
+}

@@ -81,6 +81,8 @@ pub struct DigestRun {
     /// The pending-warning set behind `digest.warnings`, unnarrowed (a
     /// caller that needs the waking subset applies `wake_warnings`).
     pub warnings: PendingSet,
+    /// Recipient-visible pending invitation window; bounded by WINDOW.
+    pub invitations: PendingSet,
 }
 
 /// One pending item with its logical publication key.
@@ -98,9 +100,45 @@ pub struct PendingSet {
     pub items: Vec<PendingItem>,
     pub saturated: bool,
     pub work_steps: u64,
+    /// Canonical metadata revisions from the same bounded invitation window.
+    pub context_revisions: BTreeMap<String, i64>,
 }
 
 impl PendingSet {
+    /// Content signature of this canonical bounded window. All visible keys
+    /// participate, so removal of an older row cannot hide behind a saturated
+    /// count or an unchanged newest key. Unrelated decisions do not participate.
+    pub fn content_version(&self) -> u64 {
+        if self.items.is_empty() && !self.saturated {
+            return 0;
+        }
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let mut feed = |bytes: &[u8]| {
+            for byte in bytes {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        feed(&[u8::from(self.saturated)]);
+        for item in &self.items {
+            feed(&(item.id.len() as u64).to_le_bytes());
+            feed(item.id.as_bytes());
+            feed(&(item.thread_id.len() as u64).to_le_bytes());
+            feed(item.thread_id.as_bytes());
+            feed(&item.key.0.to_le_bytes());
+            feed(&item.key.1.to_le_bytes());
+            feed(
+                &self
+                    .context_revisions
+                    .get(&item.id)
+                    .copied()
+                    .unwrap_or(0)
+                    .to_le_bytes(),
+            );
+        }
+        hash
+    }
+
     /// The presented count: at most `ATTENTION_COUNT_CAP`, with `has_more`
     /// when more than the cap may be pending.
     pub fn count(&self) -> (u64, bool) {
@@ -123,6 +161,7 @@ impl PendingSet {
                 .collect(),
             saturated: self.saturated,
             work_steps: 0,
+            context_revisions: self.context_revisions.clone(),
         }
     }
 }
@@ -166,6 +205,7 @@ impl Gather {
             items,
             saturated: self.saturated,
             work_steps: self.steps,
+            context_revisions: BTreeMap::new(),
         }
     }
 }
@@ -470,6 +510,7 @@ fn digest_for(
             + mail.as_ref().map_or(0, |mail| mail.work_steps)
             + receipt_thread_steps,
         warnings,
+        invitations,
     })
 }
 
@@ -654,8 +695,36 @@ pub fn pending_invitations(
     thread: Option<&str>,
     through: i64,
 ) -> Result<PendingSet, ApiError> {
-    const SEAT: &str = "SELECT w.invitation_id,w.thread_id,w.created_decision_seq,w.ordinal,(i.state='pending' AND s.state!='retired' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=w.invitation_id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=w.invitation_id)) FROM (SELECT invitation_id,thread_id,created_decision_seq,ordinal FROM digest_pending_invitations INDEXED BY digest_pending_invitations_seat WHERE seat_id=?1 AND created_decision_seq<=?2 ORDER BY created_decision_seq DESC,ordinal DESC LIMIT ?3) w LEFT JOIN invitations i ON i.id=w.invitation_id LEFT JOIN seats s ON s.id=?1";
-    const THREAD: &str = "SELECT w.invitation_id,w.thread_id,w.created_decision_seq,w.ordinal,(i.state='pending' AND s.state!='retired' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=w.invitation_id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=w.invitation_id)) FROM (SELECT invitation_id,thread_id,created_decision_seq,ordinal FROM digest_pending_invitations INDEXED BY digest_pending_invitations_thread WHERE seat_id=?1 AND thread_id=?4 AND created_decision_seq<=?2 ORDER BY created_decision_seq DESC,ordinal DESC LIMIT ?3) w LEFT JOIN invitations i ON i.id=w.invitation_id LEFT JOIN seats s ON s.id=?1";
+    invitation_window(db, seat_id, thread, through, false)
+}
+
+/// Only confirming invitations enter native/mod wake. Select their indexed
+/// window before LIMIT so a lazy backlog cannot hide an older timed row.
+pub fn pending_confirming_invitations(
+    db: &Connection,
+    seat_id: &str,
+    thread: Option<&str>,
+    through: i64,
+) -> Result<PendingSet, ApiError> {
+    invitation_window(db, seat_id, thread, through, true)
+}
+
+fn invitation_window(
+    db: &Connection,
+    seat_id: &str,
+    thread: Option<&str>,
+    through: i64,
+    confirming: bool,
+) -> Result<PendingSet, ApiError> {
+    const SEAT: &str = "SELECT w.invitation_id,w.thread_id,w.created_decision_seq,w.ordinal,(i.state='pending' AND s.state!='retired' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=w.invitation_id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=w.invitation_id)),t.topic_revision FROM (SELECT invitation_id,thread_id,created_decision_seq,ordinal FROM digest_pending_invitations INDEXED BY digest_pending_invitations_seat WHERE seat_id=?1 AND created_decision_seq<=?2 ORDER BY created_decision_seq DESC,ordinal DESC LIMIT ?3) w LEFT JOIN invitations i ON i.id=w.invitation_id LEFT JOIN seats s ON s.id=?1 LEFT JOIN threads t ON t.id=w.thread_id";
+    const THREAD: &str = "SELECT w.invitation_id,w.thread_id,w.created_decision_seq,w.ordinal,(i.state='pending' AND s.state!='retired' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=w.invitation_id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=w.invitation_id)),t.topic_revision FROM (SELECT invitation_id,thread_id,created_decision_seq,ordinal FROM digest_pending_invitations INDEXED BY digest_pending_invitations_thread WHERE seat_id=?1 AND thread_id=?4 AND created_decision_seq<=?2 ORDER BY created_decision_seq DESC,ordinal DESC LIMIT ?3) w LEFT JOIN invitations i ON i.id=w.invitation_id LEFT JOIN seats s ON s.id=?1 LEFT JOIN threads t ON t.id=w.thread_id";
+    const TIMED_SEAT: &str = "SELECT w.invitation_id,w.thread_id,w.created_decision_seq,w.ordinal,(s.state!='retired' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=w.invitation_id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=w.invitation_id)),t.topic_revision FROM (SELECT id AS invitation_id,thread_id,created_decision_seq,ordinal FROM invitations INDEXED BY invitations_confirmation_pending_seat WHERE seat_id=?1 AND state='pending' AND (confirmation IS NULL OR confirmation='require_ack') AND created_decision_seq<=?2 ORDER BY created_decision_seq DESC,ordinal DESC LIMIT ?3) w LEFT JOIN seats s ON s.id=?1 LEFT JOIN threads t ON t.id=w.thread_id";
+    const TIMED_THREAD: &str = "SELECT w.invitation_id,w.thread_id,w.created_decision_seq,w.ordinal,(s.state!='retired' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=w.invitation_id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=w.invitation_id)),t.topic_revision FROM (SELECT id AS invitation_id,thread_id,created_decision_seq,ordinal FROM invitations INDEXED BY invitations_confirmation_pending_thread WHERE seat_id=?1 AND thread_id=?4 AND state='pending' AND (confirmation IS NULL OR confirmation='require_ack') AND created_decision_seq<=?2 ORDER BY created_decision_seq DESC,ordinal DESC LIMIT ?3) w LEFT JOIN seats s ON s.id=?1 LEFT JOIN threads t ON t.id=w.thread_id";
+    let (seat_sql, thread_sql) = if confirming {
+        (TIMED_SEAT, TIMED_THREAD)
+    } else {
+        (SEAT, THREAD)
+    };
     let map = |r: &rusqlite::Row<'_>| {
         Ok((
             r.get::<_, String>(0)?,
@@ -663,20 +732,22 @@ pub fn pending_invitations(
             r.get::<_, i64>(2)?,
             r.get::<_, i64>(3)?,
             r.get::<_, Option<bool>>(4)?.unwrap_or(false),
+            r.get::<_, i64>(5)?,
         ))
     };
     let window = match thread {
-        None => rows(db, SEAT, params![seat_id, through, WINDOW_SQL], map)?,
+        None => rows(db, seat_sql, params![seat_id, through, WINDOW_SQL], map)?,
         Some(thread) => rows(
             db,
-            THREAD,
+            thread_sql,
             params![seat_id, through, WINDOW_SQL, thread],
             map,
         )?,
     };
     let mut gather = Gather::default();
     gather.window(window.len());
-    for (id, thread, seq, ordinal, valid) in window {
+    let mut revisions = BTreeMap::new();
+    for (id, thread, seq, ordinal, valid, revision) in window {
         if seq <= 0 || ordinal <= 0 {
             return Err(api_error(
                 ErrorCode::StoreCorrupt,
@@ -684,6 +755,7 @@ pub fn pending_invitations(
             ));
         }
         if valid {
+            revisions.insert(id.clone(), revision);
             gather.add(PendingItem {
                 id,
                 thread_id: thread,
@@ -691,7 +763,9 @@ pub fn pending_invitations(
             });
         }
     }
-    Ok(gather.finish())
+    let mut result = gather.finish();
+    result.context_revisions = revisions;
+    Ok(result)
 }
 
 /// The seat's pending addressed receipts (optionally in one thread): three
@@ -1001,16 +1075,18 @@ fn newest_notice_above(
     .map_err(store_error)
 }
 
-/// Settle the notices a hook-pull page carries for the seat's open, connected top-level binding
-/// of `native_session` (with binding generation `generation`), in one deciding transaction: that
+/// Settle the notices a hook-pull page carries for the exact admitted, open, connected top-level
+/// `binding` of `native_session` (with binding generation `generation`), in one deciding transaction: that
 /// binding's own frontier moves (spec §2 Hook notifications). `false` (nothing written) when
 /// there is no such open binding or `carried` is no longer exactly the oldest-first unoffered
 /// prefix of that binding: a concurrent check-in that carried them first is a normal race, not
 /// corruption.
+#[allow(clippy::too_many_arguments)]
 pub fn settle_pulled_notices(
     tx: &Connection,
     instance: &str,
     seat_id: &str,
+    binding: &BindingId,
     generation: u64,
     native_session: &str,
     carried: &[WarningRef],
@@ -1021,18 +1097,17 @@ pub fn settle_pulled_notices(
     let Ok(generation) = i64::try_from(generation) else {
         return Ok(false);
     };
-    let binding: Option<String> = tx
+    let current: bool = tx
         .query_row(
-            "SELECT b.binding_id FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL AND b.role='top_level' AND b.agent_id='' AND b.liveness='connected' WHERE s.id=?1 AND s.instance_id=?2 AND s.state!='retired' AND b.generation=?3 AND b.native_session=?4 ORDER BY b.ordinal DESC LIMIT 1",
-            params![seat_id, instance, generation, native_session],
+            "SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.binding_id=?5 AND s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=?3 AND b.generation=?3 AND b.native_session=?4 AND b.ended_at IS NULL AND b.role='top_level' AND b.agent_id='' AND b.liveness='connected' AND NOT EXISTS(SELECT 1 FROM recovery_holds h WHERE h.instance_id=s.instance_id AND h.target_id=s.target_id AND h.released_at IS NULL))",
+            params![seat_id, instance, generation, native_session, binding.as_str()],
             |r| r.get(0),
         )
-        .optional()
         .map_err(store_error)?;
-    let Some(binding) = binding.map(BindingId::new) else {
+    if !current {
         return Ok(false);
-    };
-    let page = notice_offer_page_for(tx, seat_id, &binding, carried.len())?;
+    }
+    let page = notice_offer_page_for(tx, seat_id, binding, carried.len())?;
     if page.len() != carried.len()
         || page
             .iter()
@@ -1041,7 +1116,7 @@ pub fn settle_pulled_notices(
     {
         return Ok(false);
     }
-    settle_offered_notices(tx, seat_id, &binding, &page)?;
+    settle_offered_notices(tx, seat_id, binding, &page)?;
     Ok(true)
 }
 
@@ -1440,10 +1515,10 @@ pub struct WakeProbe {
     pub sql: &'static str,
 }
 
-/// The six pending access paths wake discovery probes per live non-human
+/// The eight pending access paths wake discovery probes per live non-human
 /// seat (spec D2), in probe order. Each is an `INDEXED BY` seat-leading
 /// existence lookup. `wake_work` is deliberately not probed.
-pub const WAKE_PROBES: [WakeProbe; 6] = [
+pub const WAKE_PROBES: [WakeProbe; 8] = [
     WakeProbe {
         index: "digest_pending_invitations_seat",
         sql: "SELECT EXISTS(SELECT 1 FROM digest_pending_invitations INDEXED BY digest_pending_invitations_seat WHERE seat_id=?1)",
@@ -1468,9 +1543,17 @@ pub const WAKE_PROBES: [WakeProbe; 6] = [
         index: "digest_programmatic_warnings_seat",
         sql: "SELECT EXISTS(SELECT 1 FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_seat WHERE seat_id=?1 AND ordinal>?2)",
     },
+    WakeProbe {
+        index: "receipt_warning_origins_seat",
+        sql: "SELECT EXISTS(SELECT 1 FROM receipt_warning_origins INDEXED BY receipt_warning_origins_seat WHERE instance_id=(SELECT instance_id FROM seats WHERE id=?1) AND seat_id=?1)",
+    },
+    WakeProbe {
+        index: "warning_conditions_invitation_origin",
+        sql: "SELECT EXISTS(SELECT 1 FROM warning_conditions INDEXED BY warning_conditions_invitation_origin WHERE invitation_originator_instance_id=(SELECT instance_id FROM seats WHERE id=?1) AND invitation_originator_seat_id=?1 AND condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id IS NOT NULL)",
+    },
 ];
 
-/// Does any pending access path hold a row for the seat? At most seven O(1)
+/// Does any pending access path hold a row for the seat? At most eight O(1)
 /// probes, stopping at the first hit. A hit is only a reason to examine the
 /// seat: the canonical judges still decide whether the work is actionable.
 pub fn seat_has_pending_rows(db: &Connection, seat_id: &str) -> Result<bool, ApiError> {
@@ -1508,8 +1591,8 @@ pub struct WakeSeatAttention {
 
 /// May this pending warning wake `seat_id`? A canonical condition transition
 /// is an informational notice for every member (TRUST-POLICY A7): it wakes
-/// only the affected seat of a still-open condition, the seat that owes the
-/// overdue ACK or invitation answer. Other members, and every clear, receive
+/// the affected seat of a still-open condition, each canonical original sender
+/// of associated receipts, and the original inviter of an overdue invitation. Other members, and every clear, receive
 /// it on their next check-in offer instead of a prompt whose inbox has
 /// nothing for them. Other warnings keep their judged actionability. Unique
 /// index probes only.
@@ -1521,12 +1604,99 @@ pub fn warning_wakes_seat(
     if effective::is_invitation_rejection_notice(db, warning_id)? {
         return Ok(false);
     }
+    let receipt_origin:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM receipt_warning_origins INDEXED BY receipt_warning_origins_exact WHERE instance_id=(SELECT instance_id FROM seats WHERE id=?1) AND seat_id=?1 AND warning_id=?2)",params![seat_id,warning_id],|r|r.get(0)).map_err(store_error)?;
+    if receipt_origin {
+        return Ok(true);
+    }
+    let origin: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1 AND condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id=?2)",params![warning_id,seat_id],|r|r.get(0)).map_err(store_error)?;
+    if origin {
+        return Ok(true);
+    }
     db.query_row(
         "SELECT CASE WHEN EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1) OR EXISTS(SELECT 1 FROM warning_conditions WHERE clear_warning_id=?1) THEN EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1 AND affected_seat_id=?2 AND clear_warning_id IS NULL) ELSE 1 END",
         params![warning_id, seat_id],
         |r| r.get(0),
     )
     .map_err(store_error)
+}
+
+/// Open invitation conditions addressed to their frozen original inviter.
+/// This separate bounded source ignores informational notice offers. The
+/// instance/seat/ordinal partial index excludes all closed historical rows.
+pub fn open_invitation_origin_warnings(
+    db: &Connection,
+    seat_id: &str,
+) -> Result<PendingSet, ApiError> {
+    let instance: Option<String> = db
+        .query_row(
+            "SELECT instance_id FROM seats WHERE id=?1 AND state!='retired'",
+            [seat_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some(instance) = instance else {
+        return Ok(PendingSet::default());
+    };
+    let window: Vec<PendingItem> = rows(
+        db,
+        "SELECT c.open_warning_id,c.thread_id,c.opened_seq,m.event_offset FROM (SELECT open_warning_id,thread_id,opened_seq FROM warning_conditions INDEXED BY warning_conditions_invitation_origin WHERE invitation_originator_instance_id=?1 AND invitation_originator_seat_id=?2 AND condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id IS NOT NULL ORDER BY ordinal DESC LIMIT ?3) c JOIN messages m ON m.id=c.open_warning_id",
+        params![instance, seat_id, WINDOW_SQL],
+        |r| {
+            Ok(PendingItem {
+                id: r.get(0)?,
+                thread_id: r.get(1)?,
+                key: (r.get(2)?, r.get(3)?),
+            })
+        },
+    )?;
+    let mut gather = Gather::default();
+    gather.window(window.len());
+    for item in window {
+        gather.add(item);
+    }
+    Ok(gather.finish())
+}
+
+/// All canonical native authors associated with each still-open shared
+/// receipt condition. This bounded seat-leading source is independent of
+/// informational notice delivery and current thread membership.
+pub fn open_receipt_origin_warnings(
+    db: &Connection,
+    seat_id: &str,
+) -> Result<PendingSet, ApiError> {
+    let window: Vec<PendingItem> = rows(
+        db,
+        "SELECT o.warning_id,m.thread_id,m.decision_seq,m.event_offset FROM (SELECT warning_id FROM receipt_warning_origins INDEXED BY receipt_warning_origins_seat WHERE instance_id=(SELECT instance_id FROM seats WHERE id=?1 AND state!='retired') AND seat_id=?1 AND ordinal<=(SELECT COALESCE(MAX(ordinal),0) FROM receipt_warning_origins INDEXED BY receipt_warning_origins_seat WHERE instance_id=(SELECT instance_id FROM seats WHERE id=?1) AND seat_id=?1) ORDER BY ordinal DESC LIMIT ?2) o JOIN messages m ON m.id=o.warning_id",
+        params![seat_id, WINDOW_SQL],
+        |r| {
+            Ok(PendingItem {
+                id: r.get(0)?,
+                thread_id: r.get(1)?,
+                key: (r.get(2)?, r.get(3)?),
+            })
+        },
+    )?;
+    let mut gather = Gather::default();
+    gather.window(window.len());
+    for item in window {
+        gather.add(item);
+    }
+    Ok(gather.finish())
+}
+
+/// Independent open-origin attention shared by native candidate loading and
+/// the mod fingerprint. Each source has its own finite indexed window.
+pub fn open_origin_warnings(db: &Connection, seat_id: &str) -> Result<PendingSet, ApiError> {
+    let invitations = open_invitation_origin_warnings(db, seat_id)?;
+    let receipts = open_receipt_origin_warnings(db, seat_id)?;
+    let mut gather = Gather {
+        steps: invitations.work_steps + receipts.work_steps,
+        ..Gather::default()
+    };
+    gather.merge(&invitations);
+    gather.merge(&receipts);
+    Ok(gather.finish())
 }
 
 /// Narrow a seat's pending-warning set to the warnings that wake it
@@ -1550,7 +1720,14 @@ pub fn wake_warnings(
     if !(wakes.is_empty() && warnings.saturated) {
         warnings.items = wakes;
     }
-    Ok(warnings)
+    let origins = open_origin_warnings(db, seat_id)?;
+    let mut gather = Gather {
+        steps: warnings.work_steps + origins.work_steps,
+        ..Gather::default()
+    };
+    gather.merge(&warnings);
+    gather.merge(&origins);
+    Ok(gather.finish())
 }
 
 /// The wake attention of one seat, from the newest-first per-source walks
@@ -1569,7 +1746,7 @@ pub fn wake_seat_attention(db: &Connection, seat_id: &str) -> Result<WakeSeatAtt
         .optional()
         .map_err(store_error)?
         .ok_or_else(|| api_error(ErrorCode::NotFound, "seat missing"))?;
-    let invitations = pending_invitations(db, seat_id, None, decision_seq)?;
+    let invitations = pending_confirming_invitations(db, seat_id, None, decision_seq)?;
     let receipts = pending_receipts(db, seat_id, None)?;
     let warnings = wake_warnings(db, seat_id, seat_pending_warnings(db, seat_id, &|| Ok(()))?)?;
     let latest_warning_seq = warnings.items.first().map(|item| item.key.0);

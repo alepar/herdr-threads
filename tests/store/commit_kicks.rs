@@ -211,6 +211,22 @@ const INSERTS: &[(&str, &str)] = &[
         "INSERT INTO receipt_state(message_id,seat_id,state) VALUES ('m','s1','pending')",
     ),
     (
+        "receipt_warning_origins",
+        "INSERT INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id) VALUES ('i','s1','w','m')",
+    ),
+    (
+        "receipt_due_sparse",
+        "INSERT INTO receipt_due_sparse(message_id,seat_id,deadline_at) VALUES ('m','s1',1)",
+    ),
+    (
+        "receipt_deadline_backfill",
+        "INSERT OR REPLACE INTO receipt_deadline_backfill VALUES (1,0,0,0,0,0)",
+    ),
+    (
+        "receipt_discovery_backfill",
+        "INSERT OR REPLACE INTO receipt_discovery_backfill VALUES (1,0,0,0,0,0)",
+    ),
+    (
         "catch_up",
         "INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state) VALUES ('b1','s1','t',1,0,'active')",
     ),

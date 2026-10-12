@@ -1,0 +1,344 @@
+[
+  {
+    "path": "/private/tmp/ht-roast1-mod-baseline-2295162f/mod.log",
+    "sha256": "bc7069c150d5f31787d228aba76f1a391fdf7ca18891056ee0f8fcd90f728181",
+    "bytes": 10787,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-mod-baseline-2295162f/mod.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-mod-baseline-2295162f/validate.log",
+    "sha256": "ce6347b95f0f281ba67bb72b72eb98d8a363c42bb3fc070c8179017bf98fc387",
+    "bytes": 1758,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-mod-baseline-2295162f/validate.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-mod-baseline-2295162f/leaks.log",
+    "sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e",
+    "bytes": 25,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-mod-baseline-2295162f/leaks.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-mod-baseline-2295162f/execution.json",
+    "sha256": "17be1bbfdd8ae228d6fa8b418053f422b6333962f1d855ac8eff60bd3700f591",
+    "bytes": 1030,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-mod-baseline-2295162f/execution.json"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-mod-green-ba0585a9/mod.log",
+    "sha256": "610561599680cd0dce57aa822a657144984f1470da979bf157eb70cf6f2b1ec2",
+    "bytes": 10583,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-mod-green-ba0585a9/mod.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-mod-green-ba0585a9/validate.log",
+    "sha256": "ce6347b95f0f281ba67bb72b72eb98d8a363c42bb3fc070c8179017bf98fc387",
+    "bytes": 1758,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-mod-green-ba0585a9/validate.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-mod-green-ba0585a9/leaks.log",
+    "sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e",
+    "bytes": 25,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-mod-green-ba0585a9/leaks.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-mod-green-ba0585a9/execution.json",
+    "sha256": "1eca9e8b9f933800d78d72b0fabaa32a218f27d27ddeece4a3dce6cf52c83b4e",
+    "bytes": 1029,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-mod-green-ba0585a9/execution.json"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-mod-gates-1f082334/default.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-mod-gates-1f082334/default.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-mod-gates-1f082334/fmt.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-mod-gates-1f082334/fmt.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-mod-gates-1f082334/clippy.log",
+    "sha256": "59c87fd86200b0690f7a5f3507bb62add83b12e03adfa45ace928122a0ea23b8",
+    "bytes": 182,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-mod-gates-1f082334/clippy.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-mod-gates-1f082334/neutral.log",
+    "sha256": "7561605afc0af5f27527d99451825bc26c55fa2f7083bb392ad4244e406b0536",
+    "bytes": 130,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-mod-gates-1f082334/neutral.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-mod-gates-1f082334/execution.json",
+    "sha256": "ac056fec35784d58f31833f29792542616107f83694ee993c8de7c0b077ab648",
+    "bytes": 1553,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-mod-gates-1f082334/execution.json"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-source-red-c2b0d8fb/run.log",
+    "sha256": "c794f2da93a742fc17f8a0cdc66b9f52014815ac7b682adf9288f70230b8d3be",
+    "bytes": 2523,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-source-red-c2b0d8fb/run.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-source-red-c2b0d8fb/list.stderr",
+    "sha256": "4e90c611ef97cbf43dce96df06486b9933a8f388279f5cc4e5b5588006b2c5dd",
+    "bytes": 183,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-source-red-c2b0d8fb/list.stderr"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-source-red-c2b0d8fb/list.json",
+    "sha256": "75ae227ca26d08406a02496b1eac0ad8e51a1c67f7aa6406f6b165ef76544a17",
+    "bytes": 878066,
+    "retained": "original enumeration by exact path/hash; selected names in execution.json"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-source-red-c2b0d8fb/leaks.log",
+    "sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e",
+    "bytes": 25,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-source-red-c2b0d8fb/leaks.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-source-red-c2b0d8fb/execution.json",
+    "sha256": "4cc042bd0bcdf7a8ebf6981ab19e0f14aa1ad840b7ff059f5c9f8a619eacf022",
+    "bytes": 2112,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-source-red-c2b0d8fb/execution.json"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-rust-stage2-aed4b720/list.stderr",
+    "sha256": "693535990a985a96bda2d7c13e220260758041a3c227af6f4a6071c11b0392fd",
+    "bytes": 1001,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-rust-stage2-aed4b720/list.stderr"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-rust-stage2-aed4b720/list.json",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "retained": "original enumeration by exact path/hash; selected names in execution.json"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-rust-stage2-aed4b720/leaks.log",
+    "sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e",
+    "bytes": 25,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-rust-stage2-aed4b720/leaks.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-rust-stage2-aed4b720/execution.json",
+    "sha256": "b465c1e787efe29db7bb576c119279c4ea74fdad556a257485c15a431d6578a3",
+    "bytes": 2447,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-rust-stage2-aed4b720/execution.json"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-rust-stage2-corrected-741984b9/run.log",
+    "sha256": "ce45342ff702064b98eced8122c504f60b5be5b0934f31098f99a9d4cee1a6e0",
+    "bytes": 6335,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-rust-stage2-corrected-741984b9/run.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-rust-stage2-corrected-741984b9/list.stderr",
+    "sha256": "7300096b88f42b2686e0a47c05e4ac3b08417ff51c00fd8c2aac2edd9254d543",
+    "bytes": 183,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-rust-stage2-corrected-741984b9/list.stderr"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-rust-stage2-corrected-741984b9/list.json",
+    "sha256": "95d9357d619b3e5c226d65d227f23c776d25a6e699d46959f9ab67f5cddd439e",
+    "bytes": 895867,
+    "retained": "original enumeration by exact path/hash; selected names in execution.json"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-rust-stage2-corrected-741984b9/leaks.log",
+    "sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e",
+    "bytes": 25,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-rust-stage2-corrected-741984b9/leaks.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-rust-stage2-corrected-741984b9/execution.json",
+    "sha256": "4c9902c0810c1ee387f278fff1f7da9e6672ee50282c4801082918cc35be0d33",
+    "bytes": 6781,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-rust-stage2-corrected-741984b9/execution.json"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-owner-green-3b1113f0/run.log",
+    "sha256": "f122ad16b6fa0cb25cac53b6a279481d261f9e82c7373fd4dcd5714868b791d9",
+    "bytes": 1333,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-owner-green-3b1113f0/run.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-owner-green-3b1113f0/list.stderr",
+    "sha256": "f5d7872be96a4c6ed65024711844ea955ddb025c83a601b59892e220cd71ae9a",
+    "bytes": 182,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-owner-green-3b1113f0/list.stderr"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-owner-green-3b1113f0/list.json",
+    "sha256": "084884e57d2eb0edb833762041efde1ebdc2730b9591df043f0924e69f3c0c51",
+    "bytes": 18807,
+    "retained": "original enumeration by exact path/hash; selected names in execution.json"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-owner-green-3b1113f0/leaks.log",
+    "sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e",
+    "bytes": 25,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-owner-green-3b1113f0/leaks.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-owner-green-3b1113f0/execution.json",
+    "sha256": "8466d5b638f053d34caab6d9cb8cb603ea0d93e04ae128fb02f333b75be2630e",
+    "bytes": 3757,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-owner-green-3b1113f0/execution.json"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-four-fix-gates-1bf42f80/default.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-four-fix-gates-1bf42f80/default.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-four-fix-gates-1bf42f80/fmt.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-four-fix-gates-1bf42f80/fmt.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-four-fix-gates-1bf42f80/clippy.log",
+    "sha256": "d540a261130f4385b797bda68cf7e4773ecb756b095208be6be305deb673f84a",
+    "bytes": 182,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-four-fix-gates-1bf42f80/clippy.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-four-fix-gates-1bf42f80/neutral.log",
+    "sha256": "7561605afc0af5f27527d99451825bc26c55fa2f7083bb392ad4244e406b0536",
+    "bytes": 130,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-four-fix-gates-1bf42f80/neutral.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-four-fix-gates-1bf42f80/execution.json",
+    "sha256": "caa990caca4dd3722bd07e571b763d8bfe474a02c684603e31f8ce8cd6489c88",
+    "bytes": 1573,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-four-fix-gates-1bf42f80/execution.json"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge12-gates/default.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge12-gates/default.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge12-gates/fmt.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge12-gates/fmt.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge12-gates/clippy.log",
+    "sha256": "b20f12cffbf294a929d88d12d9dadc62308728bdb59f2db83c9a94e296dc1086",
+    "bytes": 182,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge12-gates/clippy.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge12-gates/neutral.log",
+    "sha256": "7561605afc0af5f27527d99451825bc26c55fa2f7083bb392ad4244e406b0536",
+    "bytes": 130,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge12-gates/neutral.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge12-gates/execution.json",
+    "sha256": "54ad2e85b2dbc521c381f66e4abbbfd1b1c18a0a05ab6e9ee4b3c48f9299b937",
+    "bytes": 1525,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge12-gates/execution.json"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge13-gates/default.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge13-gates/default.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge13-gates/fmt.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge13-gates/fmt.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge13-gates/clippy.log",
+    "sha256": "8bb3f481ba6a08e0780487b5a9543c0cf1afd10bbaa0e27cfa5473e0d95b1bca",
+    "bytes": 182,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge13-gates/clippy.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge13-gates/neutral.log",
+    "sha256": "7561605afc0af5f27527d99451825bc26c55fa2f7083bb392ad4244e406b0536",
+    "bytes": 130,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge13-gates/neutral.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge13-gates/execution.json",
+    "sha256": "7c034cb41e3769be7a79099016840c561091318fb76ef7fd4873c48aa526d0e3",
+    "bytes": 1529,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge13-gates/execution.json"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge14-gates/default.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge14-gates/default.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge14-gates/fmt.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge14-gates/fmt.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge14-gates/clippy.log",
+    "sha256": "84c067282252af963bc326eb1e411f9277568b99c7bbdf97e7d6fe4533d938e7",
+    "bytes": 182,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge14-gates/clippy.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge14-gates/neutral.log",
+    "sha256": "7561605afc0af5f27527d99451825bc26c55fa2f7083bb392ad4244e406b0536",
+    "bytes": 130,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge14-gates/neutral.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge14-gates/execution.json",
+    "sha256": "4a5dd4707aca60fb9e3ec4b51c94aebeaab58c85f82ce257dcacf4791f2753d5",
+    "bytes": 1528,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge14-gates/execution.json"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge15-gates/default.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge15-gates/default.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge15-gates/fmt.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge15-gates/fmt.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge15-gates/clippy.log",
+    "sha256": "c4f667dd8ffb6af4c1e4b446ee2bb495909aeb3833ea00644b24c51b2f17c672",
+    "bytes": 182,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge15-gates/clippy.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge15-gates/neutral.log",
+    "sha256": "7561605afc0af5f27527d99451825bc26c55fa2f7083bb392ad4244e406b0536",
+    "bytes": 130,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge15-gates/neutral.log"
+  },
+  {
+    "path": "/private/tmp/ht-roast1-merge15-gates/execution.json",
+    "sha256": "0bdedea4ec855441950986e3e53a8ade52079efaf78005359818951736025ef1",
+    "bytes": 1527,
+    "retained": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast1-fix-loop-evidence/ht-roast1-merge15-gates/execution.json"
+  }
+]

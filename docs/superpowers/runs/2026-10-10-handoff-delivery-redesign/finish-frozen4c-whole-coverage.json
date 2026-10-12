@@ -1,0 +1,1101 @@
+{
+  "audit": "fresh cumulative whole-task D",
+  "base": "ee1e598c3ee96566ddc9b397185cdc97c8bf6218",
+  "head": "4c4988d9ee937c333d602bac25dca25fc2c07d37",
+  "tree": "1589136ce7568bcd72b0050fa8d947e6f49503ab",
+  "spec_verdict": "ISSUES",
+  "quality_verdict": "ISSUES",
+  "changed_path_count": 74,
+  "covered_path_count": 74,
+  "uncovered_paths": [],
+  "source_mutated": false,
+  "cargo_or_tests_run_by_auditor": false,
+  "findings": [
+    "D-WHOLE-1",
+    "D-WHOLE-2",
+    "D-WHOLE-3"
+  ],
+  "limits": [
+    "All changed paths accounted for; semantic coverage is not a claim of exhaustive line-by-line review of every large test fixture.",
+    "Schema/interface peers provide additional depth; this inventory records only this auditor's work.",
+    "No actual advertised V2 production activation or complete native/Watch live harness sweep established here.",
+    "No full suite, default-feature check, final successor/source integration gates or controlled incremental build measurement performed by auditor.",
+    "All 14 restored attention bodies reviewed; historical unmodified bodies unavailable, so no byte-identical restoration assertion.",
+    "Superseded review/disposition history was sampled through current/final accepted reviews and source; no claim that every historical review page was read.",
+    "Runtime evidence applies only to frozen source stated in log/sourcepoint, not later helper branches."
+  ],
+  "runtime_evidence": [
+    {
+      "path": "/private/tmp/ht-task15-final-affected.log",
+      "sha256": "4906bfb1fa773e5e595e87c216b1e488ffe068bad4e635d9f3f75a79485f3ce5",
+      "provenance": "existing parent/preparation runtime log; read by auditor, not executed by auditor"
+    },
+    {
+      "path": "/private/tmp/ht-task15-final-clippy-successor.log",
+      "sha256": "d99bc30c61d4dace9f84228d5ed92c9b307989c329d48bf90c828ea791326667",
+      "provenance": "existing parent/preparation runtime log; read by auditor, not executed by auditor"
+    },
+    {
+      "path": "/private/tmp/ht-finish-frozen-sweep.log",
+      "sha256": "54e20733ba367a788a6f5a177fdac3c213a39b461b216ec34b40a2883bfb8fcc",
+      "provenance": "existing parent/preparation runtime log; read by auditor, not executed by auditor"
+    },
+    {
+      "path": "/private/tmp/ht-finish-frozen-leaks.log",
+      "sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e",
+      "provenance": "existing parent/preparation runtime log; read by auditor, not executed by auditor"
+    }
+  ],
+  "paths": [
+    {
+      "path": "TRUST-POLICY.md",
+      "sha256": "0409f007d17e2ee0ca9dcaa2d15bf635443a6021695fa5a6dc793d3ece0dd2d4",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Accepted bounded presentation contract, receipt versus display semantics, migration quick_check cost, final work budgets and private-state caps.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "integrations/claude/mod/hooks/register.js",
+      "sha256": "65898e9306e00a88fc8a5625bb70f517162e20c6fc8e707d87cc14ba38060348",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Watch protocol admission, ordered rendering, queued/inflight epoch cutoffs, exact-decimal comparisons, actual emit completion and retry semantics.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "integrations/claude/mod/tests/delivery.test.ts",
+      "sha256": "d76fe46d9c36d9219b54794fcd877b63865bb1b60aa7eae7e750d92fd2361c89",
+      "review_level": "targeted_semantic_plus_change_inventory",
+      "review_note": "Changed test/function and assertion inventory; focused passive invitation, truncation, epoch, malformed event and retry checks; not every fixture body audited line by line.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "migrations/0040_invitation_presentation.sql",
+      "sha256": "a3ba9411ab1c516d200c52a2be089d8428051e531f0926d95a66fbbc360ea8b5",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Complete new presentation table/index schema and STRICT constraints; retained-row startup quick_check is explicitly accepted.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "migrations/0041_presentation_relevance.sql",
+      "sha256": "0142aa5a67146fbc5bd77380609a86b7f892b32704fb4a2f32f36ba35f3523c7",
+      "review_level": "targeted_semantic_plus_change_inventory",
+      "review_note": "Additive scalars, relevance overlays/proofs/indexes, bootstrap and fence layout; mechanically verified all 87 fence triggers over 29 tables share one body. Repeated bodies not individually reread.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "src/cli/hook.rs",
+      "sha256": "e9081b6af2078197d9ab93e615aa84617d1a4730cd3af9202ef1eb61f132469d",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Rendered invocation ownership, actual stdout write+flush completion, confirmed-subset hints and frozen completion endpoint/boot.",
+      "added_function_inventory": [
+        "fmt",
+        "eq",
+        "commit",
+        "supports_capability",
+        "write_and_flush",
+        "complete_after_emit"
+      ],
+      "findings": []
+    },
+    {
+      "path": "src/cli/launch.rs",
+      "sha256": "2774c194dd85fbc84e907b9854ccad8f17a43e7d09686e9b3ffbacd9f97b37db",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Advisory invitation selection and native readiness result instead of accidental automatic control effects.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "src/cli/watch.rs",
+      "sha256": "96ae8d1124adc3f5367b710b643a6263da6d518371d221255913c8a6d6cd8078",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Capability/session-scoped V2 fetch, owner lease, ordered event emission, flush-before-confirm and continuation handling.",
+      "added_function_inventory": [
+        "watch_presentation_loop"
+      ],
+      "findings": []
+    },
+    {
+      "path": "src/daemon/control.rs",
+      "sha256": "67bc817ea0ae374d4631560db4efba6ee8c6afeae2784a2c3cd8541e2a01bd6e",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Watch admission obtains correct presentation lease; declaration and invocation dependencies followed.",
+      "added_function_inventory": [
+        "watch_presentation_lease",
+        "watch_unregister"
+      ],
+      "findings": []
+    },
+    {
+      "path": "src/daemon/transport/watch_connection.rs",
+      "sha256": "dc3f42b9bdb0c0237ac3ed18f83697294ccbc9fbdfab60aa77695ed40bc79e3b",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "OwnerAccepted presentation lease is capability-gated in frozen source. Earlier unconditional-lease issue is resolved; actual advertised runtime still staged.",
+      "added_function_inventory": [
+        "advertised_presentation_lease"
+      ],
+      "findings": []
+    },
+    {
+      "path": "src/delivery/assemble.rs",
+      "sha256": "ec170a05169b438779a7b3b25083ff7dc59f544a82af4cd3a4259c47ce6ccca3",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Exact-body acquisition and partial/whole delivery construction changes; invitation metadata separated from ordinary bodies.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "src/delivery/invitation.rs",
+      "sha256": "ea7b902d50365fec739c02b7626f5b967ce0d405ab8556a4ab31e03c3db884f8",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Complete bounded canonical invitation formatting, advisory context and truncation/whole geometry.",
+      "added_function_inventory": [
+        "key",
+        "render",
+        "partial",
+        "watch",
+        "wakes",
+        "block",
+        "watch",
+        "block_text",
+        "join_blocks",
+        "render_key"
+      ],
+      "findings": []
+    },
+    {
+      "path": "src/delivery/ledger.rs",
+      "sha256": "d3a1d5406e4a249467d23d1b16b48c8cb8fb062e5637e012992a34a5ba7a9d4a",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Offer capacity256, reoffer accounting, warning eligibility, retain_pending/remove paths and separate invitation cache.",
+      "added_function_inventory": [],
+      "findings": [
+        "D-WHOLE-1"
+      ]
+    },
+    {
+      "path": "src/delivery/mod.rs",
+      "sha256": "a96b220145eb706558b5a071696e7f3d0d9193dee0f591587099da3afb69483d",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "New presentation/invitation module wiring.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "src/delivery/page.rs",
+      "sha256": "2fd6343e1cffe520c8411f9be1f5df7164bd632c8498b01d0ab0f19bd00bfad0",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Legacy invitation display geometry and page budgeting changes checked against new bounded presentation path.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "src/delivery/presentation.rs",
+      "sha256": "367e8bc25bca53b00c8c3977b761fd77a1d3663d941fce4c6a98329d587bc276",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Complete actual native/Watch sizing, ordered projection, static render identity and candidate/final encode accounting.",
+      "added_function_inventory": [
+        "selection",
+        "codec",
+        "emitted_controls",
+        "presentation_watch_lines",
+        "presentation_hook_text",
+        "valid_items",
+        "new",
+        "write",
+        "flush",
+        "measure",
+        "validate",
+        "render_key",
+        "new",
+        "measure",
+        "rpc",
+        "default",
+        "descriptor_key"
+      ],
+      "findings": []
+    },
+    {
+      "path": "src/harness/adapter.rs",
+      "sha256": "014abbd05b1562f92160b2f160c4439cbc86a4b369236060ba80e0e4629bbf88",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Neutral default invocation/completion and codec policies; no adapter-specific branch introduced into core.",
+      "added_function_inventory": [
+        "presentation_codec",
+        "run_with_completion",
+        "complete",
+        "new",
+        "supports_capability"
+      ],
+      "findings": []
+    },
+    {
+      "path": "src/harness/agy/decode.rs",
+      "sha256": "d3cbdf5cccbc5a021e4c18f3b26359d2797225aa51bc1f109a5b41c6ea6cf545",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Native System/User response codec framing, actual serialized sizes and completion payload decoding.",
+      "added_function_inventory": [
+        "presentation_selector",
+        "from_presentation_selector",
+        "presentation_codec",
+        "encode_presentation",
+        "write",
+        "flush"
+      ],
+      "findings": []
+    },
+    {
+      "path": "src/harness/agy/delivery.rs",
+      "sha256": "6d9ece730b07273d57577b201a41f40e614d910da060de61066d3021198c8089",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Frozen render admission, invocation/emit split, physical completion, retry/rebind and confirmed hint subset.",
+      "added_function_inventory": [
+        "run_with_completion",
+        "complete",
+        "run_step_with_completion",
+        "hex_digest",
+        "valid_hex",
+        "valid_completion",
+        "decimal_epoch",
+        "apply_emitted_controls",
+        "complete_step"
+      ],
+      "findings": []
+    },
+    {
+      "path": "src/harness/agy/launch.rs",
+      "sha256": "a3676cdc684b32adc1500943ce27b89730bbc0815cf1c96b5ac111436c229471",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Actual native readiness and advisory launch behavior.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "src/harness/agy/mod.rs",
+      "sha256": "dc2fd38d112e98ed22b05935a6c9fd448876094f166e467cdc3865515978c091",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Adapter method wiring for native presentation and completion.",
+      "added_function_inventory": [
+        "presentation_codec"
+      ],
+      "findings": []
+    },
+    {
+      "path": "src/harness/agy/paths.rs",
+      "sha256": "10f7d473357cb3c1a19484f681520c185b117c5f2efb85fe83675999f052f502",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Stable supported hook event mapping and canonical output paths.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "src/harness/registry.rs",
+      "sha256": "43313c7169f63a2155db78237c47be8bbcb01e1acef06a6a5c1e5e83c16d21a1",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Forwarding new neutral adapter capabilities/defaults.",
+      "added_function_inventory": [
+        "presentation_codec",
+        "presentation_codec",
+        "presentation_codec"
+      ],
+      "findings": []
+    },
+    {
+      "path": "src/ports.rs",
+      "sha256": "c17bd28366385ef8178b88a5ef5529c36ced00c1e141a3859a139389f885bbf0",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Presentation store port, input/output/work shapes and bounded operation seams.",
+      "added_function_inventory": [
+        "presentation_refresh",
+        "presentation_seat_view",
+        "presentation_render_selection",
+        "presentation_pull",
+        "presentation_confirm",
+        "presentation_owner",
+        "presentation_lease",
+        "presentation_owner_live",
+        "record_presentation_attention_push",
+        "watch_presentation_lease"
+      ],
+      "findings": []
+    },
+    {
+      "path": "src/protocol/capabilities.rs",
+      "sha256": "1ed0b7340a421d8abfb28c8842ec5c1305fea16a060774d0b1cd8afd2f144f9d",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "New named capability remains intentionally unadvertised; production activation is deferred, not itself an audit defect.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "src/protocol/commands.rs",
+      "sha256": "c43327caba89f464efb6159b292f7ec7f9c7a4adecd8a6762ea13693cc295dee",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "V2 command variants and argument wiring.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "src/protocol/delivery.rs",
+      "sha256": "1f07a5557294d570894c17f238ee52acce8c317afb506ca50860c4028902d7a9",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Full V2 types, required render profile, bounded selector/control validation, structured confirmations, token/epoch validation.",
+      "added_function_inventory": [
+        "as_str",
+        "valid_presentation_token",
+        "validate",
+        "validate_presentation_scope",
+        "validate",
+        "validate_control_stamps",
+        "empty",
+        "validate_for",
+        "valid_presentation_epoch"
+      ],
+      "findings": [
+        "D-WHOLE-3"
+      ]
+    },
+    {
+      "path": "src/protocol/output_compact.rs",
+      "sha256": "1aa695b0e0fad0693ea38a22c45232992b68ababeb121aa16b5944c20e1f03ba",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Compact rendering of new structured outcomes; no invitation acceptance implication.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "src/protocol/results.rs",
+      "sha256": "ef530f6efab1edd1011ef3dda79a2776a34c3cc1f6d9e635d6473b90b19ebc48",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "V2 result variants, typed refusal/confirmation outcomes.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "src/protocol/watch.rs",
+      "sha256": "13a9476b396eeefc9b55ee2d1ab4c5cc9fbb1a39537b9d7c02e5dc089600fb42",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Optional capability-gated lease/content fields, omission behavior and ordered V2 item shape.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "src/scheduler/mod.rs",
+      "sha256": "4ab35b07deadb8c2983e7e793e4e0b931e04239f51480608ea690b639a7e677e",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Passive presentation work does not create wakes; canonical warning eligibility bypass remains actionable-only.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "src/service/delivery_presentation.rs",
+      "sha256": "3f4b8a06744f58895736c6c70d1eb746a4778732947756df17426c587c940242",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Complete V2 scope/codec admission, per-seat serialization, ledger snapshot/record, canonical pull and confirm routes.",
+      "added_function_inventory": [
+        "permit",
+        "presentation_pull",
+        "presentation_confirm"
+      ],
+      "findings": [
+        "D-WHOLE-1"
+      ]
+    },
+    {
+      "path": "src/service/delivery_pull.rs",
+      "sha256": "6e52d203794db5efcdf2e1be95e028efccf56fbcc7be8d7b2b1a9a4e2858117b",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Cumulative change reviewed, legacy whole-walk reconciliation and Hook confirmation removals followed; registered stale V2 regression identified.",
+      "added_function_inventory": [
+        "content_version",
+        "lock",
+        "hook_pull_view",
+        "hook_presentation_view",
+        "watch_presentation_view",
+        "hook_pull_view_mode"
+      ],
+      "findings": [
+        "D-WHOLE-1"
+      ]
+    },
+    {
+      "path": "src/service/dispatch.rs",
+      "sha256": "9e2670feeca005c5bfc121306add3a1ba068ba962a4ce089d4e2372f7fcc19b0",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Public command routing, AckModDelivered canonical mutation/registry ack and absence of V2 ledger reclamation.",
+      "added_function_inventory": [
+        "watch_presentation_lease",
+        "watch_unregister"
+      ],
+      "findings": [
+        "D-WHOLE-1"
+      ]
+    },
+    {
+      "path": "src/service/kicks.rs",
+      "sha256": "87fdb4b090ec34062daaddc6ce959ffa9361dcdb71c970c481d082e7e9eba130",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Presentation bookkeeping passive; canonical context producers request bounded passive refresh.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "src/service/mod.rs",
+      "sha256": "c09403028361bf0c970f8e9b56d44b393140d236d42dfe3a9577404a3f3fd47c",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "New presentation service wiring and registry state.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "src/service/mod_channels.rs",
+      "sha256": "72fa24c15470b9ff9e53de187e0f3bcf0ffb64c68aef6dfdcff180b240445984",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Exact live owner/lease admission, per-seat permit, passive refresh, cutoff ordering and passive no-stall behavior.",
+      "added_function_inventory": [
+        "presentation_owner",
+        "presentation_lease",
+        "presentation_owner_live",
+        "record_presentation_attention_push",
+        "record_ack"
+      ],
+      "findings": []
+    },
+    {
+      "path": "src/store/attention.rs",
+      "sha256": "3ff3cbd8e6582ede2931ff28ea6080e4f2a561c058a0556804923cbe50b79926",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Bounded relevance query entrypoints and canonical fingerprint integration; restored source-specific tests evaluated separately.",
+      "added_function_inventory": [
+        "content_version"
+      ],
+      "findings": []
+    },
+    {
+      "path": "src/store/control.rs",
+      "sha256": "e5de4a66284b6dc5a8f64521a5f800257c921c90b64da928e950d973cc6fe501",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Canonical timed invitation/control context changes, legacy/modern producer paths and transaction epochs.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "src/store/invitation_content.rs",
+      "sha256": "523ad2ca9ac8bd4ee048675c9bee8f9fb9df00051474e15fba693d60caab94e1",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Complete private state/carry/outbox reader, bounded invitation walks/revisits, hydration, publication, ordinary carry, pull/refresh/confirm behavior.",
+      "added_function_inventory": [
+        "record_context_change",
+        "record_command_change",
+        "default",
+        "corrupt",
+        "decode",
+        "partial_state",
+        "partial_json",
+        "encode",
+        "scope_matches",
+        "load_raw",
+        "load",
+        "save",
+        "hydrate_many",
+        "render_selection",
+        "checked_publication_state",
+        "publication_head",
+        "advance_ordinary_publications",
+        "control_stamp",
+        "descriptor_mask",
+        "checked_masks",
+        "retire_outbox",
+        "confirm",
+        "pending_high",
+        "context_high",
+        "initial_candidates",
+        "context_candidates",
+        "bounded_private_text",
+        "private_read_error",
+        "item",
+        "revisit_candidates",
+        "default",
+        "checked",
+        "open",
+        "absent",
+        "pending",
+        "allocated",
+        "applicable",
+        "confirm",
+        "ordinary_carry",
+        "remove_generated_marker",
+        "ordinary_carry_json",
+        "new_token",
+        "frozen_profile",
+        "page",
+        "replay",
+        "pull",
+        "finish",
+        "refresh"
+      ],
+      "findings": [
+        "D-WHOLE-1",
+        "D-WHOLE-2"
+      ]
+    },
+    {
+      "path": "src/store/mod.rs",
+      "sha256": "0073eca49e30019ae5a9bb0907e1442882457d4c8db636f7d3f7969ff936990d",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Transaction ownership and presentation port wrappers, canonical decision placement.",
+      "added_function_inventory": [
+        "presentation_refresh",
+        "presentation_seat_view",
+        "mod_seat_view",
+        "presentation_render_selection",
+        "presentation_pull",
+        "presentation_confirm",
+        "archival_pass"
+      ],
+      "findings": []
+    },
+    {
+      "path": "src/store/presentation_relevance.rs",
+      "sha256": "9fc701f4d75961909c846cfd0edad4511a41b394267942c9539905fb413049b9",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Complete bounded local relevance proof, 13-source shared sweep, direct overlays, witness revalidation and private proof guards.",
+      "added_function_inventory": [
+        "representation",
+        "corrupt",
+        "id",
+        "check",
+        "validate",
+        "load",
+        "save",
+        "admitted",
+        "fence",
+        "confirming",
+        "snapshot",
+        "row",
+        "yes",
+        "source_id",
+        "direct",
+        "prepared",
+        "native_rejection",
+        "receipt_pending",
+        "actionable",
+        "recipient",
+        "eligible",
+        "evaluate",
+        "charge_points",
+        "generic",
+        "authority_valid",
+        "initial_authority",
+        "first_judgment",
+        "room",
+        "source_step",
+        "finish_negative",
+        "accept_evaluation",
+        "fallback_step",
+        "witness",
+        "next_slot",
+        "microstep",
+        "schedule",
+        "result",
+        "advance",
+        "revalidate"
+      ],
+      "findings": []
+    },
+    {
+      "path": "src/store/queries.rs",
+      "sha256": "07432c66c5a16bd40e00b20d9ec400b3e2ccaced1af4cae2e7c5da6c6942d8b8",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Exact wanted-ID hydration, digest-free view, fixed publication range and generated marker inverses.",
+      "added_function_inventory": [
+        "capture",
+        "query_mode",
+        "ordinary_presentation_page"
+      ],
+      "findings": []
+    },
+    {
+      "path": "src/store/schema.rs",
+      "sha256": "f0c533e2dbcdff6809d7d0c6e17039c0318c22bf618af3e89f05031e0a75a188",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Migration40/41 dispatch, catalog/quick_check validation and released migration compatibility.",
+      "added_function_inventory": [
+        "verify_presentation_relevance_schema",
+        "verify_invitation_presentation_schema"
+      ],
+      "findings": []
+    },
+    {
+      "path": "src/store/seats.rs",
+      "sha256": "8afca7e101bbe9bdc713d8ff1e96a3d4d0fbe93e3f9cb628300479d1f75aa062",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Digest-free current binding/seat view supporting bounded canonical presentation admission.",
+      "added_function_inventory": [
+        "presentation_seat_view",
+        "mod_seat_view_mode"
+      ],
+      "findings": []
+    },
+    {
+      "path": "src/store/service_controls.rs",
+      "sha256": "d869ca90d9ca68283773d58be734b1c531f082d49de54c36cd8510304201f6ff",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Control attachment/detachment context epochs and timed confirmation overlay behavior.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "src/test_support/mod.rs",
+      "sha256": "c0c2dadb587696e57c474187925eff62358f7154e4bc603a57684b8d33ab0100",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Test-support exposure/wiring for owned test capabilities.",
+      "added_function_inventory": [
+        "presentation_codec"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/cli/hook.rs",
+      "sha256": "dfbfcc62d46e3295a5c7280b39c99219483aa183a7d54fe646ae60950e018f52",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Updated invocation fixture construction and actual completion behavior.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "tests/cli/hook_neutral.rs",
+      "sha256": "43da31291a43f586225901e74a13bce7097ef0636e5c7f9a65beb2e6baf6bdba",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Default inert completion and successful write+flush gating assertions.",
+      "added_function_inventory": [
+        "adapter_completion_requires_successful_stdout_write_and_flush",
+        "write",
+        "flush",
+        "default_hook_step_completion_is_inert",
+        "run",
+        "call"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/cli/launch.rs",
+      "sha256": "229e71401e8878d392a962e1f9e66b8bbe5dfeb15ecee2b35511e479ec64e010",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Four advisory display/native readiness regressions and negative guards.",
+      "added_function_inventory": [
+        "agy_guarded_launch_keeps_plugin_readiness_advisory_and_native_guards"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/cli/lazy_display.rs",
+      "sha256": "4e0effefc33d2439f4c2306d2c847986c3d10b7e8c6dd86f007809046b7ea78d",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Updated typed output field expectations and existing lazy display behavior.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "tests/cli/output.rs",
+      "sha256": "f7e3bd255c31fcae043fec561dd92f9d0962a691c7c10f5f581cfaaad3f12e24",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Compact structured protocol output expectations.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "tests/cli/watch.rs",
+      "sha256": "248a9701d948af9b34ae574bda46ba11165e647891a815c88ca9c37916a71ede",
+      "review_level": "targeted_semantic_plus_change_inventory",
+      "review_note": "Added function/assertion inventory plus selected real owner/session/write/flush/close/foreign-ACK/replaced-owner cases; large fixture not exhaustively line-read.",
+      "added_function_inventory": [
+        "watch_carries_a_passive_invitation_as_invitation_content_never_a_message",
+        "capable_watch_streams_ordered_v2_then_explicitly_confirms_captured_controls",
+        "next_frame",
+        "presentation_notice_page",
+        "presentation_watch_failed_flush_never_confirms_or_writes_success_hint",
+        "write",
+        "flush",
+        "presentation_watch_close_wins_before_next_more_quantum",
+        "presentation_watch_foreign_acknowledgement_is_error_not_success",
+        "presentation_watch_refused_confirmation_never_records_truncation_hint",
+        "presentation_watch_new_owner_physically_reemits_before_own_confirmation"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/combined.rs",
+      "sha256": "c2d1c459244f68f93e37922f78ae0aa5f52938dedd88652be8ef86746e8b4220",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Explicit suite registration consistent with autotests=false; target feature wiring checked in unchanged Cargo manifest.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "tests/daemon/watch_connection.rs",
+      "sha256": "e1f626510c9c8c61ca50623003147b109a262c10f5c2d0bea77bae65d6e6df4a",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Actual currently-unadvertised OwnerAccepted lease omission, helper advertised-positive branch and lease registration checks; no real advertised activation claim.",
+      "added_function_inventory": [
+        "watch_presentation_lease",
+        "presentation_owner_accepted_wire_carries_the_registered_lease"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/delivery/extraction.rs",
+      "sha256": "190ca9c849d5dff622611d50861bd9055df107843b2049bb7e00728767ffe45d",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Exact goal/body omission and timed invitation reactivation extraction tests.",
+      "added_function_inventory": [
+        "invitation_context_carries_goal_or_requires_inspection_before_acceptance",
+        "an_omitted_invitation_goal_is_incomplete_until_full_context_at_the_same_revision"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/fixtures/agy/plugin/hooks.json",
+      "sha256": "8520d476ca3ca0ea8508686d16080d7b2df45bcab10dcd52d573190fb0b8bab1",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Expected stable hook event and CLI route fixture.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "tests/harness/agy_decode.rs",
+      "sha256": "065429a66e935d30b571e5b3aec613d2f3f7e16d5787e96cda399acdd0e3e150",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Actual escaped System/User response geometry and serialization assertions.",
+      "added_function_inventory": [
+        "registered_presentation_codecs_equal_actual_native_shapes",
+        "native_presentation_encoder_caps_actual_final_bytes"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/harness/agy_delivery.rs",
+      "sha256": "ac024fd56ef96fada87d1fa2782ef0321f2bdc085518fde3635c1ff0ab11d814",
+      "review_level": "targeted_semantic_plus_change_inventory",
+      "review_note": "Added function/assertion inventory, physical-emission helpers and selected codec/loss/refusal/expiry/rebind/confirmed-subset cases; not every large fixture body line-read.",
+      "added_function_inventory": [
+        "supports_capability",
+        "call",
+        "prepare",
+        "run",
+        "hook_step_does_not_commit_offered_page_before_stdout_emission",
+        "canonical_v2_allocations_fit_actual_native_codec",
+        "supports_capability",
+        "call",
+        "canonical_v2_system_allocated_pages_fit_actual_native_codec",
+        "canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec",
+        "preparing_probation_does_not_open_it_before_emission",
+        "native_escaping_invitation_page",
+        "historical_system_message_scripted_page_preserves_native_bytes_and_oversize_geometry",
+        "historical_downgraded_user_message_scripted_page_preserves_native_bytes_and_oversize_geometry",
+        "modern_items",
+        "modern_reply",
+        "modern_page",
+        "modern_system_output",
+        "modern_fake",
+        "postflush_confirmation_loss_keeps_state_replayable_after_restart",
+        "stale_confirmation_and_expired_completion_never_save_injected_state",
+        "postflush_state_hint_does_not_overwrite_an_observed_concurrent_change",
+        "malformed_or_oversized_completion_is_inert",
+        "probation_opening_is_deferred_until_successful_completion",
+        "probation_confirmation_loss_keeps_the_retry_available",
+        "probation_completion_preserves_an_observed_changed_downgrade_hint",
+        "expired_probation_maintenance_remains_independent_of_page_emission",
+        "typed_completion_fits_two_maximal_admitted_records_and_escaped_claim_fields",
+        "passive_invitation_item",
+        "v2_invitation_only_empty_and_unchanged_pages_never_cache_current_metadata_as_seen",
+        "emitted_v2_controls_apply_exact_epochs_and_old_replay_cannot_resurrect_a_clear",
+        "frozen_reply_codec_overrides_new_local_preference_without_opening_early_probation",
+        "mismatched_or_unsupported_v2_native_output_is_not_emitted_or_confirmed",
+        "completion_applies_only_the_daemon_acknowledged_captured_control_subset",
+        "invalid_acknowledged_control_subset_never_saves_hints_or_opens_probation",
+        "completion_rejects_duplicate_captured_control_stamps"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/harness/agy_launch.rs",
+      "sha256": "a99631c7b7a4dabe1a33b28c828dd016db865e4ff7ea6457583266edee090e81",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Readiness fixture migration to actual native outcome.",
+      "added_function_inventory": [
+        "a_missing_plugin_keeps_native_launch_and_the_setup_diagnostic",
+        "a_disabled_plugin_keeps_native_launch_and_the_enable_diagnostic",
+        "advisory_plugin_readiness_keeps_native_launch_available_without_fabricated_hooks"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/harness/agy_setup.rs",
+      "sha256": "bb1cb7320a9077c15048f67d147f133b6db3fe1b801240dcf51e1497ffb8f8a7",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Stable event mapping and exact generated command route checks.",
+      "added_function_inventory": [
+        "installed_agy_handlers_use_the_stable_event_entrypoint_and_exact_route"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/hook_entrypoint/agy.rs",
+      "sha256": "d443b7276684969c48da5b43ba728d1174a7e78ce04abdca5e5b9136c928cddd",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Real CLI lazy turn visibility, no acceptance and native wake behavior assertions.",
+      "added_function_inventory": [
+        "agy_turn_hook_carries_lazy_invitation_without_accepting_or_confirming_it"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/integration/agy_sweep.rs",
+      "sha256": "6d88e39d2c6dedacb9ecef4ba64d046b4092b9a0f464f4d9e91fc05fcadce7dc",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Explicit require-ack on nudge-class sweep message aligns delivery contract.",
+      "added_function_inventory": [],
+      "findings": []
+    },
+    {
+      "path": "tests/protocol/delivery.rs",
+      "sha256": "131033858a755faa473e160a8e479180719b1890bb26e0fde5f55e41759dbe05",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Full new wire roundtrip/validation and structured control confirmation tests.",
+      "added_function_inventory": [
+        "presentation_v2_decodes_scoped_commands_without_changing_v1",
+        "presentation_v2_rejects_invalid_tokens_consumers_and_watch_without_lease",
+        "presentation_confirmation_exact_control_shape_and_removed_piggyback",
+        "presentation_confirmation_maximum_valid_controls_fit_actual_framed_wrapper_reserve"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/protocol/lazy_inbox_v2.rs",
+      "sha256": "703a639ed5b01b2df31932708ca2a9291606366da6f7a0ac40e521487ff04744",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Current presentation capability staging expectation.",
+      "added_function_inventory": [
+        "invitation_decision_context_is_additive_and_old_omitted_bytes_stay_exact"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/protocol/watch.rs",
+      "sha256": "952073978e00584372a2c9fe8c0d23980ff4aaaf96bd8024caec13a817157275",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Optional lease serialization omission and wire roundtrip checks.",
+      "added_function_inventory": [
+        "accepted_presentation_lease_survives_new_decoder_and_old_bytes_stay_omitted"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/service/delivery_pull.rs",
+      "sha256": "16a4ad953b08d0a781f7d4a580a333d8dd6c65db449a21f27f9212cf04681d2c",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "All added function names inventoried; targeted bodies for canonical replay, partial/carry, exact budgets, ordinary slot saturation, publication/rebind and corruption guards. Not every 4679-line addition individually line-read; stale replay found.",
+      "added_function_inventory": [
+        "a_lazy_invitation_reaches_hook_pull_without_attention_or_acceptance",
+        "departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack",
+        "attempt_wake",
+        "canonical_lazy_invitation_signals_a_passive_channel_drain_without_attention_history",
+        "push",
+        "canonical_lazy_invitation_content_changes_on_accept_reject_and_retirement_only",
+        "canonical_lazy_invitation_backlog",
+        "presentation_test_pull",
+        "presentation_invitations",
+        "presentation_watch_frozen",
+        "presentation_test_confirm",
+        "an_old_visible_invitation_topic_change_survives_a_saturated_newest_window",
+        "a_finite_invitation_backlog_progresses_beyond_the_whole_display_cache",
+        "a_departed_inviter_remains_actionable_after_whole_deadline_warning_until_acceptance",
+        "presentation_v2_replays_one_canonical_invitation_until_emit_confirmation",
+        "canonical_invitation_context_coalesces_topic_changes_without_recipient_fanout",
+        "presentation_v2_resumes_control_heavy_ordinary_partial_without_changing_body_limit",
+        "presentation_v2_keeps_truncated_ordinary_cursor_progress_across_quanta",
+        "presentation_refresh_observes_lazy_context_and_removal_without_consuming_output",
+        "presentation_refresh_preserves_live_presentation_header_and_outbox_across_rebind",
+        "presentation_refresh_stub_allows_actual_watch_full_offer_and_replaced_owner_replay",
+        "push",
+        "presentation_final_watch_codec_counts_escaped_canonical_invitation_batch",
+        "presentation_final_cleanup_preserves_passive_removal_observation",
+        "presentation_registry_pass_drives_bounded_passive_refresh_before_full_pull",
+        "push",
+        "presentation_private_partial_guards_reject_corrupt_supported_shapes",
+        "presentation_private_skipped_body_requires_exact_retained_cursor",
+        "presentation_ordinary_carry_survives_completed_control_partial_and_invitation_priority",
+        "presentation_raw_carry_serializer_accounting_witness",
+        "presentation_current_handler_derives_timed_invitation_attention",
+        "presentation_promoted_lazy_raw_carry_survives_restart_with_frozen_prefix",
+        "presentation_confirmation_preserves_original_slots_and_exact_subsets_on_restart",
+        "presentation_actual_candidate_sizing_and_rpc_wrapper_work_remain_bounded",
+        "presentation_handler_clears_unconfirmed_epoch_then_reopens_new_episode",
+        "presentation_handler_published_warn_reopens_at_unchanged_native_version",
+        "author",
+        "register",
+        "decision_guard",
+        "revoke_exact",
+        "presentation_quiet_channel_observes_new_lazy_ordinary_without_wake",
+        "push",
+        "presentation_confirm_rejects_oversized_private_json_before_decoding",
+        "presentation_last_token_control_serializer_has_exact_bounded_witness",
+        "presentation_handler_partial_confirmation_retains_canonical_slots_across_restart",
+        "presentation_private_state_rejects_typed_corruption_without_confirmation_effects",
+        "presentation_watch_fresh_confirmation_records_exact_owner_publication_cutoff_once",
+        "push",
+        "presentation_publication_scalar_maximum_roundtrips_without_changing_carry",
+        "presentation_publication_walk_counts_foreign_prefix_before_filter_and_progresses",
+        "presentation_publication_invalid_scalars_refuse_before_confirmation_effects",
+        "presentation_publication_refresh_and_pull_rebind_preserve_each_others_progress",
+        "presentation_private_context_cursors_refuse_invalid_thread_ids_before_effects",
+        "presentation_private_item_refresh_text_bounds_refuse_before_effects",
+        "presentation_publication_signal_preserves_active_capture_and_replays_across_restart",
+        "finish_presentation_attention_job",
+        "presentation_registered_channel_materializes_each_published_warn_before_drain",
+        "author",
+        "register",
+        "decision_guard",
+        "revoke_exact",
+        "push",
+        "presentation_publication_foreign_refresh_refuses_without_touching_hook_or_watch",
+        "presentation_handler_initial_ordinary_receipt_delivers_body_without_invented_attention",
+        "presentation_publication_watch_reconnect_keeps_positive_frontier_without_native_wake",
+        "push",
+        "presentation_publication_generation_overflow_rolls_back_frontier_and_version",
+        "presentation_quiet_channel_observes_new_ordinary_ack_message",
+        "push"
+      ],
+      "findings": [
+        "D-WHOLE-3"
+      ]
+    },
+    {
+      "path": "tests/service/kicks_contract.rs",
+      "sha256": "a6a1ec37bf9dd8c4bd39bd1ffe2d1c814db683c0304331123cc16bb0c84188a8",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Passive presentation bookkeeping versus canonical producer refresh assertions.",
+      "added_function_inventory": [
+        "invitation_presentation_bookkeeping_is_passive_but_context_producers_refresh_mod"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/service/mod_channels.rs",
+      "sha256": "d49fb0d31e76e44e842b8d533182422700af88c2a9760c8d6c70851c03e60638",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Complete added owner/admission/grace/passive no-stall/permit/cutoff regression bodies.",
+      "added_function_inventory": [
+        "presentation_owner_current_watch_is_admitted_and_old_lease_is_refused",
+        "passive_invitation_drain_does_not_arm_attention_stall_history",
+        "presentation_owner_lease_is_exact_live_and_replacement_fenced",
+        "presentation_owner_permit_serializes_replacement",
+        "presentation_attention_cutoff_requires_exact_live_owner"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/store/attention.rs",
+      "sha256": "dfc127997c8cea3572300c5063433cf3e5cf29b7403e5228f63b1ca7836bc04e",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "All 14 restored test bodies reviewed for canonical producers, 13-source sweeps, exact plans/VM bounds, rollover/rollback and corruption. Restoration is adapted behavior, not a byte-identical historical recovery.",
+      "added_function_inventory": [
+        "relevance_claim",
+        "relevance_db",
+        "relevance_budget",
+        "relevance_pull",
+        "presentation_relevance_required_lazy_overlay_tracks_digest_and_requirement",
+        "presentation_relevance_quiet_proof_does_not_fence_itself_and_overflow_aborts_writer",
+        "presentation_relevance_walks_retained_membership_and_revalidates_exact_witness",
+        "relevance_publish_unrelated_lazy",
+        "relevance_legacy_membership_fixture",
+        "relevance_suspend_legacy_membership",
+        "presentation_relevance_suspended_membership_respects_repaired_current_high",
+        "presentation_relevance_suspended_membership_unchanged_high_still_opens",
+        "presentation_relevance_direct_legacy_survives_canonical_lazy_churn",
+        "presentation_relevance_canonical_receipt_sweep_closes_before_clear_publication",
+        "presentation_relevance_direct_association_survives_prepared_same_id",
+        "relevance_append_covered_receipt",
+        "presentation_relevance_coverage_reserves_fallback_progress_under_source_load",
+        "presentation_relevance_all_thirteen_physical_sources_progress_through_stale_candidates",
+        "presentation_relevance_successor_plan_and_vm_stay_bounded_in_retained_canonical_sweeps",
+        "presentation_relevance_sweep_mutations_fence_and_overflow_roll_back_without_self_invalidation",
+        "presentation_relevance_unavailable_exact_episode_and_late_publication_are_swept",
+        "presentation_relevance_private_proof_refuses_corruption_without_effects"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/store/control.rs",
+      "sha256": "72906d2de4c3a1ee76774dd43fd4dacf3c18865f64d4831face5fd8244f47d9e",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Complete added control attachment/required-Lazy overlay tests. Existing same-ID third-attach failure is correct for frozen D but needs documented Main026 composition adjustment.",
+      "added_function_inventory": [
+        "same_invitation_requirement_attach_release_replacement_has_distinct_context_epochs",
+        "service_requirement_uses_an_independent_episode_without_mutating_native_lazy_invitation",
+        "invitation_command_epoch_corruption_and_exhaustion_roll_back_required_attach"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/store/invitation_content.rs",
+      "sha256": "b6b76187d9762252c7ce92f69fe9458ab65930fa5e2e1c7db59b4e38d1067d3b",
+      "review_level": "targeted_semantic_plus_change_inventory",
+      "review_note": "Changed tests and targeted full bodies for carry/partial caps, private guards, callback budgets and real STRICT populated migration work. No constant-cost migration claim.",
+      "added_function_inventory": [
+        "ordinary_partial_worst_escaped_witness_preserves_exact_bytes",
+        "populated",
+        "alter_steps",
+        "quick_check_steps",
+        "linked_sqlite_default_column_alter_has_row_independent_vm_work",
+        "linked_sqlite_checked_column_validates_existing_rows_and_rolls_back",
+        "presentation_sqlite_measured",
+        "drop",
+        "presentation_publication_scalar_checks_validate_retained_consumer_rows",
+        "retained",
+        "fixture",
+        "released_v39_invitation_epoch_alter_records_nested_work_and_preserves_state",
+        "snapshot"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/store/queries.rs",
+      "sha256": "741c9b67a30ed5e06fb5039e468854e6bc607b8874c1a17510daccdfd0d06ae5",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Complete exact-ID hydration, marker inverse, bounded publication SQL/VM and staging-to-late-manifest tests.",
+      "added_function_inventory": [
+        "v2_invitation_goal_and_revision_fit_or_yield_to_usable_pending_inspection",
+        "presentation_hydrate_exact_query_is_driven_by_bounded_wanted_ids",
+        "presentation_generated_marker_inverse_refuses_wrong_variant_or_body",
+        "presentation_publication_range_uses_exact_index_and_bounded_sqlite_work",
+        "presentation_publication_observes_old_staging_only_after_late_manifest"
+      ],
+      "findings": []
+    },
+    {
+      "path": "tests/store/schema.rs",
+      "sha256": "122fe264dfef1d1d60d9ec47beda50fa31925a545d20fbb304230ca54ce5f47f",
+      "review_level": "semantic_changed_source_and_dependencies",
+      "review_note": "Complete populated released39/40 upgrade/reopen, rootpage/catalog preservation, transaction rollback and pending-index work tests.",
+      "added_function_inventory": [
+        "presentation_populated_v39",
+        "presentation_populated_v39_with_confirmations",
+        "presentation_schema_catalog",
+        "presentation_retained_rows",
+        "presentation_schema_populated_v39_upgrade_is_additive_and_reopens",
+        "presentation_schema_populated_v39_failed_ddl_rolls_back_epoch_and_catalog",
+        "presentation_schema_pending_index_build_work_tracks_only_pending_projection",
+        "presentation_schema_populated_v40_failed_v41_rolls_back_bootstrap_and_catalog",
+        "presentation_schema_populated_v40_consumers_upgrade_revised_v41_and_reopen"
+      ],
+      "findings": []
+    }
+  ]
+}

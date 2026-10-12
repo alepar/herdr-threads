@@ -1,0 +1,18 @@
+   Compiling herdr-threads v0.9.0 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/upstream-composition-v090)
+error[E0282]: type annotations needed for `BTreeMap<_, _>`
+   --> src/service/../../tests/service/normal_unrenderable_controls.rs:56:9
+    |
+ 56 |     let mut later = std::collections::BTreeMap::new();
+    |         ^^^^^^^^^
+...
+159 |                     params![id.as_str(), window.recipient.seat.as_str()],
+    |                             -- type must be known at this point
+    |
+help: consider giving `later` an explicit type, where the placeholders `_` are specified
+    |
+ 56 |     let mut later: BTreeMap<K, V> = std::collections::BTreeMap::new();
+    |                  ++++++++++++++++
+
+For more information about this error, try `rustc --explain E0282`.
+error: could not compile `herdr-threads` (lib test) due to 1 previous error
+error: command `/Users/alepar/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --lib --all-features --locked` exited with code 101

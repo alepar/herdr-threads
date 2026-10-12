@@ -1,0 +1,15 @@
+{
+  "reviewed_helper_head": "dd5bfe864b9f95457a2922490f611a3f5c2361be",
+  "baseline": "0f5d9bd2",
+  "target": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "before": {
+    "integrations/claude/mod/hooks/register.js": "d5e6b204e6e9858692258b0fa41b72e0bd1a2755e0860f3fe4319d907cd4c78b",
+    "integrations/claude/mod/tests/delivery.test.ts": "44974faf681b30f76d5a059615c440c5a8667f69953f2b1c3c5fd25847e1e263"
+  },
+  "after": {
+    "integrations/claude/mod/hooks/register.js": "604e28d528c01e798476faf3a013f5e360cb3c68e8d1dbbfcc53bd1f57584fcd",
+    "integrations/claude/mod/tests/delivery.test.ts": "76d3a55cb32612d561eb0796a1046039b2b8bcd18ea0f256f390f0efa508afb4"
+  },
+  "net_diff_sha256": "fa17d9d119234a178da7b6845684ad2625cc13679ac28b098bd1b45d1905032d",
+  "result": "exact reviewed net delta only applied; no other source touched"
+}

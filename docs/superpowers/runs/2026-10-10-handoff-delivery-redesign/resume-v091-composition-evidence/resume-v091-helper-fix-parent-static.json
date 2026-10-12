@@ -1,0 +1,16 @@
+{
+  "resume-v091-prepare.py": {
+    "sha256": "db7479281f80f59fa23ea53c1ce019b49bf6c9b1c9f3ae092071308d3752bb11",
+    "main": 55,
+    "new": 15,
+    "feature": 1,
+    "proof": "cbd0eeea9d9cafec5b9e7e99a0d6ec1fc2f1c5586e183e351a78a50c0a63e9c8"
+  },
+  "resume-v091-run.py": {
+    "sha256": "97f1dae368a7fe2f879855670682c058c57691e4b25580e92164af005e4581bd",
+    "main": 55,
+    "new": 15,
+    "feature": 1,
+    "proof": "cbd0eeea9d9cafec5b9e7e99a0d6ec1fc2f1c5586e183e351a78a50c0a63e9c8"
+  }
+}

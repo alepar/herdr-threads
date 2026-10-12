@@ -1,0 +1,438 @@
+# Review package: 7ea79d3d8e598b01729b61be9c0faa31a6e046f4..HEAD
+
+## Commits
+a7d9fbf2 fix: settle identical successful invitation replays and isolate ACK cap test
+5aada258 fix: bound Claude pending invitation revisions and framed appends
+
+## Files changed
+ integrations/claude/mod/hooks/register.js      |  48 +++++++-
+ integrations/claude/mod/tests/delivery.test.ts | 152 ++++++++++++++++++++++++-
+ 2 files changed, 192 insertions(+), 8 deletions(-)
+
+## Diff
+diff --git a/integrations/claude/mod/hooks/register.js b/integrations/claude/mod/hooks/register.js
+index 1aa0b7a7..f41412ff 100644
+--- a/integrations/claude/mod/hooks/register.js
++++ b/integrations/claude/mod/hooks/register.js
+@@ -12,20 +12,23 @@ const HEADER = '[herdr-threads] new messages:'
+ const WAKE_PROMPT = 'herdr-threads: wake up'
+ const BACKOFF_S = [1, 2, 5, 10, 30]
+ const ASSUMED_BUSY_IDLE_MS = 5000
+ const HOLD_IDLE_MS = 120000
+ const DRAFT_WAIT_MS = 120000
+ const DROP_BACKOFF_MS = 30000
+ const ACK_RETRY_MS = 30000
+ const ACK_BATCH_MAX = 100 // MAX_BATCH_ITEMS in src/protocol/commands.rs
+ const CONNECTED_RESET_MS = 60000
+ const LEDGER_CAP = 2000
++// Match the delivery envelope, counting the actual framed UTF-8 text.
++const APPEND_MAX_ITEMS = 32
++const APPEND_MAX_BYTES = 64 * 1024
+ 
+ const INTENTS = new Set(['query', 'request', 'rule'])
+ const canonicalEpoch = (v) => typeof v === 'string' && /^(0|[1-9][0-9]{0,19})$/.test(v)
+   && (v.length < 20 || v <= '18446744073709551615')
+ const oneLine = (s) => String(s).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
+ const LINE_BREAK = /\r\n|[\n\r\u000b\u000c\u0085\u2028\u2029]/
+ /** Every non-empty body line indented two spaces (src/protocol/output_compact.rs), so a body never starts a line at column 0. */
+ const indent = (body) => String(body).split(LINE_BREAK).map((l) => (l === '' ? '' : `  ${l}`)).join('\n')
+ 
+ /** The fixed markers every other read path shows (src/protocol/results.rs author_markers). */
+@@ -53,20 +56,32 @@ const label = (id, name) => {
+  */
+ export function frame(items) {
+   const blocks = items.map((it) =>
+     it.kind === 'attention'
+       ? `[herdr-threads] attention ${oneLine(it.id)}:\n${indent(it.body)}`
+       : `[herdr-threads] ${oneLine(it.kind)} ${oneLine(it.id)} in ${label(it.thread, it.threadName)} from ${label(it.sender, it.senderName)}${markers(it)}:\n${indent(it.body)}`,
+   )
+   return `${HEADER}\n\n${blocks.join('\n\n')}`
+ }
+ 
++/** Keep whole items queued when the next framed append would exceed its envelope. */
++function appendBatch(items) {
++  const batch = []
++  const encoder = new TextEncoder()
++  for (const item of items) {
++    if (batch.length === APPEND_MAX_ITEMS
++        || encoder.encode(frame([...batch, item])).length > APPEND_MAX_BYTES) break
++    batch.push(item)
++  }
++  return batch
++}
++
+ const emptyRec = () => ({ delivered: {}, unacked: {}, attentionVersions: [], invitationVersions: {} })
+ 
+ // Esc at a permission dialog (ht-j16.30, live stress D3): the engine ends that turn with a
+ // non-aborted turn.complete, so the hold cannot key on isAborted alone. The exact tool.call
+ // result shape for a user reject could not be read out of the 2.1.295 binary, so this is the
+ // fallback heuristic: any main tool result that is not an answer (a deny, or isError) counts.
+ // It is judged on the last main tool call of the turn only.
+ const userRejected = (r) => !!r && (r.deny !== undefined || r.isError === true)
+ 
+ export function createCore(io) {
+@@ -283,25 +298,31 @@ export function createCore(io) {
+       const contextVersion = o.command_context_epoch == null
+         ? revision : JSON.stringify([revision, String(o.command_context_epoch)])
+       if (o.kind === 'invitation') {
+         if (Object.prototype.hasOwnProperty.call(S.rec.invitationVersions, o.id)
+             && S.rec.invitationVersions[o.id] === contextVersion) return
+       } else if (S.rec.delivered[o.id] !== undefined) {
+         if (S.rec.unacked[o.id] !== undefined) retryAcks()
+         return
+       }
+       const dup = S.queue.find((q) => q.id === o.id && (o.kind !== 'invitation'
+-        || (q.contextVersion === contextVersion && (!q.truncated || o.truncated === true))))
++        || ((q.run === S.run || !q.inflight) && q.contextVersion === contextVersion
++          && (!q.truncated || o.truncated === true))))
+       if (dup) {
+         dup.run = S.run
+         return
+       }
++      // An append owns its exact object. Only the newest pending context is useful;
++      // the duplicate check above also prevents a same-version whole-to-partial downgrade.
++      if (o.kind === 'invitation') {
++        S.queue = S.queue.filter((q) => q.id !== o.id || q.inflight)
++      }
+       const truncated = o.kind !== 'notice' && o.truncated === true
+       S.queue.push({
+         id: o.id,
+         kind: o.kind,
+         thread: o.thread || 'unknown',
+         threadName: o.thread_name ?? null,
+         sender: o.sender ?? null,
+         senderName: o.sender_name ?? null,
+         author_role: o.author_role ?? null,
+         relays_user: o.relays_user === true,
+@@ -316,25 +337,40 @@ export function createCore(io) {
+         ackable: !truncated && (o.kind === 'lazy' || o.kind === 'message'),
+       })
+     }
+     retryAcks()
+     void pumpLazy()
+     void pump()
+   }
+ 
+   // ---- delivery --------------------------------------------------------
+ 
++  /** A refused append is pending again; discard it if a newer context replaced it. */
++  function releaseBatch(batch) {
++    for (const it of batch) it.inflight = false
++    const newest = new Map()
++    for (const q of S.queue) {
++      if (q.kind === 'invitation' && !q.inflight) newest.set(q.id, q)
++    }
++    S.queue = S.queue.filter((q) => q.kind !== 'invitation' || q.inflight || newest.get(q.id) === q)
++  }
++
+   /** Marks `items` delivered through `via`, then acks the ackable ones. */
+   function complete(items, via) {
+     const ids = items.map((i) => i.id)
+     for (const it of items) {
+-      S.queue = S.queue.filter((q) => it.kind === 'invitation' ? q !== it : q.id !== it.id)
++      // A successful whole append also settles an identical pending replay from a
++      // successor run. A partial output, newer context or other inflight object does not.
++      S.queue = S.queue.filter((q) => it.kind === 'invitation'
++        ? q !== it && (it.truncated || q.inflight || q.kind !== 'invitation'
++          || q.id !== it.id || q.contextVersion !== it.contextVersion)
++        : q.id !== it.id)
+       if (it.kind === 'attention') {
+         S.runAttention.add(it.id)
+         if (it.version !== undefined && !S.rec.attentionVersions.includes(it.version)) {
+           S.rec.attentionVersions.push(it.version)
+           if (S.rec.attentionVersions.length > 64) S.rec.attentionVersions.shift()
+         }
+       } else if (it.kind === 'invitation') {
+         if (!it.truncated) {
+           S.rec.invitationVersions[it.id] = it.contextVersion
+           const ids = Object.keys(S.rec.invitationVersions)
+@@ -450,21 +486,21 @@ export function createCore(io) {
+       try {
+         box = await io.promptRead()
+       } catch {}
+       if (S.disposed || !S.live || S.submitInflight || busy()) return
+       if (S.turns.abortHoldSince != null) return held('post_abort', ids)
+       if (box && box.text !== '') {
+         if (S.draftSince == null) S.draftSince = io.now()
+         if (io.now() - S.draftSince < DRAFT_WAIT_MS) return held('draft', ids)
+       }
+       S.draftSince = null
+-      const batch = S.queue.filter((q) => !passive(q) && !q.inflight && q.run === S.run && !predHas(q.id))
++      const batch = appendBatch(S.queue.filter((q) => !passive(q) && !q.inflight && q.run === S.run && !predHas(q.id)))
+       if (!batch.length && !S.turns.wake) return
+       const gen = S.gen
+       for (const it of batch) it.inflight = true
+       S.submitInflight = true
+       void deliverIdle(batch, gen)
+     } finally {
+       S.pumping = false
+     }
+   }
+ 
+@@ -481,21 +517,21 @@ export function createCore(io) {
+         p = Promise.reject(err)
+       }
+       const r = await p.then(
+         (v) => v || {},
+         (err) => (err && err.apiMissing ? { missing: true } : { deny: `error:${String(err)}` }),
+       )
+       // a disposed core touches neither the record, the store nor acks
+       if (S.disposed) return
+       // a resolution from before a session change touches nothing
+       if (gen !== S.gen) return
+-      for (const it of batch) it.inflight = false
++      releaseBatch(batch)
+       if (r.missing) {
+         S.submitInflight = false
+         return goInert()
+       }
+       if (r.deny !== undefined) {
+         S.submitInflight = false
+         discardStale(batch, 'late_deny')
+         S.appendBackoffUntil = io.now() + DROP_BACKOFF_MS
+         S.submitBackoffUntil = S.appendBackoffUntil
+         ledger('refused', { ids: bids, via: 'append', reason: `deny:${r.deny}` })
+@@ -539,41 +575,41 @@ export function createCore(io) {
+     }
+     void pump()
+   }
+ 
+   const passive = (item) => item.kind === 'lazy' || item.kind === 'notice' || (item.kind === 'invitation' && !item.wakes) || (item.kind === 'message' && item.passive)
+ 
+   /** Passive items are appended at once, busy or idle, without a wake. */
+   async function pumpLazy() {
+     if (S.inert || S.disposed || S.appendInflight || !S.live) return
+     if (io.now() < S.appendBackoffUntil) return
+-    const batch = S.queue.filter((q) => passive(q) && !q.inflight && q.run === S.run)
++    const batch = appendBatch(S.queue.filter((q) => passive(q) && !q.inflight && q.run === S.run))
+     if (!batch.length) return
+     const gen = S.gen
+     for (const it of batch) it.inflight = true
+     S.appendInflight = true
+     const ids = batch.map((i) => i.id)
+     let p
+     try {
+       p = Promise.resolve(io.append(frame(batch)))
+     } catch (err) {
+       p = Promise.reject(err)
+     }
+     void p
+       .then(
+         (r) => r || {},
+         (err) => (err && err.apiMissing ? { missing: true } : { deny: `error:${String(err)}` }),
+       )
+       .then((r) => {
+         if (gen !== S.gen) return
+         S.appendInflight = false
+-        for (const it of batch) it.inflight = false
++        releaseBatch(batch)
+         if (r.missing) return goInert()
+         if (r.deny !== undefined) {
+           discardStale(batch, 'late_deny')
+           S.appendBackoffUntil = io.now() + DROP_BACKOFF_MS
+           ledger('refused', { ids, via: 'append', reason: `deny:${r.deny}` })
+           return
+         }
+         return complete(batch, 'append')
+       })
+       .then(() => pumpLazy())
+diff --git a/integrations/claude/mod/tests/delivery.test.ts b/integrations/claude/mod/tests/delivery.test.ts
+index 34e1aaba..f5701d43 100644
+--- a/integrations/claude/mod/tests/delivery.test.ts
++++ b/integrations/claude/mod/tests/delivery.test.ts
+@@ -858,24 +858,26 @@ test('delivered-but-unacked ids in $.store are re-acked, not delivered again', a
+   expect(h.ackRuns().length).toBe(1)
+   expect(h.ackRuns()[0].slice(5)).toEqual(['--via', 'context', 'm1'])
+   h.line(msg('m1'))
+   await flush()
+   expect(h.submits.length).toBe(0)
+   expect(h.core.snapshot().rec.unacked).toEqual({})
+ })
+ 
+ test('acks are capped at 100 ids per watch ack invocation', async () => {
+   const idsOf = (run: string[]) => run.slice(run.indexOf('--via') + 2)
+-  // one submit delivers 150 messages; they are acked in runs of 100 and 50
+-  const h = await harness({ state: IDLE }).boot()
++  // One busy-turn context completion delivers 150 messages, independently of
++  // the idle append envelope; ACKs still split into runs of 100 and 50.
++  const h = await harness({ state: busyState() }).boot()
+   const ids = Array.from({ length: 150 }, (_, n) => `m${n + 1}`)
+   for (const id of ids) h.line(msg(id))
++  await h.core.onToolCall({ tool: 'Bash' }, answered)
+   await flush()
+   const runs = h.ackRuns()
+   expect(runs.map((r: string[]) => idsOf(r).length)).toEqual([100, 50])
+   expect(runs.flatMap(idsOf)).toEqual(ids)
+   expect(Object.keys(h.core.snapshot().rec.unacked)).toEqual([])
+   // a stored backlog of 230 unacked ids is retried in runs of 100, 100 and 30
+   const stored = Array.from({ length: 230 }, (_, n) => `s${n + 1}`)
+   const unacked = Object.fromEntries(stored.map((id) => [id, 'context']))
+   const r = await harness({
+     state: IDLE,
+@@ -2112,20 +2114,166 @@ test('a changed command context arriving during complete append remains queued',
+   await flush()
+   h.line({ ...invitation, command_context_epoch: '9007199254740993', body: 'new goal' })
+   await flush()
+   expect(h.appends.length).toBe(2)
+   expect(h.core.snapshot().queue).toEqual([])
+   expect(h.submits.length).toBe(0)
+   expect(h.ackRuns()).toEqual([])
+ })
+ 
+ const notice = (warning: string) => ({ schema: 1, id: `notice:${warning}`, kind: 'notice', warning, thread: 'T1', body: `inspect ${warning}` })
++const queuedInvitation = (version: number, extra: Any = {}) => ({ schema: 1,
++  id: 'invitation:bounded', kind: 'invitation', thread: 'T1', topic_revision: String(version),
++  command_context_epoch: String(version), wakes: false, truncated: false,
++  body: `goal ${version}\nnext: herdr-threads accept T1`, ...extra })
++
++test('bounded invitation retains only inflight and latest pending context while append stalls', async () => {
++  const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
++  h.line(queuedInvitation(0))
++  for (let i = 1; i <= 2000; i++) h.line(queuedInvitation(i))
++  expect(h.core.snapshot().queue.length).toBe(2)
++  h.pendingAppends[0].res({})
++  await flush()
++  expect(h.appends.length).toBe(2)
++  expect(h.appends[1]).toContain('goal 2000')
++  expect(h.appends[1]).not.toContain('goal 1999')
++  h.pendingAppends[1].res({})
++  await flush()
++  expect(h.core.snapshot().queue).toEqual([])
++  expect(h.core.snapshot().rec.invitationVersions['invitation:bounded']).toBe('["2000","2000"]')
++  expect(h.ackRuns()).toEqual([])
++  expect(h.submits).toEqual([])
++  h.core.dispose()
++})
++
++test('bounded invitation coalesces refused revisions and preserves whole same-version context', async () => {
++  const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
++  h.line(queuedInvitation(0))
++  h.pendingAppends[0].res({ deny: 'refused' })
++  await flush()
++  for (let i = 1; i <= 2000; i++) h.line(queuedInvitation(i, { truncated: true, body: `partial ${i}` }))
++  h.line(queuedInvitation(2000))
++  h.line(queuedInvitation(2000, { truncated: true, body: 'goal omitted' }))
++  expect(h.core.snapshot().queue.length).toBe(1)
++  await h.advance(30000)
++  expect(h.appends.length).toBe(2)
++  expect(h.appends[1]).toContain('goal 2000')
++  expect(h.appends[1]).not.toContain('goal omitted')
++  h.pendingAppends[1].res({})
++  await flush()
++  expect(h.core.snapshot().queue).toEqual([])
++  expect(h.core.snapshot().rec.invitationVersions['invitation:bounded']).toBe('["2000","2000"]')
++  expect(h.ackRuns()).toEqual([])
++  h.core.dispose()
++})
++
++test('bounded invitation late old-run denial leaves current whole context pending', async () => {
++  const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
++  h.line(queuedInvitation(0, { truncated: true }))
++  h.exit(1)
++  await h.advance(1000)
++  await h.connect()
++  h.line(queuedInvitation(1))
++  h.line(queuedInvitation(2))
++  h.pendingAppends[0].res({ deny: 'late old-run failure' })
++  await flush()
++  expect(h.core.snapshot().queue).toEqual(['invitation:bounded'])
++  await h.advance(30000)
++  expect(h.appends[1]).toContain('goal 2')
++  h.pendingAppends[1].res({})
++  await flush()
++  expect(h.core.snapshot().rec.invitationVersions['invitation:bounded']).toBe('["2","2"]')
++  expect(h.core.snapshot().queue).toEqual([])
++  expect(h.ackRuns()).toEqual([])
++  h.core.dispose()
++})
++
++test('bounded invitation replay keeps the old inflight run distinct from its live replacement', async () => {
++  const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
++  h.line(queuedInvitation(7))
++  h.exit(1)
++  await h.advance(1000)
++  await h.connect()
++  h.line(queuedInvitation(7))
++  expect(h.core.snapshot().queue.length).toBe(2)
++  h.pendingAppends[0].res({ deny: 'old run refused' })
++  await flush()
++  expect(h.core.snapshot().queue).toEqual(['invitation:bounded'])
++  await h.advance(30000)
++  expect(h.appends.length).toBe(2)
++  expect(h.appends[1]).toContain('goal 7')
++  h.pendingAppends[1].res({})
++  await flush()
++  expect(h.core.snapshot().queue).toEqual([])
++  expect(h.ackRuns()).toEqual([])
++  h.core.dispose()
++})
++
++test('bounded invitation successful old-run whole append settles only an identical pending context', async () => {
++  for (const { old, replacement, redisplay } of [
++    { old: queuedInvitation(7), replacement: queuedInvitation(7), redisplay: false },
++    { old: queuedInvitation(7), replacement: queuedInvitation(8), redisplay: true },
++    { old: queuedInvitation(7, { truncated: true, body: 'goal omitted' }), replacement: queuedInvitation(7), redisplay: true },
++  ]) {
++    const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
++    h.line(old)
++    h.exit(1)
++    await h.advance(1000)
++    await h.connect()
++    h.line(replacement)
++    h.pendingAppends[0].res({})
++    await flush()
++    if (!redisplay) {
++      expect(h.appends.length).toBe(1)
++      expect(h.core.snapshot().queue).toEqual([])
++    } else {
++      expect(h.appends.length).toBe(2)
++      expect(h.appends[1]).toContain(replacement.topic_revision === '7' ? 'goal 7' : 'goal 8')
++      h.pendingAppends[1].res({})
++      await flush()
++      expect(h.core.snapshot().queue).toEqual([])
++    }
++    expect(h.core.snapshot().rec.invitationVersions['invitation:bounded']).toBe(
++      replacement.topic_revision === '7' ? '["7","7"]' : '["8","8"]')
++    expect(h.ackRuns()).toEqual([])
++    h.core.dispose()
++  }
++})
++
++for (const { name, count, body, active } of [
++  { name: 'passive item count', count: 80, body: 'small', active: false },
++  { name: 'passive UTF-8 bytes', count: 20, body: '界\n'.repeat(2000), active: false },
++  { name: 'idle item count', count: 80, body: 'small', active: true },
++  { name: 'idle UTF-8 bytes', count: 20, body: '界\n'.repeat(2000), active: true },
++]) {
++  test(`framed append batches bound ${name} without losing messages`, async () => {
++    const h = await harness({ state: active ? IDLE : busyState(), appendMode: 'manual' }).boot()
++    h.line(queuedInvitation(0, { wakes: active })) // Stall before the distinct IDs arrive.
++    await flush()
++    for (let i = 0; i < count; i++) h.line({ ...(active ? msg(`bounded-${i}`) : lazy(`bounded-${i}`)), body })
++    let completed = 0
++    while (h.core.snapshot().queue.length) {
++      const text = h.appends[completed]
++      expect(text).toBeDefined()
++      expect(new TextEncoder().encode(text).length).toBeLessThanOrEqual(64 * 1024)
++      expect((text.match(/^\[herdr-threads\] (?:message|lazy|invitation) /gm) ?? []).length).toBeLessThanOrEqual(32)
++      h.pendingAppends[completed++].res({})
++      await flush()
++    }
++    const ids = h.appends.join('\n').match(/^\[herdr-threads\] (?:message|lazy) bounded-\d+ /gm) ?? []
++    expect(ids.length).toBe(count)
++    expect(new Set(ids).size).toBe(count)
++    expect(Object.keys(h.core.snapshot().rec.delivered).length).toBe(count)
++    if (!active) expect(h.submits).toEqual([])
++    h.core.dispose()
++  })
++}
+ const epochAttention = (epoch: string) => ({ ...attention(7), id: `attention:${epoch}`, presentation_epoch: epoch, text: `episode ${epoch}` })
+ const epochCleared = (epoch: string) => ({ ...cleared(7), id: `attention_cleared:${epoch}`, presentation_epoch: epoch })
+ 
+ test('a notice is visible once, passive and never grants ACK or wake authority', async () => {
+   const h = await harness({ state: IDLE }).boot()
+   h.line({ ...notice('warning-1'), ack_required: true, wakes: true, truncated: true })
+   await flush()
+   expect(h.appends.length).toBe(1)
+   expect(h.appends[0]).toContain('notice notice:warning-1 in T1')
+   expect(h.appends[0]).toContain('inspect warning-1')

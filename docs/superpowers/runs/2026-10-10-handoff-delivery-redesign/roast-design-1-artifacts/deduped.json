@@ -1,0 +1,60 @@
+{
+  "findings": [
+    {
+      "claim": "The bounded-time warning promise relies on fair, sufficiently frequent progress through overdue work, but the design specifies neither a detection-lag bound nor a backlog-progress test that establishes that assumption.",
+      "location": "Root design (settled-input.md): Goal; Message deadline contract; Risks and mitigations; task-tree ht-0lo.1.2 and ht-0lo.1.3",
+      "category": "domain:durable-messaging",
+      "external": false,
+      "evidence": "The Goal promises a 'bounded-time warning', and the message contract distinguishes 'bounded deadline detection' from deferred native submission. Historical dormant obligations are backdated and 'Already expired rows become due on the normal bounded scan'; the risk mitigation says to 'bound scan work'. These requirements bound work per scan, but do not state how soon successive scans execute, how a cursor makes fair progress through an upgrade burst, or a maximum delay between an overdue deadline and durable warning creation. The listed tests exercise individual unavailable recipients, restart, and a 'bounded warning burst', without requiring a multi-batch backlog to drain while native wakes remain blocked or newer due work arrives. For the promised detection bound to hold, overdue discovery must continue independently of blocked delivery and make fair progress under a stated workload bound; that assumption is not demonstrated by the artifact. No supported historical backlog size, new-send arrival rate, or minimum scan service rate is specified, and the stated bounded warning burst test has no measurable maximum per-obligation warning-creation delay.",
+      "kind": "UNVERIFIED-ASSUMPTION",
+      "spike": {
+        "question": "What upper bound on durable warning creation follows from the scanner cadence, batch size, and supported overdue backlog, independently of native wake admission?",
+        "cheapest_test": "Seed a supported sparse and physical historical overdue backlog larger than several scanner batches, block native delivery to recipients and originators, continuously add short-deadline receipts and timed invitations, and restart between batches. Measure maximum durable warning-creation delay for both original and newly due obligations, eventual discovery, and daemon responsiveness against a declared scan-count or time bound.",
+        "kill_criteria": "Reject the bounded-time claim if blocked delivery, restart, historical backlog, or continuing arrivals can starve any eligible obligation or exceed the declared detection-lag bound under the supported workload; define the load/latency contract and scheduler fairness or narrow the promise."
+      },
+      "suggestedSeverity": "Blocking"
+    },
+    {
+      "claim": "The design leaves unspecified whether a confirmation committed after its deadline but before overdue scanning must create a missed-deadline warning or may settle silently.",
+      "location": "Root design: Message deadline contract and Invitation contract; acceptance and validation",
+      "category": "completeness",
+      "external": false,
+      "evidence": "The receipt contract says 'An overdue warning says confirmation missed its deadline' and 'Late ACK clears the existing warning through normal lifecycle'; the invitation contract says 'Only explicit recipient acceptance settles it automatically' and 'Expiry notifies its originating seat'. The tests exercise expiry then late ACK/acceptance, but no rule or scenario handles deadline < confirmation commit < first due-scan transaction, where no existing warning is available to clear. Both suppressing the warning because the row is now terminal and recording that the deadline was missed fit separate clauses. An atomic transition rule and boundary/race tests are needed to define the externally visible outcome.",
+      "kind": "GAP",
+      "suggestedSeverity": "Should-fix"
+    },
+    {
+      "claim": "The design leaves the ownership policy undefined when a recorded stable hook group is removed and independently recreated with identical bytes while its manifest remains.",
+      "location": "settled-input.md, root design, Stable hook entrypoints and ownership; Risks and mitigations",
+      "category": "domain:native-hook-configuration-ownership",
+      "external": false,
+      "evidence": "The spec says 'Remove the per-install UUID shell comment ... not the manifest installation identity', 'Persist exact installed groups/fingerprints and installation ID in ownership records', 'Existing unmanaged identical groups are foreign: do not adopt, overwrite, remove or treat them as owned', and 'Unsetup removes only exactly owned records'. Consider setup recording group G, then a same-user settings edit deleting G and independently inserting the same stable group at the same position, leaving the manifest intact. Group bytes, position and manifest installation ID match the untouched-install case, but the replacement is independently created. The listed ownership evidence cannot distinguish these histories. The spec does not state an accepted observational-ownership limit or another continuity signal, although it promises conservative foreign-group detection after removing the embedded installation marker. This is a configuration provenance ambiguity, not an adversarial-caller issue.",
+      "kind": "UNVERIFIED-ASSUMPTION",
+      "spike": {
+        "question": "Does ownership intentionally follow exact current configuration plus a retained manifest, including independently recreated identical groups, or must independent replacements remain foreign?",
+        "cheapest_test": "In isolated configuration, install a stable group, retain the manifest, remove and recreate the group byte-for-byte at its original position, then run reinstall and unsetup; compare with an untouched installation.",
+        "kill_criteria": "If the same observations authorize removing the independent replacement while the contract still calls it foreign, the stated ownership guarantee needs an explicit accepted limit or additional continuity mechanism."
+      },
+      "suggestedSeverity": "Should-fix"
+    },
+    {
+      "claim": "The design does not specify capability negotiation for the changed ordinary-send receipt semantics, so a modern client cannot establish that an older daemon will start an unavailable recipient\u2019s ACK deadline at send time.",
+      "location": "Root design: Message deadline contract; Invitation contract capability negotiation; Risks and mitigations; receipt task ht-0lo.1.1; invitation task ht-0lo.2.1",
+      "category": "domain:protocol-evolution-and-data-migrations",
+      "external": false,
+      "evidence": "The message contract promises \u201cFor every new durable ACK-required ordinary send\u201d an original deadline at \u201ccanonical committed send time plus that duration\u201d, including \u201cno binding\u201d and \u201cunavailable binding\u201d. The explicit compatibility mechanism instead appears under invitations: \u201cnegotiate protocol capability/version before any mutation requiring the new representation\u201d; subtree validation likewise requires negotiation for \u201cnew incompatible fields\u201d. Ordinary ACK-required sends need not contain any new invitation field or new representation, yet their old availability-deferred semantics are precisely what this redesign changes. An old daemon can therefore accept a wire-compatible ordinary send while failing the new deadline contract unless a receipt-semantics capability/version gate or an explicit mixed-version limitation is specified. No such gate or mixed-version receipt test is named in the settled artifact. The receipt migration uses a local schema/semantics marker, which does not establish the semantics supported by a connected older daemon; the task tree names invitation capability negotiation but no mixed-version ordinary-send test.",
+      "kind": "GAP",
+      "suggestedSeverity": "Should-fix"
+    },
+    {
+      "claim": "The design adds a second permanent public hook invocation syntax without establishing why generating stable per-event commands with the existing hook HARNESS --event EVENT syntax cannot satisfy the same contract.",
+      "location": "settled-input.md: root design, Options and decisions item 3; Stable hook entrypoints and ownership; hooks subtree, Stable native event dispatch and command generation",
+      "category": "yagni",
+      "external": false,
+      "kind": "GAP",
+      "evidence": "The design explicitly preserves existing `hook HARNESS --event EVENT` registrations while introducing `herdr-threads hook-event HARNESS EVENT`. Its stated stability rule depends only on executable spelling, canonical route, harness and event; it separately identifies the per-install UUID shell comment as the changing component to remove. The options compare random owner comments, sidecar scripts and dedicated CLI entrypoints, but omit generating deterministic commands through the already event-specific syntax. The hooks task then owns the additional parser/dispatch surface, and registry/help/canary expectations must adopt its command grammar while legacy syntax remains supported. No stated semantic difference between the two invocation forms explains that additional permanent interface. Evaluate the existing syntax with UUID-free manifest-owned command generation before committing to the additional command.",
+      "suggestedSeverity": "Should-fix"
+    }
+  ],
+  "beyondCapCount": 0
+}

@@ -1,0 +1,12 @@
+{
+  "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "helper": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.1.1",
+  "source_head": "ee1e598c3ee96566ddc9b397185cdc97c8bf6218",
+  "source_ack_hash": "fcd7364015df96ae6fb2e8c91af5523b1e7c53751115ed4a75555a086a01e5f9",
+  "dirty_diff_sha256": "710823237dc14e5c04fe68eca25539ddbbac63d7715ed427fd5581b8fa70b88d",
+  "files": 3530,
+  "manifest_sha256": "fcd7364015df96ae6fb2e8c91af5523b1e7c53751115ed4a75555a086a01e5f9",
+  "all_files_exact": true,
+  "cargo_allowed": false,
+  "application_authority": false
+}

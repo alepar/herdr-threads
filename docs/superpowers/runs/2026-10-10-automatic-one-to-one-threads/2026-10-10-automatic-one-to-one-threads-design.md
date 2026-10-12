@@ -82,3 +82,18 @@ The caller owns the requested `join dev-herdr-threads` and integration-ready --n
 
 - 2026-10-10 — The integrated implementation uses additive 0029_direct_threads and 0030_automatic_handoff migrations without rewriting historical migrations. The 0030 companion tables retain immutable full automatic originals, registered child keys, bootstrap attempts, attachments, reports and recoveries. Automatic plans use Ensure → ordinary Send → guarded launch/completion, with no standalone Invite child; exact published Send is required before canonical Complete. Local OperatorRecoverAutomaticBootstrap is an additive V2 journal semantic under the existing operator intent kind, so parsed human recovery can decide the automatic bootstrap without changing V1 bytes or provenance.
 - 2026-10-10 — Main was merged with ancestry preserved at 6107075f. Its invitation Reject warning and literal name-or-topic directory search coexist with pair identity: Reject freezes the existing actor/membership high-water and does not reinvite or send for the pair; names/topics remain discovery fields, never pair keys. The embedded guide was kept at 199 lines and clarifies that the first ordinary invitation may notify independently of a lazy message. Task8 scoped evidence and the R1–R22 matrix are in integration-evidence.md; the full-suite and final branch review remain caller-owned.
+
+- 2026-10-11 — Accepted Q4 reader refinement for composition with per-binding cursors: an explicitly
+  addressed Lazy direct body is eligible before acceptance in every active canonical invitation episode.
+  A cursorless reader admits publications after its exact current invitation creation decision; existing
+  own cursors retain older addressed unread work. The invitation's actual event sequence supplies the
+  bounded baseline for full-display cursor progress and missing cursors on direct acceptance. Acceptance
+  preserves existing cursors and invalidates every affected open binding's private Hook/Watch reader in
+  the same transaction, including unchanged cursors; shared cursors also expose eligible settled ordinary
+  direct content after joining. Generic nonpair join and post-acceptance new-binding seeding remain intact.
+  Pending-episode new bindings may independently replay that episode, and historical skipped cursors are
+  not rewound. This uses existing pair/membership/invitation/event authority without schema, autoaccept or
+  send-time binding fanout. TRUST-POLICY.md specifies terminal-writer invariants, display/completion
+  separation, atomic rollback, three-probe scope accounting, unchanged presentation caps and inherited
+  public-reader/display-walk limits. Implementation and validation evidence belongs to the Q4 run record;
+  this accepted refinement does not assert runtime completion.

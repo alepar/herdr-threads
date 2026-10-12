@@ -1,0 +1,10 @@
+{
+  "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "full_source_sha256": "4cb175863972ee3b9d93482dedfc99d7ccf7adebdc88f7718272bd285f493759",
+  "dirtydiff_sha256": "8669d6db8c6713556a255bdf6af2a4ec1f6ca3c00177d4ee47388d71ee6ee981",
+  "file_count": 3531,
+  "attention_sha256": "7692410f492232e4c56408b80978a47f0499cb585df0c67fb5a25735ba517196",
+  "new_paths_absent": true,
+  "processes_drained": true,
+  "scope": "Diagnostic25ac baseline ONLY; knownImportant not readiness/sourceCLEAN. Frozen until coordinator application ACK."
+}

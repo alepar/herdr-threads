@@ -1,0 +1,114 @@
+   Compiling herdr-threads v0.8.1 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/upstream-composition-478ec4a9)
+error[E0277]: `ids::ThreadId` doesn't implement `std::fmt::Display`
+    --> src/service/../../tests/service/delivery_pull.rs:2396:29
+     |
+2395 | ...                   "herdr-threads accept-required {} --invitation {} --requirement {} --revision {}",
+     |                                                      -- required by this formatting parameter
+2396 | ...                   thread, id, required.requirement, required.revision
+     |                       ^^^^^^ `ids::ThreadId` cannot be formatted with the default formatter
+     |
+help: the trait `std::fmt::Display` is not implemented for `ids::ThreadId`
+    --> src/protocol/ids.rs:7:9
+     |
+   7 |         pub struct $name(String);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+  35 | id!(ThreadId);
+     | ------------- in this macro invocation
+     = note: in format strings you may be able to use `{:?}` (or {:#?} for pretty-print) instead
+     = note: this error originates in the macro `$crate::__export::format_args` which comes from the expansion of the macro `id` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `ids::InvitationId` doesn't implement `std::fmt::Display`
+    --> src/service/../../tests/service/delivery_pull.rs:2396:37
+     |
+2395 | ...                   "herdr-threads accept-required {} --invitation {} --requirement {} --revision {}",
+     |                                                                      -- required by this formatting parameter
+2396 | ...                   thread, id, required.requirement, required.revision
+     |                               ^^ `ids::InvitationId` cannot be formatted with the default formatter
+     |
+help: the trait `std::fmt::Display` is not implemented for `ids::InvitationId`
+    --> src/protocol/ids.rs:7:9
+     |
+   7 |         pub struct $name(String);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+  65 | id!(InvitationId);
+     | ----------------- in this macro invocation
+     = note: in format strings you may be able to use `{:?}` (or {:#?} for pretty-print) instead
+     = note: required for `&ids::InvitationId` to implement `std::fmt::Display`
+     = note: this error originates in the macro `$crate::__export::format_args` which comes from the expansion of the macro `id` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `ids::RequirementId` doesn't implement `std::fmt::Display`
+    --> src/service/../../tests/service/delivery_pull.rs:2396:41
+     |
+2395 | ...                   "herdr-threads accept-required {} --invitation {} --requirement {} --revision {}",
+     |                                                                                       -- required by this formatting parameter
+2396 | ...                   thread, id, required.requirement, required.revision
+     |                                   ^^^^^^^^^^^^^^^^^^^^ `ids::RequirementId` cannot be formatted with the default formatter
+     |
+help: the trait `std::fmt::Display` is not implemented for `ids::RequirementId`
+    --> src/protocol/ids.rs:7:9
+     |
+   7 |         pub struct $name(String);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+  66 | id!(RequirementId);
+     | ------------------ in this macro invocation
+     = note: in format strings you may be able to use `{:?}` (or {:#?} for pretty-print) instead
+     = note: this error originates in the macro `$crate::__export::format_args` which comes from the expansion of the macro `id` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `ids::ThreadId` doesn't implement `std::fmt::Display`
+    --> src/service/../../tests/service/delivery_pull.rs:2399:55
+     |
+2399 |                         format!("herdr-threads accept {thread}")
+     |                                                       ^^^^^^^^ `ids::ThreadId` cannot be formatted with the default formatter
+     |
+help: the trait `std::fmt::Display` is not implemented for `ids::ThreadId`
+    --> src/protocol/ids.rs:7:9
+     |
+   7 |         pub struct $name(String);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+  35 | id!(ThreadId);
+     | ------------- in this macro invocation
+     = note: in format strings you may be able to use `{:?}` (or {:#?} for pretty-print) instead
+     = note: this error originates in the macro `$crate::__export::format_args` which comes from the expansion of the macro `id` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `ids::InvitationId` doesn't implement `std::fmt::Display`
+    --> src/service/../../tests/service/delivery_pull.rs:2422:76
+     |
+2422 | ...                   .contains(&format!("[herdr-threads] invitation {id} in {thread}"))
+     |                                                                      ^^^^ `ids::InvitationId` cannot be formatted with the default formatter
+     |
+help: the trait `std::fmt::Display` is not implemented for `ids::InvitationId`
+    --> src/protocol/ids.rs:7:9
+     |
+   7 |         pub struct $name(String);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+  65 | id!(InvitationId);
+     | ----------------- in this macro invocation
+     = note: in format strings you may be able to use `{:?}` (or {:#?} for pretty-print) instead
+     = note: required for `&ids::InvitationId` to implement `std::fmt::Display`
+     = note: this error originates in the macro `$crate::__export::format_args` which comes from the expansion of the macro `id` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `ids::ThreadId` doesn't implement `std::fmt::Display`
+    --> src/service/../../tests/service/delivery_pull.rs:2422:84
+     |
+2422 | ...                   .contains(&format!("[herdr-threads] invitation {id} in {thread}"))
+     |                                                                              ^^^^^^^^ `ids::ThreadId` cannot be formatted with the default formatter
+     |
+help: the trait `std::fmt::Display` is not implemented for `ids::ThreadId`
+    --> src/protocol/ids.rs:7:9
+     |
+   7 |         pub struct $name(String);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+  35 | id!(ThreadId);
+     | ------------- in this macro invocation
+     = note: in format strings you may be able to use `{:?}` (or {:#?} for pretty-print) instead
+     = note: this error originates in the macro `$crate::__export::format_args` which comes from the expansion of the macro `id` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `herdr-threads` (lib test) due to 6 previous errors
+error: command `/Users/alepar/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --lib --all-features --locked` exited with code 101

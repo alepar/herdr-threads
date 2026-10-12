@@ -1,0 +1,1575 @@
+# Review package: 957544e8849a36c5a211820aa5bcd3c4b0c92ea5..30c1f07c387ce0de6fcb562be75e8d9e6c5e1772
+
+## Commits
+30c1f07c Add invitation confirmation wire and schema contract
+
+## Files changed
+ migrations/0029_invitation_confirmation.sql | 15 +++++
+ src/cli/commands.rs                         |  1 +
+ src/cli/handoff.rs                          |  1 +
+ src/cli/journal.rs                          | 16 +++++
+ src/cli/mod.rs                              | 20 ++++++
+ src/protocol/capabilities.rs                |  3 +
+ src/protocol/commands.rs                    | 23 +++++++
+ src/store/control.rs                        |  8 +++
+ src/store/schema.rs                         | 70 ++++++++++++++++++++-
+ src/test_support/history.rs                 |  1 +
+ tests/cli/cooperative.rs                    | 95 +++++++++++++++++++++++++++++
+ tests/cli/handoff_delivery.rs               |  2 +
+ tests/handoff_topology_authority.rs         |  1 +
+ tests/integration/channel_activation.rs     |  1 +
+ tests/integration/lazy_attention.rs         |  1 +
+ tests/integration/topology_activation.rs    |  2 +
+ tests/protocol/capabilities.rs              | 41 +++++++++++++
+ tests/service/cooperative.rs                |  3 +
+ tests/service/crash_matrix.rs               |  1 +
+ tests/store/control.rs                      | 87 ++++++++++++++++++++++++++
+ tests/store/cooperative_checkin.rs          |  1 +
+ tests/store/facade.rs                       |  2 +
+ tests/store/retention.rs                    |  1 +
+ tests/store/schema.rs                       | 46 +++++++++++++-
+ 24 files changed, 437 insertions(+), 5 deletions(-)
+
+## Diff
+diff --git a/migrations/0029_invitation_confirmation.sql b/migrations/0029_invitation_confirmation.sql
+new file mode 100644
+index 00000000..0a462d35
+--- /dev/null
++++ b/migrations/0029_invitation_confirmation.sql
+@@ -0,0 +1,15 @@
++-- NULL is the historical timed invitation. Never reconstruct an unknown inviter.
++ALTER TABLE invitations ADD COLUMN confirmation TEXT CHECK(confirmation IN ('lazy','require_ack'));
++ALTER TABLE invitations ADD COLUMN inviter_seat_id TEXT REFERENCES seats(id);
++
++CREATE INDEX invitations_confirmation_due ON invitations(deadline_at,ordinal)
++    WHERE state='pending' AND warning_message_id IS NULL AND reject_recorded=0
++    AND (confirmation IS NULL OR confirmation='require_ack');
++
++CREATE TRIGGER invitations_confirmation_origin BEFORE INSERT ON invitations
++WHEN NEW.confirmation IS NOT NULL AND NEW.inviter_seat_id IS NULL
++BEGIN SELECT RAISE(ABORT, 'modern invitation requires original inviter'); END;
++
++CREATE TRIGGER invitations_confirmation_immutable BEFORE UPDATE OF confirmation,inviter_seat_id ON invitations
++WHEN NEW.confirmation IS NOT OLD.confirmation OR NEW.inviter_seat_id IS NOT OLD.inviter_seat_id
++BEGIN SELECT RAISE(ABORT, 'invitation policy and origin are immutable'); END;
+diff --git a/src/cli/commands.rs b/src/cli/commands.rs
+index 058b3bbb..ce701568 100644
+--- a/src/cli/commands.rs
++++ b/src/cli/commands.rs
+@@ -392,20 +392,21 @@ impl MutationSpec {
+                 topic,
+                 operation,
+                 claim: claim.unwrap(),
+             }),
+             Self::Invite {
+                 thread,
+                 seat,
+                 deadline_millis,
+                 operator: false,
+             } => WireCommand::Invite(Invite {
++                confirmation: None,
+                 thread,
+                 seat,
+                 deadline_millis,
+                 operation,
+                 claim: claim.unwrap(),
+             }),
+             Self::Invite {
+                 thread,
+                 seat,
+                 deadline_millis,
+diff --git a/src/cli/handoff.rs b/src/cli/handoff.rs
+index f9c16640..0b750bfc 100644
+--- a/src/cli/handoff.rs
++++ b/src/cli/handoff.rs
+@@ -215,20 +215,21 @@ pub(crate) fn stage_work<C: LocalClient + ?Sized>(
+                 seat: plan.recipient.clone(),
+             })
+         } else {
+             // Retain the keyed invitation decision before a possibly lost reply.
+             if plan.skip_joined {
+                 progress.invitation_attempted = true;
+                 save(progress)?;
+             }
+             call(
+                 SemanticMutation::Invite {
++                    confirmation: None,
+                     thread: thread.clone(),
+                     seat: plan.recipient.clone(),
+                     deadline_millis: None,
+                 },
+                 plan.invite_key,
+             )?
+         };
+         if !matches!(
+             result,
+             CommandResult::Invitation(_) | CommandResult::AlreadyJoined(_)
+diff --git a/src/cli/journal.rs b/src/cli/journal.rs
+index fba24d96..f40e9dac 100644
+--- a/src/cli/journal.rs
++++ b/src/cli/journal.rs
+@@ -138,20 +138,22 @@ pub enum SemanticMutation {
+         execution: ExecutionId,
+     },
+     CheckIn,
+     CreateThread {
+         #[serde(default, skip_serializing_if = "Option::is_none")]
+         name: Option<String>,
+         topic: String,
+         goal: String,
+     },
+     Invite {
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        confirmation: Option<InvitationConfirmation>,
+         thread: ThreadId,
+         seat: SeatId,
+         deadline_millis: Option<u64>,
+     },
+     Join {
+         thread: ThreadId,
+     },
+     Accept {
+         thread: ThreadId,
+     },
+@@ -289,20 +291,27 @@ impl SemanticMutation {
+         {
+             return Err(invalid("mutation cannot be frozen in cooperative context"));
+         }
+         let frozen = Self::Frozen {
+             claim,
+             mutation: Box::new(mutation),
+         };
+         frozen.validate()?;
+         Ok(frozen)
+     }
++    pub fn has_invitation_confirmation(&self) -> bool {
++        match self {
++            Self::Frozen { mutation, .. } => mutation.has_invitation_confirmation(),
++            Self::Invite { confirmation, .. } => confirmation.is_some(),
++            _ => false,
++        }
++    }
+     pub fn is_lazy_send(&self) -> bool {
+         match self {
+             Self::Frozen { mutation, .. } => mutation.is_lazy_send(),
+             Self::SendMessage {
+                 delivery_mode: DeliveryMode::Lazy,
+                 ..
+             } => true,
+             _ => false,
+         }
+     }
+@@ -401,20 +410,25 @@ impl SemanticMutation {
+                     target: target.clone(),
+                     harness: *harness,
+                     native_session: native_session.clone(),
+                     source: source.clone(),
+                     operation: OperationId::new("validation"),
+                     execution: execution.clone(),
+                 }
+                 .validate()
+                 .map_err(invalid)
+             }
++            Self::Invite {
++                confirmation: Some(InvitationConfirmation::Lazy),
++                deadline_millis: Some(_),
++                ..
++            } => Err(invalid("lazy invitation conflicts with deadline")),
+             Self::Invite {
+                 deadline_millis: Some(0),
+                 ..
+             }
+             | Self::OperatorOrphanInvite {
+                 deadline_millis: Some(0),
+                 ..
+             } => Err(invalid("deadline must be positive")),
+             Self::CreateThread { goal, .. } if goal.is_empty() || goal.len() > 1024 => {
+                 Err(invalid("invalid thread goal byte bound"))
+@@ -576,24 +590,26 @@ impl SemanticMutation {
+                 claim: native()?,
+             }),
+             Self::CreateThread { name, topic, goal } => Command::CreateThread(CreateThread {
+                 name: name.clone(),
+                 topic: topic.clone(),
+                 goal: goal.clone(),
+                 operation,
+                 claim: native()?,
+             }),
+             Self::Invite {
++                confirmation,
+                 thread,
+                 seat,
+                 deadline_millis,
+             } => Command::Invite(Invite {
++                confirmation: *confirmation,
+                 thread: thread.clone(),
+                 seat: seat.clone(),
+                 deadline_millis: *deadline_millis,
+                 operation,
+                 claim: native()?,
+             }),
+             Self::Reject {
+                 thread,
+                 invitation,
+                 reason,
+diff --git a/src/cli/mod.rs b/src/cli/mod.rs
+index 5821b180..491619f5 100644
+--- a/src/cli/mod.rs
++++ b/src/cli/mod.rs
+@@ -2739,20 +2739,21 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
+                 instance: claim.instance.clone(),
+                 seat: claim.seat.clone(),
+             };
+             if matches!(&mutation, MutationSpec::Join(_)) {
+                 require_join_capability(client, clock)?;
+             }
+             if matches!(&mutation, MutationSpec::Reject { .. }) {
+                 require_rejection_capability(client, clock)?;
+             }
+             let semantic = SemanticMutation::freeze(cooperative_semantic(mutation)?, claim)?;
++            require_invitation_confirmation_capability(client, clock, &semantic)?;
+             if semantic.is_lazy_send() {
+                 require_lazy_send_capability(client, clock)?;
+             }
+             retry::run_new_api_to_writer_discarding_rejection(
+                 journal,
+                 scope,
+                 semantic,
+                 clock.utc_now().0,
+                 || unreachable!("frozen cooperative claim"),
+                 |command| client.call_definitive(command, &cooperative_budget(clock)),
+@@ -2835,20 +2836,21 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
+                     writer,
+                 )
+                 .map_err(bridge_run_error)?;
+             } else {
+                 if pending.semantic.kind() == crate::protocol::results::IntentKind::Join {
+                     require_join_capability(client, clock)?;
+                 }
+                 if pending.semantic.kind() == crate::protocol::results::IntentKind::Reject {
+                     require_rejection_capability(client, clock)?;
+                 }
++                require_invitation_confirmation_capability(client, clock, &pending.semantic)?;
+                 if pending.semantic.is_lazy_send() {
+                     require_lazy_send_capability(client, clock)?;
+                 }
+                 retry::run_retry_api_to_writer(
+                     journal,
+                     &reference,
+                     &scope,
+                     || unreachable!("frozen cooperative claim"),
+                     |command| client.call(command, &cooperative_budget(clock)),
+                     &parsed.output,
+@@ -2890,20 +2892,21 @@ fn cooperative_semantic(mutation: MutationSpec) -> io::Result<SemanticMutation>
+             SemanticMutation::CreateThread { name, topic, goal }
+         }
+         MutationSpec::Name { thread, name } => SemanticMutation::SetThreadName { thread, name },
+         MutationSpec::Topic { thread, topic } => SemanticMutation::SetTopic { thread, topic },
+         MutationSpec::Invite {
+             thread,
+             seat,
+             deadline_millis,
+             operator: false,
+         } => SemanticMutation::Invite {
++            confirmation: None,
+             thread,
+             seat,
+             deadline_millis,
+         },
+         MutationSpec::Join(thread) => SemanticMutation::Join { thread },
+         MutationSpec::Accept(thread) => SemanticMutation::Accept { thread },
+         MutationSpec::Reject {
+             thread,
+             invitation,
+             reason,
+@@ -2987,20 +2990,37 @@ impl LocalClient for SelectedSocketClient<'_> {
+         output: &OutputSpec,
+         budget: &CallBudget,
+     ) -> Result<CommandResult, ApiError> {
+         if output != self.output {
+             return Err(ApiError::invalid_request("selected output mismatch"));
+         }
+         self.client.call_with_output(command, output, budget)
+     }
+ }
+ 
++/// Explicit invitation policies must be understood before intent creation/replay.
++fn require_invitation_confirmation_capability<C: LocalClient + ?Sized>(
++    client: &C,
++    clock: &dyn Clock,
++    semantic: &SemanticMutation,
++) -> Result<(), RunError> {
++    if semantic.has_invitation_confirmation() {
++        require_mutation_capability(
++            client,
++            clock,
++            crate::protocol::capabilities::INVITATION_CONFIRMATION_V1,
++            "requesting invitation confirmation policy",
++        )?;
++    }
++    Ok(())
++}
++
+ /// Older daemons are refused before any rejection intent is submitted.
+ fn require_rejection_capability<C: LocalClient + ?Sized>(
+     client: &C,
+     clock: &dyn Clock,
+ ) -> Result<(), RunError> {
+     require_mutation_capability(
+         client,
+         clock,
+         crate::protocol::capabilities::INVITATION_REJECT,
+         "rejecting invitations",
+diff --git a/src/protocol/capabilities.rs b/src/protocol/capabilities.rs
+index d7724919..7b56f310 100644
+--- a/src/protocol/capabilities.rs
++++ b/src/protocol/capabilities.rs
+@@ -18,20 +18,23 @@ pub const HOOK_PARSE_FAILURE_REPORT: &str = "hook.parse_failure_report";
+ pub const SERVICE_SEND_V1: &str = "service.send_v1";
+ pub const HARNESS_EVIDENCE_V2: &str = "hook.harness_evidence_v2";
+ pub const HARNESS_EVIDENCE: &str = "hook.harness_evidence";
+ pub const HARNESS_HEALTH_V2: &str = "harness.health_v2";
+ pub const HARNESS_STATES: &str = "harness.states";
+ pub const SEAT_MANAGED_LAUNCH: &str = "seat.managed_launch";
+ pub const PARTICIPANT_LOCATIONS: &str = "participants.locations_v1";
+ 
+ pub const THREAD_JOIN: &str = "thread.join_v1";
+ 
++/// Advertise only once canonical invitation lifecycle handlers honor this policy.
++pub const INVITATION_CONFIRMATION_V1: &str = "invitation.confirmation_v1";
++
+ pub const INVITATION_REJECT: &str = "invitation.reject_v1";
+ 
+ pub const LAZY_SEND: &str = "send.lazy_v1";
+ pub const INBOX_BATCH_V2: &str = "inbox.batch_v2";
+ pub const MESSAGE_DELIVERY_MODES: &str = "messages.delivery_modes_v1";
+ /// Lazy rows in the attention digest (`AttentionDigestQuery.lazy`) and
+ /// `CompleteInboxDelivery.via = hook_context` (standard hook inbox pages).
+ pub const LAZY_HOOK_DELIVERY: &str = "hook.lazy_delivery_v1";
+ 
+ pub const INBOX_BATCH: &str = "inbox.batch_v1";
+diff --git a/src/protocol/commands.rs b/src/protocol/commands.rs
+index 40ef9443..2dc67d60 100644
+--- a/src/protocol/commands.rs
++++ b/src/protocol/commands.rs
+@@ -657,26 +657,37 @@ pub struct CreateThread {
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub name: Option<String>,
+     pub topic: String,
+     pub goal: String,
+     pub operation: OperationId,
+     pub claim: CallerClaim,
+ }
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(deny_unknown_fields)]
+ pub struct Invite {
++    /// Absence preserves the historical timed invitation and its operation digest.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub confirmation: Option<InvitationConfirmation>,
+     pub thread: ThreadId,
+     pub seat: SeatId,
+     pub deadline_millis: Option<u64>,
+     pub operation: OperationId,
+     pub claim: CallerClaim,
+ }
++/// Explicit modern invitation policy; the duration remains `deadline_millis`.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum InvitationConfirmation {
++    Lazy,
++    RequireAck,
++}
++
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(deny_unknown_fields)]
+ pub struct Join {
+     pub thread: ThreadId,
+     pub operation: OperationId,
+     pub claim: CallerClaim,
+ }
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(deny_unknown_fields)]
+ pub struct Accept {
+@@ -1079,20 +1090,32 @@ impl Command {
+             Self::CreateThread(create) if create.goal.is_empty() || create.goal.len() > 1024 => {
+                 Err("invalid thread goal byte bound")
+             }
+             Self::CreateThread(create) => {
+                 create.name.as_deref().map_or(Ok(()), validate_thread_name)
+             }
+             Self::SetThreadName(change) => {
+                 change.name.as_deref().map_or(Ok(()), validate_thread_name)
+             }
+             Self::ResolveThread(query) => validate_thread_name(&query.selector),
++            Self::Invite(invite)
++                if invite.confirmation == Some(InvitationConfirmation::Lazy)
++                    && invite.deadline_millis.is_some() =>
++            {
++                Err("lazy invitation conflicts with deadline")
++            }
++            Self::Invite(invite)
++                if invite.confirmation == Some(InvitationConfirmation::RequireAck)
++                    && invite.claim.harness == crate::protocol::authority::Harness::Human =>
++            {
++                Err("human invitation cannot require agent confirmation")
++            }
+             Self::Invite(invite) if invite.deadline_millis == Some(0) => {
+                 Err("deadline must be positive")
+             }
+             Self::SummarySubmit(submit) if !submit.submission.is_object() => {
+                 Err("summary submission must be a JSON object")
+             }
+             Self::HotThreads(query)
+                 if query.limit == 0 || query.limit > crate::protocol::results::MAX_HOT_THREADS =>
+             {
+                 Err("invalid hot thread limit")
+diff --git a/src/store/control.rs b/src/store/control.rs
+index e02e3308..e062064e 100644
+--- a/src/store/control.rs
++++ b/src/store/control.rs
+@@ -1517,20 +1517,28 @@ fn create_thread_impl(
+ /// Invite a nonretired seat. A pending episode is immutable, including its
+ /// deadline, even when the caller requests a different duration later.
+ pub fn invite(
+     context: &StoreContext,
+     conn: &mut Connection,
+     budget: &CallBudget,
+     command: &Invite,
+     mut permit: MutationPermit,
+     installation_default_ms: Option<u64>,
+ ) -> Result<CommandResult, ApiError> {
++    // Activation boundary: replace this refusal only when the canonical lifecycle
++    // honors confirmation and advertises INVITATION_CONFIRMATION_V1.
++    if command.confirmation.is_some() {
++        return Err(api_error(
++            ErrorCode::Unsupported,
++            "invitation confirmation lifecycle is not active",
++        ));
++    }
+     let duration = command
+         .deadline_millis
+         .or(installation_default_ms)
+         .unwrap_or(300_000);
+     let duration = i64::try_from(duration)
+         .map_err(|_| api_error(ErrorCode::InvalidRequest, "invitation duration too large"))?;
+     if duration <= 0 {
+         return Err(api_error(
+             ErrorCode::InvalidRequest,
+             "invitation duration must be positive",
+diff --git a/src/store/schema.rs b/src/store/schema.rs
+index a24969c2..5c87cd32 100644
+--- a/src/store/schema.rs
++++ b/src/store/schema.rs
+@@ -57,21 +57,23 @@ const V18: &str = include_str!("../../migrations/0018_warning_conditions.sql");
+ const V19: &str = include_str!("../../migrations/0019_thread_names.sql");
+ const V20: &str = include_str!("../../migrations/0020_recent_activity.sql");
+ const V21: &str = include_str!("../../migrations/0021_invitation_rejections.sql");
+ const V22: &str = include_str!("../../migrations/0022_user_message_intent.sql");
+ const V23: &str = include_str!("../../migrations/0023_channel_archival.sql");
+ const V24: &str = include_str!("../../migrations/0024_harness_contract_diagnostics.sql");
+ const V25: &str = include_str!("../../migrations/0025_warning_notice_delivery.sql");
+ const V26: &str = include_str!("../../migrations/0026_lazy_message_delivery.sql");
+ const V27: &str = include_str!("../../migrations/0027_harness_adapters.sql");
+ const V28: &str = include_str!("../../migrations/0028_handoff_topology.sql");
+-pub(crate) const LATEST_VERSION: i64 = 28;
++const V29: &str = include_str!("../../migrations/0029_invitation_confirmation.sql");
++
++pub(crate) const LATEST_VERSION: i64 = 29;
+ 
+ /// Decode only persisted results, after the caller's digest has matched. Live
+ /// protocol responses still require disposition. Missing original context
+ /// cannot be recovered from today's occupant without inventing historical data.
+ fn decode_stored_result(json: &str) -> Result<CommandResult, ApiError> {
+     let mut value: serde_json::Value = serde_json::from_str(json).map_err(|e| {
+         api_error(
+             ErrorCode::StoreCorrupt,
+             format!("invalid stored result: {e}"),
+         )
+@@ -159,20 +161,21 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
+                 .and_then(|_| conn.execute_batch(V19))
+                 .and_then(|_| conn.execute_batch(V20))
+                 .and_then(|_| conn.execute_batch(V21))
+                 .and_then(|_| conn.execute_batch(V22))
+                 .and_then(|_| conn.execute_batch(V23))
+                 .and_then(|_| conn.execute_batch(V24))
+                 .and_then(|_| conn.execute_batch(V25))
+                 .and_then(|_| conn.execute_batch(V26))
+                 .and_then(|_| conn.execute_batch(V27))
+                 .and_then(|_| conn.execute_batch(V28))
++                .and_then(|_| conn.execute_batch(V29))
+                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
+             match result {
+                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+                 Err(error) => {
+                     let _ = conn.execute_batch("ROLLBACK");
+                     return Err(store_error(error));
+                 }
+             }
+             verify_existing(conn)
+         }
+@@ -399,21 +402,21 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
+         }
+         16 => {
+             verify_existing_v13_shape(conn)?;
+             verify_existing_v14(conn)?;
+             verify_existing_v15(conn)?;
+             verify_existing_v16(conn)?;
+             migrate_v16_to_v17(conn)?;
+             verify_existing(conn)
+         }
+         17 => verify_existing(conn),
+-        18..=28 => verify_existing(conn),
++        18..=29 => verify_existing(conn),
+         _ => Err(api_error(
+             ErrorCode::IncompatibleSchema,
+             format!("unsupported schema version {version}"),
+         )),
+     }?;
+     if (1..=17).contains(&version) {
+         migrate_v17_to_v18(conn)?;
+     }
+     verify_existing_v18(conn)?;
+     if (1..=18).contains(&version) {
+@@ -567,21 +570,82 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
+                     .map_err(store_error)
+             });
+         match result {
+             Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+             Err(error) => {
+                 let _ = conn.execute_batch("ROLLBACK");
+                 return Err(error);
+             }
+         }
+     }
+-    verify_existing_v28(conn)
++    verify_existing_v28(conn)?;
++    if (1..=28).contains(&version) {
++        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
++        let result = conn
++            .execute_batch(V29)
++            .map_err(store_error)
++            .and_then(|_| verify_existing_v29(conn))
++            .and_then(|_| {
++                conn.pragma_update(None, "user_version", 29)
++                    .map_err(store_error)
++            });
++        match result {
++            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
++            Err(error) => {
++                let _ = conn.execute_batch("ROLLBACK");
++                return Err(error);
++            }
++        }
++    }
++    verify_existing_v29(conn)
++}
++
++fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
++    let table: String = conn
++        .query_row(
++            "SELECT sql FROM sqlite_master WHERE type='table' AND name='invitations'",
++            [],
++            |row| row.get(0),
++        )
++        .map_err(store_error)?;
++    for column in [
++        "confirmation TEXT CHECK(confirmation IN ('lazy','require_ack'))",
++        "inviter_seat_id TEXT REFERENCES seats(id)",
++    ] {
++        if !table.contains(column) {
++            return Err(api_error(
++                ErrorCode::IncompatibleSchema,
++                "invalid invitation confirmation column",
++            ));
++        }
++    }
++    for statement in V29.split("\n\n").filter(|sql| sql.starts_with("CREATE ")) {
++        let expected = statement.trim().trim_end_matches(';');
++        let mut words = expected.split_whitespace().skip(1);
++        let kind = words.next().unwrap_or_default().to_ascii_lowercase();
++        let name = words.next().unwrap_or_default();
++        let actual: Option<String> = conn
++            .query_row(
++                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
++                params![kind, name],
++                |row| row.get(0),
++            )
++            .optional()
++            .map_err(store_error)?;
++        if actual.as_deref().map(str::trim) != Some(expected) {
++            return Err(api_error(
++                ErrorCode::IncompatibleSchema,
++                format!("missing or altered invitation confirmation {kind} {name}"),
++            ));
++        }
++    }
++    Ok(())
+ }
+ 
+ fn verify_existing_v26(conn: &Connection) -> Result<(), ApiError> {
+     // Compare every lazy object, including trigger bodies with embedded semicolons.
+     let ddl = V26
+         .lines()
+         .filter(|line| !line.trim_start().starts_with("--"))
+         .collect::<Vec<_>>()
+         .join("\n");
+     for statement in ddl
+diff --git a/src/test_support/history.rs b/src/test_support/history.rs
+index 8dc3f177..672e15f2 100644
+--- a/src/test_support/history.rs
++++ b/src/test_support/history.rs
+@@ -597,20 +597,21 @@ pub fn write_pending_invitations(
+         })? {
+             CommandResult::ThreadCreated(thread) => thread,
+             other => {
+                 return Err(api_error(
+                     ErrorCode::StoreCorrupt,
+                     format!("unexpected thread result {other:?}"),
+                 ));
+             }
+         };
+         let invite = Invite {
++            confirmation: None,
+             thread: thread.clone(),
+             seat: SeatId::new(invitee),
+             deadline_millis: Some(deadline_millis),
+             operation: OperationId::new(format!("{tag}-invite-{n}")),
+             claim: from.claim(),
+         };
+         let digest = control::cooperative_payload_hash("invite", &invite)?;
+         match with_retries(|| {
+             let permit = from.permit(
+                 context,
+diff --git a/tests/cli/cooperative.rs b/tests/cli/cooperative.rs
+index 0a6e0c56..06cf8db2 100644
+--- a/tests/cli/cooperative.rs
++++ b/tests/cli/cooperative.rs
+@@ -4586,20 +4586,21 @@ mod main539_composition {
+         assert_eq!(snapshot(), before);
+         assert!(!paths.descriptor_path.exists());
+         assert!(!paths.database_path.exists());
+         assert!(!paths.instance_dir.join("contexts").exists());
+     }
+ 
+     #[test]
+     fn joined_result_is_refused_by_handoff_invitation_stage_and_durable_retry() {
+         let f = Fixture::new(false);
+         let invite = SemanticMutation::Invite {
++            confirmation: None,
+             thread: ThreadId::new("t"),
+             seat: SeatId::new("recipient"),
+             deadline_millis: None,
+         };
+         let reference = f
+             .journal
+             .record(
+                 IntentScope::Cooperative {
+                     instance: f.claim.instance.clone(),
+                     seat: f.claim.seat.clone(),
+@@ -5157,10 +5158,104 @@ fn frozen_human_ordinary_retry_pending_canonical_refuses() {
+     assert!(
+         fx.client
+             .calls
+             .lock()
+             .unwrap()
+             .iter()
+             .any(|command| matches!(command, Command::CreateThread(_))),
+         "refusal must come from canonical replay, after frozen dispatch"
+     );
+ }
++
++#[test]
++fn invitation_confirmation_saved_intent_retains_explicit_mode_and_legacy_bytes() {
++    let legacy = r#"{"kind":"invite","thread":"t","seat":"s","deadline_millis":null}"#;
++    let semantic: SemanticMutation = serde_json::from_str(legacy).unwrap();
++    assert_eq!(serde_json::to_string(&semantic).unwrap(), legacy);
++    for mode in ["lazy", "require_ack"] {
++        let mut modern: serde_json::Value = serde_json::from_str(legacy).unwrap();
++        modern["confirmation"] = serde_json::json!(mode);
++        let semantic: SemanticMutation = serde_json::from_value(modern.clone()).unwrap();
++        assert_eq!(serde_json::to_value(&semantic).unwrap(), modern);
++        let wire = semantic
++            .to_command(OperationId::new("op"), Some(claim()))
++            .unwrap();
++        assert_eq!(
++            serde_json::to_value(wire).unwrap()["args"]["confirmation"],
++            mode
++        );
++    }
++}
++
++#[test]
++fn invitation_confirmation_capability_refuses_modern_and_bypasses_legacy() {
++    use crate::protocol::{
++        results::{ApiError, CapabilityList},
++        time::{CallBudget, Clock, MonoInstant, UtcMillis},
++    };
++    struct Time;
++    impl Clock for Time {
++        fn utc_now(&self) -> UtcMillis {
++            UtcMillis(0)
++        }
++        fn monotonic_now(&self) -> MonoInstant {
++            MonoInstant(0)
++        }
++    }
++    struct Client {
++        supported: bool,
++        calls: std::sync::atomic::AtomicUsize,
++    }
++    impl crate::ports::LocalClient for Client {
++        fn call_with_output(
++            &self,
++            command: Command,
++            _: &crate::protocol::output::OutputSpec,
++            budget: &CallBudget,
++        ) -> Result<CommandResult, ApiError> {
++            self.call(command, budget)
++        }
++        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
++            assert_eq!(
++                command,
++                Command::Capabilities,
++                "negotiation must not submit a mutation"
++            );
++            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
++            Ok(CommandResult::Capabilities(CapabilityList {
++                capabilities: if self.supported {
++                    vec![crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.into()]
++                } else {
++                    vec![]
++                },
++            }))
++        }
++    }
++    let legacy: SemanticMutation =
++        serde_json::from_str(r#"{"kind":"invite","thread":"t","seat":"s","deadline_millis":null}"#)
++            .unwrap();
++    for supported in [false, true] {
++        let client = Client {
++            supported,
++            calls: std::sync::atomic::AtomicUsize::new(0),
++        };
++        super::require_invitation_confirmation_capability(&client, &Time, &legacy).unwrap();
++        assert_eq!(
++            client.calls.load(std::sync::atomic::Ordering::SeqCst),
++            0,
++            "old intents require no new capability"
++        );
++        for mode in ["lazy", "require_ack"] {
++            let modern: SemanticMutation = serde_json::from_value(serde_json::json!({"kind":"invite","thread":"t","seat":"s","deadline_millis":null,"confirmation":mode})).unwrap();
++            assert_eq!(
++                super::require_invitation_confirmation_capability(&client, &Time, &modern).is_ok(),
++                supported
++            );
++            let frozen = SemanticMutation::freeze(modern, claim()).unwrap();
++            assert_eq!(
++                super::require_invitation_confirmation_capability(&client, &Time, &frozen).is_ok(),
++                supported
++            );
++        }
++        assert_eq!(client.calls.load(std::sync::atomic::Ordering::SeqCst), 4);
++    }
++}
+diff --git a/tests/cli/handoff_delivery.rs b/tests/cli/handoff_delivery.rs
+index 6439ab7b..92b4dd93 100644
+--- a/tests/cli/handoff_delivery.rs
++++ b/tests/cli/handoff_delivery.rs
+@@ -638,20 +638,21 @@ fn canonical_invitation_loss_and_old_replay_leave_new_episode_pending() {
+                 thread: ThreadId::new(thread.clone()),
+                 operation: crate::protocol::ids::OperationId::new("recipient-leaves"),
+                 claim: recipient,
+             }),
+             &budget,
+         )
+         .unwrap();
+     let next = client
+         .canonical(
+             Command::Invite(crate::protocol::commands::Invite {
++                confirmation: None,
+                 thread: ThreadId::new(thread.clone()),
+                 seat: SeatId::new("recipient"),
+                 deadline_millis: None,
+                 operation: crate::protocol::ids::OperationId::new("another-invitation"),
+                 claim: canonical_claim(),
+             }),
+             &budget,
+         )
+         .unwrap();
+     let CommandResult::Invitation(second) = next else {
+@@ -772,20 +773,21 @@ fn canonical_pending_invitation_is_reused_in_existing_channel() {
+             }),
+             &budget,
+         )
+         .unwrap();
+     let CommandResult::ThreadCreated(thread) = created else {
+         panic!("not created")
+     };
+     let initial = client
+         .canonical(
+             Command::Invite(crate::protocol::commands::Invite {
++                confirmation: None,
+                 thread: thread.clone(),
+                 seat: SeatId::new("recipient"),
+                 deadline_millis: None,
+                 operation: crate::protocol::ids::OperationId::new("prior-invite"),
+                 claim: canonical_claim(),
+             }),
+             &budget,
+         )
+         .unwrap();
+     let CommandResult::Invitation(invitation) = initial else {
+diff --git a/tests/handoff_topology_authority.rs b/tests/handoff_topology_authority.rs
+index a834e860..0705058d 100644
+--- a/tests/handoff_topology_authority.rs
++++ b/tests/handoff_topology_authority.rs
+@@ -540,20 +540,21 @@ fn live_cached_replay(phase: &str) {
+         request.action = if phase == "create" {
+             DeliveryAction::Create(herdr_threads::protocol::commands::CreateThread {
+                 name: None,
+                 topic: "new".into(),
+                 goal: "new".into(),
+                 claim: request.claim.clone(),
+                 operation: request.plan.payload.keys.create.clone(),
+             })
+         } else if phase == "invite" {
+             DeliveryAction::Invite(herdr_threads::protocol::commands::Invite {
++                confirmation: None,
+                 thread: request.plan.payload.channel.thread().unwrap().clone(),
+                 seat: request.plan.recipient.clone(),
+                 deadline_millis: None,
+                 claim: request.claim.clone(),
+                 operation: request.plan.payload.keys.invite.clone(),
+             })
+         } else {
+             DeliveryAction::Send(herdr_threads::protocol::commands::SendMessage {
+                 delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
+                 thread: request.plan.payload.channel.thread().unwrap().clone(),
+diff --git a/tests/integration/channel_activation.rs b/tests/integration/channel_activation.rs
+index 37ddaa60..ab565dd3 100644
+--- a/tests/integration/channel_activation.rs
++++ b/tests/integration/channel_activation.rs
+@@ -360,20 +360,21 @@ fn channel_activation_cli_complete_removal_failure_archived_binding_retry_is_cle
+             goal: "goal".into(),
+         }
+         .to_command(plan.create_key.clone(), Some(claim.clone()))
+         .unwrap(),
+     );
+     let CommandResult::ThreadCreated(thread) = created else {
+         panic!("expected thread")
+     };
+     let invitation = w.call(
+         SemanticMutation::Invite {
++            confirmation: None,
+             thread: thread.clone(),
+             seat: recipient,
+             deadline_millis: None,
+         }
+         .to_command(plan.invite_key.clone(), Some(claim.clone()))
+         .unwrap(),
+     );
+     let message = w.call(
+         SemanticMutation::SendMessage {
+             delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
+diff --git a/tests/integration/lazy_attention.rs b/tests/integration/lazy_attention.rs
+index bb033c11..8b6e6267 100644
+--- a/tests/integration/lazy_attention.rs
++++ b/tests/integration/lazy_attention.rs
+@@ -729,20 +729,21 @@ fn lazy_attention_mixed_ordinary_positive_controls() {
+         )
+         .unwrap()
+             > 0
+     );
+     assert!(
+         f.count("warning_conditions") > 0,
+         "unavailable ordinary audience warns"
+     );
+     f.member("outsider", "resolved", "left", Harness::Codex);
+     f.mutate(PermitMutation::Invite(Invite {
++        confirmation: None,
+         thread: ThreadId::new("t"),
+         seat: SeatId::new("outsider"),
+         deadline_millis: None,
+         operation: OperationId::new("invite"),
+         claim: f.claim("author"),
+     }))
+     .unwrap();
+     let digest = |seat| {
+         attention::seat_digest(&f.db, "i", &SeatId::new(seat), &|| Ok(()))
+             .unwrap()
+diff --git a/tests/integration/topology_activation.rs b/tests/integration/topology_activation.rs
+index 380e0797..b60bd66d 100644
+--- a/tests/integration/topology_activation.rs
++++ b/tests/integration/topology_activation.rs
+@@ -1137,20 +1137,21 @@ fn elected_public_new_tab_completes_one_native_create_and_start_then_replays_his
+         identity: completed.attachment.handoff.clone(),
+         operation: identity.payload.handoff.keys.begin.clone(),
+     };
+     let old_begin: (Vec<u8>, String) = f.db().query_row("SELECT digest,result_json FROM operations WHERE actor_scope='seat:sender' AND operation_key=?1", [identity.payload.handoff.keys.begin.as_str()], |r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+     assert_eq!(
+         old_begin.0,
+         herdr_threads::store::control::cooperative_payload_hash("begin_handoff", &legacy_begin)
+             .unwrap()
+     );
+     let invite = Command::Invite(herdr_threads::protocol::commands::Invite {
++        confirmation: None,
+         thread: completed.retained.thread.clone(),
+         seat: completed.retained.recipient.clone(),
+         deadline_millis: None,
+         operation: identity.payload.handoff.keys.invite.clone(),
+         claim: identity.claim.clone(),
+     });
+     let send = Command::SendMessage(herdr_threads::protocol::commands::SendMessage {
+         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
+         thread: completed.retained.thread.clone(),
+         body: identity.payload.handoff.body.clone(),
+@@ -1431,20 +1432,21 @@ fn elected_live_registered_phase_replays_recheck_current_caller_recipient_and_pa
+     .unwrap();
+     let thread: herdr_threads::protocol::ids::ThreadId =
+         herdr_threads::protocol::ids::ThreadId::new(
+             f.db()
+                 .query_row("SELECT thread_id FROM bootstrap_handoffs", [], |r| {
+                     r.get::<_, String>(0)
+                 })
+                 .unwrap(),
+         );
+     let invite = Command::Invite(herdr_threads::protocol::commands::Invite {
++        confirmation: None,
+         thread: thread.clone(),
+         seat: attachment.resolved_seat.clone(),
+         deadline_millis: None,
+         operation: identity.payload.handoff.keys.invite.clone(),
+         claim: identity.claim.clone(),
+     });
+     let send = Command::SendMessage(herdr_threads::protocol::commands::SendMessage {
+         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
+         thread,
+         body: identity.payload.handoff.body.clone(),
+diff --git a/tests/protocol/capabilities.rs b/tests/protocol/capabilities.rs
+index 5a870b9e..da23bc3f 100644
+--- a/tests/protocol/capabilities.rs
++++ b/tests/protocol/capabilities.rs
+@@ -1651,10 +1651,51 @@ fn probe_thread_join() {
+         command
+     );
+     assert_eq!(
+         handler
+             .handle(command, PeerIdentity::from_kernel(501), &budget())
+             .unwrap_err()
+             .code,
+         ErrorCode::NotFound
+     );
+ }
++
++#[test]
++fn invitation_confirmation_wire_preserves_legacy_and_distinguishes_modern_requests() {
++    let legacy = r#"{"kind":"invite","args":{"thread":"t","seat":"s","deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}}"#;
++    let original: serde_json::Value = serde_json::from_str(legacy).unwrap();
++    let historical: Command = serde_json::from_str(legacy).unwrap();
++    assert_eq!(serde_json::to_string(&historical).unwrap(), legacy);
++    let digest = crate::store::schema::canonical_digest(&historical).unwrap();
++    let digest_hex = digest
++        .iter()
++        .map(|byte| format!("{byte:02x}"))
++        .collect::<String>();
++    assert_eq!(
++        digest_hex,
++        "828be585cb68fe75bc8decd1a9d5e23f5f8c5e2da738fb9bb4bb175e8430d3ad"
++    );
++    for mode in ["lazy", "require_ack"] {
++        let mut modern = original.clone();
++        modern["args"]["confirmation"] = serde_json::json!(mode);
++        let command: Command = serde_json::from_value(modern.clone()).unwrap();
++        assert_eq!(serde_json::to_value(&command).unwrap(), modern);
++        assert_ne!(
++            crate::store::schema::canonical_digest(&command).unwrap(),
++            crate::store::schema::canonical_digest(&historical).unwrap()
++        );
++        assert!(command.validate().is_ok());
++        if mode == "require_ack" {
++            modern["args"]["deadline_millis"] = serde_json::json!(17);
++            let timed: Command = serde_json::from_value(modern.clone()).unwrap();
++            assert_eq!(serde_json::to_value(&timed).unwrap(), modern);
++            assert!(timed.validate().is_ok());
++            modern["args"]["claim"]["harness"] = serde_json::json!("human");
++            let human: Command = serde_json::from_value(modern).unwrap();
++            assert!(human.validate().is_err());
++        } else {
++            modern["args"]["deadline_millis"] = serde_json::json!(10);
++            let conflict: Command = serde_json::from_value(modern).unwrap();
++            assert!(conflict.validate().is_err());
++        }
++    }
++}
+diff --git a/tests/service/cooperative.rs b/tests/service/cooperative.rs
+index 76d09c00..4af2890a 100644
+--- a/tests/service/cooperative.rs
++++ b/tests/service/cooperative.rs
+@@ -223,20 +223,21 @@ fn explicit_send_accept_and_ack_are_separate_sqlite_decisions() {
+             peer,
+             &budget(),
+         )
+         .unwrap();
+     let CommandResult::ThreadCreated(created) = created else {
+         panic!("wrong result")
+     };
+     service
+         .handle(
+             Command::Invite(Invite {
++                confirmation: None,
+                 thread: created.clone(),
+                 seat: SeatId::new("recipient"),
+                 deadline_millis: None,
+                 operation: OperationId::new("invite"),
+                 claim: sender.clone(),
+             }),
+             peer,
+             &budget(),
+         )
+         .unwrap();
+@@ -993,20 +994,21 @@ fn sends_succeed_after_host_outage_epoch_advance_and_reconfirmation() {
+             peer,
+             &budget(),
+         )
+         .unwrap()
+     else {
+         panic!("wrong result")
+     };
+     service
+         .handle(
+             Command::Invite(Invite {
++                confirmation: None,
+                 thread: thread.clone(),
+                 seat: SeatId::new("recipient"),
+                 deadline_millis: None,
+                 operation: OperationId::new("invite"),
+                 claim: sender.clone(),
+             }),
+             peer,
+             &budget(),
+         )
+         .unwrap();
+@@ -1202,20 +1204,21 @@ fn send_before_first_pass_to_structurally_continuous_seat_has_no_warning() {
+             &budget(),
+         )
+         .unwrap()
+     else {
+         panic!("wrong result")
+     };
+     for (op, command) in [
+         (
+             "invite",
+             Command::Invite(Invite {
++                confirmation: None,
+                 thread: thread.clone(),
+                 seat: SeatId::new("recipient"),
+                 deadline_millis: None,
+                 operation: OperationId::new("invite"),
+                 claim: sender.clone(),
+             }),
+         ),
+         (
+             "accept",
+             Command::Accept(Accept {
+diff --git a/tests/service/crash_matrix.rs b/tests/service/crash_matrix.rs
+index cfda3320..5fa34b56 100644
+--- a/tests/service/crash_matrix.rs
++++ b/tests/service/crash_matrix.rs
+@@ -279,20 +279,21 @@ impl Matrix {
+ 
+     fn invite_with_deadline(
+         &self,
+         claim: &CallerClaim,
+         thread: &ThreadId,
+         seat: &str,
+         deadline_millis: Option<u64>,
+         op: &str,
+     ) {
+         self.handle(Command::Invite(Invite {
++            confirmation: None,
+             thread: thread.clone(),
+             seat: SeatId::new(seat),
+             deadline_millis,
+             operation: OperationId::new(op),
+             claim: claim.clone(),
+         }))
+         .unwrap();
+     }
+ 
+     fn accept(
+diff --git a/tests/store/control.rs b/tests/store/control.rs
+index ac5e1d7b..0755aa4b 100644
+--- a/tests/store/control.rs
++++ b/tests/store/control.rs
+@@ -1936,20 +1936,21 @@ fn native_ordinary_offer_after_required_offer_can_be_accepted_after_join() {
+             thread: thread.clone(),
+             seat: SeatId::new("s2"),
+             constraint: InvitationConstraint::Required,
+             deadline_millis: Some(1000),
+             operation: OperationId::new("required-native-offer"),
+         }),
+     ) else {
+         panic!()
+     };
+     let native_invite = Invite {
++        confirmation: None,
+         thread: thread.clone(),
+         seat: SeatId::new("s2"),
+         deadline_millis: Some(1000),
+         operation: OperationId::new("native-independent-offer"),
+         claim: claim("s1"),
+     };
+     let invite_hash = cooperative_payload_hash("invite", &native_invite).unwrap();
+     let CommandResult::Invitation(ordinary) = invite(
+         &context,
+         &mut conn,
+@@ -3458,20 +3459,21 @@ fn pending_reinvite_keeps_first_deadline_and_new_invites_use_precedence() {
+         panic!("create failed")
+     };
+     let initial_revision: i64 = conn
+         .query_row(
+             "SELECT membership_revision FROM threads WHERE id=?1",
+             [thread.as_str()],
+             |r| r.get(0),
+         )
+         .unwrap();
+     let first = Invite {
++        confirmation: None,
+         thread: thread.clone(),
+         seat: SeatId::new("s2"),
+         deadline_millis: None,
+         operation: OperationId::new("invite1"),
+         claim: claim("s1"),
+     };
+     let hash = cooperative_payload_hash("invite", &first).unwrap();
+     let CommandResult::Invitation(invitation) = invite(
+         &context,
+         &mut conn,
+@@ -3502,20 +3504,21 @@ fn pending_reinvite_keeps_first_deadline_and_new_invites_use_precedence() {
+     assert!(invited_revision > initial_revision);
+     let saved: (i64, i64) = conn
+         .query_row(
+             "SELECT frozen_duration_ms, deadline_at FROM invitations WHERE id=?1",
+             [invitation.as_str()],
+             |r| Ok((r.get(0)?, r.get(1)?)),
+         )
+         .unwrap();
+     assert_eq!(saved, (120_000, 120_100));
+     let again = Invite {
++        confirmation: None,
+         deadline_millis: Some(500_000),
+         operation: OperationId::new("invite2"),
+         ..first
+     };
+     let hash = cooperative_payload_hash("invite", &again).unwrap();
+     let result = invite(
+         &context,
+         &mut conn,
+         &crate::protocol::time::CallBudget {
+             deadline: MonoInstant(u64::MAX),
+@@ -3638,20 +3641,21 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
+             "c",
+             ObligationRef::CheckIn(SeatId::new("s1")),
+             hash,
+             100,
+         ),
+     )
+     .unwrap() else {
+         panic!()
+     };
+     let invitation_request = Invite {
++        confirmation: None,
+         thread: thread.clone(),
+         seat: SeatId::new("s2"),
+         deadline_millis: None,
+         operation: OperationId::new("i"),
+         claim: claim("s1"),
+     };
+     let hash = cooperative_payload_hash("invite", &invitation_request).unwrap();
+     let CommandResult::Invitation(invitation) = invite(
+         &context,
+         &mut conn,
+@@ -3704,20 +3708,21 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
+                 "accept",
+                 ObligationRef::Invitation(invitation.clone()),
+                 hash,
+                 300_100
+             )
+         )
+         .unwrap(),
+         CommandResult::Accepted(invitation.clone().into())
+     );
+     let joined_invite = Invite {
++        confirmation: None,
+         thread: thread.clone(),
+         seat: SeatId::new("s2"),
+         deadline_millis: Some(1),
+         operation: OperationId::new("invite-accepted"),
+         claim: claim("s1"),
+     };
+     let joined_hash = cooperative_payload_hash("invite", &joined_invite).unwrap();
+     assert_eq!(
+         invite(
+             &context,
+@@ -4711,20 +4716,21 @@ fn inviting_directly_joined_creator_is_truthful_replayable_noop() {
+             "create-creator",
+             ObligationRef::CheckIn(SeatId::new("s1")),
+             create_hash,
+             100,
+         ),
+     )
+     .unwrap() else {
+         panic!()
+     };
+     let request = Invite {
++        confirmation: None,
+         thread: thread.clone(),
+         seat: SeatId::new("s1"),
+         deadline_millis: Some(42),
+         operation: OperationId::new("invite-creator"),
+         claim: claim("s1"),
+     };
+     let digest = cooperative_payload_hash("invite", &request).unwrap();
+     let expected = CommandResult::AlreadyJoined(crate::protocol::results::AlreadyJoined {
+         thread: thread.clone(),
+         seat: SeatId::new("s1"),
+@@ -8838,20 +8844,21 @@ fn rejection_offer_with_recipient_harness(
+             "create",
+             ObligationRef::CheckIn(SeatId::new("s1")),
+             hash,
+             100,
+         ),
+     )
+     .unwrap() else {
+         panic!()
+     };
+     let offer = Invite {
++        confirmation: None,
+         thread: thread.clone(),
+         seat: SeatId::new("s2"),
+         deadline_millis: Some(10),
+         operation: OperationId::new("invite"),
+         claim: claim("s1"),
+     };
+     let hash = cooperative_payload_hash("invite", &offer).unwrap();
+     let CommandResult::Invitation(invitation) = invite(
+         &context,
+         &mut conn,
+@@ -9603,20 +9610,21 @@ fn invitation_rejection_accept_races_have_one_winner_and_reinvite_is_fresh() {
+             );
+         } else {
+             let original = rejection_call(&context, &mut conn, &command, 100).unwrap();
+             assert_eq!(
+                 rejection_accept(&context, &mut conn, &thread, &invitation)
+                     .unwrap_err()
+                     .code,
+                 ErrorCode::Conflict
+             );
+             let offer = Invite {
++                confirmation: None,
+                 thread: thread.clone(),
+                 seat: SeatId::new("s2"),
+                 deadline_millis: Some(50),
+                 operation: OperationId::new("reinvite"),
+                 claim: claim("s1"),
+             };
+             let hash = cooperative_payload_hash("invite", &offer).unwrap();
+             let CommandResult::Invitation(fresh) = invite(
+                 &context,
+                 &mut conn,
+@@ -9891,20 +9899,21 @@ fn invitation_rejection_restores_left_only_from_recorded_leave_evidence() {
+                 hash,
+                 100,
+             ),
+         )
+         .unwrap();
+         if !retain_evidence {
+             // A legacy closed interval without its matching leave event is insufficient.
+             conn.execute("UPDATE membership_intervals SET left_seq=left_seq+1000 WHERE thread_id=?1 AND seat_id='s2'",[thread.as_str()]).unwrap();
+         }
+         let offer = Invite {
++            confirmation: None,
+             thread: thread.clone(),
+             seat: SeatId::new("s2"),
+             deadline_millis: Some(50),
+             operation: OperationId::new("reinvite"),
+             claim: claim("s1"),
+         };
+         let hash = cooperative_payload_hash("invite", &offer).unwrap();
+         let CommandResult::Invitation(fresh) = invite(
+             &context,
+             &mut conn,
+@@ -10192,10 +10201,88 @@ fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not()
+                 crate::protocol::results::ErrorCode::CursorStale
+             );
+ 
+             drop(store);
+             drop(conn);
+             drop(context);
+             let _ = std::fs::remove_file(path);
+         }
+     }
+ }
++
++#[test]
++fn invitation_confirmation_refuses_wire_semantics_before_lifecycle_activation() {
++    let (context, mut conn, path, _) = bound_fixture(100);
++    let budget = crate::protocol::time::CallBudget {
++        deadline: MonoInstant(u64::MAX),
++        cancellation: Default::default(),
++    };
++    let create = CreateThread {
++        name: None,
++        topic: "topic".into(),
++        goal: "goal".into(),
++        operation: OperationId::new("create-confirmation"),
++        claim: claim("s1"),
++    };
++    let digest = cooperative_payload_hash("create_thread", &create).unwrap();
++    let CommandResult::ThreadCreated(thread) = create_thread(
++        &context,
++        &mut conn,
++        &budget,
++        &create,
++        permit(
++            "s1",
++            "create-confirmation",
++            ObligationRef::CheckIn(SeatId::new("s1")),
++            digest,
++            100,
++        ),
++    )
++    .unwrap() else {
++        panic!()
++    };
++    let before = conn.total_changes();
++    for confirmation in [
++        crate::protocol::commands::InvitationConfirmation::Lazy,
++        crate::protocol::commands::InvitationConfirmation::RequireAck,
++    ] {
++        let command = Invite {
++            confirmation: Some(confirmation),
++            thread: thread.clone(),
++            seat: SeatId::new("s2"),
++            deadline_millis: None,
++            operation: OperationId::new(format!("invite-{confirmation:?}")),
++            claim: claim("s1"),
++        };
++        let digest = cooperative_payload_hash("invite", &command).unwrap();
++        let error = invite(
++            &context,
++            &mut conn,
++            &budget,
++            &command,
++            permit(
++                "s1",
++                command.operation.as_str(),
++                ObligationRef::Control(thread.clone()),
++                digest,
++                100,
++            ),
++            None,
++        )
++        .unwrap_err();
++        assert_eq!(error.code, ErrorCode::Unsupported);
++    }
++    assert_eq!(
++        conn.total_changes(),
++        before,
++        "unsupported semantics must not write even operation results"
++    );
++    assert_eq!(
++        conn.query_row("SELECT count(*) FROM invitations", [], |r| r
++            .get::<_, i64>(0))
++            .unwrap(),
++        0
++    );
++    drop(conn);
++    drop(context);
++    let _ = std::fs::remove_file(path);
++}
+diff --git a/tests/store/cooperative_checkin.rs b/tests/store/cooperative_checkin.rs
+index 61fc65ed..10b02453 100644
+--- a/tests/store/cooperative_checkin.rs
++++ b/tests/store/cooperative_checkin.rs
+@@ -987,20 +987,21 @@ fn canonical_factory_matches_invite_topic_archive_reopen_and_leave_decisions() {
+         claim: first.context.clone(),
+         topic: "topic".into(),
+         goal: "goal".into(),
+         operation: OperationId::new("create"),
+     })) else {
+         panic!()
+     };
+     conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('other','i','resolved','native','other-target',0,0,0)",[]).unwrap();
+     assert!(matches!(
+         run(PermitMutation::Invite(Invite {
++            confirmation: None,
+             claim: first.context.clone(),
+             thread: thread.clone(),
+             seat: SeatId::new("other"),
+             deadline_millis: Some(1000),
+             operation: OperationId::new("invite")
+         })),
+         CommandResult::Invitation(_)
+     ));
+     assert_eq!(
+         run(PermitMutation::SetTopic(SetTopic {
+diff --git a/tests/store/facade.rs b/tests/store/facade.rs
+index 32b012bd..277fe025 100644
+--- a/tests/store/facade.rs
++++ b/tests/store/facade.rs
+@@ -1524,20 +1524,21 @@ fn public_facade_creates_invites_sends_accepts_acks_and_archives_with_stable_ids
+         goal: "goal".into(),
+         operation: OperationId::new("create"),
+         claim: fixture_claim("s1", "s1"),
+     };
+     let CommandResult::ThreadCreated(thread) =
+         permitted(&store, PermitMutation::CreateThread(create.clone())).unwrap()
+     else {
+         panic!()
+     };
+     let invite = Invite {
++        confirmation: None,
+         thread: thread.clone(),
+         seat: SeatId::new("s2"),
+         deadline_millis: Some(1000),
+         operation: OperationId::new("invite"),
+         claim: fixture_claim("s1", "s1"),
+     };
+     let CommandResult::Invitation(invitation) =
+         permitted(&store, PermitMutation::Invite(invite.clone())).unwrap()
+     else {
+         panic!()
+@@ -1758,20 +1759,21 @@ fn join_hint_fixture_inner(
+         goal: "goal".into(),
+         operation: OperationId::new("create"),
+         claim: fixture_claim("s1", "s1"),
+     };
+     let CommandResult::ThreadCreated(thread) =
+         permitted(&store, PermitMutation::CreateThread(create.clone())).unwrap()
+     else {
+         panic!()
+     };
+     let invite = Invite {
++        confirmation: None,
+         thread: thread.clone(),
+         seat: SeatId::new("s2"),
+         deadline_millis: Some(1000),
+         operation: OperationId::new("invite"),
+         claim: fixture_claim("s1", "s1"),
+     };
+     let invitation = if with_invitation {
+         let CommandResult::Invitation(invitation) =
+             permitted(&store, PermitMutation::Invite(invite)).unwrap()
+         else {
+diff --git a/tests/store/retention.rs b/tests/store/retention.rs
+index 0cd9bc61..ea203bcc 100644
+--- a/tests/store/retention.rs
++++ b/tests/store/retention.rs
+@@ -668,20 +668,21 @@ fn rerunning_send_attention_producer_does_not_reenqueue() {
+             operation: OperationId::new("create"),
+             claim: fixture_claim("s1"),
+         }),
+     )
+     .unwrap() else {
+         panic!()
+     };
+     permitted(
+         store,
+         PermitMutation::Invite(Invite {
++            confirmation: None,
+             thread: thread.clone(),
+             seat: SeatId::new("s2"),
+             deadline_millis: Some(1000),
+             operation: OperationId::new("invite"),
+             claim: fixture_claim("s1"),
+         }),
+     )
+     .unwrap();
+     let send = SendMessage {
+         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+diff --git a/tests/store/schema.rs b/tests/store/schema.rs
+index 4ae49fc9..ecfe82d3 100644
+--- a/tests/store/schema.rs
++++ b/tests/store/schema.rs
+@@ -6251,25 +6251,25 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
+             db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").unwrap()
+             .query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?.split_whitespace().collect::<String>().replace('\"',"")))).unwrap().map(Result::unwrap).collect::<Vec<_>>()
+         };
+         assert_eq!(catalog(&db), catalog(&fresh));
+         assert_eq!(
+             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
+             74
+         );
+         assert_eq!(
+             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
+-            139
++            140
+         );
+         assert_eq!(
+             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
+-            181
++            183
+         );
+     }
+ }
+ 
+ // An unpublished adapter schema25 is not the immutable published main25.
+ #[test]
+ fn absorption_rejects_development_adapter25_without_writing() {
+     let db = adapter_historical_database(24);
+     db.execute_batch(include_str!("../../migrations/0027_harness_adapters.sql"))
+         .unwrap();
+@@ -6443,10 +6443,52 @@ fn adapter_upgrade_rejects_tampered_diagnostics_from_main25_and_lazy26() {
+                     "SELECT count(*) FROM sqlite_master WHERE name='harness_runtime_identities'",
+                     [],
+                     |r| r.get::<_, i64>(0)
+                 )
+                 .unwrap(),
+                 0
+             );
+         }
+     }
+ }
++
++#[test]
++fn invitation_confirmation_schema_migrates_legacy_and_retains_frozen_origin() {
++    let db = v11_populated_database();
++    db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('old','t','s',1,'pending',1,10,30,40);").unwrap();
++    schema::initialize(&db, || UtcMillis(900)).unwrap();
++    let legacy: (Option<String>, Option<String>, i64, i64) = db.query_row("SELECT confirmation,inviter_seat_id,frozen_duration_ms,deadline_at FROM invitations WHERE id='old'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
++    assert_eq!(legacy, (None, None, 30, 40));
++    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('modern','t','s',2,'pending',2,100,50,150,'require_ack','s'),('quiet','t','s',3,'pending',3,100,50,150,'lazy','s');").unwrap();
++    assert!(db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation) VALUES ('missing-origin','t','s',4,'pending',4,100,50,150,'lazy')", []).is_err());
++    schema::initialize(&db, || UtcMillis(1000)).unwrap();
++    let modern: (String,String,i64,i64) = db.query_row("SELECT confirmation,inviter_seat_id,frozen_duration_ms,deadline_at FROM invitations WHERE id='modern'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
++    assert_eq!(modern, ("require_ack".into(), "s".into(), 50, 150));
++    let ids = db.prepare("SELECT id FROM invitations INDEXED BY invitations_confirmation_due WHERE state='pending' AND warning_message_id IS NULL AND reject_recorded=0 AND (confirmation IS NULL OR confirmation='require_ack') ORDER BY deadline_at,ordinal").unwrap().query_map([],|r|r.get::<_,String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>();
++    assert_eq!(ids, ["old", "modern"]);
++    assert!(
++        db.execute(
++            "UPDATE invitations SET inviter_seat_id=NULL WHERE id='modern'",
++            []
++        )
++        .is_err()
++    );
++    assert!(
++        db.execute(
++            "UPDATE invitations SET confirmation='lazy' WHERE id='modern'",
++            []
++        )
++        .is_err()
++    );
++}
++
++#[test]
++fn invitation_confirmation_schema_refuses_missing_policy_guard() {
++    let db = Connection::open_in_memory().unwrap();
++    schema::initialize(&db, || UtcMillis(0)).unwrap();
++    db.execute_batch("DROP TRIGGER invitations_confirmation_immutable")
++        .unwrap();
++    assert_eq!(
++        schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
++        ErrorCode::IncompatibleSchema
++    );
++}

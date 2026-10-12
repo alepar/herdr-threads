@@ -1,0 +1,91 @@
+{
+  "head": "1d1c6112384dbc95b29fdb20da2484522751fd61",
+  "tree": "2ba0635e970df5d60bdf0178bd8e5f3f044261f2",
+  "run_id": "39a338ac-792f-4868-a26d-676ce7412a11",
+  "expected": [
+    "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy",
+    "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy",
+    "store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work",
+    "store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope",
+    "store::queries::tests::query_work_q4::q4_three_event_keys_and_actual_floor_have_constant_sqlite_work",
+    "store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers",
+    "store::queries::tests::query_work_q4::q4_actual_continued_tail_checks_scope_once_and_charges_retirement",
+    "cli::handoff_delivery::tests::historical_none_automatic_existing_retry_requires_receipts_before_effects_and_preserves_origin",
+    "cli::topology_handoff::tests::live::automatic_live::public_historical_none_new_tab_retry_requires_receipts_before_any_effect_and_preserves_origin"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 184.64979945798405
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "cli::handoff_delivery::tests::historical_none_automatic_existing_retry_requires_receipts_before_effects_and_preserves_origin"
+    ],
+    [
+      "herdr-threads",
+      "cli::topology_handoff::tests::live::automatic_live::public_historical_none_new_tab_retry_requires_receipts_before_any_effect_and_preserves_origin"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_actual_continued_tail_checks_scope_once_and_charges_retirement"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_three_event_keys_and_actual_floor_have_constant_sqlite_work"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-bc80e388954f6954",
+      "sha256": "3f67d053c695b49e964531e47966736c851830fafa6db1dc13fe1d8f9273ff86"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 12.919255124987103,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy) | test(=service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy) | test(=store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work) | test(=store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope) | test(=store::queries::tests::query_work_q4::q4_three_event_keys_and_actual_floor_have_constant_sqlite_work) | test(=store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers) | test(=store::queries::tests::query_work_q4::q4_actual_continued_tail_checks_scope_once_and_charges_retirement) | test(=cli::handoff_delivery::tests::historical_none_automatic_existing_retry_requires_receipts_before_effects_and_preserves_origin) | test(=cli::topology_handoff::tests::live::automatic_live::public_historical_none_new_tab_retry_requires_receipts_before_any_effect_and_preserves_origin)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.38035320898052305,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "39a338ac-792f-4868-a26d-676ce7412a11"
+    ]
+  },
+  "leak_exit": 0
+}

@@ -1,0 +1,25 @@
+{
+  "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "target_dir": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "manifest_method": "sorted git tracked+untracked nonignored regular files; compact JSON list of path/sha256",
+  "source_manifest_sha256": "2c0930b551d055ecac2712965a87e1d9e5fad434bf7fe48051111cf32eb88451",
+  "dirtydiff_sha256": "d1724d33373a22d2f048fe1efb47e48e5e0bde5baf11fe9f9e9d4caabf7d43d5",
+  "source_count": 3533,
+  "command": "CARGO_TARGET_DIR=/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib presentation_current_handler_derives_timed_invitation_attention -- --nocapture",
+  "log": "/private/tmp/ht-task15-handler-relevance-green-2.log",
+  "status": "Actual handler selected1 PASS/.25 and cached lifecycle selected1 PASS/.10; diagnostic relevance baseline, not corrected helper evidence",
+  "leak_run_id": null,
+  "build_seconds": 45.45,
+  "build_scope": "Only src/store/schema.rs changed after preceding same-command warm build; latest reopen guard correction",
+  "log_sha256": "0bf1c5be16329eb46857c08c125f4c188f67c14f1ed8b79ce5d748a7f66a8e80",
+  "lifecycle": {
+    "test": "presentation_handler_clears_unconfirmed_epoch_then_reopens_same_native_version",
+    "command": "CARGO_TARGET_DIR=/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib presentation_handler_clears_unconfirmed_epoch_then_reopens_same_native_version -- --nocapture",
+    "selected": 1,
+    "passed": 1,
+    "runtime_seconds": 0.1,
+    "log": "/private/tmp/ht-task15-handler-episode-lifecycle.log",
+    "log_sha256": "6f3d23750bbc1c9029d9ce8ce34a6fd57a86ca4e20b7a13fcb6944eb065bdd7d",
+    "scope": "real RequireAckInvite/Accept/scoped clear/Confirm/new Invite; does NOT prove unchanged native metadata; name superseded subsequently"
+  }
+}

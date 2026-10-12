@@ -1,0 +1,10 @@
+{
+  "source_manifest": "fb481088b8e974a1f27f50a3545db931c5784c841da6f1a2beb7f7be35fde98c",
+  "manifest_method": "sorted compact JSON OBJECT path->SHA256 tracked/nonignored untracked files",
+  "dirtydiff": "ddbc006c6c99f7c88c08428135ea639eb7e26bd00a977ca1948be7110d6d9c4e",
+  "expected_selected": 1,
+  "session": 81082,
+  "source_frozen_since_start": true,
+  "scope": "four reset owner-order/generation and same-generation execution-repair cases; postfmt multifile recompilation",
+  "sweep_uuid": null
+}

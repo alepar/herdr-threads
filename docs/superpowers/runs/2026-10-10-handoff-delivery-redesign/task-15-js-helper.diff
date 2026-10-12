@@ -1,0 +1,202 @@
+diff --git a/integrations/claude/mod/hooks/register.js b/integrations/claude/mod/hooks/register.js
+index 2b255165..58a88c75 100644
+--- a/integrations/claude/mod/hooks/register.js
++++ b/integrations/claude/mod/hooks/register.js
+@@ -260,48 +260,51 @@ export function createCore(io) {
+       S.queue.push({
+         id: o.id,
+         kind: 'attention',
+         body: String(o.text ?? ''),
+         version: v,
+         run: S.run,
+         ackable: false,
+       })
+     } else {
+       const revision = o.topic_revision == null ? null : String(o.topic_revision)
++      // Retain historical scalar keys; modern contexts include exact decimal epochs.
++      const contextVersion = o.command_context_epoch == null
++        ? revision : JSON.stringify([revision, String(o.command_context_epoch)])
+       if (o.kind === 'invitation') {
+         if (Object.prototype.hasOwnProperty.call(S.rec.invitationVersions, o.id)
+-            && S.rec.invitationVersions[o.id] === revision) return
++            && S.rec.invitationVersions[o.id] === contextVersion) return
+       } else if (S.rec.delivered[o.id] !== undefined) {
+         if (S.rec.unacked[o.id] !== undefined) retryAcks()
+         return
+       }
+       const dup = S.queue.find((q) => q.id === o.id && (o.kind !== 'invitation'
+-        || (q.revision === revision && (!q.truncated || o.truncated === true))))
++        || (q.contextVersion === contextVersion && (!q.truncated || o.truncated === true))))
+       if (dup) {
+         dup.run = S.run
+         return
+       }
+       const truncated = o.truncated === true
+       S.queue.push({
+         id: o.id,
+         kind: o.kind,
+         thread: o.thread || 'unknown',
+         threadName: o.thread_name ?? null,
+         sender: o.sender ?? null,
+         senderName: o.sender_name ?? null,
+         author_role: o.author_role ?? null,
+         relays_user: o.relays_user === true,
+         user_intent: o.user_intent ?? null,
+         body: String(o.body ?? ''),
+         truncated,
+         wakes: o.wakes === true,
+-        revision,
++        contextVersion,
+         run: S.run,
+         ackable: !truncated && (o.kind === 'lazy' || (o.kind === 'message' && o.ack_required === true)),
+       })
+     }
+     retryAcks()
+     void pumpLazy()
+     void pump()
+   }
+ 
+   // ---- delivery --------------------------------------------------------
+@@ -312,21 +315,21 @@ export function createCore(io) {
+     for (const it of items) {
+       S.queue = S.queue.filter((q) => it.kind === 'invitation' ? q !== it : q.id !== it.id)
+       if (it.kind === 'attention') {
+         S.runAttention.add(it.id)
+         if (it.version !== undefined && !S.rec.attentionVersions.includes(it.version)) {
+           S.rec.attentionVersions.push(it.version)
+           if (S.rec.attentionVersions.length > 64) S.rec.attentionVersions.shift()
+         }
+       } else if (it.kind === 'invitation') {
+         if (!it.truncated) {
+-          S.rec.invitationVersions[it.id] = it.revision
++          S.rec.invitationVersions[it.id] = it.contextVersion
+           const ids = Object.keys(S.rec.invitationVersions)
+           if (ids.length > 1024) delete S.rec.invitationVersions[ids[0]]
+         }
+       } else {
+         S.rec.delivered[it.id] = via
+         if (it.ackable) S.rec.unacked[it.id] = via
+       }
+     }
+     saveRec()
+     S.lastHeld = ''
+diff --git a/integrations/claude/mod/tests/delivery.test.ts b/integrations/claude/mod/tests/delivery.test.ts
+index 35dad2e4..21510cf0 100644
+--- a/integrations/claude/mod/tests/delivery.test.ts
++++ b/integrations/claude/mod/tests/delivery.test.ts
+@@ -1717,51 +1717,112 @@ test('decimal invitation revisions preserve every bit through u64 maximum', asyn
+   }
+   expect(h.appends.length).toBe(3)
+   revisions.forEach((revision, index) => expect(h.appends[index]).toContain(revision))
+   expect(h.core.snapshot().rec.invitationVersions['invitation:precise']).toBe(revisions[2])
+   expect(h.submits.length).toBe(0)
+   expect(h.ackRuns()).toEqual([])
+ })
+ 
+ test('an omitted goal permits a later whole goal at the same invitation revision', async () => {
+   const h = await harness({ state: IDLE }).boot()
+-  const invitation = { schema: 1, id: 'invitation:goal', kind: 'invitation', thread: 'T1', topic_revision: '7', wakes: false }
++  const invitation = { schema: 1, id: 'invitation:goal', kind: 'invitation', thread: 'T1', topic_revision: '7', command_context_epoch: '9007199254740993', wakes: false }
+   h.line({ ...invitation, truncated: true, body: 'topic\ngoal: omitted\nnext: herdr-threads thread show T1\nnext: herdr-threads accept T1' })
+   await flush()
+   expect(h.core.snapshot().rec.invitationVersions['invitation:goal']).toBeUndefined()
+   h.line({ ...invitation, truncated: false, body: 'topic\ngoal: review recipient remit\nnext: herdr-threads accept T1' })
+   await flush()
+   expect(h.appends.length).toBe(2)
+   expect(h.appends[1]).toContain('goal: review recipient remit')
+   h.line({ ...invitation, truncated: false, body: 'topic\ngoal: review recipient remit\nnext: herdr-threads accept T1' })
+   await flush()
+   expect(h.appends.length).toBe(2)
+   expect(h.submits.length).toBe(0)
+   expect(h.ackRuns()).toEqual([])
+ })
+ 
+ test('a whole same-revision goal arriving during partial append is retained', async () => {
+   const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
+-  const invitation = { schema: 1, id: 'invitation:inflight-goal', kind: 'invitation', thread: 'T1', topic_revision: '7', wakes: false }
++  const invitation = { schema: 1, id: 'invitation:inflight-goal', kind: 'invitation', thread: 'T1', topic_revision: '7', command_context_epoch: '9007199254740993', wakes: false }
+   h.line({ ...invitation, truncated: true, body: 'goal: omitted\nnext: herdr-threads thread show T1' })
+   await flush()
+   expect(h.appends.length).toBe(1)
+   h.line({ ...invitation, truncated: false, body: 'goal: newly available complete remit' })
+   await flush()
+   expect(h.core.snapshot().queue).toEqual(['invitation:inflight-goal', 'invitation:inflight-goal'])
+   h.pendingAppends[0].res({})
+   await flush()
+   await h.advance(1)
+   expect(h.appends.length).toBe(2)
+   expect(h.appends[1]).toContain('newly available complete remit')
+   expect(h.core.snapshot().queue).toEqual(['invitation:inflight-goal'])
+   h.pendingAppends[1].res({})
+   await flush()
+   expect(h.core.snapshot().queue).toEqual([])
+-  expect(h.core.snapshot().rec.invitationVersions['invitation:inflight-goal']).toBe('7')
++  expect(h.core.snapshot().rec.invitationVersions['invitation:inflight-goal']).toBeDefined()
+   h.line({ ...invitation, truncated: false, body: 'goal: newly available complete remit' })
+   await flush()
+   expect(h.appends.length).toBe(2)
+   expect(h.core.snapshot().queue).toEqual([])
+   expect(h.submits.length).toBe(0)
+   expect(h.ackRuns()).toEqual([])
+ })
++
++
++test('command context epochs preserve adjacent large decimals and suppress only unchanged complete context', async () => {
++  const h = await harness({ state: IDLE }).boot()
++  const invitation = { schema: 1, id: 'invitation:epoch', kind: 'invitation', thread: 'T1', topic_revision: '18446744073709551615', wakes: false, truncated: false }
++  const epochs = ['9007199254740992', '9007199254740993', '18446744073709551615']
++  for (const epoch of epochs) {
++    h.line({ ...invitation, command_context_epoch: epoch, body: `goal ${epoch}` })
++    await flush()
++    h.line({ ...invitation, command_context_epoch: epoch, body: `goal ${epoch}` })
++    await flush()
++  }
++  expect(h.appends.length).toBe(3)
++  epochs.forEach((epoch, index) => expect(h.appends[index]).toContain(epoch))
++  h.line({ ...invitation, topic_revision: '18446744073709551614', command_context_epoch: epochs[2], body: 'new topic, same goal' })
++  await flush()
++  expect(h.appends.length).toBe(4)
++  expect(h.submits.length).toBe(0)
++  expect(h.ackRuns()).toEqual([])
++})
++
++test('historical missing command context epoch differs from explicit zero', async () => {
++  const h = await harness({ state: IDLE }).boot()
++  const invitation = { schema: 1, id: 'invitation:historical-epoch', kind: 'invitation', thread: 'T1', wakes: false, truncated: false }
++  h.line({ ...invitation, body: 'historical context' })
++  await flush()
++  h.line({ ...invitation, body: 'historical context' })
++  await flush()
++  expect(h.appends.length).toBe(1)
++  h.line({ ...invitation, command_context_epoch: '0', body: 'modern context zero' })
++  await flush()
++  h.line({ ...invitation, command_context_epoch: '0', body: 'modern context zero' })
++  await flush()
++  expect(h.appends.length).toBe(2)
++  expect(h.appends[1]).toContain('modern context zero')
++  expect(h.submits.length).toBe(0)
++  expect(h.ackRuns()).toEqual([])
++})
++
++test('a changed command context arriving during complete append remains queued', async () => {
++  const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
++  const invitation = { schema: 1, id: 'invitation:inflight-epoch', kind: 'invitation', thread: 'T1', topic_revision: '7', wakes: false, truncated: false }
++  h.line({ ...invitation, command_context_epoch: '9007199254740992', body: 'old goal' })
++  await flush()
++  h.line({ ...invitation, command_context_epoch: '9007199254740993', body: 'new goal' })
++  await flush()
++  expect(h.core.snapshot().queue).toEqual(['invitation:inflight-epoch', 'invitation:inflight-epoch'])
++  h.pendingAppends[0].res({})
++  await flush()
++  await h.advance(1)
++  expect(h.appends.length).toBe(2)
++  expect(h.appends[1]).toContain('new goal')
++  h.pendingAppends[1].res({})
++  await flush()
++  h.line({ ...invitation, command_context_epoch: '9007199254740993', body: 'new goal' })
++  await flush()
++  expect(h.appends.length).toBe(2)
++  expect(h.core.snapshot().queue).toEqual([])
++  expect(h.submits.length).toBe(0)
++  expect(h.ackRuns()).toEqual([])
++})

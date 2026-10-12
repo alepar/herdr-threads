@@ -1,0 +1,318 @@
+{
+  "status": "PREPARED ONLY \u2014 NOT DISPATCHED; NO FORMAL ROAST OR COUNTER CHANGE",
+  "mode": "PR",
+  "iteration": 1,
+  "prior_report": null,
+  "planned_roster": [
+    "correctness",
+    "security",
+    "premortem",
+    "simplicity-design",
+    "hot-path-perf",
+    "concurrency-async",
+    "data-migrations",
+    "deploy-safety",
+    "api-contract",
+    "observability",
+    "testing",
+    "hygiene-docs"
+  ],
+  "core_lanes": [
+    "correctness",
+    "security",
+    "premortem",
+    "simplicity-design",
+    "hot-path-perf",
+    "concurrency-async"
+  ],
+  "conditional_lanes_pending_fresh_triage": [
+    "data-migrations",
+    "deploy-safety",
+    "api-contract",
+    "observability",
+    "testing",
+    "hygiene-docs"
+  ],
+  "omitted_conditional_lane": "dependency (planned roster only; fresh triage decides final activation)",
+  "final_artifact_and_base": "UNRESOLVED placeholders; parent must render final exact tip/base before dispatch",
+  "source_files": {
+    "/Users/alepar/.codex/skills/super-roast/SKILL.md": "b73782cf91ae448e9e5ec4eed9f17dccd205b5a59c85c692b8e68055bace5ebe",
+    "/Users/alepar/.codex/skills/super-roast/scout-prompts-pr.md": "eb1cfb75ec401fdd441cd5413f58b9dfe1c0d3262e681c747a15f57c6c3d5ae3",
+    "/Users/alepar/.codex/skills/super-roast/super-roast-workflow.md": "7d5e90015f4f9d01012ff631887547363da547d7619ffd4ad0382616a882c13f",
+    "/Users/alepar/.codex/skills/super-roast/triage-prompt.md": "a9217c3f6fe9092d57e679f1f3dbdd250d10f6c7d64c5539355179015a176d85"
+  },
+  "assembly_checks": {
+    "all_12_originals_exact_buggy_official_assembly": true,
+    "one_lane_block_per_output": true,
+    "one_category_scalar_per_output": true,
+    "exact_official_shared_lane_round_1_prefix": true,
+    "no_unintended_official_tokens_left": true,
+    "caller_placeholders_deliberately_unresolved": true
+  },
+  "prompts": [
+    {
+      "lane": "correctness",
+      "planned_role": "core",
+      "path": "roast-code-1-final-prompts/correctness.txt",
+      "bytes": 7200,
+      "sha256": "cd8716f2bfc2c884caa7105010f6099d21f6d19f1a550dad0f90c8694208f205",
+      "prior_prepared_sha256": "51345dee77c4cc6871a353d1ca9e9646b25164ae9d3e867721ec9dea2074a8a2",
+      "category": "correctness",
+      "placeholders": [
+        "{{BASE}}",
+        "{{COOPERATIVE_TRUST}}",
+        "{{FINAL_ARTIFACT}}",
+        "{{INPUT_SPEC}}",
+        "{{PROFILE}}",
+        "{{RUN}}",
+        "{{SKEW}}",
+        "{{TRIAGE}}"
+      ],
+      "official_prefix_bytes": 5120,
+      "official_prefix_sha256": "f7d8f3e8c5595648d86a722c2bf4f7110db196c9d40089a1cee3c8cc987a30cf",
+      "prior_matches_buggy_official_assembly": true
+    },
+    {
+      "lane": "security",
+      "planned_role": "core",
+      "path": "roast-code-1-final-prompts/security.txt",
+      "bytes": 7586,
+      "sha256": "0c5030dcc8a06cad0f082e2a3be3158352a7353112f4402bc8eb30ccbae32b3b",
+      "prior_prepared_sha256": "05b43f9af2881fd9416df19f6600c7a1b19a88061a441896a8555792bd7b99f1",
+      "category": "security",
+      "placeholders": [
+        "{{BASE}}",
+        "{{COOPERATIVE_TRUST}}",
+        "{{FINAL_ARTIFACT}}",
+        "{{INPUT_SPEC}}",
+        "{{PROFILE}}",
+        "{{RUN}}",
+        "{{SKEW}}",
+        "{{TRIAGE}}"
+      ],
+      "official_prefix_bytes": 5506,
+      "official_prefix_sha256": "163a049102c364ca8d9deb0bce6db54cd3dfa6a6a5743a52baf251adaeeb7d4c",
+      "prior_matches_buggy_official_assembly": true
+    },
+    {
+      "lane": "premortem",
+      "planned_role": "core",
+      "path": "roast-code-1-final-prompts/premortem.txt",
+      "bytes": 7813,
+      "sha256": "090480d47152ff04174a3f225f1b70afd1ff015b0f8a149e054783bb65b8bf82",
+      "prior_prepared_sha256": "bc01836e6f599517afd3bd25bccd8272a7895da7be48f807616e566ae0d486f6",
+      "category": "premortem",
+      "placeholders": [
+        "{{BASE}}",
+        "{{COOPERATIVE_TRUST}}",
+        "{{FINAL_ARTIFACT}}",
+        "{{INPUT_SPEC}}",
+        "{{PROFILE}}",
+        "{{RUN}}",
+        "{{SKEW}}",
+        "{{TRIAGE}}"
+      ],
+      "official_prefix_bytes": 5733,
+      "official_prefix_sha256": "db26036f695decbedda11403d130e43f5cb5cc22b35db8634505b28007408f91",
+      "prior_matches_buggy_official_assembly": true
+    },
+    {
+      "lane": "simplicity-design",
+      "planned_role": "core",
+      "path": "roast-code-1-final-prompts/simplicity-design.txt",
+      "bytes": 9107,
+      "sha256": "ffc6d59ef9b5582dc21ba07f44815d01829621bc46f306c8f5e2e9cc02533d2e",
+      "prior_prepared_sha256": "0c2ccfd5eb81508e559cde686495504e35d3045ef56c696fd931c87173fd28f3",
+      "category": "simplicity-design",
+      "placeholders": [
+        "{{BASE}}",
+        "{{COOPERATIVE_TRUST}}",
+        "{{FINAL_ARTIFACT}}",
+        "{{INPUT_SPEC}}",
+        "{{PROFILE}}",
+        "{{RUN}}",
+        "{{SKEW}}",
+        "{{TRIAGE}}"
+      ],
+      "official_prefix_bytes": 7027,
+      "official_prefix_sha256": "6ff529f87c57fcc395ac450100fe3049a42bc0451cae5deb13a8ffdf8d63ca48",
+      "prior_matches_buggy_official_assembly": true
+    },
+    {
+      "lane": "hot-path-perf",
+      "planned_role": "core",
+      "path": "roast-code-1-final-prompts/hot-path-perf.txt",
+      "bytes": 8290,
+      "sha256": "89a8735c126c66a8f4b2f5d5879b3dfc4370629bbce2fb5e0863e86aea9c3be8",
+      "prior_prepared_sha256": "bd503102bcc3468a2a45af3f26ad6e78a8b9d48f1d0a6c7352a79334783f68a3",
+      "category": "hot-path-perf",
+      "placeholders": [
+        "{{BASE}}",
+        "{{COOPERATIVE_TRUST}}",
+        "{{FINAL_ARTIFACT}}",
+        "{{INPUT_SPEC}}",
+        "{{PROFILE}}",
+        "{{RUN}}",
+        "{{SKEW}}",
+        "{{TRIAGE}}"
+      ],
+      "official_prefix_bytes": 6210,
+      "official_prefix_sha256": "bd4f5e17cc1fed26a5ddd2146aae9cff92fa76c7f78cda2a1b98fc188d466014",
+      "prior_matches_buggy_official_assembly": true
+    },
+    {
+      "lane": "concurrency-async",
+      "planned_role": "core",
+      "path": "roast-code-1-final-prompts/concurrency-async.txt",
+      "bytes": 8542,
+      "sha256": "035ba7810d001cf257f224cabe140b3cbef912c4174c7144c97d7b6e22d7c1b9",
+      "prior_prepared_sha256": "a34eb0addad9d7eac9c16392d2511ba6376b7a5af158bd722c40cabb20d238e3",
+      "category": "concurrency-async",
+      "placeholders": [
+        "{{BASE}}",
+        "{{COOPERATIVE_TRUST}}",
+        "{{FINAL_ARTIFACT}}",
+        "{{INPUT_SPEC}}",
+        "{{PROFILE}}",
+        "{{RUN}}",
+        "{{SKEW}}",
+        "{{TRIAGE}}"
+      ],
+      "official_prefix_bytes": 6462,
+      "official_prefix_sha256": "92fd6540ab5a3384c2dfaa4f120dea999d3b42b0691ad48c7e2430822b401c93",
+      "prior_matches_buggy_official_assembly": true
+    },
+    {
+      "lane": "data-migrations",
+      "planned_role": "conditional-pending-fresh-triage",
+      "path": "roast-code-1-final-prompts/data-migrations.txt",
+      "bytes": 7424,
+      "sha256": "28ff05abd166100712b95acf26faede140a14ce0d629247cb65eb900ce3e47ad",
+      "prior_prepared_sha256": "24df5294d5552d7a291f673c0d221c40e7ad2fe3c3975c2e4e982c77844ee918",
+      "category": "data-migrations",
+      "placeholders": [
+        "{{BASE}}",
+        "{{COOPERATIVE_TRUST}}",
+        "{{FINAL_ARTIFACT}}",
+        "{{INPUT_SPEC}}",
+        "{{PROFILE}}",
+        "{{RUN}}",
+        "{{SKEW}}",
+        "{{TRIAGE}}"
+      ],
+      "official_prefix_bytes": 5344,
+      "official_prefix_sha256": "dee00afc47df7117c35d5d1799cca00c5ac80f799a55ed1e80ff1e9ba3a89a54",
+      "prior_matches_buggy_official_assembly": true
+    },
+    {
+      "lane": "deploy-safety",
+      "planned_role": "conditional-pending-fresh-triage",
+      "path": "roast-code-1-final-prompts/deploy-safety.txt",
+      "bytes": 7046,
+      "sha256": "22381682c01a74624294ff97e86c3a42c61d3c09bbe606f989ea10ed9695db7c",
+      "prior_prepared_sha256": "0b1128ffc695ea26f51c3af2ec5dd14a3818178275469a02a2ef6c40e99be85c",
+      "category": "deploy-safety",
+      "placeholders": [
+        "{{BASE}}",
+        "{{COOPERATIVE_TRUST}}",
+        "{{FINAL_ARTIFACT}}",
+        "{{INPUT_SPEC}}",
+        "{{PROFILE}}",
+        "{{RUN}}",
+        "{{SKEW}}",
+        "{{TRIAGE}}"
+      ],
+      "official_prefix_bytes": 4966,
+      "official_prefix_sha256": "ba7af93112c91b2bd3aa2d1dc89a126f10bd6d4d8c247f559ce2231e1c1207c8",
+      "prior_matches_buggy_official_assembly": true
+    },
+    {
+      "lane": "api-contract",
+      "planned_role": "conditional-pending-fresh-triage",
+      "path": "roast-code-1-final-prompts/api-contract.txt",
+      "bytes": 7328,
+      "sha256": "9f1ef373a1348de133e1a1a6350d600f17973cb1d8f58985d404b85ba9cd683c",
+      "prior_prepared_sha256": "c852089c3a4a5d7f32560f249acf095aad7549f553454205b1c853918688c348",
+      "category": "api-contract",
+      "placeholders": [
+        "{{BASE}}",
+        "{{COOPERATIVE_TRUST}}",
+        "{{FINAL_ARTIFACT}}",
+        "{{INPUT_SPEC}}",
+        "{{PROFILE}}",
+        "{{RUN}}",
+        "{{SKEW}}",
+        "{{TRIAGE}}"
+      ],
+      "official_prefix_bytes": 5248,
+      "official_prefix_sha256": "4f179cb4cdb6b5e3acd58bbfe441e3e81902eb49b047fb1106f9f8cf13382dd0",
+      "prior_matches_buggy_official_assembly": true
+    },
+    {
+      "lane": "observability",
+      "planned_role": "conditional-pending-fresh-triage",
+      "path": "roast-code-1-final-prompts/observability.txt",
+      "bytes": 6972,
+      "sha256": "c7f58fadedd26a1775000b6fe1329e073a624aba8a926e010bce3cd33dfa41e4",
+      "prior_prepared_sha256": "661519b1e8e174861d12b9601339ce443d0b2704011ea88f561a32a44bb65d40",
+      "category": "observability",
+      "placeholders": [
+        "{{BASE}}",
+        "{{COOPERATIVE_TRUST}}",
+        "{{FINAL_ARTIFACT}}",
+        "{{INPUT_SPEC}}",
+        "{{PROFILE}}",
+        "{{RUN}}",
+        "{{SKEW}}",
+        "{{TRIAGE}}"
+      ],
+      "official_prefix_bytes": 4892,
+      "official_prefix_sha256": "f1dccaafef0dcb08f26f03ce350df67bd68d2a04aa14a0edc971baedbf49a280",
+      "prior_matches_buggy_official_assembly": true
+    },
+    {
+      "lane": "testing",
+      "planned_role": "conditional-pending-fresh-triage",
+      "path": "roast-code-1-final-prompts/testing.txt",
+      "bytes": 7629,
+      "sha256": "16a53ae4af7660158b47b791a2e90a3f5636d4ec7dcae87500e86fec6bb81f3b",
+      "prior_prepared_sha256": "8ee7b4760d270b598849c0333d35ec65c20f10e195e6a2276ffc392e72b24d15",
+      "category": "testing",
+      "placeholders": [
+        "{{BASE}}",
+        "{{COOPERATIVE_TRUST}}",
+        "{{FINAL_ARTIFACT}}",
+        "{{INPUT_SPEC}}",
+        "{{PROFILE}}",
+        "{{RUN}}",
+        "{{SKEW}}",
+        "{{TRIAGE}}"
+      ],
+      "official_prefix_bytes": 5549,
+      "official_prefix_sha256": "1d5eef738b5e953b79a1e5b0c4f67ea697f97e451e56f2fb2fdf4f46ed3f9874",
+      "prior_matches_buggy_official_assembly": true
+    },
+    {
+      "lane": "hygiene-docs",
+      "planned_role": "conditional-pending-fresh-triage",
+      "path": "roast-code-1-final-prompts/hygiene-docs.txt",
+      "bytes": 7766,
+      "sha256": "0ecb9d43214ff6303fd65b38ad671fcb1296d89c57f01689fd93ad30c5832cc3",
+      "prior_prepared_sha256": "f1c540c2c47e5c750134bc492a9cc8562da42c22cdd40832e3bbc5452894827d",
+      "category": "hygiene-docs",
+      "placeholders": [
+        "{{BASE}}",
+        "{{COOPERATIVE_TRUST}}",
+        "{{FINAL_ARTIFACT}}",
+        "{{INPUT_SPEC}}",
+        "{{PROFILE}}",
+        "{{RUN}}",
+        "{{SKEW}}",
+        "{{TRIAGE}}"
+      ],
+      "official_prefix_bytes": 5686,
+      "official_prefix_sha256": "604fd0343a2140f287c65b90ca880fb324dcc95be382999b40aa0e0e0b5b6570",
+      "prior_matches_buggy_official_assembly": true
+    }
+  ]
+}

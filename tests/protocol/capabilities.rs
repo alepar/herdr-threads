@@ -270,6 +270,8 @@ fn capability_constants_are_stable() {
     assert_eq!(SEAT_MANAGED_LAUNCH, "seat.managed_launch");
     assert_eq!(INBOX_BATCH, "inbox.batch_v1");
     assert_eq!(LAZY_HOOK_DELIVERY, "hook.lazy_delivery_v1");
+    assert_eq!(DELIVERY_PRESENTATION_V2, "delivery.presentation_v2");
+    assert_eq!(MOD_WATCH_PRESENTATION_V2, "mod.watch_presentation_v2");
     assert_eq!(BINDING_CURSORS, "inbox.binding_cursors_v1");
     assert_eq!(BINDING_DIGEST, "attention.binding_digest_v1");
     assert_eq!(IN_TURN_OFFER, "inbox.in_turn_offer_v1");
@@ -279,6 +281,7 @@ fn capability_constants_are_stable() {
             "history.full_bodies",
             "hook.parse_failure_report",
             "service.send_v1",
+            "messages.send_time_receipts_v1",
             "hook.harness_evidence",
             "hook.harness_evidence_v2",
             "harness.states",
@@ -288,6 +291,7 @@ fn capability_constants_are_stable() {
             "invitation.reject_v1",
             "thread.join_v1",
             "thread.direct_v1",
+            "direct_threads.ensure_creation_policy_v1",
             "participants.locations_v1",
             "picker.directory_v1",
             "attention.notice_delivery_v1",
@@ -295,9 +299,11 @@ fn capability_constants_are_stable() {
             "send.lazy_v1",
             "inbox.batch_v2",
             "mod.watch_v1",
+            "mod.watch_presentation_v2",
             "seat.wake_on_v1",
             "delivery.pull_v1",
             "hook.lazy_delivery_v1",
+            "delivery.presentation_v2",
             "inbox.binding_cursors_v1",
             "attention.binding_digest_v1",
             "inbox.in_turn_offer_v1"
@@ -345,8 +351,8 @@ fn every_advertised_capability_has_a_handler() {
                     crate::store::queries::query(&context, "probe-instance", &command, &budget());
                 assert_eq!(outcome.unwrap_err().code, ErrorCode::NotFound);
             }
-            LAZY_SEND => {
-                let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"delivery_mode":"lazy","thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+            LAZY_SEND | SEND_TIME_RECEIPTS_V1 => {
+                let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"delivery_mode":if *name == LAZY_SEND { "lazy" } else { "ordinary" },"thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
                 assert!(command.validate().is_ok());
                 let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
                 assert_eq!(
@@ -359,9 +365,16 @@ fn every_advertised_capability_has_a_handler() {
             }
             INVITATION_REJECT => probe_invitation_reject(),
             THREAD_JOIN => probe_thread_join(),
-            DIRECT_THREADS_V1 => {
+            DIRECT_THREADS_V1 | ENSURE_CREATION_POLICY_V1 => {
                 let command =
                     Command::EnsureDirectThread(crate::protocol::commands::EnsureDirectThread {
+                        creation_policy: (*name == ENSURE_CREATION_POLICY_V1).then_some(
+                            crate::protocol::commands::EnsureCreationPolicy {
+                                confirmation:
+                                    crate::protocol::commands::InvitationConfirmation::Lazy,
+                                deadline_millis: None,
+                            },
+                        ),
                         recipient: crate::protocol::ids::SeatId::new("peer"),
                         operation: crate::protocol::ids::OperationId::new("direct-probe"),
                         claim: crate::protocol::authority::CallerClaim {
@@ -412,7 +425,9 @@ fn every_advertised_capability_has_a_handler() {
                     ErrorCode::NotFound
                 );
             }
-            MOD_WATCH => probe_mod_watch(),
+            MOD_WATCH => probe_mod_watch(false),
+            MOD_WATCH_PRESENTATION_V2 => probe_mod_watch(true),
+            DELIVERY_PRESENTATION_V2 => presentation_capability_routes_use_configured_domain(),
             DELIVERY_PULL => {
                 // The command decodes and routes to the domain service (served by
                 // `service::delivery_pull`, tested there); this daemon has none.
@@ -588,7 +603,7 @@ fn probe_binding_cursors() {
 /// The daemon's domain decides a watch registration against its store: a
 /// claim for a seat the store does not know is refused `unresolved` (a
 /// service without the handler would answer `disabled`).
-fn probe_mod_watch() {
+fn probe_mod_watch(presentation_v2: bool) {
     use crate::{
         ports::{ModChannelSink, StorePort},
         protocol::{
@@ -617,6 +632,7 @@ fn probe_mod_watch() {
     );
     let domain = DomainService::new("probe-instance".into(), store, clock);
     let request = WatchRequest {
+        presentation_v2,
         claim: CallerClaim {
             instance: "probe-instance".into(),
             seat: SeatId::new("nobody"),
@@ -630,6 +646,11 @@ fn probe_mod_watch() {
             liveness: None,
         },
     };
+    assert_eq!(
+        serde_json::from_value::<WatchRequest>(serde_json::to_value(&request).unwrap()).unwrap(),
+        request,
+        "the explicit registration mode must survive the wire"
+    );
     let refusal = domain
         .watch_register(&request, Arc::new(NoSink), &budget())
         .unwrap_err();
@@ -684,6 +705,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "history.full_bodies",
             "hook.parse_failure_report",
             "service.send_v1",
+            "messages.send_time_receipts_v1",
             "hook.harness_evidence",
             "harness.states",
             "seat.managed_launch",
@@ -691,6 +713,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "invitation.reject_v1",
             "thread.join_v1",
             "thread.direct_v1",
+            "direct_threads.ensure_creation_policy_v1",
             "participants.locations_v1",
             "picker.directory_v1",
             "attention.notice_delivery_v1",
@@ -698,12 +721,15 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "send.lazy_v1",
             "inbox.batch_v2",
             "mod.watch_v1",
+            "mod.watch_presentation_v2",
             "seat.wake_on_v1",
             "delivery.pull_v1",
             "hook.lazy_delivery_v1",
+            "delivery.presentation_v2",
             "inbox.binding_cursors_v1",
             "attention.binding_digest_v1",
-            "inbox.in_turn_offer_v1"
+            "inbox.in_turn_offer_v1",
+            "invitation.confirmation_v1"
         ]
     );
     let caps = Capabilities::from_list(advertised.capabilities);
@@ -1432,6 +1458,7 @@ fn v2_capability_is_negotiated_only_with_recorder() {
             .iter()
             .filter(|name| **name != HARNESS_HEALTH_V2)
             .copied()
+            .chain(std::iter::once(INVITATION_CONFIRMATION_V1))
             .collect::<Vec<_>>()
     );
     let d = crate::harness::claude::ClaudeAdapter.contracts()[0];
@@ -1864,6 +1891,100 @@ fn probe_thread_join() {
 }
 
 #[test]
+fn invitation_confirmation_wire_preserves_legacy_and_distinguishes_modern_requests() {
+    let legacy = r#"{"kind":"invite","args":{"thread":"t","seat":"s","deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}}"#;
+    let original: serde_json::Value = serde_json::from_str(legacy).unwrap();
+    let historical: Command = serde_json::from_str(legacy).unwrap();
+    assert_eq!(serde_json::to_string(&historical).unwrap(), legacy);
+    let digest = crate::store::schema::canonical_digest(&historical).unwrap();
+    let digest_hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        digest_hex,
+        "828be585cb68fe75bc8decd1a9d5e23f5f8c5e2da738fb9bb4bb175e8430d3ad"
+    );
+    for mode in ["lazy", "require_ack"] {
+        let mut modern = original.clone();
+        modern["args"]["confirmation"] = serde_json::json!(mode);
+        let command: Command = serde_json::from_value(modern.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&command).unwrap(), modern);
+        assert_ne!(
+            crate::store::schema::canonical_digest(&command).unwrap(),
+            crate::store::schema::canonical_digest(&historical).unwrap()
+        );
+        assert!(command.validate().is_ok());
+        if mode == "require_ack" {
+            modern["args"]["deadline_millis"] = serde_json::json!(17);
+            let timed: Command = serde_json::from_value(modern.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&timed).unwrap(), modern);
+            assert!(timed.validate().is_ok());
+            modern["args"]["claim"]["harness"] = serde_json::json!("human");
+            let human: Command = serde_json::from_value(modern).unwrap();
+            assert!(human.validate().is_err());
+        } else {
+            modern["args"]["deadline_millis"] = serde_json::json!(10);
+            let conflict: Command = serde_json::from_value(modern).unwrap();
+            assert!(conflict.validate().is_err());
+        }
+    }
+}
+
+#[test]
+fn public_operation_status_cannot_bypass_send_time_capability_guard() {
+    use crate::{
+        ports::StorePort,
+        protocol::{commands::OperationStatusQuery, ids::OperationId},
+        service::dispatch::DomainService,
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+    };
+    let isolation = crate::test_support::isolation::TestIsolation::new("ordinary-public-status");
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+    let store: Arc<dyn StorePort> = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(isolation.path("store.db"), clock.clone()),
+            "probe-instance",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let domain = DomainService::new("probe-instance".into(), store, clock);
+    let error = domain
+        .handle(
+            Command::OperationStatus(OperationStatusQuery {
+                operation: OperationId::new("historical-key"),
+            }),
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unauthorized);
+    assert_eq!(error.detail, "verified operation scope required");
+}
+
+#[test]
+fn invitation_confirmation_capability_is_advertised_with_active_lifecycle() {
+    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let CommandResult::Capabilities(reply) = handler
+        .handle(
+            Command::Capabilities,
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert!(
+        reply
+            .capabilities
+            .iter()
+            .any(|value| value == INVITATION_CONFIRMATION_V1)
+    );
+}
+
+#[test]
 fn automatic_contract_declarations_do_not_advertise_an_unimplemented_runtime() {
     let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
     let CommandResult::Capabilities(caps) = handler
@@ -1881,5 +2002,167 @@ fn automatic_contract_declarations_do_not_advertise_an_unimplemented_runtime() {
             .capabilities
             .iter()
             .any(|cap| cap == AUTOMATIC_HANDOFF_V1)
+    );
+}
+
+/// Kills: advertising V2 while either deciding route is absent from the
+/// configured DomainService, or canonical Confirm loses the captured controls.
+/// Unlike the older NoDomain probes this must allocate and retire real output.
+#[test]
+fn presentation_capability_routes_use_configured_domain() {
+    use crate::{
+        harness::registry::builtins,
+        ports::StorePort,
+        protocol::{
+            authority::{CallerClaim, CallerRole, Harness},
+            commands::{CheckIn, CheckInMode, CreateThread, InvitationConfirmation, Invite},
+            delivery::{
+                DeliveryPresentationConfirmV2, DeliveryPresentationConfirmationV2,
+                DeliveryPullReplyV2, DeliveryPullV2, PresentationConsumer,
+                PresentationRenderRequest,
+            },
+            ids::{ExecutionId, HostTargetId, NativeSessionId, OperationId, SeatId},
+        },
+        service::{dispatch::DomainService, fair_writer::FairWriter},
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+        test_support::isolation::TestIsolation,
+    };
+    let isolated = TestIsolation::new("presentation-capability-route");
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+    let context = StoreContext::new(isolated.path("store.db"), clock.clone());
+    let db = context.open_writer().unwrap();
+    let instance = Uuid::new_v4();
+    let boot = Uuid::new_v4();
+    db.execute(
+        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)",
+        [instance.to_string()],
+    )
+    .unwrap();
+    for seat in ["origin", "recipient"] {
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?1,0,0,0)", rusqlite::params![seat, instance.to_string()]).unwrap();
+        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,?2,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?2,'inc-'||?2,'coherent_enumeration',1)", rusqlite::params![instance.to_string(),seat]).unwrap();
+    }
+    let store: Arc<dyn StorePort> = Arc::new(
+        SqliteStore::new(context, instance.to_string(), StoreSettings::default()).unwrap(),
+    );
+    let domain = DomainService::new(instance.to_string(), store, clock)
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)));
+    let handler = ControlService::new(
+        StopController::new(instance, boot, Cancellation::default()),
+        move |_: &CallBudget| HealthInputs::unknown(instance, boot),
+        domain,
+    );
+    let call = |command| {
+        handler
+            .handle(command, PeerIdentity::from_kernel(501), &budget())
+            .unwrap()
+    };
+    let CommandResult::Capabilities(caps) = call(Command::Capabilities) else {
+        panic!("capabilities")
+    };
+    assert!(
+        caps.capabilities
+            .iter()
+            .any(|name| name == DELIVERY_PRESENTATION_V2),
+        "configured actual capability response must advertise the selected routes"
+    );
+    let check_in = |seat: &str| {
+        let session = format!("session-{seat}");
+        let claim = CallerClaim {
+            instance: instance.to_string(),
+            seat: SeatId::new(seat),
+            binding_generation: 0,
+            role: CallerRole::TopLevel,
+            harness: Harness::Agent(builtins().agent("agy").unwrap()),
+            native_session: NativeSessionId::new(&session),
+            execution: ExecutionId::new(Uuid::new_v4().to_string()),
+            target: HostTargetId::new(seat),
+            agent_id: None,
+            liveness: Some(crate::test_support::isolation::stand_in_fingerprint(
+                "agy", &session,
+            )),
+        };
+        let CommandResult::CheckedIn(checked) = call(Command::CheckIn(CheckIn {
+            lineage_parent: None,
+            mode: CheckInMode::Lifecycle {
+                expected_binding_generation: 0,
+            },
+            claim,
+            operation: OperationId::new(format!("check-in-{seat}")),
+        })) else {
+            panic!("canonical binding")
+        };
+        checked.context
+    };
+    let origin = check_in("origin");
+    let recipient = check_in("recipient");
+    let CommandResult::ThreadCreated(thread) = call(Command::CreateThread(CreateThread {
+        name: None,
+        topic: "capability route".into(),
+        goal: "canonical page retirement".into(),
+        operation: OperationId::new("route-create"),
+        claim: origin.clone(),
+    })) else {
+        panic!("created thread")
+    };
+    call(Command::Invite(Invite {
+        confirmation: Some(InvitationConfirmation::RequireAck),
+        thread,
+        seat: recipient.seat.clone(),
+        deadline_millis: Some(300_000),
+        operation: OperationId::new("route-invite"),
+        claim: origin,
+    }));
+    let CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page)) =
+        call(Command::DeliveryPullV2(DeliveryPullV2 {
+            claim: recipient.clone(),
+            consumer: PresentationConsumer::Hook,
+            render: PresentationRenderRequest::Hook {
+                confirmable_selector: 0,
+                passive_selector: 0,
+            },
+            presentation_lease: None,
+            marker_prefix: vec![],
+        }))
+    else {
+        panic!("configured production PullV2 route allocates a canonical page")
+    };
+    assert!(!page.items.is_empty());
+    assert!(
+        !page.emitted_controls.is_empty(),
+        "exercise canonical control retirement"
+    );
+    let token = page
+        .presentation_token
+        .expect("canonical presentation token");
+    let confirm = Command::DeliveryPresentationConfirmV2(DeliveryPresentationConfirmV2 {
+        emitted_controls: page.emitted_controls.clone(),
+        claim: recipient,
+        consumer: PresentationConsumer::Hook,
+        token: token.clone(),
+        presentation_lease: None,
+    });
+    let CommandResult::DeliveryPresentationConfirmedV2(reply) = call(confirm.clone()) else {
+        panic!("configured production Confirm route")
+    };
+    assert_eq!(reply.status, DeliveryPresentationConfirmationV2::Confirmed);
+    assert_eq!(reply.acknowledged_controls, page.emitted_controls);
+    let CommandResult::DeliveryPresentationConfirmedV2(replay) = call(confirm) else {
+        panic!("exact canonical replay")
+    };
+    assert_eq!(
+        replay.status,
+        DeliveryPresentationConfirmationV2::AlreadyConfirmed
+    );
+    assert_eq!(replay.acknowledged_controls, reply.acknowledged_controls);
+    assert_eq!(db.query_row("SELECT last_token FROM invitation_presentation_consumers WHERE seat_id='recipient' AND consumer='hook'", [], |row| row.get::<_,String>(0)).unwrap(), token);
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM invitations WHERE state='pending'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
     );
 }

@@ -103,8 +103,9 @@ fn hooks_current(env: &SetupEnv, settings: &Path, manifest: &Path) -> bool {
         Some(&argv),
     )
     .is_ok_and(|inspection| inspection.installed)
-        && recorded_command(manifest)
-            .is_some_and(|recorded| recorded.starts_with(&format!("{expected} # ")))
+        && recorded_command(manifest).is_some_and(|recorded| {
+            recorded == expected || recorded.starts_with(&format!("{expected} # "))
+        })
 }
 
 pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
@@ -124,7 +125,9 @@ pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<V
     let command_moved = shell_command(&env.hook_argv(Harness::Claude)?)
         .ok()
         .zip(recorded_command(&manifest))
-        .is_some_and(|(expected, recorded)| !recorded.starts_with(&format!("{expected} # ")));
+        .is_some_and(|(expected, recorded)| {
+            !(recorded == expected || recorded.starts_with(&format!("{expected} # ")))
+        });
     let component = permission_component(env, &settings)?;
     let permissions = if command_moved {
         component.status()
@@ -187,6 +190,7 @@ pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<V
             "instance": instance_json(env),
             "hook_argv": env.hook_argv(Harness::Claude)?,
             "command": command,
+            "commands": super::super::setup::commands_json(&installed.owned),
             "events": installed.owned.iter().map(|entry| entry.event.clone()).collect::<Vec<_>>(),
             "allow_rule": allow_rule_json(claude::settings_kind(), allow_rule.as_ref()),
             "permissions": permissions,
@@ -599,7 +603,7 @@ pub(crate) fn claude_remove(env: &SetupEnv) -> Result<Value, RunError> {
     if recorded.adopted {
         report["adopted"] = json!(recorded.installation_id);
         report["note"] = json!(
-            "removed only the adopted hook groups (another setup's owner marker) from this \
+            "removed only the hook groups with the adopted installation identity from this \
              settings file; that setup's own settings file is unchanged"
         );
     }

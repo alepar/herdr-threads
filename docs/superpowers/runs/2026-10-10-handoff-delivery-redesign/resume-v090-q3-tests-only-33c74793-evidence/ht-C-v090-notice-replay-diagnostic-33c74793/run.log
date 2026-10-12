@@ -1,0 +1,32 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 8c1926cf-9284-4e27-ad1e-075fb7e71271 with nextest profile: default
+    Starting 1 test across 1 binary (82 tests skipped)
+        FAIL [   1.691s] (1/1) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion
+  stdout ───
+
+    running 1 test
+    test agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion ... FAILED
+
+    failures:
+
+    failures:
+        agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 1.68s
+
+  stderr ───
+    elected daemon.log tail:
+    harness manifest: auto
+    store startup binding evidence: backfilled 0, still lacking 0
+    lane archival: Unsupported: test adapter has no composer-aware archival observation
+    panicked at tests/hook_entrypoint/agy.rs:1992:9:
+    assertion `left == right` failed: the exact durable invitation/control descriptors physically replay; notice_before={"allocated_controls":[{"epoch":"1","kind":"attention","version":8109080586913966177}],"allocated_token":"92dcc00309804bc6810efb4c3af1a779","canonical":{"binding":{"execution":"1ff90392-f625-55ea-b253-ae7292c945d9","generation":1,"id":"64f3524101fa993f757e95da189ee551","liveness":"disconnected","pid":59950,"reason":"liveness_process_exit","start":1791765401008532},"digest":{"event_offset":1,"event_seq":8,"ordinal":2,"thread":"tgN8gyP6y"},"frontier":2,"logical":{"affected":"sjrOxAuio","base_sequence":3,"decision":8,"episode":2,"instance":"75275848-e753-4f77-81c8-6d52d9bc82e0","interval_high":3,"offset":1,"ordinal":1,"preparation":"pXEZM7Lo1","source":"mXEZM7Lo1","thread":"tgN8gyP6y","warning_count":1},"outbox":{"codec":"09d128d2e4c3e8f850d4c18b21b9d43e6a428abbdd0b439fec52c6e8133e7830","confirmed_mask":0,"execution":"1ff90392-f625-55ea-b253-ae7292c945d9","generation":1,"last_confirmed_mask":0,"last_token":null,"retired_mask":0,"selection":"{\"kind\":\"hook\",\"selector\":0}","token":"92dcc00309804bc6810efb4c3af1a779"},"physical":null,"recipient":{"generation":8,"ordinal":2}},"expected_thread":"tgN8gyP6y","initial_claim":{"binding_generation":1,"execution":"1ff90392-f625-55ea-b253-ae7292c945d9","harness":"agy","instance":"75275848-e753-4f77-81c8-6d52d9bc82e0","liveness":{"pid":59898,"start":1791765399706193},"native_session":"534e47d6-64b3-4fd6-bd7f-446ceec4d86c","role":"top_level","seat":"sjrOxAuio","target":"w9:p1"},"notice":"w0af6e0a6-63f5-813d-9e84-7a63938466f3"}; notice_after={"allocated_controls":[{"epoch":"1","kind":"attention","version":8109080586913966177}],"allocated_token":"92dcc00309804bc6810efb4c3af1a779","canonical":{"binding":{"execution":"1ff90392-f625-55ea-b253-ae7292c945d9","generation":1,"id":"64f3524101fa993f757e95da189ee551","liveness":"connected","pid":59955,"reason":null,"start":1791765401044239},"digest":{"event_offset":1,"event_seq":8,"ordinal":2,"thread":"tgN8gyP6y"},"frontier":2,"logical":{"affected":"sjrOxAuio","base_sequence":3,"decision":8,"episode":2,"instance":"75275848-e753-4f77-81c8-6d52d9bc82e0","interval_high":3,"offset":1,"ordinal":1,"preparation":"pXEZM7Lo1","source":"mXEZM7Lo1","thread":"tgN8gyP6y","warning_count":1},"outbox":{"codec":"","confirmed_mask":0,"execution":"1ff90392-f625-55ea-b253-ae7292c945d9","generation":1,"last_confirmed_mask":1,"last_token":"92dcc00309804bc6810efb4c3af1a779","retired_mask":0,"selection":"","token":null},"physical":null,"recipient":{"generation":8,"ordinal":2}},"expected_thread":"tgN8gyP6y","initial_claim":{"binding_generation":1,"execution":"1ff90392-f625-55ea-b253-ae7292c945d9","harness":"agy","instance":"75275848-e753-4f77-81c8-6d52d9bc82e0","liveness":{"pid":59898,"start":1791765399706193},"native_session":"534e47d6-64b3-4fd6-bd7f-446ceec4d86c","role":"top_level","seat":"sjrOxAuio","target":"w9:p1"},"notice":"w0af6e0a6-63f5-813d-9e84-7a63938466f3"}; retry_checkins=0
+      left: [Invitation { id: InvitationId("iA0qlrAXQ"), content: WatchInvitation { command_context_epoch: Some("0"), topic_revision: Some("0"), thread: ThreadId("tgOqpm3TH"), thread_name: Some("registered hook activation"), body: "registered hook activation\ngoal: exact emitted control\ndeadline: 1791765700994\nnext: herdr-threads --state-dir /private/tmp/hk-2c0f9d55365b/state accept tgOqpm3TH", truncated: false, wakes: true } }, Attention { epoch: "1", attention_version: 8109080586913966177, text: "herdr-threads: attention pending; run herdr-threads --state-dir /private/tmp/hk-2c0f9d55365b/state inbox" }]
+     right: [Notice { warning: MessageId("w0af6e0a6-63f5-813d-9e84-7a63938466f3"), thread: ThreadId("tgN8gyP6y"), body: "informational, no ACK; read: herdr-threads --state-dir /private/tmp/hk-2c0f9d55365b/state body w0af6e0a6-63f5-813d-9e84-7a63938466f3" }, Invitation { id: InvitationId("iA0qlrAXQ"), content: WatchInvitation { command_context_epoch: Some("0"), topic_revision: Some("0"), thread: ThreadId("tgOqpm3TH"), thread_name: Some("registered hook activation"), body: "registered hook activation\ngoal: exact emitted control\ndeadline: 1791765700994\nnext: herdr-threads --state-dir /private/tmp/hk-2c0f9d55365b/state accept tgOqpm3TH", truncated: false, wakes: true } }, Attention { epoch: "1", attention_version: 8109080586913966177, text: "herdr-threads: attention pending; run herdr-threads --state-dir /private/tmp/hk-2c0f9d55365b/state inbox" }]
+
+
+────────────
+     Summary [   1.694s] 1 test run: 0 passed, 1 failed, 82 skipped
+        FAIL [   1.691s] (1/1) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion
+error: test run failed

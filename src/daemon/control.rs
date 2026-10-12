@@ -262,6 +262,10 @@ where
         self.domain.watch_register(request, sink, budget)
     }
 
+    fn watch_presentation_lease(&self, channel: crate::ports::ModChannelId) -> Option<String> {
+        self.domain.watch_presentation_lease(channel)
+    }
+
     fn watch_unregister(
         &self,
         channel: crate::ports::ModChannelId,
@@ -322,6 +326,9 @@ where
                                         .is_some_and(|p| p.has_observations()))
                         })
                         .copied()
+                        .chain(std::iter::once(
+                            crate::protocol::capabilities::INVITATION_CONFIRMATION_V1,
+                        ))
                         .chain(self.bootstrap_guarded.then_some(
                             crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1,
                         ))

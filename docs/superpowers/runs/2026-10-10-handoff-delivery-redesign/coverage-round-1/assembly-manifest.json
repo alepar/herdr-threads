@@ -1,0 +1,19 @@
+{
+  "round": 1,
+  "tree_source": "bd list --label sp:ht-0lo --json --status all",
+  "spec_count": 5,
+  "leaf_count": 10,
+  "subepic_count": 4,
+  "canonical_requirement_count": 35,
+  "initial_valid_reviews_per_pass": 0,
+  "initial_insufficient_reviews_per_pass": 3,
+  "repair": "literal frozen packet and full coverage template in reviewer messages; reviewers no tools",
+  "sha256": "125c1b520937993a496163c7f5af767c1d3f63e683e48917f9131586cc6c0dea",
+  "repaired_dispatches": {
+    "review1": "Literal full root/nested specs+complete bulk fields+35R+checks0-9 direct messages; triggered; returned valid five passes.",
+    "review2": "Courier delivered full literal360-line packet in3chunks and212-line template; triggered.",
+    "review3": "Courier delivered full literal360-line packet in3chunks and212-line template; triggered."
+  },
+  "repaired_valid_reviews_per_pass": 3,
+  "degraded": false
+}

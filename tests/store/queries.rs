@@ -6000,3 +6000,606 @@ fn directory_filtered_name_revision_is_selected_and_rejects_legacy_keys() {
         );
     }
 }
+
+#[test]
+fn v2_invitation_goal_and_revision_fit_or_yield_to_usable_pending_inspection() {
+    let (store, db) = fixture();
+    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES ('inv-v2-goal','t','s',1,'pending',0,300,300,1)", []).unwrap();
+    let read = |max_bytes, output: &OutputSpec| {
+        query_with_output(
+            &store,
+            "i",
+            &Command::InboxBatchV2(InboxQuery {
+                seat: Some(SeatId::new("s")),
+                claim: None,
+                page: PageRequest {
+                    max_bytes,
+                    ..PageRequest::default()
+                },
+            }),
+            output,
+            &budget(),
+        )
+        .unwrap()
+    };
+    let full = read(65536, &OutputSpec::default());
+    let raw = serde_json::to_value(&full).unwrap();
+    assert_eq!(raw["data"]["items"][0]["goal_data"], "goal");
+    assert!(raw["data"]["items"][0]["topic_revision"].is_u64());
+    db.execute(
+        "UPDATE threads SET goal=?1 WHERE id='t'",
+        ["\u{001b}".repeat(1024)],
+    )
+    .unwrap();
+    for format in [OutputFormat::Text, OutputFormat::Json] {
+        let output = OutputSpec {
+            format,
+            ..OutputSpec::default()
+        };
+        let result = read(2048, &output);
+        let raw = serde_json::to_value(&result).unwrap();
+        assert_eq!(raw["data"]["items"][0]["invitation"], "inv-v2-goal");
+        assert!(raw["data"]["items"][0].get("goal_data").is_none());
+        let encoded = crate::protocol::output::encode_selected(&result, &output).unwrap();
+        assert!(
+            encoded.len() <= 2048,
+            "actual encoded V2 page exceeds selected bytes"
+        );
+        let CommandResult::InboxBatchV2(page) = result else {
+            unreachable!()
+        };
+        let mut assembler = crate::delivery::Assembler::default();
+        let crate::delivery::Assembled::Invitation(context) =
+            assembler.push(page.items[0].clone()).unwrap()
+        else {
+            panic!("missing context")
+        };
+        let inspect = context.content.body.find("thread show t").unwrap();
+        assert!(inspect < context.content.body.find("accept t").unwrap());
+        assert!(
+            context.content.truncated,
+            "byte-budget omitted goal is incomplete"
+        );
+        assert!(assembler.invitation_displays.is_empty());
+        let CommandResult::InboxBatchV2(full_page) = read(65536, &output) else {
+            unreachable!()
+        };
+        let full_item = full_page.items[0].clone();
+        let crate::delivery::Assembled::Invitation(full_context) =
+            assembler.push(full_item.clone()).unwrap()
+        else {
+            panic!("same revision must offer its newly available full goal")
+        };
+        assert!(!full_context.content.truncated);
+        assert!(full_context.content.body.contains(&"\u{001b}".repeat(1024)));
+        assert!(matches!(
+            assembler.push(full_item),
+            Ok(crate::delivery::Assembled::Attention)
+        ));
+    }
+    let inspection = query(
+        &store,
+        "i",
+        &Command::Thread(ThreadQuery {
+            thread: ThreadId::new("t"),
+            caller: Some(SeatId::new("s")),
+            page: PageRequest::default(),
+        }),
+        &budget(),
+    )
+    .unwrap();
+    let CommandResult::Thread(inspection) = inspection else {
+        panic!("pending recipient cannot inspect")
+    };
+    assert_eq!(inspection.goal_data, "\u{001b}".repeat(1024));
+    assert_eq!(
+        db.query_row(
+            "SELECT state FROM invitations WHERE id='inv-v2-goal'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "pending"
+    );
+}
+
+#[test]
+fn presentation_hydrate_exact_query_is_driven_by_bounded_wanted_ids() {
+    use rusqlite::StatementStatus;
+    let sql = super::super::invitation_content::HYDRATE_SQL;
+    let mut measured = Vec::new();
+    for count in [1, 1025, 8192] {
+        let (_store, db) = fixture();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) SELECT 'hydrate-'||n,'t','s',n,'pending',0,300,300,n FROM n",[count]).unwrap();
+        for wanted_count in [1, 100] {
+            if wanted_count > count {
+                continue;
+            }
+            let ids = (count - wanted_count + 1..=count)
+                .map(|n| format!("hydrate-{n}"))
+                .collect::<Vec<_>>();
+            let wanted = serde_json::to_string(&ids).unwrap();
+            let plan = db
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map(params![wanted, "s", "i"], |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            let mut statement = db.prepare(sql).unwrap();
+            let rows = statement
+                .query_map(params![wanted, "s", "i"], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(4)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(
+                rows,
+                ids.into_iter()
+                    .map(|id| (id, "goal".into()))
+                    .collect::<Vec<_>>()
+            );
+            let vm = statement.get_status(StatementStatus::VmStep);
+            let scans = statement.get_status(StatementStatus::FullscanStep);
+            let version: String = db
+                .query_row("SELECT sqlite_version()", [], |r| r.get(0))
+                .unwrap();
+            eprintln!(
+                "SQLite {version} hydrate pending={count} wanted={wanted_count} VM={vm} fullscan_steps={scans} plan={plan:?}"
+            );
+            measured.push((count, wanted_count, vm, scans));
+        }
+    }
+    assert!(
+        measured.iter().all(|(_, _, _, scans)| *scans == 0),
+        "pending relation must not be scanned: {measured:?}"
+    );
+    for wanted_count in [1, 100] {
+        let group = measured
+            .iter()
+            .filter(|(_, wanted, _, _)| *wanted == wanted_count)
+            .collect::<Vec<_>>();
+        assert!(
+            group.iter().all(|(_, _, vm, _)| *vm == group[0].2),
+            "VM work must follow wanted IDs, not pending cardinality: {measured:?}"
+        );
+    }
+}
+
+#[test]
+fn presentation_generated_marker_inverse_refuses_wrong_variant_or_body() {
+    let id = crate::protocol::ids::MessageId::parse("marker-source").unwrap();
+    let prefix = vec!["ht".into(), "--state-dir".into(), "old prefix".into()];
+    for marker_lazy in [false, true] {
+        let generated = crate::protocol::watch::truncation_marker_for(&prefix, &id, marker_lazy);
+        let canonical_body = "raw body ending in …truncated; run arbitrary body marker";
+        let assembled = format!("{canonical_body}{generated}");
+        assert_eq!(
+            crate::store::invitation_content::remove_generated_marker(
+                &assembled,
+                &prefix,
+                &id,
+                marker_lazy
+            )
+            .unwrap(),
+            canonical_body
+        );
+        let forged = crate::store::invitation_content::remove_generated_marker(
+            &assembled,
+            &prefix,
+            &id,
+            !marker_lazy,
+        )
+        .unwrap_err();
+        assert_eq!(
+            forged.code,
+            crate::protocol::results::ErrorCode::StoreCorrupt
+        );
+        let changed = vec!["different-prefix".into()];
+        assert!(
+            crate::store::invitation_content::remove_generated_marker(
+                &assembled,
+                &changed,
+                &id,
+                marker_lazy
+            )
+            .is_err()
+        );
+        assert!(
+            crate::store::invitation_content::remove_generated_marker(
+                canonical_body,
+                &prefix,
+                &id,
+                marker_lazy
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn presentation_publication_range_uses_exact_index_and_bounded_sqlite_work() {
+    use rusqlite::StatementStatus;
+    let sql = crate::store::invitation_content::PUBLICATION_RANGE_SQL;
+    let migration = include_str!("../../migrations/0001_initial.sql");
+    let start = migration.find("CREATE TABLE send_manifests (").unwrap();
+    let end = migration[start..]
+        .find("CREATE INDEX send_manifests_warning_decision")
+        .unwrap()
+        + start;
+    let mut work = Vec::new();
+    for count in [128, 8192] {
+        // Exact canonical relation/index DDL; unrelated FK relations are not
+        // needed for this linked-SQLite query-work witness.
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", false).unwrap();
+        db.execute_batch(&migration[start..end]).unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) SELECT 'p'||n,'m'||n,'i','t',n,0,n,0,0,0 FROM n",[count]).unwrap();
+        let plan = db
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .unwrap()
+            .query_map(params!["i", 0, count], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|line| line
+                .contains("SEARCH send_manifests USING INDEX send_manifests_instance_decision")),
+            "{plan:?}"
+        );
+        assert!(
+            !plan
+                .iter()
+                .any(|line| line.contains("SCAN ") || line.contains("TEMP B-TREE")),
+            "{plan:?}"
+        );
+        let mut statement = db.prepare(sql).unwrap();
+        let rows = statement
+            .query_map(params!["i", 0, count], |r| r.get::<_, i64>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(rows, (1..=100).collect::<Vec<_>>());
+        let vm = statement.get_status(StatementStatus::VmStep);
+        work.push(vm);
+        eprintln!(
+            "publication exactSQL SQLite={} retained={count} visits={} VM={vm} plan={plan:?}",
+            db.query_row("SELECT sqlite_version()", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            rows.len()
+        );
+    }
+    assert_eq!(
+        work[0], work[1],
+        "range work depends on selected100, not retained manifest cardinality"
+    );
+}
+
+#[test]
+fn presentation_publication_observes_old_staging_only_after_late_manifest() {
+    use crate::store::messages::{PublicationAuthor, insert_publication, stage_recipient};
+    let (store, mut db) = fixture();
+    bind_query_agent(&db);
+    let seat = SeatId::new("s");
+    let binding = crate::protocol::ids::BindingId::new(db.query_row("SELECT binding_id FROM occupant_bindings WHERE seat_id='s' AND harness='codex' AND native_session='session' AND agent_id=''", [], |r|r.get::<_,String>(0)).unwrap());
+    let thread = ThreadId::new("t");
+    let refresh = |db: &rusqlite::Connection| {
+        crate::store::invitation_content::refresh(db, "i", &seat, &binding, 1, "session")
+            .unwrap()
+            .unwrap()
+    };
+    let baseline = refresh(&db);
+    assert_eq!(baseline.version, 0);
+    let tx = db.transaction().unwrap();
+    tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES ('prep-late-publication','i','seat:s','late-publication',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy')",[]).unwrap();
+    let (mut recipients, mut warnings) = (0, 0);
+    stage_recipient(
+        &tx,
+        "prep-late-publication",
+        "i",
+        &thread,
+        "s",
+        100,
+        &mut recipients,
+        &mut warnings,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let staged = refresh(&db);
+    assert_eq!(staged.version, baseline.version);
+    assert_eq!(
+        staged.ordinary_publication_visits, 0,
+        "staged recipient is not yet canonical publication"
+    );
+    let tx = db.transaction().unwrap();
+    tx.execute(
+        "UPDATE send_preparations SET status='sealed' WHERE id='prep-late-publication'",
+        [],
+    )
+    .unwrap();
+    insert_publication(
+        &tx,
+        200,
+        "seat:s",
+        "late-publication",
+        &[0; 32],
+        &thread,
+        "late lazy body",
+        PublicationAuthor::Native {
+            seat: &seat,
+            binding: &binding,
+            observation: "cooperative_top_level",
+            relays_user: false,
+            user_intent: None,
+        },
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let published = refresh(&db);
+    assert!(published.version > staged.version);
+    assert_eq!(
+        (
+            published.ordinary_publication_visits,
+            published.ordinary_publication_probes,
+            published.ordinary_publication_seeks
+        ),
+        (1, 2, 3)
+    );
+    assert_eq!(refresh(&db).version, published.version);
+    let _reopened = store.open_writer().unwrap();
+    assert_eq!(
+        refresh(&db).version,
+        published.version,
+        "reopen does not rescan completed prefix"
+    );
+}
+
+// This inventory is extracted from the actual helper, not an independently
+// rewritten query. Its full source SHA256 is printed with the physical witness.
+fn q3_reader_sql(prefix: &str) -> String {
+    let source = include_str!("../../src/store/presentation_reader.rs");
+    let start = source.find(&format!("\"{prefix}")).unwrap() + 1;
+    let literal = &source[start..];
+    literal[..literal.find('"').unwrap()]
+        .replace("\\\n", "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn q3_indexed_sql_work(
+    db: &rusqlite::Connection,
+    sql: &str,
+    values: Vec<rusqlite::types::Value>,
+    searches: usize,
+) -> (Vec<Vec<rusqlite::types::Value>>, i32) {
+    use rusqlite::{StatementStatus, params_from_iter};
+    let plan = db
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .unwrap()
+        .query_map(params_from_iter(&values), |r| r.get::<_, String>(3))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        plan.iter().filter(|line| line.contains("SEARCH ")).count(),
+        searches,
+        "{plan:?}"
+    );
+    assert!(
+        !plan
+            .iter()
+            .any(|line| line.contains("SCAN ") || line.contains("TEMP B-TREE")),
+        "{plan:?}"
+    );
+    let mut statement = db.prepare(sql).unwrap();
+    let columns = statement.column_count();
+    let rows = statement
+        .query_map(params_from_iter(&values), |row| {
+            (0..columns).map(|column| row.get(column)).collect()
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        statement.get_status(StatementStatus::FullscanStep),
+        0,
+        "{plan:?}"
+    );
+    let vm = statement.get_status(StatementStatus::VmStep);
+    eprintln!("Q3 exactSQL VM={vm} plan={plan:?}");
+    (rows, vm)
+}
+
+/// Kills: replacing the exact binding/consumer keys with a retained-history
+/// walk, or a hidden scan/write in the real reader-maintenance helper.
+#[test]
+fn presentation_q3_reader_helper_exact_keys_have_constant_sqlite_work() {
+    use crate::protocol::ids::BindingId;
+    use crate::test_support::isolation::{CostCounter, count_vm_units};
+    use rusqlite::types::Value;
+    use sha2::{Digest, Sha256};
+    let canonical_sql = q3_reader_sql("SELECT b.seat_id");
+    let consumer_sql =
+        q3_reader_sql("SELECT seat_id,instance_id,generation,execution,mod_generation");
+    let mut work = Vec::new();
+    for retained in [128, 8192] {
+        let (_store, mut db) = fixture();
+        bind_query_agent(&db);
+        let binding = BindingId::new(
+            db.query_row(
+                "SELECT binding_id FROM occupant_bindings WHERE native_session='session'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap(),
+        );
+        crate::store::invitation_content::refresh(
+            &db,
+            "i",
+            &SeatId::new("s"),
+            &binding,
+            1,
+            "session",
+        )
+        .unwrap()
+        .unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO seats(id,instance_id,state,role,generation,created_at) SELECT 'retained-'||n,'i','resolved','native',1,0 FROM n", [retained]).unwrap();
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at,terminal_id,incarnation) SELECT id,1,1,'w:p1','host',1,'codex',id,'exec','cooperative_top_level',0,0,1,'term','inc' FROM seats WHERE id<>'s'", []).unwrap();
+        // Copy the real bounded consumer shape, changing only canonical owner
+        // fields. Include retained ended bindings: no seat/history shortcut is safe.
+        let columns = db
+            .prepare("PRAGMA table_info(invitation_presentation_consumers)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let projection = columns
+            .iter()
+            .map(|column| match column.as_str() {
+                "binding_id" => "b.binding_id".into(),
+                "seat_id" => "b.seat_id".into(),
+                "consumer" => "c.consumer".into(),
+                _ => format!("p.\"{column}\""),
+            })
+            .collect::<Vec<String>>()
+            .join(",");
+        let column_list = columns
+            .iter()
+            .map(|column| format!("\"{column}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        db.execute(&format!("INSERT INTO invitation_presentation_consumers({column_list}) SELECT {projection} FROM invitation_presentation_consumers p CROSS JOIN occupant_bindings b CROSS JOIN (SELECT 'hook' AS consumer UNION ALL SELECT 'watch') c WHERE p.binding_id=?1 AND p.consumer='watch' AND (b.binding_id<>?1 OR c.consumer='hook')"), [binding.as_str()]).unwrap();
+        let canonical = q3_indexed_sql_work(
+            &db,
+            &canonical_sql,
+            vec![Value::Text(binding.as_str().into())],
+            2,
+        );
+        assert_eq!(
+            canonical.0,
+            [vec![
+                Value::Text("s".into()),
+                Value::Text("i".into()),
+                Value::Integer(1),
+                Value::Text("exec".into()),
+                Value::Text("session".into())
+            ]]
+        );
+        let mut points = Vec::new();
+        for consumer in ["hook", "watch"] {
+            let point = q3_indexed_sql_work(
+                &db,
+                &consumer_sql,
+                vec![
+                    Value::Text(binding.as_str().into()),
+                    Value::Text(consumer.into()),
+                ],
+                1,
+            );
+            assert_eq!(point.0.len(), 1);
+            points.push(point.1);
+        }
+        let tx = db.transaction().unwrap();
+        let counter = CostCounter::default();
+        count_vm_units(&tx, &counter, || {
+            crate::store::presentation_reader::note_binding_reader_change(&tx, &binding).unwrap();
+        });
+        assert_eq!(tx.query_row("SELECT COUNT(*) FROM invitation_presentation_consumers WHERE ordinary_passive_generation=1 AND mod_version=1 AND binding_id=?1", [binding.as_str()], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(tx.query_row("SELECT COUNT(*) FROM invitation_presentation_consumers WHERE binding_id<>?1 AND (ordinary_passive_generation<>0 OR mod_version<>0)", [binding.as_str()], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        work.push((canonical.1, points, counter.units()));
+        eprintln!(
+            "Q3 reader SQLite={} retained={retained} helper_VM_units={} source_SHA256={:x}",
+            tx.query_row("SELECT sqlite_version()", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            counter.units(),
+            Sha256::digest(include_str!("../../src/store/presentation_reader.rs").as_bytes())
+        );
+        tx.rollback().unwrap();
+    }
+    assert_eq!(
+        work[0], work[1],
+        "reader work must follow one exact owner and two fixed consumers, not retained cardinality"
+    );
+}
+
+/// Actual production message-first and mode-selected recipient SQL on the
+/// complete canonical schema. This isolates indexed point work; it does not run
+/// the scanner or prove its total 100/200/3 accounting. The range control remains
+/// separate. Kills: losing exact recipient keys or widening either point probe
+/// into an audience/history walk, including mixed and unrelated publications.
+#[test]
+fn presentation_q3_publication_recipient_keys_have_constant_sqlite_work() {
+    use crate::store::invitation_content::{
+        PUBLICATION_LAZY_RECIPIENT_SQL as LAZY, PUBLICATION_MESSAGE_SQL as MESSAGE,
+        PUBLICATION_ORDINARY_RECIPIENT_SQL as ORDINARY,
+    };
+    use rusqlite::types::Value;
+    use sha2::{Digest, Sha256};
+    let mut work = Vec::new();
+    for retained in [128, 8192] {
+        let (_store, db) = fixture();
+        // Keep the complete migrated canonical schema, foreign keys and triggers.
+        // Valid building preparations own the staged recipient rows; only the
+        // point-query workload below is measured, not this fixture's setup.
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('other','i','resolved','native',1,0)", []).unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) SELECT 'prep-'||n,'i','actor','probe-'||n,zeroblob(32),'t',0,0,0,0,0,0,0,'building',CASE WHEN n%2=0 THEN 'lazy' ELSE 'ordinary' END FROM n", [retained]).unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at,delivery_mode) SELECT 'msg-'||n,'i','t',n,'ordinary','body',n,0,CASE WHEN n%2=0 THEN 'lazy' ELSE 'ordinary' END FROM n", [retained]).unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) SELECT 'prep-'||n,'t','other',1,100,1 FROM n WHERE n%2=1", [retained]).unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) SELECT 'prep-'||n,'msg-'||n,'t','other' FROM n WHERE n%2=0", [retained]).unwrap();
+        db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('prep-1','t','s',2,100,1)", []).unwrap();
+        db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES ('prep-2','msg-2','t','s')", []).unwrap();
+        let mut quantum = Vec::new();
+        // A fixed slice of100 candidate identities mixes both modes; only 1
+        // and 2 address s. Misses still execute the selected recipient point SQL.
+        // No manifest traversal, output or private signal allocation runs here.
+        for n in 1..=100 {
+            let message = q3_indexed_sql_work(
+                &db,
+                MESSAGE,
+                vec![
+                    Value::Text(format!("msg-{n}")),
+                    Value::Text("i".into()),
+                    Value::Text("t".into()),
+                    Value::Integer(n),
+                ],
+                1,
+            );
+            let (sql, expected) = if n % 2 == 0 {
+                (LAZY, "lazy")
+            } else {
+                (ORDINARY, "ordinary")
+            };
+            assert_eq!(message.0, [vec![Value::Text(expected.into())]]);
+            let recipient = q3_indexed_sql_work(
+                &db,
+                sql,
+                vec![Value::Text(format!("prep-{n}")), Value::Text("s".into())],
+                1,
+            );
+            let wanted = match n {
+                1 => vec![vec![Value::Text("t".into())]],
+                2 => vec![vec![Value::Text("msg-2".into()), Value::Text("t".into())]],
+                _ => vec![],
+            };
+            assert_eq!(recipient.0, wanted);
+            quantum.push((message.1, recipient.1));
+        }
+        eprintln!(
+            "Q3 production publication pointSQL SQLite={} retained={retained} mixed100 VM={quantum:?} source_SHA256={:x}",
+            db.query_row("SELECT sqlite_version()", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            Sha256::digest(include_str!("../../src/store/invitation_content.rs").as_bytes())
+        );
+        work.push(quantum);
+    }
+    assert_eq!(
+        work[0], work[1],
+        "production mode-specific point work must not follow unrelated retained recipients"
+    );
+}
+
+#[path = "query_work_q4.rs"]
+mod query_work_q4;

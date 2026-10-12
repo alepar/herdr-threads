@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+────────────
+ Nextest run ID d0a5728c-4791-4be4-aac6-7be7557be0f5 with nextest profile: default
+    Starting 1 test across 1 binary (200 tests skipped)
+        PASS [  12.757s] (1/1) herdr-threads::integration mod_delivery::activation_v2_watch_full_pending_capacity_parks_until_real_channel_input
+────────────
+     Summary [  12.759s] 1 test run: 1 passed, 200 skipped

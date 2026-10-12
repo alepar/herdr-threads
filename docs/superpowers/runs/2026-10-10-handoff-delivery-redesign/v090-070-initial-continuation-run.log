@@ -1,0 +1,27 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+────────────
+ Nextest run ID 40bca66f-b836-4db7-8de8-87096622b3ce with nextest profile: default
+    Starting 1 test across 1 binary (719 tests skipped)
+        FAIL [   0.222s] (1/1) herdr-threads::combined invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read ... FAILED
+
+    failures:
+
+    failures:
+        invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 719 filtered out; finished in 0.21s
+
+  stderr ───
+
+    thread 'invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read' (55237837) panicked at tests/store/invitation_content.rs:1016:14:
+    called `Result::unwrap()` on an `Err` value: SqliteFailure(Error { code: ConstraintViolation, extended_code: 1811 }, Some("message history is immutable"))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.225s] 1 test run: 0 passed, 1 failed, 719 skipped
+        FAIL [   0.222s] (1/1) herdr-threads::combined invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read
+error: test run failed

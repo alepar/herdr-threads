@@ -1,0 +1,27 @@
+# v0.9.1 hook composition source inspection
+
+Source-only result: no production defect found in the declared composition seam; one inherited focused-caller test defect requires correction. No Cargo/runtime tests run and no candidate/shared-root product files changed.
+
+## Concrete defect and minimal scratch correction
+
+`tests/hook_entrypoint.rs:6681`, `native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_before_effects`, labels `(claude, SubagentStart)` an undeclared pair and expects `undeclared hook event` plus unchanged parse-failure count. Candidate `src/harness/claude.rs:71` declares SubagentStart in its actual native payload contract (not merely an owned setup group); its descriptor at :1097 also declares the event. `src/cli/hook.rs:226` recognizes that pair from registered contracts, so it reaches native decode, where the supplied SessionStart payload mismatches registration. It cannot emit the expected undeclared-event diagnostic, and its parse-failure evidence may also increase. This is a deterministic source contradiction.
+
+Parent specifically requested immutable grounding, so read-only Git object reads were used for that follow-up only. Feature commit `f4b74f31` already has Claude SubagentStart in the native contract at :71 and the stale tuple at `tests/hook_entrypoint.rs:6429`. Main `20e7` also has the same declared Claude event. This is inherited from the earlier v0.9.0 composition, not introduced by v0.9.1's Codex UserPromptSubmit addition.
+
+The scratch patch replaces only the alleged undeclared Claude event with Bogus; both harnesses retain invalid-pair pre-effect checks. The existing actual declared Codex SubagentStart malformed-field rejection at candidate :6652–6672 remains byte-for-byte, and `versionless_native_callbacks_without_path_refuse_registered_event_mismatch` retains declared-event mismatch and parse-failure evidence controls.
+
+Prior C evidence does not prove this test passed: all four retained list.json files containing this exact name mark it `filter-match.status=mismatch`, `reason=expression`. In particular `docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/resume-v090-q4-68fab47e-checkpoint-evidence/ht-C-v090-registered-hook6-q4-68fab47e/list.json` excludes it, as does the earlier `resume-v090-07fdf88d-hook-fixture-lazy-evidence/ht-C-v090-registered-hook6-fba17e52/list.json`. These are selection observations, not runtime success evidence.
+
+## Declared seam findings
+
+- `src/harness/codex.rs`: CONTRACT, DECLARATION.owned_hooks, required_hook_events and evidence descriptor all retain six events: SessionStart, SubagentStart, PreToolUse, UserPromptSubmit, SubagentStop, SessionEnd. UserPromptSubmit requires session/turn, uses the normal role pairing guard and Current intent. Decode explicitly restores `metadata.native_event=UserPromptSubmit`, and the registered encoder uses that exact value. Registered-event payload mismatches are refused before canonical action; operational admission remains registered-contract, without a new executable/version prerequisite.
+- `src/cli/hook.rs`: stable `hook-event HARNESS EVENT` producer/parser validates through registered contracts. Shared orchestration uses adapter policy and existing capability election; no Codex-specific neutral-core branch was added for this turn event.
+- Focused setup callers `src/harness/setup.rs::native_entries` and `src/harness/codex/setup.rs::plan_codex` derive all six complete stable event argv from the same declaration; generated groups retain matcher/timeout policy and exact owned records. Declared `tests/harness/setup.rs` controls cover six groups and per-event commands, stable same-route repeat, foreign identical/drift refusal, and foreign-route preservation.
+- `tests/harness/contract.rs` pins Codex `aa060178f462d0db` consistently at all selected literal locations. A standalone source-data reproduction of canonical_json/SHA256 produces that exact ID. `tests/fixtures/golden/contract-id/{json.json,text.txt}` match it. `setup/codex.json` has the six-event inventory. The zero-byte `hook/codex.UserPromptSubmit.stdout` and `no resolved seat` status are consistent with its no-seat fixture; that golden alone is not affirmative codec/delivery evidence.
+- `tests/contracts.rs` was checked for hook/event/contract literals and frozen wire compatibility assertions; no conflicting Codex contract hash or hook-event expectation was identified.
+
+## Parent runtime controls
+
+Run the corrected `hook_entrypoint::native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_before_effects`, `versionless_native_callbacks_without_path_refuse_registered_event_mismatch`, `versionless_registered_event_mismatch_keeps_tool_deadline_with_withheld_capabilities`, `lazy_mail_reaches_the_next_codex_tool_hook`, and `lazy_mail_reaches_the_next_codex_user_prompt_hook`. The last case positively asserts exact UserPromptSubmit native output and lazy-body delivery; preserve it alongside the tool case.
+
+Also retain `harness::setup::codex_setup_registers_event_per_group`, `codex_session_plan_registers_event_per_group`, `stable_owned_reinstall_preserves_identity_positions_and_foreign_groups`, `stable_foreign_identical_and_owned_drift_are_preserved`, `stable_same_event_foreign_route_conflicts_without_config_changes`, `harness::contract::contract_ids_are_pinned`, and `combined` golden surfaces `setup_reports`, `setup_status_reports`, `contract_id_output`, `hook_stdout_per_event`. Parent owns patch import and exact candidate runtime evidence.

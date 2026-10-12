@@ -61,6 +61,9 @@ static TEXT: AdapterText = AdapterText {
 
 impl HarnessAdapter for AgyAdapter {
     type Admission = AgyAdmission;
+    fn presentation_codec(&self, selector: u8) -> Option<PresentationCodec> {
+        InjectionStep::from_presentation_selector(selector).map(InjectionStep::presentation_codec)
+    }
     fn metadata(&self) -> &'static AdapterMetadata {
         &METADATA
     }

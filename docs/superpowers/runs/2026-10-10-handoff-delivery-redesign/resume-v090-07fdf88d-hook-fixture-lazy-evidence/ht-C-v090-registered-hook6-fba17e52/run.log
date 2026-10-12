@@ -1,0 +1,37 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID e282b253-c183-437d-825e-2d464b7e78b6 with nextest profile: default
+    Starting 6 tests across 1 binary (77 tests skipped)
+        PASS [   1.680s] (1/6) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion
+        PASS [   1.323s] (2/6) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_lost_completion_preserves_exact_recovery
+        PASS [   0.666s] (3/6) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_system_hook_round_trip
+        PASS [   0.659s] (4/6) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_user_hook_round_trip
+        FAIL [   0.779s] (5/6) herdr-threads::hook_entrypoint agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement
+  stdout ───
+
+    running 1 test
+    test agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement ... FAILED
+
+    failures:
+
+    failures:
+        agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.77s
+
+  stderr ───
+    elected daemon.log tail:
+    harness manifest: auto
+    store startup binding evidence: backfilled 0, still lacking 0
+    panicked at tests/hook_entrypoint/agy.rs:1889:9:
+    assertion `left == right` failed
+      left: 0
+     right: 1
+    lane archival: Unsupported: test adapter has no composer-aware archival observation
+
+
+        PASS [   1.014s] (6/6) herdr-threads::hook_entrypoint agy::activation::registered_agy_omitted_or_refused_capability_uses_historical_pull
+────────────
+     Summary [   6.122s] 6 tests run: 5 passed, 1 failed, 77 skipped
+        FAIL [   0.779s] (5/6) herdr-threads::hook_entrypoint agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement
+error: test run failed

@@ -2,7 +2,7 @@
 //! spec DP2): page `InboxBatchV2` for a seat until exhausted, feed every item
 //! to an [`Assembler`] and report what came out as [`DrainEvent`]s.
 
-use super::assemble::{AssembleError, Assembled, Assembler, DeliveryItem};
+use super::assemble::{AssembleError, Assembled, Assembler, DeliveryInvitation, DeliveryItem};
 use crate::protocol::{pagination::Page, results::InboxBatchV2Item};
 
 pub use crate::protocol::watch::{
@@ -32,10 +32,15 @@ pub trait PageSource {
 pub enum DrainEvent {
     /// A message completed.
     Item(DeliveryItem),
+    Invitation(DeliveryInvitation),
     /// The seat needs attention at `version`; reported once per version.
-    Attention { version: u64 },
+    Attention {
+        version: u64,
+    },
     /// Everything the last attention pointed at was settled elsewhere.
-    AttentionCleared { version: u64 },
+    AttentionCleared {
+        version: u64,
+    },
     /// The last page was read.
     Exhausted,
 }
@@ -86,6 +91,10 @@ pub fn drain_pages<E>(
         for item in page.items {
             match assembler.push(item).map_err(DrainPagesError::Assemble)? {
                 Assembled::Item(item) => emit!(DrainEvent::Item(item)),
+                Assembled::Invitation(item) => {
+                    saw_attention |= item.content.wakes;
+                    emit!(DrainEvent::Invitation(item));
+                }
                 Assembled::Attention => saw_attention = true,
                 Assembled::Pending | Assembled::InformationalNotice | Assembled::Duplicate => {}
             }

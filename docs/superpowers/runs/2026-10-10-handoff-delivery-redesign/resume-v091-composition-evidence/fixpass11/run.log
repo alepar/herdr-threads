@@ -1,0 +1,105 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID b0e30fa5-3c79-4552-a622-18fdce0c4bd9 with nextest profile: default
+    Starting 11 tests across 4 binaries (6012 tests skipped)
+        PASS [   0.505s] ( 1/11) herdr-threads store::connection::tests::user_intent_schema22_fresh_and_v21_upgrade
+  stdout ───
+
+    running 1 test
+    test store::connection::tests::user_intent_schema22_fresh_and_v21_upgrade ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.49s
+
+
+        PASS [   0.903s] ( 2/11) herdr-threads::combined golden_surfaces::help_texts
+  stdout ───
+
+    running 1 test
+    test golden_surfaces::help_texts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.89s
+
+
+        PASS [   1.573s] ( 3/11) herdr-threads::hook_entrypoint lazy_mail_reaches_the_next_codex_tool_hook
+  stdout ───
+
+    running 1 test
+    test lazy_mail_reaches_the_next_codex_tool_hook ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 85 filtered out; finished in 1.56s
+
+
+        PASS [   1.830s] ( 4/11) herdr-threads::combined golden_surfaces::hook_stdout_per_event
+  stdout ───
+
+    running 1 test
+    test golden_surfaces::hook_stdout_per_event ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 1.82s
+
+
+        PASS [   0.917s] ( 5/11) herdr-threads::hook_entrypoint lazy_mail_reaches_the_next_codex_user_prompt_hook
+  stdout ───
+
+    running 1 test
+    test lazy_mail_reaches_the_next_codex_user_prompt_hook ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 85 filtered out; finished in 0.91s
+
+
+        PASS [   0.564s] ( 6/11) herdr-threads::hook_entrypoint native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_before_effects
+  stdout ───
+
+    running 1 test
+    test native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_before_effects ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 85 filtered out; finished in 0.56s
+
+
+        PASS [   3.105s] ( 7/11) herdr-threads::combined golden_surfaces::setup_reports
+  stdout ───
+
+    running 1 test
+    test golden_surfaces::setup_reports ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 3.10s
+
+
+        PASS [   3.345s] ( 8/11) herdr-threads::integration session_bindings_smoke::config8_upgrade_from_a_v0_6_0_database
+  stdout ───
+
+    running 1 test
+    test session_bindings_smoke::config8_upgrade_from_a_v0_6_0_database ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 236 filtered out; finished in 3.34s
+
+
+        PASS [   0.481s] ( 9/11) herdr-threads::hook_entrypoint versionless_native_callbacks_without_path_refuse_registered_event_mismatch
+  stdout ───
+
+    running 1 test
+    test versionless_native_callbacks_without_path_refuse_registered_event_mismatch ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 85 filtered out; finished in 0.47s
+
+
+        PASS [   4.592s] (10/11) herdr-threads::combined golden_surfaces::setup_status_reports
+  stdout ───
+
+    running 1 test
+    test golden_surfaces::setup_status_reports ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 4.58s
+
+
+        PASS [   3.275s] (11/11) herdr-threads::hook_entrypoint versionless_registered_event_mismatch_keeps_tool_deadline_with_withheld_capabilities
+  stdout ───
+
+    running 1 test
+    test versionless_registered_event_mismatch_keeps_tool_deadline_with_withheld_capabilities ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 85 filtered out; finished in 3.27s
+
+
+────────────
+     Summary [   6.833s] 11 tests run: 11 passed, 6012 skipped

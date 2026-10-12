@@ -1,0 +1,271 @@
+    Checking herdr-threads v0.9.0 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/upstream-composition-v090)
+error[E0433]: failed to resolve: use of undeclared type `ExecutionId`
+    --> src/scheduler/../../tests/scheduler/poke_flow.rs:1101:28
+     |
+1101 |                 execution: ExecutionId::new("00000000-0000-4000-8000-0000000000cc"),
+     |                            ^^^^^^^^^^^ use of undeclared type `ExecutionId`
+     |
+help: consider importing this struct
+     |
+   9 + use crate::protocol::ids::ExecutionId;
+     |
+
+error[E0425]: cannot find function `mod_seat_view` in module `crate::store::seats`
+    --> src/scheduler/../../tests/scheduler/poke_flow.rs:1156:38
+     |
+1156 |                 crate::store::seats::mod_seat_view(&db, "i", &SeatId::new(seat))
+     |                                      ^^^^^^^^^^^^^ not found in `crate::store::seats`
+
+error[E0425]: cannot find function `mod_seat_view` in module `crate::store::seats`
+     --> src/store/../../tests/store/control.rs:11956:41
+      |
+11956 |         let view = crate::store::seats::mod_seat_view(&conn, "i", &origin)
+      |                                         ^^^^^^^^^^^^^ not found in `crate::store::seats`
+
+error[E0425]: cannot find function `mod_seat_view` in module `crate::store::seats`
+     --> src/store/../../tests/store/control.rs:12028:30
+      |
+12028 |         crate::store::seats::mod_seat_view(&conn, "i", &origin)
+      |                              ^^^^^^^^^^^^^ not found in `crate::store::seats`
+
+error[E0425]: cannot find function `mod_seat_view` in module `crate::store::seats`
+     --> src/store/../../tests/store/control.rs:12227:30
+      |
+12227 |         crate::store::seats::mod_seat_view(conn, "i", &SeatId::new("s1"))
+      |                              ^^^^^^^^^^^^^ not found in `crate::store::seats`
+
+error[E0425]: cannot find function `mod_seat_view` in module `crate::store::seats`
+   --> src/store/../../tests/store/invitation_due.rs:430:30
+    |
+430 |         crate::store::seats::mod_seat_view(
+    |                              ^^^^^^^^^^^^^ not found in `crate::store::seats`
+
+error[E0425]: cannot find function `mod_seat_view` in module `crate::store::seats`
+    --> src/store/../../tests/store/receipts.rs:3862:34
+     |
+3862 |             crate::store::seats::mod_seat_view(&db, "i", &SeatId::new(seat))
+     |                                  ^^^^^^^^^^^^^ not found in `crate::store::seats`
+
+error[E0425]: cannot find function `mod_seat_view` in module `crate::store::seats`
+    --> src/store/../../tests/store/receipts.rs:4022:45
+     |
+4022 |             let view = crate::store::seats::mod_seat_view(&db, "i", &SeatId::new(seat))
+     |                                             ^^^^^^^^^^^^^ not found in `crate::store::seats`
+
+error[E0063]: missing field `step_completion` in initializer of `cli::hook::HookOutcome`
+    --> src/cli/hook.rs:3616:16
+     |
+3616 |         return HookOutcome {
+     |                ^^^^^^^^^^^ missing `step_completion`
+
+error[E0063]: missing fields `agent_id` and `liveness` in initializer of `protocol::authority::CallerClaim`
+   --> /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/upstream-composition-v090/tests/cli/output.rs:305:16
+    |
+305 |         claim: CallerClaim {
+    |                ^^^^^^^^^^^ missing `agent_id` and `liveness`
+
+error[E0063]: missing field `cursors` in initializer of `cli::hook_inbox::InboxOffer`
+   --> /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/upstream-composition-v090/tests/cli/output.rs:304:17
+    |
+304 |     let offer = crate::cli::hook_inbox::InboxOffer {
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `cursors`
+
+error[E0063]: missing field `lineage_parent` in initializer of `protocol::commands::CheckIn`
+    --> src/harness/agy/../../../tests/harness/agy_delivery.rs:1682:34
+     |
+1682 |                 Command::CheckIn(CheckIn {
+     |                                  ^^^^^^^ missing `lineage_parent`
+
+error[E0063]: missing field `wakes` in initializer of `protocol::watch::WatchMessage`
+    --> src/harness/agy/../../../tests/harness/agy_delivery.rs:2144:22
+     |
+2144 |             content: crate::protocol::watch::WatchMessage {
+     |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `wakes`
+
+error[E0063]: missing fields `agent_id` and `liveness` in initializer of `protocol::authority::CallerClaim`
+    --> src/protocol/../../tests/protocol/capabilities.rs:2028:21
+     |
+2028 |         let claim = CallerClaim {
+     |                     ^^^^^^^^^^^ missing `agent_id` and `liveness`
+
+error[E0063]: missing field `lineage_parent` in initializer of `protocol::commands::CheckIn`
+    --> src/protocol/../../tests/protocol/capabilities.rs:2038:71
+     |
+2038 |         let CommandResult::CheckedIn(checked) = call(Command::CheckIn(CheckIn {
+     |                                                                       ^^^^^^^ missing `lineage_parent`
+
+error[E0063]: missing fields `agent_id` and `liveness` in initializer of `protocol::authority::CallerClaim`
+    --> src/scheduler/../../tests/scheduler/poke_flow.rs:1094:20
+     |
+1094 |             claim: crate::protocol::authority::CallerClaim {
+     |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `agent_id` and `liveness`
+
+For more information about this error, try `rustc --explain E0063`.
+error: could not compile `herdr-threads` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error[E0599]: no method named `mod_seat_view` found for struct `std::sync::Arc<(dyn ports::StorePort + 'static)>` in the current scope
+    --> src/service/../../tests/service/delivery_pull.rs:2256:30
+     |
+2256 |         let a_view = f.store.mod_seat_view(&a.seat, &budget()).unwrap().unwrap();
+     |                              ^^^^^^^^^^^^^ method not found in `std::sync::Arc<(dyn ports::StorePort + 'static)>`
+
+error[E0599]: no method named `mod_seat_view` found for struct `std::sync::Arc<(dyn ports::StorePort + 'static)>` in the current scope
+    --> src/service/../../tests/service/delivery_pull.rs:2257:30
+     |
+2257 |         let b_view = f.store.mod_seat_view(&b.seat, &budget()).unwrap().unwrap();
+     |                              ^^^^^^^^^^^^^ method not found in `std::sync::Arc<(dyn ports::StorePort + 'static)>`
+
+error[E0599]: no method named `mod_seat_view` found for struct `std::sync::Arc<(dyn ports::StorePort + 'static)>` in the current scope
+    --> src/service/../../tests/service/delivery_pull.rs:2341:10
+     |
+2339 |       let before = f
+     |  __________________-
+2340 | |         .store
+2341 | |         .mod_seat_view(&recipient.seat, &budget())
+     | |         -^^^^^^^^^^^^^ method not found in `std::sync::Arc<(dyn ports::StorePort + 'static)>`
+     | |_________|
+     |
+
+error[E0599]: no method named `mod_seat_view` found for struct `std::sync::Arc<(dyn ports::StorePort + 'static)>` in the current scope
+    --> src/service/../../tests/service/delivery_pull.rs:2376:10
+     |
+2374 |       let after = f
+     |  _________________-
+2375 | |         .store
+2376 | |         .mod_seat_view(&recipient.seat, &budget())
+     | |         -^^^^^^^^^^^^^ method not found in `std::sync::Arc<(dyn ports::StorePort + 'static)>`
+     | |_________|
+     |
+
+error[E0599]: no method named `mod_seat_view` found for struct `std::sync::Arc<(dyn ports::StorePort + 'static)>` in the current scope
+    --> src/service/../../tests/service/delivery_pull.rs:2454:14
+     |
+2453 | /         f.store
+2454 | |             .mod_seat_view(&recipient.seat, &budget())
+     | |             -^^^^^^^^^^^^^ method not found in `std::sync::Arc<(dyn ports::StorePort + 'static)>`
+     | |_____________|
+     |
+
+error[E0599]: no method named `mod_seat_view` found for struct `std::sync::Arc<(dyn ports::StorePort + 'static)>` in the current scope
+    --> src/service/../../tests/service/delivery_pull.rs:3350:14
+     |
+3349 | /         f.store
+3350 | |             .mod_seat_view(&inviter.seat, &budget())
+     | |             -^^^^^^^^^^^^^ method not found in `std::sync::Arc<(dyn ports::StorePort + 'static)>`
+     | |_____________|
+     |
+
+error[E0599]: no method named `mod_seat_view` found for struct `std::sync::Arc<(dyn ports::StorePort + 'static)>` in the current scope
+    --> src/service/../../tests/service/delivery_pull.rs:3371:14
+     |
+3370 | /         f.store
+3371 | |             .mod_seat_view(&inviter.seat, &budget())
+     | |             -^^^^^^^^^^^^^ method not found in `std::sync::Arc<(dyn ports::StorePort + 'static)>`
+     | |_____________|
+     |
+
+error[E0063]: missing field `confirmation` in initializer of `protocol::commands::Invite`
+    --> src/service/../../tests/service/cooperative.rs:1748:29
+     |
+1748 |             Command::Invite(Invite {
+     |                             ^^^^^^ missing `confirmation`
+
+error[E0063]: missing field `binding` in initializer of `store::messages::PublicationAuthor<'_>`
+    --> src/store/../../tests/store/attention.rs:2670:9
+     |
+2670 |         PublicationAuthor::Native {
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^ missing `binding`
+
+error[E0063]: missing field `binding` in initializer of `store::messages::PublicationAuthor<'_>`
+    --> src/store/../../tests/store/attention.rs:3753:13
+     |
+3753 |             PublicationAuthor::Native {
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^ missing `binding`
+
+error[E0063]: missing field `lineage_parent` in initializer of `protocol::commands::CheckIn`
+     --> src/store/../../tests/store/control.rs:11575:27
+      |
+11575 |             let checkin = CheckIn {
+      |                           ^^^^^^^ missing `lineage_parent`
+
+error[E0593]: closure is expected to take 5 arguments, but it takes 3 arguments
+     --> src/store/../../tests/store/control.rs:11584:13
+      |
+11584 | /             crate::store::seats::register_available(
+11585 | |                 &context,
+11586 | |                 &mut conn,
+11587 | |                 &checkin,
+...     |
+11597 | |                 |_, seat, seq| {
+      | |                 -------------- takes 3 arguments
+...     |
+11609 | |                 },
+11610 | |             )
+      | |_____________^ expected closure that takes 5 arguments
+
+error[E0063]: missing fields `fast_forward` and `first_contact` in initializer of `protocol::results::CheckInResult`
+     --> src/store/../../tests/store/control.rs:11598:24
+      |
+11598 |                     Ok(CheckInResult {
+      |                        ^^^^^^^^^^^^^ missing `fast_forward` and `first_contact`
+
+error[E0061]: this function takes 4 arguments but 5 arguments were supplied
+     --> src/store/../../tests/store/control.rs:11915:5
+      |
+11915 |     attention::settle_carried_notices(
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+11918 |         1,
+      |         - expected `&BindingId`, found integer
+11919 |         "00000000-0000-4000-8000-000000000001",
+      |         -------------------------------------- unexpected argument #4 of type `&'static str`
+      |
+note: function defined here
+     --> src/store/attention.rs:1238:8
+      |
+ 1238 | pub fn settle_carried_notices(
+      |        ^^^^^^^^^^^^^^^^^^^^^^
+...
+ 1241 |     binding: &BindingId,
+      |     -------------------
+help: remove the extra argument
+      |
+11918 -         1,
+11919 -         "00000000-0000-4000-8000-000000000001",
+11918 +         /* &protocol::ids::BindingId */,
+      |
+
+error[E0063]: missing field `claim` in initializer of `protocol::commands::InboxQuery`
+    --> src/store/../../tests/store/queries.rs:6012:36
+     |
+6012 |             &Command::InboxBatchV2(InboxQuery {
+     |                                    ^^^^^^^^^^ missing `claim`
+
+error[E0061]: this function takes 6 arguments but 5 arguments were supplied
+    --> src/store/../../tests/store/queries.rs:6286:9
+     |
+6286 |         crate::store::invitation_content::refresh(db, "i", &seat, 1, "session")
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^                 - argument #4 of type `&protocol::ids::BindingId` is missing
+     |
+note: function defined here
+    --> src/store/invitation_content.rs:2755:15
+     |
+2755 | pub(super) fn refresh(
+     |               ^^^^^^^
+...
+2759 |     binding_id: &BindingId,
+     |     ----------------------
+help: provide the argument
+     |
+6286 |         crate::store::invitation_content::refresh(db, "i", &seat, /* &protocol::ids::BindingId */, 1, "session")
+     |                                                                   ++++++++++++++++++++++++++++++++
+
+error[E0063]: missing field `binding` in initializer of `store::messages::PublicationAuthor<'_>`
+    --> src/store/../../tests/store/queries.rs:6327:9
+     |
+6327 |         PublicationAuthor::Native {
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^ missing `binding`
+
+Some errors have detailed explanations: E0061, E0063, E0425, E0433, E0593, E0599.
+For more information about an error, try `rustc --explain E0061`.
+error: could not compile `herdr-threads` (lib test) due to 33 previous errors

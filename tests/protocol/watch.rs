@@ -64,6 +64,7 @@ fn watch_line_attention_cleared_round_trips() {
     let line = WatchLine::new(
         "attention_cleared:7",
         WatchItem::AttentionCleared(WatchAttentionCleared {
+            presentation_epoch: None,
             attention_version: 7,
         }),
     );
@@ -83,6 +84,7 @@ fn watch_line_lazy_attention_status_kinds() {
     let attention = WatchLine::new(
         "attention:4",
         WatchItem::Attention(WatchAttention {
+            presentation_epoch: None,
             attention_version: 4,
             text: "attention".into(),
         }),
@@ -228,6 +230,7 @@ fn watch_frames_wire_shape() {
     );
     assert_eq!(
         serde_json::to_value(WatchOutcome::Accepted(WatchAccepted {
+            presentation_lease: None,
             attention_version: 3
         }))
         .unwrap(),
@@ -254,6 +257,7 @@ fn watch_wire_request_is_disjoint_from_other_first_frames() {
         expected_boot: None,
         watch: WatchRequest {
             claim: claim(CallerRole::TopLevel),
+            presentation_v2: false,
         },
     };
     let bytes = serde_json::to_vec(&request).unwrap();
@@ -628,6 +632,7 @@ fn no_mod_channels_is_inert() {
     assert!(!channels.binding_stalled(&seat, &binding, UtcMillis(0)));
     assert!(channels.status().is_none());
     let registration = ModChannelRegistration {
+        mode: crate::ports::ModChannelMode::Legacy,
         seat: seat.clone(),
         binding: binding.clone(),
         binding_generation: 1,
@@ -670,4 +675,31 @@ fn notice_marker_names_body_only_with_and_without_a_prefix() {
     );
     assert!(!prefixed.contains('\n'));
     assert!(!prefixed.contains("ack w-1"));
+}
+
+#[test]
+fn accepted_presentation_lease_survives_new_decoder_and_old_bytes_stay_omitted() {
+    // The old decoder accepted additive nested fields. Its unknown-field
+    // tolerance is retained; the new decoder must preserve the lease.
+    let old = r#"{"attention_version":7}"#;
+    let historical: WatchAccepted = serde_json::from_str(old).unwrap();
+    assert_eq!(serde_json::to_string(&historical).unwrap(), old);
+    let offered = json!({"attention_version":7,
+        "presentation_lease":"0123456789abcdef0123456789abcdef"});
+    let accepted: WatchAccepted = serde_json::from_value(offered.clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(accepted).unwrap(),
+        offered,
+        "capable Accepted decoder must preserve the exact owner lease"
+    );
+    #[derive(serde::Deserialize)]
+    struct OldAccepted {
+        attention_version: u64,
+    }
+    assert_eq!(
+        serde_json::from_value::<OldAccepted>(offered)
+            .unwrap()
+            .attention_version,
+        7
+    );
 }

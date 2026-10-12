@@ -1,0 +1,51 @@
+{
+  "head": "71bb7ea92b820321b03b9c4206cd2e4a2fb23011",
+  "tree": "5fe2b03c0be7414ea2fcd0751920213e1175a27a",
+  "run_id": "fc258420-dc13-4c76-a74d-cf75dd502fac",
+  "expected": [
+    "cli::topology_handoff::tests::live::automatic_live::automatic_child_begin_expired_permit_has_no_effects_and_fresh_permit_succeeds"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 155.27377037506085
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "cli::topology_handoff::tests::live::automatic_live::automatic_child_begin_expired_permit_has_no_effects_and_fresh_permit_succeeds"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-1cbaa8be764c5987",
+      "sha256": "0c2b9ae85f797467f1a9b6adcb19166420c3c0a113dc6789f116855189a80b11"
+    }
+  ],
+  "run": {
+    "exit": 0,
+    "seconds": 0.8624272079905495,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=cli::topology_handoff::tests::live::automatic_live::automatic_child_begin_expired_permit_has_no_effects_and_fresh_permit_succeeds)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.6174398330040276,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "fc258420-dc13-4c76-a74d-cf75dd502fac"
+    ]
+  },
+  "leak_exit": 0
+}

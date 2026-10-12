@@ -1,0 +1,10 @@
+{
+  "status": "scratch only; unapplied/uncompiled/unrun",
+  "head": "8009d3afb4802531e85f9bda12d6a5b6fb22f229",
+  "tree": "eeabbd47d694e028435fa9290c8d0954d76ec44b",
+  "before_sha256": "a9945b8106ea425f9411c404e6db043caf3325d49113e0874265ee99293edd78",
+  "after_sha256": "bbe3102b4f13dfe5abf556077c8ab9dc0fd124442e6ff2ba5af93dedab24e14c",
+  "patch_sha256": "d676ac680a8a25b259461f409dc9d79108f9e3e2a7063f8526117c950c9724bb",
+  "target": "tests/service/normal_unrenderable_controls.rs",
+  "change": "Mode-derived rendered ACK corrected to source-chunk contract; immediate effective Pending and canonical prepared-recipient ack_required=1 required for Ordinary. All other bytes unchanged."
+}

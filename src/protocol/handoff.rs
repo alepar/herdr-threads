@@ -130,7 +130,20 @@ impl DeliveryMutation {
                 v.claim == self.claim
                     && v.operation == keys.invite
                     && v.seat == self.plan.recipient
-                    && v.deadline_millis.is_none()
+                    && v.deadline_millis
+                        == self
+                            .plan
+                            .payload
+                            .policy
+                            .as_ref()
+                            .and_then(|p| p.invite_deadline_millis)
+                    && v.confirmation
+                        == self
+                            .plan
+                            .payload
+                            .policy
+                            .as_ref()
+                            .map(|p| p.invitation_confirmation)
                     && thread_matches(&v.thread)
             }
             DeliveryAction::Send(v) => {
@@ -140,7 +153,13 @@ impl DeliveryMutation {
                     && v.direct_recipient.is_none()
                     && v.body == self.plan.payload.body
                     && v.invited_recipients == [self.plan.recipient.clone()]
-                    && v.deadline_millis.is_none()
+                    && v.deadline_millis
+                        == self
+                            .plan
+                            .payload
+                            .policy
+                            .as_ref()
+                            .and_then(|p| p.deadline_millis)
                     && !v.relays_user
                     && v.user_intent.is_none()
                     && thread_matches(&v.thread)
@@ -210,10 +229,40 @@ pub struct HandoffKeys {
     pub complete: OperationId,
 }
 
+/// Frozen independent receipt and invitation timing. Absence on the containing
+/// historical payload preserves the original child request bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HandoffPolicy {
+    pub deadline_millis: Option<u64>,
+    pub invitation_confirmation: super::commands::InvitationConfirmation,
+    pub invite_deadline_millis: Option<u64>,
+}
+impl HandoffPolicy {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self
+            .deadline_millis
+            .into_iter()
+            .chain(self.invite_deadline_millis)
+            .any(|v| v == 0 || v > i64::MAX as u64)
+        {
+            return Err("handoff deadline must fit positive signed milliseconds");
+        }
+        if self.invitation_confirmation == super::commands::InvitationConfirmation::Lazy
+            && self.invite_deadline_millis.is_some()
+        {
+            return Err("lazy invitation cannot have a deadline");
+        }
+        Ok(())
+    }
+}
+
 /// Shared immutable staging payload; delivery carries no launch requirement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HandoffPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<HandoffPolicy>,
     pub namespace: HandoffNamespace,
     pub keys: HandoffKeys,
     pub channel: HandoffChannel,
@@ -595,7 +644,10 @@ impl HandoffPayload {
         if self.channel == HandoffChannel::Automatic {
             return Err("automatic payload requires V2 contract");
         }
-        if !bounded_text(&self.body, 1024) {
+        if let Some(policy) = &self.policy {
+            policy.validate()?;
+        }
+        if self.body.is_empty() || self.body.len() > crate::store::messages::MAX_BODY_BYTES {
             return Err("invalid handoff body");
         }
         if let HandoffChannel::New { name, topic, goal } = &self.channel {
@@ -961,6 +1013,7 @@ pub(crate) mod topology_contract_tests {
     pub(crate) fn payload() -> BootstrapPayload {
         BootstrapPayload {
             handoff: HandoffPayload {
+                policy: None,
                 namespace: HandoffNamespace {
                     instance: "i".into(),
                     state_dir: "/state".into(),
@@ -1140,6 +1193,90 @@ pub(crate) mod topology_contract_tests {
             Command::RecoverBootstrap(Box::new(recovery)),
         ]
     }
+    #[test]
+    fn maximum_escaped_body_completion_and_recovery_share_bounded_wire_reply() {
+        for body in ["\u{1}".repeat(65_536), "\0".repeat(65_536), " \n\t".into()] {
+            let mut wrapper = completion();
+            wrapper.identity.payload.handoff.body = body.clone();
+            wrapper.identity.digest = wrapper.identity.semantic_digest().unwrap();
+            wrapper.validate().unwrap();
+            let completed = CompletedBootstrapResult {
+                identity: wrapper.identity.clone(),
+                attachment: wrapper.attachment.clone(),
+                retained: wrapper.retained,
+                legacy_result: HandoffResult {
+                    compound: wrapper.attachment.handoff.compound.clone(),
+                    thread: Some(ThreadId::new("thread")),
+                    state: HandoffState::Completed,
+                },
+            };
+            let mut request = RecoverBootstrap {
+                inspection: None,
+                identity: wrapper.identity.clone(),
+                expected_attempt: BootstrapAttempt::first(),
+                operation: OperationId::new("placeholder"),
+                disposition: BootstrapRecoveryDisposition::CreatedPane {
+                    evidence: created(),
+                    structural_reference: HostCallId::new("inspection"),
+                },
+            };
+            request.operation = request.decision_operation().unwrap();
+            let recovery = BootstrapRecoveryResult {
+                inspection: None,
+                identity: request.identity,
+                attempt: request.expected_attempt,
+                operation: request.operation,
+                disposition: request.disposition,
+                operator_uid: 501,
+                operator_provenance: "operator:local-user:501".into(),
+                creation: Some(created()),
+                state: BootstrapState::Created,
+            };
+            assert!(
+                serde_json::to_vec(&recovery).unwrap().len()
+                    <= crate::store::topology_handoff::MAX_RECOVERY_BYTES
+            );
+            assert!(
+                serde_json::to_vec(&completed).unwrap().len()
+                    <= crate::store::topology_handoff::MAX_COMPLETED_BYTES
+            );
+            let result = BootstrapResult {
+                compound: wrapper.identity.compound,
+                attempt: BootstrapAttempt::first(),
+                attempt_state: BootstrapAttemptState::Created,
+                state: BootstrapState::Completed,
+                creation: Some(created()),
+                attachment: Some(wrapper.attachment),
+                completed: Some(Box::new(completed)),
+                recovery: Some(Box::new(recovery)),
+            };
+            let response = crate::protocol::wire::WireResponse {
+                version: crate::protocol::wire::PROTOCOL_VERSION,
+                request_id: "maximum-body".into(),
+                instance: "00000000-0000-4000-8000-000000000001".into(),
+                daemon_boot: "00000000-0000-4000-8000-000000000002".into(),
+                result: Ok(crate::protocol::results::CommandResult::Bootstrap(
+                    Box::new(result),
+                )),
+            };
+            let wire = crate::protocol::wire::encode_wire_response(&response).unwrap();
+            eprintln!(
+                "maximum body wire reply: body={} frame={}",
+                body.len(),
+                wire.len()
+            );
+            assert!(wire.len() <= crate::protocol::wire::MAX_WIRE_FRAME_BYTES);
+            let decoded: crate::protocol::wire::WireResponse =
+                serde_json::from_slice(&wire[4..]).unwrap();
+            let Ok(crate::protocol::results::CommandResult::Bootstrap(saved)) = decoded.result
+            else {
+                panic!("wrong response")
+            };
+            assert_eq!(saved.completed.unwrap().identity.payload.handoff.body, body);
+            assert_eq!(saved.recovery.unwrap().identity.payload.handoff.body, body);
+        }
+    }
+
     #[test]
     fn topology_contract_structural_validation() {
         assert!(payload().validate().is_ok());
@@ -1639,6 +1776,43 @@ mod automatic_contract_tests {
         changed.digest = changed.original.digest(&changed.claim).unwrap();
         assert!(changed.validate().is_err());
     }
+    #[test]
+    fn automatic_historical_original_capacity_and_exact_bytes_remain_unchanged() {
+        let historical = request();
+        assert_eq!(
+            historical.digest,
+            "8a9d2f46e0b4786658b9ee4ad9aa011cc91110e9ea9cf932479810c2f0998f71"
+        );
+        let AutomaticOriginal::Delivery(original) = &historical.original else {
+            unreachable!()
+        };
+        assert_eq!(serde_json::to_string(original).unwrap(), PLAN);
+        let mut oversized = historical;
+        let AutomaticOriginal::Delivery(plan) = &mut oversized.original else {
+            unreachable!()
+        };
+        plan.payload.body = "\0".repeat(65536);
+        oversized.digest = oversized.original.digest(&oversized.claim).unwrap();
+        assert!(
+            Command::AutomaticHandoffDelivery(Box::new(oversized.clone()))
+                .validate()
+                .is_err(),
+            "historical absent-policy envelope gained a new canonical capacity"
+        );
+        let AutomaticOriginal::Delivery(plan) = &mut oversized.original else {
+            unreachable!()
+        };
+        plan.payload.policy = Some(HandoffPolicy {
+            deadline_millis: None,
+            invitation_confirmation: crate::protocol::commands::InvitationConfirmation::Lazy,
+            invite_deadline_millis: None,
+        });
+        oversized.digest = oversized.original.digest(&oversized.claim).unwrap();
+        Command::AutomaticHandoffDelivery(Box::new(oversized))
+            .validate()
+            .unwrap();
+    }
+
     #[test]
     fn automatic_keys_versions_and_raw_legacy_phases_fail_closed() {
         let mut plan: AutomaticDeliveryPlan = serde_json::from_str(PLAN).unwrap();

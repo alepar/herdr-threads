@@ -6,7 +6,7 @@ run against a fake probe directory with a fake herdr-threads and a fake cargo. N
 cargo or harness. Covered: t0.payload-parse fails on an empty capture/tier0 while t0.hook-fires ran and parses
 only captures whose argv ends `hook <h>`; after a witness swap and restore t0.unsetup succeeds and nothing it
 (or doctor) does is captured into capture/tier0."""
-import os, pathlib, shutil, subprocess, sys
+import os, pathlib, shutil, subprocess, sys, json, hashlib
 
 HERE = pathlib.Path(__file__).resolve().parent
 # scripts/canary/bisect.py shadows the stdlib `bisect` (needed by `random`, hence `tempfile`) when
@@ -134,6 +134,57 @@ build_env "$P"
     def test_an_evented_hook_capture_is_parsed(self):
         # setup registers `hook <harness> --event <NAME>`; a bare word after it is not a hook capture
         self.capture("1-1", ["--state-dir", "/s", "hook", "claude", "--event", "SessionStart"])
+        (self.p / "fake-cargo-payloads").write_text("")
+        self.bash("HOOK_FIRES_RAN=1; run_check t0.payload-parse")
+        status, detail = self.checks()["t0.payload-parse"]
+        self.assertEqual(status, "pass", detail)
+        self.assertIn("(1 hook capture(s))", detail)
+
+    def test_unsetup_assert_detects_stable_owned_command_residue(self):
+        conf = self.p / "home/.codex"
+        conf.mkdir(parents=True)
+        command = "'/x/herdr-threads' 'hook-event' 'codex' 'SessionStart'"
+        (conf / "hooks.json").write_text(json.dumps({"hooks": {"SessionStart": [{"hooks": [{"command": command}]}]}}))
+        setup = self.p / "logs/setup.out"
+        setup.write_text(json.dumps({"setup": {"commands": {"SessionStart": command}}}))
+        report = self.p / "logs/unsetup.out"
+        report.write_text('{"setup":{"action":"removed"}}')
+        result = self.bash(f't0_py unsetup-assert codex "{report}" "{conf}" "{self.p}/absent-before.toml"')
+        self.assertTrue(result.stdout.startswith("fail\t"), result.stdout)
+
+    def test_stable_setup_assert_requires_exact_manifest_owned_groups(self):
+        conf = self.p / "home/.claude"
+        conf.mkdir(parents=True)
+        settings = conf / "settings.json"
+        manifest = self.p / "ownership.json"
+        groups = []
+        for event, matcher in [("SessionStart", None), ("PreToolUse", "Bash")]:
+            group = {"hooks": [{"type": "command", "command": f"'/x/herdr-threads' 'hook-event' 'claude' '{event}'"}]}
+            if matcher:
+                group["matcher"] = matcher
+            digest = hashlib.sha256(json.dumps(group, separators=(",", ":"), sort_keys=True).encode()).hexdigest()
+            groups.append({"event": event, "group": group, "fingerprint": "sha256:" + digest})
+        settings.write_text(json.dumps({"hooks": {e["event"]: [e["group"]] for e in groups}}))
+        manifest.write_text(json.dumps({"version": 3, "harness": "claude", "scope": "user", "path": str(settings),
+            "installation_id": "0b5e8f3c-1111-4222-8333-444455556666", "phase": "installed", "owned": groups}))
+        report = self.p / "setup.json"
+        report.write_text(json.dumps({"setup": {"action": "installed", "manifest": str(manifest),
+            "harness_version": {"admission": "contract_declared", "version": None}}}))
+        result = self.bash(f't0_py setup-assert claude ignored "{report}" "{conf}"')
+        self.assertTrue(result.stdout.startswith("pass\t"), result.stdout)
+        value = json.loads(settings.read_text())
+        duplicate = json.loads(json.dumps(groups[0]["group"]))
+        duplicate["hooks"][0]["timeout"] = 99
+        value["hooks"]["SessionStart"].append(duplicate)
+        settings.write_text(json.dumps(value))
+        result = self.bash(f't0_py setup-assert claude ignored "{report}" "{conf}"')
+        self.assertTrue(result.stdout.startswith("fail\t"), result.stdout)
+        manifest.unlink()
+        result = self.bash(f't0_py setup-assert claude ignored "{report}" "{conf}"')
+        self.assertTrue(result.stdout.startswith("fail\t"), result.stdout)
+
+    def test_stable_native_event_capture_is_parsed(self):
+        self.capture("1-1", ["--state-dir", "/s", "--host-endpoint", "/h", "hook-event", "claude", "SessionStart"])
         (self.p / "fake-cargo-payloads").write_text("")
         self.bash("HOOK_FIRES_RAN=1; run_check t0.payload-parse")
         status, detail = self.checks()["t0.payload-parse"]

@@ -442,6 +442,7 @@ impl CompletedRetryFixture {
             startup_input: None,
             bootstrap_input: None,
             request: HandoffRequest {
+                policy: None,
                 automatic: false,
                 thread: Some(ThreadId::new("t1")),
                 thread_name: None,

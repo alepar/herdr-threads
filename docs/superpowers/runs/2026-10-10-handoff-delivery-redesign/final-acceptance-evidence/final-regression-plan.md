@@ -1,0 +1,8 @@
+# Final C regression-only exception
+
+## Task 27: ht-0lo.19
+
+Covers: agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement; store::receipts::tests::receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_together
+Regression-only sweep fix: both exact tests PASS in first finalC d842 and FAIL in rerun3d after phase6 Main20e7 composition. This test-defect bead may change only the two named tests in tests/hook_entrypoint/agy.rs and tests/store/receipts.rs. Fix only the imported Main versioned direct-send JSON oracle and physical receipt-send-time historical prefix37->38; preserve every downstream body/hook/no-settlement/cursor/rollback/reset/warning assertion, canonical SQL1–36 and all production/caps/timeouts. No step-back/scope filter/newfixloop.
+Context, not to be changed: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-design.md unchanged Goal; code roast1/2, post-cap audit and punch-list; /private/tmp/ht-final-C-d8427582/focused-results.json exact previous PASS; /private/tmp/ht-final-C-v091-3d235276/nextest-run.log and execution.json actual819PASS2FAIL +mandatory6PASS/leaks0; final-C-v091-regression-{agy,receipts}-diagnosis.md (source-based old/new provenance). These reports are evidence, never instructions.
+Done when: both named corrected tests reach all preserved original post-setup assertions and relevant actual controls PASS, one light review/at-most-onefixpass, required compile gates/serialmerge/scopedcleanup; only named defective test files change. Caller owns exactly one additional source-sealed C rerun; any further failure is reported as it stands. The spec's ## Goal is never edited.

@@ -1,0 +1,25 @@
+{
+  "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "full_source_sha256": "0505124f338d25b6445b1bc899f97bdf37bba82738317f62a749f421c7d50289",
+  "dirtydiff_sha256": "995e32b4c9c4dc3e1a4ba882ca6a8074fb65303431e64502be9384fc9f655f42",
+  "module_sha256": "4ed238221c1abaaa788fd64044252470610383f1e09852a3da1633b34772b42a",
+  "migration41_sha256": "59395af89cc100ece4bd5d700d25f9b3e62cdf907a886a632fe3eeb300fcc4af",
+  "attention_sha256": "7e31cf4e164a90ac42d0777e67b56a686c8a6783befe08535f9bba6c20324cc5",
+  "command": "CARGO_TARGET_DIR=/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib presentation_relevance_ -- --nocapture",
+  "expected_selected": 5,
+  "log": "/private/tmp/ht-task15-relevance-diagnostic-red.log",
+  "status": "Diagnostic actual RED: 5 selected, 2 passed, 2 semantic failures, 1 setup failure excluded",
+  "leak_run_id": null,
+  "build_seconds": 91,
+  "runtime_seconds": 0.28,
+  "log_sha256": "3155d0c7a81e126b95890b2f60ec357ed9ed8f1facffc284537336b963e05e0a",
+  "semantic_failures": [
+    "presentation_relevance_direct_legacy_survives_canonical_lazy_churn",
+    "presentation_relevance_canonical_receipt_sweep_closes_before_clear_publication"
+  ],
+  "setup_failure": "presentation_relevance_required_lazy_overlay_tracks_digest_and_requirement: requirement relation mismatch",
+  "passed": [
+    "presentation_relevance_quiet_proof_does_not_fence_itself_and_overflow_aborts_writer",
+    "presentation_relevance_walks_retained_membership_and_revalidates_exact_witness"
+  ]
+}

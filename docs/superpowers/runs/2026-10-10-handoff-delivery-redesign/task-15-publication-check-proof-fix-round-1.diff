@@ -1,0 +1,162 @@
+--- original-ab28/task-15-publication-check-proof-block.rs
++++ fix-round-1/task-15-publication-check-proof-block.rs
+@@ -60,7 +60,7 @@
+         let mapped = statement.query_map([], |row| (0..width).map(|i| row.get(i)).collect())?;
+         mapped.collect()
+     }
+-    fn fixture(rows: usize, ddl: &str) -> rusqlite::Result<(Connection, String)> {
++    fn fixture(rows: usize, ddl: &str, consumer: &str) -> rusqlite::Result<(Connection, String)> {
+         let db = Connection::open_in_memory()?;
+         db.execute_batch(
+             "PRAGMA foreign_keys=ON;
+@@ -93,7 +93,7 @@
+                 .iter()
+                 .map(|(name, kind)| match name.as_str() {
+                     "seat_id" => Value::Text(seat.clone()),
+-                    "consumer" => Value::Text(if n % 2 == 0 { "hook" } else { "watch" }.into()),
++                    "consumer" => Value::Text(consumer.into()),
+                     "instance_id" => Value::Text("instance".into()),
+                     "render_key" => Value::Text("a".repeat(64)),
+                     "ordinary_cursor" | "ordinary_skip_body" | "outbox_token" | "last_token" => {
+@@ -141,70 +141,77 @@
+         "ordinary_passive_generation",
+         "ordinary_scan_passive_generation",
+     ];
+-    let mut checked_work = Vec::new();
+-    let mut control_work = Vec::new();
+-    for rows in [1, 32, 128] {
+-        let (db, old_columns) = fixture(rows, ddl)?;
+-        let (control, control_columns) = fixture(rows, ddl)?;
+-        let before = retained(&db, &old_columns)?;
+-        assert_eq!(before.len(), rows);
+-        let mut checked = Vec::new();
+-        let mut controls = Vec::new();
+-        let version: String = db.query_row("SELECT sqlite_version()", [], |row| row.get(0))?;
+-        for (sql, column) in alters.iter().zip(scalar_names) {
+-            let (outer, progress) = measured(&db, sql)?;
+-            // Matched uncomplicated ADD COLUMN: only CHECK is removed.
+-            // The control isolates fixed DDL from validation of retained rows.
+-            let (prefix, _) = sql.split_once(" CHECK(").expect("scalar CHECK");
+-            let (control_outer, control_progress) = measured(&control, &format!("{prefix};"))?;
+-            assert!(outer > 0 && control_outer > 0 && progress > control_progress);
+-            assert_eq!(retained(&db, &old_columns)?, before);
+-            let zeroes: i64 = db.query_row(
+-                &format!("SELECT COUNT(*) FROM invitation_presentation_consumers WHERE {column}=0"),
+-                [],
+-                |row| row.get(0),
+-            )?;
+-            assert_eq!(zeroes, rows as i64);
+-            // Every added scalar independently enforces its actual CHECK;
+-            // rejected writes cannot corrupt defaults or pre-upgrade values.
+-            let error = db.execute(&format!("UPDATE invitation_presentation_consumers SET {column}=-1 WHERE seat_id='seat-0000'"), []).expect_err("negative scalar must fail");
+-            assert!(
+-                error.to_string().contains("CHECK constraint failed"),
+-                "{error}"
+-            );
+-            assert_eq!(retained(&db, &old_columns)?, before);
+-            let negative: i64 = db.query_row(
+-                &format!(
+-                    "SELECT COUNT(*) FROM invitation_presentation_consumers WHERE {column}<>0"
+-                ),
+-                [],
+-                |row| row.get(0),
+-            )?;
+-            assert_eq!(negative, 0);
+-            eprintln!(
+-                "sqlite_version={version} retained_consumers={rows} scalar={column} checked_outer_vm={outer} checked_including_nested_progress={progress} control_outer_vm={control_outer} control_progress={control_progress}"
+-            );
+-            checked.push(progress);
+-            controls.push(control_progress);
+-        }
+-        assert_eq!(retained(&control, &control_columns)?, before);
+-        checked_work.push(checked);
+-        control_work.push(controls);
+-    }
+-    for column in 0..4 {
+-        assert_eq!(control_work[0][column], control_work[1][column]);
+-        assert_eq!(control_work[1][column], control_work[2][column]);
+-        let first_delta = checked_work[1][column]
+-            .checked_sub(checked_work[0][column])
+-            .expect("positive validation slope");
+-        let second_delta = checked_work[2][column]
+-            .checked_sub(checked_work[1][column])
+-            .expect("positive validation slope");
+-        assert!(first_delta > 0 && second_delta > 0);
+-        // Each of four ALTERs validates S retained consumer rows, plus fixed
+-        // DDL/scan overhead. VM ticks are NOT asserted equal to 4*S: their
+-        // per-row slope includes all existing V40 constraints and new ones.
+-        assert_eq!(first_delta * 96, second_delta * 31);
++    // CHECK(consumer IN ('hook','watch')) can execute different comparison
++    // paths. Keep each size series homogeneous and measure BOTH supported
++    // kinds independently, so row-count deltas never mix those paths.
++    for consumer in ["hook", "watch"] {
++        let mut checked_work = Vec::new();
++        let mut control_work = Vec::new();
++        for rows in [1, 32, 128] {
++            let (db, old_columns) = fixture(rows, ddl, consumer)?;
++            let (control, control_columns) = fixture(rows, ddl, consumer)?;
++            let before = retained(&db, &old_columns)?;
++            assert_eq!(before.len(), rows);
++            let mut checked = Vec::new();
++            let mut controls = Vec::new();
++            let version: String = db.query_row("SELECT sqlite_version()", [], |row| row.get(0))?;
++            for (sql, column) in alters.iter().zip(scalar_names) {
++                let (outer, progress) = measured(&db, sql)?;
++                // Matched uncomplicated ADD COLUMN: only CHECK is removed.
++                // The control isolates fixed DDL from validation of retained rows.
++                let (prefix, _) = sql.split_once(" CHECK(").expect("scalar CHECK");
++                let (control_outer, control_progress) = measured(&control, &format!("{prefix};"))?;
++                assert!(outer > 0 && control_outer > 0 && progress > control_progress);
++                assert_eq!(retained(&db, &old_columns)?, before);
++                let zeroes: i64 = db.query_row(
++                    &format!(
++                        "SELECT COUNT(*) FROM invitation_presentation_consumers WHERE {column}=0"
++                    ),
++                    [],
++                    |row| row.get(0),
++                )?;
++                assert_eq!(zeroes, rows as i64);
++                // Every added scalar independently enforces its actual CHECK;
++                // rejected writes cannot corrupt defaults or pre-upgrade values.
++                let error = db.execute(&format!("UPDATE invitation_presentation_consumers SET {column}=-1 WHERE seat_id='seat-0000'"), []).expect_err("negative scalar must fail");
++                assert!(
++                    error.to_string().contains("CHECK constraint failed"),
++                    "{error}"
++                );
++                assert_eq!(retained(&db, &old_columns)?, before);
++                let negative: i64 = db.query_row(
++                    &format!(
++                        "SELECT COUNT(*) FROM invitation_presentation_consumers WHERE {column}<>0"
++                    ),
++                    [],
++                    |row| row.get(0),
++                )?;
++                assert_eq!(negative, 0);
++                eprintln!(
++                    "sqlite_version={version} consumer={consumer} retained_consumers={rows} scalar={column} checked_outer_vm={outer} checked_including_nested_progress={progress} control_outer_vm={control_outer} control_progress={control_progress}"
++                );
++                checked.push(progress);
++                controls.push(control_progress);
++            }
++            assert_eq!(retained(&control, &control_columns)?, before);
++            checked_work.push(checked);
++            control_work.push(controls);
++        }
++        for column in 0..4 {
++            assert_eq!(control_work[0][column], control_work[1][column]);
++            assert_eq!(control_work[1][column], control_work[2][column]);
++            let first_delta = checked_work[1][column]
++                .checked_sub(checked_work[0][column])
++                .expect("positive validation slope");
++            let second_delta = checked_work[2][column]
++                .checked_sub(checked_work[1][column])
++                .expect("positive validation slope");
++            assert!(first_delta > 0 && second_delta > 0);
++            // Each of four ALTERs validates S retained consumer rows, plus fixed
++            // DDL/scan overhead. VM ticks are NOT asserted equal to 4*S: their
++            // per-row slope includes all existing V40 constraints and new ones.
++            assert_eq!(first_delta * 96, second_delta * 31);
++        }
+     }
+     Ok(())
+ }

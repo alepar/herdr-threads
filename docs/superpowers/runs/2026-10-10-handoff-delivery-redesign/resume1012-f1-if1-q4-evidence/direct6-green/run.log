@@ -1,0 +1,12 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 86845ab3-8fcb-45b4-96bf-b73a86d48bff with nextest profile: default
+    Starting 6 tests across 1 binary (735 tests skipped)
+        PASS [   0.552s] (1/6) herdr-threads::combined direct_send::modern_lazy_direct_send_is_exempt_from_receipt_capability
+        PASS [   0.575s] (2/6) herdr-threads::combined direct_send::modern_ordinary_direct_send_with_receipt_capability_commits_exact_ordinary_body
+        PASS [   0.581s] (3/6) herdr-threads::combined direct_send::historical_lazy_direct_retry_is_exempt_from_receipt_capability
+        PASS [   0.619s] (4/6) herdr-threads::combined direct_send::pending_historical_ordinary_direct_retry_requires_receipts_without_rewriting_original
+        PASS [   0.774s] (5/6) herdr-threads::combined direct_send::modern_ordinary_direct_send_requires_receipt_capability_before_any_effect
+        PASS [   0.958s] (6/6) herdr-threads::combined direct_send::committed_direct_ordinary_output_retry_does_not_require_receipt_capability
+────────────
+     Summary [   0.961s] 6 tests run: 6 passed, 735 skipped

@@ -182,3 +182,20 @@ fn lazy_inbox_v2_codec_is_rejected_by_every_legacy_page_route() {
         assert!(command.validate().is_err());
     }
 }
+
+#[test]
+fn invitation_decision_context_is_additive_and_old_omitted_bytes_stay_exact() {
+    use herdr_threads::protocol::results::InboxBatchV2Item;
+    let old = r#"{"kind":"invitation","thread":"t","topic_data":"review","invitation":"inv","required_service":null}"#;
+    let decoded: InboxBatchV2Item = serde_json::from_str(old).unwrap();
+    assert_eq!(serde_json::to_string(&decoded).unwrap(), old);
+    let mut complete: serde_json::Value = serde_json::from_str(old).unwrap();
+    complete["goal_data"] = "Decide whether this review belongs to your remit".into();
+    complete["topic_revision"] = 7.into();
+    let decoded: InboxBatchV2Item = serde_json::from_value(complete.clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(decoded).unwrap(),
+        complete,
+        "canonical goal/revision survive the actual V2 codec"
+    );
+}

@@ -1,0 +1,19 @@
+Diff in /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/upstream-composition-v090/src/cli/mod.rs:3316:
+ #[path = "../../tests/cli/cooperative.rs"]
+ mod cooperative_tests;
+ #[cfg(test)]
+[32m+#[path = "../../tests/cli/q5_continuation_normalization.rs"]
+(B[m[32m+mod q5_continuation_normalization;
+(B[m[32m+#[cfg(test)]
+(B[m #[path = "../../tests/cli/read_cost.rs"]
+ mod read_cost_tests;
+ #[cfg(test)]
+Diff in /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/upstream-composition-v090/src/cli/mod.rs:3322:
+ #[path = "../../tests/cli/service_output.rs"]
+ mod service_output_tests;
+[31m-#[cfg(test)]
+(B[m[31m-#[path = "../../tests/cli/q5_continuation_normalization.rs"]
+(B[m[31m-mod q5_continuation_normalization;
+(B[m 
+ /// Runtime composition seam for an already service-resolved durable seat and
+ /// private context directory. The provider declares honest role and harness;

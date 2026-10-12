@@ -1,0 +1,76 @@
+{
+  "head": "f330bdab3abee8535213228e5465b085b65be750",
+  "tree": "5576d25210259cada7b4b00c484c33693369f228",
+  "run_id": "2d390115-6dea-44db-8cee-1675d3898677",
+  "expected": [
+    "cli::topology_handoff::tests::live::automatic_live::modern_automatic_actual_admission_boundary_completes_and_next_metadata_size_has_zero_effects",
+    "cli::topology_handoff::tests::live::automatic_live::modern_automatic_maximum_escaped_body_completes_and_recovers_exactly",
+    "cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_over_limit_replay_refuses",
+    "protocol::capabilities::tests::bare_daemon_advertises_legacy_capabilities_without_v2_recorder",
+    "protocol::capabilities::tests::capability_constants_are_stable",
+    "store::effective::tests::dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recapture"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 96.55740274989512
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_over_limit_replay_refuses"
+    ],
+    [
+      "herdr-threads",
+      "cli::topology_handoff::tests::live::automatic_live::modern_automatic_actual_admission_boundary_completes_and_next_metadata_size_has_zero_effects"
+    ],
+    [
+      "herdr-threads",
+      "cli::topology_handoff::tests::live::automatic_live::modern_automatic_maximum_escaped_body_completes_and_recovers_exactly"
+    ],
+    [
+      "herdr-threads",
+      "protocol::capabilities::tests::bare_daemon_advertises_legacy_capabilities_without_v2_recorder"
+    ],
+    [
+      "herdr-threads",
+      "protocol::capabilities::tests::capability_constants_are_stable"
+    ],
+    [
+      "herdr-threads",
+      "store::effective::tests::dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recapture"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-1cbaa8be764c5987",
+      "sha256": "c299838b3e6df3d78c22b5f49b22922cb649aaee0ddea59c956d21827c434d7f"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 12.523964166990481,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=cli::topology_handoff::tests::live::automatic_live::modern_automatic_actual_admission_boundary_completes_and_next_metadata_size_has_zero_effects) | test(=cli::topology_handoff::tests::live::automatic_live::modern_automatic_maximum_escaped_body_completes_and_recovers_exactly) | test(=cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_over_limit_replay_refuses) | test(=protocol::capabilities::tests::bare_daemon_advertises_legacy_capabilities_without_v2_recorder) | test(=protocol::capabilities::tests::capability_constants_are_stable) | test(=store::effective::tests::dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recapture)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.30018154194112867,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "2d390115-6dea-44db-8cee-1675d3898677"
+    ]
+  },
+  "leak_exit": 0
+}

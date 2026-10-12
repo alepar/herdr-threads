@@ -1,0 +1,60 @@
+# Review package: d23ecbf7576912d603b168158a11dbbca9593426..84706c6b365c951e5484f6d3b3ed5980e326b4e7
+
+## Commits
+84706c6b test: align topology latest-schema guards with version 31
+
+## Files changed
+ tests/store/topology_handoff.rs | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+## Diff
+diff --git a/tests/store/topology_handoff.rs b/tests/store/topology_handoff.rs
+index bdcf54ef..c2691379 100644
+--- a/tests/store/topology_handoff.rs
++++ b/tests/store/topology_handoff.rs
+@@ -60,21 +60,21 @@ pub(super) fn identity() -> BootstrapIdentity {
+     identity.digest = identity.semantic_digest().unwrap();
+     identity.validate().unwrap();
+     identity
+ }
+ 
+ fn setup(db: &Connection) {
+     schema::initialize(db, || UtcMillis(0)).unwrap();
+     assert_eq!(
+         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+             .unwrap(),
+-        29
++        31
+     );
+     db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0)")
+         .unwrap();
+     thread(db);
+     joined_agent(db);
+ }
+ 
+ /// The database image `setup` produces. Building the schema replays every
+ /// migration and its verification, far more than most cases cost, so each
+ /// test process builds it once; every fixture is a private copy of the image,
+@@ -1324,21 +1324,21 @@ fn current_main_fresh_and_canonical26_upgrade_to_topology28() {
+                 })
+                 .unwrap(),
+             )
+         } else {
+             None
+         };
+         schema::initialize(&db, || UtcMillis(0)).unwrap();
+         assert_eq!(
+             db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+                 .unwrap(),
+-            29
++            31
+         );
+         assert!(
+             db.query_row(
+                 "SELECT name FROM sqlite_master WHERE name='bootstrap_handoffs'",
+                 [],
+                 |r| r.get::<_, String>(0)
+             )
+             .is_ok()
+         );
+         if let Some(saved) = saved {

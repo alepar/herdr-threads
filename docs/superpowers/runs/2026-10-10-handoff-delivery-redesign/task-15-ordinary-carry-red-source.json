@@ -1,0 +1,11 @@
+{
+  "workspace": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "head": "ee1e598c3ee96566ddc9b397185cdc97c8bf6218",
+  "source_sha256": "a4389e681518a50b05c73acfc613cfdf56d4af39775403f9d362615a751c55cd",
+  "source_files": 893,
+  "tracked_diff_sha256": "4d1bde5d84110c511abffee4c4c952aeb24fc7e2273719ff186cbbed7cf0dc27",
+  "test": "service::delivery_pull::tests::presentation_ordinary_carry_survives_completed_control_partial_and_invitation_priority",
+  "log": "/private/tmp/ht-task15-ordinary-carry-red.log",
+  "result": "pending; source frozen during command26086",
+  "application_authority": false
+}

@@ -9,6 +9,7 @@ use std::sync::Mutex;
 // This fixture exercises the parsed omitted-channel request through the actual
 // producer, and refuses every standalone Create/Invite/Accept/ACK route.
 struct AutomaticClient {
+    body: String,
     supported: bool,
     calls: Mutex<Vec<Command>>,
     thread: Mutex<Option<ThreadId>>,
@@ -24,6 +25,7 @@ struct AutomaticClient {
 impl AutomaticClient {
     fn new() -> Self {
         Self {
+            body: "secret durable task".into(),
             supported: true,
             calls: Mutex::new(vec![]),
             thread: Mutex::new(None),
@@ -53,7 +55,12 @@ impl LocalClient for AutomaticClient {
             Command::Capabilities => Ok(CommandResult::Capabilities(
                 crate::protocol::results::CapabilityList {
                     capabilities: if self.supported {
-                        vec![crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into()]
+                        vec![
+                            crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into(),
+                            crate::protocol::capabilities::ENSURE_CREATION_POLICY_V1.into(),
+                            crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.into(),
+                            crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.into(),
+                        ]
                     } else {
                         vec![]
                     },
@@ -70,7 +77,7 @@ impl LocalClient for AutomaticClient {
                     ));
                 }
                 assert_eq!(request.plan().recipient.as_str(), "recipient");
-                assert_eq!(request.plan().payload.body, "secret durable task");
+                assert_eq!(request.plan().payload.body, self.body);
                 let keys = &request.plan().payload.keys;
                 let status = |state, thread| {
                     CommandResult::Handoff(crate::protocol::handoff::HandoffResult {
@@ -104,7 +111,17 @@ impl LocalClient for AutomaticClient {
                         if std::mem::take(&mut *self.lose_ensure.lock().unwrap()) {
                             return Err(ApiError::unknown_outcome("Ensure committed; reply lost"));
                         }
-                        Ok(CommandResult::ThreadCreated(ThreadId::new("t-pair")))
+                        if let Some(policy) = &ensure.creation_policy {
+                            use crate::protocol::results::{
+                                DirectThreadEnsureOutcome, DirectThreadEnsured,
+                                DirectThreadInvitation,
+                            };
+                            Ok(CommandResult::DirectThreadEnsured(DirectThreadEnsured {thread:ThreadId::new("t-pair"),recipient:SeatId::new("recipient"),outcome:DirectThreadEnsureOutcome::Created,
+                                invitation:Some(DirectThreadInvitation {id:crate::protocol::ids::InvitationId::new("iv-pair"),episode:1,confirmation:policy.confirmation,
+                                    effective_deadline_at:if policy.confirmation==crate::protocol::commands::InvitationConfirmation::RequireAck {Some(UtcMillis(11001))} else {None},inviter:Some(ensure.claim.seat.clone())})}))
+                        } else {
+                            Ok(CommandResult::ThreadCreated(ThreadId::new("t-pair")))
+                        }
                     }
                     AutomaticDeliveryAction::Send(send) => {
                         assert_eq!(send.operation, keys.send);
@@ -147,7 +164,11 @@ impl LocalClient for AutomaticClient {
 #[derive(Default)]
 struct AutomaticLauncher {
     starts: usize,
+    preflights: usize,
     lose_start: bool,
+    report_padding: usize,
+    report_outcome: Option<&'static str>,
+    full_report: Option<serde_json::Value>,
 }
 impl HandoffLauncher for AutomaticLauncher {
     fn select_startup_input(
@@ -159,6 +180,7 @@ impl HandoffLauncher for AutomaticLauncher {
         ))
     }
     fn preflight(&mut self, _: &LaunchRequest) -> Result<SeatId, RunError> {
+        self.preflights += 1;
         Ok(SeatId::new("recipient"))
     }
     fn launch(
@@ -174,11 +196,232 @@ impl HandoffLauncher for AutomaticLauncher {
         if self.lose_start {
             return Err(ApiError::unknown_outcome("native start submitted; reply lost").into());
         }
-        Ok(super::super::launch::LaunchReport {
-            report: serde_json::json!({"outcome":"started"}),
-            exit: 0,
-        })
+        let report = serde_json::json!({"outcome":self.report_outcome.unwrap_or("started"),"pane":request.target,"seat":seat,"harness":"codex","argv":request.argv,"padding":"x".repeat(self.report_padding)});
+        self.full_report = Some(report.clone());
+        Ok(super::super::launch::LaunchReport { report, exit: 0 })
     }
+}
+
+#[test]
+fn automatic_launched_oversized_original_refuses_before_recipient_allocation() {
+    let body = "\0".repeat(65536);
+    let parsed = crate::cli::commands::parse_argv([
+        "ht", "handoff", "--pane", "w1:p2", "--kind", "codex", "--", &body,
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(mut request) = parsed.action else {
+        panic!("route")
+    };
+    request.launch.argv = std::iter::once("codex".into())
+        .chain((0..6).map(|_| format!("--model={}", "\u{1}".repeat(4088))))
+        .collect();
+    crate::ports::NativeLaunchRequest::validate_argv(&request.launch.argv).unwrap();
+    let (_temp, journal) = journal();
+    let client = AutomaticClient::new();
+    let mut launcher = AutomaticLauncher::default();
+    let mut output = OutputSpec::default();
+    output.context.state_dir = Some("/tmp/automatic-state".into());
+    output.context.host = Some("/tmp/automatic-host.sock".into());
+    let mut original_claim = claim();
+    original_claim.harness = Harness::Codex;
+    assert!(
+        start(
+            &journal,
+            request,
+            original_claim,
+            "recipient",
+            &client,
+            &mut launcher,
+            &TestClock,
+            &output,
+            &mut vec![]
+        )
+        .is_err()
+    );
+    assert_eq!(
+        launcher.preflights, 0,
+        "oversized origin reached recipient allocation preflight"
+    );
+    assert_eq!(launcher.starts, 0);
+    assert!(journal.resolve_recovery_ref("local:1").is_err());
+    assert!(
+        client
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|c| matches!(c, Command::Capabilities))
+    );
+}
+
+#[test]
+fn automatic_launched_maximum_escaped_body_is_frozen_and_retries_without_relaunch() {
+    let body = "\0".repeat(65536);
+    let parsed = crate::cli::commands::parse_argv([
+        "ht", "handoff", "--pane", "w1:p2", "--kind", "codex", "--", &body,
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("route")
+    };
+    let (_temp, journal) = journal();
+    let mut client = AutomaticClient::new();
+    client.body = body.clone();
+    let mut launcher = AutomaticLauncher::default();
+    let mut output = OutputSpec {
+        format: crate::protocol::output::OutputFormat::Json,
+        ..OutputSpec::default()
+    };
+    let mut presentation = Vec::new();
+    output.context.state_dir = Some("/tmp/automatic-state".into());
+    output.context.host = Some("/tmp/automatic-host.sock".into());
+    let mut original_claim = claim();
+    original_claim.harness = Harness::Codex;
+    let result = start(
+        &journal,
+        request,
+        original_claim,
+        "recipient",
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut presentation,
+    );
+    assert!(
+        result.is_ok(),
+        "maximum escaped launched body failed: {result:?}"
+    );
+    let report: serde_json::Value = serde_json::from_slice(&presentation).unwrap();
+    assert!(
+        report["handoff"]["launch"]["argv"].is_null(),
+        "ordinary success dumped retained native argv"
+    );
+    assert_eq!(report["handoff"]["selection"]["outcome"], "created");
+    assert_eq!(
+        report["handoff"]["local_diagnostics"]["state"],
+        "local_file"
+    );
+    assert_eq!(
+        report["handoff"]["local_diagnostics"]["authority"],
+        "local_hint"
+    );
+    let calls = client.calls.lock().unwrap();
+    let send = calls
+        .iter()
+        .find_map(|c| match c {
+            Command::AutomaticHandoffDelivery(q) => match &q.action {
+                crate::protocol::handoff::AutomaticDeliveryAction::Send(v) => Some(v),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(send.body, body);
+    drop(calls);
+    let reference =
+        super::super::handoff_delivery::resolve_automatic_recovery_ref(&journal, "local:1")
+            .unwrap();
+    super::super::handoff_delivery::retry_automatic_to_writer(
+        &journal,
+        &reference,
+        super::super::actor_route::InvocationActor::Agent,
+        &crate::protocol::handoff::HandoffNamespace {
+            instance: claim().instance,
+            state_dir: "/tmp/automatic-state".into(),
+            host_endpoint: "/tmp/automatic-host.sock".into(),
+        },
+        &client,
+        Some(&mut launcher),
+        &TestClock,
+        &output,
+        &mut vec![],
+    )
+    .unwrap();
+    assert_eq!(launcher.starts, 1);
+}
+
+#[test]
+fn automatic_launched_noncompletion_keeps_exact_artifact_and_bounded_progress() {
+    let parsed = crate::cli::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--pane",
+        "w1:p2",
+        "--kind",
+        "codex",
+        "--",
+        "secret durable task",
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("route")
+    };
+    let (_temp, journal) = journal();
+    let client = AutomaticClient::new();
+    let mut launcher = AutomaticLauncher {
+        report_padding: 3 * 1024 * 1024,
+        report_outcome: Some("outcome_unknown"),
+        ..Default::default()
+    };
+    let mut output = OutputSpec::default();
+    output.context.state_dir = Some("/tmp/automatic-state".into());
+    output.context.host = Some("/tmp/automatic-host.sock".into());
+    let mut original_claim = claim();
+    original_claim.harness = Harness::Codex;
+    assert!(
+        start(
+            &journal,
+            request,
+            original_claim,
+            "recipient",
+            &client,
+            &mut launcher,
+            &TestClock,
+            &output,
+            &mut vec![]
+        )
+        .is_err()
+    );
+    let reference = journal.resolve_recovery_ref("local:1").unwrap();
+    let path = progress_path(&journal, &reference);
+    let bytes = std::fs::read(path).unwrap();
+    assert!(bytes.len() < 2 * 1024 * 1024);
+    let progress: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        progress["launch"]["format"],
+        "automatic_launch_noncompletion_v1"
+    );
+    assert_eq!(progress["launch"]["observed_started"], false);
+    assert_eq!(progress["possible_start"], true);
+    let artifact = std::fs::read(automatic_diagnostics_path(&journal, &reference)).unwrap();
+    let expected = serde_json::to_vec(launcher.full_report.as_ref().unwrap()).unwrap();
+    assert_eq!(artifact, expected);
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        progress["launch"]["full_report_digest"],
+        format!("{:x}", Sha256::digest(&artifact))
+    );
+    assert!(
+        super::super::handoff_delivery::retry_automatic_to_writer(
+            &journal,
+            &reference,
+            super::super::actor_route::InvocationActor::Agent,
+            &crate::protocol::handoff::HandoffNamespace {
+                instance: claim().instance,
+                state_dir: "/tmp/automatic-state".into(),
+                host_endpoint: "/tmp/automatic-host.sock".into()
+            },
+            &client,
+            Some(&mut launcher),
+            &TestClock,
+            &output,
+            &mut vec![]
+        )
+        .is_err()
+    );
+    assert_eq!(launcher.starts, 1);
+    assert!(!*client.completed.lock().unwrap());
 }
 
 #[test]
@@ -793,6 +1036,7 @@ fn claim() -> CallerClaim {
 }
 fn request() -> HandoffRequest {
     HandoffRequest {
+        policy: None,
         automatic: false,
         thread: None,
         thread_name: Some("review".into()),
@@ -810,6 +1054,8 @@ fn request() -> HandoffRequest {
     }
 }
 struct Client {
+    expected_claim: CallerClaim,
+    expected_body: String,
     joined: bool,
     already_joined: bool,
     calls: Mutex<Vec<Command>>,
@@ -819,6 +1065,8 @@ struct Client {
 impl Client {
     fn new(lost: Option<&'static str>) -> Self {
         Self {
+            expected_claim: claim(),
+            expected_body: "secret durable task".into(),
             joined: true,
             already_joined: false,
             calls: Mutex::new(vec![]),
@@ -837,6 +1085,18 @@ impl LocalClient for Client {
         self.call(c, b)
     }
     fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        if matches!(command, Command::Capabilities) {
+            return Ok(CommandResult::Capabilities(
+                crate::protocol::results::CapabilityList {
+                    capabilities: crate::protocol::capabilities::ADVERTISED
+                        .iter()
+                        .copied()
+                        .chain([crate::protocol::capabilities::INVITATION_CONFIRMATION_V1])
+                        .map(str::to_owned)
+                        .collect(),
+                },
+            ));
+        }
         if let Command::BeginHandoff(q) | Command::CompleteHandoff(q) = &command {
             return Ok(CommandResult::Handoff(
                 crate::protocol::handoff::HandoffResult {
@@ -867,7 +1127,7 @@ impl LocalClient for Client {
         }
         let (key, phase, result) = match &command {
             Command::CreateThread(q) => {
-                assert_eq!(q.claim, claim());
+                assert_eq!(q.claim, self.expected_claim);
                 (
                     q.operation.as_str(),
                     "create",
@@ -875,7 +1135,7 @@ impl LocalClient for Client {
                 )
             }
             Command::Invite(q) => {
-                assert_eq!(q.claim, claim());
+                assert_eq!(q.claim, self.expected_claim);
                 assert_eq!(q.seat, SeatId::new("recipient"));
                 (
                     q.operation.as_str(),
@@ -891,8 +1151,8 @@ impl LocalClient for Client {
                 )
             }
             Command::SendMessage(q) => {
-                assert_eq!(q.claim, claim());
-                assert_eq!(q.body, "secret durable task");
+                assert_eq!(q.claim, self.expected_claim);
+                assert_eq!(q.body, self.expected_body);
                 assert_eq!(q.invited_recipients, vec![SeatId::new("recipient")]);
                 (
                     q.operation.as_str(),
@@ -1550,6 +1810,7 @@ impl LocalClient for FencedClient {
     fn call(&self, c: Command, b: &CallBudget) -> Result<CommandResult, ApiError> {
         use crate::protocol::handoff::{HandoffResult, HandoffState};
         match c {
+            Command::Capabilities => self.inner.call(c, b),
             Command::BeginHandoff(q) => {
                 self.events.lock().unwrap().push("begin");
                 Ok(CommandResult::Handoff(HandoffResult {
@@ -3307,6 +3568,18 @@ impl LocalClient for Task48DurableClient {
         self.call(command, budget)
     }
     fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        if matches!(command, Command::Capabilities) {
+            return Ok(CommandResult::Capabilities(
+                crate::protocol::results::CapabilityList {
+                    capabilities: crate::protocol::capabilities::ADVERTISED
+                        .iter()
+                        .copied()
+                        .chain([crate::protocol::capabilities::INVITATION_CONFIRMATION_V1])
+                        .map(str::to_owned)
+                        .collect(),
+                },
+            ));
+        }
         use crate::protocol::handoff::{HandoffResult, HandoffState};
         let mut events = self.events.lock().unwrap();
         Ok(match command {
@@ -3672,6 +3945,18 @@ impl LocalClient for Task48PhaseClient {
         self.call(command, budget)
     }
     fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        if matches!(command, Command::Capabilities) {
+            return Ok(CommandResult::Capabilities(
+                crate::protocol::results::CapabilityList {
+                    capabilities: crate::protocol::capabilities::ADVERTISED
+                        .iter()
+                        .copied()
+                        .chain([crate::protocol::capabilities::INVITATION_CONFIRMATION_V1])
+                        .map(str::to_owned)
+                        .collect(),
+                },
+            ));
+        }
         use crate::protocol::handoff::{HandoffResult, HandoffState};
         let (mutation, complete) = match command {
             Command::BeginHandoff(mutation) => (mutation, false),
@@ -4461,4 +4746,549 @@ fn frozen_v1_prompt_and_manual_projection_ignore_current_renderer_drift() {
         .as_array()
         .unwrap();
     assert_eq!(manual.last().unwrap(), &serde_json::json!(v1));
+}
+
+#[test]
+fn handoff_instruction_sources_preserve_message_bytes_and_exclude_conflicts() {
+    use crate::cli::commands::{CliAction, parse_argv};
+    let (temp, _journal) = journal();
+    let path = temp.0.join("instructions");
+    for body in [
+        " \0\n\r\t".to_owned(),
+        "x".repeat(65_536),
+        "\u{1}".repeat(65_536),
+    ] {
+        std::fs::write(&path, &body).unwrap();
+        for mode in [
+            vec!["--pane", "w1:p2", "--kind", "codex"],
+            vec!["--new-tab", "peer", "--kind", "codex"],
+            vec!["--existing", "--seat", "recipient"],
+        ] {
+            for source in [
+                vec!["--", body.as_str()],
+                vec!["--file", path.to_str().unwrap()],
+            ] {
+                let mut argv = vec!["ht", "handoff", "--thread", "t1"];
+                argv.extend(mode.clone());
+                argv.extend(source);
+                let parsed = parse_argv(argv).expect("valid source must parse");
+                let saved = match parsed.action {
+                    CliAction::Handoff(request) => request.body,
+                    CliAction::TopologyHandoff(request) => request.body,
+                    _ => panic!("wrong action"),
+                };
+                assert_eq!(saved, body);
+            }
+        }
+    }
+    for bytes in [vec![], vec![0xff], vec![b'x'; 65_537]] {
+        std::fs::write(&path, bytes).unwrap();
+        assert!(
+            parse_argv([
+                "ht",
+                "handoff",
+                "--existing",
+                "--seat",
+                "recipient",
+                "--thread",
+                "t1",
+                "--file",
+                path.to_str().unwrap()
+            ])
+            .is_err()
+        );
+    }
+    std::fs::remove_file(&path).unwrap();
+    assert!(
+        parse_argv([
+            "ht",
+            "handoff",
+            "--existing",
+            "--seat",
+            "recipient",
+            "--thread",
+            "t1",
+            "--file",
+            path.to_str().unwrap()
+        ])
+        .is_err()
+    );
+    for source in [
+        vec![],
+        vec!["--stdin", "--", "body"],
+        vec!["--file", "missing", "--stdin"],
+        vec!["--file", "missing", "--", "body"],
+    ] {
+        let mut argv = vec![
+            "ht",
+            "handoff",
+            "--existing",
+            "--seat",
+            "recipient",
+            "--thread",
+            "t1",
+        ];
+        argv.extend(source);
+        assert!(parse_argv(argv).is_err());
+    }
+}
+
+#[test]
+fn handoff_stdin_acquisition_is_bounded_and_preserves_exact_message_bytes() {
+    use crate::cli::input::read_body_from;
+    for body in [
+        " \0\n\r\t".to_owned(),
+        "x".repeat(65_536),
+        "\u{1}".repeat(65_536),
+    ] {
+        let mut input = std::io::Cursor::new(body.as_bytes());
+        assert_eq!(read_body_from(None, None, true, &mut input).unwrap(), body);
+    }
+    for bytes in [vec![], vec![0xff], vec![b'x'; 65_537]] {
+        let mut input = std::io::Cursor::new(bytes);
+        assert!(read_body_from(None, None, true, &mut input).is_err());
+    }
+    let mut input = std::io::Cursor::new(vec![b'x'; 1_000_000]);
+    assert!(read_body_from(None, None, true, &mut input).is_err());
+    assert_eq!(input.position(), 65_537);
+    for body in [" \0\n", "x"] {
+        let request = HandoffRequest {
+            policy: None,
+            body: body.into(),
+            ..request()
+        };
+        request.validate().unwrap();
+    }
+    let mut request = request();
+    request.body = "x".repeat(65_536);
+    request.validate().unwrap();
+    request.body.push('x');
+    assert!(request.validate().is_err());
+}
+
+#[test]
+fn maximum_instruction_file_freezes_through_explicit_launch_retry() {
+    for body in ["x".repeat(65_536), "\u{1}".repeat(65_536)] {
+        let (temp, journal) = journal();
+        let mut agent = claim();
+        agent.harness = Harness::Codex;
+        agent.native_session = NativeSessionId::new("session");
+        agent.execution = ExecutionId::new("00000000-0000-4000-8000-000000000001");
+        let path = temp.0.join("instructions");
+        std::fs::write(&path, &body).unwrap();
+        let parsed = crate::cli::commands::parse_argv([
+            "ht",
+            "handoff",
+            "--pane",
+            "w1:p2",
+            "--kind",
+            "codex",
+            "--thread",
+            "t1",
+            "--deadline",
+            "7",
+            "--file",
+            path.to_str().unwrap(),
+        ])
+        .unwrap();
+        let crate::cli::commands::CliAction::Handoff(mut r) = parsed.action else {
+            panic!("wrong action")
+        };
+        if body.starts_with('\u{1}') {
+            r.policy.as_mut().unwrap().invitation_confirmation =
+                crate::protocol::commands::InvitationConfirmation::RequireAck;
+            r.policy.as_mut().unwrap().invite_deadline_millis = Some(11000);
+        }
+        let expected_confirmation = r.policy.as_ref().unwrap().invitation_confirmation;
+        let expected_invite_deadline = r.policy.as_ref().unwrap().invite_deadline_millis;
+        r.thread = None;
+        r.launch.argv = request().launch.argv;
+        r.topic = Some("review".into());
+        r.goal = Some("review changes".into());
+        let mut client = Client::new(Some("send"));
+        client.expected_body = body.clone();
+        client.expected_claim = agent.clone();
+        let mut launcher = Launcher::default();
+        assert!(
+            start(
+                &journal,
+                r,
+                agent.clone(),
+                "bob",
+                &client,
+                &mut launcher,
+                &TestClock,
+                &OutputSpec::default(),
+                &mut Vec::new()
+            )
+            .is_err()
+        );
+        let reference = reference(&journal);
+        let original = std::fs::read(journal.root().join(format!(
+            "{:020}-{}.intent",
+            reference.ordinal,
+            reference.operation.as_str()
+        )))
+        .unwrap();
+        std::fs::write(&path, "changed").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            std::fs::read(journal.root().join(format!(
+                "{:020}-{}.intent",
+                reference.ordinal,
+                reference.operation.as_str()
+            )))
+            .unwrap(),
+            original
+        );
+        resume(
+            &journal,
+            &reference,
+            &scope(),
+            &client,
+            &mut launcher,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(launcher.starts, 1);
+        assert!(
+            launcher
+                .submitted_argv
+                .iter()
+                .all(|arg| !arg.contains(&body) && !arg.contains(path.to_str().unwrap()))
+        );
+        assert!(
+            journal.load(&reference).is_err(),
+            "successful retry cleans the original intent"
+        );
+        let commands = client.calls.lock().unwrap();
+        let sends = commands
+            .iter()
+            .filter_map(|c| {
+                if let Command::SendMessage(q) = c {
+                    Some(q)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sends.len(), 2);
+        assert_eq!(sends[0], sends[1]);
+        assert_eq!(sends[0].body, body);
+        assert_eq!(
+            sends[0].delivery_mode,
+            crate::protocol::commands::DeliveryMode::Ordinary
+        );
+        let invite = commands
+            .iter()
+            .find_map(|c| match c {
+                Command::Invite(q) => Some(q),
+                _ => None,
+            })
+            .expect("staged invitation");
+        assert_eq!(invite.confirmation, Some(expected_confirmation));
+        assert_eq!(invite.deadline_millis, expected_invite_deadline);
+        assert_eq!(sends[0].deadline_millis, Some(7000));
+        assert_eq!(sends[0].invited_recipients, [SeatId::new("recipient")]);
+    }
+}
+
+#[test]
+fn acquired_stdin_survives_retry_after_reader_is_unavailable() {
+    let (_temp, journal) = journal();
+    let body = "\u{1}".repeat(65_536);
+    let acquired = {
+        let mut stdin = std::io::Cursor::new(body.as_bytes());
+        crate::cli::input::read_body_from(None, None, true, &mut stdin).unwrap()
+    };
+    let mut r = request();
+    r.body = acquired;
+    let mut client = Client::new(Some("send"));
+    client.expected_body = body.clone();
+    let mut launcher = Launcher::default();
+    assert!(
+        start(
+            &journal,
+            r,
+            claim(),
+            "bob",
+            &client,
+            &mut launcher,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut Vec::new(),
+        )
+        .is_err()
+    );
+    let reference = reference(&journal);
+    resume(
+        &journal,
+        &reference,
+        &scope(),
+        &client,
+        &mut launcher,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let commands = client.calls.lock().unwrap();
+    let sends = commands
+        .iter()
+        .filter_map(|command| match command {
+            Command::SendMessage(send) => Some(send),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(sends.len(), 2);
+    assert_eq!(sends[0], sends[1]);
+    assert_eq!(sends[0].body, body);
+    assert_eq!(launcher.starts, 1);
+}
+
+#[test]
+fn legacy_handoff_origin_overflow_refuses_before_publication_or_effects() {
+    let (_temp, journal) = journal();
+    let body = "\u{1}".repeat(65_536);
+    let model = format!("--model={}", "\u{1}".repeat(12_000));
+    let parsed = crate::cli::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--pane",
+        "w1:p2",
+        "--kind",
+        "codex",
+        "--new-thread",
+        "--topic",
+        "review",
+        "--goal",
+        "review changes",
+        "--agent-arg=-a",
+        "--agent-arg=on-request",
+        &format!("--agent-arg={model}"),
+        &format!("--agent-arg={model}"),
+        "--",
+        &body,
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("wrong action")
+    };
+    request.validate().unwrap();
+    crate::ports::validate_native_argv(&request.launch.argv).unwrap();
+    let registry = crate::harness::registry::builtins();
+    let codex = registry.agent("codex").unwrap();
+    registry
+        .by_id(codex)
+        .unwrap()
+        .launch_policy()
+        .unwrap()
+        .validate_native_argv(&request.launch.argv)
+        .unwrap();
+    let semantic = SemanticMutation::freeze(
+        SemanticMutation::Handoff(Box::new(HandoffPlan {
+            bootstrap_input: None,
+            startup_input: Some(crate::harness::adapter::StartupInputTemplate::positional(
+                request.launch.argv.len(),
+            )),
+            request: request.clone(),
+            context: OutputSpec::default().context,
+            recipient: SeatId::new("recipient"),
+            create_key: OperationId::new("create"),
+            invite_key: OperationId::new("invite"),
+            send_key: OperationId::new("send"),
+        })),
+        claim(),
+    )
+    .unwrap();
+    let encoded = serde_json::to_vec(&semantic).unwrap();
+    eprintln!(
+        "legacy handoff semantic={} cap={}",
+        encoded.len(),
+        super::super::journal::MAX_DELIVERY_ORIGIN_BYTES
+    );
+    assert!(
+        encoded.len() > super::super::journal::MAX_DELIVERY_ORIGIN_BYTES,
+        "semantic alone exceeds the origin cap even before its header/newlines"
+    );
+    let ordinal_before = std::fs::read(journal.root().join("next-ordinal")).unwrap();
+    let mut client = Client::new(Some("send"));
+    client.expected_body = body;
+    let mut launcher = Launcher::default();
+    let result = start(
+        &journal,
+        request,
+        claim(),
+        "bob",
+        &client,
+        &mut launcher,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut Vec::new(),
+    );
+    assert!(result.is_err());
+    assert!(
+        journal.page(&Default::default()).unwrap().items.is_empty(),
+        "oversized legacy origin must never become a published intent"
+    );
+    assert_eq!(
+        std::fs::read(journal.root().join("next-ordinal")).unwrap(),
+        ordinal_before
+    );
+    assert!(
+        client.calls.lock().unwrap().is_empty(),
+        "no downstream canonical commands"
+    );
+    assert_eq!(launcher.starts, 0, "no native launch");
+    assert_eq!(
+        frozen(&journal).ordinal,
+        1,
+        "overflow must not consume an ordinal"
+    );
+}
+
+#[test]
+fn handoff_policy_parses_independent_deadlines_before_body_effects() {
+    for target in [
+        vec!["--pane", "w1:p2", "--kind", "codex"],
+        vec!["--new-tab", "peer", "--kind", "codex"],
+        vec!["--existing", "--seat", "recipient"],
+    ] {
+        let mut argv = vec!["ht", "handoff"];
+        argv.extend(target);
+        argv.extend([
+            "--thread",
+            "t1",
+            "--deadline",
+            "7",
+            "--invite-deadline",
+            "11",
+            "--",
+            "instructions",
+        ]);
+        let parsed = crate::cli::commands::parse_argv(argv).expect("independent policy flags");
+        let policy = match parsed.action {
+            crate::cli::commands::CliAction::Handoff(q) => {
+                serde_json::to_value(q).unwrap()["policy"].clone()
+            }
+            crate::cli::commands::CliAction::TopologyHandoff(q) => {
+                serde_json::to_value(q.policy).unwrap()
+            }
+            _ => panic!("wrong route"),
+        };
+        assert!(policy.is_object());
+        if policy.is_object() {
+            assert_eq!(policy["deadline_millis"], 7000);
+            assert_eq!(policy["invite_deadline_millis"], 11000);
+            assert_eq!(policy["invitation_confirmation"], "require_ack");
+        }
+    }
+}
+
+#[test]
+fn handoff_policy_refuses_unsupported_daemon_before_journal_or_launch() {
+    struct Old(Client, Vec<String>);
+    impl LocalClient for Old {
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+        fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
+            if matches!(command, Command::Capabilities) {
+                return Ok(CommandResult::Capabilities(
+                    crate::protocol::results::CapabilityList {
+                        capabilities: self.1.clone(),
+                    },
+                ));
+            }
+            self.0.call(command, budget)
+        }
+    }
+    for advertised in [
+        vec![],
+        vec![crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.to_owned()],
+    ] {
+        let (_temp, journal) = journal();
+        let mut request = request();
+        request.policy = Some(crate::protocol::handoff::HandoffPolicy {
+            deadline_millis: Some(7000),
+            invitation_confirmation: crate::protocol::commands::InvitationConfirmation::Lazy,
+            invite_deadline_millis: None,
+        });
+        let client = Old(Client::new(None), advertised);
+        let mut launcher = Launcher::default();
+        let result = start(
+            &journal,
+            request,
+            claim(),
+            "peer",
+            &client,
+            &mut launcher,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut Vec::new(),
+        );
+        assert!(
+            matches!(
+                result,
+                Err(RunError::Api(ApiError {
+                    code: ErrorCode::Unsupported,
+                    ..
+                }))
+            ),
+            "{result:?}"
+        );
+        assert_eq!((launcher.preflights, launcher.starts), (0, 0));
+        assert!(client.0.calls.lock().unwrap().is_empty());
+        assert!(!std::fs::read_dir(journal.root()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "intent")
+        }));
+    }
+}
+
+#[test]
+fn automatic_presentation_admission_counts_exact_local_root() {
+    let (_temp, journal) = journal();
+    let namespace = crate::protocol::handoff::HandoffNamespace {
+        instance: claim().instance,
+        state_dir: "/tmp/automatic-state".into(),
+        host_endpoint: "/tmp/automatic-host.sock".into(),
+    };
+    let selection = crate::protocol::results::DirectThreadEnsured::admission_witness(
+        ThreadId::new("t"),
+        SeatId::new("recipient"),
+    );
+    let summary = crate::protocol::handoff::automatic_launch_summary(&serde_json::json!({"outcome":"started","pane":"w1:p2","seat":"recipient","harness":"codex","argv":["codex"]}),&"f".repeat(64)).unwrap();
+    validate_automatic_presentation_admission(
+        journal.root(),
+        &namespace,
+        &summary,
+        &selection,
+        serde_json::Value::Null,
+    )
+    .unwrap();
+    // Pure admission guard: such a root cannot be opened on the filesystem.
+    // Count every path byte rather than assuming provider/local path finiteness.
+    let oversized_root = std::path::PathBuf::from(format!("/{}", "x".repeat(1024 * 1024)));
+    assert!(
+        validate_automatic_presentation_admission(
+            &oversized_root,
+            &namespace,
+            &summary,
+            &selection,
+            serde_json::Value::Null
+        )
+        .is_err()
+    );
+    assert!(journal.resolve_recovery_ref("local:1").is_err());
 }

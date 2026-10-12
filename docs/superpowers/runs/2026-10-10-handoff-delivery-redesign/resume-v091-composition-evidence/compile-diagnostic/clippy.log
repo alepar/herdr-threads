@@ -1,0 +1,24 @@
+    Checking herdr-threads v0.9.1 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign)
+error[E0063]: missing fields `confirmation`, `deadline_at`, `goal_data` and 1 other field in initializer of `protocol::results::InboxBatchV2Item`
+   --> src/cli/../../tests/cli/hook_inbox.rs:372:18
+    |
+372 |     let invite = InboxBatchV2Item::Invitation {
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `confirmation`, `deadline_at`, `goal_data` and 1 other field
+
+error[E0603]: constant `LATEST_VERSION` is private
+  --> tests/store/lazy_schema.rs:28:17
+   |
+28 |         schema::LATEST_VERSION
+   |                 ^^^^^^^^^^^^^^ private constant
+   |
+note: the constant `LATEST_VERSION` is defined here
+  --> src/store/schema.rs:86:1
+   |
+86 | pub(crate) const LATEST_VERSION: i64 = 46;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0603`.
+error: could not compile `herdr-threads` (test "combined") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+For more information about this error, try `rustc --explain E0063`.
+error: could not compile `herdr-threads` (lib test) due to 1 previous error

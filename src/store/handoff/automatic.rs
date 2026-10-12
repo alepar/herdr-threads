@@ -89,6 +89,15 @@ pub(crate) fn current(
 ) -> Result<Option<HandoffResult>, ApiError> {
     request.validate().map_err(ApiError::invalid_request)?;
     crate::store::topology_handoff::automatic::guard_child(db, request, true)?;
+    current_after_parent_guard(db, request)
+}
+// Both callers validate the request and its linked parent before entering this
+// unchanged child reader. Phase validation already uses the requested replay
+// mode (at least as strict as true), so it need not hydrate the parent twice.
+fn current_after_parent_guard(
+    db: &Connection,
+    request: &AutomaticDeliveryMutation,
+) -> Result<Option<HandoffResult>, ApiError> {
     let id = identity(request);
     let bytes: Option<Vec<u8>> = db.query_row("SELECT substr(original_json,1,?4) FROM automatic_handoff_companions WHERE instance_id=?1 AND actor_scope=?2 AND compound=?3",params![id.claim.instance,scope(&id),id.compound.as_str(),(MAX_ORIGINAL_BYTES+1) as u32],|r|r.get(0)).optional().map_err(store_error)?;
     let Some(bytes) = bytes else {
@@ -177,7 +186,8 @@ pub(crate) fn validate_phase(
     replay: bool,
 ) -> Result<(), ApiError> {
     crate::store::topology_handoff::automatic::guard_child(db, request, replay)?;
-    let saved = current(db, request)?;
+    request.validate().map_err(ApiError::invalid_request)?;
+    let saved = current_after_parent_guard(db, request)?;
     let Some(saved) = saved else {
         return if matches!(request.action, AutomaticDeliveryAction::Begin { .. }) {
             Ok(())
@@ -372,6 +382,9 @@ pub(crate) fn mutate(
                     if let Some(saved) = current(tx, request)? {
                         return Ok(CommandResult::Handoff(saved));
                     }
+                    request
+                        .validate_admission()
+                        .map_err(ApiError::invalid_request)?;
                     let linked =
                         crate::store::topology_handoff::automatic::guard_child(tx, request, false)?;
                     if !linked {
@@ -427,12 +440,12 @@ pub(crate) fn mutate(
                     )?))
                 }
                 AutomaticDeliveryAction::Ensure(v) => {
-                    let thread = control::resolve_direct_pair(
+                    let (thread, created) = control::resolve_direct_pair(
                         tx,
                         decision,
-                        &request.claim.instance,
-                        &request.claim.seat,
+                        &request.claim,
                         &v.recipient,
+                        v.creation_policy.as_ref(),
                         installation_default_ms,
                     )?;
                     super::attach_created_legacy(
@@ -447,7 +460,13 @@ pub(crate) fn mutate(
                     if attached.as_ref() != Some(&thread) {
                         return Err(mismatch());
                     }
-                    Ok(CommandResult::ThreadCreated(thread))
+                    control::direct_pair_selection(
+                        tx,
+                        thread,
+                        &v.recipient,
+                        created,
+                        v.creation_policy.is_some(),
+                    )
                 }
                 AutomaticDeliveryAction::Complete { .. } => {
                     let mut saved = current(tx, request)?
@@ -486,6 +505,15 @@ pub(crate) fn mutate(
                     if saved.thread.as_ref() == Some(&thread) =>
                 {
                     Ok(CommandResult::ThreadCreated(thread))
+                }
+                (
+                    AutomaticDeliveryAction::Ensure(v),
+                    CommandResult::DirectThreadEnsured(actual),
+                ) if v.creation_policy.is_some()
+                    && saved.thread.as_ref() == Some(&actual.thread)
+                    && actual.recipient == v.recipient =>
+                {
+                    Ok(CommandResult::DirectThreadEnsured(actual))
                 }
                 _ => Err(api_error(
                     ErrorCode::StoreCorrupt,

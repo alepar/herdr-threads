@@ -1,0 +1,155 @@
+--- a/resume-v090-prepare.py
++++ b/resume-v090-prepare.py
+@@ -106,6 +106,14 @@
+ baseline=json.loads(baseline_path.read_text())
+ original={(r['target'],r['name']):r for r in baseline['expected_tests']}
+ assert len(original)==391
++historical657_path=WS/'resume-v090-9a573c3f-final-inventory.json'
++historical657_sha256='c433673ebf52ce5d64b4352f8b9f6d512dcad60edb3a66d5034a7b22f699f3a8'
++historical657_bytes=historical657_path.read_bytes()
++if dig(historical657_bytes)!=historical657_sha256:raise ValueError('immutable expanded657 inventory changed')
++historical657=json.loads(historical657_bytes)
++expanded={(r['target'],r['name']):r for r in historical657['expected_tests']}
++if len(expanded)!=657 or len(historical657['expected_tests'])!=657:raise ValueError('expanded657 keys changed')
++historical657_meta={'path':str(historical657_path),'sha256':historical657_sha256,'original_keys_preserved':657}
+ oldfiles=[p for p in WS.iterdir() if p.name.startswith('resume-composed-') and p.is_file()]
+ old_hashes={str(p):sha(p) for p in oldfiles}
+ proposal=WS/'resume-main-v090-test-selection-proposal.md'
+@@ -133,7 +141,7 @@
+ negative_commit='71bb7ea92b820321b03b9c4206cd2e4a2fb23011'
+ negative_key=('lib','cli::topology_handoff::tests::live::automatic_live::automatic_child_begin_expired_permit_has_no_effects_and_fresh_permit_succeeds')
+ negative=Tree(negative_commit).enumerate().one(negative_key)
+-keys={norm(k) for k in original}|{norm(k) for k in main_keys}|actual_author|{(r['target'],r['canonical']) for r in rename_rows}
++keys={norm(k) for k in expanded}|{norm(k) for k in original}|{norm(k) for k in main_keys}|actual_author|{(r['target'],r['canonical']) for r in rename_rows}
+ restored=('lib','store::effective::tests::unpublished_staging_is_invisible_and_first_later_anchor_is_immutable')
+ if restored in current.found:keys.add(restored)
+ pending=[]
+@@ -148,6 +156,7 @@
+  r=dict(current.one(key));bid,bname,kind=identity[key[0]]
+  assert not any(re.search(r'#\[\s*ignore',a) for a in r['test_attributes'])
+  groups=[]
++ if key in {norm(k) for k in expanded}:groups.append('historical657')
+  if key in {norm(k) for k in original}:groups.append('original391')
+  if key in {norm(k) for k in main_keys}:groups.append('published_Main244')
+  if key in actual_author:groups.append('actual_composed_author')
+@@ -161,6 +170,12 @@
+ for historical,previous in sorted(original.items()):
+  canonical=norm(historical);current.one(canonical)
+  traces.append({'historical_target':historical[0],'historical_name':historical[1],'canonical_target':canonical[0],'canonical_name':canonical[1],'original_source_path':previous['source_path'],'original_source_file_sha256':previous['source_file_sha256'],'original_source_function_sha256':previous['source_function_sha256'],'baseline_path':str(baseline_path),'baseline_sha256':sha(baseline_path)})
++historical657_fields=('source_path','source_file_sha256','source_function_sha256','source_tree','registration_chain','selection')
++historical657_traces=[]
++for historical,previous in sorted(expanded.items()):
++ canonical=norm(historical)
++ if ('mandatory_cargo_separate' if canonical in mandatory else 'focused_nextest')!=previous['selection']:raise ValueError(f'historical657 selection class changed: {historical}')
++ historical657_traces.append({'historical_target':historical[0],'historical_name':historical[1],'canonical_target':canonical[0],'canonical_name':canonical[1],'historical_source':{k:previous[k] for k in historical657_fields}})
+ for r in rename_rows:r.update(historical_was_in_original391=(r['target'],r['historical']) in original,canonical_selected=True,reviewed_disposition_path=str(disposition),reviewed_disposition_sha256=sha(disposition))
+ proof_fields=('target','binary_id','binary_name','target_kind','name','source_path','source_line','source_file_sha256','source_function_sha256','source_tree','selection','registration_chain','test_attributes')
+ proof=[{k:r[k] for k in proof_fields} for r in sorted(rows,key=lambda r:(r['binary_id'],r['name']))]
+@@ -185,11 +200,11 @@
+ stamp['source_seal_policy']='Source metadata only: no runtime verdict. Parent final review/import/causal-fix attestation required for final commit mode.'
+ 
+ focused=[r for r in rows if r['selection']=='focused_nextest']
+-inputs={str(baseline_path):sha(baseline_path),str(proposal):sha(proposal),str(disposition):sha(disposition)}
+-seal={'schema':'herdr-threads.v090.selection-seal.v1','phase':phase,'runtime_verdict':None,'source_tree':REF,'source_head':source_head,'selection_fingerprint':fingerprint,'original391_requirement_map':traces,'reviewed_key_dispositions':rename_rows,'published_Main244_keys':[{'target':t,'name':n} for t,n in sorted(main_keys)],'actual_composed_author_keys':[{'target':t,'name':n} for t,n in sorted(actual_author)],'pending_required':pending,'explicit_source_evidenced_allowlist':proof,'input_sha256':inputs,'counts':{'selected_static':len(rows),'original_requirements':391,'normalized_original_execution_keys':len({norm(k) for k in original}),'focused_static':len(focused),'mandatory_static':6,'runtime_selected':None,'runtime_executed':None},'history_policy':'Preserve391 original requirement rows individually. Runtime execution deduplicates current canonical keys. Both reviewed disposition requirements are separate from391 because the historical names are absent in the frozen391 selection. No fabricated original membership or subtraction.','final_seal_required':'Parent causal fix/import/review, clean committed final source, exact refreshed source registration/fingerprints, pending_required empty and matching source/selection seal. No runtime success implied.'}
++inputs={str(historical657_path):historical657_sha256,str(baseline_path):sha(baseline_path),str(proposal):sha(proposal),str(disposition):sha(disposition)}
++seal={'schema':'herdr-threads.v090.selection-seal.v1','phase':phase,'runtime_verdict':None,'source_tree':REF,'source_head':source_head,'selection_fingerprint':fingerprint,'original391_requirement_map':traces,'historical657':historical657_meta,'historical657_requirement_map':historical657_traces,'reviewed_key_dispositions':rename_rows,'published_Main244_keys':[{'target':t,'name':n} for t,n in sorted(main_keys)],'actual_composed_author_keys':[{'target':t,'name':n} for t,n in sorted(actual_author)],'pending_required':pending,'explicit_source_evidenced_allowlist':proof,'input_sha256':inputs,'counts':{'selected_static':len(rows),'original_requirements':391,'normalized_original_execution_keys':len({norm(k) for k in original}),'focused_static':len(focused),'mandatory_static':6,'runtime_selected':None,'runtime_executed':None},'history_policy':'Preserve391 original requirement rows individually. Runtime execution deduplicates current canonical keys. Both reviewed disposition requirements are separate from391 because the historical names are absent in the frozen391 selection. No fabricated original membership or subtraction.','final_seal_required':'Parent causal fix/import/review, clean committed final source, exact refreshed source registration/fingerprints, pending_required empty and matching source/selection seal. No runtime success implied.'}
+ inv_path=WS/('resume-v090-'+args.label+'-inventory.json')
+ seal_path=WS/('resume-v090-'+args.label+'-selection-seal.json')
+-inventory={'schema':'herdr-threads.v090.inventory.v1','preparation_only':phase=='PREPARATION_ONLY','phase':phase,'execution':None,'runtime_counts':None,'source':{'path':str(SOURCE),'head':source_head,'tree':REF,'identity_kind':identity_kind,'observed_staged_provenance':stamp},'expected_tests':rows,'source_files':files,'counts':{'unique_expected_tests':len(rows),'mandatory_separate':6,'focused_nextest':len(focused),'by_target':dict(Counter(r['target'] for r in rows)),'runtime_selected':None,'runtime_executed':None},'selection_fingerprint':fingerprint,'selection_seal':{'path':str(seal_path),'phase':phase},'mandatory_recovery':{'source_file_sha256':files['tests/cli/lazy_recovery_context.rs']['sha256'],'expected_tests':[r['name'] for r in rows if r['selection']=='mandatory_cargo_separate'],'projection_wait_seconds':30,'projection_poll_milliseconds':20},'parent_runner_requirements':baseline['parent_runner_requirements'],'baseline391':{'path':str(baseline_path),'sha256':sha(baseline_path),'original_keys_preserved':391},'pending_required':pending,'history_input_sha256':inputs,'source_membership_note':'Explicit frozen source-evidenced keys only. Static author discovery from immutable parents converted to concrete seal rows; the runtime runner never discovers/adopts wildcard extras.'}
++inventory={'schema':'herdr-threads.v090.inventory.v1','preparation_only':phase=='PREPARATION_ONLY','phase':phase,'execution':None,'runtime_counts':None,'source':{'path':str(SOURCE),'head':source_head,'tree':REF,'identity_kind':identity_kind,'observed_staged_provenance':stamp},'expected_tests':rows,'source_files':files,'counts':{'unique_expected_tests':len(rows),'mandatory_separate':6,'focused_nextest':len(focused),'by_target':dict(Counter(r['target'] for r in rows)),'runtime_selected':None,'runtime_executed':None},'selection_fingerprint':fingerprint,'selection_seal':{'path':str(seal_path),'phase':phase},'mandatory_recovery':{'source_file_sha256':files['tests/cli/lazy_recovery_context.rs']['sha256'],'expected_tests':[r['name'] for r in rows if r['selection']=='mandatory_cargo_separate'],'projection_wait_seconds':30,'projection_poll_milliseconds':20},'parent_runner_requirements':baseline['parent_runner_requirements'],'historical657':historical657_meta,'baseline391':{'path':str(baseline_path),'sha256':sha(baseline_path),'original_keys_preserved':391},'pending_required':pending,'history_input_sha256':inputs,'source_membership_note':'Explicit frozen source-evidenced keys only. Static author discovery from immutable parents converted to concrete seal rows; the runtime runner never discovers/adopts wildcard extras.'}
+ for p,data in ((inv_path,inventory),(seal_path,seal)):
+  assert not p.exists(),str(p)
+  p.write_text(json.dumps(data,indent=2)+'\n')
+--- a/resume-v090-run.py
++++ b/resume-v090-run.py
+@@ -39,6 +39,8 @@
+     "--test", "integration", "--test", "service",
+ ]
+ BASELINE_SHA256 = "d568da428d23aaa0b517d0ab6a656e0f1684634fdf18f4281761b12a35546fad"
++HISTORICAL657_NAME = "resume-v090-9a573c3f-final-inventory.json"
++HISTORICAL657_SHA256 = "c433673ebf52ce5d64b4352f8b9f6d512dcad60edb3a66d5034a7b22f699f3a8"
+ LOG_LIMIT = 32 * 1024 * 1024
+ LIST_LIMIT = 64 * 1024 * 1024
+ RECORD_LIMIT = 8 * 1024 * 1024
+@@ -278,6 +280,47 @@
+     return sorted(focused, key=pair), sorted(mandatory, key=pair)
+ 
+ 
++def validate_historical657(
++    inventory: dict, seal: dict, historical: dict, historical_path: Path
++) -> None:
++    """Retain every exact expanded657 requirement and its historical source proof."""
++    prior_rows = historical["expected_tests"]
++    prior = {(row["target"], row["name"]): row for row in prior_rows}
++    if len(prior_rows) != 657 or len(prior) != 657:
++        raise ValueError("frozen expanded657 requirement set changed")
++    metadata = {
++        "path": str(historical_path), "sha256": HISTORICAL657_SHA256,
++        "original_keys_preserved": 657,
++    }
++    if inventory.get("historical657") != metadata or seal.get("historical657") != metadata:
++        raise ValueError("missing or incorrect expanded657 inventory provenance")
++    for inputs in (inventory["history_input_sha256"], seal["input_sha256"]):
++        if inputs.get(str(historical_path)) != HISTORICAL657_SHA256:
++            raise ValueError("expanded657 input hash missing or changed")
++    traces = seal.get("historical657_requirement_map", [])
++    trace_keys = [(row["historical_target"], row["historical_name"]) for row in traces]
++    if len(traces) != 657 or len(set(trace_keys)) != 657 or set(trace_keys) != set(prior):
++        raise ValueError("expanded657 traceability is incomplete or fabricated")
++    current = {(row["target"], row["name"]): row for row in inventory["expected_tests"]}
++    renames = {
++        (row["target"], row["historical"]): (row["target"], row["canonical"])
++        for row in seal["reviewed_key_dispositions"]
++    }
++    fields = (
++        "source_path", "source_file_sha256", "source_function_sha256",
++        "source_tree", "registration_chain", "selection",
++    )
++    for trace in traces:
++        old = trace["historical_target"], trace["historical_name"]
++        actual = trace["canonical_target"], trace["canonical_name"]
++        if actual != renames.get(old, old) or actual not in current:
++            raise ValueError(f"expanded657 requirement lost or incorrectly renamed: {old}")
++        if trace["historical_source"] != {key: prior[old][key] for key in fields}:
++            raise ValueError(f"expanded657 historical source proof changed: {old}")
++        if current[actual]["selection"] != prior[old]["selection"]:
++            raise ValueError(f"expanded657 selection class changed: {old}")
++
++
+ def validate_execution_seal(inventory: dict, seal: dict) -> None:
+     """Parent final metadata only; rejects prototype before any Cargo."""
+     final = "sealed_parent_reviewed_final_source"
+@@ -527,9 +570,15 @@
+     if sha256(baseline_path) != BASELINE_SHA256:
+         parser.error("immutable f330391 baseline snapshot changed")
+     baseline = json.loads(baseline_path.read_text())
++    historical657_path = Path(__file__).with_name(HISTORICAL657_NAME).resolve()
++    historical657_bytes = historical657_path.read_bytes()
++    if hashlib.sha256(historical657_bytes).hexdigest() != HISTORICAL657_SHA256:
++        parser.error("immutable expanded657 inventory changed")
++    historical657 = json.loads(historical657_bytes)
+     if source != Path(inventory["source"]["path"]).resolve():
+         parser.error("--source does not match inventory source")
+     focused, mandatory = validate_inventory(inventory, baseline, seal)
++    validate_historical657(inventory, seal, historical657, historical657_path)
+     if not args.evidence_dir.is_absolute():
+         parser.error("evidence directory must be absolute and fresh")
+     evidence = args.evidence_dir.resolve()
+@@ -548,6 +597,8 @@
+         "inventory_sha256": inventory_hash, "selection_seal": str(seal_path),
+         "selection_seal_sha256": seal_hash, "baseline_inventory": str(baseline_path),
+         "baseline_sha256": BASELINE_SHA256, "runner_sha256": sha256(Path(__file__)),
++        "historical657_inventory": str(historical657_path),
++        "historical657_sha256": HISTORICAL657_SHA256,
+         "ht_leak_run_id": run_id, "target": str(target),
+         "expected_counts": {"all": len(focused) + 6, "focused": len(focused), "mandatory": 6},
+         "commands": [], "artifact_limits": {"log_bytes": LOG_LIMIT, "list_bytes": LIST_LIMIT, "record_bytes": RECORD_LIMIT},
+@@ -659,6 +710,8 @@
+     def frozen(stage: str, original: dict | None = None) -> dict:
+         if sha256(inventory_path) != inventory_hash or sha256(seal_path) != seal_hash:
+             raise ValueError("inventory/selection seal changed during parent sweep")
++        if sha256(historical657_path) != HISTORICAL657_SHA256:
++            raise ValueError("expanded657 inventory changed during parent sweep")
+         observed = check_source(source, inventory)
+         if original is not None and observed != original:
+             raise ValueError(f"source/index changed during{stage}")

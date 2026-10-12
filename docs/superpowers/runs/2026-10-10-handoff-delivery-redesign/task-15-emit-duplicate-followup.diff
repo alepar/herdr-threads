@@ -1,0 +1,52 @@
+--- a/src/harness/agy/delivery.rs
++++ b/src/harness/agy/delivery.rs
+@@ -721,6 +721,7 @@
+             .as_deref()
+             .is_none_or(|v| decimal_epoch(v).is_some())
+         && completion.emitted_controls.len() <= MAX_TRACKED
++        && crate::protocol::delivery::validate_control_stamps(&completion.emitted_controls).is_ok()
+         && completion.emitted_controls.iter().all(|stamp| match stamp {
+             PresentationControlStampV2::Attention { epoch, .. }
+             | PresentationControlStampV2::Cleared { epoch, .. } => decimal_epoch(epoch).is_some(),
+--- a/tests/harness/agy_delivery.rs
++++ b/tests/harness/agy_delivery.rs
+@@ -1771,6 +1771,13 @@
+             let Some(page) = daemon.page.borrow_mut().take() else {
+                 continue;
+             };
++            let result=CommandResult::DeliveryPulledV2(crate::protocol::delivery::DeliveryPullReplyV2::Page(page.clone()));
++            let result_bytes=serde_json::to_vec(&result).unwrap().len();
++            let response=crate::protocol::wire::WireResponse{version:crate::protocol::wire::PROTOCOL_VERSION,request_id:"\"".repeat(128),instance:uuid::Uuid::from_u128(1).to_string(),daemon_boot:uuid::Uuid::from_u128(2).to_string(),result:Ok(result)};
++            let response_bytes=serde_json::to_vec(&response).unwrap();
++            assert!(serde_json::from_slice::<crate::protocol::wire::WireResponse>(&response_bytes).is_ok(),"actual maximum escaped valid envelope decodes");
++            assert!(response_bytes.len()-result_bytes<=512,"actual wrapper reserve includes max request ID escaping");
++            assert!(result_bytes<=crate::delivery::presentation::RPC_RESULT_LIMIT && response_bytes.len()<=crate::protocol::wire::MAX_WIRE_FRAME_BYTES);
+             assert_eq!(page.output_bytes as usize, prepared.stdout.len());
+             assert!(prepared.stdout.len() <= 65_536, "actual final native bytes");
+             largest = largest.max(prepared.stdout.len());
+@@ -2536,8 +2543,8 @@
+         previous_digest: Some("f".repeat(64)),
+         presentation_token: Some("a".repeat(32)),
+         emitted_controls: (0..32)
+-            .map(|_| PresentationControlStampV2::Attention {
+-                epoch: u64::MAX.to_string(),
++            .map(|n| PresentationControlStampV2::Attention {
++                epoch: (u64::MAX-n).to_string(),
+                 version: u64::MAX,
+             })
+             .collect(),
+@@ -2975,3 +2982,14 @@
+         );
+     }
+ }
++
++#[test]
++fn completion_rejects_duplicate_captured_control_stamps() {
++    let rig=Rig::new();
++    let items=vec![PresentationItemV2::Attention{epoch:"1".into(),attention_version:11,text:"attention".into()}];
++    let fake=modern_fake(vec![modern_reply(items,Some(&"a".repeat(32)),999,InjectionStep::SystemMessage,vec![])]);
++    let prepared=rig.prepare("PreInvocation",json!({"invocationNum":0}),Some(&fake),&runtime(1000,&ident("a")));
++    let mut completion:EmissionCompletion=serde_json::from_slice(&prepared.completion.unwrap().0).unwrap();
++    completion.emitted_controls.push(completion.emitted_controls[0].clone());
++    assert!(!valid_completion(&completion),"duplicate captured controls must be refused before confirmation or local hint writes");
++}

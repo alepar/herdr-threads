@@ -35,6 +35,8 @@ use std::io::{self, Write};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creation_policy: Option<crate::protocol::commands::EnsureCreationPolicy>,
     pub namespace: HandoffNamespace,
     pub request: Request,
     pub ensure_key: OperationId,
@@ -46,6 +48,9 @@ fn invalid(detail: &str) -> io::Error {
 impl Plan {
     pub fn validate(&self) -> io::Result<()> {
         self.namespace.validate().map_err(invalid)?;
+        if let Some(policy) = &self.creation_policy {
+            policy.validate().map_err(invalid)?;
+        }
         let r = &self.request;
         if r.body.is_empty()
             || r.body.len() > super::input::MAX_BODY_BYTES
@@ -125,12 +130,22 @@ pub(crate) fn check_namespace(p: &Plan, context: &ContinuationContext) -> io::Re
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Progress {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selection: Option<crate::protocol::results::DirectThreadEnsured>,
     thread: Option<ThreadId>,
     send: Option<SendMessage>,
     message: Option<MessageId>,
 }
 impl Progress {
     fn validate(&self, p: &Plan, claim: &CallerClaim) -> io::Result<()> {
+        if self.selection.as_ref().is_some_and(|actual| {
+            actual.validate().is_err()
+                || Some(&actual.thread) != self.thread.as_ref()
+                || actual.recipient != p.request.target
+                || p.creation_policy.is_none()
+        }) {
+            return Err(invalid("contradictory direct selection"));
+        }
         match (&self.thread, &self.send) {
             (None, None) if self.message.is_none() => Ok(()),
             (Some(t), Some(s)) if *s == p.send(claim, t.clone()) => Ok(()),
@@ -160,12 +175,17 @@ fn capability<C: LocalClient + ?Sized>(
     client: &C,
     clock: &dyn Clock,
     lazy: bool,
+    modern: bool,
 ) -> Result<(), RunError> {
     match client.call(Command::Capabilities, &super::cooperative_budget(clock)) {
         Ok(CommandResult::Capabilities(c))
             if c.capabilities
                 .iter()
                 .any(|v| v == crate::protocol::capabilities::DIRECT_THREADS_V1)
+                && (!modern
+                    || c.capabilities.iter().any(|v| {
+                        v == crate::protocol::capabilities::ENSURE_CREATION_POLICY_V1
+                    }))
                 && (!lazy
                     || c.capabilities
                         .iter()
@@ -231,13 +251,25 @@ pub(crate) fn start<C: LocalClient + ?Sized, W: Write>(
     writer: &mut W,
 ) -> Result<(), RunError> {
     let p = Plan {
+        creation_policy: Some(crate::protocol::commands::EnsureCreationPolicy {
+            confirmation: crate::protocol::commands::InvitationConfirmation::Lazy,
+            deadline_millis: None,
+        }),
         namespace: namespace(&claim.instance, &output.context)?,
         request,
         ensure_key: OperationId::new(uuid::Uuid::new_v4().to_string()),
         send_key: OperationId::new(uuid::Uuid::new_v4().to_string()),
     };
     p.validate_claim(&claim)?;
-    capability(client, clock, p.request.delivery_mode == DeliveryMode::Lazy)?;
+    if p.request.delivery_mode == DeliveryMode::Ordinary {
+        super::require_send_time_receipts_capability(client, clock)?;
+    }
+    capability(
+        client,
+        clock,
+        p.request.delivery_mode == DeliveryMode::Lazy,
+        p.creation_policy.is_some(),
+    )?;
     let caller = inspect(client, clock, &claim.seat)?;
     if caller.summary.generation != claim.binding_generation
         || caller.summary.target.as_ref() != Some(&claim.target)
@@ -346,18 +378,45 @@ pub(crate) fn retry<C: LocalClient + ?Sized, W: Write>(
     let result = (|| -> Result<(), RunError> {
         let mut progress: Progress = super::handoff::load_progress(journal, reference)?;
         progress.validate(p, claim)?;
-        capability(client, clock, p.request.delivery_mode == DeliveryMode::Lazy)?;
+        if p.request.delivery_mode == DeliveryMode::Ordinary && progress.message.is_none() {
+            super::require_send_time_receipts_capability(client, clock)?;
+        }
+        capability(
+            client,
+            clock,
+            p.request.delivery_mode == DeliveryMode::Lazy,
+            p.creation_policy.is_some(),
+        )?;
         let ensured = client.call(
             Command::EnsureDirectThread(EnsureDirectThread {
+                creation_policy: p.creation_policy.clone(),
                 recipient: p.request.target.clone(),
                 operation: p.ensure_key.clone(),
                 claim: claim.clone(),
             }),
             &super::cooperative_budget(clock),
         )?;
-        let CommandResult::ThreadCreated(thread) = ensured else {
-            return Err(super::invalid_request("direct Ensure returned no thread"));
+        let (thread, selection) = match ensured {
+            CommandResult::ThreadCreated(thread) if p.creation_policy.is_none() => (thread, None),
+            CommandResult::DirectThreadEnsured(actual)
+                if p.creation_policy.is_some() && actual.recipient == p.request.target =>
+            {
+                (actual.thread.clone(), Some(actual))
+            }
+            _ => {
+                return Err(super::invalid_request(
+                    "direct Ensure returned no exact selection",
+                ));
+            }
         };
+        if progress
+            .selection
+            .as_ref()
+            .is_some_and(|saved| Some(saved) != selection.as_ref())
+        {
+            return Err(super::invalid_request("direct Ensure selection changed"));
+        }
+        progress.selection = selection;
         if progress
             .thread
             .as_ref()
@@ -395,6 +454,9 @@ pub(crate) fn retry<C: LocalClient + ?Sized, W: Write>(
                 let mut result = serde_json::to_value(CommandResult::MessageSent(message.clone()))
                     .map_err(io::Error::other)?;
                 result["thread"] = serde_json::to_value(&thread).map_err(io::Error::other)?;
+                if let Some(selection) = &progress.selection {
+                    result["selection"] = selection.presentation();
+                }
                 let mut b = serde_json::to_vec(&serde_json::json!({
                     "version": crate::protocol::wire::PROTOCOL_VERSION,
                     "result": result,
@@ -404,7 +466,19 @@ pub(crate) fn retry<C: LocalClient + ?Sized, W: Write>(
                 b
             }
             OutputFormat::Text => {
-                format!("thread {} message {}\n", thread.as_str(), message.as_str()).into_bytes()
+                if let Some(selection) = &progress.selection {
+                    format!(
+                        "thread {} message {} selection {}\n",
+                        thread.as_str(),
+                        message.as_str(),
+                        serde_json::to_string(&selection.presentation())
+                            .map_err(io::Error::other)?
+                    )
+                    .into_bytes()
+                } else {
+                    format!("thread {} message {}\n", thread.as_str(), message.as_str())
+                        .into_bytes()
+                }
             }
         };
         if bytes.len() > crate::protocol::pagination::MAX_PAGE_BYTES as usize {

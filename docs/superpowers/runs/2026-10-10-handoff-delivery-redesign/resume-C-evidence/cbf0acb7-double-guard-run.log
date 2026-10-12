@@ -1,0 +1,9 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+────────────
+ Nextest run ID 668debb1-4f61-4b31-8489-ff8014671167 with nextest profile: default
+    Starting 3 tests across 1 binary (4403 tests skipped)
+        PASS [   8.621s] (1/3) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_actual_admission_boundary_completes_and_next_metadata_size_has_zero_effects
+        PASS [   5.619s] (2/3) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_maximum_escaped_body_completes_and_recovers_exactly
+        PASS [   0.483s] (3/3) herdr-threads cli::topology_handoff::tests::live::automatic_live::automatic_child_begin_expired_permit_has_no_effects_and_fresh_permit_succeeds
+────────────
+     Summary [  14.734s] 3 tests run: 3 passed, 4403 skipped

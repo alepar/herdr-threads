@@ -246,11 +246,11 @@ fn correlation_for_empty_args(harness: Harness) -> CorrelatedStartup {
         target: HostTargetId::new("pane_1"),
         harness,
         argv: Vec::new(),
-        configured_hook: ConfiguredHook {
+        configured_hook: Some(ConfiguredHook {
             scope: "codex".into(),
             path: "/path with spaces/hook".into(),
             fingerprint: "sha256:abc".into(),
-        },
+        }),
         expected_terminal: TerminalId::new("term_1"),
         expected_generation: 4,
         expected_incarnation: "inc_1".into(),
@@ -398,20 +398,17 @@ fn final_recheck_rejects_change_and_missing_hook() {
     );
 
     let (host, seats, _, clock, budget) = fixture();
-    assert_eq!(
-        launch_managed(
-            &host,
-            &seats,
-            &FakeHooks(None),
-            &clock,
-            request(Harness::Claude, &[]),
-            &budget
-        )
-        .unwrap_err()
-        .code,
-        ErrorCode::MissingHook
-    );
-    assert!(host.submitted.lock().unwrap().is_empty());
+    launch_managed(
+        &host,
+        &seats,
+        &FakeHooks(None),
+        &clock,
+        request(Harness::Claude, &[]),
+        &budget,
+    )
+    .unwrap();
+    assert_eq!(host.submitted.lock().unwrap().len(), 1);
+    assert!(host.submitted.lock().unwrap()[0].configured_hook.is_none());
 }
 
 #[test]
@@ -449,7 +446,10 @@ fn native_argument_forms_preserve_caller_options_and_transport_only() {
         ]
     );
     assert_eq!(sent.seat, SeatId::new("seat_1"));
-    assert_eq!(sent.configured_hook.path, "/path with spaces/hook");
+    assert_eq!(
+        sent.configured_hook.as_ref().unwrap().path,
+        "/path with spaces/hook"
+    );
 
     let (host, seats, hooks, clock, budget) = fixture();
     launch_managed(
@@ -807,7 +807,10 @@ fn owned_configuration_precedes_caller_arguments_without_daemon_flags() {
             "prompt"
         ]
     );
-    assert_eq!(submitted[0].configured_hook.fingerprint, "sha256:owned");
+    assert_eq!(
+        submitted[0].configured_hook.as_ref().unwrap().fingerprint,
+        "sha256:owned"
+    );
 }
 
 /// Kills: a caller `-c hooks.*` override (in any spelling) replacing the owned
@@ -1507,7 +1510,15 @@ fn process_hint_policy_reaches_generic_native_request() {
             assert_eq!(prepared.request.argv, ["space arg", "apostrophe's arg"]);
             assert_eq!(prepared.request.agent_name(), "hint-worker");
             assert_eq!(prepared.request.target.as_str(), "pane_1");
-            assert_eq!(prepared.request.configured_hook.fingerprint, "sha256:abc");
+            assert_eq!(
+                prepared
+                    .request
+                    .configured_hook
+                    .as_ref()
+                    .unwrap()
+                    .fingerprint,
+                "sha256:abc"
+            );
             assert_eq!(prepared.request.expected_incarnation, "inc_1");
         }
     }
@@ -1587,7 +1598,7 @@ fn task48_actual_owned_preparation_preserves_empty_data() {
             .count(),
         1
     );
-    assert_eq!(prepared.request.configured_hook, owned.hook);
+    assert_eq!(prepared.request.configured_hook, Some(owned.hook));
     assert!(host.submitted.lock().unwrap().is_empty());
 }
 

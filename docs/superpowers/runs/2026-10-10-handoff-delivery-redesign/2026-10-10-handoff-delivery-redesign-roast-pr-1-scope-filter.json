@@ -1,0 +1,30 @@
+{
+  "findings": [
+    {
+      "key": "[Should-fix] integrations/claude/mod/hooks/register.js:289",
+      "disposition": "in-scope",
+      "reason": "The authorized scope requires Lazy invitation context delivery and correct context-version handling across failure and restart; deleting the replacement run's independently queued context suppresses that required delivery."
+    },
+    {
+      "key": "[Should-fix] src/store/invitation_content.rs:2442",
+      "disposition": "in-scope",
+      "reason": "The selected framing contract explicitly bounds private ordinary discovery and requires charged resumable membership judgment; the uncharged membership-history traversal violates that named physical-work bound."
+    },
+    {
+      "key": "[Should-fix] tests/store/effective.rs:2136",
+      "disposition": "in-scope",
+      "reason": "The failing populated receipt-upgrade regression blocks the catalog, graph, clock and reopen preservation checks expressly required for receipt upgrades and the authorized migration composition."
+    },
+    {
+      "key": "[Should-fix] src/service/delivery_presentation.rs:62",
+      "disposition": "in-scope",
+      "reason": "The authorized V2 owner-serialized presentation path must preserve cancellation and time budgets and service cancellation between bounded Watch quanta; unconditional owner acquisition retains cancelled or expired requests before admission."
+    },
+    {
+      "key": "[Should-fix] integrations/claude/mod/hooks/register.js:296",
+      "disposition": "punch-list",
+      "reason": "Coalescing obsolete downstream invitation bodies improves queue retention and recovery context; the selected bounds cover canonical discovery, outbox and emitted pages, without requiring a bounded mod append queue or downstream uptake.",
+      "clusterOverride": "Unlike the cluster's successor-deletion defect, this finding establishes unnecessary obsolete-history retention rather than suppression of the current invitation context required by the goal."
+    }
+  ]
+}

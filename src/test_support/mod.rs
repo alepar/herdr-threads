@@ -235,6 +235,17 @@ pub mod synthetic_fourth {
     }
     static DELIVERY: FourthDelivery = FourthDelivery;
     impl HarnessAdapter for Fourth {
+        fn presentation_codec(
+            &self,
+            selector: u8,
+        ) -> Option<crate::harness::adapter::PresentationCodec> {
+            (selector == 0).then_some(
+                crate::harness::adapter::PresentationCodec::JsonStringEnvelope {
+                    prefix: "",
+                    suffix: "",
+                },
+            )
+        }
         type Admission = ();
         fn metadata(&self) -> &'static AdapterMetadata {
             &METADATA
@@ -547,7 +558,7 @@ pub mod synthetic_fourth {
         ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
             Ok(LaunchPreparation {
                 argv: self.compose_argv(request.argv.clone(), vec![])?,
-                hook: crate::harness::launch::owned_launch_hook(status)?,
+                hook: Some(crate::harness::launch::owned_launch_hook(status)?),
                 working_directory: scope.working_directory.clone(),
                 environment_overrides: Default::default(),
                 report: json!({"synthetic": true, "runtime": null}),

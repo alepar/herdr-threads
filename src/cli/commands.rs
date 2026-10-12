@@ -321,6 +321,7 @@ pub enum MutationSpec {
     Invite {
         thread: ThreadId,
         seat: SeatId,
+        confirmation: Option<InvitationConfirmation>,
         deadline_millis: Option<u64>,
         operator: bool,
     },
@@ -419,9 +420,11 @@ impl MutationSpec {
             Self::Invite {
                 thread,
                 seat,
+                confirmation,
                 deadline_millis,
                 operator: false,
             } => WireCommand::Invite(Invite {
+                confirmation,
                 thread,
                 seat,
                 deadline_millis,
@@ -433,6 +436,7 @@ impl MutationSpec {
                 seat,
                 deadline_millis,
                 operator: true,
+                ..
             } => WireCommand::OperatorOrphanInvite(OperatorOrphanInvite {
                 thread,
                 seat,
@@ -765,7 +769,7 @@ enum Top {
     Launch(LaunchArgs),
     /// Deliver durable work to a new tab, explicit launch pane, or existing peer.
     #[command(after_help = format!("{}\n\n{}", super::help::handoff_help(), super::topology_recover::RECOVERY_HELP))]
-    Handoff(HandoffArgs),
+    Handoff(Box<HandoffArgs>),
     #[command(name = "_topology-recover", hide = true)]
     TopologyRecover(RecoveryArgs),
     /// Your own identity as a person in this Herdr pane.
@@ -1139,7 +1143,13 @@ struct InviteArgs {
     /// Seat ID to invite.
     #[arg(long)]
     seat: Option<String>,
-    /// Invitation deadline in positive seconds.
+    /// Leave the invitation discoverable without timed confirmation (default).
+    #[arg(long, conflicts_with_all = ["require_ack", "deadline", "operator"])]
+    lazy: bool,
+    /// Require explicit acceptance by the invitation deadline.
+    #[arg(long, conflicts_with = "operator")]
+    require_ack: bool,
+    /// Acceptance deadline in positive seconds; implies --require-ack.
     #[arg(long)]
     deadline: Option<u64>,
     /// Mark this as an explicit operator invitation.
@@ -1349,7 +1359,17 @@ struct LaunchArgs {
 }
 
 #[derive(Args)]
+#[command(group(clap::ArgGroup::new("instruction_source").required(true).multiple(false).args(["body", "file", "stdin"])))]
 struct HandoffArgs {
+    /// Addressed instructions receipt deadline in positive seconds.
+    #[arg(long)]
+    deadline: Option<u64>,
+    /// Request timed invitation acceptance independently of message receipt.
+    #[arg(long)]
+    require_invite_ack: bool,
+    /// Invitation acceptance deadline in positive seconds; implies --require-invite-ack.
+    #[arg(long)]
+    invite_deadline: Option<u64>,
     #[arg(long, conflicts_with_all = ["existing", "tab", "pane", "seat"])]
     new_tab: Option<String>,
     #[arg(long)]
@@ -1385,8 +1405,14 @@ struct HandoffArgs {
     #[arg(long = "agent-arg", allow_hyphen_values = true)]
     agent_args: Vec<String>,
     /// Exactly one quoted durable message after --; never native argv.
-    #[arg(last = true, required = true, num_args = 1, allow_hyphen_values = true)]
-    body: String,
+    #[arg(last = true, num_args = 1, allow_hyphen_values = true)]
+    body: Option<String>,
+    /// Read the complete durable instructions from this UTF-8 file.
+    #[arg(long)]
+    file: Option<String>,
+    /// Read the complete durable instructions from standard input.
+    #[arg(long)]
+    stdin: bool,
 }
 
 #[derive(Args)]
@@ -1771,6 +1797,13 @@ where
             1
         };
     }
+    if actor == InvocationActor::Human
+        && matches!(&cli.command, Top::Invite(args) if args.lazy || args.require_ack)
+    {
+        return Err(ParseFailure::Invalid(invalid(
+            "--lazy and --require-ack apply only to ordinary agent invitations",
+        )));
+    }
     let mut parsed = parse_cli_in_registry(cli, registry).map_err(|error| {
         if actor == InvocationActor::Agent && error.detail == "operator required" {
             invalid(format!(
@@ -1836,6 +1869,12 @@ where
     );
     if actor == InvocationActor::Agent && requires_human {
         return Err(ParseFailure::Invalid(invalid(guidance(&original, None))));
+    }
+    if actor == InvocationActor::Human
+        && let CliAction::Mutation(MutationSpec::Invite { confirmation, .. }) = &mut parsed.action
+    {
+        // Human/operator invitations retain their established semantics.
+        *confirmation = None;
     }
     parsed.actor = actor;
     Ok(parsed)
@@ -2218,7 +2257,20 @@ fn parse_cli_in_registry(
                 args.seat.unwrap_or_else(|| "pending-pane-selector".into()),
                 SeatId::parse,
             )?,
-            deadline_millis: deadline(args.deadline)?,
+            confirmation: (!args.operator).then_some(
+                if args.require_ack || args.deadline.is_some() {
+                    InvitationConfirmation::RequireAck
+                } else {
+                    InvitationConfirmation::Lazy
+                },
+            ),
+            deadline_millis: deadline(args.deadline)?
+                .map(|millis| {
+                    i64::try_from(millis)
+                        .map(|_| millis)
+                        .map_err(|_| invalid("invitation deadline must fit signed milliseconds"))
+                })
+                .transpose()?,
             operator: args.operator,
         }),
         Top::Participants { thread, page: args } => {
@@ -2678,7 +2730,19 @@ fn parse_cli_in_registry(
             if let Some(name) = &args.thread_name {
                 validate_thread_name(name).map_err(validation_error)?;
             }
-            let body = bounded(args.body, "body")?;
+            let policy = crate::protocol::handoff::HandoffPolicy {
+                deadline_millis: deadline(args.deadline)?,
+                invitation_confirmation: if args.require_invite_ack
+                    || args.invite_deadline.is_some()
+                {
+                    InvitationConfirmation::RequireAck
+                } else {
+                    InvitationConfirmation::Lazy
+                },
+                invite_deadline_millis: deadline(args.invite_deadline)?,
+            };
+            policy.validate().map_err(invalid)?;
+            let body = super::input::read_body(args.body, args.file, args.stdin)?;
             if args.new_tab.is_some() || args.existing {
                 if args.existing
                     && (args.harness_binary.is_some()
@@ -2688,6 +2752,7 @@ fn parse_cli_in_registry(
                     return Err(invalid("native launch arguments conflict with --existing"));
                 }
                 CliAction::TopologyHandoff(super::topology_handoff::Request {
+                    policy: Some(policy),
                     automatic: !args.new_thread && args.thread.is_none(),
                     new_tab: args.new_tab,
                     existing: args.existing,
@@ -2706,6 +2771,7 @@ fn parse_cli_in_registry(
                 })
             } else {
                 CliAction::Handoff(super::handoff::HandoffRequest {
+                    policy: Some(policy),
                     automatic: !args.new_thread && args.thread.is_none(),
                     thread: args.thread.map(thread_id).transpose()?,
                     thread_name: args.thread_name,

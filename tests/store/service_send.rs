@@ -265,7 +265,14 @@ impl Fixture {
     fn drain(&self, message: &MessageId) {
         let job = format!("work:send:{}", message.as_str());
         let mut db = self.db();
-        loop {
+        let high_water: i64 = db
+            .query_row(
+                "SELECT high_water FROM work_jobs WHERE id=?1",
+                [&job],
+                |r| r.get(0),
+            )
+            .unwrap();
+        for _ in 0..=high_water + 1 {
             let status: String = db
                 .query_row("SELECT status FROM work_jobs WHERE id=?1", [&job], |r| {
                     r.get(0)
@@ -274,7 +281,7 @@ impl Fixture {
             if status == "complete" {
                 return;
             }
-            materialization::advance_work(
+            let progress = materialization::advance_work(
                 &mut db,
                 &job,
                 DurableWorkAdmission::new(16).unwrap(),
@@ -282,7 +289,9 @@ impl Fixture {
                 self.store.context.clock(),
             )
             .unwrap();
+            assert!(progress.last_error.is_none(), "{:?}", progress.last_error);
         }
+        panic!("finite send projection did not terminate");
     }
 }
 
@@ -1420,4 +1429,67 @@ fn service_preparation_retention_preserves_resume_and_rebuild_fences() {
             .unwrap(),
         1
     );
+}
+
+#[test]
+fn new_service_sends_anchor_all_unavailable_audiences_to_send_time() {
+    for state in ["unbound", "unavailable", "managed_launch", "invited"] {
+        let f = Fixture::with_joined(&["s1"]);
+        {
+            let db = f.db();
+            match state {
+                "unbound" => {
+                    db.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+                        .unwrap();
+                }
+                "unavailable" => {
+                    db.execute(
+                        "UPDATE occupant_bindings SET registered_at=NULL WHERE seat_id='s1'",
+                        [],
+                    )
+                    .unwrap();
+                }
+                "managed_launch" => {
+                    db.execute("UPDATE occupant_bindings SET registered_at=NULL,observation_provenance='managed_launch' WHERE seat_id='s1'", []).unwrap();
+                }
+                "invited" => {
+                    db.execute("UPDATE memberships SET state='invited',voluntary_state='invited' WHERE seat_id='s1'", []).unwrap();
+                    db.execute(
+                        "UPDATE membership_intervals SET left_seq=2 WHERE seat_id='s1'",
+                        [],
+                    )
+                    .unwrap();
+                    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES('v','t','s1',1,'pending',2,0,300,300)",[]).unwrap();
+                }
+                _ => unreachable!(),
+            }
+        }
+        let explicit = if state == "invited" {
+            vec!["s1"]
+        } else {
+            vec![]
+        };
+        let ServiceResult::MessageSent(sent) = f.send("k", "body", &explicit, Some(50)).unwrap()
+        else {
+            panic!()
+        };
+        let id = sent.summary.message;
+        let before = crate::store::effective::effective_receipt(&f.db(), id.as_str(), "s1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(before.deadline_at, Some(150), "{state}");
+        if state != "invited" {
+            assert_eq!(before.available_at, None, "{state}");
+        }
+        f.drain(&id);
+        let db = f.db();
+        let deadline: i64 = db
+            .query_row(
+                "SELECT deadline_at FROM receipt_state WHERE message_id=?1 AND seat_id='s1'",
+                [id.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(deadline, 150, "{state}");
+    }
 }

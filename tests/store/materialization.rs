@@ -117,7 +117,7 @@ fn later_anchor_does_not_restart_timer_or_enqueue_duplicate_attention() {
         {}
     }
     let times:(Option<i64>,Option<i64>)=db.query_row("SELECT available_at,deadline_at FROM receipt_state WHERE message_id='m' AND seat_id='s1'",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
-    assert_eq!(times, (Some(1200), Some(1500)));
+    assert_eq!(times, (Some(1200), Some(1300)));
     assert_eq!(
         db.query_row(
             "SELECT attention_version FROM wake_work WHERE seat_id='s1'",
@@ -458,7 +458,7 @@ fn published_manifest_warning_and_first_anchor_project_without_new_decision() {
     assert_eq!(count(&db, "warning_jobs"), 1);
     assert_eq!(count(&db, "work_jobs"), 2);
     let (available,deadline): (Option<i64>,Option<i64>) = db.query_row("SELECT available_at,deadline_at FROM receipt_state WHERE message_id='m' AND seat_id='s1'",[],|r| Ok((r.get(0)?,r.get(1)?))).unwrap();
-    assert_eq!((available, deadline), (Some(1200), Some(1500)));
+    assert_eq!((available, deadline), (Some(1200), Some(1300)));
     assert_eq!(count(&db, "messages"), 1);
 }
 
@@ -847,6 +847,37 @@ fn send_attention_completion_stamps_completed_at() {
         completed_at(&db, "send"),
         ("complete".into(), Some(999_999))
     );
+}
+
+#[test]
+fn unavailable_send_materializes_due_deadline_without_availability() {
+    let mut db = fixture();
+    db.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('p','i','a','o',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed'); INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('p','t','s1',1,300,0); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','body',1000,10); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',10,1000,1,0,1,0); INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('send','send_attention','p',2);").unwrap();
+    let clock = TestClock(AtomicU64::new(0));
+    let mut complete = false;
+    for _ in 0..3 {
+        let progress = advance_work(
+            &mut db,
+            "send",
+            WorkAdmission::new(1).unwrap(),
+            &budget(),
+            &clock,
+        )
+        .unwrap();
+        assert!(progress.last_error.is_none(), "{:?}", progress.last_error);
+        if !progress.has_more {
+            complete = true;
+            break;
+        }
+    }
+    assert!(
+        complete,
+        "finite unavailable-recipient projection did not terminate"
+    );
+    let times: (Option<i64>,Option<i64>) = db.query_row("SELECT available_at,deadline_at FROM receipt_state WHERE message_id='m' AND seat_id='s1'",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    assert_eq!(times, (None, Some(1300)));
+    let due: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM receipt_state INDEXED BY receipt_state_required_due WHERE state='pending' AND ack_required=1 AND warning_message_id IS NULL AND deadline_at<=1300)",[],|r|r.get(0)).unwrap();
+    assert!(due);
 }
 
 /// Every monotonic read is 10 ms after the previous one: a thread stalled

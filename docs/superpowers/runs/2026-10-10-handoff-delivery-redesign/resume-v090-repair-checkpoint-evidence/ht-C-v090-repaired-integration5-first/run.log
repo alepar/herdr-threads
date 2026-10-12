@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 98f3b695-fd73-49c1-a955-19ecec37fcf8 with nextest profile: default
+    Starting 5 tests across 1 binary (232 tests skipped)
+        PASS [   2.154s] (1/5) herdr-threads::integration mod_delivery::clear_rebind_pending_item_restreamed_to_new_session
+        PASS [   2.324s] (2/5) herdr-threads::integration mod_delivery::activation_v2_watch_replacement_replays_uncommitted_output
+        PASS [   1.040s] (3/5) herdr-threads::integration mod_delivery::stale_attention_is_retracted_after_accept_and_after_a_notice_offer
+        PASS [   3.744s] (4/5) herdr-threads::integration mod_delivery::notice_published_while_live_reaches_the_next_pre_tool_use_once
+        PASS [   3.888s] (5/5) herdr-threads::integration mod_delivery::activation_v2_elected_watch_capabilities_lease_output_confirm
+────────────
+     Summary [   3.889s] 5 tests run: 5 passed, 232 skipped

@@ -260,6 +260,14 @@ impl WatchWireRequest {
 #[serde(deny_unknown_fields)]
 pub struct WatchRequest {
     pub claim: CallerClaim,
+    /// Explicitly negotiated presentation mode. Absent/false retains the
+    /// historical claim-only registration bytes and legacy channel behavior.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub presentation_v2: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 /// First daemon frame of a watch connection.
@@ -282,6 +290,8 @@ pub enum WatchOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchAccepted {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation_lease: Option<String>,
     /// The seat's current attention version at registration.
     pub attention_version: u64,
 }
@@ -471,9 +481,27 @@ impl WatchLine {
 pub enum WatchItem {
     Message(WatchMessage),
     Lazy(WatchMessage),
+    Invitation(WatchInvitation),
+    Notice(WatchNotice),
     Attention(WatchAttention),
     AttentionCleared(WatchAttentionCleared),
     Status(WatchStatus),
+}
+
+/// Pending invitation context; display is neither acceptance nor a message ACK.
+/// Older consumers ignore this additive kind and require an upgrade for its content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchInvitation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_context_epoch: Option<String>,
+    /// Decimal canonical revision preserves integer precision in JavaScript consumers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic_revision: Option<String>,
+    pub thread: ThreadId,
+    pub thread_name: Option<String>,
+    pub body: String,
+    pub truncated: bool,
+    pub wakes: bool,
 }
 
 /// A message or lazy row. `body` is the full body, or its first
@@ -509,6 +537,8 @@ pub struct WatchMessage {
 /// `text` is the existing fixed attention marker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchAttention {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation_epoch: Option<String>,
     pub attention_version: u64,
     pub text: String,
 }
@@ -517,6 +547,8 @@ pub struct WatchAttention {
 /// pending (ht-j16.33): the mod drops attention items it has not sent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchAttentionCleared {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation_epoch: Option<String>,
     pub attention_version: u64,
 }
 
@@ -645,3 +677,11 @@ pub struct ModLedgerEntry {
 #[cfg(test)]
 #[path = "../../tests/protocol/watch.rs"]
 mod tests;
+
+/// Passive warning presentation, independent of receipt ACK or condition settlement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchNotice {
+    pub warning: MessageId,
+    pub thread: ThreadId,
+    pub body: String,
+}

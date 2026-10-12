@@ -1,0 +1,11 @@
+# Settled design handoff
+
+Epic: ht-0lo. Root and four nested specs are committed and indexed. Four promoted subepics, ten open implementation leaves, terminal integration sweep ht-0lo.5, and closed design-only fix leaves ht-0lo.6/ht-0lo.7. Sweep consumes all twelve leaves. Parent owns execution and final main-tab notification; no source implementation or merge performed by this design agent.
+
+Coverage used exactly two rounds with three independent reviewers per required scope. Round1 one graph defect fixed; round2 maps36/36 requirements with zero findings, no degradation. No third pass.
+
+Design roast1: Blocking (2confirmed); full eight scouts, five three-seat panels,15/15valid votes. Fixed finite-backlog fair discovery/conditional detection bound and ordinary-send receipt semantic capability. Design roast2: clean (0nits) [low coverage]; nine fresh scouts including regression, zero raw/deduped candidates, both prior issues resolved, no applicable panels. Sole qualifier is the skill’s literal zero-raw rule, no review-stage failures. Caller-owned fully autonomous exception records proceed without another roast, preserving qualifier. No escalations, beyond-cap items or outstanding confirmed findings.
+
+Protocol/migration implementation seams: messages.send_time_receipts_v1 advertised only with canonical new-send semantics, modern ACK sends/handoff refuse beforeeffects when unsupported; invitation absent fields retain historical timed behavior while modern CLI explicitLazy; never rewrite retained requests/digests. Historical dormant receipt upgrade remains separate .1.3. Stable native event grammar preserves manifest ownership and conservative migration. Long-body serializer preflight/escaped64KiB fixtures measure bounded canonical/local/public envelopes. Originator waking-open/passive-clear warning requires A7 update; native consent remains explicit. Hook readiness advisory, structural launch safety and conditional owned-fingerprint recheck preserved.
+
+Baseline7c40c83c028d4a1a7650d6a58e92cd0bdedd3cdb remained frozen. Parent may now compose newer main and invoke super-code on this epic. Parent baseline21 scheduler deadline tests passed; implementation validation remains pending execution.

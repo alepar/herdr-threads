@@ -196,6 +196,7 @@ fn deadline_worker_keeps_a_failed_due_phase_visible_during_retry_cooldown() {
         due_progress: Some(DueScanProgress {
             state: DueScanState::default(),
             examined_candidates: 0,
+            maintenance_sessions: 0,
             warnings_added: 0,
             invitations: DuePhaseProgress::Failed(
                 ErrorCode::StoreBusy,
@@ -224,6 +225,7 @@ fn deadline_health_recovers_only_the_successful_failed_phase() {
         due_progress: Some(DueScanProgress {
             state: DueScanState::default(),
             examined_candidates: 0,
+            maintenance_sessions: 0,
             warnings_added: 0,
             invitations,
             receipts,
@@ -336,6 +338,7 @@ impl herdr_threads::scheduler::deadlines::DeadlinePort for HealthDeadlinePort {
         Ok(DueScanProgress {
             state: request.state,
             examined_candidates: 0,
+            maintenance_sessions: 0,
             warnings_added: 0,
             invitations: if !request.run_invitations {
                 DuePhaseProgress::Skipped

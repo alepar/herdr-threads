@@ -1,0 +1,28 @@
+{
+  "remainderCap": 50,
+  "iterationCap": 3,
+  "coreLanes": [
+    "correctness",
+    "security",
+    "premortem",
+    "simplicity-design",
+    "hot-path-perf",
+    "concurrency-async",
+    "regression"
+  ],
+  "models": {
+    "triage": "gpt-6.1-sol",
+    "scout": "gpt-6-astra",
+    "dedupe": "gpt-6.1-sol",
+    "judge": "gpt-6.1-sol",
+    "reporter": "gpt-6.1-sol"
+  },
+  "effort": {
+    "triage": "low",
+    "scout": "high",
+    "dedupe": "low",
+    "judge": "high",
+    "spot": "medium",
+    "reporter": "high"
+  }
+}

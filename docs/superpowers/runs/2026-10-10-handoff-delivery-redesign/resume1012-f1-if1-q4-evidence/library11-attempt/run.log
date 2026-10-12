@@ -1,0 +1,75 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
+────────────
+ Nextest run ID d989aafb-f951-4642-a295-2fa7c9b359f5 with nextest profile: default
+    Starting 11 tests across 1 binary (4928 tests skipped)
+        PASS [   0.022s] ( 1/11) herdr-threads delivery::presentation::sizing_failure_tests::actual_overflow_is_distinct_from_exhaustion_and_invalid_rendering
+        PASS [   0.604s] ( 2/11) herdr-threads cli::handoff_delivery::tests::historical_none_automatic_existing_retry_requires_receipts_before_effects_and_preserves_origin
+        FAIL [   2.652s] ( 3/11) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_mixed_page_retains_alone_fitting_lazy_successor
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_mixed_page_retains_alone_fitting_lazy_successor ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_mixed_page_retains_alone_fitting_lazy_successor
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4938 filtered out; finished in 2.63s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_mixed_page_retains_alone_fitting_lazy_successor' (57905561) panicked at src/service/../../tests/service/normal_unrenderable_controls.rs:379:5:
+    nonempty-page failure retains the canonical successor in carry
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   3.132s] ( 4/11) herdr-threads cli::topology_handoff::tests::live::automatic_live::public_historical_none_new_tab_retry_requires_receipts_before_any_effect_and_preserves_origin
+        FAIL [   3.883s] ( 5/11) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4938 filtered out; finished in 3.86s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy' (57905566) panicked at src/service/../../tests/service/normal_unrenderable_controls.rs:181:5:
+    completed normal pass stays quiet without canonical settlement
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   3.989s] ( 6/11) herdr-threads store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope
+        FAIL [   4.012s] ( 7/11) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4938 filtered out; finished in 3.99s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy' (57905564) panicked at src/service/../../tests/service/normal_unrenderable_controls.rs:181:5:
+    completed normal pass stays quiet without canonical settlement
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   4.469s] ( 8/11) herdr-threads store::queries::tests::query_work_q4::q4_actual_continued_tail_checks_scope_once_and_charges_retirement
+        PASS [  44.145s] ( 9/11) herdr-threads store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers
+        PASS [  45.236s] (10/11) herdr-threads store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work
+        PASS [  45.302s] (11/11) herdr-threads store::queries::tests::query_work_q4::q4_three_event_keys_and_actual_floor_have_constant_sqlite_work
+────────────
+     Summary [  45.321s] 11 tests run: 8 passed, 3 failed, 4928 skipped
+        FAIL [   2.652s] ( 3/11) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_mixed_page_retains_alone_fitting_lazy_successor
+        FAIL [   3.883s] ( 5/11) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy
+        FAIL [   4.012s] ( 7/11) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy
+error: test run failed

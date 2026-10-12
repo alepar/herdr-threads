@@ -7,11 +7,9 @@
 //!    without invoking diagnostic flags or inferring runtime identity;
 //! 2. inside the policy: a fresh explicit-target read that must be an
 //!    available shell, the pane's seat resolved through the daemon's ordinary
-//!    guarded `seat resolve` path (a recovery hold refuses), the owned
-//!    user-level hook installation inspected (`setup` must have installed it
-//!    in the Claude settings / Codex hooks.json this environment resolves;
-//!    Codex commands use approved outside-sandbox execution, without requiring
-//!    a network allowance), and a last fenced recheck;
+//!    guarded `seat resolve` path (a recovery hold refuses), advisory hook
+//!    readiness inspection, and a last fenced recheck of the selected native
+//!    inputs and any configuration actually used;
 //! 3. Herdr's guarded `agent.start` with the argument array: the caller's
 //!    arguments byte for byte and in order (the owned configuration is on
 //!    disk, so launch adds none). No daemon-mode argument is injected.
@@ -242,14 +240,14 @@ fn policy_harness(harness: ContextHarness) -> Harness {
     harness.into()
 }
 
-struct PreparedHookInspector(ConfiguredHook);
+struct PreparedHookInspector(Option<ConfiguredHook>);
 impl LaunchHookInspector for PreparedHookInspector {
     fn configured_hook(
         &self,
         _: Harness,
         _: &CallBudget,
     ) -> Result<Option<ConfiguredHook>, ApiError> {
-        Ok(Some(self.0.clone()))
+        Ok(self.0.clone())
     }
 }
 
@@ -883,26 +881,28 @@ fn execute_guarded_inner(
         &local_budget,
     ) {
         SetupStatus::Detailed(status) => status,
-        SetupStatus::Failed(error) => {
-            return Err(api(ErrorCode::Conflict, error.to_string()).into());
-        }
-        _ => {
-            return Err(missing_hook(api(
-                ErrorCode::MissingHook,
-                format!("{word}: launch setup status is unavailable"),
-            )));
-        }
+        diagnostic => Box::new(crate::harness::adapter::LocalSetupStatus {
+            scope: scope.setup.clone(),
+            installed: false,
+            enabled: None,
+            admitted: None,
+            observed: None,
+            configured_hook: None,
+            fingerprint: None,
+            diagnostics: vec![],
+            repairs: vec![],
+            projection: json!({"diagnostic": match diagnostic {
+                SetupStatus::Failed(error) => error.to_string(),
+                SetupStatus::Unavailable { diagnostic } | SetupStatus::Available { diagnostic, .. } => diagnostic,
+                SetupStatus::Unsupported(operation) => operation.to_string(),
+                SetupStatus::Detailed(_) => unreachable!(),
+            }}),
+        }),
     };
-    let config_fingerprint = if status.installed
-        && status.configured_hook.is_some()
-        && status.enabled != Some(false)
-        && status.admitted != Some(false)
-    {
-        Some(if let Some(handle) = &prelaunch {
-            registration.recheck_prelaunch(&adapter_request, &scope, handle, &local_budget)?
-        } else {
-            policy.configuration_fingerprint(&adapter_request, &scope)?
-        })
+    let candidate_fingerprint = if let Some(handle) = &prelaunch {
+        Some(registration.recheck_prelaunch(&adapter_request, &scope, handle, &local_budget))
+    } else if crate::harness::launch::optional_launch_hook(&status).is_some() {
+        Some(policy.configuration_fingerprint(&adapter_request, &scope))
     } else {
         None
     };
@@ -920,6 +920,16 @@ fn execute_guarded_inner(
             }
             missing_hook(error)
         })?;
+    // Prelaunch providers independently fingerprint actual native inputs, even
+    // without owned integration; ordinary providers only recheck used hooks.
+    let config_fingerprint = if prelaunch.is_some() || preparation.hook.is_some() {
+        Some(
+            candidate_fingerprint
+                .unwrap_or_else(|| policy.configuration_fingerprint(&adapter_request, &scope))?,
+        )
+    } else {
+        None
+    };
     // The native host carries argv only; providers cannot silently request an environment it cannot submit.
     if !preparation.environment_overrides.is_empty() {
         return Err(api(
@@ -940,12 +950,6 @@ fn execute_guarded_inner(
         )
         .into());
     }
-    let config_fingerprint = config_fingerprint.ok_or_else(|| {
-        missing_hook(api(
-            ErrorCode::MissingHook,
-            "owned launch configuration unavailable",
-        ))
-    })?;
     let inspector = PreparedHookInspector(preparation.hook.clone());
     let seats = RecordingResolver {
         inner: parts.seats,
@@ -978,9 +982,16 @@ fn execute_guarded_inner(
             .as_ref()
                 != Some(&binary_identity)
             || (if let Some(handle) = &prelaunch {
-                registration.recheck_prelaunch(&adapter_request, &scope, handle, &local_budget)?
+                Some(registration.recheck_prelaunch(
+                    &adapter_request,
+                    &scope,
+                    handle,
+                    &local_budget,
+                )?)
+            } else if config_fingerprint.is_some() {
+                Some(policy.configuration_fingerprint(&adapter_request, &scope)?)
             } else {
-                policy.configuration_fingerprint(&adapter_request, &scope)?
+                None
             }) != config_fingerprint
         {
             return Err(api(
@@ -1664,7 +1675,7 @@ mod task23_tests {
         assert_eq!(seats.recorded.lock().unwrap().len(), 1);
     }
     #[test]
-    fn hermes_foreign_partial_api_and_settings_refuse_before_seat_start() {
+    fn hermes_readiness_is_diagnostic_but_missing_native_api_refuses() {
         for kind in ["foreign", "partial", "api", "settings"] {
             let mut s = hermes_fixture();
             let home = Path::new(s.env.declared_environment["FIXTURE_HOME"].to_str().unwrap());
@@ -1691,19 +1702,22 @@ mod task23_tests {
             let seats = seats();
             let handoff = handoff();
             let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
-            assert!(
-                s.launch(&host, &seats, &handoff, request(harness, &[]))
-                    .is_err(),
-                "accepted {kind}"
-            );
-            assert_eq!(seats.calls.load(Ordering::SeqCst), 0);
-            assert!(host.submitted().is_empty());
-            assert!(seats.recorded.lock().unwrap().is_empty());
-            assert!(s.records().is_empty());
+            let result = s.launch(&host, &seats, &handoff, request(harness, &[]));
+            if kind == "api" {
+                assert!(result.is_err(), "missing selected native API refuses");
+                assert_eq!(seats.calls.load(Ordering::SeqCst), 0);
+                assert!(host.submitted().is_empty());
+                assert!(s.records().is_empty());
+            } else {
+                assert!(result.is_ok(), "diagnostic {kind}: {result:?}");
+                assert_eq!(host.submitted().len(), 1);
+                assert!(host.submitted()[0].configured_hook.is_none());
+            }
         }
     }
+
     #[test]
-    fn hermes_disabled_and_unknown_selected_config_refuse_before_seat_start() {
+    fn hermes_disabled_and_unknown_selected_config_are_diagnostic() {
         for failed in [false, true] {
             let s = hermes_fixture();
             let native = Path::new(
@@ -1718,15 +1732,16 @@ mod task23_tests {
             let seats = seats();
             let handoff = handoff();
             let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
-            assert_eq!(
-                code(s.launch(&host, &seats, &handoff, request(harness, &[]))),
-                ErrorCode::MissingHook
+            let result = s.launch(&host, &seats, &handoff, request(harness, &[]));
+            assert!(
+                result.is_ok(),
+                "diagnostic config failed={failed}: {result:?}"
             );
-            assert_eq!(seats.calls.load(Ordering::SeqCst), 0);
-            assert!(host.submitted().is_empty());
-            assert!(seats.recorded.lock().unwrap().is_empty());
+            assert_eq!(host.submitted().len(), 1);
+            assert!(host.submitted()[0].configured_hook.is_none());
         }
     }
+
     #[test]
     fn hermes_pre_submit_config_generation_and_binary_drift_never_start() {
         for kind in ["config", "asset", "binary"] {

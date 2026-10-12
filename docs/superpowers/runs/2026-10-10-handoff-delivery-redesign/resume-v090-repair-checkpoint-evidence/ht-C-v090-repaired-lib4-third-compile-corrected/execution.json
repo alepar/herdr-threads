@@ -1,0 +1,66 @@
+{
+  "head": "31819c1f9f5c960f27541128f743614970b10a17",
+  "tree": "19c7e09e3c90cfec66ff6782775c6ef4cfdb699a",
+  "run_id": "bdc69c56-f94f-435f-9455-3116776fa84b",
+  "expected": [
+    "harness::agy::delivery::tests::daemon::canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec",
+    "harness::agy::delivery::tests::daemon::canonical_v2_system_allocated_pages_fit_actual_native_codec",
+    "service::delivery_pull::tests::presentation_capacity_due_walk_preserves_partial_body_until_real_ack",
+    "service::delivery_pull::tests::presentation_owner_replay_preserves_partial_body_until_real_ack"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 45.89919079106767
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "harness::agy::delivery::tests::daemon::canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec"
+    ],
+    [
+      "herdr-threads",
+      "harness::agy::delivery::tests::daemon::canonical_v2_system_allocated_pages_fit_actual_native_codec"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_capacity_due_walk_preserves_partial_body_until_real_ack"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_owner_replay_preserves_partial_body_until_real_ack"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-bc80e388954f6954",
+      "sha256": "c970ef253e063d1a2e73688039b571791ba84f33c58280eafc517c333cf398ec"
+    }
+  ],
+  "run": {
+    "exit": 0,
+    "seconds": 1.0003568340325728,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=harness::agy::delivery::tests::daemon::canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec) | test(=harness::agy::delivery::tests::daemon::canonical_v2_system_allocated_pages_fit_actual_native_codec) | test(=service::delivery_pull::tests::presentation_capacity_due_walk_preserves_partial_body_until_real_ack) | test(=service::delivery_pull::tests::presentation_owner_replay_preserves_partial_body_until_real_ack)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.19143745803739876,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "bdc69c56-f94f-435f-9455-3116776fa84b"
+    ]
+  },
+  "leak_exit": 0
+}

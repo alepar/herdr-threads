@@ -1,0 +1,191 @@
+{
+  "incoming": "02041b93",
+  "released_migrations": [
+    {
+      "path": "migrations/0001_initial.sql",
+      "working_blob": "ffeaade84f5ad44efd496a5619a6ceeb06645d86",
+      "released_blob": "ffeaade84f5ad44efd496a5619a6ceeb06645d86",
+      "exact": true
+    },
+    {
+      "path": "migrations/0002_service_substrate.sql",
+      "working_blob": "6831f3a20f80393acaaaa0fb82da10ffd7f1b3f1",
+      "released_blob": "6831f3a20f80393acaaaa0fb82da10ffd7f1b3f1",
+      "exact": true
+    },
+    {
+      "path": "migrations/0003_invitation_cancellations.sql",
+      "working_blob": "481d3ef3cc8e25d0bcd48afdb150f0bdee07a5ad",
+      "released_blob": "481d3ef3cc8e25d0bcd48afdb150f0bdee07a5ad",
+      "exact": true
+    },
+    {
+      "path": "migrations/0004_voluntary_membership.sql",
+      "working_blob": "c88ddbdb4d3edafe61a43835e71a7c36e0369e43",
+      "released_blob": "c88ddbdb4d3edafe61a43835e71a7c36e0369e43",
+      "exact": true
+    },
+    {
+      "path": "migrations/0005_service_notifications.sql",
+      "working_blob": "ee8f04c5b4a1c96c1c2168c9fd220f34e580a792",
+      "released_blob": "ee8f04c5b4a1c96c1c2168c9fd220f34e580a792",
+      "exact": true
+    },
+    {
+      "path": "migrations/0006_retirement_health.sql",
+      "working_blob": "8438928a18d1afa2a9371f4232966f85a71d506c",
+      "released_blob": "8438928a18d1afa2a9371f4232966f85a71d506c",
+      "exact": true
+    },
+    {
+      "path": "migrations/0007_attention_digest.sql",
+      "working_blob": "c4297bd74419ef30333907be40cd4b9ebdf32579",
+      "released_blob": "c4297bd74419ef30333907be40cd4b9ebdf32579",
+      "exact": true
+    },
+    {
+      "path": "migrations/0008_digest_pending_paths.sql",
+      "working_blob": "22c6850ce559ea78e04a44d75dc200758c37c65c",
+      "released_blob": "22c6850ce559ea78e04a44d75dc200758c37c65c",
+      "exact": true
+    },
+    {
+      "path": "migrations/0009_human_occupant.sql",
+      "working_blob": "be735bca5e0c5dfb0ea596fd4809b76d04d99f85",
+      "released_blob": "be735bca5e0c5dfb0ea596fd4809b76d04d99f85",
+      "exact": true
+    },
+    {
+      "path": "migrations/0010_b5_trust_guards.sql",
+      "working_blob": "ba4bba6d2fa40cf7f8d2fefb638651db0837c564",
+      "released_blob": "ba4bba6d2fa40cf7f8d2fefb638651db0837c564",
+      "exact": true
+    },
+    {
+      "path": "migrations/0011_cooperative_only.sql",
+      "working_blob": "cdc8899d3f04bad6a5dd448d09ea5b0ac5ae2c86",
+      "released_blob": "cdc8899d3f04bad6a5dd448d09ea5b0ac5ae2c86",
+      "exact": true
+    },
+    {
+      "path": "migrations/0012_harness_version_evidence.sql",
+      "working_blob": "2760de22cfd67c7f331e6131851cb917479f703d",
+      "released_blob": "2760de22cfd67c7f331e6131851cb917479f703d",
+      "exact": true
+    },
+    {
+      "path": "migrations/0013_thread_summaries.sql",
+      "working_blob": "6a719f36df8e972adbe8a3fd62b1b98e0f451b91",
+      "released_blob": "6a719f36df8e972adbe8a3fd62b1b98e0f451b91",
+      "exact": true
+    },
+    {
+      "path": "migrations/0014_catch_up_release.sql",
+      "working_blob": "b742830cb46770ae93cb7fe9b1be555942ca174f",
+      "released_blob": "b742830cb46770ae93cb7fe9b1be555942ca174f",
+      "exact": true
+    },
+    {
+      "path": "migrations/0015_preparation_retention.sql",
+      "working_blob": "b326ac0c40645ad3bfc9ee97156b7e3035ffa02a",
+      "released_blob": "b326ac0c40645ad3bfc9ee97156b7e3035ffa02a",
+      "exact": true
+    },
+    {
+      "path": "migrations/0016_human_receipt_waivers.sql",
+      "working_blob": "a70c4cef4aa13b1566a24d755d3b6323e8add989",
+      "released_blob": "a70c4cef4aa13b1566a24d755d3b6323e8add989",
+      "exact": true
+    },
+    {
+      "path": "migrations/0017_wake_batches.sql",
+      "working_blob": "3de5632eef923c875c5c331b19f81cb758581fb0",
+      "released_blob": "3de5632eef923c875c5c331b19f81cb758581fb0",
+      "exact": true
+    },
+    {
+      "path": "migrations/0018_warning_conditions.sql",
+      "working_blob": "0e0d1b3a19f28dcaa58eff59b2d9923f07125697",
+      "released_blob": "0e0d1b3a19f28dcaa58eff59b2d9923f07125697",
+      "exact": true
+    },
+    {
+      "path": "migrations/0019_thread_names.sql",
+      "working_blob": "59df4103564b47fe547bffb0c1995908b6b88296",
+      "released_blob": "59df4103564b47fe547bffb0c1995908b6b88296",
+      "exact": true
+    },
+    {
+      "path": "migrations/0020_recent_activity.sql",
+      "working_blob": "c0f0568ff6f0d9f69344de749079c1750c5b5390",
+      "released_blob": "c0f0568ff6f0d9f69344de749079c1750c5b5390",
+      "exact": true
+    },
+    {
+      "path": "migrations/0021_invitation_rejections.sql",
+      "working_blob": "c76679e0189972cdf3abe975f0be8e1c988398c1",
+      "released_blob": "c76679e0189972cdf3abe975f0be8e1c988398c1",
+      "exact": true
+    },
+    {
+      "path": "migrations/0022_user_message_intent.sql",
+      "working_blob": "e0ac9bfb33f252ef68bc2fb0c179a2624714bd37",
+      "released_blob": "e0ac9bfb33f252ef68bc2fb0c179a2624714bd37",
+      "exact": true
+    },
+    {
+      "path": "migrations/0023_channel_archival.sql",
+      "working_blob": "d0bc1aaee3a240aeaa4b2fb6f979e2952249ee74",
+      "released_blob": "d0bc1aaee3a240aeaa4b2fb6f979e2952249ee74",
+      "exact": true
+    },
+    {
+      "path": "migrations/0024_harness_contract_diagnostics.sql",
+      "working_blob": "cd149cf9eafdf0977d1ec9e965f7ffcae79ccc13",
+      "released_blob": "cd149cf9eafdf0977d1ec9e965f7ffcae79ccc13",
+      "exact": true
+    },
+    {
+      "path": "migrations/0025_warning_notice_delivery.sql",
+      "working_blob": "f0cdb580c151abcdf42ae15fb091c96b220cded8",
+      "released_blob": "f0cdb580c151abcdf42ae15fb091c96b220cded8",
+      "exact": true
+    },
+    {
+      "path": "migrations/0026_lazy_message_delivery.sql",
+      "working_blob": "d95b416092f47fc73632c3b4788da09a045999b9",
+      "released_blob": "d95b416092f47fc73632c3b4788da09a045999b9",
+      "exact": true
+    },
+    {
+      "path": "migrations/0027_harness_adapters.sql",
+      "working_blob": "b7995bedb994959b3af912c7b357183569bbfdc2",
+      "released_blob": "b7995bedb994959b3af912c7b357183569bbfdc2",
+      "exact": true
+    },
+    {
+      "path": "migrations/0028_handoff_topology.sql",
+      "working_blob": "01852f36265dae509c1183a50a7d6639a736e76b",
+      "released_blob": "01852f36265dae509c1183a50a7d6639a736e76b",
+      "exact": true
+    },
+    {
+      "path": "migrations/0029_direct_threads.sql",
+      "working_blob": "42d0f534cc1f7ef52bd1fcbf4ae21101d9d0ee69",
+      "released_blob": "42d0f534cc1f7ef52bd1fcbf4ae21101d9d0ee69",
+      "exact": true
+    },
+    {
+      "path": "migrations/0030_automatic_handoff.sql",
+      "working_blob": "49ca7cf1e47ce6a50b4f0b07894d267a4327ec51",
+      "released_blob": "49ca7cf1e47ce6a50b4f0b07894d267a4327ec51",
+      "exact": true
+    },
+    {
+      "path": "migrations/0031_seat_wake_on.sql",
+      "working_blob": "1daf0194717c4d90c88871c25425fbd22b8c6b6a",
+      "released_blob": "1daf0194717c4d90c88871c25425fbd22b8c6b6a",
+      "exact": true
+    }
+  ]
+}

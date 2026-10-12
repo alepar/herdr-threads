@@ -1,0 +1,86 @@
+{
+  "head": "e12e90df6ac0d45f8b7183a598066b5e555c8484",
+  "tree": "bba5b70a9f8f6eadc07a10978852fc6bcbd1fa21",
+  "run_id": "7440bf55-71ba-49fc-91f8-59a2ae54f57a",
+  "expected": [
+    "service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity",
+    "service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity",
+    "service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity",
+    "service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged",
+    "service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work",
+    "service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags",
+    "service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion",
+    "service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 0.22648608300369233
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-bc80e388954f6954",
+      "sha256": "7970e093c470ef1ab02c65fcab3969ba909874374d2a24c028551699f8728038"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 1.1579164169961587,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity) | test(=service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity) | test(=service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity) | test(=service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged) | test(=service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work) | test(=service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags) | test(=service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion) | test(=service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.2046537910355255,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "7440bf55-71ba-49fc-91f8-59a2ae54f57a"
+    ]
+  },
+  "leak_exit": 0
+}

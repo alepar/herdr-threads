@@ -1,0 +1,12 @@
+{
+  "baseline": "367da744905c1df11dbdf72d811c133e6bdf9e21",
+  "baseline_sha256": "3053bbe770b57588cc6857f8c019524e8943145cad40ac9d0ba83ec102d719e4",
+  "current_sha256": "dfc127997c8cea3572300c5063433cf3e5cf29b7403e5228f63b1ca7836bc04e",
+  "all_baseline_functions_retained": true,
+  "added_functions": [
+    "presentation_relevance_private_proof_refuses_corruption_without_effects"
+  ],
+  "missing_functions": [],
+  "original_before_cleanup_bytes_available": false,
+  "incident": "Overbroad script span while replacing Option unwrap removed fixture tail. Caught before compilation; restored entire reviewed helper baseline plus two previously passing fixture corrections and private proof corruption suite. Full before-cleanup source hash retained in sourcepoint; exact original appended private-proof bytes were not backed up, so no byte-identical restoration claim. Diff enumerates every successor change."
+}

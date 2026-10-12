@@ -1,0 +1,20 @@
+{
+  "head": "b7787ac1920148a8c51a596536cca2a2e6a8c533",
+  "ht_leak_run_id": "6ed4243e-2037-469a-992b-93ae394f8193",
+  "selected": 1,
+  "passed": 0,
+  "failed": 1,
+  "runtime_seconds": 21.246,
+  "scoped_leak_exit": 0,
+  "finding": "Canonical resolved/current binding, SessionStart0 with context; bootstrap invitation confirmation lazy,pending; wake empty. Default Lazy correctly does not wake; bootstrap expected nudge intent must explicitly requireACK.",
+  "logs": [
+    {
+      "path": "/private/tmp/ht-finish-watch-bootstrap-diag.log",
+      "sha256": "a8ff9330676c758eca4a9a34033e2926dc05d26c15bf01d9fd4938f4b0e178a2"
+    },
+    {
+      "path": "/private/tmp/ht-finish-watch-bootstrap-diag-leaks.log",
+      "sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e"
+    }
+  ]
+}

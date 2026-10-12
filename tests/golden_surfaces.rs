@@ -337,7 +337,10 @@ impl Scratch {
     /// The scratch environment: no Herdr instance on the command line or in
     /// the environment, no inherited markers.
     fn command(&self) -> Command {
-        let mut command = scrubbed_command(BIN);
+        self.configure_command(scrubbed_command(BIN))
+    }
+
+    fn configure_command(&self, mut command: Command) -> Command {
         command
             .current_dir(&self.root)
             .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
@@ -785,23 +788,26 @@ fn hook_stdout_per_event() {
             "UserPromptSubmit",
             "Stop",
         ] {
-            let mut command = s.command();
+            let input = s.root.join("hook-input.json");
+            fs::write(&input, hook_payload(event)).unwrap();
+            let mut command =
+                s.configure_command(herdr_threads::test_support::harness_shim::under_harness(
+                    harness,
+                    Path::new(BIN),
+                    &[],
+                    &[],
+                ));
             s.instance_args(&mut command, &["hook", harness, "--event", event]);
             command
                 .env("HERDR_ENV", "1")
                 .env("HERDR_PANE_ID", "p1")
                 .env("HERDR_SOCKET_PATH", s.host())
-                .stdin(Stdio::piped())
+                // An undeclared registration can exit before reading stdin. A private file
+                // preserves the native payload without racing that refusal or losing its output.
+                .stdin(Stdio::from(fs::File::open(&input).unwrap()))
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            let mut child = command.spawn_owned().unwrap();
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(&hook_payload(event))
-                .unwrap();
-            let out = child.wait_with_output().unwrap();
+            let out = command.spawn_owned().unwrap().wait_with_output().unwrap();
             record(&s.norm(), &format!("hook/{harness}.{event}.stdout"), &out);
         }
     }

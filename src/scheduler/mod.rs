@@ -785,7 +785,12 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
         // its re-offer is due, and a seat whose next pull would show nothing is woken only to clear ids parked for `inbox`
         // (the dispatcher then types the marker). Nothing is reserved or recorded; the next pass (<= the safety tick)
         // re-derives the candidate.
-        if let Some(generation) = candidate.binding_generation {
+        // An open canonical warning remains actionable after its context was
+        // displayed. The pull ledger controls presentation, not that condition.
+        if let Some(generation) = candidate.binding_generation
+            && (candidate.actionable_warning_seq.is_none()
+                || candidate.warning_offered_for_current_occupant())
+        {
             let now = self.store.clock().utc_now();
             // The bindings this wake would reach; each has its own offered ledger entry.
             let targets: Vec<BindingId> = candidate

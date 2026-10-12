@@ -1,0 +1,40 @@
+{
+  "head": "cfe7989ae2ae443d5457f2ebbd0ffd6354e7648b",
+  "descriptor_checkpoint": "f7b98b68cf29abfaec6ab4c12bfbc98178914beb",
+  "branch": "helper-ht-0lo.8.4-neutral-emit",
+  "artifacts": {
+    "framing-followup": {
+      "base": "f5cf90bfdeff613f4cc0dba4f33179ea63d68986",
+      "path": "task-15-emit-helper-framing-followup.diff",
+      "sha256": "1232cac841146505f038299b08846ae83e616889a3a6e8c12274fa2e34bf1464",
+      "bytes": 50499
+    },
+    "final-cumulative": {
+      "base": "ee1e598c3ee96566ddc9b397185cdc97c8bf6218",
+      "path": "task-15-emit-helper-final-cumulative.diff",
+      "sha256": "12f7735a2d549ed9b8370125a24213d6af5756e517ea38ee8acd9abf2e5dd9a2",
+      "bytes": 89953
+    },
+    "final-post-red": {
+      "base": "e25eecffe6a9b6ad045b364501e996bfaeb9db94",
+      "path": "task-15-emit-helper-final-post-red.diff",
+      "sha256": "9f9375c5d3ef2bcc68b67df17ab32098f7bb9f62dc45ac64ad213f449ab13def",
+      "bytes": 87684
+    }
+  },
+  "paths": [
+    "src/cli/hook.rs",
+    "src/harness/adapter.rs",
+    "src/harness/agy/decode.rs",
+    "src/harness/agy/delivery.rs",
+    "src/harness/agy/mod.rs",
+    "src/harness/registry.rs",
+    "tests/cli/hook.rs",
+    "tests/cli/hook_neutral.rs",
+    "tests/harness/agy_decode.rs",
+    "tests/harness/agy_delivery.rs"
+  ],
+  "cargo_run_by_helper": false,
+  "applied_to_D": false,
+  "review_status": "pending independent cumulative source review and actual integrated execution"
+}

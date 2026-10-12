@@ -202,7 +202,12 @@ pub fn load_candidate(
                 }
             }
         }
-        if unoffered {
+        // An open origin-addressed condition remains waking after its
+        // informational delivery was carried. Delivery settlement is separate.
+        let open_origin = !super::attention::open_origin_warnings(db, seat.as_str())?
+            .items
+            .is_empty();
+        if unoffered || open_origin {
             warning_offer = None;
         }
     }
@@ -250,7 +255,12 @@ pub fn load_candidate(
         && served_by_all(
             db,
             &reachable,
-            &super::attention::pending_invitations(db, seat.as_str(), None, decision_seq)?,
+            &super::attention::pending_confirming_invitations(
+                db,
+                seat.as_str(),
+                None,
+                decision_seq,
+            )?,
         )?;
     Ok(WakeCandidate {
         seat: seat.clone(),
@@ -649,7 +659,7 @@ pub fn wake_owed_to_binding(
         if !all_offered(
             db,
             &binding,
-            &super::attention::pending_invitations(db, seat, None, decision_seq)?,
+            &super::attention::pending_confirming_invitations(db, seat, None, decision_seq)?,
         )? {
             return Ok(true);
         }
@@ -1095,7 +1105,7 @@ fn oldest_ordinary_at(db: &Connection, seat: &str, through: i64) -> Result<Optio
     let cap = super::attention::WINDOW as i64;
     let mut earliest = None::<i64>;
     let mut invitations = db.prepare(
-        "SELECT i.created_at FROM (SELECT invitation_id FROM digest_pending_invitations INDEXED BY digest_pending_invitations_seat WHERE seat_id=?1 AND created_decision_seq<=?2 ORDER BY created_decision_seq,ordinal LIMIT ?3) w JOIN invitations i ON i.id=w.invitation_id WHERE i.state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id)").map_err(store_error)?;
+        "SELECT i.created_at FROM (SELECT id FROM invitations INDEXED BY invitations_confirmation_pending_seat WHERE seat_id=?1 AND state='pending' AND (confirmation IS NULL OR confirmation='require_ack') AND created_decision_seq<=?2 ORDER BY created_decision_seq,ordinal LIMIT ?3) w JOIN invitations i ON i.id=w.id WHERE i.state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id)").map_err(store_error)?;
     let dates = invitations
         .query_map(params![seat, through, cap], |r| r.get::<_, i64>(0))
         .map_err(store_error)?;
@@ -1165,7 +1175,7 @@ pub fn batch_window(
             params![candidate.seat.as_str(), instance], |r| r.get(0)).map_err(store_error)?;
         if !live { return Ok((None, false)); }
         let scan = super::attention::wake_seat_attention(tx, candidate.seat.as_str())?;
-        let invitations = super::attention::pending_invitations(tx, candidate.seat.as_str(), None, scan.decision_seq)?;
+        let invitations = super::attention::pending_confirming_invitations(tx, candidate.seat.as_str(), None, scan.decision_seq)?;
         let pending = super::attention::pending_receipts(tx, candidate.seat.as_str(), None)?;
         let mut first = None::<i64>;
         let mut urgent = scan.attention.latest_warning_seq.is_some()

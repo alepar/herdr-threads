@@ -1,0 +1,12 @@
+{
+  "findings": [
+    {
+      "claim": "The design adds a second permanent public hook invocation syntax without establishing why generating stable per-event commands with the existing hook HARNESS --event EVENT syntax cannot satisfy the same contract.",
+      "location": "settled-input.md: root design, Options and decisions item 3; Stable hook entrypoints and ownership; hooks subtree, Stable native event dispatch and command generation",
+      "category": "yagni",
+      "external": false,
+      "kind": "GAP",
+      "evidence": "The design explicitly preserves existing `hook HARNESS --event EVENT` registrations while introducing `herdr-threads hook-event HARNESS EVENT`. Its stated stability rule depends only on executable spelling, canonical route, harness and event; it separately identifies the per-install UUID shell comment as the changing component to remove. The options compare random owner comments, sidecar scripts and dedicated CLI entrypoints, but omit generating deterministic commands through the already event-specific syntax. The hooks task then owns the additional parser/dispatch surface, and registry/help/canary expectations must adopt its command grammar while legacy syntax remains supported. No stated semantic difference between the two invocation forms explains that additional permanent interface. Evaluate the existing syntax with UUID-free manifest-owned command generation before committing to the additional command."
+    }
+  ]
+}

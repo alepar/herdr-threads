@@ -7,7 +7,7 @@ use super::{
 };
 use crate::protocol::{
     commands::DeliveryMode,
-    ids::{BindingId, MessageId, SeatId, ThreadId},
+    ids::{BindingId, InvitationId, MessageId, SeatId, ThreadId},
     results::{ApiError, ErrorCode},
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -38,20 +38,65 @@ pub struct PendingPage {
     pub has_more: bool,
 }
 
-/// The one per-binding lazy-unread predicate over aliases `b` (the `occupant_bindings` row), `r`
-/// (the lazy recipient row) and `m` (its message). A lazy message is unread for a binding when
-/// its cursor is short of the message. A missing cursor row reads as 0, which would make a
-/// thread's whole history unread for a binding enrolled after its seat left (or never joined) it,
-/// so a binding WITHOUT a cursor row for the thread also needs the seat to have it joined (the
-/// lazy twin of `read_cursors::UNREAD_EXTRA`). A binding that holds a cursor row keeps its
-/// addressed rows after the seat leaves, as the lazy spec requires ("Leaving does not erase
-/// already addressed delivery"). The legacy branch (rows carried pending from before V34, and rows
-/// addressed to the seat before it joined, flagged by `read_cursors::init_for_join`; delivered to
-/// top-level bindings until displayed) is deliberately not membership-gated, so no such pending
-/// lazy row disappears.
+/// Reader scope from validated canonical scalars. A retained own cursor keeps its
+/// established stream; only a cursorless unjoined reader needs a current direct
+/// invitation episode and a publication after its creation decision. The existing
+/// membership point contains the three extra exact pair/seat/invitation points.
+/// This fragment does not test sequence-unread or the legacy-pending exception,
+/// so captured continuations can reuse scope without reinterpreting their offset.
+macro_rules! binding_lazy_scope_sql {
+    (binding: $binding:literal, seat: $seat:literal, thread: $thread:literal,
+     instance: $instance:literal, publication: $publication:literal $(,)?) => {
+        concat!(
+            "(EXISTS(SELECT 1 FROM binding_cursors lc WHERE lc.binding_id=", $binding,
+            " AND lc.thread_id=", $thread,
+            ") OR EXISTS(SELECT 1 FROM memberships lm WHERE lm.thread_id=", $thread,
+            " AND lm.seat_id=", $seat,
+            " AND (lm.state='joined' OR (lm.state='invited' AND COALESCE(lm.voluntary_state,lm.state)='invited' AND EXISTS(",
+            "SELECT 1 FROM direct_threads ld JOIN seats ls ON ls.id=", $seat,
+            " JOIN invitations li ON li.thread_id=ld.thread_id AND li.seat_id=ls.id AND li.episode=lm.episode ",
+            "WHERE ld.thread_id=", $thread, " AND ld.instance_id=", $instance,
+            " AND (ls.id=ld.seat_a OR ls.id=ld.seat_b) AND ls.instance_id=", $instance,
+            " AND ls.state<>'retired' AND ls.retired_at IS NULL AND li.state='pending' AND ", $publication,
+            ">li.created_decision_seq)))))"
+        )
+    };
+}
+pub(crate) use binding_lazy_scope_sql;
+
+/// Modern unread plus the unchanged top-level legacy-pending branch. The named
+/// form accepts scalar inputs, with no required message alias; callers validate
+/// message/recipient/manifest identity against their canonical message row first.
+/// The historical aliases remain available through the zero-argument wrapper.
 macro_rules! binding_lazy_unread_sql {
     () => {
-        "((m.sequence>COALESCE((SELECT c.seq FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=r.thread_id),0) AND (EXISTS(SELECT 1 FROM binding_cursors c2 WHERE c2.binding_id=b.binding_id AND c2.thread_id=r.thread_id) OR EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=r.thread_id AND mb.seat_id=r.seat_id AND mb.state='joined'))) OR (r.legacy_pending=1 AND b.role='top_level'))"
+        $crate::store::lazy_delivery::binding_lazy_unread_sql! {
+            binding: "b.binding_id", seat: "r.seat_id", thread: "r.thread_id",
+            instance: "m.instance_id", sequence: "m.sequence", publication: "m.decision_seq",
+            legacy: "r.legacy_pending", role: "b.role",
+        }
+    };
+    (binding: $binding:literal, seat: $seat:literal, thread: $thread:literal,
+     instance: $instance:literal, sequence: $sequence:literal, publication: $publication:literal,
+     legacy: $legacy:literal, role: $role:literal $(,)?) => {
+        concat!(
+            "((",
+            $sequence,
+            ">COALESCE((SELECT lc.seq FROM binding_cursors lc WHERE lc.binding_id=",
+            $binding,
+            " AND lc.thread_id=",
+            $thread,
+            "),0) AND ",
+            $crate::store::lazy_delivery::binding_lazy_scope_sql! {
+                binding: $binding, seat: $seat, thread: $thread,
+                instance: $instance, publication: $publication,
+            },
+            ") OR (",
+            $legacy,
+            "=1 AND ",
+            $role,
+            "='top_level'))"
+        )
     };
 }
 pub(crate) use binding_lazy_unread_sql;
@@ -85,6 +130,225 @@ pub const BINDING_PENDING_CANDIDATES_SQL: &str = concat!(
 );
 pub const ADDRESSED_SQL: &str = "SELECT EXISTS(SELECT 1 FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id WHERE r.seat_id=?1 AND r.message_id=?2 AND sm.instance_id=?3)";
 pub const CLEANUP_CANDIDATES_SQL: &str = "SELECT ordinal FROM lazy_recipients INDEXED BY lazy_recipients_preparation_ordinal WHERE preparation_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT ?4";
+
+/// One current invitation point reached through the exact membership, immutable
+/// pair and seat. No latest-invitation/history search or lifecycle-time inference.
+pub(crate) const ACTIVE_DIRECT_EPISODE_SQL: &str = "SELECT li.id,li.episode,li.created_decision_seq \
+     FROM memberships lm JOIN direct_threads ld ON ld.thread_id=lm.thread_id \
+     JOIN seats ls ON ls.id=lm.seat_id \
+     JOIN invitations li ON li.thread_id=lm.thread_id AND li.seat_id=lm.seat_id AND li.episode=lm.episode \
+     WHERE lm.thread_id=?1 AND lm.seat_id=?2 AND ld.instance_id=?3 AND ls.instance_id=?3 \
+       AND (ls.id=ld.seat_a OR ls.id=ld.seat_b) AND ls.state<>'retired' AND ls.retired_at IS NULL \
+       AND lm.state='invited' AND COALESCE(lm.voluntary_state,lm.state)='invited' AND li.state='pending'";
+
+/// Each recognized event key is UNIQUE; three calls are a fixed envelope even
+/// with arbitrarily much retained invitation/thread history.
+pub(crate) const DIRECT_EPISODE_EVENT_SQL: &str = "SELECT instance_id,thread_id,kind,source_invitation_id,decision_seq,sequence \
+     FROM messages WHERE event_key=?1";
+
+struct DirectEpisode {
+    invitation: InvitationId,
+    created_decision: i64,
+}
+
+struct InvitationEvent {
+    instance: String,
+    thread: String,
+    kind: String,
+    source_invitation: Option<String>,
+    decision: i64,
+    sequence: i64,
+}
+
+fn direct_episode_error(error: rusqlite::Error) -> ApiError {
+    match error {
+        rusqlite::Error::InvalidColumnType(..) => {
+            api_error(ErrorCode::StoreCorrupt, "invalid direct invitation episode")
+        }
+        other => store_error(other),
+    }
+}
+
+fn active_direct_episode(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    thread: &ThreadId,
+) -> Result<Option<DirectEpisode>, ApiError> {
+    let episode: Option<(String, i64, i64)> = db
+        .query_row(
+            ACTIVE_DIRECT_EPISODE_SQL,
+            params![thread.as_str(), seat.as_str(), instance],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(direct_episode_error)?;
+    episode
+        .map(|(invitation, episode, created_decision)| {
+            if episode <= 0 || created_decision <= 0 {
+                return Err(api_error(
+                    ErrorCode::StoreCorrupt,
+                    "invalid direct invitation episode",
+                ));
+            }
+            Ok(DirectEpisode {
+                invitation: InvitationId::new(invitation),
+                created_decision,
+            })
+        })
+        .transpose()
+}
+
+fn episode_floor(
+    db: &Connection,
+    instance: &str,
+    thread: &ThreadId,
+    episode: &DirectEpisode,
+) -> Result<u64, ApiError> {
+    let invitation = episode.invitation.as_str();
+    let mut floor: Option<u64> = None;
+    for key in [
+        format!("invite:{invitation}"),
+        format!("operator_invite:{invitation}"),
+        format!("service_invite:{invitation}:ordinary"),
+    ] {
+        let row = db
+            .query_row(DIRECT_EPISODE_EVENT_SQL, [key], |r| {
+                Ok(InvitationEvent {
+                    instance: r.get(0)?,
+                    thread: r.get(1)?,
+                    kind: r.get(2)?,
+                    source_invitation: r.get(3)?,
+                    decision: r.get(4)?,
+                    sequence: r.get(5)?,
+                })
+            })
+            .optional()
+            .map_err(direct_episode_error)?;
+        let Some(event) = row else {
+            continue;
+        };
+        if event.instance != instance
+            || event.thread != thread.as_str()
+            || event.kind != "info"
+            || event.source_invitation.as_deref() != Some(invitation)
+            || event.decision <= episode.created_decision
+            || event.sequence <= 0
+        {
+            return Err(api_error(
+                ErrorCode::StoreCorrupt,
+                "invalid invitation timeline event",
+            ));
+        }
+        let sequence = u64::try_from(event.sequence)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative message sequence"))?;
+        floor = Some(floor.map_or(sequence, |current| current.min(sequence)));
+    }
+    floor.ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "invitation timeline event missing"))
+}
+
+/// Capture the exact active pair episode before acceptance changes its state.
+/// Generic acceptance keeps the established head-seeding policy.
+pub(super) fn direct_acceptance_floor(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    thread: &ThreadId,
+    invitation: &InvitationId,
+) -> Result<Option<u64>, ApiError> {
+    let pair: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM direct_threads WHERE thread_id=?1)",
+            [thread.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if !pair {
+        return Ok(None);
+    }
+    let episode = active_direct_episode(db, instance, seat, thread)?
+        .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "invalid direct invitation episode"))?;
+    if episode.invitation != *invitation {
+        return Err(api_error(
+            ErrorCode::StoreCorrupt,
+            "invalid direct invitation episode",
+        ));
+    }
+    episode_floor(db, instance, thread, &episode).map(Some)
+}
+
+/// Nonjoined AdvanceCursors admission is per exact published addressed Lazy
+/// pair ID. Generic left-thread behavior and ordinary admission are unchanged.
+pub(crate) const DIRECT_LAZY_DISPLAY_ADMISSION_SQL: &str = concat!(
+    "SELECT EXISTS(SELECT 1 FROM messages m ",
+    "JOIN lazy_recipients r ON r.message_id=m.id AND r.thread_id=m.thread_id ",
+    "JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=m.id AND sm.thread_id=m.thread_id ",
+    "JOIN occupant_bindings b ON b.binding_id=?3 AND b.seat_id=r.seat_id ",
+    "JOIN direct_threads ld0 ON ld0.thread_id=m.thread_id AND ld0.instance_id=m.instance_id ",
+    "WHERE r.seat_id=?1 AND m.id=?2 AND m.instance_id=?4 AND m.kind='ordinary' AND m.delivery_mode='lazy' ",
+    "AND sm.instance_id=m.instance_id AND sm.decision_seq=m.decision_seq ",
+    "AND (r.seat_id=ld0.seat_a OR r.seat_id=ld0.seat_b) AND ",
+    binding_lazy_scope_sql! { binding: "b.binding_id", seat: "r.seat_id", thread: "m.thread_id", instance: "m.instance_id", publication: "m.decision_seq" },
+    ")"
+);
+
+pub(super) fn direct_lazy_display_admitted(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    binding: &BindingId,
+    message: &MessageId,
+) -> Result<bool, ApiError> {
+    db.query_row(
+        DIRECT_LAZY_DISPLAY_ADMISSION_SQL,
+        params![seat.as_str(), message.as_str(), binding.as_str(), instance],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
+}
+
+/// Only a cursorless display of currently eligible exact addressed content can
+/// use the virtual episode floor. Historical CompleteInboxDelivery remains on
+/// its existing zero-start walk when no supplied body qualifies for this rule.
+pub(super) fn displayed_episode_floor(
+    db: &Connection,
+    binding: &BindingId,
+    seat: &SeatId,
+    thread: &ThreadId,
+    displayed: &[u64],
+) -> Result<Option<u64>, ApiError> {
+    if displayed.is_empty() {
+        return Ok(None);
+    }
+    let instance: String = db
+        .query_row(
+            "SELECT instance_id FROM seats WHERE id=?1",
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let Some(episode) = active_direct_episode(db, &instance, seat, thread)? else {
+        return Ok(None);
+    };
+    for sequence in displayed {
+        let sequence = i64::try_from(*sequence)
+            .map_err(|_| api_error(ErrorCode::InvalidRequest, "cursor out of range"))?;
+        let eligible: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages m \
+             JOIN lazy_recipients r ON r.message_id=m.id AND r.thread_id=m.thread_id \
+             JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=m.id AND sm.thread_id=m.thread_id \
+             JOIN occupant_bindings b ON b.binding_id=?6 AND b.seat_id=r.seat_id \
+             WHERE m.thread_id=?1 AND m.sequence=?2 AND m.instance_id=?3 AND r.seat_id=?4 \
+               AND m.kind='ordinary' AND m.delivery_mode='lazy' AND sm.instance_id=m.instance_id \
+               AND sm.decision_seq=m.decision_seq AND m.decision_seq>?5)",
+            params![thread.as_str(), sequence, instance, seat.as_str(), episode.created_decision, binding.as_str()], |r| r.get(0),
+        ).map_err(store_error)?;
+        if eligible {
+            return episode_floor(db, &instance, thread, &episode).map(Some);
+        }
+    }
+    Ok(None)
+}
 
 /// Exact canonical ID only; foreign-instance IDs are absent, never inferred.
 pub fn recorded_mode(
@@ -353,8 +617,9 @@ pub struct LazyUnread {
     pub sequence: u64,
 }
 
-/// A lazy message is unread for a binding by `binding_lazy_unread_sql!`: its cursor is short of
-/// it and the seat has the thread joined, or it is a legacy pending row and the binding is top-level.
+/// A lazy message is unread when its own cursor is short and its established or joined
+/// stream permits it, or it is newly published in its current direct invitation episode.
+/// The top-level legacy-pending exception remains independent of modern scope.
 const BINDING_UNREAD_WHERE: &str = concat!("b.binding_id=?1 AND ", binding_lazy_unread_sql!());
 const BINDING_UNREAD_FROM: &str = "FROM occupant_bindings b JOIN lazy_recipients r ON r.seat_id=b.seat_id JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id JOIN messages m ON m.id=r.message_id AND m.delivery_mode='lazy'";
 
@@ -535,8 +800,18 @@ pub fn complete_displayed_for_binding(
         }
     }
     for target in &targets {
+        let mut reader_changed = false;
         for (thread, sequences) in &by_thread {
-            read_cursors::advance_through_displayed(tx, target, &ThreadId::new(thread), sequences)?;
+            let (_, changed) = read_cursors::advance_through_displayed_with_change(
+                tx,
+                target,
+                &ThreadId::new(thread),
+                sequences,
+            )?;
+            reader_changed |= changed;
+        }
+        if reader_changed {
+            super::presentation_reader::note_binding_reader_change(tx, target)?;
         }
     }
     // `binding_cursors` is WITHOUT ROWID, so SQLite's update hook never reports it. Touch the

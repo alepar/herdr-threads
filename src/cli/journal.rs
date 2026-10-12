@@ -157,6 +157,8 @@ pub enum SemanticMutation {
         goal: String,
     },
     Invite {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        confirmation: Option<InvitationConfirmation>,
         thread: ThreadId,
         seat: SeatId,
         deadline_millis: Option<u64>,
@@ -320,6 +322,13 @@ impl SemanticMutation {
         frozen.validate()?;
         Ok(frozen)
     }
+    pub fn has_invitation_confirmation(&self) -> bool {
+        match self {
+            Self::Frozen { mutation, .. } => mutation.has_invitation_confirmation(),
+            Self::Invite { confirmation, .. } => confirmation.is_some(),
+            _ => false,
+        }
+    }
     pub fn is_lazy_send(&self) -> bool {
         match self {
             Self::Frozen { mutation, .. } => mutation.is_lazy_send(),
@@ -445,6 +454,11 @@ impl SemanticMutation {
                 .validate()
                 .map_err(invalid)
             }
+            Self::Invite {
+                confirmation: Some(InvitationConfirmation::Lazy),
+                deadline_millis: Some(_),
+                ..
+            } => Err(invalid("lazy invitation conflicts with deadline")),
             Self::Invite {
                 deadline_millis: Some(0),
                 ..
@@ -638,10 +652,12 @@ impl SemanticMutation {
                 claim: native()?,
             }),
             Self::Invite {
+                confirmation,
                 thread,
                 seat,
                 deadline_millis,
             } => Command::Invite(Invite {
+                confirmation: *confirmation,
                 thread: thread.clone(),
                 seat: seat.clone(),
                 deadline_millis: *deadline_millis,
@@ -830,11 +846,13 @@ impl PendingIntent {
 pub type PendingPage = Page<LocalIntent>;
 // Compact published semantic and header each fit the canonical identity envelope;
 // fixed reference/digest/header fields have 4096 bytes of additional headroom.
+pub(crate) const MAX_DELIVERY_ORIGIN_BYTES: usize = 512 * 1024;
 pub(crate) const MAX_BOOTSTRAP_ORIGIN_BYTES: usize =
     2 * crate::store::topology_handoff::MAX_IDENTITY_BYTES + 4096;
-// The canonical automatic envelope (claim + original) is capped at 128 KiB.
-// The first 128 KiB covers the nested original and claim, and the second
-// covers repeated claim/scope fields in the frozen semantic and header. Fixed
+// The canonical automatic envelope (claim + original) is capped at 512 KiB
+// for modern explicit policy (historical absent policy retains 128 KiB). One
+// envelope covers the nested original and claim, another covers repeated
+// claim/scope fields in the frozen semantic and header. Fixed
 // reference fields and JSON tags use 4 KiB. Reject oversize, never truncate.
 pub(crate) const MAX_AUTOMATIC_ORIGIN_BYTES: usize =
     2 * crate::protocol::handoff::MAX_AUTOMATIC_ORIGINAL_BYTES + 4096;
@@ -1410,7 +1428,6 @@ impl Journal {
             .counter()?
             .checked_add(1)
             .ok_or_else(|| invalid("intent allocator exhausted"))?;
-        self.reserve(ordinal)?;
         let reference = IntentRef {
             ordinal,
             operation: OperationId::new(Uuid::new_v4().to_string()),
@@ -1423,13 +1440,22 @@ impl Journal {
             thread: semantic.thread().cloned(),
             semantic_digest: format!("{:x}", Sha256::digest(&body)),
         };
-        // Single buffered write, as in record_lazy_displayed_chunk (ht-poh.55).
-        let mut bytes = serde_json::to_vec(&header)?;
+        let encoded_header = serde_json::to_vec(&header)?;
+        let origin_limit = match header.kind {
+            IntentKind::Handoff | IntentKind::HandoffDelivery => Some(MAX_DELIVERY_ORIGIN_BYTES),
+            IntentKind::HandoffBootstrap => Some(MAX_BOOTSTRAP_ORIGIN_BYTES),
+            _ => None,
+        };
+        if origin_limit.is_some_and(|limit| encoded_header.len() + body.len() + 2 > limit) {
+            return Err(invalid("handoff origin exceeds retained byte cap"));
+        }
+        self.reserve(ordinal)?;
+        let path = self.root.join(format!(".intent-{}", Uuid::new_v4()));
+        let mut file = private_new(&path)?;
+        let mut bytes = encoded_header;
         bytes.push(b'\n');
         bytes.extend_from_slice(&body);
         bytes.push(b'\n');
-        let path = self.root.join(format!(".intent-{}", Uuid::new_v4()));
-        let mut file = private_new(&path)?;
         file.write_all(&bytes)?;
         durable_sync(&file)?;
         fs::rename(path, self.path(&reference))?;
@@ -1484,7 +1510,12 @@ impl Journal {
     }
     /// Exact bounded original bytes for delivery-only terminal cleanup recovery.
     pub(crate) fn snapshot_delivery_origin(&self, reference: &IntentRef) -> io::Result<Vec<u8>> {
-        self.snapshot_origin(reference, IntentKind::HandoffDelivery, 65536, "delivery")
+        self.snapshot_origin(
+            reference,
+            IntentKind::HandoffDelivery,
+            MAX_DELIVERY_ORIGIN_BYTES,
+            "delivery",
+        )
     }
     pub(crate) fn decode_delivery_origin(
         reference: &IntentRef,
@@ -1494,7 +1525,7 @@ impl Journal {
             reference,
             bytes,
             IntentKind::HandoffDelivery,
-            65536,
+            MAX_DELIVERY_ORIGIN_BYTES,
             "delivery",
         )
     }

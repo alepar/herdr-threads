@@ -705,7 +705,7 @@ pub(super) fn stage_recipient(
             params![prep_id,thread.as_str(),recipient,*count,duration,available,provenance]).map_err(store_error)?;
     }
     // C4: a seat whose binding the pending reconciliation pass will carry is
-    // not warned about; the carry starts its receipt timer.
+    // not warned about; the carry records availability independently of the send-time deadline.
     if !available
         && !schema::carry_pending(tx, recipient, instance)?
         && schema::effective_membership_state(tx, thread, &SeatId::new(recipient))?

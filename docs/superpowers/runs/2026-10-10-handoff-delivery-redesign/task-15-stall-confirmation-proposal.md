@@ -1,0 +1,29 @@
+# V2 Watch confirmation and existing stall bookkeeping
+
+Status: selected exact-owner method pending fresh review/parent implementation authority; no production policy change. Parent constraints received 2026-10-11. Capability remains unadvertised. This supersedes the earlier shorthand that any allocated V2 Attention should arm the channel stall clock.
+
+## Existing source behavior
+
+`src/service/mod_channels.rs::notify_at` records `last_attention_push=now` only when a Live channel sink accepts its Attention drain frame. `observe_fingerprint` calls this for changed native fingerprints; its passive invitation signal calls sink.push directly and deliberately does not record push time. `ModChannels::record_attention_push` is currently unused by production callers: the registry implementation checks binding generation and permits Live OR ReconnectGrace, while the default trait implementation is inert. Tests call it directly to exercise the existing stall policy.
+
+`stalled_judgement` requires Live or ReconnectGrace, an existing channel, registration/actual receipt ACK older than ten minutes, a recorded Attention push, and an ordinary required receipt published no later than the push and older than ten minutes. `seats::mod_stall_oldest` retains its existing ordinary-only/body<=8KiB policy. Actual receipt ACK uses `record_ack` separately; V2 presentation Confirm must never act as receipt ACK or invitation acceptance.
+
+V2 service Pull records ordinary offers but does not arm the mod stall clock. Confirm validates request, obtains the same per-seat owner permit used by Watch replacement/allocation, checks exact Live generation/native-session/lease with `presentation_owner_live`, performs canonical store confirmation, validates the daemon's bounded acknowledged subset, then applies only acknowledged applicable control hints. The owner permit is retained throughout these operations. Register/replacement takes this same permit, preventing replacement between admission and the final bookkeeping write.
+
+## Selected proposal for review
+
+Only Watch consumer Confirm with an exact current Live lease, a newly committed `Confirmed` result and at least one acknowledged applicable Attention stamp calls a NEW narrow `record_presentation_attention_push(seat,generation,native_session,lease,now)` port. Its trait default is inert. Under the SAME registry entry lock, the implementation requires state==Live and the exact current generation/native-session/lease tuple, and atomically records last_attention_push. Hook never calls it. The per-seat permit remains held across initial admission, canonical store Confirm, and this exact-owner method; no new authority, durable state, generic callback or source walk.
+
+The existing generation-only legacy port remains untouched and is NOT reused. Current unregister/register/close_inner paths also take the existing per-seat permit. The selected new method nevertheless atomically checks Live and writes under the registry entry lock, so it does not rely on proving every present/future disconnect path acquires the permit. A disconnect into grace before that exact-owner check prevents arming.
+
+AlreadyConfirmed retries, repeated same-token Pull, Unchanged, clear-only or passive output, empty acknowledged subsets, malformed/foreign acknowledgments, refusal and transport errors never reset the push clock. A lost Confirm response may leave one canonical Confirm and one push recorded; retry remains AlreadyConfirmed and must not record again. A failed write/flush never submits Confirm. Unknown relevance itself does not confirm withheld Attention; an independently submitted exact control confirmation remains governed by the stored episode/applicability contract. No Pending result exists.
+
+Canonical native eligibility, idle/presence/backoff/coalescing and existing observer behavior remain unchanged. This bookkeeping is local channel health evidence, not a new wake condition or presentation authority. Watch registration resets its own registration clock; old lease confirmation after replacement is StaleBinding and cannot arm the new channel.
+
+## Actual regression plan before production change
+
+Use the existing private service/delivery_pull host, real registered ModChannelRegistry and public V2 handler. Publish a supported ordinary receipt with body<=8KiB before the physical emitted Attention/Confirm; do not call registry.pass beforehand, since that would hide the missing V2 bookkeeping through the legacy observer. Advance the fixture clock beyond the existing stall threshold while retaining the receipt. Assert no stall after Pull allocation alone, then a fresh exact Watch Confirm arms existing stall detection. Assert ordinary receipt remains pending/no ACK.
+
+The push timestamp is a receipt-publication cutoff, NOT a new ten-minute countdown. Registration/actual receipt ACK age and receipt age still control the threshold. Controls: actual Lazy invitation/message/passive ModRefresh and Hook Confirm never arm; clear/empty-ack/AlreadyConfirmed do not arm or move the cutoff. Test lost response by discarding a successful service result then retrying after time advances, proving the original push time remains the cutoff: a receipt published after the first Confirm must not become eligible because of the AlreadyConfirmed retry. Replace or disconnect the channel before Confirm and require no arm on old lease; generation/native-session equality alone must not suffice. Existing Watch writer/flush/refused-confirm tests supply consumer-level no-Confirm evidence, supplemented by registered-channel assertions rather than claiming a mock alone proves registry behavior.
+
+No runtime budget, native-wake predicate, receipt semantics or model-visible string changes are proposed. Final source/interface reviewer must inspect exact permit lifetime, lease recheck, fresh status/ack predicate and all negative controls. Production remains held pending parent disposition.

@@ -1,0 +1,7 @@
+[
+  "scouts: 12/12 returned · raw findings 17",
+  "dedupe: raw 17 → deduped 17 · panels 12 · spot checks 5",
+  "reporter enforcement: lanes: 4 confirmed entries tagged",
+  "reporter enforcement: header: lane-yield inserted",
+  "reporter enforcement: confirmedCount 5 vs 6 confirmed default routes (overrules account for the gap)"
+]

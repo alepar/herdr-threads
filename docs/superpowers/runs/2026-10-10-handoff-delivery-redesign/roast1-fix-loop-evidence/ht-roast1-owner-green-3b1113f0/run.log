@@ -1,0 +1,12 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 562d91f7-5e1b-4b3a-9d3d-7fbe1c5add8e with nextest profile: default
+    Starting 6 tests across 1 binary (93 tests skipped)
+        PASS [   0.516s] (1/6) herdr-threads::service presentation_owner_budget_controls::presentation_confirm_expired_owner_waiter_returns_before_release_without_effects
+        PASS [   0.525s] (2/6) herdr-threads::service presentation_owner_budget_controls::presentation_pull_cancelled_owner_waiter_returns_before_release_without_effects
+        PASS [   0.526s] (3/6) herdr-threads::service presentation_owner_budget_controls::presentation_confirm_cancelled_owner_waiter_returns_before_release_without_effects
+        PASS [   0.531s] (4/6) herdr-threads::service presentation_owner_budget_controls::presentation_poisoned_owner_recovers_for_pull_and_confirm
+        PASS [   0.541s] (5/6) herdr-threads::service presentation_owner_budget_controls::presentation_pull_expired_owner_waiter_returns_before_release_without_effects
+        PASS [   1.208s] (6/6) herdr-threads::service presentation_owner_budget_controls::presentation_live_owner_waiters_serialize_and_succeed_after_release
+────────────
+     Summary [   1.209s] 6 tests run: 6 passed, 93 skipped

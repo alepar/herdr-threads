@@ -1,0 +1,180 @@
+{
+  "status": "scoped_revision_WRD1_WRD2_ready_for_independent_rereview",
+  "baseline": "7bdb3678",
+  "source_worktree": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "artifacts": [
+    "resume-watch-owner-replay-design.md",
+    "resume-watch-owner-replay-requirements.json"
+  ],
+  "actual_changed_paths": [
+    "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/resume-watch-owner-replay-design.md",
+    "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/resume-watch-owner-replay-requirements.json"
+  ],
+  "proposed_implementation_paths": {
+    "required": [
+      "src/service/mod_channels.rs",
+      "src/service/delivery_presentation.rs",
+      "src/ports.rs",
+      "src/store/invitation_content.rs",
+      "TRUST-POLICY.md"
+    ],
+    "conditional": [
+      "src/delivery/ledger.rs (expose/reuse bounded incarnation snapshot only if needed)",
+      "src/store/queries.rs (neutral exact-key counter naming/comment only if useful)",
+      "src/harness/bridge.rs (separate stale notice comment alignment)"
+    ],
+    "tests": [
+      "tests/service/mod_channels.rs",
+      "tests/store/invitation_content.rs",
+      "tests/integration/mod_delivery.rs",
+      "tests/delivery/ledger.rs (if ledger seams change)"
+    ]
+  },
+  "state": {
+    "owner": "current ModChannelRegistry Entry",
+    "maximum_entries": 64,
+    "maximum_pairs_per_entry": 256,
+    "key": "MessageId + complete Offer",
+    "scope": [
+      "seat",
+      "generation",
+      "native_session",
+      "execution",
+      "lease",
+      "ledger_incarnation"
+    ],
+    "initialized_empty_is_terminal_for_lease": true,
+    "durable_schema_change": false,
+    "wire_change": false,
+    "model_visible_added_bytes": 0,
+    "recorded_offer_count_domain": {
+      "accepted_min": 1,
+      "accepted_max": 255,
+      "zero_invalid": true,
+      "policy_threshold_is_not_recorded_domain": true,
+      "preserve_concurrent_count_four": true
+    }
+  },
+  "budgets": {
+    "exclusive_ordinary_source_modes": [
+      "normal",
+      "logical_due",
+      "owner_replay"
+    ],
+    "ordinary_attempts": 100,
+    "hydrated_candidates": 32,
+    "keyed_probes": 1303,
+    "availability_seeks": 100,
+    "fresh_source_visits": 433,
+    "reconciliation_visits": 256,
+    "reconciliation_probes": 1280,
+    "output_blocks": 32,
+    "encoded_output_bytes": 65536,
+    "sizing_passes": 352
+  },
+  "required_tests": [
+    {
+      "id": "WR1",
+      "test": "reconnect_within_grace_keeps_wake_suppressed_restreams_and_late_ack_settles_once",
+      "requirement": "Keep immediate causal failure/red oracle; replacement restream before logical 60-second retry, no wake and once-only ACK settlement."
+    },
+    {
+      "id": "WR2",
+      "requirement": "First Watch captures existing Hook/V1 offers; preserve full Offer tuple including counts3/4. Produce count4 with actual CIR-1 V1 before-record interleaving; immediate replay permits independent nonordinary output. Accept recorded counts1..255, reject zero; count>3 refusal mutant fails."
+    },
+    {
+      "id": "WR3",
+      "requirement": "Dedicated nonfull and full256 reconnect replay; unknown257 carry stays parked."
+    },
+    {
+      "id": "WR4",
+      "requirement": "Repeated same-lease pulls/render changes do not refill; finite quiet response."
+    },
+    {
+      "id": "WR5",
+      "requirement": "Whole/truncated/lazy/promoted-lazy/manifest-sparse/fallback canonical fixtures retain framing and pending semantics."
+    },
+    {
+      "id": "WR6",
+      "requirement": "256 mixed missing/wrong-mode/unpublished/nonaddressed/terminal keys drain finitely without authority/capacity fabrication."
+    },
+    {
+      "id": "WR7",
+      "requirement": "Foreign/stale/replaced/grace/currentbinding owner fences; deterministic replacement race."
+    },
+    {
+      "id": "WR8",
+      "requirement": "Concurrent logical stamp changes and same-generation ledger recreation cannot overwrite/refill same lease."
+    },
+    {
+      "id": "WR9",
+      "requirement": "Rollback/refusal installs no replay progress; lost successful response/output consumed only current lease, replacement recovers."
+    },
+    {
+      "id": "WR10",
+      "test": "activation_v2_watch_replacement_replays_uncommitted_output",
+      "requirement": "Old nonordinary outbox token/descriptors/slots remain intact and normally confirmed before physical ordinary continuation."
+    },
+    {
+      "id": "WR11",
+      "requirement": "Retained ordinary cursor/carry/partial/scan tuple byte-identical through replay; capacity freed by ACK resumes progress."
+    },
+    {
+      "id": "WR12",
+      "requirement": "Existing is_due 60-second/three-offer eligibility and accepted concurrent recording unchanged; mutations record(replay), positive-capacity skip and zero-capacity skip fail dedicated tests."
+    },
+    {
+      "id": "WR13",
+      "requirement": "Measure declared work/output bounds and mutually exclusive source choice through real exact-key queries."
+    },
+    {
+      "id": "WR14",
+      "requirement": "Legacy capability probe precedes effects; fallback bytes unchanged; no Hook replay state."
+    },
+    {
+      "id": "WR15",
+      "requirement": "Daemon restart clears local lease/progress; canonical pending recovers via normal fresh offer."
+    },
+    {
+      "id": "WR16",
+      "finding": "WRD-2",
+      "requirement": "Full256 ledger: 255 parked count3 identities and one due count2 on final physical replay page. Unchanged stamps and exhausted owner debt still yield logical more=true; next logical call records only due key. Combined physical consumed-ID mutant must fail."
+    },
+    {
+      "id": "WR17",
+      "finding": "WRD-2",
+      "requirement": "Preserve current post-store more_pending true/false, read_attention, whole_read and next_pull through empty/missing/mixed/final replay and outbox/control-only active recovery; deterministic concurrent V1 mutation survives. Kill filtered-false, stale-snapshot restoration and missing-empty-disposition mutants; live no-wake alone is insufficient."
+    }
+  ],
+  "commands_executed": {
+    "cargo": false,
+    "herdr": false,
+    "source_mutation": false,
+    "subagents": false
+  },
+  "required_next_steps": [
+    "Parent independent scoped WRD-1/WRD-2 rereview",
+    "Authorize source author after review disposition",
+    "Meaningful focused RED/GREEN and required lint/neutral checks",
+    "Independent implementation review"
+  ],
+  "bookkeeping": {
+    "internal_source_disposition": [
+      "Normal",
+      "LogicalDue",
+      "OwnerReplay",
+      "None with active-recovery context"
+    ],
+    "logical_consumed_ids": "Only successfully allocated logical offered/truncated IDs; physical replay IDs never consume logical due episodes.",
+    "owner_replay_native_outlook": "Preserve current more_pending/read_attention/whole_read under post-store ledger lock, including empty, mixed and final-exhausted replay quanta.",
+    "outbox_control_during_recovery": "Same preservation rule, even if remaining keys exhaust or prune on this call.",
+    "normal_logical_due": "Existing legitimate logical allocation bookkeeping; owner continuation creates no native outlook.",
+    "outbox_control_without_recovery": "Existing unrelated behavior unchanged.",
+    "concurrent_v1": "Never restore pre-store outlook snapshot and never assign false from filtered physical metadata.",
+    "due_cache": "Owner attempt results do not alter deferrals; existing independent render/publication scope maintenance remains."
+  },
+  "review_dispositions": {
+    "WRD-1": "Accepted; full nonzero u8 recorded-count domain and actual count4 interleaving required.",
+    "WRD-2": "Accepted; explicit source disposition, logical-only consumed IDs, and current post-store native-outlook preservation required."
+  }
+}

@@ -1585,6 +1585,18 @@ pub fn effective_warning_by_id(
     ).optional().map_err(store_error)
 }
 
+/// Original canonical invitation episode evidence only. Old records with no
+/// recorded native inviter remain unattributed; current membership is no hint.
+pub(crate) fn invitation_originator(
+    db: &Connection,
+    invitation: &str,
+) -> Result<Option<String>, ApiError> {
+    db.query_row(
+        "SELECT coalesce(i.inviter_seat_id,(SELECT json_extract(m.event_json,'$.actor_seat') FROM messages m JOIN seats origin ON origin.id=json_extract(m.event_json,'$.actor_seat') AND origin.instance_id=t.instance_id WHERE m.event_key='invite:'||i.id AND m.source_invitation_id=i.id AND m.thread_id=i.thread_id AND m.kind='info' AND json_extract(m.event_json,'$.action')='invite' AND json_extract(m.event_json,'$.invitation')=i.id AND json_extract(m.event_json,'$.seat')=i.seat_id)) FROM invitations i JOIN threads t ON t.id=i.thread_id WHERE i.id=?1",
+        [invitation],|r|r.get(0),
+    ).optional().map(|row|row.flatten()).map_err(store_error)
+}
+
 pub fn is_warning_recipient(db: &Connection, id: &str, seat_id: &str) -> Result<bool, ApiError> {
     let Some(warning) = effective_warning_by_id(db, id)? else {
         return Ok(false);
@@ -1749,15 +1761,19 @@ pub fn effective_receipt(
         Option<i64>,
         Option<i64>,
         i64,
+        Option<i64>,
+        Option<i64>,
+        i64,
     )>;
     let logical: LogicalColumns = db.query_row(
-        "SELECT sm.thread_id, sm.base_sequence, pr.ordinal, sm.decision_seq, sm.decision_at, pr.frozen_duration_ms, pr.eligible_at_snapshot, pr.availability_provenance, rs.state, rs.warning_message_id, rs.ack_actor_seat_id, rs.ack_generation, rs.ack_observation, rs.acked_at, s.retired_at, s.retired_seq, MIN(pr.ack_required,COALESCE(rs.ack_required,1)) \
+        "SELECT sm.thread_id, sm.base_sequence, pr.ordinal, sm.decision_seq, sm.decision_at, pr.frozen_duration_ms, pr.eligible_at_snapshot, pr.availability_provenance, rs.state, rs.warning_message_id, rs.ack_actor_seat_id, rs.ack_generation, rs.ack_observation, rs.acked_at, s.retired_at, s.retired_seq, MIN(pr.ack_required,COALESCE(rs.ack_required,1)), rs.available_at, rs.deadline_at, COALESCE(cut.historical_decision_seq,0) \
          FROM send_manifests sm JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id \
          JOIN seats s ON s.id=pr.seat_id \
          LEFT JOIN receipt_state rs ON rs.message_id=sm.message_id AND rs.seat_id=pr.seat_id \
+         LEFT JOIN receipt_send_time_cutovers cut ON cut.instance_id=sm.instance_id \
          WHERE sm.message_id=?1 AND pr.seat_id=?2",
         params![message_id, seat_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?, r.get(14)?, r.get(15)?, r.get(16)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?, r.get(14)?, r.get(15)?, r.get(16)?, r.get(17)?, r.get(18)?, r.get(19)?)),
     ).optional().map_err(store_error)?;
     if let Some((
         thread_id,
@@ -1777,6 +1793,9 @@ pub fn effective_receipt(
         retired_at,
         retired_seq,
         ack_required,
+        stored_available_at,
+        stored_deadline_at,
+        historical_cutover,
     )) = logical
     {
         if retired_at.is_some() && retired_seq.is_none() {
@@ -1785,19 +1804,42 @@ pub fn effective_receipt(
                 "retired seat lacks decision cutover",
             ));
         }
-        let start =
-            if eligible == 1 {
-                Some(send_at)
-            } else {
-                db.query_row(
-                "SELECT decision_at FROM seat_availability WHERE seat_id=?1 AND decision_seq>?2 \
-                 AND (?3 IS NULL OR decision_seq<?3) ORDER BY decision_seq LIMIT 1",
-                params![seat_id, send_seq, retired_seq], |r| r.get(0),
+        let first_availability: Option<(i64, i64)> = if eligible == 1 {
+            Some((send_at, send_seq))
+        } else {
+            db.query_row(
+                "SELECT decision_at,decision_seq FROM seat_availability WHERE seat_id=?1 AND decision_seq>?2 AND (?3 IS NULL OR decision_seq<?3) ORDER BY decision_seq LIMIT 1",
+                params![seat_id,send_seq,retired_seq],|r|Ok((r.get(0)?,r.get(1)?)),
             ).optional().map_err(store_error)?
-            };
-        let deadline = start
-            .map(|at| checked_deadline(UtcMillis(at), duration).map(|d| d.0))
-            .transpose()?;
+        };
+        let start = stored_available_at.or(first_availability.map(|(at, _)| at));
+        // Only availability already recorded at the upgrade cutover can preserve
+        // a legacy running clock. Later registration must not restart a dormant one.
+        let original_start = if send_seq <= historical_cutover {
+            first_availability
+                .filter(|(_, seq)| *seq <= historical_cutover)
+                .map(|(at, _)| at)
+                .unwrap_or(send_at)
+        } else {
+            send_at
+        };
+        let deadline = match stored_deadline_at {
+            Some(deadline) => Some(deadline),
+            None if state.as_deref().is_some_and(|s| s != "pending")
+                || (send_seq <= historical_cutover
+                    && retired_seq.is_some_and(|seq| seq <= historical_cutover)) =>
+            {
+                stored_available_at
+                    .or(first_availability
+                        .filter(|(_, seq)| {
+                            send_seq > historical_cutover || *seq <= historical_cutover
+                        })
+                        .map(|(at, _)| at))
+                    .map(|at| checked_deadline(UtcMillis(at), duration).map(|d| d.0))
+                    .transpose()?
+            }
+            None => Some(checked_deadline(UtcMillis(original_start), duration)?.0),
+        };
         let waived = if state.as_deref().is_none_or(|status| status == "pending") {
             ack_required == 0
                 || availability_provenance.as_deref() == Some("operator_human")
@@ -1878,6 +1920,16 @@ pub fn effective_receipt(
                 } else {
                     false
                 };
+                let state = receipt_state(Some(&state), retired_at.is_some(), waived)?;
+                // Physical legacy receipts have no manifest timer worker. Their
+                // logical deadline agrees with the bounded upgrade projection,
+                // while terminal/waived evidence and stored running clocks win.
+                let deadline_at = match deadline_at {
+                    None if state == EffectiveReceiptState::Pending => {
+                        Some(checked_deadline(UtcMillis(decision_at), duration)?.0)
+                    }
+                    deadline => deadline,
+                };
                 Ok(EffectiveReceipt {
                     source: ReceiptSource::Physical,
                     message_id: message_id.to_owned(),
@@ -1888,7 +1940,7 @@ pub fn effective_receipt(
                     decision_seq,
                     decision_at,
                     frozen_duration_ms: duration,
-                    state: receipt_state(Some(&state), retired_at.is_some(), waived)?,
+                    state,
                     available_at,
                     deadline_at,
                     warning_message_id,

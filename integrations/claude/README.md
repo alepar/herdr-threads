@@ -107,3 +107,14 @@ Claude Code 2.1.286 (binary SHA-256 `75e3016e9d2570767b08e43a7467d4817a4f149232c
 Claude Code 2.1.287 (binary SHA-256 `6eab8333fe2121553100d8f40bfada384a3e989b94f947e18ba6677a6fcb41ea`) was captured in `claude-compact-capture` with the 2.1.286 method plus a print-mode `/compact`. The startup, resume, root Bash and subagent Bash payloads have the same keys and value types as 2.1.286. The SessionStart `compact` payload (`cwd`, `hook_event_name`, `model`, `prompt_id`, `session_id`, `source`, `transcript_path`; no `agent_id`) is committed with them under `tests/fixtures/claude-2.1.287/`. A hook that returned `additionalContext` on that event had it recorded as a `hook_additional_context` attachment after the compact boundary, and the model repeated the marker. That is the evidence behind the separate `claude-hooks-2.1.287` recipe. Not observed: interactive-TUI compaction and size-triggered auto-compaction.
 
 The [installed lifecycle capture](../../docs/compatibility/claude-lifecycle-probe.md) shows native startup, clear, and resume input and private settings composition. The [Bash probe](../../docs/compatibility/claude-probe.md) shows command rewriting reaching the matching tool invocation. Neither capture proves model receipt, explicit accept/ACK, SQLite receipt rows, installed application entry point, compaction behavior, or all launch modes. Those remain native integration gates under the superseding cooperative trust direction in ht-910.
+
+
+Native setup registers a complete `herdr-threads hook-event HARNESS EVENT` command for each
+owned event, with the canonical state directory and Herdr endpoint pinned. Equivalent setup
+reuses the exact group in place. The private ownership manifest retains the installation UUID,
+exact groups and their SHA-256 fingerprints; the shell command contains no per-install UUID.
+An identical unrecorded stable group is foreign and setup refuses it. Legacy UUID-marked groups
+remain eligible for the existing explicit adoption path. Explicit setup migrates recorded legacy
+registrations recoverably, preserving unrelated settings and group order. Status does not migrate.
+Codex may require native review of changed commands. Hook registration never writes native trust
+or permission grants. Unsetup removes only exact unambiguous owned groups and preserves edited or duplicate groups.

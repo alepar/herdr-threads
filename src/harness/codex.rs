@@ -2258,8 +2258,10 @@ impl LaunchPolicy for CodexAdapter {
                 "launch admission or scope mismatch",
             ));
         }
-        let hook = super::launch::owned_launch_hook(status)?;
-        if hook != super::launch::native_configuration_hook(request, scope, Harness::Codex)? {
+        let hook = super::launch::optional_launch_hook(status);
+        if let Some(hook) = &hook
+            && hook != &super::launch::native_configuration_hook(request, scope, Harness::Codex)?
+        {
             return Err(crate::protocol::results::ApiError::new(
                 crate::protocol::results::ErrorCode::Conflict,
                 "selected native setup status changed before preparation",

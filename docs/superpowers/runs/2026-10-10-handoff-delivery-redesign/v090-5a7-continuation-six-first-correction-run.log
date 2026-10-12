@@ -1,0 +1,12 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID e0e368f2-c7f1-403c-a511-4725fa39b042 with nextest profile: default
+    Starting 6 tests across 1 binary (719 tests skipped)
+        PASS [   0.310s] (1/6) herdr-threads::combined invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read
+        PASS [   0.314s] (2/6) herdr-threads::combined invitation_content::binding_presentation::continued_pending_body_survives_own_display_cursor
+        PASS [   0.318s] (3/6) herdr-threads::combined invitation_content::binding_presentation::continued_body_retirement_rolls_back_when_final_state_write_fails
+        PASS [   0.320s] (4/6) herdr-threads::combined invitation_content::binding_presentation::continued_body_retirement_is_private_and_charged_once
+        PASS [   0.324s] (5/6) herdr-threads::combined invitation_content::binding_presentation::continued_unread_body_survives_sibling_full_read
+        PASS [   0.566s] (6/6) herdr-threads::combined invitation_content::binding_presentation::continued_body_refuses_corrupt_accumulator_and_missing_authority_without_progress
+────────────
+     Summary [   0.569s] 6 tests run: 6 passed, 719 skipped

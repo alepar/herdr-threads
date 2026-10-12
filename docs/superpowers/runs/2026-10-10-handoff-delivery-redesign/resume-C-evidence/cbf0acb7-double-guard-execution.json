@@ -1,0 +1,61 @@
+{
+  "head": "cbf0acb79756ab6b5c19b65dadb910f6d30d0483",
+  "tree": "0659c147f4eef8f7ee293ba89fb53432531fdd76",
+  "run_id": "dec59576-9256-4fb9-bec2-3bba2db06f3b",
+  "expected": [
+    "cli::topology_handoff::tests::live::automatic_live::modern_automatic_actual_admission_boundary_completes_and_next_metadata_size_has_zero_effects",
+    "cli::topology_handoff::tests::live::automatic_live::modern_automatic_maximum_escaped_body_completes_and_recovers_exactly",
+    "cli::topology_handoff::tests::live::automatic_live::automatic_child_begin_expired_permit_has_no_effects_and_fresh_permit_succeeds"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 162.57851270900574
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "cli::topology_handoff::tests::live::automatic_live::automatic_child_begin_expired_permit_has_no_effects_and_fresh_permit_succeeds"
+    ],
+    [
+      "herdr-threads",
+      "cli::topology_handoff::tests::live::automatic_live::modern_automatic_actual_admission_boundary_completes_and_next_metadata_size_has_zero_effects"
+    ],
+    [
+      "herdr-threads",
+      "cli::topology_handoff::tests::live::automatic_live::modern_automatic_maximum_escaped_body_completes_and_recovers_exactly"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-1cbaa8be764c5987",
+      "sha256": "71cf906b8dbaa354092bda3e9ee05f99719bbc60045f2c6fa5c91b6065b5b043"
+    }
+  ],
+  "run": {
+    "exit": 0,
+    "seconds": 14.980220792000182,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=cli::topology_handoff::tests::live::automatic_live::modern_automatic_actual_admission_boundary_completes_and_next_metadata_size_has_zero_effects) | test(=cli::topology_handoff::tests::live::automatic_live::modern_automatic_maximum_escaped_body_completes_and_recovers_exactly) | test(=cli::topology_handoff::tests::live::automatic_live::automatic_child_begin_expired_permit_has_no_effects_and_fresh_permit_succeeds)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.5539758750237525,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "dec59576-9256-4fb9-bec2-3bba2db06f3b"
+    ]
+  },
+  "leak_exit": 0
+}

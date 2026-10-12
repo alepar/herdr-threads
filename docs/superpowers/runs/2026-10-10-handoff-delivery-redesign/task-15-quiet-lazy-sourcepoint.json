@@ -1,0 +1,13 @@
+{
+  "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "target_dir": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "manifest_method": "sorted compact JSON OBJECT mapping path to sha256",
+  "full_source_sha256": "fe0fb9e1c46c1c4a1cf4d489d8fd57c41c308bba7172755a7fbf6622470f36b1",
+  "dirtydiff_sha256": "c4e2c6ee267426c78bb6386deea0fee249bb26f1df5cc3403239000f9ad40006",
+  "source_count": 3533,
+  "command": "CARGO_TARGET_DIR=/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib presentation_quiet_channel_observes_new_lazy_ordinary_without_wake -- --nocapture",
+  "log": "/private/tmp/ht-task15-quiet-lazy-channel-red.log",
+  "expected_selected": 1,
+  "status": "frozen running; no result claim",
+  "leak_run_id": null
+}

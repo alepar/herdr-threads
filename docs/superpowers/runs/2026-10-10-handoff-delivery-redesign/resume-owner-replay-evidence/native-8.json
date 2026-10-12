@@ -1,0 +1,174 @@
+{
+  "schema": 1,
+  "preparation_only": false,
+  "status": "passed",
+  "run_requested": true,
+  "run_executed": true,
+  "started_utc": "2026-10-11T20:39:50.499073+00:00",
+  "inventory": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-owner-4632-native-inventory.json",
+  "inventory_sha256": "b18a79d1fdcebe15e699435bbdfcd05d6a13a3afc58f04f2b92cc8d829f699ac",
+  "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "expected_head": "4632df8427617130581a727e0560e0d6388c2951",
+  "expected_tree": "3baa3a546c9e0933d09561c291095deb5d06fe0b",
+  "ht_leak_run_id": "8129a874-9c2a-4505-9b00-f889eac4a475",
+  "commands": [
+    {
+      "stage": "nextest_list",
+      "argv": [
+        "nice",
+        "cargo",
+        "nextest",
+        "list",
+        "--locked",
+        "--all-features",
+        "--lib",
+        "--test",
+        "integration",
+        "--test",
+        "hook_entrypoint",
+        "--message-format",
+        "json",
+        "-E",
+        "(kind(lib) & test(=service::delivery_pull::tests::presentation_hook_notice_settles_current_execution_without_reoffer)) | (kind(lib) & test(=service::delivery_pull::tests::presentation_watch_notice_continuation_preserves_remaining_confirming_condition)) | (kind(lib) & test(=service::delivery_pull::tests::presentation_watch_notice_settles_current_execution_without_reoffer)) | (binary(=hook_entrypoint) & test(=agy::activation::activation_v2_registered_agy_system_hook_round_trip)) | (binary(=integration) & test(=mod_delivery::activation_v2_watch_replacement_replays_uncommitted_output)) | (binary(=integration) & test(=mod_delivery::notice_published_while_live_reaches_the_next_pre_tool_use_once)) | (binary(=integration) & test(=mod_delivery::reconnect_within_grace_keeps_wake_suppressed_restreams_and_late_ack_settles_once)) | (binary(=integration) & test(=mod_delivery::stale_attention_is_retracted_after_accept_and_after_a_notice_offer))"
+      ],
+      "cwd": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+      "stdout": "/private/tmp/ht-owner-4632-native/nextest-list.json",
+      "stderr": "/private/tmp/ht-owner-4632-native/nextest-list.stderr.log",
+      "exit": 0,
+      "seconds": 62.33058779197745,
+      "stdout_sha256": "60a1beea2a719b8593d56999fad316ceed5b277e68eaef42149ab5fff0932e75",
+      "stderr_sha256": "91ff6fb44f69466106bf91af228b686d620854066965ef914905a20ba4a4c75a"
+    },
+    {
+      "stage": "nextest_run",
+      "argv": [
+        "nice",
+        "cargo",
+        "nextest",
+        "run",
+        "--locked",
+        "--all-features",
+        "--lib",
+        "--test",
+        "integration",
+        "--test",
+        "hook_entrypoint",
+        "-E",
+        "(kind(lib) & test(=service::delivery_pull::tests::presentation_hook_notice_settles_current_execution_without_reoffer)) | (kind(lib) & test(=service::delivery_pull::tests::presentation_watch_notice_continuation_preserves_remaining_confirming_condition)) | (kind(lib) & test(=service::delivery_pull::tests::presentation_watch_notice_settles_current_execution_without_reoffer)) | (binary(=hook_entrypoint) & test(=agy::activation::activation_v2_registered_agy_system_hook_round_trip)) | (binary(=integration) & test(=mod_delivery::activation_v2_watch_replacement_replays_uncommitted_output)) | (binary(=integration) & test(=mod_delivery::notice_published_while_live_reaches_the_next_pre_tool_use_once)) | (binary(=integration) & test(=mod_delivery::reconnect_within_grace_keeps_wake_suppressed_restreams_and_late_ack_settles_once)) | (binary(=integration) & test(=mod_delivery::stale_attention_is_retracted_after_accept_and_after_a_notice_offer))"
+      ],
+      "cwd": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+      "stdout": "/private/tmp/ht-owner-4632-native/nextest-run.log",
+      "exit": 0,
+      "seconds": 4.184010708006099,
+      "stdout_sha256": "0499df5367c0cc5a7d919f3abc0da16ad62ca5e0a5cb608f72bd498aab7e2f2d"
+    },
+    {
+      "stage": "scoped_leaks",
+      "argv": [
+        "scripts/check-no-leaked-processes",
+        "--run-id",
+        "8129a874-9c2a-4505-9b00-f889eac4a475"
+      ],
+      "cwd": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+      "stdout": "/private/tmp/ht-owner-4632-native/scoped-leaks.log",
+      "exit": 0,
+      "seconds": 0.20188608299940825,
+      "stdout_sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e"
+    }
+  ],
+  "child_environment": {
+    "CARGO_BUILD_JOBS": "4",
+    "CARGO_TARGET_DIR": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+    "HT_LEAK_RUN_ID": "8129a874-9c2a-4505-9b00-f889eac4a475",
+    "HT_ACTIVATION_CAPTURE_PATH": "/private/tmp/ht-owner-4632-native/watch-activation.jsonl",
+    "HOME": "/private/tmp/ht-owner-4632-native/isolated-config/home",
+    "CLAUDE_CONFIG_DIR": "/private/tmp/ht-owner-4632-native/isolated-config/claude",
+    "CODEX_HOME": "/private/tmp/ht-owner-4632-native/isolated-config/codex",
+    "GEMINI_CONFIG_DIR": "/private/tmp/ht-owner-4632-native/isolated-config/gemini",
+    "GEMINI_CLI_HOME": "/private/tmp/ht-owner-4632-native/isolated-config/gemini-home"
+  },
+  "toolchain_environment": {
+    "CARGO_HOME": "/Users/alepar/.cargo",
+    "RUSTUP_HOME": "/Users/alepar/.rustup"
+  },
+  "parent_home_modified": false,
+  "leak_argv": [
+    "scripts/check-no-leaked-processes",
+    "--run-id",
+    "8129a874-9c2a-4505-9b00-f889eac4a475"
+  ],
+  "source_before": {
+    "head": "4632df8427617130581a727e0560e0d6388c2951",
+    "tree": "3baa3a546c9e0933d09561c291095deb5d06fe0b",
+    "tracked_status": "",
+    "source_file_hashes_verified": 60
+  },
+  "run_selection": {
+    "path": "/private/tmp/ht-owner-4632-native/run-selection.json",
+    "sha256": "fa1f77a96acdc69b7f33454b2747f895c593c8941ab7bdaafc67a96f5e378dcd",
+    "status": "matched",
+    "selected_count": 8,
+    "selected_by_target": {
+      "herdr-threads": 3,
+      "herdr-threads::hook_entrypoint": 1,
+      "herdr-threads::integration": 4
+    }
+  },
+  "source_after_list": {
+    "head": "4632df8427617130581a727e0560e0d6388c2951",
+    "tree": "3baa3a546c9e0933d09561c291095deb5d06fe0b",
+    "tracked_status": "",
+    "source_file_hashes_verified": 60
+  },
+  "binary_provenance": [
+    {
+      "binary_id": "herdr-threads",
+      "binary_name": "herdr_threads",
+      "kind": "lib",
+      "binary_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-38f1e6f612d0a088",
+      "build_platform": "target",
+      "cwd": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+      "sha256": "05d885c417c187131ed86945d846fff4963d24c12b21c65c3dae3eabf5f8528e",
+      "bytes": 98594032
+    },
+    {
+      "binary_id": "herdr-threads::hook_entrypoint",
+      "binary_name": "hook_entrypoint",
+      "kind": "test",
+      "binary_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/hook_entrypoint-1334a9c906bd256c",
+      "build_platform": "target",
+      "cwd": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+      "sha256": "e4c729bae6c916586b1185af56104dff79e3d8cbf6b12c99a1b84b7dfa343b64",
+      "bytes": 46568256
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "binary_name": "integration",
+      "kind": "test",
+      "binary_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/integration-be5d2b55617e1459",
+      "build_platform": "target",
+      "cwd": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+      "sha256": "7487f1fc9ae6bae24f157946fe314d0d3a45ae6857d36bc003d7dffa4d6d4a9d",
+      "bytes": 45589248
+    }
+  ],
+  "installed_executable_provenance": {
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/herdr-threads",
+    "sha256": "fb36daad45093fdb275a79e9c7a66ec579b0af19bfc6e4f46f1238477cb9c328",
+    "bytes": 45065984
+  },
+  "source_before_run": {
+    "head": "4632df8427617130581a727e0560e0d6388c2951",
+    "tree": "3baa3a546c9e0933d09561c291095deb5d06fe0b",
+    "tracked_status": "",
+    "source_file_hashes_verified": 60
+  },
+  "source_after_run": {
+    "head": "4632df8427617130581a727e0560e0d6388c2951",
+    "tree": "3baa3a546c9e0933d09561c291095deb5d06fe0b",
+    "tracked_status": "",
+    "source_file_hashes_verified": 60
+  },
+  "scoped_leak_exit": 0,
+  "finished_utc": "2026-10-11T20:40:57.471619+00:00"
+}

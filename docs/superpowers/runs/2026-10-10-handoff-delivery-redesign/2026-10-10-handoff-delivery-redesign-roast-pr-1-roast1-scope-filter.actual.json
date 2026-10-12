@@ -1,0 +1,29 @@
+{
+  "findings": [
+    {
+      "key": "[Should-fix] integrations/claude/mod/hooks/register.js:289",
+      "disposition": "punch-list",
+      "reason": "The goal names durable handoff payloads, invitation acceptance deadlines and stable hook commands; preserving revised invitation presentation contexts after a late append refusal is a separate delivery lifecycle correction, with no established failure of those named behaviors."
+    },
+    {
+      "key": "[Should-fix] src/store/invitation_content.rs:2442",
+      "disposition": "punch-list",
+      "reason": "The goal requires bounded indexed due scans; this finding concerns physical work accounting in private ordinary presentation discovery, a separate runtime bound whose violation does not establish incorrect handoff, deadline materialization or originating-seat warning behavior."
+    },
+    {
+      "key": "[Should-fix] tests/store/effective.rs:2136",
+      "disposition": "in-scope",
+      "reason": "The failing populated receipt-upgrade regression prevents the historical graph, clock and restart preservation checks required for the goal's canonical receipt upgrades and unchanged running deadlines."
+    },
+    {
+      "key": "[Should-fix] src/service/delivery_presentation.rs:62",
+      "disposition": "punch-list",
+      "reason": "Budget-aware acquisition for V2 presentation owners improves cancellation and admission-slot behavior in a separate presentation service path; the finding does not establish a failure of the goal's durable handoff, bounded-time receipt or acceptance warnings, or stable native hooks."
+    },
+    {
+      "key": "[Should-fix] integrations/claude/mod/hooks/register.js:296",
+      "disposition": "punch-list",
+      "reason": "Coalescing obsolete invitation presentation revisions improves downstream queue size and recovery context, neither of which is named by the goal, and the finding does not establish loss or alteration of durable handoff instructions or incorrect invitation acceptance deadlines."
+    }
+  ]
+}

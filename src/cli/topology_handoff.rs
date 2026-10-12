@@ -3,6 +3,7 @@ use super::{RunError, panes::PaneSelector};
 mod automatic;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
+    pub policy: Option<crate::protocol::handoff::HandoffPolicy>,
     pub automatic: bool,
     pub new_tab: Option<String>,
     pub existing: bool,
@@ -142,6 +143,7 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
         OperationId::new(uuid::Uuid::new_v4().to_string()),
         request.body.clone(),
     )
+    .and_then(|payload| payload.with_policy(request.policy.clone()))
     .map_err(fail)?;
     let scope = super::journal::IntentScope::Cooperative {
         instance: inputs.claim.instance.clone(),
@@ -181,6 +183,7 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
         },
     )
     .map_err(fail)?;
+    identity.validate_admission().map_err(fail)?;
     let effective = preflight_automatic_launch_request(&identity)?;
     // Completion validates the retained native argv against the applied caller argv, not a
     // frozen composition, so the automatic plan admits only an adapter whose composition
@@ -248,6 +251,10 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
         ));
     }
     let fail = super::invalid_request;
+    if let Some(policy) = &request.policy {
+        policy.validate().map_err(super::invalid_request)?;
+        super::require_handoff_capabilities(inputs.client, inputs.clock, Some(policy))?;
+    }
     let label = request
         .new_tab
         .as_ref()
@@ -366,6 +373,7 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
     };
     let payload = BootstrapPayload {
         handoff: HandoffPayload {
+            policy: request.policy.clone(),
             namespace,
             keys: HandoffKeys {
                 compound: compound.clone(),
@@ -549,6 +557,7 @@ pub fn publish(
 ) -> Result<super::journal::IntentRef, RunError> {
     use super::journal::{BootstrapPlan, SemanticMutation};
     identity.validate().map_err(super::invalid_request)?;
+    crate::store::topology_handoff::encode_identity(&identity.payload.handoff.namespace, identity)?;
     if !identity.payload.cwd.is_dir() {
         return Err(super::invalid_request(
             "bootstrap cwd disappeared before publication",
@@ -579,7 +588,9 @@ pub fn publish_automatic(
     identity: &crate::protocol::handoff::AutomaticBootstrapIdentity,
     created_at_millis: i64,
 ) -> Result<super::journal::IntentRef, RunError> {
-    identity.validate().map_err(super::invalid_request)?;
+    identity
+        .validate_local_admission(journal.root())
+        .map_err(super::invalid_request)?;
     if !identity.plan.payload.cwd.is_dir() {
         return Err(super::invalid_request(
             "bootstrap cwd disappeared before publication",
@@ -676,7 +687,14 @@ pub fn resume_to_attachment<
         Ok(CommandResult::Capabilities(c))
             if c.capabilities.iter().any(|name| {
                 name == crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1
-            }) => {}
+            }) && c
+                .capabilities
+                .iter()
+                .any(|name| name == crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1)
+                && (identity.payload.handoff.policy.is_none()
+                    || c.capabilities.iter().any(|name| {
+                        name == crate::protocol::capabilities::INVITATION_CONFIRMATION_V1
+                    })) => {}
         _ => {
             return Err(super::unsupported(
                 "daemon lacks guarded bootstrap resolution capability",
@@ -914,6 +932,7 @@ fn downstream_plan(
         startup_input: None,
         bootstrap_input: payload.launch.startup_input.clone(),
         request: super::handoff::HandoffRequest {
+            policy: payload.handoff.policy.clone(),
             automatic: false,
             thread,
             thread_name,
@@ -1089,7 +1108,7 @@ pub(crate) struct BootstrapProgress {
     pub creation: Option<crate::ports::CreatedTab>,
     pub not_submitted: bool,
 }
-const MAX_BOOTSTRAP_PROGRESS: usize = 128 * 1024;
+pub(crate) const MAX_BOOTSTRAP_PROGRESS: usize = 512 * 1024;
 fn save_bootstrap_progress(
     journal: &super::journal::Journal,
     reference: &super::journal::IntentRef,

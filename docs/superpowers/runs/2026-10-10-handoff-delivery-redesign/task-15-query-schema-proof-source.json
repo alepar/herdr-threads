@@ -1,0 +1,51 @@
+{
+  "workspace": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "head": "ee1e598c3ee96566ddc9b397185cdc97c8bf6218",
+  "branch": "task-ht-0lo.8.4",
+  "source_sha256": "94503b4829070e7a6776e8ca14ed3f249e88d109eb1099b49cb16e3c93d3b0b9",
+  "source_file_count": 893,
+  "tracked_diff_sha256": "7030301f18d83995baa23c1cc2e1045d3ef8fa565b053b6b635cbe9228163a24",
+  "algorithm": "sorted src/tests/migrations files plus Cargo.toml/Cargo.lock; relative path UTF8 + NUL + file SHA256 bytes",
+  "checks": [
+    {
+      "target": "lib",
+      "filter": "presentation_hydrate_exact_query_is_driven_by_bounded_wanted_ids",
+      "log": "/private/tmp/ht-task15-hydrate-max-query-proof.log",
+      "selected": 1,
+      "passed": 1,
+      "VM_wanted_1": 71,
+      "VM_wanted_100": 4328
+    },
+    {
+      "target": "lib",
+      "filter": "presentation_schema_pending_index_build_work_tracks_only_pending_projection",
+      "log": "/private/tmp/ht-task15-index-build-proof.log",
+      "selected": 1,
+      "passed": 1,
+      "pending_VM": [
+        [
+          0,
+          26
+        ],
+        [
+          1,
+          36
+        ],
+        [
+          32,
+          346
+        ]
+      ]
+    },
+    {
+      "target": "lib",
+      "filter": "presentation_schema_populated_v39_",
+      "log": "/private/tmp/ht-task15-populated-upgrade-proof-current.log",
+      "selected": 2,
+      "passed": 2,
+      "provenance_note": "Cached unique2PASS repeated once to close missing exact-hash provenance at this recorded full source snapshot; no source change/rebuild."
+    }
+  ],
+  "command_template": "CARGO_TARGET_DIR=\"$PWD/target\" CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib FILTER -- --nocapture",
+  "application_authority": false
+}

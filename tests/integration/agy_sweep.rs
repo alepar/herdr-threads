@@ -80,7 +80,7 @@ impl Agy {
         let mark = rig.host.mark();
         rig.cli(
             Some((&rig.a, PANE_A)),
-            &["invite", &rig.thread, "--seat", &agy.seat],
+            &["invite", &rig.thread, "--seat", &agy.seat, "--require-ack"],
         )
         .data("invite agy");
         // The invitation wakes the idle agy pane natively; waiting for that prompt before the

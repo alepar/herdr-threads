@@ -103,6 +103,8 @@ pub enum Command {
     AckModDelivered(AckModDelivered),
     /// Hook-pull read (delivery-policy DP4); gated by `delivery.pull_v1`.
     DeliveryPull(crate::protocol::delivery::DeliveryPull),
+    DeliveryPullV2(crate::protocol::delivery::DeliveryPullV2),
+    DeliveryPresentationConfirmV2(crate::protocol::delivery::DeliveryPresentationConfirmV2),
     /// Hook-pull settlement (DP4); gated by `delivery.pull_v1`.
     DeliveryConfirm(crate::protocol::delivery::DeliveryConfirm),
     /// Presentation bookkeeping only; never an ACK or adoption.
@@ -706,6 +708,9 @@ pub struct CreateThread {
 /// Resolve the immutable canonical pair; returns the ordinary ThreadCreated ID.
 /// Resolves the immutable canonical pair through the guarded thread.direct_v1 runtime.
 pub struct EnsureDirectThread {
+    /// Only initial creation uses this policy; omission retains the historical timed request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creation_policy: Option<EnsureCreationPolicy>,
     pub recipient: SeatId,
     pub operation: OperationId,
     pub claim: CallerClaim,
@@ -713,12 +718,42 @@ pub struct EnsureDirectThread {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Invite {
+    /// Absence preserves the historical timed invitation and its operation digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation: Option<InvitationConfirmation>,
     pub thread: ThreadId,
     pub seat: SeatId,
     pub deadline_millis: Option<u64>,
     pub operation: OperationId,
     pub claim: CallerClaim,
 }
+/// Frozen initial direct-pair invitation policy. Existing episodes are never changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnsureCreationPolicy {
+    pub confirmation: InvitationConfirmation,
+    pub deadline_millis: Option<u64>,
+}
+impl EnsureCreationPolicy {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self
+            .deadline_millis
+            .is_some_and(|v| v == 0 || v > i64::MAX as u64)
+            || (self.confirmation == InvitationConfirmation::Lazy && self.deadline_millis.is_some())
+        {
+            return Err("invalid direct invitation creation policy");
+        }
+        Ok(())
+    }
+}
+/// Explicit modern invitation policy; the duration remains `deadline_millis`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvitationConfirmation {
+    Lazy,
+    RequireAck,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Join {
@@ -1190,6 +1225,8 @@ impl Command {
         // so it is not an early-refused accountable claim; its binding fields are still checked.
         let claim = self.accountable_claim().or(match self {
             Self::DeliveryPull(v) => Some(&v.claim),
+            Self::DeliveryPullV2(v) => Some(&v.claim),
+            Self::DeliveryPresentationConfirmV2(v) => Some(&v.claim),
             Self::DeliveryConfirm(v) => Some(&v.claim),
             _ => None,
         });
@@ -1243,6 +1280,18 @@ impl Command {
                 change.name.as_deref().map_or(Ok(()), validate_thread_name)
             }
             Self::ResolveThread(query) => validate_thread_name(&query.selector),
+            Self::Invite(invite)
+                if invite.confirmation == Some(InvitationConfirmation::Lazy)
+                    && invite.deadline_millis.is_some() =>
+            {
+                Err("lazy invitation conflicts with deadline")
+            }
+            Self::Invite(invite)
+                if invite.confirmation == Some(InvitationConfirmation::RequireAck)
+                    && invite.claim.harness == crate::protocol::authority::Harness::Human =>
+            {
+                Err("human invitation cannot require agent confirmation")
+            }
             Self::Invite(invite) if invite.deadline_millis == Some(0) => {
                 Err("deadline must be positive")
             }
@@ -1363,6 +1412,8 @@ impl Command {
                 Err("invalid mod delivery ack batch")
             }
             Self::DeliveryPull(pull) => pull.validate(),
+            Self::DeliveryPullV2(pull) => pull.validate(),
+            Self::DeliveryPresentationConfirmV2(confirm) => confirm.validate(),
             Self::DeliveryConfirm(confirm) => confirm.validate(),
             _ => Ok(()),
         }

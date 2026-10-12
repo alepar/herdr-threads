@@ -1,0 +1,836 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+────────────
+ Nextest run ID d9c00fe5-cbd2-4242-8bc5-9f43ba0da9dd with nextest profile: default
+    Starting 771 tests across 5 binaries (5331 tests skipped)
+        PASS [   7.716s] (  1/771) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_actual_admission_boundary_completes_and_next_metadata_size_has_zero_effects
+        PASS [   4.854s] (  2/771) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_maximum_escaped_body_completes_and_recovers_exactly
+        PASS [   0.012s] (  3/771) herdr-threads::integration mod_delivery::activation_capacity_flow_stop_recovers_poison_and_releases_waiter
+        PASS [   0.012s] (  4/771) herdr-threads::integration mod_delivery::activation_capacity_flow_oracle_assertions_do_not_poison
+        PASS [   0.014s] (  5/771) herdr-threads::integration mod_delivery::activation_capacity_flow_failed_or_unwritten_attention_has_no_marker
+        PASS [   0.008s] (  6/771) herdr-threads::integration mod_delivery::activation_capacity_flow_successful_frame_write_serializes_pull_observation
+        PASS [   0.059s] (  7/771) herdr-threads::integration mod_delivery::activation_capacity_flow_oracle_unwind_restores_relay
+        PASS [   0.124s] (  8/771) herdr-threads cli::cooperative_tests::subagent_text_inbox_without_binding_cursors_is_a_read_only_read
+        PASS [   0.146s] (  9/771) herdr-threads cli::cooperative_tests::subagent_own_inbox_displays_advances_only_its_cursor_and_machine_read_carries_the_claim
+        PASS [   0.360s] ( 10/771) herdr-threads cli::handoff::tests::acquired_stdin_survives_retry_after_reader_is_unavailable
+        PASS [   0.254s] ( 11/771) herdr-threads cli::handoff::tests::automatic_launched_pane_lost_start_never_resubmits_on_retry
+        PASS [   0.536s] ( 12/771) herdr-threads cli::handoff::tests::automatic_launched_noncompletion_keeps_exact_artifact_and_bounded_progress
+        PASS [   0.263s] ( 13/771) herdr-threads cli::handoff_delivery::tests::automatic_existing_pane_full_request_resolves_one_seat
+        PASS [   0.572s] ( 14/771) herdr-threads cli::handoff::tests::maximum_instruction_file_freezes_through_explicit_launch_retry
+        PASS [   0.243s] ( 15/771) herdr-threads cli::handoff_delivery::tests::automatic_existing_seat_full_request_ensures_and_sends
+        PASS [   0.505s] ( 16/771) herdr-threads cli::handoff_delivery::tests::automatic_existing_max_escaped_body_and_independent_frozen_deadlines
+        PASS [   0.995s] ( 17/771) herdr-threads cli::handoff::tests::automatic_launched_maximum_escaped_body_is_frozen_and_retries_without_relaunch
+        PASS [   0.246s] ( 18/771) herdr-threads cli::handoff_delivery::tests::historical_none_automatic_existing_retry_requires_receipts_before_effects_and_preserves_origin
+        PASS [   0.010s] ( 19/771) herdr-threads cli::hook::neutral_tests::adapter_completion_requires_successful_stdout_write_and_flush
+        PASS [   0.010s] ( 20/771) herdr-threads cli::hook::neutral_tests::default_hook_step_completion_is_inert
+        PASS [   0.010s] ( 21/771) herdr-threads cli::hook::neutral_tests::every_hooks_own_harness_finds_its_resolved_binding
+        PASS [   0.010s] ( 22/771) herdr-threads cli::hook::neutral_tests::parse_failure_report_follows_the_legacy_contract_predicate
+        PASS [   0.010s] ( 23/771) herdr-threads cli::hook::tests::claude_subagent_pre_tool_use_rewrites_herdr_commands
+        PASS [   0.848s] ( 24/771) herdr-threads cli::handoff_delivery::tests::handoff_policy_completed_canonical_status_bypasses_missing_capabilities_but_pending_refuses
+        PASS [   0.797s] ( 25/771) herdr-threads cli::handoff_delivery::tests::handoff_policy_lazy_invitation_still_warns_sender_for_unregistered_ack_required_recipient
+        PASS [   0.954s] ( 26/771) herdr-threads cli::handoff_delivery::tests::handoff_policy_already_joined_unavailable_recipient_warns_without_new_invitation
+        PASS [   0.306s] ( 27/771) herdr-threads cli::hook::tests::registered_resume::claude_subagent_start_enrolls_its_binding_and_still_renders_guidance
+        PASS [   0.305s] ( 28/771) herdr-threads cli::hook::tests::registered_resume::claude_subagent_stop_reports_a_stop_binding_event_for_its_agent
+        PASS [   0.674s] ( 29/771) herdr-threads cli::hook::tests::registered_resume::claude_session_start_reports_no_binding_event
+        PASS [   0.110s] ( 30/771) herdr-threads cli::hook_inbox::tests::cli_inbox_prints_first_contact_once
+        PASS [   0.015s] ( 31/771) herdr-threads cli::hook_inbox::tests::inbox_sends_claim_and_advances_after_full_flush
+        PASS [   0.493s] ( 32/771) herdr-threads cli::hook::tests::registered_resume::codex_session_end_and_subagent_stop_report_end_binding_events
+        PASS [   0.010s] ( 33/771) herdr-threads cli::hook_inbox::tests::truncated_page_advances_only_what_was_displayed
+        PASS [   0.016s] ( 34/771) herdr-threads cli::human::tests::presentation_flags_parse_and_conflict_with_json
+        PASS [   0.012s] ( 35/771) herdr-threads cli::human::tests::presentation_is_machine_unless_selected_and_never_for_json
+        PASS [   0.523s] ( 36/771) herdr-threads cli::hook::tests::registered_resume::hermes_finalize_and_delegate_events_report_binding_events
+        PASS [   1.293s] ( 37/771) herdr-threads cli::hook::tests::registered_resume::claude_binding_and_hermes_one_shot_coexist_on_one_seat
+        PASS [   0.198s] ( 38/771) herdr-threads cli::hook_inbox::tests::subagent_inbox_never_sends_ack_displayed
+        PASS [   0.317s] ( 39/771) herdr-threads cli::launch::tests::adapter_launch_configuration_mutation_before_submit_refuses
+        PASS [   2.812s] ( 40/771) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion
+        PASS [   0.557s] ( 41/771) herdr-threads cli::launch::tests::agy_guarded_launch_keeps_plugin_readiness_advisory_and_native_guards
+        PASS [   0.483s] ( 42/771) herdr-threads cli::q5_continuation_normalization::q5_normalizer_actual_complete_message_has_no_continuation_to_rewrite
+        PASS [   0.337s] ( 43/771) herdr-threads cli::q5_continuation_normalization::q5_normalizer_actual_partial_utf8_body_restores_only_continuation_budget
+        PASS [   0.219s] ( 44/771) herdr-threads cli::q5_continuation_normalization::q5_normalizer_changes_only_budget_value_and_preserves_flag_like_raw_data
+        PASS [   0.284s] ( 45/771) herdr-threads cli::q5_continuation_normalization::q5_normalizer_default_history_omission_adds_only_original_byte_bound
+        PASS [   3.280s] ( 46/771) herdr-threads::integration mod_delivery::activation_v2_watch_lost_confirm_response_replays_exact_subset
+        PASS [   0.306s] ( 47/771) herdr-threads cli::q5_continuation_normalization::q5_normalizer_mismatched_unrelated_result_kind_is_unchanged
+        PASS [   0.013s] ( 48/771) herdr-threads cli::q5_continuation_normalization::q5_post_refit_empty_lazy_modes_still_guard_actual_final_bytes
+        PASS [   0.018s] ( 49/771) herdr-threads cli::skill::tests::skill_prints_verbatim_in_every_presentation
+        PASS [   0.252s] ( 50/771) herdr-threads cli::q5_continuation_normalization::q5_normalizer_route_thresholds_and_identical_duplicate_values_preserve_existing_grammar
+        PASS [   0.278s] ( 51/771) herdr-threads cli::topology_contract_retry_tests::topology_contract_retry_refuses_unavailable_or_unconfigured_runtime_before_presentation
+        PASS [   0.012s] ( 52/771) herdr-threads cli::topology_handoff::tests::live::automatic_live::automatic_old_peer_with_all_other_caps_refuses_before_selector_or_caller_allocation
+        PASS [   3.702s] ( 53/771) herdr-threads::service graph_d2::registered_service_and_native_caller_complete_required_flow_with_exact_replay
+        PASS [   0.404s] ( 54/771) herdr-threads cli::q5_continuation_normalization::q5_normalizer_terminal_and_never_refit_results_remain_exactly_unchanged
+        PASS [   2.818s] ( 55/771) herdr-threads cli::handoff_delivery::tests::maximum_instruction_file_freezes_through_existing_delivery_and_retry
+        PASS [   0.387s] ( 56/771) herdr-threads cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_below_limit_replays_exact_bytes
+        PASS [   0.668s] ( 57/771) herdr-threads cli::topology_handoff::tests::live::automatic_live::automatic_child_begin_expired_permit_has_no_effects_and_fresh_permit_succeeds
+        PASS [   0.698s] ( 58/771) herdr-threads cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_over_limit_read_refuses
+        PASS [   0.667s] ( 59/771) herdr-threads cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_over_limit_write_refuses_atomically
+        PASS [   0.772s] ( 60/771) herdr-threads cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_over_limit_replay_refuses
+        PASS [   2.258s] ( 61/771) herdr-threads cli::q5_continuation_normalization::q5_malformed_post_refit_continuations_stop_actual_writer_before_output_or_mutation
+        PASS [   0.699s] ( 62/771) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_canonical_completion_refuses_full_diagnostic_report
+        PASS [   0.750s] ( 63/771) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_artifact_failure_keeps_synced_summary_and_reopened_retry_never_starts
+        PASS [   4.914s] ( 64/771) herdr-threads::integration mod_delivery::activation_v2_watch_lazy_only_page_is_passive
+        PASS [   5.084s] ( 65/771) herdr-threads::integration mod_delivery::activation_v2_elected_watch_capabilities_lease_output_confirm
+        PASS [   1.052s] ( 66/771) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_committed_completion_reply_loss_reopens_without_artifact_or_relaunch
+        PASS [   1.173s] ( 67/771) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_large_diagnostics_preserve_full_local_report_and_complete_summary
+        PASS [   0.991s] ( 68/771) herdr-threads cli::topology_handoff::tests::live::automatic_live::public_historical_none_new_tab_retry_requires_receipts_before_any_effect_and_preserves_origin
+        PASS [   0.012s] ( 69/771) herdr-threads cli::watch::tests::a_drain_that_finds_nothing_pending_retracts_the_last_attention_line
+        PASS [   1.017s] ( 70/771) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_unknown_large_diagnostics_keep_bounded_truthful_progress
+        PASS [   0.010s] ( 71/771) herdr-threads cli::watch::tests::a_run_without_attention_never_retracts
+        PASS [   0.013s] ( 72/771) herdr-threads cli::watch::tests::a_failed_chunk_marks_only_its_ids_retryable
+        PASS [   0.023s] ( 73/771) herdr-threads cli::watch::tests::attention_frame_triggers_another_drain
+        PASS [   0.029s] ( 74/771) herdr-threads cli::watch::tests::body_over_8_kib_is_truncated_with_marker_and_hint_file_records_id
+        PASS [   0.010s] ( 75/771) herdr-threads cli::watch::tests::busy_or_timed_out_probe_is_retryable
+        PASS [   2.548s] ( 76/771) herdr-threads::integration mod_delivery::activation_v2_watch_replacement_replays_uncommitted_output
+        PASS [   0.011s] ( 77/771) herdr-threads cli::watch::tests::chunked_body_is_reassembled_before_emitting
+        PASS [   0.445s] ( 78/771) herdr-threads cli::topology_handoff::tests::live::live_preallocation_budget_entry_and_final_presentation_zero_effect
+        PASS [   0.026s] ( 79/771) herdr-threads cli::watch::tests::capable_watch_streams_ordered_v2_then_explicitly_confirms_captured_controls
+        PASS [   0.010s] ( 80/771) herdr-threads cli::watch::tests::definitive_unknown_wire_version_probe_exits_3_unsupported
+        PASS [   0.027s] ( 81/771) herdr-threads cli::watch::tests::dead_parent_stops_the_stream_loop_without_a_status_line
+        PASS [   0.012s] ( 82/771) herdr-threads cli::watch::tests::drain_pages_until_exhausted_with_schema_kind_and_stable_ids
+        PASS [   1.218s] ( 83/771) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_recovery_above_historical_limit_succeeds_and_replays
+        PASS [   0.010s] ( 84/771) herdr-threads cli::watch::tests::drain_surfaces_daemon_errors_and_closed_stdout
+        PASS [   0.009s] ( 85/771) herdr-threads cli::watch::tests::env_off_exits_3_with_env_disabled_status_before_connecting
+        PASS [   0.010s] ( 86/771) herdr-threads cli::watch::tests::every_chunk_failing_prints_nothing_and_exits_1
+        PASS [   0.010s] ( 87/771) herdr-threads cli::watch::tests::exactly_the_batch_limit_is_one_call
+        PASS [   0.010s] ( 88/771) herdr-threads cli::watch::tests::failed_capability_probe_exits_retryable_daemon_unavailable
+        PASS [   0.010s] ( 89/771) herdr-threads cli::watch::tests::informational_warnings_raise_no_attention_line
+        PASS [   0.010s] ( 90/771) herdr-threads cli::watch::tests::invitation_policy_lazy_is_bookkeeping_while_timed_and_legacy_raise_attention
+        PASS [   0.009s] ( 91/771) herdr-threads cli::watch::tests::lazy_rows_stream_as_lazy_without_ack_required
+        PASS [   0.010s] ( 92/771) herdr-threads cli::watch::tests::invitations_and_warnings_collapse_into_one_attention_line_per_version
+        PASS [   0.010s] ( 93/771) herdr-threads cli::watch::tests::missing_mod_watch_capability_exits_3_unsupported
+        PASS [   0.010s] ( 94/771) herdr-threads cli::watch::tests::message_lines_carry_the_thread_topic_and_sender_names
+        PASS [   0.010s] ( 95/771) herdr-threads cli::watch::tests::missing_pane_exits_3_with_no_pane_status_and_registers_nothing
+        PASS [   0.012s] ( 96/771) herdr-threads cli::watch::tests::missing_pane_through_run_in_pane_prints_one_status_and_exits_3
+        PASS [   0.010s] ( 97/771) herdr-threads cli::watch::tests::one_over_is_two_calls
+        PASS [   0.009s] ( 98/771) herdr-threads cli::watch::tests::parent_death_ends_watch
+        PASS [   0.012s] ( 99/771) herdr-threads cli::watch::tests::parses_watch_ack_argv
+        PASS [   0.011s] (100/771) herdr-threads cli::watch::tests::parses_watch_argv
+        PASS [   0.010s] (101/771) herdr-threads cli::watch::tests::presentation_watch_failed_flush_never_confirms_or_writes_success_hint
+        PASS [   0.011s] (102/771) herdr-threads cli::watch::tests::presentation_watch_close_wins_before_next_more_quantum
+        PASS [   3.208s] (103/771) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_lost_completion_preserves_exact_recovery
+        PASS [   0.010s] (104/771) herdr-threads cli::watch::tests::presentation_watch_foreign_acknowledgement_is_error_not_success
+        PASS [   0.010s] (105/771) herdr-threads cli::watch::tests::presentation_watch_new_owner_physically_reemits_before_own_confirmation
+        PASS [   0.154s] (106/771) herdr-threads cli::watch::tests::close_frame_prints_closing_status_and_exits_with_close_code
+        PASS [   0.023s] (107/771) herdr-threads cli::watch::tests::presentation_watch_refused_confirmation_never_records_truncation_hint
+        PASS [   0.011s] (108/771) herdr-threads cli::watch::tests::q3_absent_watch_opt_in_preserves_historical_bytes
+        PASS [   0.383s] (109/771) herdr-threads cli::topology_recover::tests::root_operator_retry_refuses_before_completed_presentation_and_cleanup
+        PASS [   0.010s] (110/771) herdr-threads cli::watch::tests::q3_false_watch_opt_in_normalizes_to_historical_bytes
+        PASS [   0.027s] (111/771) herdr-threads cli::watch::tests::q3_all_watch_mode_capabilities_send_true_and_use_the_accepted_lease
+        PASS [   0.062s] (112/771) herdr-threads cli::watch::tests::presentation_watch_requires_both_capability_and_valid_accepted_lease
+        PASS [   0.026s] (113/771) herdr-threads cli::watch::tests::q3_missing_binding_cursors_capability_keeps_old_wire_and_consumer
+        PASS [   0.017s] (114/771) herdr-threads cli::watch::tests::q3_missing_mod_watch_capability_never_opens_a_registration_socket
+        PASS [   0.032s] (115/771) herdr-threads cli::watch::tests::q3_missing_generic_presentation_capability_keeps_old_wire_and_consumer
+        PASS [   0.020s] (116/771) herdr-threads cli::watch::tests::q3_raw_watch_server_drop_joins_and_removes_socket_on_unwind
+        PASS [   0.029s] (117/771) herdr-threads cli::watch::tests::q3_missing_watch_mode_capability_keeps_old_wire_and_consumer
+        PASS [   0.024s] (118/771) herdr-threads cli::watch::tests::q3_raw_watch_server_finishes_when_the_client_never_connects
+        PASS [   0.011s] (119/771) herdr-threads cli::watch::tests::q3_true_watch_opt_in_is_explicit_and_strictly_typed
+        PASS [   0.030s] (120/771) herdr-threads cli::watch::tests::q3_raw_watch_server_success_closes_the_socket_before_finish
+        PASS [   0.012s] (121/771) herdr-threads cli::watch::tests::q3_watch_discovery_failure_never_opens_a_registration_socket
+        PASS [   0.017s] (122/771) herdr-threads cli::watch::tests::rejects_bad_watch_argv
+        PASS [   0.010s] (123/771) herdr-threads cli::watch::tests::stub_mod_files_follow_the_layout
+        PASS [   0.009s] (124/771) herdr-threads cli::watch::tests::the_attention_line_follows_the_command_prefix
+        PASS [   0.028s] (125/771) herdr-threads cli::watch::tests::stdout_closed_exits_0_quietly
+        PASS [   0.028s] (126/771) herdr-threads cli::watch::tests::stream_eof_prints_stream_ended_and_exits_0
+        PASS [   0.019s] (127/771) herdr-threads cli::watch::tests::unreachable_daemon_exits_1_daemon_unavailable
+        PASS [   0.020s] (128/771) herdr-threads cli::watch::tests::unlocated_caller_exits_2_no_binding
+        PASS [   0.027s] (129/771) herdr-threads cli::watch::tests::unknown_wire_version_reply_exits_3_unsupported
+        PASS [   0.011s] (130/771) herdr-threads cli::watch::tests::unreachable_socket_exits_1_daemon_unavailable
+        PASS [   0.011s] (131/771) herdr-threads cli::watch::tests::watch_ack_error_prints_nothing_and_exits_1
+        PASS [   0.011s] (132/771) herdr-threads cli::watch::tests::watch_ack_over_the_batch_limit_sends_chunks_and_settles_every_id
+        PASS [   0.010s] (133/771) herdr-threads cli::watch::tests::watch_ack_prints_one_line_per_id_and_exits_0
+        PASS [   0.011s] (134/771) herdr-threads cli::watch::tests::watch_ack_refuses_hinted_truncated_ids_locally_and_sends_the_rest
+        PASS [   0.013s] (135/771) herdr-threads cli::watch::tests::watch_carries_a_passive_invitation_as_invitation_content_never_a_message
+        PASS [   0.026s] (136/771) herdr-threads cli::watch::tests::watch_drain_reads_the_registering_bindings_own_stream
+        PASS [   0.014s] (137/771) herdr-threads cli::watch::tests::watch_registers_with_its_own_session_claim
+        PASS [   0.024s] (138/771) herdr-threads cli::watch::tests::watch_drain_reads_the_seat_without_the_binding_cursors_capability
+        PASS [   1.751s] (139/771) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_completed_missing_child_and_artifact_is_readonly_and_truthful
+        PASS [   0.116s] (140/771) herdr-threads cli::watch::tests::refusal_prints_status_line_and_exits_with_contract_code
+        PASS [   0.437s] (141/771) herdr-threads daemon::transport::tests::automatic_known_request_rejects_unrelated_success_result_family
+        PASS [   0.010s] (142/771) herdr-threads daemon::transport::tests::automatic_response_overlimit_length_refuses_before_body_read
+        PASS [   0.479s] (143/771) herdr-threads daemon::transport::tests::automatic_historical_response_keeps_one_mib_scoped_encoder_limit
+        PASS [   0.511s] (144/771) herdr-threads daemon::transport::tests::automatic_recovery_response_larger_than_one_mib_survives_actual_local_client_transport
+        FAIL [   0.013s] (145/771) herdr-threads daemon::transport::watch_connection::tests::presentation_owner_accepted_wire_carries_the_registered_lease
+  stdout ───
+
+    running 1 test
+    test daemon::transport::watch_connection::tests::presentation_owner_accepted_wire_carries_the_registered_lease ... FAILED
+
+    failures:
+
+    failures:
+        daemon::transport::watch_connection::tests::presentation_owner_accepted_wire_carries_the_registered_lease
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4941 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'daemon::transport::watch_connection::tests::presentation_owner_accepted_wire_carries_the_registered_lease' (58896529) panicked at src/daemon/transport/../../../tests/daemon/watch_connection.rs:614:5:
+    assertion `left == right` failed
+      left: Accepted(WatchAccepted { presentation_lease: None, attention_version: 7 })
+     right: Accepted(WatchAccepted { presentation_lease: Some("0123456789abcdef0123456789abcdef"), attention_version: 7 })
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.010s] (146/771) herdr-threads delivery::ledger::tests::a_newer_generation_entry_is_not_touched
+        PASS [   0.537s] (147/771) herdr-threads daemon::transport::tests::automatic_response_embedded_identity_must_match_exact_request
+        PASS [   0.010s] (148/771) herdr-threads delivery::ledger::tests::a_rotated_generation_discards_only_that_bindings_offers
+        PASS [   0.010s] (149/771) herdr-threads delivery::ledger::tests::due_cache_filters_full_stamps_and_isolates_consumer_and_session
+        PASS [   1.695s] (150/771) herdr-threads::integration mod_delivery::clear_new_binding_digests_and_wakes_for_its_unread_mail_without_grace
+        PASS [   0.021s] (151/771) herdr-threads delivery::ledger::tests::due_cache_recreation_and_retention_never_reuse_an_old_incarnation
+        PASS [   0.025s] (152/771) herdr-threads delivery::ledger::tests::eviction_counts_bindings_and_keeps_the_seat_index_in_step
+        PASS [   0.012s] (153/771) herdr-threads delivery::ledger::tests::outlook_over_targets
+        PASS [   0.011s] (154/771) herdr-threads delivery::ledger::tests::two_bindings_of_one_seat_keep_separate_offers_counts_and_spacing
+        PASS [   0.010s] (155/771) herdr-threads delivery::presentation::sizing_failure_tests::actual_overflow_is_distinct_from_exhaustion_and_invalid_rendering
+        PASS [   0.010s] (156/771) herdr-threads harness::agy::decode::tests::registered_presentation_codecs_equal_actual_native_shapes
+        PASS [   0.015s] (157/771) herdr-threads harness::agy::decode::tests::native_presentation_encoder_caps_actual_final_bytes
+        PASS [   0.076s] (158/771) herdr-threads harness::agy::delivery::tests::a_cancelled_probation_turn_re_downgrades_with_a_fresh_timestamp
+        PASS [   0.079s] (159/771) herdr-threads harness::agy::delivery::tests::a_confirmed_probation_frame_clears_the_downgrade
+        PASS [   0.019s] (160/771) herdr-threads harness::agy::delivery::tests::a_downgrade_of_another_executable_identity_is_not_shown
+        PASS [   0.027s] (161/771) herdr-threads harness::agy::delivery::tests::a_forged_header_after_a_literal_backslash_n_in_a_body_does_not_confirm
+        PASS [   0.028s] (162/771) herdr-threads harness::agy::delivery::tests::a_frame_pushed_past_a_fixed_tail_by_tool_output_is_still_confirmed
+        PASS [   0.020s] (163/771) herdr-threads harness::agy::delivery::tests::a_full_page_of_offered_ids_is_tracked
+        PASS [   0.012s] (164/771) herdr-threads harness::agy::delivery::tests::a_genuine_post_tool_call_frame_confirms
+        PASS [   1.028s] (165/771) herdr-threads cli::watch::tests::hint_file_keeps_only_the_newest_1024_ids
+        PASS [   0.013s] (166/771) herdr-threads harness::agy::delivery::tests::a_genuine_system_message_frame_confirms
+        PASS [   0.016s] (167/771) herdr-threads harness::agy::delivery::tests::a_genuine_user_message_frame_confirms
+        PASS [   0.018s] (168/771) herdr-threads harness::agy::delivery::tests::a_header_in_a_step_with_a_user_source_does_not_confirm
+        PASS [   0.015s] (169/771) herdr-threads harness::agy::delivery::tests::a_header_in_a_tool_result_does_not_confirm
+        PASS [   0.016s] (170/771) herdr-threads harness::agy::delivery::tests::a_header_in_model_output_does_not_confirm
+        PASS [   0.015s] (171/771) herdr-threads harness::agy::delivery::tests::a_header_quoted_inside_a_body_is_not_a_frame_and_an_id_prefix_is_not_the_id
+        PASS [   0.016s] (172/771) herdr-threads harness::agy::delivery::tests::a_launcher_parent_falls_back_to_the_path_resolved_agy
+        PASS [   0.047s] (173/771) herdr-threads harness::agy::delivery::tests::a_new_binding_generation_forgets_the_previous_generations_ids
+        PASS [   0.042s] (174/771) herdr-threads harness::agy::delivery::tests::a_notices_only_page_renders_a_system_message_when_not_downgraded
+        PASS [   0.422s] (175/771) herdr-threads daemon::transport::tests::unscoped_ordinary_encoder_keeps_one_mib_even_for_automatic_result
+        PASS [   0.149s] (176/771) herdr-threads harness::agy::delivery::tests::a_new_executable_identity_injects_a_system_message_again
+        PASS [   0.942s] (177/771) herdr-threads daemon::transport::tests::automatic_historical_response_keeps_one_mib_client_allocation_limit
+        PASS [   0.029s] (178/771) herdr-threads harness::agy::delivery::tests::a_shorter_transcript_than_the_offset_is_scanned_from_its_start
+        PASS [   0.173s] (179/771) herdr-threads harness::agy::delivery::tests::a_page_with_no_offered_id_neither_opens_nor_spends_probation
+        PASS [   0.173s] (180/771) herdr-threads harness::agy::delivery::tests::a_probation_confirmed_at_a_later_pre_invocation_clears_the_downgrade
+        PASS [   0.082s] (181/771) herdr-threads harness::agy::delivery::tests::a_retryable_confirm_keeps_the_id_for_the_next_attempt
+        PASS [   0.034s] (182/771) herdr-threads harness::agy::delivery::tests::a_window_that_starts_inside_a_record_skips_that_record
+        PASS [   1.252s] (183/771) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_system_hook_round_trip
+        PASS [   0.055s] (184/771) herdr-threads harness::agy::delivery::tests::a_symlinked_binary_is_identified_by_its_resolved_target
+        PASS [   0.083s] (185/771) herdr-threads harness::agy::delivery::tests::a_single_injection_miss_does_not_downgrade
+        PASS [   0.009s] (186/771) herdr-threads harness::agy::delivery::tests::agy_declares_hook_pull_with_native_idle_wake
+        PASS [   0.160s] (187/771) herdr-threads harness::agy::delivery::tests::a_probation_with_no_stop_re_downgrades_at_the_next_injection_after_24_hours
+        PASS [   0.097s] (188/771) herdr-threads harness::agy::delivery::tests::a_stale_never_found_id_does_not_block_confirming_newer_frames
+        PASS [   0.051s] (189/771) herdr-threads harness::agy::delivery::tests::admission_selects_user_message_only_for_the_current_identity
+        PASS [   0.092s] (190/771) herdr-threads harness::agy::delivery::tests::an_existing_conversation_does_not_prune
+        PASS [   0.067s] (191/771) herdr-threads harness::agy::delivery::tests::an_unchanged_reply_caches_the_attention_version_and_the_next_pull_sends_it
+        PASS [   0.080s] (192/771) herdr-threads harness::agy::delivery::tests::an_id_within_one_window_of_the_end_stays_tracked
+        PASS [   0.020s] (193/771) herdr-threads harness::agy::delivery::tests::completion_rejects_duplicate_captured_control_stamps
+        PASS [   0.172s] (194/771) herdr-threads harness::agy::delivery::tests::an_errored_probation_turn_re_downgrades_with_a_fresh_timestamp
+        PASS [   0.189s] (195/771) herdr-threads harness::agy::delivery::tests::an_abort_style_stop_error_downgrades_at_once
+        PASS [   2.539s] (196/771) herdr-threads::integration mod_delivery::agy_sweep::agy_pull_confirm_and_the_claude_watch_path_coexist_on_one_daemon
+        PASS [   0.109s] (197/771) herdr-threads harness::agy::delivery::tests::completion_applies_only_the_daemon_acknowledged_captured_control_subset
+        PASS [   0.120s] (198/771) herdr-threads harness::agy::delivery::tests::an_unreadable_transcript_ends_the_probation_turn
+        PASS [   0.053s] (199/771) herdr-threads harness::agy::delivery::tests::doctor_reports_the_downgrade_and_the_never_confirmed_count
+        PASS [   0.059s] (200/771) herdr-threads harness::agy::delivery::tests::emitted_v2_controls_apply_exact_epochs_and_old_replay_cannot_resurrect_a_clear
+        PASS [   0.197s] (201/771) herdr-threads harness::agy::delivery::tests::daemon::a_clear_rotation_discards_the_agy_pull_ledger
+        PASS [   0.036s] (202/771) herdr-threads harness::agy::delivery::tests::expired_probation_maintenance_remains_independent_of_page_emission
+        PASS [   0.033s] (203/771) herdr-threads harness::agy::delivery::tests::frozen_reply_codec_overrides_new_local_preference_without_opening_early_probation
+        PASS [   0.035s] (204/771) herdr-threads harness::agy::delivery::tests::historical_system_message_scripted_page_preserves_native_bytes_and_oversize_geometry
+        PASS [   0.045s] (205/771) herdr-threads harness::agy::delivery::tests::historical_downgraded_user_message_scripted_page_preserves_native_bytes_and_oversize_geometry
+        PASS [   0.015s] (206/771) herdr-threads harness::agy::delivery::tests::hook_step_does_not_commit_offered_page_before_stdout_emission
+        PASS [   0.201s] (207/771) herdr-threads harness::agy::delivery::tests::daemon::pull_inject_fixture_transcript_confirm_settles_with_hook_delivery_provenance
+        PASS [   0.020s] (208/771) herdr-threads harness::agy::delivery::tests::malformed_or_oversized_completion_is_inert
+        PASS [   0.021s] (209/771) herdr-threads harness::agy::delivery::tests::malformed_and_truncated_lines_are_skipped
+        PASS [   0.039s] (210/771) herdr-threads harness::agy::delivery::tests::mismatched_or_unsupported_v2_native_output_is_not_emitted_or_confirmed
+        PASS [   0.084s] (211/771) herdr-threads harness::agy::delivery::tests::misses_on_the_same_turn_twice_do_not_downgrade
+        PASS [   0.115s] (212/771) herdr-threads harness::agy::delivery::tests::invalid_acknowledged_control_subset_never_saves_hints_or_opens_probation
+        PASS [   0.009s] (213/771) herdr-threads harness::agy::delivery::tests::only_a_hook_command_argv_names_a_state_dir
+        PASS [   0.028s] (214/771) herdr-threads harness::agy::delivery::tests::output_shapes_are_byte_locked
+        PASS [   0.047s] (215/771) herdr-threads harness::agy::delivery::tests::nothing_is_printed_for_unchanged_refusals_and_daemon_errors
+        PASS [   0.092s] (216/771) herdr-threads harness::agy::delivery::tests::misses_on_two_distinct_turns_downgrade_to_user_message
+        PASS [   0.021s] (217/771) herdr-threads harness::agy::delivery::tests::postflush_confirmation_loss_keeps_state_replayable_after_restart
+        PASS [   0.027s] (218/771) herdr-threads harness::agy::delivery::tests::preparing_probation_does_not_open_it_before_emission
+        PASS [   0.027s] (219/771) herdr-threads harness::agy::delivery::tests::postflush_state_hint_does_not_overwrite_an_observed_concurrent_change
+        PASS [   0.059s] (220/771) herdr-threads harness::agy::delivery::tests::probation_completion_preserves_an_observed_changed_downgrade_hint
+        PASS [   0.060s] (221/771) herdr-threads harness::agy::delivery::tests::probation_confirmation_loss_keeps_the_retry_available
+        PASS [   0.012s] (222/771) herdr-threads harness::agy::delivery::tests::scan_finds_the_frame_ids_after_the_offset
+        PASS [   0.012s] (223/771) herdr-threads harness::agy::delivery::tests::scan_ignores_frames_before_the_recorded_offset
+        PASS [   0.097s] (224/771) herdr-threads harness::agy::delivery::tests::probation_after_24_hours_is_one_system_message_turn
+        PASS [   0.037s] (225/771) herdr-threads harness::agy::delivery::tests::probation_opening_is_deferred_until_successful_completion
+        PASS [   0.020s] (226/771) herdr-threads harness::agy::delivery::tests::stale_confirmation_and_expired_completion_never_save_injected_state
+        PASS [   0.062s] (227/771) herdr-threads harness::agy::delivery::tests::state_files_untouched_for_30_days_are_pruned_when_a_new_conversation_starts
+        PASS [   0.070s] (228/771) herdr-threads harness::agy::delivery::tests::stop_confirms_a_frame_in_the_turns_last_call_and_records_no_miss
+        PASS [   0.090s] (229/771) herdr-threads harness::agy::delivery::tests::stop_confirms_newer_frames_past_a_stale_id_and_records_no_miss_for_it
+        PASS [   0.075s] (230/771) herdr-threads harness::agy::delivery::tests::the_next_pre_invocation_confirms_the_frame_it_finds_after_the_offset
+        PASS [   0.676s] (231/771) herdr-threads harness::agy::delivery::tests::daemon::canonical_v2_system_allocated_pages_fit_actual_native_codec
+        PASS [   0.698s] (232/771) herdr-threads harness::agy::delivery::tests::daemon::canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec
+        PASS [   0.067s] (233/771) herdr-threads harness::agy::delivery::tests::the_state_file_is_created_after_a_pull_and_deleted_on_session_mismatch
+        PASS [   0.075s] (234/771) herdr-threads harness::agy::delivery::tests::the_scan_is_bounded_at_8_mib_and_past_the_bound_is_non_evidence
+        PASS [   0.058s] (235/771) herdr-threads harness::agy::delivery::tests::the_state_file_never_exceeds_4_kib
+        PASS [   0.018s] (236/771) herdr-threads harness::agy::delivery::tests::unparseable_missing_and_non_file_transcripts_find_nothing
+        PASS [   0.263s] (237/771) herdr-threads harness::agy::delivery::tests::setup_clears_the_downgrade_record
+        PASS [   0.012s] (238/771) herdr-threads harness::registry::tests::required_hook_events_of_builtins_are_their_installed_sets
+        PASS [   0.051s] (239/771) herdr-threads harness::agy::delivery::tests::v2_invitation_only_empty_and_unchanged_pages_never_cache_current_metadata_as_seen
+        PASS [   0.010s] (240/771) herdr-threads harness::setup_tests::codex_session_plan_registers_event_per_group
+        PASS [   0.128s] (241/771) herdr-threads harness::agy::delivery::tests::typed_completion_fits_two_maximal_admitted_records_and_escaped_claim_fields
+        PASS [   0.009s] (242/771) herdr-threads protocol::authority::tests::binding_fields_validation_rejects_pid_zero
+        PASS [   0.010s] (243/771) herdr-threads protocol::authority::tests::claim_without_binding_fields_serializes_exactly_as_before
+        PASS [   0.010s] (244/771) herdr-threads protocol::authority::tests::session_binding_provenances_are_defined_in_trust_policy
+        PASS [   0.009s] (245/771) herdr-threads protocol::capabilities::tests::automatic_contract_declarations_do_not_advertise_an_unimplemented_runtime
+        PASS [   0.009s] (246/771) herdr-threads protocol::capabilities::tests::bare_daemon_advertises_legacy_capabilities_without_v2_recorder
+        PASS [   0.009s] (247/771) herdr-threads protocol::capabilities::tests::capabilities_reply_round_trips_and_defaults_empty
+        PASS [   0.009s] (248/771) herdr-threads protocol::capabilities::tests::capability_constants_are_stable
+        PASS [   0.026s] (249/771) herdr-threads protocol::capabilities::tests::client_caches_capabilities_per_session
+        PASS [   0.010s] (250/771) herdr-threads protocol::capabilities::tests::control_without_a_recorder_accepts_and_drops_evidence
+        PASS [   0.121s] (251/771) herdr-threads harness::setup_tests::codex_setup_registers_event_per_group
+        PASS [   0.010s] (252/771) herdr-threads protocol::capabilities::tests::daemon_counts_a_hook_parse_failure_report
+        PASS [   0.210s] (253/771) herdr-threads harness::bridge_tests::cached_pinned_continuations_use_verified_recipient_presentation_without_changing_cache
+        PASS [   0.188s] (254/771) herdr-threads harness::setup_tests::claude_setup_registers_event_per_group
+        PASS [   0.012s] (255/771) herdr-threads protocol::capabilities::tests::harness_evidence_round_trips_on_the_wire
+        PASS [   0.010s] (256/771) herdr-threads protocol::capabilities::tests::harness_evidence_validation_bounds_every_field
+        PASS [   0.010s] (257/771) herdr-threads protocol::capabilities::tests::harness_states_round_trips_on_the_wire
+        PASS [   0.250s] (258/771) herdr-threads harness::agy::delivery::tests::unreadable_cancelled_errored_and_oversized_transcripts_are_non_evidence
+        PASS [   0.010s] (259/771) herdr-threads protocol::capabilities::tests::invitation_confirmation_capability_is_advertised_with_active_lifecycle
+        PASS [   0.012s] (260/771) herdr-threads protocol::capabilities::tests::invitation_confirmation_wire_preserves_legacy_and_distinguishes_modern_requests
+        PASS [   0.022s] (261/771) herdr-threads protocol::capabilities::tests::old_daemon_that_answers_an_error_reads_as_no_capabilities
+        PASS [   0.014s] (262/771) herdr-threads protocol::capabilities::tests::old_daemon_that_closes_reads_as_no_capabilities
+        PASS [   1.690s] (263/771) herdr-threads::integration mod_delivery::clear_rebind_pending_item_restreamed_to_new_session
+        PASS [   0.014s] (264/771) herdr-threads protocol::capabilities::tests::pre_change_cli_decodes_this_daemons_hello_and_history
+        PASS [   0.015s] (265/771) herdr-threads protocol::capabilities::tests::picker_directory_wire_keeps_old_directory_shape_and_cursor_only_contract
+        PASS [   0.072s] (266/771) herdr-threads protocol::capabilities::tests::health_v2_capability_is_negotiated_only_with_cached_provider
+        PASS [   0.145s] (267/771) herdr-threads protocol::capabilities::tests::directory_search_generated_continuation_preserves_literal_scope_order_and_output
+        PASS [   0.024s] (268/771) herdr-threads protocol::delivery::tests::presentation_confirmation_exact_control_shape_and_removed_piggyback
+        PASS [   0.079s] (269/771) herdr-threads protocol::capabilities::tests::public_operation_status_cannot_bypass_send_time_capability_guard
+        PASS [   0.018s] (270/771) herdr-threads protocol::delivery::tests::presentation_confirmation_maximum_valid_controls_fit_actual_framed_wrapper_reserve
+        PASS [   0.080s] (271/771) herdr-threads protocol::capabilities::tests::v2_capability_is_negotiated_only_with_recorder
+        PASS [   0.018s] (272/771) herdr-threads protocol::delivery::tests::presentation_v2_decodes_scoped_commands_without_changing_v1
+        PASS [   0.014s] (273/771) herdr-threads protocol::delivery::tests::presentation_v2_rejects_invalid_tokens_consumers_and_watch_without_lease
+        PASS [   0.010s] (274/771) herdr-threads protocol::watch::tests::accepted_presentation_lease_survives_new_decoder_and_old_bytes_stay_omitted
+        PASS [   1.352s] (275/771) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_user_hook_round_trip
+        PASS [   1.954s] (276/771) herdr-threads daemon::transport::tests::automatic_response_path_alias_is_not_exact_identity_in_either_family
+        PASS [   0.180s] (277/771) herdr-threads protocol::capabilities::tests::presentation_capability_routes_use_configured_domain
+        PASS [   0.132s] (278/771) herdr-threads service::delivery_pull::lazy_hook_pull_tests::claude_seat_hook_context_completion_per_main
+        PASS [   0.149s] (279/771) herdr-threads service::delivery_pull::lazy_hook_pull_tests::hook_pull_late_first_pull_after_a_sibling_settled_delivers
+        PASS [   0.158s] (280/771) herdr-threads service::delivery_pull::lazy_hook_pull_tests::hook_pull_confirm_of_ordinary_and_lazy_advances_the_cursor_and_does_not_reoffer
+        PASS [   0.171s] (281/771) herdr-threads service::delivery_pull::lazy_hook_pull_tests::hook_pull_lazy_row_completed_by_one_binding_is_not_reoffered_to_it
+        PASS [   0.156s] (282/771) herdr-threads service::delivery_pull::lazy_hook_pull_tests::hook_pull_lazy_row_is_delivered_exactly_once_through_pull
+        PASS [   0.125s] (283/771) herdr-threads service::delivery_pull::lazy_hook_pull_tests::hook_pull_seat_text_inbox_completion_still_works
+        PASS [   0.163s] (284/771) herdr-threads service::delivery_pull::lazy_hook_pull_tests::hook_pull_ordinary_settled_by_a_sibling_still_reaches_the_other_binding
+        PASS [   0.178s] (285/771) herdr-threads service::delivery_pull::tests::a_departed_inviter_remains_actionable_after_whole_deadline_warning_until_acceptance
+        PASS [   0.177s] (286/771) herdr-threads service::delivery_pull::tests::a_new_session_of_one_binding_keeps_its_siblings_offers
+        PASS [   0.137s] (287/771) herdr-threads service::delivery_pull::tests::a_plain_call_enrolled_hook_pull_binding_is_served
+        PASS [   0.129s] (288/771) herdr-threads service::delivery_pull::tests::a_pull_on_a_binding_the_store_never_reconnects_writes_nothing
+        PASS [   0.139s] (289/771) herdr-threads service::delivery_pull::tests::a_pull_re_adopts_a_migrated_binding_and_delivers
+        PASS [   0.115s] (290/771) herdr-threads service::delivery_pull::tests::a_pull_without_a_fingerprint_does_not_re_adopt_and_is_refused_no_binding
+        PASS [   0.126s] (291/771) herdr-threads service::delivery_pull::tests::a_pull_reconnects_a_disconnected_non_migrated_binding_and_delivers
+        PASS [   0.121s] (292/771) herdr-threads service::delivery_pull::tests::a_resume_keeps_the_binding_and_its_offers
+        PASS [   0.163s] (293/771) herdr-threads service::delivery_pull::tests::alternating_pulls_keep_each_bindings_reoffer_spacing_and_count
+        PASS [   0.157s] (294/771) herdr-threads service::delivery_pull::tests::interleaved_pulls_of_two_bindings_confirm_their_own_offers
+        PASS [   0.958s] (295/771) herdr-threads protocol::capabilities::tests::every_advertised_capability_has_a_handler
+        PASS [   0.162s] (296/771) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_mixed_page_retains_alone_fitting_lazy_successor
+        PASS [   0.289s] (297/771) herdr-threads service::delivery_pull::tests::departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack
+        PASS [   1.094s] (298/771) herdr-threads::integration mod_delivery::full_body_read_of_truncated_message_unblocks_binding_cursor
+        PASS [   0.978s] (299/771) herdr-threads::hook_entrypoint agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement
+        PASS [   0.256s] (300/771) herdr-threads service::delivery_pull::tests::presentation_capacity_cache_progress_survives_lost_reply_but_not_ledger_restart
+        PASS [   0.190s] (301/771) herdr-threads service::delivery_pull::tests::presentation_capacity_due_promoted_lazy_defers_oversize_render_then_retries
+        PASS [   0.721s] (302/771) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy
+        PASS [   0.704s] (303/771) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy
+        PASS [   0.703s] (304/771) herdr-threads service::delivery_pull::tests::presentation_actual_candidate_sizing_and_rpc_wrapper_work_remain_bounded
+        PASS [   0.234s] (305/771) herdr-threads service::delivery_pull::tests::presentation_capacity_due_size_failure_after_passive_output_retries_standalone
+        PASS [   0.189s] (306/771) herdr-threads service::delivery_pull::tests::presentation_capacity_parked_ordinary_still_drains_passive_context_and_notices
+        PASS [   0.221s] (307/771) herdr-threads service::delivery_pull::tests::presentation_capacity_missing_due_keys_finish_a_finite_pass
+        PASS [   0.382s] (308/771) herdr-threads service::delivery_pull::tests::presentation_capacity_last_slot_parks_unknown_carry_and_only_continues_for_due_keys
+        PASS [   3.039s] (309/771) herdr-threads::integration mod_delivery::fresh_watch_after_accept_prints_no_attention
+        PASS [   0.290s] (310/771) herdr-threads service::delivery_pull::tests::presentation_capacity_replay_preserves_finite_due_progress_and_positive_slot_quiet
+        PASS [   0.333s] (311/771) herdr-threads service::delivery_pull::tests::presentation_capacity_reclaimed_or_initially_free_with_missing_due_keys_quiets
+        PASS [   4.768s] (312/771) herdr-threads::integration mod_delivery::clear_new_binding_gets_no_digest_or_wake_for_mail_already_read
+        PASS [   0.222s] (313/771) herdr-threads service::delivery_pull::tests::presentation_capacity_retained_concurrent_offer_count_does_not_refuse_passive_work
+        PASS [   0.749s] (314/771) herdr-threads service::delivery_pull::tests::presentation_capacity_due_walk_preserves_partial_body_until_real_ack
+        PASS [   0.168s] (315/771) herdr-threads service::delivery_pull::tests::presentation_capacity_snapshot_validation_scope_and_failed_calls
+        PASS [   0.143s] (316/771) herdr-threads service::delivery_pull::tests::presentation_confirmation_preserves_original_slots_and_exact_subsets_on_restart
+        PASS [   1.288s] (317/771) herdr-threads::integration mod_delivery::full_body_read_passes_later_message_the_binding_already_displayed
+        PASS [   0.208s] (318/771) herdr-threads service::delivery_pull::tests::presentation_current_handler_derives_timed_invitation_attention
+        PASS [   0.197s] (319/771) herdr-threads service::delivery_pull::tests::presentation_final_cleanup_preserves_passive_removal_observation
+        PASS [   0.343s] (320/771) herdr-threads service::delivery_pull::tests::presentation_final_watch_codec_counts_escaped_canonical_invitation_batch
+        PASS [   1.874s] (321/771) herdr-threads::hook_entrypoint agy::activation::registered_agy_omitted_or_refused_capability_uses_historical_pull
+        PASS [   1.088s] (322/771) herdr-threads::integration mod_delivery::lazy_row_appended_then_completed
+        PASS [   0.642s] (323/771) herdr-threads service::delivery_pull::tests::presentation_handler_clears_unconfirmed_epoch_then_reopens_new_episode
+        PASS [   0.151s] (324/771) herdr-threads service::delivery_pull::tests::presentation_handler_initial_ordinary_receipt_delivers_body_without_invented_attention
+        PASS [   1.172s] (325/771) herdr-threads::integration mod_delivery::machine_and_json_body_reads_do_not_advance_binding_cursor
+        PASS [   0.187s] (326/771) herdr-threads service::delivery_pull::tests::presentation_handler_partial_confirmation_retains_canonical_slots_across_restart
+        PASS [   1.197s] (327/771) herdr-threads service::delivery_pull::tests::presentation_full_pending_carry_reaches_quiet_without_evicting_offers
+        PASS [   0.780s] (328/771) herdr-threads::hook_entrypoint agy::agy_turn_hook_carries_lazy_invitation_without_accepting_or_confirming_it
+        PASS [   0.189s] (329/771) herdr-threads service::delivery_pull::tests::presentation_handler_published_warn_reopens_at_unchanged_native_version
+        PASS [   1.519s] (330/771) herdr-threads service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id
+        PASS [  12.475s] (331/771) herdr-threads::integration mod_delivery::activation_v2_watch_full_pending_capacity_parks_until_real_channel_input
+        PASS [   0.014s] (332/771) herdr-threads service::delivery_pull::tests::presentation_last_token_control_serializer_has_exact_bounded_witness
+        PASS [   0.238s] (333/771) herdr-threads service::delivery_pull::tests::presentation_hook_notice_settles_current_execution_without_reoffer
+        PASS [   0.147s] (334/771) herdr-threads service::delivery_pull::tests::presentation_owner_replay_accepts_actual_v1_count_four_and_nonordinary_work
+        PASS [   0.486s] (335/771) herdr-threads service::delivery_pull::tests::presentation_ordinary_carry_survives_completed_control_partial_and_invitation_priority
+        PASS [   0.851s] (336/771) herdr-threads::hook_entrypoint cooperative_seat_on_own_target_startup_clear_resume_register_session_bindings
+        PASS [  13.133s] (337/771) herdr-threads::integration session_bindings_e2e::a_one_shot_adds_sends_exits_and_a_later_call_reconnects_until_its_process_exits
+        PASS [   1.534s] (338/771) herdr-threads::integration mod_delivery::no_mod_or_env_off_keeps_native_wake_and_exits_3
+        PASS [   2.675s] (339/771) herdr-threads::integration mod_delivery::live_channel_suppresses_native_wake
+        PASS [   2.832s] (340/771) herdr-threads service::delivery_pull::tests::presentation_confirm_rejects_oversized_private_json_before_decoding
+        PASS [   1.356s] (341/771) herdr-threads service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity
+        PASS [   1.195s] (342/771) herdr-threads::integration mod_delivery::partial_body_read_does_not_advance_binding_cursor
+        PASS [   0.253s] (343/771) herdr-threads service::delivery_pull::tests::presentation_owner_replay_mid_work_budget_keeps_first_capture_uninstalled
+        PASS [   0.682s] (344/771) herdr-threads::hook_entrypoint installed_claude_hook_rewrites_a_subagents_herdr_call_only
+        PASS [   0.208s] (345/771) herdr-threads service::delivery_pull::tests::presentation_owner_replay_mixed_invalid_keys_and_physical_fallback_drain_finitely
+        PASS [   1.261s] (346/771) herdr-threads service::delivery_pull::tests::presentation_owner_replay_deferred_control_only_preserves_current_outlook
+        PASS [   0.469s] (347/771) herdr-threads service::delivery_pull::tests::presentation_owner_replay_missing_quanta_preserve_current_native_outlook
+        PASS [   0.187s] (348/771) herdr-threads service::delivery_pull::tests::presentation_owner_replay_owner_permit_fences_replacement_during_store
+        PASS [   0.487s] (349/771) herdr-threads service::delivery_pull::tests::presentation_owner_replay_mixed_invitation_page_preserves_native_outlook
+        PASS [   1.492s] (350/771) herdr-threads service::delivery_pull::tests::presentation_owner_replay_full_final_page_keeps_logical_due_continuation
+        PASS [   0.373s] (351/771) herdr-threads service::delivery_pull::tests::presentation_owner_replay_preserves_post_snapshot_native_outlook_and_newer_stamp
+        PASS [   0.401s] (352/771) herdr-threads service::delivery_pull::tests::presentation_owner_replay_pruned_all_allows_real_logical_allocation_bookkeeping
+        PASS [   0.178s] (353/771) herdr-threads service::delivery_pull::tests::presentation_owner_replay_refusal_and_store_error_do_not_consume_first_capture
+        PASS [   0.735s] (354/771) herdr-threads service::delivery_pull::tests::presentation_owner_replay_preserves_partial_body_until_real_ack
+        PASS [   1.100s] (355/771) herdr-threads::integration mod_delivery::send_attention_drain_ack_settles_with_mod_delivery_provenance
+        PASS [   0.160s] (356/771) herdr-threads service::delivery_pull::tests::presentation_owner_replay_registry_success_scope_and_incarnation_lifetime
+        PASS [   0.927s] (357/771) herdr-threads service::delivery_pull::tests::presentation_owner_replay_nonfull_once_per_lease_preserves_physical_metadata
+        PASS [   2.855s] (358/771) herdr-threads::integration mod_delivery::notice_published_while_live_reaches_the_next_pre_tool_use_once
+        PASS [   0.201s] (359/771) herdr-threads service::delivery_pull::tests::presentation_owner_replay_restart_discards_lease_and_recovers_canonical_pending
+        PASS [   1.835s] (360/771) herdr-threads::integration session_bindings_e2e::two_agents_in_one_pane_settle_one_obligation_once_and_a_subagent_reads_only
+        PASS [   0.148s] (361/771) herdr-threads service::delivery_pull::tests::presentation_owner_replay_validates_full_scope_and_nonzero_count_domain
+        PASS [   0.305s] (362/771) herdr-threads service::delivery_pull::tests::presentation_owner_replay_standalone_unrenderable_attempt_is_finite_and_local
+        PASS [   0.421s] (363/771) herdr-threads service::delivery_pull::tests::presentation_owner_replay_waits_for_original_outbox_then_continues
+        PASS [   0.295s] (364/771) herdr-threads service::delivery_pull::tests::presentation_private_invitation_id_wrong_types_refuse_at_strict_storage_boundary
+        PASS [   0.471s] (365/771) herdr-threads service::delivery_pull::tests::presentation_private_invitation_ids_allow_exact_128_byte_ids_in_each_reader
+        PASS [   0.251s] (366/771) herdr-threads service::delivery_pull::tests::presentation_private_item_refresh_text_bounds_refuse_before_effects
+        PASS [   6.802s] (367/771) herdr-threads service::delivery_pull::tests::a_finite_invitation_backlog_progresses_beyond_the_whole_display_cache
+        PASS [   0.116s] (368/771) herdr-threads service::delivery_pull::tests::presentation_private_skipped_body_requires_exact_retained_cursor
+        PASS [   0.124s] (369/771) herdr-threads service::delivery_pull::tests::presentation_private_watch_cleanup_ids_allow_128_byte_id_without_canonical_owner_changes
+        PASS [   6.853s] (370/771) herdr-threads service::delivery_pull::tests::an_old_visible_invitation_topic_change_survives_a_saturated_newest_window
+        PASS [   1.086s] (371/771) herdr-threads::integration mod_delivery::wake_on_all_promoted_lazy_line_carries_wakes
+        PASS [   0.263s] (372/771) herdr-threads service::delivery_pull::tests::presentation_private_watch_cleanup_ids_enforce_borrowed_text_bounds_without_effects
+        PASS [   0.594s] (373/771) herdr-threads service::delivery_pull::tests::presentation_private_partial_guards_reject_corrupt_supported_shapes
+        PASS [   1.352s] (374/771) herdr-threads::integration mod_delivery::stale_attention_is_retracted_after_accept_and_after_a_notice_offer
+        PASS [   0.128s] (375/771) herdr-threads service::delivery_pull::tests::presentation_publication_foreign_refresh_refuses_without_touching_hook_or_watch
+        PASS [   1.712s] (376/771) herdr-threads service::delivery_pull::tests::presentation_owner_replay_pruned_all_passive_page_preserves_current_outlook
+        PASS [   2.864s] (377/771) herdr-threads::integration mod_delivery::resume_keeps_binding_and_reack_settles
+        PASS [   0.308s] (378/771) herdr-threads service::delivery_pull::tests::presentation_promoted_lazy_raw_carry_survives_restart_with_frozen_prefix
+        PASS [   0.215s] (379/771) herdr-threads service::delivery_pull::tests::presentation_publication_generation_overflow_rolls_back_frontier_and_version
+        PASS [   0.135s] (380/771) herdr-threads service::delivery_pull::tests::presentation_publication_scalar_maximum_roundtrips_without_changing_carry
+        PASS [   1.378s] (381/771) herdr-threads::integration session_bindings_smoke::config1_subagent_display_advances_its_own_cursor
+        PASS [   1.455s] (382/771) herdr-threads service::delivery_pull::tests::presentation_private_context_cursors_refuse_invalid_thread_ids_before_effects
+        PASS [   3.244s] (383/771) herdr-threads::integration mod_delivery::reconnect_within_grace_keeps_wake_suppressed_restreams_and_late_ack_settles_once
+        PASS [   0.248s] (384/771) herdr-threads service::delivery_pull::tests::presentation_publication_invalid_scalars_refuse_before_confirmation_effects
+        PASS [   0.269s] (385/771) herdr-threads service::delivery_pull::tests::presentation_publication_signal_preserves_active_capture_and_replays_across_restart
+        PASS [   0.164s] (386/771) herdr-threads service::delivery_pull::tests::presentation_q3_capable_registry_uses_only_bounded_real_store_reads
+        PASS [   0.185s] (387/771) herdr-threads service::delivery_pull::tests::presentation_q3_ordinary_publication_generation_observes_early_store_ack_without_service_hint
+        PASS [   1.071s] (388/771) herdr-threads service::delivery_pull::tests::presentation_private_state_rejects_typed_corruption_without_confirmation_effects
+        PASS [   0.402s] (389/771) herdr-threads service::delivery_pull::tests::presentation_publication_walk_counts_foreign_prefix_before_filter_and_progresses
+        PASS [   0.390s] (390/771) herdr-threads service::delivery_pull::tests::presentation_q3_advance_cursors_coalesces_many_real_thread_gaps
+        PASS [   0.809s] (391/771) herdr-threads service::delivery_pull::tests::presentation_private_watch_cleanup_ids_refuse_malformed_identity_without_effects
+        PASS [   0.433s] (392/771) herdr-threads service::delivery_pull::tests::presentation_q3_complete_inbox_delivery_coalesces_many_real_thread_gaps
+        PASS [   0.211s] (393/771) herdr-threads service::delivery_pull::tests::presentation_q3_quiet_ordinary_sibling_ack_before_materialization_drains_passively
+        PASS [   0.622s] (394/771) herdr-threads service::delivery_pull::tests::presentation_publication_watch_reconnect_keeps_positive_frontier_without_native_wake
+        PASS [   0.312s] (395/771) herdr-threads service::delivery_pull::tests::presentation_q3_quiet_pending_and_lazy_publications_have_distinct_authority
+        PASS [   0.147s] (396/771) herdr-threads service::delivery_pull::tests::presentation_quiet_channel_observes_new_lazy_ordinary_without_wake
+        PASS [   0.781s] (397/771) herdr-threads service::delivery_pull::tests::presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap
+        PASS [   0.375s] (398/771) herdr-threads service::delivery_pull::tests::presentation_q3_reader_change_preserves_nonempty_progress_outbox_and_offers
+        PASS [   0.477s] (399/771) herdr-threads service::delivery_pull::tests::presentation_q3_reader_change_failure_rolls_back_cursor_and_private_state
+        PASS [   0.031s] (400/771) herdr-threads service::delivery_pull::tests::presentation_raw_carry_serializer_accounting_witness
+        PASS [   0.477s] (401/771) herdr-threads service::delivery_pull::tests::presentation_q3_reader_change_is_binding_local_coalesced_and_noop_stable
+        PASS [   0.170s] (402/771) herdr-threads service::delivery_pull::tests::presentation_quiet_channel_observes_new_ordinary_ack_message
+        PASS [   0.166s] (403/771) herdr-threads service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work
+        PASS [   0.119s] (404/771) herdr-threads service::delivery_pull::tests::presentation_reclamation_refuses_oversize_hints_before_effects
+        PASS [   0.138s] (405/771) herdr-threads service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation
+        PASS [   0.643s] (406/771) herdr-threads service::delivery_pull::tests::presentation_q3_reader_change_respects_current_primary_or_refresh_scope
+        PASS [   0.174s] (407/771) herdr-threads service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion
+        PASS [   0.425s] (408/771) herdr-threads service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged
+        PASS [   0.139s] (409/771) herdr-threads service::delivery_pull::tests::presentation_refresh_preserves_live_presentation_header_and_outbox_across_rebind
+        PASS [   0.173s] (410/771) herdr-threads service::delivery_pull::tests::presentation_refresh_observes_lazy_context_and_removal_without_consuming_output
+        PASS [   0.176s] (411/771) herdr-threads service::delivery_pull::tests::presentation_refresh_stub_allows_actual_watch_full_offer_and_replaced_owner_replay
+        PASS [   0.184s] (412/771) herdr-threads service::delivery_pull::tests::presentation_registered_channel_materializes_each_published_warn_before_drain
+        PASS [   1.295s] (413/771) herdr-threads service::delivery_pull::tests::presentation_q3_parked_ack_then_reader_resumes_existing_id257
+        PASS [   0.168s] (414/771) herdr-threads service::delivery_pull::tests::presentation_registry_pass_drives_bounded_passive_refresh_before_full_pull
+        PASS [   1.236s] (415/771) herdr-threads service::delivery_pull::tests::presentation_q3_parked_reader_then_ack_resumes_existing_id257
+        PASS [   0.146s] (416/771) herdr-threads service::delivery_pull::tests::presentation_v2_resumes_control_heavy_ordinary_partial_without_changing_body_limit
+        PASS [   0.157s] (417/771) herdr-threads service::delivery_pull::tests::presentation_v2_replays_one_canonical_invitation_until_emit_confirmation
+        PASS [   0.191s] (418/771) herdr-threads service::delivery_pull::tests::presentation_v2_keeps_truncated_ordinary_cursor_progress_across_quanta
+        PASS [   0.204s] (419/771) herdr-threads service::delivery_pull::tests::presentation_v2_service_requirement_attach_release_fresh_replacement_keeps_exact_commands
+        PASS [   0.409s] (420/771) herdr-threads service::delivery_pull::tests::presentation_two_live_bindings_keep_offer_stamps_replay_and_carry_independent
+        PASS [   0.173s] (421/771) herdr-threads service::delivery_pull::tests::presentation_watch_fresh_confirmation_records_exact_owner_publication_cutoff_once
+        PASS [   0.187s] (422/771) herdr-threads service::delivery_pull::tests::presentation_watch_notice_continuation_preserves_remaining_confirming_condition
+        PASS [   0.184s] (423/771) herdr-threads service::delivery_pull::tests::presentation_watch_notice_settles_current_execution_without_reoffer
+        PASS [   1.147s] (424/771) herdr-threads service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags
+        PASS [   3.089s] (425/771) herdr-threads service::delivery_pull::tests::presentation_private_invitation_ids_refuse_corruption_in_each_reader_without_effects
+        PASS [   0.315s] (426/771) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers
+        PASS [   0.304s] (427/771) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader
+        PASS [   0.267s] (428/771) herdr-threads service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate
+        PASS [   0.205s] (429/771) herdr-threads service::delivery_pull::tests::q4_body_controls::private_old_episode_lazy_tail_retires_and_reaches_fresh_preaccept_body
+        PASS [   2.513s] (430/771) herdr-threads service::delivery_pull::tests::presentation_publication_refresh_and_pull_rebind_preserve_each_others_progress
+        PASS [   0.288s] (431/771) herdr-threads service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display
+        PASS [   0.184s] (432/771) herdr-threads service::delivery_pull::tests::q4_body_controls::q4_retirement_refusal_controls::legacy_lazy_tail_keeps_strict_refusal_when_modern_reader_scope_is_lost
+        PASS [   0.921s] (433/771) herdr-threads service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity
+        PASS [   0.188s] (434/771) herdr-threads service::delivery_pull::tests::q4_body_controls::q4_retirement_refusal_controls::modern_lazy_scope_retirement_rolls_back_when_final_private_save_fails
+        PASS [   1.626s] (435/771) herdr-threads service::delivery_pull::tests::presentation_reclamation_preserves_pending_truncated_and_reoffer_history
+        PASS [   0.145s] (436/771) herdr-threads service::delivery_pull::tests::the_hook_pull_outlook_waits_for_every_target_binding
+        PASS [   0.188s] (437/771) herdr-threads service::delivery_pull::tests::q4_body_controls::q4_retirement_refusal_controls::public_lazy_continuation_refuses_real_old_episode_audience_loss
+        PASS [   0.124s] (438/771) herdr-threads service::dispatch::cooperative_tests::q3_completion_hint_ack_errors_and_rollback_are_inert
+        PASS [   0.880s] (439/771) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers
+        PASS [   0.161s] (440/771) herdr-threads service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_delivery_confirm_lazy_mixed_and_retained_offer
+        PASS [   0.249s] (441/771) herdr-threads service::dispatch::cooperative_tests::q3_completion_hint_ack_and_displayed_release_foreground_writer
+        PASS [   0.144s] (442/771) herdr-threads service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_delivery_confirm_no_progress_is_inert
+        PASS [   0.013s] (443/771) herdr-threads service::kicks::tests::invitation_presentation_bookkeeping_is_passive_but_context_producers_refresh_mod
+        PASS [   0.121s] (444/771) herdr-threads service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_mod_ack_lazy_mixed_and_already_settled
+        PASS [   1.113s] (445/771) herdr-threads service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity
+        PASS [   0.134s] (446/771) herdr-threads service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_mod_ack_no_progress_is_inert
+        PASS [   0.102s] (447/771) herdr-threads service::liveness::liveness_worker_tests::a_dead_fingerprint_reconnect_is_disconnected_on_the_next_pass
+        PASS [   0.138s] (448/771) herdr-threads service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_successful_presentation_confirm_is_inert
+        FAIL [   1.117s] (449/771) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4941 filtered out; finished in 1.10s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window' (58903426) panicked at src/service/../../tests/service/q4_accept_controls.rs:764:5:
+    SETUP: actual unoffered carry at full capacity
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.127s] (450/771) herdr-threads service::liveness::liveness_worker_tests::a_plain_readopted_binding_loses_to_the_lifecycle_binding_of_its_process
+        PASS [   0.121s] (451/771) herdr-threads service::liveness::liveness_worker_tests::a_reconnected_superseded_lifecycle_binding_is_superseded_again
+        PASS [   0.117s] (452/771) herdr-threads service::liveness::liveness_worker_tests::exited_process_disconnects_its_binding
+        PASS [   0.098s] (453/771) herdr-threads service::liveness::liveness_worker_tests::fingerprintless_verdict_is_void_after_a_fingerprinted_reconnect
+        PASS [   2.439s] (454/771) herdr-threads service::delivery_pull::tests::presentation_q3_shared_ack_rechecks_read_captured_body_but_keeps_unread_sibling
+        PASS [   0.124s] (455/771) herdr-threads service::liveness::liveness_worker_tests::fingerprintless_bindings_disconnect_on_first_pass
+        PASS [   0.093s] (456/771) herdr-threads service::liveness::liveness_worker_tests::human_bindings_are_never_touched
+        PASS [   0.291s] (457/771) herdr-threads service::liveness::liveness_worker_tests::a_managed_launch_placeholder_never_wins_the_same_process_rule
+        PASS [   0.146s] (458/771) herdr-threads service::liveness::liveness_worker_tests::held_unresolved_or_retired_seats_are_skipped
+        PASS [   0.757s] (459/771) herdr-threads service::delivery_pull::tests::q4_body_controls::q4_retirement_refusal_controls::modern_lazy_scope_loss_cannot_hide_corrupt_accumulator_or_utf8_offset
+        PASS [   0.087s] (460/771) herdr-threads service::liveness::liveness_worker_tests::idle_pass_commits_nothing
+        PASS [   0.013s] (461/771) herdr-threads service::mod_channels::tests::close_binding_changed_starts_that_bindings_rebind_grace_only
+        PASS [   0.014s] (462/771) herdr-threads service::mod_channels::tests::ack_landing_during_the_stall_read_prevents_the_stall_close
+        PASS [   0.010s] (463/771) herdr-threads service::mod_channels::tests::closing_one_channel_leaves_the_other_live
+        PASS [   0.119s] (464/771) herdr-threads service::liveness::liveness_worker_tests::pid_reuse_with_another_start_disconnects
+        PASS [   0.114s] (465/771) herdr-threads service::liveness::liveness_worker_tests::recheck_before_wake_disconnects_a_dead_binding_before_it_is_targeted
+        PASS [   0.852s] (466/771) herdr-threads service::delivery_pull::tests::q4_body_controls::q4_retirement_refusal_controls::modern_lazy_retirement_requires_intact_captured_publication_and_recipient_authority
+        PASS [   0.104s] (467/771) herdr-threads service::liveness::liveness_worker_tests::same_fingerprint_tie_goes_to_the_later_enrolled_binding
+        PASS [   0.132s] (468/771) herdr-threads service::liveness::liveness_worker_tests::same_fingerprint_newer_session_disconnects_the_older
+        PASS [   0.096s] (469/771) herdr-threads service::liveness::liveness_worker_tests::subagents_neither_supersede_nor_are_superseded
+        PASS [   0.386s] (470/771) herdr-threads service::liveness::liveness_worker_tests::a_plain_call_only_binding_loses_to_a_lifecycle_claimed_one_and_never_wins
+        PASS [   0.101s] (471/771) herdr-threads service::liveness::liveness_worker_tests::the_thread_rechecks_on_its_cadence_and_stops_on_cancel
+        PASS [   0.095s] (472/771) herdr-threads service::mod_channels::tests::domain::closing_one_channel_leaves_the_other_live
+        PASS [   1.204s] (473/771) herdr-threads service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer
+        PASS [   0.080s] (474/771) herdr-threads service::mod_channels::tests::domain::q3_legacy_channel_cannot_capture_owner_replay
+        PASS [   0.120s] (475/771) herdr-threads service::mod_channels::tests::domain::disconnect_closes_that_bindings_channel
+        PASS [   0.092s] (476/771) herdr-threads service::mod_channels::tests::domain::q3_legacy_channel_cannot_confirm_with_an_issued_or_guessed_lease
+        PASS [   0.113s] (477/771) herdr-threads service::mod_channels::tests::domain::no_binding
+        PASS [   0.013s] (478/771) herdr-threads service::mod_channels::tests::each_channel_receives_only_its_bindings_deliveries
+        PASS [   0.100s] (479/771) herdr-threads service::mod_channels::tests::domain::q3_legacy_channel_cannot_pull_with_an_issued_or_guessed_lease
+        PASS [   0.097s] (480/771) herdr-threads service::mod_channels::tests::domain::q3_legacy_claim_only_registration_has_no_presentation_lease
+        PASS [   0.129s] (481/771) herdr-threads service::mod_channels::tests::domain::presentation_owner_current_watch_is_admitted_and_old_lease_is_refused
+        PASS [   0.013s] (482/771) herdr-threads service::mod_channels::tests::pass_closes_channels_whose_seat_or_binding_no_longer_holds
+        PASS [   0.147s] (483/771) herdr-threads service::mod_channels::tests::domain::each_channel_receives_only_its_bindings_deliveries
+        PASS [   0.012s] (484/771) herdr-threads service::mod_channels::tests::pass_judges_each_channel_against_its_own_binding
+        PASS [   0.012s] (485/771) herdr-threads service::mod_channels::tests::presentation_attention_cutoff_requires_exact_live_owner
+        PASS [   0.014s] (486/771) herdr-threads service::mod_channels::tests::presentation_owner_lease_is_exact_live_and_replacement_fenced
+        PASS [   0.084s] (487/771) herdr-threads service::mod_channels::tests::domain::registration_uses_the_bindings_generation_not_the_claims
+        PASS [   0.012s] (488/771) herdr-threads service::mod_channels::tests::q3_capable_to_legacy_replacement_cannot_receive_the_old_active_push
+        PASS [   0.012s] (489/771) herdr-threads service::mod_channels::tests::q3_closed_receiver_preserves_passive_drain_without_an_immediate_kick_loop
+        PASS [   0.014s] (490/771) herdr-threads service::mod_channels::tests::q3_failed_hint_work_does_not_transfer_to_either_replacement_mode
+        PASS [   0.100s] (491/771) herdr-threads service::mod_channels::tests::domain::re_registering_a_binding_replaces_only_its_own_channel
+        PASS [   0.011s] (492/771) herdr-threads service::mod_channels::tests::q3_failed_store_work_keeps_a_newer_hint_without_a_captured_hint
+        PASS [   0.009s] (493/771) herdr-threads service::mod_channels::tests::q3_passive_hints_coalesce_without_health_or_crossing_legacy_and_seat_scope
+        PASS [   0.012s] (494/771) herdr-threads service::mod_channels::tests::q3_legacy_to_capable_replacement_cannot_receive_the_old_passive_push
+        PASS [   0.016s] (495/771) herdr-threads service::mod_channels::tests::q3_failed_hint_work_restores_the_same_exact_owner
+        PASS [   0.010s] (496/771) herdr-threads service::mod_channels::tests::q3_replacement_after_observation_cannot_receive_the_old_passive_push
+        PASS [   0.012s] (497/771) herdr-threads service::mod_channels::tests::q3_replacement_after_observation_cannot_receive_the_old_active_push
+        PASS [   0.011s] (498/771) herdr-threads service::mod_channels::tests::re_registering_a_binding_replaces_only_its_own_channel
+        PASS [   0.011s] (499/771) herdr-threads service::mod_channels::tests::q3_second_hint_during_store_work_survives_the_first_successful_pass
+        PASS [   0.012s] (500/771) herdr-threads service::mod_channels::tests::rebind_grace_authorizes_acks_but_is_neither_seat_nor_binding_live
+        PASS [   0.014s] (501/771) herdr-threads service::mod_channels::tests::record_ack_and_attention_push_for_another_binding_are_ignored
+        PASS [   0.011s] (502/771) herdr-threads service::mod_channels::tests::register_then_is_live_for_its_binding_only
+        PASS [   0.014s] (503/771) herdr-threads service::mod_channels::tests::record_ack_resets_stall_clock
+        PASS [   0.046s] (504/771) herdr-threads service::mod_channels::tests::presentation_owner_permit_serializes_replacement
+        PASS [   0.097s] (505/771) herdr-threads service::mod_channels::tests::domain::two_claude_bindings_hold_two_live_channels
+        PASS [   0.073s] (506/771) herdr-threads service::mod_channels::tests::domain::watch_register_accepts_matching_claude_binding
+        PASS [   0.013s] (507/771) herdr-threads service::mod_channels::tests::registration_landing_between_pass_snapshot_and_close_survives
+        PASS [   0.095s] (508/771) herdr-threads service::mod_channels::tests::domain::watch_register_accepts_a_plain_call_enrolled_binding
+        PASS [   0.014s] (509/771) herdr-threads service::mod_channels::tests::registration_landing_during_the_stall_read_is_not_closed_and_arms_no_cooldown
+        PASS [   0.012s] (510/771) herdr-threads service::mod_channels::tests::registration_over_a_configured_cap_is_busy_but_replacement_is_not
+        PASS [   0.011s] (511/771) herdr-threads service::mod_channels::tests::seat_stalled_needs_every_channel_stalled
+        PASS [   0.013s] (512/771) herdr-threads service::mod_channels::tests::registration_over_the_connection_bound_is_busy_but_replacement_is_not
+        PASS [   0.012s] (513/771) herdr-threads service::mod_channels::tests::stall_close_pushes_close_stalled_to_the_channel
+        PASS [   0.011s] (514/771) herdr-threads service::mod_channels::tests::stall_close_starts_cooldown_refusing_same_generation_for_ten_minutes
+        PASS [   0.011s] (515/771) herdr-threads service::mod_channels::tests::stall_cooldown_is_per_binding
+        PASS [   0.012s] (516/771) herdr-threads service::mod_channels::tests::stalled_requires_old_ack_old_receipt_published_before_last_push
+        PASS [   0.012s] (517/771) herdr-threads service::mod_channels::tests::truncated_receipts_never_count_toward_stall
+        PASS [   0.014s] (518/771) herdr-threads service::mod_channels::tests::two_claude_bindings_hold_two_live_channels
+        PASS [   0.191s] (519/771) herdr-threads service::mod_channels::tests::domain::q3_mixed_same_seat_modes_and_replacement_cannot_borrow_old_leases
+        PASS [   0.083s] (520/771) herdr-threads store::attention::tests::newest_pending_notice_follows_the_frontier
+        PASS [   0.203s] (521/771) herdr-threads store::attention::tests::display_by_one_binding_does_not_clear_the_others_notice
+        PASS [   0.206s] (522/771) herdr-threads store::attention::tests::bound_reader_informational_notice_follows_its_own_frontier
+        PASS [   0.205s] (523/771) herdr-threads store::attention::tests::held_mail_is_not_pushed_until_the_catch_up_releases_it
+        PASS [   0.202s] (524/771) herdr-threads store::attention::tests::presentation_relevance_canonical_receipt_sweep_closes_before_clear_publication
+        FAIL [   0.207s] (525/771) herdr-threads store::attention::tests::presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settlement
+  stdout ───
+
+    running 1 test
+    test store::attention::tests::presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settlement ... FAILED
+
+    failures:
+
+    failures:
+        store::attention::tests::presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settlement
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4941 filtered out; finished in 0.20s
+
+  stderr ───
+
+    thread 'store::attention::tests::presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settlement' (58903844) panicked at src/store/../../tests/store/attention.rs:4175:9:
+    assertion `left == right` failed
+      left: 30
+     right: 27
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.206s] (526/771) herdr-threads store::attention::tests::presentation_relevance_all_thirteen_physical_sources_progress_through_stale_candidates
+        PASS [   0.213s] (527/771) herdr-threads store::attention::tests::presentation_relevance_direct_association_survives_prepared_same_id
+        PASS [   0.235s] (528/771) herdr-threads store::attention::tests::presentation_relevance_direct_legacy_survives_canonical_lazy_churn
+        PASS [   0.376s] (529/771) herdr-threads store::attention::tests::presentation_relevance_coverage_reserves_fallback_progress_under_source_load
+        PASS [   0.207s] (530/771) herdr-threads store::attention::tests::presentation_relevance_private_proof_refuses_corruption_without_effects
+        PASS [   0.207s] (531/771) herdr-threads store::attention::tests::presentation_relevance_quiet_proof_does_not_fence_itself_and_overflow_aborts_writer
+        PASS [   0.232s] (532/771) herdr-threads store::attention::tests::presentation_relevance_required_lazy_overlay_tracks_digest_and_requirement
+        PASS [   0.210s] (533/771) herdr-threads store::attention::tests::presentation_relevance_sweep_mutations_fence_and_overflow_roll_back_without_self_invalidation
+        PASS [   0.255s] (534/771) herdr-threads store::attention::tests::presentation_relevance_suspended_membership_unchanged_high_still_opens
+        PASS [   0.081s] (535/771) herdr-threads store::attention::tests::settle_pulled_notices_refuses_a_stale_generation_another_session_or_a_non_prefix
+        PASS [   0.092s] (536/771) herdr-threads store::attention::tests::pulled_notice_settlement_uses_exact_binding_when_sessions_match_across_harnesses
+        PASS [   0.193s] (537/771) herdr-threads store::attention::tests::presentation_relevance_unavailable_exact_episode_and_late_publication_are_swept
+        PASS [   0.093s] (538/771) herdr-threads store::attention::tests::settle_pulled_notices_settles_exactly_the_carried_prefix_for_the_open_binding
+        PASS [   0.202s] (539/771) herdr-threads store::attention::tests::subagent_gets_its_own_notices_and_never_advances_the_parents
+        PASS [   0.205s] (540/771) herdr-threads store::attention::tests::two_bindings_both_get_a_notice_for_one_new_message
+        PASS [   0.288s] (541/771) herdr-threads store::attention::tests::presentation_relevance_walks_retained_membership_and_revalidates_exact_witness
+        PASS [   0.017s] (542/771) herdr-threads store::bindings::tests::binding_key_from_claim_reads_seat_harness_session_and_agent
+        PASS [   0.211s] (543/771) herdr-threads store::bindings::liveness_apply_tests::process_exit_verdicts_are_unchanged
+        PASS [   0.199s] (544/771) herdr-threads store::bindings::liveness_apply_tests::superseded_verdict_is_dropped_when_the_loser_reclaims_first
+        PASS [   0.214s] (545/771) herdr-threads store::bindings::liveness_apply_tests::superseded_verdict_is_dropped_when_the_group_shrank_to_one
+        PASS [   0.210s] (546/771) herdr-threads store::bindings::liveness_apply_tests::superseded_verdict_still_applies_when_ordering_is_unchanged
+        PASS [   0.112s] (547/771) herdr-threads store::bindings::tests::availability::lifecycle_reconnect_closes_the_episode
+        PASS [   0.587s] (548/771) herdr-threads store::attention::tests::presentation_relevance_suspended_membership_respects_repaired_current_high
+        PASS [   0.190s] (549/771) herdr-threads store::bindings::tests::lineage::lineage_successor_starts_at_predecessor_cursors
+        PASS [   0.215s] (550/771) herdr-threads store::bindings::tests::lineage::lineage_from_another_process_is_ignored
+        PASS [   0.198s] (551/771) herdr-threads store::bindings::tests::lineage::link_lineage_never_moves_cursors
+        PASS [   0.195s] (552/771) herdr-threads store::bindings::tests::lineage::validate_lineage_requires_a_top_level_predecessor_of_the_same_seat_and_harness
+        PASS [   0.241s] (553/771) herdr-threads store::bindings::tests::exclusivity::a_plain_call_enrollment_never_adopts_the_placeholder
+        PASS [   0.181s] (554/771) herdr-threads store::bindings::tests::lineage_successor_copies_predecessor_cursors
+        PASS [   0.196s] (555/771) herdr-threads store::bindings::tests::liveness::different_harness_same_pid_does_not_supersede
+        PASS [   0.020s] (556/771) herdr-threads store::bindings::tests::registries::enroll_hooks_are_the_placeholder_replace_then_the_same_pid_supersede
+        PASS [   0.194s] (557/771) herdr-threads store::bindings::tests::liveness::lineage_successor_copies_cursors_before_superseding
+        PASS [   1.029s] (558/771) herdr-threads store::attention::tests::presentation_capacity_due_exact_keys_have_bounded_actual_sql_plans_and_vm
+        PASS [   0.184s] (559/771) herdr-threads store::bindings::tests::liveness::same_pid_supersede_disconnects_the_prior_top_level_binding_at_enrollment
+        PASS [   0.209s] (560/771) herdr-threads store::bindings::tests::liveness::pid_reuse_does_not_supersede
+        PASS [   0.204s] (561/771) herdr-threads store::bindings::tests::liveness::plain_call_enrollment_never_supersedes_a_same_process_binding
+        PASS [   0.203s] (562/771) herdr-threads store::bindings::tests::liveness::subagents_never_supersede_nor_are_superseded
+        PASS [   0.197s] (563/771) herdr-threads store::bindings::tests::match_claim_distinguishes_agent_ids
+        PASS [   0.209s] (564/771) herdr-threads store::bindings::tests::match_claim_ignores_ended_rows
+        PASS [   0.191s] (565/771) herdr-threads store::bindings::tests::resolution::attach_subagent_attaches_to_an_existing_parent_without_touching_it
+        PASS [   0.208s] (566/771) herdr-threads store::bindings::tests::resolution::codex_subagent_uses_env_session_provenance
+        PASS [   0.230s] (567/771) herdr-threads store::bindings::tests::resolution::hermes_cli_claim_of_a_registered_child_resolves_to_the_subagent_binding
+        PASS [   1.274s] (568/771) herdr-threads store::attention::tests::presentation_relevance_all_thirteen_actual_source_heads_and_ranges_have_bounded_plans_and_vm
+        PASS [   0.171s] (569/771) herdr-threads store::bindings::tests::resolution::lifecycle_refreshes_the_placement_of_an_open_binding
+        PASS [   0.197s] (570/771) herdr-threads store::bindings::tests::resolution::lifecycle_enrollment_uses_the_harness_cooperative_provenance
+        PASS [   0.195s] (571/771) herdr-threads store::bindings::tests::resolution::lifecycle_reconnects_a_disconnected_binding_and_runs_hooks
+        PASS [   0.195s] (572/771) herdr-threads store::bindings::tests::resolution::migrated_binding_with_another_session_is_not_readopted
+        PASS [   0.198s] (573/771) herdr-threads store::bindings::tests::resolution::migrated_binding_is_readopted_by_a_plain_call_with_its_session
+        PASS [   0.204s] (574/771) herdr-threads store::bindings::tests::resolution::plain_call_does_not_reconnect_an_end_event_binding
+        PASS [   0.184s] (575/771) herdr-threads store::bindings::tests::resolution::plain_call_does_not_reconnect_when_a_lifecycle_binding_holds_the_process
+        PASS [   0.219s] (576/771) herdr-threads store::bindings::tests::resolution::plain_call_of_an_unknown_session_enrolls_with_env_provenance
+        PASS [   0.225s] (577/771) herdr-threads store::bindings::tests::resolution::plain_call_on_a_retired_seat_does_not_reconnect
+        PASS [   0.210s] (578/771) herdr-threads store::bindings::tests::resolution::plain_call_with_a_fingerprint_reconnects_a_disconnected_binding
+        PASS [   0.200s] (579/771) herdr-threads store::bindings::tests::resolution::readoption_records_the_fingerprint
+        PASS [   0.213s] (580/771) herdr-threads store::bindings::tests::resolution::plain_call_without_a_fingerprint_serves_a_disconnected_binding_without_reconnecting
+        PASS [   0.196s] (581/771) herdr-threads store::bindings::tests::resolution::superseded_binding_plain_call_stays_disconnected_and_supersedes_nothing
+        PASS [   0.203s] (582/771) herdr-threads store::bindings::tests::resolution::subagent_role_without_agent_id_is_invalid
+        PASS [   0.217s] (583/771) herdr-threads store::bindings::tests::resolution::subagent_claim_attaches_to_its_parent_and_enrolls_a_missing_parent
+        PASS [   0.212s] (584/771) herdr-threads store::bindings::tests::resolution::two_sessions_resolve_to_two_open_bindings
+        PASS [   0.195s] (585/771) herdr-threads store::bindings::tests::resolution::v32_readopt_refused_while_a_lifecycle_binding_holds_the_process
+        PASS [   0.229s] (586/771) herdr-threads store::bindings::tests::resolution::v32_readopted_binding_then_session_start_successor_stays_superseded
+        PASS [   1.459s] (587/771) herdr-threads store::attention::tests::presentation_relevance_successor_plan_and_vm_stay_bounded_in_retained_canonical_sweeps
+        PASS [   0.191s] (588/771) herdr-threads store::bindings::tests::subagent_records_parent_and_parent_of_reads_it
+        PASS [   0.187s] (589/771) herdr-threads store::connection::tests::presentation_schema_populated_v39_failed_ddl_rolls_back_epoch_and_catalog
+        PASS [   0.203s] (590/771) herdr-threads store::bindings::tests::two_sessions_hold_two_open_bindings_on_one_seat
+        PASS [   0.207s] (591/771) herdr-threads store::connection::tests::upgrade_from_v28_with_pending_lazy_and_catch_up_mail_delivers_exactly_once
+        PASS [   0.189s] (592/771) herdr-threads store::connection::tests::v32_session_key_is_unique_only_among_open_rows
+        PASS [   0.392s] (593/771) herdr-threads store::connection::tests::presentation_schema_pending_index_build_work_tracks_only_pending_projection
+        PASS [   0.232s] (594/771) herdr-threads store::connection::tests::v32_startup_rejects_missing_or_altered_binding_objects
+        PASS [   0.345s] (595/771) herdr-threads store::connection::tests::v32_fresh_matches_upgraded_catalog
+        PASS [   0.379s] (596/771) herdr-threads store::connection::tests::v28_upgrade_migrates_bindings_to_session_keyed_v32
+        PASS [   0.244s] (597/771) herdr-threads store::connection::tests::v33_to_v34_carries_lazy_and_catch_up_state
+        PASS [   0.321s] (598/771) herdr-threads store::connection::tests::v33_fresh_matches_upgraded_catalog
+        PASS [   0.308s] (599/771) herdr-threads store::connection::tests::v33_startup_rejects_an_altered_archival_trigger
+        PASS [   0.315s] (600/771) herdr-threads store::connection::tests::v34_fresh_matches_upgraded_catalog_with_delivery_data
+        PASS [   0.718s] (601/771) herdr-threads store::connection::tests::published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history
+        PASS [   0.255s] (602/771) herdr-threads store::connection::tests::v34_startup_rejects_altered_catch_up_and_lazy_objects
+        PASS [   0.244s] (603/771) herdr-threads store::connection::tests::v34_to_v35_moves_attention_frontiers_to_bindings
+        PASS [   0.176s] (604/771) herdr-threads store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog
+        PASS [   0.217s] (605/771) herdr-threads store::connection::tests::v35_startup_rejects_altered_attention_frontier_objects
+        PASS [   0.174s] (606/771) herdr-threads store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings
+        PASS [   0.306s] (607/771) herdr-threads store::connection::tests::v35_fresh_matches_upgraded_catalog_with_attention_data
+        PASS [   0.162s] (608/771) herdr-threads store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor
+        PASS [   0.982s] (609/771) herdr-threads store::connection::tests::presentation_schema_populated_v39_upgrade_is_additive_and_reopens
+        PASS [   0.239s] (610/771) herdr-threads store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept
+        PASS [   0.998s] (611/771) herdr-threads store::connection::tests::presentation_schema_populated_v40_consumers_upgrade_revised_v41_and_reopen
+        PASS [   0.160s] (612/771) herdr-threads store::control::tests::direct_threads::reader_controls::q4_rejection_prevents_cursorless_direct_lazy_revival_or_display_bootstrap
+        PASS [   1.045s] (613/771) herdr-threads store::connection::tests::presentation_schema_populated_v40_failed_v41_rolls_back_bootstrap_and_catalog
+        PASS [   0.349s] (614/771) herdr-threads store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap
+        PASS [   0.130s] (615/771) herdr-threads store::control::tests::invitation_confirmation_required_service_gets_fresh_timed_episode_without_mutating_lazy
+        PASS [   0.242s] (616/771) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_native_pending_episode_reused_by_native_and_service_writers_keeps_exact_floor_rows
+        PASS [   0.189s] (617/771) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_pair_refuses_managed_ownership_and_required_writer_without_changing_floor_authority
+        PASS [   0.145s] (618/771) herdr-threads store::control::tests::managed_required_controls_preserve_left_history_and_independent_ordinary_invite
+        PASS [   0.239s] (619/771) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream
+        PASS [   0.167s] (620/771) herdr-threads store::control::tests::managed_release_cancels_only_required_invitation_and_replay_retains_history
+        PASS [   0.276s] (621/771) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream
+        PASS [   0.150s] (622/771) herdr-threads store::control::tests::managed_required_reattach_preserves_upgraded_ordinary_invitation_and_history
+        PASS [   0.094s] (623/771) herdr-threads store::control::tests::registration_ignores_an_exhausted_binding_history_generation_and_rolls_back_without_anchor
+        PASS [   0.111s] (624/771) herdr-threads store::control::tests::managed_required_upgrade_preserves_deadline_and_demands_native_revision
+        PASS [   0.277s] (625/771) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_service_pending_episode_reused_by_service_and_native_writers_keeps_exact_floor_rows
+        PASS [   0.125s] (626/771) herdr-threads store::control::tests::service_requirement_uses_an_independent_episode_without_mutating_native_lazy_invitation
+        PASS [   0.141s] (627/771) herdr-threads store::control::tests::same_invitation_requirement_attach_release_replacement_has_distinct_context_epochs
+        PASS [   0.176s] (628/771) herdr-threads store::control::tests::required_then_independent_ordinary_acceptance_keeps_one_join_interval
+        PASS [   0.195s] (629/771) herdr-threads store::control::tests::native_ordinary_offer_after_required_offer_can_be_accepted_after_join
+        PASS [   0.126s] (630/771) herdr-threads store::first_contact::tests::a_peer_thread_name_cannot_add_lines
+        PASS [   0.077s] (631/771) herdr-threads store::first_contact::tests::counts_cover_only_messages_up_to_the_cursor
+        PASS [   0.112s] (632/771) herdr-threads store::first_contact::tests::at_most_eight_threads_by_recent_activity_then_more_line
+        PASS [   0.176s] (633/771) herdr-threads store::effective::tests::unpublished_staging_is_invisible_and_first_later_anchor_is_immutable
+        PASS [   0.164s] (634/771) herdr-threads store::first_contact::tests::a_seat_with_no_history_gets_no_first_contact
+        PASS [   1.355s] (635/771) herdr-threads store::connection::tests::released_main31_populated_automatic_graph_physically_upgrades_and_reopens
+        PASS [   0.070s] (636/771) herdr-threads store::first_contact::tests::line_format_matches_the_spec
+        PASS [   0.129s] (637/771) herdr-threads store::first_contact::tests::first_contact_is_attached_once_per_binding
+        PASS [   0.084s] (638/771) herdr-threads store::first_contact::tests::open_requests_come_from_the_summary_ledger
+        PASS [   0.215s] (639/771) herdr-threads store::first_contact::tests::fast_forward_keeps_pending_obligations_listed
+        PASS [   0.087s] (640/771) herdr-threads store::first_contact::tests::threads_without_earlier_history_are_omitted
+        PASS [   0.250s] (641/771) herdr-threads store::first_contact::tests::fast_forward_triggers_above_one_page_and_not_below
+        PASS [   0.138s] (642/771) herdr-threads store::first_contact::tests::unenrolled_inbox_page_carries_stats_until_the_enrolling_advance
+        PASS [   0.089s] (643/771) herdr-threads store::first_contact::tests::unnamed_thread_label
+        PASS [   0.211s] (644/771) herdr-threads store::first_contact::tests::plain_touch_never_fast_forwards
+        PASS [   0.232s] (645/771) herdr-threads store::first_contact::tests::plain_call_reconnect_never_fast_forwards
+        PASS [   0.218s] (646/771) herdr-threads store::first_contact::tests::subagent_fast_forward_never_settles
+        PASS [   0.221s] (647/771) herdr-threads store::first_contact::tests::supersede_never_fast_forwards_the_superseded_binding
+        PASS [   0.170s] (648/771) herdr-threads store::invitation_content::notice_replay_tests::presentation_virtual_notice_replays_and_confirms_original_slots_without_materializing
+        PASS [   0.366s] (649/771) herdr-threads store::first_contact::tests::many_small_messages_past_a_page_fast_forward_with_gap_counts
+        PASS [   0.196s] (650/771) herdr-threads store::lazy_delivery::binding_lazy_tests::a_binding_less_completion_counts_for_every_open_top_level_binding
+        PASS [   0.201s] (651/771) herdr-threads store::lazy_delivery::binding_lazy_tests::a_later_binding_inherits_the_seat_maximum_cursor
+        PASS [   0.198s] (652/771) herdr-threads store::lazy_delivery::binding_lazy_tests::advance_through_displayed_stops_at_the_first_gap
+        PASS [   0.221s] (653/771) herdr-threads store::lazy_delivery::binding_lazy_tests::a_seat_without_a_connected_top_level_binding_counts_only_legacy_rows
+        PASS [   0.286s] (654/771) herdr-threads store::invitation_content::notice_replay_tests::retained_virtual_notice_lookup_uses_indexed_constant_vm_work
+        PASS [   0.212s] (655/771) herdr-threads store::lazy_delivery::binding_lazy_tests::has_unread_is_lazy_aware
+        PASS [   0.226s] (656/771) herdr-threads store::lazy_delivery::binding_lazy_tests::completion_state_follows_the_binding
+        PASS [   0.694s] (657/771) herdr-threads store::effective::tests::dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recapture
+        PASS [   0.089s] (658/771) herdr-threads store::queries::binding_inbox_tests::invitations_are_listed_per_seat
+        PASS [   0.103s] (659/771) herdr-threads store::queries::binding_inbox_tests::bound_warning_cutoff_is_the_reading_bindings_own_offer_frontier
+        PASS [   0.254s] (660/771) herdr-threads store::lazy_delivery::binding_lazy_tests::lazy_message_is_delivered_once_per_binding
+        PASS [   0.238s] (661/771) herdr-threads store::lazy_delivery::binding_lazy_tests::left_threads_are_not_lazy_unread_for_a_binding_without_a_cursor
+        PASS [   0.144s] (662/771) herdr-threads store::queries::binding_inbox_tests::binding_enrolled_after_leave_gets_no_old_lazy_history
+        PASS [   0.225s] (663/771) herdr-threads store::lazy_delivery::binding_lazy_tests::legacy_pending_survives_a_subagent_display_attempt
+        PASS [   0.222s] (664/771) herdr-threads store::lazy_delivery::binding_lazy_tests::legacy_pending_survives_leaving_the_thread
+        PASS [   0.263s] (665/771) herdr-threads store::lazy_delivery::binding_lazy_tests::legacy_pending_is_shown_to_top_level_bindings_until_displayed
+        PASS [   0.228s] (666/771) herdr-threads store::materialization::tests::stall_before_first_unit_still_does_one_unit_within_call_budget
+        PASS [   0.016s] (667/771) herdr-threads store::queries::tests::presentation_generated_marker_inverse_refuses_wrong_variant_or_body
+        PASS [   0.266s] (668/771) herdr-threads store::queries::binding_inbox_tests::bound_lazy_stream_is_per_binding
+        PASS [   0.031s] (669/771) herdr-threads store::queries::tests::presentation_publication_range_uses_exact_index_and_bounded_sqlite_work
+        PASS [   0.209s] (670/771) herdr-threads store::queries::binding_inbox_tests::join_gives_every_open_binding_a_cursor_at_the_join_point
+        PASS [   0.175s] (671/771) herdr-threads store::queries::binding_inbox_tests::subagent_display_advances_only_its_own_cursor
+        PASS [   0.116s] (672/771) herdr-threads store::queries::tests::presentation_publication_observes_old_staging_only_after_late_manifest
+        PASS [   1.015s] (673/771) herdr-threads store::effective::tests::dormant_upgrade_bounded_batches_survive_restart_and_continuing_arrivals
+        PASS [   0.305s] (674/771) herdr-threads store::queries::binding_inbox_tests::pending_obligations_older_than_the_binding_are_listed
+        PASS [   0.374s] (675/771) herdr-threads store::queries::binding_inbox_tests::no_duplicate_delivery_after_v29_migration
+        PASS [   0.309s] (676/771) herdr-threads store::queries::binding_inbox_tests::unknown_session_inbox_shows_no_backlog_past_the_seat_maximum
+        PASS [   0.387s] (677/771) herdr-threads store::queries::binding_inbox_tests::one_bindings_display_never_hides_mail_from_the_other
+        PASS [   7.196s] (678/771) herdr-threads::integration session_bindings_smoke::config5_resume_within_a_page_and_past_it
+        PASS [   0.320s] (679/771) herdr-threads store::queries::tests::presentation_hydrate_exact_query_is_driven_by_bounded_wanted_ids
+        PASS [   0.406s] (680/771) herdr-threads store::queries::binding_inbox_tests::two_bindings_each_receive_every_message_exactly_once
+        PASS [   0.105s] (681/771) herdr-threads store::queries::tests::query_work_q4::q4_public_and_origin_warning_sources_remain_enabled
+        PASS [   0.325s] (682/771) herdr-threads store::queries::tests::presentation_q3_publication_recipient_keys_have_constant_sqlite_work
+        PASS [   0.398s] (683/771) herdr-threads store::queries::tests::presentation_q3_reader_helper_exact_keys_have_constant_sqlite_work
+        PASS [   0.202s] (684/771) herdr-threads store::read_cursors::tests::advance_is_monotonic
+        PASS [   0.199s] (685/771) herdr-threads store::read_cursors::tests::advance_through_displayed_counts_only_this_bindings_display_acks
+        PASS [   0.187s] (686/771) herdr-threads store::read_cursors::tests::advance_through_displayed_stops_at_the_first_gap
+        PASS [   0.200s] (687/771) herdr-threads store::read_cursors::tests::copy_lineage_copies_and_keeps_the_higher_cursor
+        PASS [   0.204s] (688/771) herdr-threads store::read_cursors::tests::init_for_join_gives_every_open_binding_a_cursor_at_the_join_point
+        PASS [   0.211s] (689/771) herdr-threads store::read_cursors::tests::has_unread_tracks_ordinary_mail_past_the_cursor
+        PASS [   0.215s] (690/771) herdr-threads store::read_cursors::tests::init_for_new_binding_starts_at_the_seat_maximum_else_head
+        PASS [   0.212s] (691/771) herdr-threads store::read_cursors::tests::readopt_never_lowers_a_cursor
+        PASS [   0.197s] (692/771) herdr-threads store::read_cursors::tests::seed_modes
+        PASS [   0.214s] (693/771) herdr-threads store::read_cursors::tests::retired_seat_keeps_its_cursor_rows
+        PASS [   0.186s] (694/771) herdr-threads store::read_cursors::tests::seed_precedence_readopt_over_lineage_over_seat_max
+        PASS [   0.107s] (695/771) herdr-threads store::receipts::mod_ack_tests::already_settled_ordinary_still_advances_a_second_bindings_cursor
+        PASS [   0.135s] (696/771) herdr-threads store::receipts::mod_ack_tests::mod_ack_of_only_the_lazy_row_stops_before_an_unshown_ordinary_message
+        PASS [   0.145s] (697/771) herdr-threads store::receipts::mod_ack_tests::mod_ack_of_ordinary_and_lazy_advances_the_cursor_past_both
+        PASS [   0.138s] (698/771) herdr-threads store::receipts::mod_ack_tests::truncated_ordinary_next_to_a_lazy_row_does_not_let_the_cursor_pass
+        PASS [   0.126s] (699/771) herdr-threads store::receipts::tests::binding_attribution::disconnected_binding_ack_reconnects_and_settles
+        PASS [   0.105s] (700/771) herdr-threads store::receipts::tests::binding_attribution::explicit_ack_records_the_acting_binding
+        PASS [   0.119s] (701/771) herdr-threads store::receipts::tests::binding_attribution::fingerprintless_ack_of_a_disconnected_binding_is_refused
+        PASS [   0.118s] (702/771) herdr-threads store::receipts::tests::binding_attribution::two_top_level_bindings_may_display_ack_settled_once
+        PASS [   0.119s] (703/771) herdr-threads store::receipts::tests::display_ack_reconnects_a_disconnected_plain_call_enrolled_binding
+        PASS [   1.036s] (704/771) herdr-threads store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope
+        PASS [   0.106s] (705/771) herdr-threads store::receipts::tests::display_ack_settles_for_a_plain_call_enrolled_binding
+        PASS [   0.104s] (706/771) herdr-threads store::receipts::tests::fingerprintless_display_ack_of_a_disconnected_binding_is_refused
+        PASS [   0.109s] (707/771) herdr-threads store::receipts::tests::display_ack_settles_for_a_readopted_migrated_binding
+        PASS [   1.308s] (708/771) herdr-threads store::queries::tests::query_work_q4::q4_actual_continued_tail_checks_scope_once_and_charges_retirement
+        PASS [   0.182s] (709/771) herdr-threads store::receipts::tests::receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack
+        PASS [   0.124s] (710/771) herdr-threads store::receipts::tests::receipt_discovery_orphan_wrong_audience_and_service_markers_cannot_invent_origins
+        PASS [   0.084s] (711/771) herdr-threads store::wake_tests::candidate_binding_is_the_newest_connected_top_level_binding
+        PASS [   0.227s] (712/771) herdr-threads store::receipts::tests::receipt_origin_actual_ordinary_send_with_null_native_author_notifies_sender
+        PASS [   0.202s] (713/771) herdr-threads store::seats::mod_seat_view_tests::binding_view_fingerprint_moves_with_that_bindings_unread_only
+        PASS [   0.176s] (714/771) herdr-threads store::seats::mod_seat_view_tests::ended_or_disconnected_binding_view_reports_it
+        PASS [   1.712s] (715/771) herdr-threads store::queries::tests::query_work_q4::q4_private_fresh_excludes_warning_history
+        PASS [   1.857s] (716/771) herdr-threads store::queries::tests::query_work_q4::q4_private_resumed_excludes_warning_history
+        PASS [   0.461s] (717/771) herdr-threads::combined direct_send::historical_ensure_omits_new_result_and_modern_reuse_reports_old_timed_origin_honestly
+        PASS [   0.630s] (718/771) herdr-threads::combined direct_send::direct_file_body_is_frozen_across_send_failure
+        PASS [   0.609s] (719/771) herdr-threads::combined direct_send::frozen_some_claim_survives_direct_send_durable_retry_with_changed_caller
+        PASS [   0.772s] (720/771) herdr-threads::combined direct_send::historical_lazy_direct_retry_is_exempt_from_receipt_capability
+        PASS [   0.677s] (721/771) herdr-threads::combined direct_send::historical_none_claim_survives_direct_send_durable_retry_with_changed_caller
+        PASS [   1.307s] (722/771) herdr-threads::combined direct_send::committed_direct_ordinary_output_retry_does_not_require_receipt_capability
+        PASS [   0.751s] (723/771) herdr-threads::combined direct_send::modern_direct_send_creates_lazy_pending_invitation_without_invitation_wake
+        PASS [   1.761s] (724/771) herdr-threads store::receipts::tests::receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_together
+        PASS [   0.528s] (725/771) herdr-threads::combined direct_send::modern_ensure_returns_actual_canonical_policy_and_selection_outcome
+        PASS [   0.601s] (726/771) herdr-threads::combined direct_send::modern_lazy_direct_send_is_exempt_from_receipt_capability
+        PASS [   0.491s] (727/771) herdr-threads::combined direct_send::old_direct_peer_with_lazy_support_refuses_creation_policy_before_any_effect
+        PASS [   0.704s] (728/771) herdr-threads::combined direct_send::modern_ordinary_direct_send_with_receipt_capability_commits_exact_ordinary_body
+        PASS [   0.881s] (729/771) herdr-threads::combined direct_send::modern_ordinary_direct_send_requires_receipt_capability_before_any_effect
+        PASS [   0.582s] (730/771) herdr-threads::combined direct_send::pending_historical_ordinary_direct_retry_requires_receipts_without_rewriting_original
+        PASS [   2.429s] (731/771) herdr-threads store::receipts::tests::receipt_discovery_global_fair_snapshots_cover_upgrade_and_restart_with_blocked_wakes
+        PASS [   0.517s] (732/771) herdr-threads::combined invitation_content::binding_presentation::binding_input_cannot_select_a_sibling_or_canonical_subagent
+        PASS [   1.696s] (733/771) herdr-threads::combined direct_send::modern_ensure_joined_rejected_and_left_use_actual_canonical_lifecycle
+        PASS [   1.865s] (734/771) herdr-threads::combined direct_send::lost_committed_replies_restart_with_exact_keys_body_and_lazy_audience
+        PASS [   0.422s] (735/771) herdr-threads::combined invitation_content::binding_presentation::carried_message_rechecks_own_unread_and_sibling_ack_without_touching_receipt
+        PASS [   0.405s] (736/771) herdr-threads::combined invitation_content::binding_presentation::continued_body_cancellation_before_final_save_rolls_back_and_retries
+        PASS [   0.461s] (737/771) herdr-threads::combined invitation_content::binding_presentation::carry_quantum_accounts_all_thirty_two_keys_and_refuses_a_thirty_third
+        PASS [   0.422s] (738/771) herdr-threads::combined invitation_content::binding_presentation::continued_body_cancellation_during_decision_sample_rolls_back_tentative_save
+        PASS [   0.355s] (739/771) herdr-threads::combined invitation_content::binding_presentation::continued_body_retirement_is_private_and_charged_once
+        PASS [   0.371s] (740/771) herdr-threads::combined invitation_content::binding_presentation::continued_body_retirement_rolls_back_when_final_state_write_fails
+        PASS [   0.017s] (741/771) herdr-threads::combined lazy_inbox_v2::invitation_decision_context_is_additive_and_old_omitted_bytes_stay_exact
+        PASS [   0.414s] (742/771) herdr-threads::combined invitation_content::binding_presentation::continued_pending_body_survives_own_display_cursor
+        PASS [   0.380s] (743/771) herdr-threads::combined invitation_content::binding_presentation::continued_unread_body_survives_sibling_full_read
+        PASS [   0.347s] (744/771) herdr-threads::combined invitation_content::binding_presentation::sibling_settled_receipt_remains_in_bound_normal_and_exact_recovery
+        PASS [   0.384s] (745/771) herdr-threads::combined invitation_content::binding_presentation::same_generation_binding_outboxes_and_notice_frontiers_are_independent
+        PASS [   0.376s] (746/771) herdr-threads::combined invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read
+        PASS [   0.786s] (747/771) herdr-threads::combined invitation_content::binding_presentation::continued_body_refuses_corrupt_accumulator_and_missing_authority_without_progress
+        PASS [   0.136s] (748/771) herdr-threads::combined setup_cli::doctor_flags_claude_install_missing_subagent_groups
+        PASS [   0.461s] (749/771) herdr-threads::combined invitation_content::composed_v43_invitation_epoch_alter_records_nested_work_and_preserves_state
+        PASS [   0.140s] (750/771) herdr-threads::combined setup_cli::doctor_flags_codex_install_missing_subagent_stop_and_session_end
+        PASS [   0.093s] (751/771) herdr-threads::combined setup_cli::setup_codex_registers_subagent_stop_and_session_end
+        PASS [   0.498s] (752/771) herdr-threads::combined lazy_markers::q5_continuation_public::q5_public_insufficient_original_bound_writes_nothing_and_performs_no_display_effect
+        PASS [   0.428s] (753/771) herdr-threads::combined setup_cli::setup_claude_registers_subagent_start_and_stop
+        PASS [   0.273s] (754/771) herdr-threads::combined setup_cli::unsetup_claude_removes_subagent_groups
+        PASS [   4.939s] (755/771) herdr-threads::integration session_bindings_smoke::config9_a_late_drain_after_a_sibling_settles_still_delivers
+        PASS [   1.870s] (756/771) herdr-threads::combined lazy_markers::q5_continuation_public::q5_history_public_refits_preserve_1400_byte_and_row_bounds_through_completion
+        PASS [   1.820s] (757/771) herdr-threads::combined lazy_markers::q5_continuation_public::q5_search_public_refits_preserve_2048_byte_filter_route_actor_and_cursor
+        PASS [   1.382s] (758/771) herdr-threads::service presentation_owner_budget_controls::presentation_confirm_cancelled_owner_waiter_returns_before_release_without_effects
+        PASS [   1.963s] (759/771) herdr-threads::combined lazy_markers::q5_continuation_public::q5_search_public_reselected_no_lazy_page_still_restores_original_bound
+        PASS [   1.447s] (760/771) herdr-threads::service presentation_owner_budget_controls::presentation_confirm_expired_owner_waiter_returns_before_release_without_effects
+        PASS [   2.365s] (761/771) herdr-threads::combined lazy_markers::q5_continuation_public::q5_history_public_reselected_no_lazy_page_still_restores_original_bound
+        PASS [   2.380s] (762/771) herdr-threads::combined lazy_markers::q5_continuation_public::q5_public_json_and_unadvertised_modes_keep_initial_serialization_unchanged
+        PASS [   2.042s] (763/771) herdr-threads::integration setup_canary_seam::actual_claude_setup_consumer_rejects_bad_output_and_owned_configuration
+        PASS [   0.706s] (764/771) herdr-threads::service presentation_owner_budget_controls::presentation_poisoned_owner_recovers_for_pull_and_confirm
+        PASS [   0.628s] (765/771) herdr-threads::service presentation_owner_budget_controls::presentation_pull_cancelled_owner_waiter_returns_before_release_without_effects
+        PASS [   0.641s] (766/771) herdr-threads::service presentation_owner_budget_controls::presentation_pull_expired_owner_waiter_returns_before_release_without_effects
+        PASS [   1.557s] (767/771) herdr-threads::service presentation_owner_budget_controls::presentation_live_owner_waiters_serialize_and_succeed_after_release
+        PASS [   6.438s] (768/771) herdr-threads::integration session_bindings_smoke::config9_foreground_and_background_agents_in_one_pane
+        PASS [  16.330s] (769/771) herdr-threads store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers
+        PASS [  16.816s] (770/771) herdr-threads store::queries::tests::query_work_q4::q4_three_event_keys_and_actual_floor_have_constant_sqlite_work
+        PASS [  17.094s] (771/771) herdr-threads store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work
+────────────
+     Summary [  53.048s] 771 tests run: 768 passed, 3 failed, 5331 skipped
+error: test run failed

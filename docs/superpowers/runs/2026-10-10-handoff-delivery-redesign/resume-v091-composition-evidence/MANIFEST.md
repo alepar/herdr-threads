@@ -1,0 +1,9 @@
+# Current Main36 composition proof
+
+Actualintegration79a0c3dd/tree6068 exactlymatchesc53validatedtree. CanonicalMain20e7/history1–36 preserved; prospective37–46. Author495sourceonlycompiledunknown untilparent. Firstce2compile2fixtureerrors retained; correctedf39gatesPASS. Exact95=89PASS6FAIL6.821s, newmixedwake4.353s andcanonical36controlsPASS, allscopedleaks0. SinglefamilylightreviewNEEDS_FIX(onefixpass only/no rereview):6actualfailures+additionalconfig8latestpin. Independentlygroundedtest/snapshotfixes8d37/c53; exactnormal11PASS6.833s, rawselectivegoldengeneration NOTregressionGREEN, every26changedfixturegroundedbyfield/contracts. Finalpromotion4compile-onlygatesPASS; no merge-timetests/productionfixwaiver.
+
+HelperonefocusedREVISE+onefixpass adds55thMainlegacyupgradefloor, old54/15new/feature1/391/657/244/2aliases/6mandatory preserved. FreshparentASTchecks hash currenthelpers db747928 /97f1dae3, sameproofdigestcbd0eeea. No finalseal/runtimecreatedbyhelpers yet.
+
+Driver39 fakecredentialselftestsPASS11.850s/leaks0 atunchangedMain20e7scriptblobs; initialsandbox8fails solelyprocess-inspectiondenial retained, exactscopecleanup laterPASS. Modsource unchanged vsprior124consumerpass; finalreadiness must citebyteidentity ratherthanpretendrerun. No realagentuptake/releasequalificationclaim.
+
+Large nextest listJSON retainedbyoriginalexact/privatepaths inexecutionfiles; copiesherearecompactactualcommands/results/logs, notfabricatedregistrations. FinalC rerun unspent pendingonce-onlyscopedpost-cap codeauditandfreshcomplete55floor source-seal; controlledspeed/report/once-onlylocalfeedback/authorizedMainREADY stillpending.

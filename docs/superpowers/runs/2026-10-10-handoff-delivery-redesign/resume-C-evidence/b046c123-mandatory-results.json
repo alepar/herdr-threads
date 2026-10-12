@@ -1,0 +1,44 @@
+{
+  "executed_cases": [
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "lazy_recovery_context::lazy_recovery_agent_mixed_submission_pins_ambient_journal",
+      "status": "ok"
+    },
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "lazy_recovery_context::lazy_recovery_prior_durable_ref_on_second_record_failure_pins_journal",
+      "status": "ok"
+    },
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "lazy_recovery_context::lazy_recovery_prior_durable_ref_on_second_record_failure_pins_ambient_journal",
+      "status": "ok"
+    },
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "lazy_recovery_context::lazy_recovery_agent_mixed_submission_pins_journal",
+      "status": "ok"
+    },
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "lazy_recovery_context::lazy_recovery_human_submission_pins_journal",
+      "status": "ok"
+    },
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "lazy_recovery_context::lazy_recovery_human_submission_pins_ambient_journal",
+      "status": "ok"
+    }
+  ],
+  "executed_count": 6,
+  "passed_count": 6,
+  "missing": [],
+  "extra": [],
+  "duplicates": [],
+  "ignored": [],
+  "evidence_complete": true,
+  "summaries": [
+    "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 687 filtered out; finished in 3.23s"
+  ]
+}

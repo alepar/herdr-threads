@@ -1,0 +1,67 @@
+# Review package: 7ea79d3d8e598b01729b61be9c0faa31a6e046f4..HEAD
+
+## Commits
+045b1b65 docs: distinguish active direct invitation readers
+
+## Files changed
+ CHANGELOG.md        | 2 +-
+ docs/agent-usage.md | 6 +++++-
+ 2 files changed, 6 insertions(+), 2 deletions(-)
+
+## Diff
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index e34b9a47..593f36c2 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,19 +1,19 @@
+ # Changelog
+ 
+ ## Unreleased
+ 
+ ## v0.9.1
+ 
+ - **Codex turn-start delivery.** Pending lazy messages arrive on text-only turns through the owned `UserPromptSubmit` hook. Re-run `herdr-threads setup codex` and trust the updated hook contract in Codex.
+ - **Session-aware wake suppression.** Receipts and invitations fully presented inside a binding's turn no longer cause an extra wake after that turn. Native dispatch checks the actual foreground binding, preserving sibling delivery and recovery-hint behavior. Presentation remains separate from ACK and acceptance.
+-- **Pair opening messages.** Accepting an automatic one-to-one invitation preserves pending opening messages. Joining or rejoining seeds the head frontier and retains undisplayed lazy mail beyond the seat's furthest cursor for the first top-level reader; that pre-join pending mail settles once for the seat.
++- **Pair opening messages.** Accepting the active one-to-one invitation preserves existing binding cursors and seeds missing open-binding cursors at the invitation event; a sibling's display leaves each binding's unread stream intact. Fresh bindings after acceptance still start at the seat's furthest cursor, or the head if none exists. Generic join/rejoin and nonpair acceptance seed the head frontier and retain undisplayed lazy mail beyond the seat's furthest cursor for the first top-level reader; that pre-join pending mail settles once for the seat.
+ - **Fresh-attention retries and JSON output.** New attention immediately retries a refusal-backed-off seat without resetting its failure count. `send --seat --json` returns the versioned send envelope.
+ - **Upgrade and release checks.** Additive migration 36 records in-turn presentation; upgrade the CLI and daemon together. A private live wake matrix and startup/interruption cleanup controls accompany the fixes. Successful Claude evidence and the still-outstanding Codex gate are recorded separately in the release qualification.
+ 
+ ## v0.9.0
+ 
+ - **Independent session delivery.** Multiple sessions share a durable seat with their own read cursors, attention frontiers and bounded delivery ledgers. Memberships and receipt obligations remain shared; the first eligible top-level binding settles each receipt once. Subagents can advance only their own read position.
+ - **Delivery across sessions.** Settled messages still reach unread sibling sessions without redundant idle wakes. Full-body reads advance the caller's cursor; opted-in lazy wakes and late Hermes lineage links preserve their intended delivery behavior.
+ 
+ - **Session-keyed seat bindings: one-time upgrade cost.** Agent bindings migrated from the previous schema start disconnected (reason `migrated`): an idle agent waiting at its prompt gets no wake until its next turn, when its first herdr-threads call, or for a hook-pull harness (agy) its next turn's delivery pull, re-adopts the same binding with its cursors intact. Schema migrations 32 to 35 (after v0.8.0's 31) apply on the first daemon start; wire protocol 7 means the CLI and daemon upgrade together. Re-run `herdr-threads setup` to install the new hook groups; `doctor` and `setup-status` flag an install that lacks one (Claude SubagentStart/SubagentStop, Codex SubagentStop/SessionEnd, Hermes bridge callbacks) and `doctor fix` re-runs the owned setup. Agents started before the upgrade re-enroll on their next call; a long-lived pane whose harness does not export its session id is refused with the fix (restart the agent, or re-run setup) rather than attributed to the pane. An agy agent's own `herdr-threads` calls are attributed to its conversation through `ANTIGRAVITY_CONVERSATION_ID`.
+ 
+diff --git a/docs/agent-usage.md b/docs/agent-usage.md
+index 1fc710af..5ec013d2 100644
+--- a/docs/agent-usage.md
++++ b/docs/agent-usage.md
+@@ -149,21 +149,25 @@ Inspect a programmatic service connection with `herdr-threads service inspect`.
+ 
+ **Subagents are read-only.** A Claude subagent's `herdr-threads`/`ht` calls carry `--agent-id=<id>`, inserted by the PreToolUse hook; Codex subagents are enrolled from their start events (Hermes delegate children register from their `subagent_start` events). The CLI refuses a subagent's write before it reaches the daemon (`unsupported`, exit 4), and the daemon refuses any subagent-role binding with `subagent_read_only` (exit 1) for every accountable command (check-in, handoff, create thread, invite, join, accept, reject, send, ACK, leave, topic and name changes, archive, reopen). Subagents read and summarize their own stream (`inbox`, whose display advances only their own binding's cursor and ACKs nothing, as does a full `body ID` read, `inbox --machine`, `read`, `summary`, ...) and advance only their own binding's cursor; the top-level agent does the ACKs. This is cooperative: the Claude rewrite recognizes simple commands that run `herdr-threads` or `ht`, and a shape it does not recognize (`eval`, `bash -c`, scripts, `$(...)`, a quoted or path-qualified command word) stays attributed to the parent session and is not refused.
+ 
+ **First contact and fast-forward.** A new binding's cursors start at the seat's furthest-read point per joined thread (the thread head when the seat has read nothing), so a new session sees no backlog replay. Its first check-in carries per-thread history stats, shown once before the digest line:
+ 
+ ```text
+ history: #review (thr_1): 42 earlier messages, 7 from people (1 open requests), last 12m ago — herdr-threads summary thr_1
+ history: +3 more threads (herdr-threads thread list --joined)
+ ```
+ 
+-At most 8 threads are listed, most recent activity first. A resumed or reconnected binding whose unread backlog exceeds one ordinary inbox page is fast-forwarded: its cursors jump to the thread heads and it sees `history: resumed past N messages:` followed by the same stats line per thread (counts over the skipped gap) and the thread's last message (`last: #SEQ AUTHOR: preview`). Pending ACK obligations are not skipped. Joining a thread (accept, join) starts every session of the seat at the thread head; undisplayed lazy messages addressed to the seat past every session's read position (the opening of a direct send) stay pending for the seat until the first top-level session shows them, and that settles them for every session (subagents never see them). On a rejoin a session skips joined-era mail another session of the seat already read or passed (including by a fast-forward or a subagent's read), and lazy mail every session had passed unshown is not offered again. Under a tight hook budget a history line shrinks to `history: herdr-threads summary THREAD`; run it to catch up.
++At most 8 threads are listed, most recent activity first. A resumed or reconnected binding whose unread backlog exceeds one ordinary inbox page is fast-forwarded: its cursors jump to the thread heads and it sees `history: resumed past N messages:` followed by the same stats line per thread (counts over the skipped gap) and the thread's last message (`last: #SEQ AUTHOR: preview`). Pending ACK obligations are not skipped. Under a tight hook budget a history line shrinks to `history: herdr-threads summary THREAD`; run it to catch up.
++
++Generic `join` and nonpair invitation acceptance start every open binding of the seat at the thread head. Undisplayed lazy messages addressed to the seat beyond its furthest cursor stay pending for the seat until the first top-level binding shows them; that pending mail settles once for the seat (subagents never see it). On a generic rejoin a binding skips joined-era mail another binding already read or passed (including by a fast-forward or a subagent's read), and lazy mail every binding had passed unshown is not offered again.
++
++Accepting the active invitation to a direct one-to-one thread preserves each binding's existing cursor and seeds missing open-binding cursors at the invitation's timeline event, keeping opening messages available. Acceptance is not display: each binding retains its own unread stream even when a sibling shows the message. A new binding while the invitation is pending can independently receive that episode's addressed lazy messages; a new binding after acceptance uses the normal joined-thread seeding rule (the seat's furthest cursor, or the head if none exists).
+ 
+ **Human exclusivity.** A person's seat (`human me init`) holds only the person's binding and is refused (see `me init` refusals above) while an agent binding of the seat is connected, unless `--operator`. Any agent enrollment, reconnect or plain call on a human seat ends the human binding; a later resume enrolls a fresh binding.
+ 
+ **Presence.** See the presence fields below: `active` means at least one open connected binding (or the person's open binding on a seat still resolved onto its pane); `inactive` means none. Availability, wake targeting and the archival rule all follow connected bindings.
+ 
+ **Wake, pane close and archival.** A wake is decided per connected top-level binding placed on the observed terminal (subagent, disconnected, ended and human bindings are never targets); a pane's mod channel is per binding. A closed pane retires its seat: every connected binding disconnects with reason `seat_retired` and its cursors are kept. A thread archives after one quiet hour only when no member has a connected binding (a human member counts while its pane exists); bindings migrated from the single-occupant model count as active for 24 hours after the upgrade.
+ 
+ **Upgrading.** Re-run `herdr-threads setup` (and `setup hermes --profile NAME`) so the SessionStart, SubagentStart/SubagentStop, Codex SessionEnd and Hermes finalize hooks are installed; `doctor` and `setup-status` report a `stale_install` finding naming the missing events and the exact `herdr-threads setup HARNESS` fix (`the installed claude integration lacks ...: re-run ... (agents started before the upgrade also need a restart)`). A binding migrated from the older model is re-adopted, cursors kept, by the first agent call whose session id matches the one it recorded; idle agents that have not made a call since the upgrade are not woken until they do.
+ 
+ ## Presentation contract

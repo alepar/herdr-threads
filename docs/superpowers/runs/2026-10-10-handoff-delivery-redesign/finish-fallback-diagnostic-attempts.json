@@ -1,0 +1,47 @@
+{
+  "head": "83e90c520457e9435d55f0880c58b09cb1ce4926",
+  "purpose": "Bounded reproduction of first-active unexplained fallback observation failure",
+  "earlier_failure": "Unreproduced; no source repair claimed",
+  "attempts": [
+    {
+      "attempt": 1,
+      "ht_leak_run_id": "e08a5e20-db25-44c9-961c-0bd9f44c29c0",
+      "passed": 1,
+      "failed": 0,
+      "scoped_leak_exit": 0,
+      "log": "/private/tmp/ht-finish-fallback-diag-1.log"
+    },
+    {
+      "attempt": 2,
+      "ht_leak_run_id": "6aee4cad-2799-47e9-b281-15d7c37a0945",
+      "passed": 1,
+      "failed": 0,
+      "scoped_leak_exit": 0,
+      "log": "/private/tmp/ht-finish-fallback-diag-2.log"
+    },
+    {
+      "attempt": 3,
+      "ht_leak_run_id": "0303cff3-a40f-40b2-98ab-19d1f0df0592",
+      "passed": 1,
+      "failed": 0,
+      "scoped_leak_exit": 0,
+      "log": "/private/tmp/ht-finish-fallback-diag-3.log"
+    },
+    {
+      "attempt": 4,
+      "ht_leak_run_id": "a77e4346-50e5-48c3-9049-b2d15e7c1737",
+      "passed": 1,
+      "failed": 0,
+      "scoped_leak_exit": 0,
+      "log": "/private/tmp/ht-finish-fallback-diag-4.log"
+    },
+    {
+      "attempt": 5,
+      "ht_leak_run_id": "cdae3e22-180c-4b55-9674-0d76a50694cf",
+      "passed": 1,
+      "failed": 0,
+      "scoped_leak_exit": 0,
+      "log": "/private/tmp/ht-finish-fallback-diag-5.log"
+    }
+  ]
+}

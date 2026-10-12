@@ -1,0 +1,23 @@
+--- a/TRUST-POLICY.md
++++ b/TRUST-POLICY.md
+@@ -875,6 +875,20 @@
+ display, and do not claim to recover historically skipped bodies. Existing explicit lifecycle
+ fast-forward remains the separate accepted Lazy limit described below. No binding-birth heuristic,
+ autoaccept, receipt provenance, new schema or deadline is inferred from this reader exception.
++
++For private ordinary presentation only, an intact captured modern Lazy continuation whose current
++reader scope has become inapplicable may retire its exact private body/ordinal instead of blocking
++later episodes. Exact message/instance/Lazy mode, published addressing, captured publication/range,
++canonical binding, and the assembler's matching ID/offset or skip-body state must validate first;
++missing/corrupt authority remains an error. This retirement requires `legacy_pending=0`: modern-scope
++failure alone never discards the independent top-level legacy-pending branch. Public continuation
++remains strict. Advance only that captured Lazy ordinal, clear only its matching body/prefix, and
++charge one existing physical candidate visit plus three scope probes once. Preserve the frozen scan
++version/passive-generation/publication/ordinal capture so that finishing the old scan allows the next
++normal quantum to observe newer publications. Preserve unrelated carry, token, parked state and logical
++offer stamps. Retirement creates no canonical Lazy completion, deletion, receipt, ACK, read cursor,
++acceptance or display evidence; any failure rolls back private progress. Existing private work caps
++remain unchanged, with no history scan, event lookup or new durable state.
+ 
+ **First-contact stats and fast-forward.** Two bounded, informational summaries ride on the response that
+ creates or resumes a binding; neither is authority and neither writes a receipt. The lifecycle check-in that

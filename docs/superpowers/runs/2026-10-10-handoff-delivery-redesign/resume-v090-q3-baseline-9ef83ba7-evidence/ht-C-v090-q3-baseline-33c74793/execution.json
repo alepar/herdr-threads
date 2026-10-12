@@ -1,0 +1,48 @@
+{
+  "head": "33c74793a369fad377036bf182b832c8cb05bac7",
+  "tree": "0c1922d5432308ce41e15d277211892f4d4ded32",
+  "run_id": "fc297edd-f7af-4640-b64d-2967d2c610b8",
+  "expected": [
+    "cli::watch::tests::q3_absent_watch_opt_in_preserves_historical_bytes",
+    "cli::watch::tests::q3_false_watch_opt_in_normalizes_to_historical_bytes",
+    "cli::watch::tests::q3_true_watch_opt_in_is_explicit_and_strictly_typed",
+    "cli::watch::tests::q3_missing_watch_mode_capability_keeps_old_wire_and_consumer",
+    "cli::watch::tests::q3_missing_generic_presentation_capability_keeps_old_wire_and_consumer",
+    "cli::watch::tests::q3_missing_binding_cursors_capability_keeps_old_wire_and_consumer",
+    "cli::watch::tests::q3_all_watch_mode_capabilities_send_true_and_use_the_accepted_lease",
+    "cli::watch::tests::q3_watch_discovery_failure_never_opens_a_registration_socket",
+    "cli::watch::tests::q3_missing_mod_watch_capability_never_opens_a_registration_socket",
+    "service::mod_channels::tests::domain::q3_legacy_claim_only_registration_has_no_presentation_lease",
+    "service::mod_channels::tests::domain::q3_legacy_channel_cannot_pull_with_an_issued_or_guessed_lease",
+    "service::mod_channels::tests::domain::q3_legacy_channel_cannot_capture_owner_replay",
+    "service::mod_channels::tests::domain::q3_legacy_channel_cannot_confirm_with_an_issued_or_guessed_lease",
+    "service::mod_channels::tests::domain::q3_mixed_same_seat_modes_and_replacement_cannot_borrow_old_leases",
+    "service::mod_channels::tests::q3_closed_receiver_preserves_passive_drain_without_an_immediate_kick_loop",
+    "service::delivery_pull::tests::presentation_q3_quiet_ordinary_sibling_ack_before_materialization_drains_passively",
+    "service::delivery_pull::tests::presentation_q3_quiet_pending_and_lazy_publications_have_distinct_authority",
+    "service::delivery_pull::tests::presentation_q3_parked_reader_then_ack_resumes_existing_id257",
+    "service::delivery_pull::tests::presentation_q3_parked_ack_then_reader_resumes_existing_id257",
+    "service::delivery_pull::tests::presentation_q3_shared_ack_rechecks_read_captured_body_but_keeps_unread_sibling",
+    "service::delivery_pull::tests::presentation_q3_reader_change_is_binding_local_coalesced_and_noop_stable",
+    "service::delivery_pull::tests::presentation_q3_reader_change_respects_current_primary_or_refresh_scope",
+    "service::delivery_pull::tests::presentation_q3_reader_change_failure_rolls_back_cursor_and_private_state",
+    "service::delivery_pull::tests::presentation_q3_capable_registry_uses_only_bounded_real_store_reads",
+    "service::mod_channels::tests::domain::each_channel_receives_only_its_bindings_deliveries",
+    "service::mod_channels::tests::each_channel_receives_only_its_bindings_deliveries"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 101,
+    "seconds": 15.571007999940775
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.17719874996691942,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "fc297edd-f7af-4640-b64d-2967d2c610b8"
+    ]
+  },
+  "leak_exit": 0
+}

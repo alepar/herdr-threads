@@ -1,0 +1,100 @@
+{
+  "head": "9e521e6eb6c091f40362ea80626ac8f7a758d60f",
+  "tree": "fb3f09bcc0349b05351ff308333388cc0cdd0d63",
+  "run_id": "0a84a666-26e4-4cb2-9fd0-696587c31e6c",
+  "expected": [
+    [
+      "herdr-threads",
+      "store::receipts::tests::receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_together"
+    ],
+    [
+      "herdr-threads::hook_entrypoint",
+      "agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement"
+    ],
+    [
+      "herdr-threads::combined",
+      "direct_send::json_output_uses_the_versioned_send_envelope_with_the_thread"
+    ],
+    [
+      "herdr-threads",
+      "store::connection::tests::published_v36_upgrade_preserves_exact_in_turn_offers_and_delivery_history"
+    ],
+    [
+      "herdr-threads",
+      "store::connection::tests::published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history"
+    ]
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 62.451024124980904
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "store::connection::tests::published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history"
+    ],
+    [
+      "herdr-threads",
+      "store::connection::tests::published_v36_upgrade_preserves_exact_in_turn_offers_and_delivery_history"
+    ],
+    [
+      "herdr-threads",
+      "store::receipts::tests::receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_together"
+    ],
+    [
+      "herdr-threads::combined",
+      "direct_send::json_output_uses_the_versioned_send_envelope_with_the_thread"
+    ],
+    [
+      "herdr-threads::hook_entrypoint",
+      "agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-ceef887c7c42f94a",
+      "sha256": "5bd48e9cf490ae06eebabe96c567071607de5723c11496e917f8adcc1108b641"
+    },
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/combined-ccdf0e34a69a440f",
+      "sha256": "a293a98dc682b50af51915972a593df1cdd8b4dc5608b7dacf810f349b7720d8"
+    },
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/hook_entrypoint-4da3a6a16d5c38b3",
+      "sha256": "1548ae70a48b8c5b6e893dd831ea79ade3fac837c508be80837aaad1f386c289"
+    }
+  ],
+  "run": {
+    "exit": 0,
+    "seconds": 2.2288464590674266,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--test",
+      "combined",
+      "--test",
+      "hook_entrypoint",
+      "--no-fail-fast",
+      "--success-output",
+      "immediate",
+      "-E",
+      "test(=store::receipts::tests::receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_together) | test(=agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement) | test(=direct_send::json_output_uses_the_versioned_send_envelope_with_the_thread) | test(=store::connection::tests::published_v36_upgrade_preserves_exact_in_turn_offers_and_delivery_history) | test(=store::connection::tests::published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.37419170804787427,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "0a84a666-26e4-4cb2-9fd0-696587c31e6c"
+    ]
+  },
+  "leak_exit": 0
+}

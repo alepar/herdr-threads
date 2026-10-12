@@ -252,7 +252,7 @@ class SeamIntegration(unittest.TestCase):
         captures = bad / "capture" / "tier0"
         captures.mkdir(parents=True, exist_ok=True)
         (captures / "bad.stdin").write_text('{"hook_event_name":"Bogus"}')
-        (captures / "bad.argv").write_text("hook\nclaude\n--event\nSessionStart\n")
+        (captures / "bad.argv").write_text("hook-event\nclaude\nSessionStart\n")
         cp = self.gated_cargo(bad, fixture)
         self.assertNotEqual(cp.returncode, 0, "historical refusal masked core payload error")
         self.assertIn("capture/tier0/bad.stdin", cp.stdout + cp.stderr)

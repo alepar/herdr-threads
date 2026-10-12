@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 0d4bb083-1743-46bd-b874-5d9945109353 with nextest profile: default
+    Starting 1 test across 1 binary (4938 tests skipped)
+        PASS [   0.719s] (1/1) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy
+────────────
+     Summary [   0.733s] 1 test run: 1 passed, 4938 skipped

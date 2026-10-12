@@ -1,0 +1,12 @@
+{
+  "findings": [
+    {
+      "claim": "The new first-discovery normal render-deferral path has no regression control proving that a failed final private save rolls back its traversal progress.",
+      "location": "src/store/invitation_content.rs:2632",
+      "category": "testing",
+      "external": false,
+      "kind": "ISSUE",
+      "evidence": "The new OutputLimit/empty-page/positive-capacity branch increments processed_message_count and continues without delivering a previously unoffered message; that prefix is removed from private carry before save(). TRUST-POLICY.md:1764-1774 explicitly permits unknown IDs to remain unknown but requires pre-commit refusal/transaction rollback to install no deferral progress. The dedicated normal_unrenderable_controls.rs cases (lines 7, 12 and 321) only execute successful service pulls; their canonical effective-receipt and later-delivery assertions are substantive, but none injects a save failure after this branch. The existing SQL failure controls at tests/service/delivery_pull.rs:11610 and :13070 exercise logical-due cache and owner replay, while tests/service/q4_retirement_refusal_controls.rs:483 exercises retirement of a captured Lazy body; they do not enter this new normal OutputLimit branch. This is a coverage gap on durable suppression of previously unseen pending mail, not a claim that rollback currently fails or that the intentionally deferred final acceptance runs are missing implementation tests. Cheapest control: extend OfferWindowFixture with the existing 65536-byte NUL/UTF-8 body and eight 512-NUL Watch prefix, precreate its consumer, then abort the final consumer UPDATE only when the expected normal cursor/skip/carry transition is being saved. Assert the diagnostic identifies that late save, compare the complete pre/post private consumer state and logical Offer map, and verify canonical effective Pending/Lazy pending plus binding cursor are unchanged; remove the trigger and prove the same pending body can still be retried. Run only that new test through the parent runtime lane."
+    }
+  ]
+}

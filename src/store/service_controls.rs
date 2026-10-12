@@ -114,8 +114,25 @@ pub fn operate(
         }
         ServiceOperation::SetTopic(v) => {
             require_owner(tx, instance, &v.thread, &author)?;
-            tx.execute("UPDATE threads SET topic=?1,topic_revision=topic_revision+1,updated_at=?2 WHERE id=?3 AND topic!=?1",
-                params![v.topic,at.0,v.thread.as_str()]).map_err(store_error)?;
+            let old: String = tx
+                .query_row(
+                    "SELECT topic FROM threads WHERE id=?1",
+                    [v.thread.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            if old != v.topic {
+                let changed=tx.execute("UPDATE threads SET topic=?1,topic_revision=topic_revision+1,updated_at=?2 WHERE id=?3 AND topic_revision<?4",
+                    params![v.topic,at.0,v.thread.as_str(),i64::MAX]).map_err(store_error)?;
+                if changed != 1 {
+                    return Err(api_error(
+                        ErrorCode::SequenceExhausted,
+                        "topic revision exhausted",
+                    ));
+                }
+                let seq = schema::next_decision_seq(tx, instance)?;
+                super::invitation_content::record_context_change(tx, instance, &v.thread, seq)?;
+            }
             schema::bump_filter_revision(tx, instance, "topic", v.thread.as_str())?;
             schema::bump_filter_revision(tx, instance, "topic", "all")?;
             schema::bump_filter_revision(tx, instance, "directory", "all")?;
@@ -335,9 +352,9 @@ fn invite(
     // Ordinary invites retain independently created invitations after release.
     // Required attaches cannot reuse any invitation with a historical requirement:
     // the immutable requirement ledger permits only one requirement per invitation.
-    let pending: Option<(String, i64, i64)> = tx
+    let pending: Option<(String, i64, i64, bool)> = tx
         .query_row(
-            "SELECT i.id,i.episode,i.created_decision_seq FROM invitations i
+            "SELECT i.id,i.episode,i.created_decision_seq,COALESCE(i.confirmation='lazy',0) FROM invitations i
              WHERE i.thread_id=?1 AND i.seat_id=?2 AND i.state='pending'
              AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id)
              AND NOT EXISTS (SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=i.id)
@@ -349,12 +366,12 @@ fn invite(
                 v.seat.as_str(),
                 v.constraint == InvitationConstraint::Required
             ],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()
         .map_err(store_error)?;
     if v.constraint == InvitationConstraint::Ordinary
-        && let Some((id, _, _)) = pending
+        && let Some((id, _, _, _)) = pending
     {
         let requirement = service_substrate::current_requirement(tx, &v.thread, &v.seat)?
             .filter(|current| current.invitation.as_str() == id);
@@ -371,7 +388,12 @@ fn invite(
             "invitation duration must be positive",
         ));
     }
-    let new_invitation = pending.is_none() || voluntary == VoluntaryMembershipState::Joined;
+    // A required membership needs its own timed episode when the voluntary
+    // invitation is Lazy. Preserve that invitation's frozen policy and replay.
+    let new_invitation = pending.is_none()
+        || voluntary == VoluntaryMembershipState::Joined
+        || (v.constraint == InvitationConstraint::Required
+            && pending.as_ref().is_some_and(|(_, _, _, lazy)| *lazy));
     let (invitation, episode, created_seq) = if new_invitation {
         let episode = next_invitation_episode(tx, &v.thread, &v.seat)?;
         if v.constraint == InvitationConstraint::Required {
@@ -400,7 +422,7 @@ fn invite(
             params![id.as_str(),v.thread.as_str(),v.seat.as_str(),episode,at.0,seq,duration,deadline.0]).map_err(store_error)?;
         (id, episode, seq)
     } else {
-        let (id, episode, seq) = pending.expect("existing pending invitation");
+        let (id, episode, seq, _) = pending.expect("existing pending invitation");
         (InvitationId::new(id), episode, seq)
     };
     let requirement = if v.constraint == InvitationConstraint::Required {
@@ -416,6 +438,13 @@ fn invite(
         };
         tx.execute("INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at) VALUES (?1,?2,?3,?4,?5,'pending',?6,?7)",
             params![id.as_str(),v.thread.as_str(),v.seat.as_str(),author.as_str(),invitation.as_str(),seq,at.0]).map_err(store_error)?;
+        super::invitation_content::record_command_change(
+            tx,
+            instance,
+            &v.thread,
+            &invitation,
+            Some(seq as u64),
+        )?;
         service_substrate::current_requirement(tx, &v.thread, &v.seat)?
     } else {
         None
@@ -498,7 +527,7 @@ fn release(
     let payload = serde_json::json!({"action":"release_requirement","issuer":author.as_str(),
         "requirement":v.requirement.as_str(),"seat":v.seat.as_str()})
     .to_string();
-    schema::append_attributed_event_once(
+    let (event, _) = schema::append_attributed_event_once(
         tx,
         EventInput {
             thread: &v.thread,
@@ -510,6 +539,25 @@ fn release(
             source_invitation: Some(&released.invitation),
         },
         EventAuthor::Programmatic(author.clone()),
+    )?;
+    let seq: i64 = tx
+        .query_row(
+            "SELECT decision_seq FROM messages WHERE id=?1",
+            [event.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    super::invitation_content::record_command_change(
+        tx,
+        instance,
+        &v.thread,
+        &released.invitation,
+        Some(u64::try_from(seq).map_err(|_| {
+            api_error(
+                ErrorCode::StoreCorrupt,
+                "negative context decision sequence",
+            )
+        })?),
     )?;
     Ok(ServiceResult::RequirementReleased(released))
 }

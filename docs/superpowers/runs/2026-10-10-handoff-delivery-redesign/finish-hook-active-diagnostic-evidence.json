@@ -1,0 +1,21 @@
+{
+  "head": "83e90c520457e9435d55f0880c58b09cb1ce4926",
+  "ht_leak_run_id": "3c1ddce8-1390-4fc8-b8c2-4c4ea027667a",
+  "selected": 3,
+  "passed": 1,
+  "failed": 2,
+  "runtime_seconds": 4.025,
+  "compile_seconds": 2.77,
+  "root_cause_evidence": "Both failed children print adapter_modes parent0755/agy0755, code0 stdout0 exchanges0; canonical loader requires0700. Fallback passed; initial failure remains unreproduced.",
+  "scoped_leak_exit": 0,
+  "logs": [
+    {
+      "path": "/private/tmp/ht-finish-hook-active-diag.log",
+      "sha256": "da9331539459a78f319345b65d9dd8a71e5e5fe0cab76d61f243bb1347932b4c"
+    },
+    {
+      "path": "/private/tmp/ht-finish-hook-active-diag-leaks.log",
+      "sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e"
+    }
+  ]
+}

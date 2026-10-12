@@ -1,0 +1,154 @@
+{
+  "head": "c53b34efd4fd582890950224079d77fa64156aa5",
+  "tree": "6068b156864fc9a186585442b94bff8cc4fad510",
+  "run_id": "a3297e90-24ad-4168-97e1-1217d612d487",
+  "expected": [
+    [
+      "herdr-threads",
+      "store::connection::tests::user_intent_schema22_fresh_and_v21_upgrade"
+    ],
+    [
+      "herdr-threads::combined",
+      "golden_surfaces::help_texts"
+    ],
+    [
+      "herdr-threads::combined",
+      "golden_surfaces::hook_stdout_per_event"
+    ],
+    [
+      "herdr-threads::combined",
+      "golden_surfaces::setup_reports"
+    ],
+    [
+      "herdr-threads::combined",
+      "golden_surfaces::setup_status_reports"
+    ],
+    [
+      "herdr-threads::hook_entrypoint",
+      "lazy_mail_reaches_the_next_codex_tool_hook"
+    ],
+    [
+      "herdr-threads::hook_entrypoint",
+      "lazy_mail_reaches_the_next_codex_user_prompt_hook"
+    ],
+    [
+      "herdr-threads::hook_entrypoint",
+      "native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_before_effects"
+    ],
+    [
+      "herdr-threads::hook_entrypoint",
+      "versionless_native_callbacks_without_path_refuse_registered_event_mismatch"
+    ],
+    [
+      "herdr-threads::hook_entrypoint",
+      "versionless_registered_event_mismatch_keeps_tool_deadline_with_withheld_capabilities"
+    ],
+    [
+      "herdr-threads::integration",
+      "session_bindings_smoke::config8_upgrade_from_a_v0_6_0_database"
+    ]
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 63.468079834012315
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "store::connection::tests::user_intent_schema22_fresh_and_v21_upgrade"
+    ],
+    [
+      "herdr-threads::combined",
+      "golden_surfaces::help_texts"
+    ],
+    [
+      "herdr-threads::combined",
+      "golden_surfaces::hook_stdout_per_event"
+    ],
+    [
+      "herdr-threads::combined",
+      "golden_surfaces::setup_reports"
+    ],
+    [
+      "herdr-threads::combined",
+      "golden_surfaces::setup_status_reports"
+    ],
+    [
+      "herdr-threads::hook_entrypoint",
+      "lazy_mail_reaches_the_next_codex_tool_hook"
+    ],
+    [
+      "herdr-threads::hook_entrypoint",
+      "lazy_mail_reaches_the_next_codex_user_prompt_hook"
+    ],
+    [
+      "herdr-threads::hook_entrypoint",
+      "native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_before_effects"
+    ],
+    [
+      "herdr-threads::hook_entrypoint",
+      "versionless_native_callbacks_without_path_refuse_registered_event_mismatch"
+    ],
+    [
+      "herdr-threads::hook_entrypoint",
+      "versionless_registered_event_mismatch_keeps_tool_deadline_with_withheld_capabilities"
+    ],
+    [
+      "herdr-threads::integration",
+      "session_bindings_smoke::config8_upgrade_from_a_v0_6_0_database"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-ceef887c7c42f94a",
+      "sha256": "d5ae07658e151f50a3bfb167da8b4be8a00817bdd2bc54986ab78b7d61e18c4f"
+    },
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/combined-ccdf0e34a69a440f",
+      "sha256": "bcb55c9d9e9f989a0a5e330db5e49e0a60374f9f302a2a756240ed2ef604e8a4"
+    },
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/hook_entrypoint-4da3a6a16d5c38b3",
+      "sha256": "d8ef0e70c86383f289c89ad1826c4fd655126a3b323857c9ce108530a42a36bf"
+    },
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/integration-338c14d62979c480",
+      "sha256": "be9a766cf47d48d48641a3466fd1109c6e839b3053cb4febf5222c44c1d67d52"
+    }
+  ],
+  "run": {
+    "exit": 0,
+    "seconds": 7.054740124964155,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--test",
+      "combined",
+      "--test",
+      "hook_entrypoint",
+      "--test",
+      "integration",
+      "--no-fail-fast",
+      "--success-output",
+      "immediate",
+      "-E",
+      "test(=store::connection::tests::user_intent_schema22_fresh_and_v21_upgrade) | test(=golden_surfaces::help_texts) | test(=golden_surfaces::hook_stdout_per_event) | test(=golden_surfaces::setup_reports) | test(=golden_surfaces::setup_status_reports) | test(=lazy_mail_reaches_the_next_codex_tool_hook) | test(=lazy_mail_reaches_the_next_codex_user_prompt_hook) | test(=native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_before_effects) | test(=versionless_native_callbacks_without_path_refuse_registered_event_mismatch) | test(=versionless_registered_event_mismatch_keeps_tool_deadline_with_withheld_capabilities) | test(=session_bindings_smoke::config8_upgrade_from_a_v0_6_0_database)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.19077670900151134,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "a3297e90-24ad-4168-97e1-1217d612d487"
+    ]
+  },
+  "leak_exit": 0
+}

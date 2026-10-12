@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID d5b376b0-8760-4f8a-810e-4ff4f7c7adca with nextest profile: default
+    Starting 4 tests across 1 binary (4891 tests skipped)
+        PASS [   0.320s] (1/4) herdr-threads service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_mod_ack_lazy_mixed_and_already_settled
+        PASS [   0.330s] (2/4) herdr-threads service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_delivery_confirm_lazy_mixed_and_retained_offer
+        PASS [   0.331s] (3/4) herdr-threads service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_successful_presentation_confirm_is_inert
+        PASS [   0.697s] (4/4) herdr-threads service::delivery_pull::tests::presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap
+────────────
+     Summary [   0.711s] 4 tests run: 4 passed, 4891 skipped

@@ -1,0 +1,28 @@
+{
+  "head": "f0cc8d396404bdb9d61c7e4304936186872c6e2c",
+  "tree": "77d4d6644b0c042122bc00d3a9df8f3f40f7bc8d",
+  "run_id": "ce1cf05e-cc57-4753-a8a6-296d42a0be75",
+  "expected": [
+    "store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor",
+    "store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings",
+    "store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap",
+    "store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog",
+    "store::control::tests::direct_threads::reader_controls::q4_rejection_prevents_cursorless_direct_lazy_revival_or_display_bootstrap",
+    "store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 101,
+    "seconds": 7.067951999953948
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.18524579098448157,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "ce1cf05e-cc57-4753-a8a6-296d42a0be75"
+    ]
+  },
+  "leak_exit": 0
+}

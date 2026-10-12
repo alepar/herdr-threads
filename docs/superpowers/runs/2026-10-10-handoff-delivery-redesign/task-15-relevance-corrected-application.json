@@ -1,0 +1,22 @@
+{
+  "classification": "Reviewed367 source application; all13 corrected tests UNRUN; no wholeD readiness",
+  "review": "task-15-relevance-helper-corrected-rereview-1.md SpecCLEAN/QualityCLEAN read FULL",
+  "helper_head": "367da744905c1df11dbdf72d811c133e6bdf9e21",
+  "pre_full_source_sha256": "7332b57580412c84d3f87e2cf9b278a2659ec1fd6f01dfe54fd0be3204cf9df3",
+  "pre_dirtydiff_sha256": "f72dc5c9fe8d5ad1720f5530ded90217895b688abad42a99324383b13d93328b",
+  "manifest_method": "sorted compact JSON OBJECT path:sha256",
+  "file_count": 3533,
+  "processes_drained_and_source_frozen": "NEW immediate author ACK independently source-verified",
+  "baseline": {
+    "src/store/presentation_relevance.rs": "4ed238221c1abaaa788fd64044252470610383f1e09852a3da1633b34772b42a",
+    "migrations/0041_presentation_relevance.sql": "59395af89cc100ece4bd5d700d25f9b3e62cdf907a886a632fe3eeb300fcc4af",
+    "tests/store/attention.rs": "7e31cf4e164a90ac42d0777e67b56a686c8a6783befe08535f9bba6c20324cc5"
+  },
+  "final": {
+    "src/store/presentation_relevance.rs": "0a3826265cdae73f956200badaecbea11f78444ae6c2b93e127508b7e1ddc2b2",
+    "migrations/0041_presentation_relevance.sql": "ca529c1cce99529f92b64c4bdeb98d860905d368fe6ac610641d5873d7a2bccf",
+    "tests/store/attention.rs": "3053bbe770b57588cc6857f8c019524e8943145cad40ac9d0ba83ec102d719e4"
+  },
+  "patch_sha256": "2b4e2700a20f89b6c8e5647a8a6c3fdb75e668530813c64d0618eb3e81474a95",
+  "patch_bytes": 76941
+}

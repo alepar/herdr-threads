@@ -1025,3 +1025,30 @@ fn settle_consent_yes_grants_and_no_declines() {
     assert_eq!(fx.status().projection["allow_entry"]["state"], "owned");
     let _ = permissions_of(&fx);
 }
+
+// Kills: setup continuing to produce the legacy per-adapter CLI event route.
+#[test]
+fn installed_agy_handlers_use_the_stable_event_entrypoint_and_exact_route() {
+    let fx = Fixture::new();
+    fx.setup().unwrap();
+    let hooks: Value =
+        serde_json::from_slice(&std::fs::read(fx.plugin_file("hooks.json")).unwrap()).unwrap();
+    for event in crate::harness::agy::paths::AgyEvent::ALL {
+        let expected = crate::cli::hook::installed_event_argv(
+            fx.exe.to_str().unwrap(),
+            fx.state.to_str(),
+            fx.root.join("host.sock").to_str(),
+            crate::harness::registry::OccupantHarness::Agent(
+                crate::harness::registry::builtins().agent("agy").unwrap(),
+            )
+            .into(),
+            event.as_str(),
+        )
+        .unwrap();
+        let expected = crate::harness::setup::native_event_command(&expected).unwrap();
+        assert_eq!(
+            hooks["herdr-threads"][event.as_str()][0]["command"],
+            expected
+        );
+    }
+}

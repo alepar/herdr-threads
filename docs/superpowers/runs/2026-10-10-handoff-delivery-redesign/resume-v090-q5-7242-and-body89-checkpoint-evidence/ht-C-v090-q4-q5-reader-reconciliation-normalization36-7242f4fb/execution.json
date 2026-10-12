@@ -1,0 +1,226 @@
+{
+  "head": "7242f4fb52251063d1b018bcd876c704271846c9",
+  "tree": "9f70a75ed47dc5b1e05f3d75e993a46aabd3aac5",
+  "run_id": "b90d6b17-31cb-4ed1-90b4-9271d0d3c74f",
+  "expected": [
+    "store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor",
+    "store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings",
+    "store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap",
+    "store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog",
+    "store::control::tests::direct_threads::reader_controls::q4_rejection_prevents_cursorless_direct_lazy_revival_or_display_bootstrap",
+    "store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept",
+    "service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer",
+    "service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate",
+    "service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display",
+    "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader",
+    "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers",
+    "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers",
+    "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window",
+    "store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream",
+    "store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream",
+    "store::control::tests::direct_threads::writer_floor_controls::q4_native_pending_episode_reused_by_native_and_service_writers_keeps_exact_floor_rows",
+    "store::control::tests::direct_threads::writer_floor_controls::q4_service_pending_episode_reused_by_service_and_native_writers_keeps_exact_floor_rows",
+    "store::control::tests::direct_threads::writer_floor_controls::q4_pair_refuses_managed_ownership_and_required_writer_without_changing_floor_authority",
+    "service::delivery_pull::tests::q4_body_controls::private_old_episode_lazy_tail_retires_and_reaches_fresh_preaccept_body",
+    "service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity",
+    "service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity",
+    "service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity",
+    "service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged",
+    "service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work",
+    "service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags",
+    "service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion",
+    "service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation",
+    "cli::q5_continuation_normalization::q5_normalizer_changes_only_budget_value_and_preserves_flag_like_raw_data",
+    "cli::q5_continuation_normalization::q5_normalizer_default_history_omission_adds_only_original_byte_bound",
+    "cli::q5_continuation_normalization::q5_normalizer_terminal_and_never_refit_results_remain_exactly_unchanged",
+    "cli::q5_continuation_normalization::q5_malformed_post_refit_continuations_stop_actual_writer_before_output_or_mutation",
+    "cli::q5_continuation_normalization::q5_normalizer_route_thresholds_and_identical_duplicate_values_preserve_existing_grammar",
+    "cli::q5_continuation_normalization::q5_post_refit_empty_lazy_modes_still_guard_actual_final_bytes",
+    "cli::q5_continuation_normalization::q5_normalizer_mismatched_unrelated_result_kind_is_unchanged",
+    "cli::q5_continuation_normalization::q5_normalizer_actual_complete_message_has_no_continuation_to_rewrite",
+    "cli::q5_continuation_normalization::q5_normalizer_actual_partial_utf8_body_restores_only_continuation_budget"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 83.0809985420201
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "cli::q5_continuation_normalization::q5_malformed_post_refit_continuations_stop_actual_writer_before_output_or_mutation"
+    ],
+    [
+      "herdr-threads",
+      "cli::q5_continuation_normalization::q5_normalizer_actual_complete_message_has_no_continuation_to_rewrite"
+    ],
+    [
+      "herdr-threads",
+      "cli::q5_continuation_normalization::q5_normalizer_actual_partial_utf8_body_restores_only_continuation_budget"
+    ],
+    [
+      "herdr-threads",
+      "cli::q5_continuation_normalization::q5_normalizer_changes_only_budget_value_and_preserves_flag_like_raw_data"
+    ],
+    [
+      "herdr-threads",
+      "cli::q5_continuation_normalization::q5_normalizer_default_history_omission_adds_only_original_byte_bound"
+    ],
+    [
+      "herdr-threads",
+      "cli::q5_continuation_normalization::q5_normalizer_mismatched_unrelated_result_kind_is_unchanged"
+    ],
+    [
+      "herdr-threads",
+      "cli::q5_continuation_normalization::q5_normalizer_route_thresholds_and_identical_duplicate_values_preserve_existing_grammar"
+    ],
+    [
+      "herdr-threads",
+      "cli::q5_continuation_normalization::q5_normalizer_terminal_and_never_refit_results_remain_exactly_unchanged"
+    ],
+    [
+      "herdr-threads",
+      "cli::q5_continuation_normalization::q5_post_refit_empty_lazy_modes_still_guard_actual_final_bytes"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_body_controls::private_old_episode_lazy_tail_retires_and_reaches_fresh_preaccept_body"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::reader_controls::q4_rejection_prevents_cursorless_direct_lazy_revival_or_display_bootstrap"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::writer_floor_controls::q4_native_pending_episode_reused_by_native_and_service_writers_keeps_exact_floor_rows"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::writer_floor_controls::q4_pair_refuses_managed_ownership_and_required_writer_without_changing_floor_authority"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::writer_floor_controls::q4_service_pending_episode_reused_by_service_and_native_writers_keeps_exact_floor_rows"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-bc80e388954f6954",
+      "sha256": "e80859770889a67b04ecdcdfb0d4166e16072ac60e2511a92adcec6f2a60fe05"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 2.5299994579982013,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor) | test(=store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings) | test(=store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap) | test(=store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog) | test(=store::control::tests::direct_threads::reader_controls::q4_rejection_prevents_cursorless_direct_lazy_revival_or_display_bootstrap) | test(=store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept) | test(=service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer) | test(=service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate) | test(=service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display) | test(=service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader) | test(=service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers) | test(=service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers) | test(=service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window) | test(=store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream) | test(=store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream) | test(=store::control::tests::direct_threads::writer_floor_controls::q4_native_pending_episode_reused_by_native_and_service_writers_keeps_exact_floor_rows) | test(=store::control::tests::direct_threads::writer_floor_controls::q4_service_pending_episode_reused_by_service_and_native_writers_keeps_exact_floor_rows) | test(=store::control::tests::direct_threads::writer_floor_controls::q4_pair_refuses_managed_ownership_and_required_writer_without_changing_floor_authority) | test(=service::delivery_pull::tests::q4_body_controls::private_old_episode_lazy_tail_retires_and_reaches_fresh_preaccept_body) | test(=service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity) | test(=service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity) | test(=service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity) | test(=service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged) | test(=service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work) | test(=service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags) | test(=service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion) | test(=service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation) | test(=cli::q5_continuation_normalization::q5_normalizer_changes_only_budget_value_and_preserves_flag_like_raw_data) | test(=cli::q5_continuation_normalization::q5_normalizer_default_history_omission_adds_only_original_byte_bound) | test(=cli::q5_continuation_normalization::q5_normalizer_terminal_and_never_refit_results_remain_exactly_unchanged) | test(=cli::q5_continuation_normalization::q5_malformed_post_refit_continuations_stop_actual_writer_before_output_or_mutation) | test(=cli::q5_continuation_normalization::q5_normalizer_route_thresholds_and_identical_duplicate_values_preserve_existing_grammar) | test(=cli::q5_continuation_normalization::q5_post_refit_empty_lazy_modes_still_guard_actual_final_bytes) | test(=cli::q5_continuation_normalization::q5_normalizer_mismatched_unrelated_result_kind_is_unchanged) | test(=cli::q5_continuation_normalization::q5_normalizer_actual_complete_message_has_no_continuation_to_rewrite) | test(=cli::q5_continuation_normalization::q5_normalizer_actual_partial_utf8_body_restores_only_continuation_budget)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.2340445410227403,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "b90d6b17-31cb-4ed1-90b4-9271d0d3c74f"
+    ]
+  },
+  "leak_exit": 0
+}

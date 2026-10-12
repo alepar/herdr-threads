@@ -13,7 +13,7 @@
 //!   `~/.codex/hooks.json`). No sandbox allowance is installed. Historical
 //!   config.toml ownership remains inspectable and removable by unsetup.
 //!
-//! Every write is owned: groups carry an installation marker, a private
+//! Every write is owned: groups have exact ownership records, a private
 //! manifest under `<state-dir>/setup/` records exactly what was added, a
 //! foreign identical entry refuses, files are replaced atomically after an
 //! unchanged-baseline check, re-running is idempotent, and `unsetup` removes
@@ -31,7 +31,7 @@
 //! Setup resolves the selected executable without invoking it and declares
 //! the registered contract. Runtime metadata and native delivery remain unknown.
 //! The installed hook command is exactly the hook entrypoint's
-//! [`hook::installed_argv`], which its `parse_hook_argv` accepts.
+//! [`hook::installed_event_argv`], which its `parse_hook_argv` accepts.
 
 pub(crate) mod foreground;
 

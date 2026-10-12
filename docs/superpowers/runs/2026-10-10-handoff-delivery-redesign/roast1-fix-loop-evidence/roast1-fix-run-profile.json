@@ -1,0 +1,718 @@
+{
+  "version": 1,
+  "epic": "ht-0lo",
+  "cap": 4,
+  "earlyUnblock": false,
+  "runtimeSlots": null,
+  "invocations": [
+    {
+      "runId": "01a12c6f-cdd1-7210-a8d2-992663c8a41e",
+      "dir": "/Users/alepar/.codex/sessions/2026/10/11/rollout-2026-10-11T12-28-07-01a12c6f-cdd1-7210-a8d2-992663c8a41e.jsonl",
+      "source": "codex",
+      "start": "2026-10-11T19:29:04.054Z",
+      "end": "2026-10-12T16:23:55.540Z",
+      "agents": 421,
+      "timed": 425,
+      "journal": true
+    }
+  ],
+  "window": {
+    "start": "2026-10-11T19:29:04.054Z",
+    "lastLanding": "2026-10-12T16:17:31.587Z",
+    "end": "2026-10-12T16:23:55.540Z",
+    "graphMs": 74907533,
+    "wallMs": 75291486
+  },
+  "shape": {
+    "beads": 24,
+    "edges": 31,
+    "depth": 5,
+    "width": 4.8,
+    "levels": [
+      14,
+      5,
+      3,
+      1,
+      1
+    ],
+    "criticalPath": [
+      "ht-0lo.1.1",
+      "ht-0lo.1.3",
+      "ht-0lo.1.2",
+      "ht-0lo.3.2",
+      "ht-0lo.5"
+    ],
+    "fanOut": [
+      {
+        "id": "ht-0lo.2.1",
+        "direct": 3,
+        "transitive": 5
+      },
+      {
+        "id": "ht-0lo.1.1",
+        "direct": 4,
+        "transitive": 4
+      },
+      {
+        "id": "ht-0lo.2.2",
+        "direct": 4,
+        "transitive": 4
+      },
+      {
+        "id": "ht-0lo.1.3",
+        "direct": 2,
+        "transitive": 3
+      },
+      {
+        "id": "ht-0lo.8.1",
+        "direct": 2,
+        "transitive": 3
+      }
+    ],
+    "cycles": []
+  },
+  "cuts": [],
+  "beads": [
+    {
+      "id": "ht-0lo.8.4",
+      "n": null,
+      "deps": [
+        "ht-0lo.8.1"
+      ],
+      "dependents": [
+        "ht-0lo.8.3"
+      ],
+      "attempts": [
+        null,
+        null,
+        null,
+        null
+      ],
+      "landed": false,
+      "readyAt": "2026-10-11T19:41:46.839Z",
+      "dispatchedAt": "2026-10-11T19:59:35.878Z",
+      "landedAt": null,
+      "waitMs": 1069039,
+      "waitCause": "retry",
+      "carriedMs": 0,
+      "implMs": 126978,
+      "implByTool": {
+        "git": 131,
+        "other": 133,
+        "read": 730,
+        "shell": 2789,
+        "edit": 1757
+      },
+      "implToolMs": 5540,
+      "reviewMs": 142956,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 233341,
+      "laneMs": 396299,
+      "seamMs": 396299,
+      "blockerMs": 137811,
+      "reworkMs": 1927030,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-0lo.12",
+      "n": null,
+      "deps": [],
+      "dependents": [],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-11T19:41:46.839Z",
+      "dispatchedAt": "2026-10-12T15:58:38.461Z",
+      "landedAt": "2026-10-12T16:05:36.072Z",
+      "waitMs": 73011622,
+      "waitCause": "unexplained",
+      "carriedMs": 0,
+      "implMs": 301947,
+      "implByTool": {
+        "read": 1097,
+        "git": 9972,
+        "shell": 142,
+        "edit": 2252,
+        "other": 406
+      },
+      "implToolMs": 13869,
+      "reviewMs": 102475,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 0,
+      "laneMs": 0,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-0lo.15",
+      "n": null,
+      "deps": [],
+      "dependents": [],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-11T19:41:46.839Z",
+      "dispatchedAt": "2026-10-12T15:59:05.721Z",
+      "landedAt": "2026-10-12T16:17:31.587Z",
+      "waitMs": 73038882,
+      "waitCause": "unexplained",
+      "carriedMs": 0,
+      "implMs": 966783,
+      "implByTool": {
+        "read": 1612,
+        "git": 19071,
+        "other": 2195,
+        "edit": 13655,
+        "shell": 129,
+        "poll": 64811
+      },
+      "implToolMs": 101473,
+      "reviewMs": 100663,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 0,
+      "laneMs": 0,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 74144748,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-0lo.13",
+      "n": null,
+      "deps": [],
+      "dependents": [],
+      "attempts": [
+        null,
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-11T19:41:46.839Z",
+      "dispatchedAt": "2026-10-12T16:11:56.896Z",
+      "landedAt": "2026-10-12T16:15:11.919Z",
+      "waitMs": 73810057,
+      "waitCause": "retry",
+      "carriedMs": 0,
+      "implMs": 66220,
+      "implByTool": {
+        "git": 73,
+        "edit": 381,
+        "other": 137
+      },
+      "implToolMs": 591,
+      "reviewMs": 117832,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 0,
+      "laneMs": 0,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 777572,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-0lo.14",
+      "n": null,
+      "deps": [],
+      "dependents": [],
+      "attempts": [
+        null,
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-11T19:41:46.839Z",
+      "dispatchedAt": "2026-10-12T16:12:04.899Z",
+      "landedAt": "2026-10-12T16:15:00.797Z",
+      "waitMs": 73818060,
+      "waitCause": "retry",
+      "carriedMs": 0,
+      "implMs": 64947,
+      "implByTool": {
+        "git": 160,
+        "edit": 57,
+        "other": 98
+      },
+      "implToolMs": 315,
+      "reviewMs": 99967,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 0,
+      "laneMs": 0,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 315357,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    }
+  ],
+  "criticalPath": {
+    "ms": 74907533,
+    "byCategory": {
+      "startup": 19961,
+      "other": 131303,
+      "wait": 73338421,
+      "planning": 350402,
+      "implement": 966783,
+      "review": 100663,
+      "merge": 0
+    },
+    "laneContentionMs": 0,
+    "redo": {
+      "stack-conflict": {
+        "ms": 0,
+        "beads": []
+      },
+      "cancelled": {
+        "ms": 0,
+        "beads": []
+      },
+      "retry": {
+        "ms": 0,
+        "beads": []
+      }
+    },
+    "segments": [
+      {
+        "kind": "startup",
+        "bead": null,
+        "label": "run start",
+        "via": null,
+        "start": "2026-10-11T19:29:04.054Z",
+        "ms": 19961
+      },
+      {
+        "kind": "other",
+        "bead": null,
+        "label": "validation_reassessment",
+        "via": null,
+        "start": "2026-10-11T19:29:24.015Z",
+        "ms": 115514
+      },
+      {
+        "kind": "wait",
+        "bead": null,
+        "label": "previous → validation_reassessment",
+        "via": null,
+        "start": "2026-10-11T19:31:19.529Z",
+        "ms": 96439
+      },
+      {
+        "kind": "other",
+        "bead": null,
+        "label": "validation_reassessment",
+        "via": "previous",
+        "start": "2026-10-11T19:32:55.968Z",
+        "ms": 15789
+      },
+      {
+        "kind": "wait",
+        "bead": null,
+        "label": "previous → plan:ht_0lo_8_4_activation",
+        "via": null,
+        "start": "2026-10-11T19:33:11.757Z",
+        "ms": 164680
+      },
+      {
+        "kind": "planning",
+        "bead": null,
+        "label": "plan:ht_0lo_8_4_activation",
+        "via": "previous",
+        "start": "2026-10-11T19:35:56.437Z",
+        "ms": 350402
+      },
+      {
+        "kind": "wait",
+        "bead": "ht-0lo.15",
+        "label": "planned → impl:ht-0lo.15",
+        "via": null,
+        "start": "2026-10-11T19:41:46.839Z",
+        "ms": 73038882
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-0lo.15",
+        "label": "impl:ht-0lo.15",
+        "via": "planned",
+        "start": "2026-10-12T15:59:05.721Z",
+        "ms": 966783
+      },
+      {
+        "kind": "wait",
+        "bead": "ht-0lo.15",
+        "label": "chain → review:ht-0lo.15",
+        "via": null,
+        "start": "2026-10-12T16:15:12.504Z",
+        "ms": 38420
+      },
+      {
+        "kind": "review",
+        "bead": "ht-0lo.15",
+        "label": "review:ht-0lo.15",
+        "via": "chain",
+        "start": "2026-10-12T16:15:50.924Z",
+        "ms": 100663
+      },
+      {
+        "kind": "merge",
+        "bead": "ht-0lo.15",
+        "label": "merge:ht-0lo.15",
+        "via": "chain",
+        "start": "2026-10-12T16:17:31.587Z",
+        "ms": 0
+      }
+    ]
+  },
+  "bottleneck": {
+    "bead": "ht-0lo.15",
+    "ms": 74144748,
+    "share": 0.9898169787543264,
+    "byCategory": {
+      "wait": 73077302,
+      "implement": 966783,
+      "review": 100663,
+      "merge": 0
+    },
+    "implByTool": {
+      "read": 1612,
+      "git": 19071,
+      "other": 2195,
+      "edit": 13655,
+      "shell": 129,
+      "poll": 64811
+    },
+    "calls": [
+      {
+        "name": "wait_agent",
+        "cat": "poll",
+        "what": "wait_agent",
+        "ms": 60007
+      },
+      {
+        "name": "exec",
+        "cat": "edit",
+        "what": "git reset --soft 36c3988fe8fd0e46861170c182d1160afda00fc4",
+        "ms": 6103
+      },
+      {
+        "name": "exec",
+        "cat": "git",
+        "what": "git reset --soft aed4b720084511464ca7065b8ff1b8fca059d263",
+        "ms": 6076
+      },
+      {
+        "name": "wait_agent",
+        "cat": "poll",
+        "what": "wait_agent",
+        "ms": 4804
+      },
+      {
+        "name": "exec",
+        "cat": "edit",
+        "what": "rustfmt --edition 2024 --config skip_children=true tests/se…",
+        "ms": 3433
+      },
+      {
+        "name": "exec",
+        "cat": "edit",
+        "what": "rustfmt --edition 2024 --config skip_children=true tests/se…",
+        "ms": 3330
+      },
+      {
+        "name": "exec",
+        "cat": "git",
+        "what": "git add src/service/delivery_presentation.rs",
+        "ms": 3276
+      },
+      {
+        "name": "exec",
+        "cat": "git",
+        "what": "git add src/service/delivery_presentation.rs",
+        "ms": 3039
+      },
+      {
+        "name": "exec",
+        "cat": "git",
+        "what": "git commit -m 'test: cover presentation owner budget conten…",
+        "ms": 2070
+      },
+      {
+        "name": "exec",
+        "cat": "git",
+        "what": "git add tests/service.rs tests/service/presentation_owner_b…",
+        "ms": 2064
+      }
+    ]
+  },
+  "lane": {
+    "busyMs": 1369733,
+    "seamMs": 1369733,
+    "spanMs": 74441415,
+    "merges": 4,
+    "firstTryFailed": 0,
+    "firstTryKnown": 4,
+    "queueWaitMs": 0,
+    "stackWaitMs": 0,
+    "peakQueue": 0
+  },
+  "runtime": {
+    "slots": null,
+    "peak": 10,
+    "fullMs": 0
+  },
+  "concurrency": {
+    "dispatches": 421,
+    "wallMs": 75291486,
+    "busyMs": 32055340,
+    "byActive": {
+      "0": 43236146,
+      "1": 8328964,
+      "2": 8659799,
+      "3": 15066577
+    },
+    "peak": 10,
+    "kinds": [
+      {
+        "kind": "watch",
+        "mapped": false,
+        "ms": 102138,
+        "n": 1
+      },
+      {
+        "kind": "plugin",
+        "mapped": false,
+        "ms": 70302,
+        "n": 1
+      },
+      {
+        "kind": "composition",
+        "mapped": false,
+        "ms": 112985,
+        "n": 1
+      },
+      {
+        "kind": "validation",
+        "mapped": false,
+        "ms": 131303,
+        "n": 2
+      },
+      {
+        "kind": "contract",
+        "mapped": false,
+        "ms": 81427,
+        "n": 1
+      },
+      {
+        "kind": "state",
+        "mapped": false,
+        "ms": 90812,
+        "n": 1
+      },
+      {
+        "kind": "review",
+        "mapped": true,
+        "ms": 989493,
+        "n": 8
+      },
+      {
+        "kind": "plan",
+        "mapped": true,
+        "ms": 1738702,
+        "n": 12
+      },
+      {
+        "kind": "impl",
+        "mapped": true,
+        "ms": 3009989,
+        "n": 9
+      },
+      {
+        "kind": "fix",
+        "mapped": true,
+        "ms": 1369733,
+        "n": 5
+      },
+      {
+        "kind": "triage",
+        "mapped": true,
+        "ms": 137811,
+        "n": 1
+      },
+      {
+        "kind": "review",
+        "mapped": false,
+        "ms": 20541402,
+        "n": 119
+      },
+      {
+        "kind": "triage",
+        "mapped": false,
+        "ms": 16163223,
+        "n": 60
+      },
+      {
+        "kind": "design",
+        "mapped": false,
+        "ms": 455929,
+        "n": 2
+      },
+      {
+        "kind": "impl",
+        "mapped": false,
+        "ms": 18301407,
+        "n": 59
+      },
+      {
+        "kind": "prepare",
+        "mapped": false,
+        "ms": 4616840,
+        "n": 10
+      },
+      {
+        "kind": "compose",
+        "mapped": false,
+        "ms": 924353,
+        "n": 5
+      },
+      {
+        "kind": "hot",
+        "mapped": false,
+        "ms": 46324,
+        "n": 1
+      },
+      {
+        "kind": "cleanup",
+        "mapped": false,
+        "ms": 547355,
+        "n": 2
+      },
+      {
+        "kind": "record",
+        "mapped": false,
+        "ms": 1614723,
+        "n": 19
+      },
+      {
+        "kind": "q3",
+        "mapped": false,
+        "ms": 2398736,
+        "n": 10
+      },
+      {
+        "kind": "assess",
+        "mapped": false,
+        "ms": 2148170,
+        "n": 9
+      },
+      {
+        "kind": "finish",
+        "mapped": false,
+        "ms": 1858329,
+        "n": 3
+      },
+      {
+        "kind": "resume",
+        "mapped": false,
+        "ms": 3320122,
+        "n": 14
+      },
+      {
+        "kind": "audit",
+        "mapped": false,
+        "ms": 819587,
+        "n": 4
+      },
+      {
+        "kind": "resume1012",
+        "mapped": false,
+        "ms": 287026,
+        "n": 1
+      },
+      {
+        "kind": "roast1",
+        "mapped": false,
+        "ms": 3217864,
+        "n": 19
+      },
+      {
+        "kind": "r1",
+        "mapped": false,
+        "ms": 8701236,
+        "n": 41
+      },
+      {
+        "kind": "final-review",
+        "mapped": true,
+        "ms": 137593,
+        "n": 1
+      }
+    ],
+    "coordinatorMergeMs": 0
+  },
+  "tests": {
+    "busyMs": 22681129,
+    "testMs": 0,
+    "pollMs": 442317,
+    "cappedCalls": 0
+  },
+  "slowTests": [],
+  "conflicts": [],
+  "simulation": {
+    "asRunMs": 1830231,
+    "actualMs": 74907533,
+    "fit": 0.02,
+    "unlimitedSlotsMs": 1830231,
+    "unlimitedLanesMs": 1830231,
+    "lowerBoundMs": 1830231,
+    "graphChain": [
+      "ht-0lo.15"
+    ],
+    "whatIfs": [
+      {
+        "kind": "faster",
+        "target": "faster ht-0lo.15",
+        "ms": 1346839.5,
+        "savingMs": 483391.5,
+        "note": "its implement time halved"
+      }
+    ],
+    "verdict": "bead-bound"
+  },
+  "unmeasured": [
+    "4 landed bead(s) with no merge in the coordinator's log: lane time 0",
+    "385 dispatch(es) not named for a bead of ht-0lo, in the run-level lines only (coordinator-subagents.md names dispatches <kind>_<bead id> on Codex, <kind>:<bead id> on Claude Code)",
+    "the schedule model is 2% of actual, so the what-ifs are rough",
+    "1 dispatched bead(s) did not land (not in the model): ht-0lo.8.4"
+  ],
+  "summary": [
+    "Profile: ht-0lo · 1 invocation · 2026-10-11T19:29Z → 2026-10-12T16:23Z · wall 20h55m (task graph 20h48m, after the last landing 6m) · agents 421 (timed 421) · beads dispatched 5, landed 4, planned 24",
+    "Profile: shape — 24 beads · 31 edges · depth 5 · width 4.8 · beads per level 14/5/3/1/1 · widest fan-out ht-0lo.2.1 (3 direct, 5 transitive dependents)",
+    "Profile: bound — graph lower bound 31m (unlimited slots and merge lanes) · model of the run 31m (cap 4, one merge lane) vs actual 20h48m (2%) → bead-bound: ht-0lo.15 alone set the pace — split it or make it faster",
+    "Profile: critical path — 20h48m = implement 16m · review 2m · planning 6m · other 2m · startup 20s · wait 20h22m",
+    "Profile: critical chain — validation other 2m → plan planning 6m → ht-0lo.15 implement+review+merge 18m",
+    "Profile: bottleneck — ht-0lo.15 — 20h36m on the critical path (99%) · implement 16m · review 2m · wait 20h18m · implement on the path 16m: poll 1m · git 19s · read 2s · edit 14s · other 2s · model 14m (longest: \"wait_agent\" 1m, \"git reset --soft 36c3988fe8fd0e46861170c182d1160afda00fc4\" 6s) · dependents 0",
+    "Profile: waits — ready→start, summed per bead (beads wait at the same time, so not wall time): 81h35m over 4 of 4 landed beads — retry 41h00m (2) · unexplained 40h34m (2)",
+    "Profile: rework — 1h01m of dispatch time in attempts that did not land — ht-0lo.8.4 43m (?, ?, ?, ?; never landed) · ht-0lo.13 13m (?; landed later) · ht-0lo.14 5m (?; landed later)",
+    "Profile: tests — implementers and fixers, summed: 0s running tests and 7m polling background runs, 2% of their 6h18m · 0 Bash call(s) ran into the 10-minute tool limit",
+    "Profile: merge lane — busy 23m of 20h41m (2%) · seam reviews and fixes 23m (100% of busy) · 4 merge dispatches, first try not merged for 0 of 4 · queue wait 0s total, peak 0 waiting · stack-parent wait 0s",
+    "Profile: concurrency — 421 dispatches over 20h55m · a dispatch running 8h54m (43%) · dispatches at once: 0 for 57% · 1 for 11% · 2 for 12% · 3+ for 20% of the time · peak 10",
+    "Profile: dispatch time by kind, summed — impl 50m (9) · plan 29m (12) · fix 23m (5) · review 16m (8) · triage 2m (1) · final-review 2m (1) · not named for a bead: review 5h42m (119) · impl 5h05m (59) · triage 4h29m (60) · r1 2h25m (41) · prepare 1h17m (10) · resume 55m (14) · roast1 54m (19) · q3 40m (10) · 15 more 2h35m (53) · merges run by the coordinator 0s (4)",
+    "Profile: runtime — peak 10 agents at once · slot cap 4",
+    "Profile: what-if — faster ht-0lo.15 → 22m (−8m, 26%) — its implement time halved",
+    "Profile: unmeasured — 4 landed bead(s) with no merge in the coordinator's log: lane time 0; 385 dispatch(es) not named for a bead of ht-0lo, in the run-level lines only (coordinator-subagents.md names dispatches <kind>_<bead id> on Codex, <kind>:<bead id> on Claude Code); the schedule model is 2% of actual, so the what-ifs are rough; 1 dispatched bead(s) did not land (not in the model): ht-0lo.8.4"
+  ]
+}

@@ -1,0 +1,88 @@
+# Review package: f36ffaa5a51fd5e115e73b05e2daef7e8bf17dbd..cdbf3c37e873a2cb571c098450602a53f81a6185
+
+## Commits
+cdbf3c37 Preserve historical recovery limits and exact automatic response identity
+cd9f2fd4 Bound modern automatic handoff delivery and preserve canonical outcomes
+57644a5e WIP: freeze direct and automatic initial invitation policy
+5a518faf Compose main bounded receipt projection fixture wait
+43cc19cd test: lazy_recovery_context waits for send receipt projection (v0.8.0 hosted shard1)
+
+## Files changed
+ tests/cli/lazy_recovery_context.rs | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+## Diff
+diff --git a/tests/cli/lazy_recovery_context.rs b/tests/cli/lazy_recovery_context.rs
+index ddf409f4..9212ebf8 100644
+--- a/tests/cli/lazy_recovery_context.rs
++++ b/tests/cli/lazy_recovery_context.rs
+@@ -46,20 +46,46 @@ fn execute(w: &World, ambient: Option<&World>, who: usize, argv: &[String]) -> O
+             )
+             .env("HERDR_SOCKET_PATH", paths.locator);
+     } else {
+         command
+             .env_remove("HERDR_PLUGIN_STATE_DIR")
+             .env_remove("HERDR_SOCKET_PATH");
+     }
+     command.output().unwrap()
+ }
+ 
++/// Waits until every `send_attention` projection job of `w` has completed: the
++/// daemon projects receipt rows in 5 ms work quanta, so under load the rows for a
++/// two-recipient send can land after `send` returns (seen on a hosted Linux runner
++/// as `QueryReturnedNoRows` in [`receipt`]).
++fn wait_for_send_projection(w: &World) {
++    let deadline = std::time::Instant::now() + Duration::from_secs(30);
++    loop {
++        let open: i64 = w
++            .db()
++            .query_row(
++                "SELECT count(*) FROM work_jobs WHERE kind='send_attention' AND status<>'complete'",
++                [],
++                |r| r.get(0),
++            )
++            .unwrap();
++        if open == 0 {
++            return;
++        }
++        assert!(
++            std::time::Instant::now() < deadline,
++            "send_attention projection still open after 30 s ({open} job(s))"
++        );
++        std::thread::sleep(Duration::from_millis(20));
++    }
++}
++
+ fn receipt(w: &World, message: &str, who: usize) -> String {
+     w.db().query_row(
+         "SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id=?2 UNION SELECT state FROM receipts WHERE message_id=?1 AND seat_id=?2",
+         [message, &w.seats[who]], |r| r.get(0),
+     ).unwrap()
+ }
+ 
+ // Catches journal-local references selecting ambient B instead of the pinned A,
+ // dropped quoting/host context, actor replacement, or clearing independent proof.
+ //
+@@ -80,20 +106,22 @@ fn recovery_case(human: bool, second_record_failure: bool, remove_ambient: bool)
+         let b = if human {
+             World::new()
+         } else {
+             World::agents_only()
+         };
+         let who = if human { 2 } else { 1 };
+         let lazy_a = a.send("original passive body", &[]);
+         let ordinary_a = a.send("original ordinary body", &["--require-ack", &a.seats[1]]);
+         let lazy_b = b.send("unrelated passive body", &[]);
+         let ordinary_b = b.send("unrelated ordinary body", &["--require-ack", &b.seats[1]]);
++        wait_for_send_projection(&a);
++        wait_for_send_projection(&b);
+         let journal_a = Journal::open(a.paths().instance_dir.join("intents")).unwrap();
+         if second_record_failure {
+             std::fs::write(
+                 a.paths().instance_dir.join("intents/next-ordinal"),
+                 format!("{}\n", u64::MAX - 1),
+             )
+             .unwrap();
+         }
+         let proxy = Proxy::new(a.paths(), &a.root);
+         if !second_record_failure {

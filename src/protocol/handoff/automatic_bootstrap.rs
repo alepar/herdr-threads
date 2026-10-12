@@ -157,9 +157,13 @@ impl AutomaticBootstrapIdentity {
         if serde_json::to_vec(self)
             .map_err(|_| "invalid bootstrap identity")?
             .len()
-            > automatic::MAX_AUTOMATIC_ORIGINAL_BYTES
+            > if self.plan.payload.handoff.policy.is_some() {
+                automatic::MAX_AUTOMATIC_ORIGINAL_BYTES
+            } else {
+                131072
+            }
         {
-            return Err("automatic bootstrap original exceeds 128 KiB");
+            return Err("automatic bootstrap original exceeds retained capacity");
         }
         Ok(())
     }
@@ -240,9 +244,13 @@ impl AutomaticBootstrapAttachment {
         if serde_json::to_vec(self)
             .map_err(|_| "invalid automatic attachment")?
             .len()
-            > 131072
+            > if id.plan.payload.handoff.policy.is_some() {
+                automatic::MAX_AUTOMATIC_ORIGINAL_BYTES
+            } else {
+                131072
+            }
         {
-            return Err("automatic attachment exceeds 128 KiB");
+            return Err("automatic attachment exceeds its retained capacity");
         }
         Ok(())
     }
@@ -339,9 +347,13 @@ impl AutomaticBootstrapMutation {
                 if serde_json::to_vec(self)
                     .map_err(|_| "invalid automatic recovery")?
                     .len()
-                    > 262144
+                    > if self.identity.plan.payload.handoff.policy.is_some() {
+                        1048572
+                    } else {
+                        262144
+                    }
                 {
-                    return Err("automatic recovery exceeds 256 KiB");
+                    return Err("automatic recovery exceeds retained request limit");
                 }
             }
             _ => {}
@@ -490,12 +502,384 @@ impl AutomaticBootstrapResult {
             &self.recovery,
         ))
         .map_err(|_| "invalid automatic inspection")?;
-        if bytes.len() > 524288 {
+        if bytes.len()
+            > if self.identity.plan.payload.handoff.policy.is_some() {
+                2097152
+            } else {
+                524288
+            }
+        {
             return Err("oversized automatic inspection");
         }
         Ok(BootstrapRecoveryInspection {
             version: 1,
             digest: format!("{:x}", Sha256::digest(bytes)),
         })
+    }
+}
+
+/// Modern automatic completion deliberately retains a bounded representation.
+/// The separately named digest refers to the exact optional LOCAL diagnostic artifact.
+pub(crate) fn automatic_launch_summary(
+    report: &serde_json::Value,
+    full_report_digest: &str,
+) -> Result<serde_json::Value, &'static str> {
+    if report["outcome"] != "started" || !super::valid_digest(full_report_digest) {
+        return Err("automatic launch has no successful bounded summary");
+    }
+    for key in ["pane", "seat", "harness"] {
+        if report[key].as_str().is_none_or(|v| !bounded_text(v, 128)) {
+            return Err("invalid automatic launch summary identity");
+        }
+    }
+    let argv = report["argv"]
+        .as_array()
+        .ok_or("missing automatic summary argv")?;
+    if argv.is_empty()
+        || argv.len() > 256
+        || argv.iter().any(|v| {
+            v.as_str()
+                .is_none_or(|a| a.len() > 4096 || a.contains('\0'))
+        })
+    {
+        return Err("invalid automatic launch summary argv");
+    }
+    Ok(serde_json::json!({
+        "format":"automatic_launch_summary_v1", "outcome":"started",
+        "pane":report["pane"], "seat":report["seat"], "harness":report["harness"],
+        "argv":report["argv"], "full_report_digest":full_report_digest,
+        "diagnostics":"optional_local_artifact",
+    }))
+}
+
+impl AutomaticBootstrapIdentity {
+    /// Admission covers every producer-generated continuation, before publication.
+    /// Synthetic values below use the enforced ID/path/numeric bounds; they are
+    /// sizing witnesses, never creation evidence or retained execution claims.
+    pub(crate) fn validate_admission(&self) -> Result<(), &'static str> {
+        self.validate_admission_for_local(None)
+    }
+    pub(crate) fn validate_local_admission(
+        &self,
+        root: &std::path::Path,
+    ) -> Result<(), &'static str> {
+        self.validate_admission_for_local(Some(root))
+    }
+    fn validate_admission_for_local(
+        &self,
+        root: Option<&std::path::Path>,
+    ) -> Result<(), &'static str> {
+        use crate::host::continuity::{
+            LocalEndpointWitness, MACOS_WITNESS_PLATFORM, SocketIdentity,
+        };
+        use crate::protocol::{commands::Command, ids::MessageId, results::CommandResult, wire::*};
+        if self.plan.payload.handoff.policy.is_none() {
+            return Ok(());
+        }
+        self.validate()?;
+        let p = &self.plan.payload;
+        let escaped = "\\".repeat(128);
+        let thread = ThreadId::new(escaped.clone());
+        let recipient = SeatId::new(escaped.clone());
+        let prefix = format!("{}:", p.workspace.as_str());
+        if prefix.len() >= 128 {
+            return Err("automatic workspace leaves no bounded pane identifier");
+        }
+        let target = |last: char| {
+            HostTargetId::new(format!(
+                "{}{}{}",
+                prefix,
+                "\\".repeat(127 - prefix.len()),
+                last
+            ))
+        };
+        let witness = LocalEndpointWitness {
+            schema: 1,
+            platform: MACOS_WITNESS_PLATFORM.into(),
+            endpoint: p.handoff.namespace.host_endpoint.clone(),
+            peer_uid: u32::MAX,
+            peer_pid: u32::MAX,
+            start_seconds: u64::MAX,
+            start_microseconds: 999999,
+            socket: SocketIdentity {
+                device: u64::MAX,
+                inode: u64::MAX,
+                birth_seconds: i64::MIN,
+                birth_nanoseconds: i64::MIN,
+                change_seconds: i64::MIN,
+                change_nanoseconds: i64::MIN,
+            },
+        };
+        let created = CreatedTab {
+            correlation: HostCallId::new(escaped.clone()),
+            workspace: p.workspace.clone(),
+            tab: target('t'),
+            root_pane: target('p'),
+            terminal: TerminalId::new(escaped.clone()),
+            host_incarnation: HostBootId::new(format!(
+                "herdr-server:pid={}:start={}.{:06}:uid={}",
+                witness.peer_pid,
+                witness.start_seconds,
+                witness.start_microseconds,
+                witness.peer_uid
+            )),
+            witness,
+        };
+        let attempt = BootstrapAttempt::new(u32::MAX)?;
+        let attachment = AutomaticBootstrapAttachment::derive(
+            self,
+            attempt,
+            created.clone(),
+            recipient.clone(),
+        )?;
+        let context = crate::protocol::output::ContinuationContext {
+            state_dir: p.handoff.namespace.state_dir.to_str().map(str::to_owned),
+            host: p
+                .handoff
+                .namespace
+                .host_endpoint
+                .to_str()
+                .map(str::to_owned),
+        };
+        let template = p
+            .startup_input
+            .as_ref()
+            .ok_or("modern automatic origin lacks startup template")?;
+        // Both canonical-routing and historical null-routing prompt outcomes are supported.
+        let mut summaries = Vec::new();
+        for prompt in crate::cli::handoff::bootstrap_v1::retained_prompts(
+            thread.as_str(),
+            &context,
+            &self.claim.instance,
+        ) {
+            let (argv, _) = template
+                .apply(&p.launch.argv, &prompt)
+                .map_err(|_| "automatic future startup input exceeds bounds")?;
+            let argv = crate::harness::launch::compose_native_argv(p.launch.harness, argv, vec![])
+                .map_err(|_| "automatic future native argv exceeds bounds")?;
+            crate::ports::NativeLaunchRequest::validate_argv(&argv)?;
+            let source = serde_json::json!({"outcome":"started","pane":created.root_pane,"seat":recipient,"harness":p.launch.harness.as_str(),"argv":argv});
+            summaries.push(automatic_launch_summary(&source, &"f".repeat(64))?);
+        }
+        let selection = crate::protocol::results::DirectThreadEnsured {
+            thread: thread.clone(),
+            recipient: recipient.clone(),
+            outcome: crate::protocol::results::DirectThreadEnsureOutcome::ExistingPending,
+            invitation: Some(crate::protocol::results::DirectThreadInvitation {
+                id: crate::protocol::ids::InvitationId::new(escaped.clone()),
+                episode: u64::MAX,
+                confirmation: crate::protocol::commands::InvitationConfirmation::RequireAck,
+                effective_deadline_at: Some(crate::protocol::time::UtcMillis(i64::MIN)),
+                inviter: Some(SeatId::new(escaped.clone())),
+            }),
+        };
+        let selection_response = WireResponse {
+            version: PROTOCOL_VERSION,
+            request_id: escaped.clone(),
+            instance: "f".repeat(36),
+            daemon_boot: "f".repeat(36),
+            result: Ok(CommandResult::DirectThreadEnsured(selection.clone())),
+        };
+        if serde_json::to_vec(&selection_response)
+            .map_err(|_| "automatic Ensure response encoding")?
+            .len()
+            + 4
+            > MAX_WIRE_FRAME_BYTES
+        {
+            return Err("automatic Ensure response exceeds 1 MiB");
+        }
+        let inspection = BootstrapRecoveryInspection {
+            version: 1,
+            digest: "f".repeat(64),
+        };
+        let dispositions = vec![
+            AutomaticBootstrapRecoveryDisposition::CreatedPane {
+                evidence: Box::new(created.clone()),
+                structural_reference: HostCallId::new(escaped.clone()),
+            },
+            AutomaticBootstrapRecoveryDisposition::NotCreated {
+                quiescence: BootstrapQuiescenceAssertion::InspectedNoncreationAndQuiescence,
+            },
+            AutomaticBootstrapRecoveryDisposition::Cancelled {
+                reason: format!("x{}", "\u{1}".repeat(4095)),
+                quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
+                attached_child: Some(Box::new(attachment.child.clone())),
+            },
+        ];
+        let wire_request = |command: Command| WireRequest {
+            version: PROTOCOL_VERSION,
+            request_id: escaped.clone(),
+            expected_instance: "f".repeat(36),
+            expected_boot: Some("f".repeat(36)),
+            output: Some(crate::protocol::output::OutputSpec::default()),
+            command,
+        };
+        let check_request = |command| -> Result<(), &'static str> {
+            if serde_json::to_vec(&wire_request(command))
+                .map_err(|_| "automatic future request encoding")?
+                .len()
+                + 4
+                > MAX_WIRE_FRAME_BYTES
+            {
+                Err("automatic future request exceeds 1 MiB")
+            } else {
+                Ok(())
+            }
+        };
+        let mutation = |action| {
+            Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
+                identity: self.clone(),
+                action,
+            }))
+        };
+        for action in [
+            AutomaticBootstrapAction::Status,
+            AutomaticBootstrapAction::Begin,
+            AutomaticBootstrapAction::Reserve { attempt },
+            AutomaticBootstrapAction::CheckSubmission {
+                attempt,
+                administrative_revision: u64::MAX,
+            },
+            AutomaticBootstrapAction::RecordCreated {
+                attempt,
+                evidence: created.clone(),
+            },
+            AutomaticBootstrapAction::RecordOutcomeUnknown { attempt },
+            AutomaticBootstrapAction::RecordNotSubmitted { attempt },
+            AutomaticBootstrapAction::Resolve { attempt },
+            AutomaticBootstrapAction::Attach(Box::new(attachment.clone())),
+            AutomaticBootstrapAction::CheckStart,
+        ] {
+            check_request(mutation(action))?;
+        }
+        for child in [
+            attachment.child.clone(),
+            attachment.child.begin(),
+            attachment.child.ensure(),
+            attachment.child.send(thread.clone()),
+            attachment.child.complete(),
+        ] {
+            check_request(Command::AutomaticHandoffDelivery(Box::new(child)))?;
+        }
+        for disposition in &dispositions {
+            check_request(mutation(AutomaticBootstrapAction::Recover {
+                attempt,
+                inspection: inspection.clone(),
+                disposition: disposition.clone(),
+            }))?;
+        }
+        for summary in summaries {
+            let retained = LinkedBootstrapReport {
+                thread: thread.clone(),
+                recipient: recipient.clone(),
+                pane: created.root_pane.clone(),
+                kind: "launch".into(),
+                launch: p.launch.clone(),
+                report_digest: format!(
+                    "{:x}",
+                    Sha256::digest(
+                        serde_json::to_vec(&summary).map_err(|_| "automatic summary encoding")?
+                    )
+                ),
+                report: summary.clone(),
+                terminal: created.terminal.clone(),
+                host_incarnation: created.host_incarnation.clone(),
+            };
+            retained.validate()?;
+            check_request(mutation(AutomaticBootstrapAction::Complete {
+                attachment: Box::new(attachment.clone()),
+                retained: retained.clone(),
+            }))?;
+            for disposition in &dispositions {
+                let result = AutomaticBootstrapResult {
+                    identity: self.clone(),
+                    state: BootstrapState::PossibleCreation,
+                    attempt,
+                    attempt_state: BootstrapAttemptState::PossibleCreation,
+                    administrative_revision: u64::MAX,
+                    creation: Some(created.clone()),
+                    attachment: Some(attachment.clone()),
+                    thread: Some(thread.clone()),
+                    completed: Some(retained.clone()),
+                    recovery: Some(AutomaticBootstrapRecoveryResult {
+                        operation: OperationId::new(escaped.clone()),
+                        attempt,
+                        inspection: inspection.clone(),
+                        disposition: disposition.clone(),
+                        operator_uid: u32::MAX,
+                        operator_provenance: format!("operator:local-user:{}", u32::MAX),
+                        state: BootstrapState::PossibleCreation,
+                        administrative_revision: u64::MAX,
+                    }),
+                };
+                // Optional fields are jointly present to dominate every reachable result.
+                for result in [
+                    CommandResult::AutomaticBootstrap(Box::new(result.clone())),
+                    CommandResult::AutomaticBootstrapReserved(Box::new(
+                        AutomaticBootstrapReserved {
+                            status: result.clone(),
+                            authorization: Some(BootstrapSubmissionAuthorization {
+                                compound: p.keys.compound.clone(),
+                                attempt,
+                                reservation: OperationId::new(escaped.clone()),
+                                administrative_revision: u64::MAX,
+                            }),
+                        },
+                    )),
+                ] {
+                    let response = WireResponse {
+                        version: PROTOCOL_VERSION,
+                        request_id: escaped.clone(),
+                        instance: "f".repeat(36),
+                        daemon_boot: "f".repeat(36),
+                        result: Ok(result),
+                    };
+                    if serde_json::to_vec(&response)
+                        .map_err(|_| "automatic future reply encoding")?
+                        .len()
+                        + 4
+                        > MAX_AUTOMATIC_RESPONSE_FRAME_BYTES
+                    {
+                        return Err("automatic future response exceeds 2 MiB");
+                    }
+                }
+                let message = CommandResult::MessageSent(MessageId::new(escaped.clone()));
+                for local in [
+                    serde_json::json!({"version":2,"identity":self,"attachment":attachment,"thread":thread,"selection":selection,"message":message,"possible_start":true,"launch":summary}),
+                    serde_json::json!({"version":2,"identity":self,"attempt":attempt,"possible_creation":true,"request":crate::ports::CreateTabRequest {correlation:created.correlation.clone(),workspace:p.workspace.clone(),cwd:p.cwd.clone(),label:p.label.clone(),focus:false,env:Default::default(),expected_witness:created.witness.clone()},"creation":created,"not_submitted":false}),
+                ] {
+                    if serde_json::to_vec(&local)
+                        .map_err(|_| "automatic local envelope encoding")?
+                        .len()
+                        > crate::cli::topology_handoff::MAX_LINKED_LOCAL_BYTES
+                    {
+                        return Err("automatic future local progress exceeds 2 MiB");
+                    }
+                }
+                if let Some(root) = root {
+                    crate::cli::handoff::validate_automatic_presentation_admission(
+                        root,
+                        &p.handoff.namespace,
+                        &summary,
+                        &selection,
+                        serde_json::json!({"creation":created,"bootstrap_compound":p.keys.compound,"attempt":attempt,"possible_start":true,"status_is_last_observed":true,"status_unknown":false}),
+                    )?;
+                }
+                // The origin's header repeats the bounded original claim/scope. Use
+                // its enforced envelope ceiling rather than a fixture header size.
+                let original = serde_json::to_string(&self.semantic())
+                    .map_err(|_| "automatic origin encoding")?;
+                let terminal = serde_json::json!({"version":2,"original":original,"completed":result,"selection":selection,"message":message});
+                if serde_json::to_vec(&terminal)
+                    .map_err(|_| "automatic terminal encoding")?
+                    .len()
+                    + crate::cli::journal::MAX_AUTOMATIC_ORIGIN_BYTES
+                    > crate::cli::topology_handoff::MAX_BOOTSTRAP_TERMINAL_BYTES
+                {
+                    return Err("automatic future terminal exceeds retained limit");
+                }
+            }
+        }
+        Ok(())
     }
 }

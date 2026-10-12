@@ -4875,13 +4875,19 @@ pub fn hook_plain_reconnect(
     conn: &mut Connection,
     instance: &str,
     claim: &crate::protocol::authority::CallerClaim,
+    presentation: bool,
 ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
     context.execute_decision(
         conn,
         |tx| cooperative_mapping(tx, claim, None),
         |tx, at, mapping| {
             resolve_cooperative(tx, at, claim, None, &mapping)?;
-            mod_binding_view(
+            let view = if presentation {
+                presentation_seat_view
+            } else {
+                mod_binding_view
+            };
+            view(
                 tx,
                 instance,
                 &claim.seat,
@@ -4907,6 +4913,23 @@ pub fn mod_binding_view(
     instance: &str,
     seat: &SeatId,
     binding: crate::ports::ModBindingRef<'_>,
+) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
+    mod_seat_view_mode(db, instance, seat, binding, true)
+}
+pub fn presentation_seat_view(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    binding: crate::ports::ModBindingRef<'_>,
+) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
+    mod_seat_view_mode(db, instance, seat, binding, false)
+}
+fn mod_seat_view_mode(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    binding: crate::ports::ModBindingRef<'_>,
+    legacy_digest: bool,
 ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
     use crate::ports::{ModBindingRef, ModBindingView, ModFingerprint, ModSeatView};
     let row: Option<(String, Option<String>)> = db
@@ -4959,6 +4982,30 @@ pub fn mod_binding_view(
         .unwrap_or(0);
     let attention_version = u64::try_from(attention_version)
         .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative attention version"))?;
+    if !legacy_digest {
+        return Ok(Some(ModSeatView {
+            seat: seat.clone(),
+            retired: state == "retired",
+            continuity_resolved: state == "resolved",
+            state,
+            held,
+            attention_version,
+            fingerprint: ModFingerprint {
+                attention_version,
+                binding_generation: binding.as_ref().map(|b| b.generation),
+                pending_receipts: 0,
+                max_pending_ordinal: 0,
+                lazy_pending: 0,
+                max_lazy_rowid: 0,
+                unread: 0,
+                max_unread_rowid: 0,
+                other_pending: 0,
+            },
+            binding,
+            newest_pending_notice: None,
+            pending_invitation_version: 0,
+        }));
+    }
     let run = super::attention::seat_digest(db, instance, seat, &|| Ok(()))?;
     // The binding's own unread. Published rows only: a staged row is invisible to the mod and
     // its publication (manifest + message) must change the fingerprint. An ended or
@@ -5003,7 +5050,14 @@ pub fn mod_binding_view(
         max_lazy_rowid,
         unread,
         max_unread_rowid,
-        other_pending: digest.invitations.count + waking_warnings,
+        other_pending: super::attention::pending_confirming_invitations(
+            db,
+            seat.as_str(),
+            None,
+            i64::MAX,
+        )?
+        .count()
+        .0 + waking_warnings,
         binding_generation: binding.as_ref().map(|b| b.generation),
     };
     // Notices above the binding's own frontier (spec §2 Hook notifications); the seat view's
@@ -5022,6 +5076,7 @@ pub fn mod_binding_view(
         attention_version,
         fingerprint,
         newest_pending_notice,
+        pending_invitation_version: run.invitations.content_version(),
     }))
 }
 

@@ -1,0 +1,5 @@
+[Should-fix] integrations/claude/mod/hooks/register.js:289
+[Should-fix] src/store/invitation_content.rs:2442
+[Should-fix] tests/store/effective.rs:2136
+[Should-fix] src/service/delivery_presentation.rs:62
+[Should-fix] integrations/claude/mod/hooks/register.js:296

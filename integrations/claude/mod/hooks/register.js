@@ -19,8 +19,13 @@ const ACK_RETRY_MS = 30000
 const ACK_BATCH_MAX = 100 // MAX_BATCH_ITEMS in src/protocol/commands.rs
 const CONNECTED_RESET_MS = 60000
 const LEDGER_CAP = 2000
+// Match the delivery envelope, counting the actual framed UTF-8 text.
+const APPEND_MAX_ITEMS = 32
+const APPEND_MAX_BYTES = 64 * 1024
 
 const INTENTS = new Set(['query', 'request', 'rule'])
+const canonicalEpoch = (v) => typeof v === 'string' && /^(0|[1-9][0-9]{0,19})$/.test(v)
+  && (v.length < 20 || v <= '18446744073709551615')
 const oneLine = (s) => String(s).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
 const LINE_BREAK = /\r\n|[\n\r\u000b\u000c\u0085\u2028\u2029]/
 /** Every non-empty body line indented two spaces (src/protocol/output_compact.rs), so a body never starts a line at column 0. */
@@ -58,7 +63,19 @@ export function frame(items) {
   return `${HEADER}\n\n${blocks.join('\n\n')}`
 }
 
-const emptyRec = () => ({ delivered: {}, unacked: {}, attentionVersions: [] })
+/** Keep whole items queued when the next framed append would exceed its envelope. */
+function appendBatch(items) {
+  const batch = []
+  const encoder = new TextEncoder()
+  for (const item of items) {
+    if (batch.length === APPEND_MAX_ITEMS
+        || encoder.encode(frame([...batch, item])).length > APPEND_MAX_BYTES) break
+    batch.push(item)
+  }
+  return batch
+}
+
+const emptyRec = () => ({ delivered: {}, unacked: {}, attentionVersions: [], invitationVersions: {} })
 
 // Esc at a permission dialog (ht-j16.30, live stress D3): the engine ends that turn with a
 // non-aborted turn.complete, so the hold cannot key on isAborted alone. The exact tool.call
@@ -153,10 +170,13 @@ export function createCore(io) {
   function discardStale(items, why) {
     const stale = items.filter((it) => it.run !== S.run || !S.live)
     if (!stale.length) return items
-    const gone = new Set(stale.map((it) => it.id))
-    S.queue = S.queue.filter((q) => !gone.has(q.id))
+    // Invitation IDs outlive their context: retire only the obsolete queued object.
+    const obsolete = new Set(stale)
+    const gone = new Set(stale.filter((it) => it.kind !== 'invitation').map((it) => it.id))
+    const retain = (it) => !obsolete.has(it) && !gone.has(it.id)
+    S.queue = S.queue.filter(retain)
     ledger('refused', { ids: stale.map((it) => it.id), reason: `channel_lost:${why}` })
-    return items.filter((it) => !gone.has(it.id))
+    return items.filter(retain)
   }
 
   function stopChild() {
@@ -235,19 +255,25 @@ export function createCore(io) {
       }
       return
     }
+    const hasEpoch = Object.prototype.hasOwnProperty.call(o, 'presentation_epoch')
+    if ((o.kind === 'attention' || o.kind === 'attention_cleared') && hasEpoch
+        && !canonicalEpoch(o.presentation_epoch)) return
     if (o.kind === 'attention_cleared') {
       // The watch found nothing pending that an earlier attention line pointed at (ht-j16.33): an unsent
       // attention item is stale. One already in a submit or attached as context is not recalled.
-      const gone = S.queue.filter((q) => q.kind === 'attention' && !q.inflight).map((q) => q.id)
-      S.queue = S.queue.filter((q) => q.kind !== 'attention' || q.inflight)
-      S.runAttention = new Set()
+      const retract = (q) => q.kind === 'attention' && !q.inflight
+        && (!hasEpoch || q.presentationEpoch === o.presentation_epoch)
+      const gone = S.queue.filter(retract).map((q) => q.id)
+      S.queue = S.queue.filter((q) => !retract(q))
+      if (hasEpoch) S.runAttention.delete(`attention:${o.presentation_epoch}`)
+      else S.runAttention = new Set()
       if (gone.length) {
         S.lastHeld = ''
         ledger('refused', { ids: gone, reason: 'attention_cleared' })
       }
       return
     }
-    if (o.kind !== 'message' && o.kind !== 'lazy' && o.kind !== 'attention') return
+    if (o.kind !== 'message' && o.kind !== 'lazy' && o.kind !== 'invitation' && o.kind !== 'attention' && o.kind !== 'notice') return
     ledger('received', { ids: [o.id] })
     if (o.kind === 'attention') {
       const v = o.attention_version
@@ -262,20 +288,35 @@ export function createCore(io) {
         kind: 'attention',
         body: String(o.text ?? ''),
         version: v,
+        presentationEpoch: hasEpoch ? o.presentation_epoch : null,
         run: S.run,
         ackable: false,
       })
     } else {
-      if (S.rec.delivered[o.id] !== undefined) {
+      const revision = o.topic_revision == null ? null : String(o.topic_revision)
+      // Retain historical scalar keys; modern contexts include exact decimal epochs.
+      const contextVersion = o.command_context_epoch == null
+        ? revision : JSON.stringify([revision, String(o.command_context_epoch)])
+      if (o.kind === 'invitation') {
+        if (Object.prototype.hasOwnProperty.call(S.rec.invitationVersions, o.id)
+            && S.rec.invitationVersions[o.id] === contextVersion) return
+      } else if (S.rec.delivered[o.id] !== undefined) {
         if (S.rec.unacked[o.id] !== undefined) retryAcks()
         return
       }
-      const dup = S.queue.find((q) => q.id === o.id)
+      const dup = S.queue.find((q) => q.id === o.id && (o.kind !== 'invitation'
+        || ((q.run === S.run || !q.inflight) && q.contextVersion === contextVersion
+          && (!q.truncated || o.truncated === true))))
       if (dup) {
         dup.run = S.run
         return
       }
-      const truncated = o.truncated === true
+      // An append owns its exact object. Only the newest pending context is useful;
+      // the duplicate check above also prevents a same-version whole-to-partial downgrade.
+      if (o.kind === 'invitation') {
+        S.queue = S.queue.filter((q) => q.id !== o.id || q.inflight)
+      }
+      const truncated = o.kind !== 'notice' && o.truncated === true
       S.queue.push({
         id: o.id,
         kind: o.kind,
@@ -288,9 +329,10 @@ export function createCore(io) {
         user_intent: o.user_intent ?? null,
         body: String(o.body ?? ''),
         truncated,
-        // mail another binding already settled carries no obligation: appended like a lazy row, never an idle wake;
-        // a promoted wake_on:all lazy row (`wakes: true`) is no ACK either but still wakes an idle session
-        passive: o.kind === 'lazy' || (o.ack_required === false && o.wakes !== true),
+        wakes: o.kind !== 'notice' && o.wakes === true,
+        contextVersion,
+        // Already-settled binding mail is passive; promoted Lazy messages still wake.
+        passive: o.kind === 'message' && o.ack_required === false && o.wakes !== true,
         run: S.run,
         ackable: !truncated && (o.kind === 'lazy' || o.kind === 'message'),
       })
@@ -302,16 +344,37 @@ export function createCore(io) {
 
   // ---- delivery --------------------------------------------------------
 
+  /** A refused append is pending again; discard it if a newer context replaced it. */
+  function releaseBatch(batch) {
+    for (const it of batch) it.inflight = false
+    const newest = new Map()
+    for (const q of S.queue) {
+      if (q.kind === 'invitation' && !q.inflight) newest.set(q.id, q)
+    }
+    S.queue = S.queue.filter((q) => q.kind !== 'invitation' || q.inflight || newest.get(q.id) === q)
+  }
+
   /** Marks `items` delivered through `via`, then acks the ackable ones. */
   function complete(items, via) {
     const ids = items.map((i) => i.id)
     for (const it of items) {
-      S.queue = S.queue.filter((q) => q.id !== it.id)
+      // A successful whole append also settles an identical pending replay from a
+      // successor run. A partial output, newer context or other inflight object does not.
+      S.queue = S.queue.filter((q) => it.kind === 'invitation'
+        ? q !== it && (it.truncated || q.inflight || q.kind !== 'invitation'
+          || q.id !== it.id || q.contextVersion !== it.contextVersion)
+        : q.id !== it.id)
       if (it.kind === 'attention') {
         S.runAttention.add(it.id)
         if (it.version !== undefined && !S.rec.attentionVersions.includes(it.version)) {
           S.rec.attentionVersions.push(it.version)
           if (S.rec.attentionVersions.length > 64) S.rec.attentionVersions.shift()
+        }
+      } else if (it.kind === 'invitation') {
+        if (!it.truncated) {
+          S.rec.invitationVersions[it.id] = it.contextVersion
+          const ids = Object.keys(S.rec.invitationVersions)
+          if (ids.length > 1024) delete S.rec.invitationVersions[ids[0]]
         }
       } else {
         S.rec.delivered[it.id] = via
@@ -413,7 +476,7 @@ export function createCore(io) {
         S.turns.wake = null
         persistTurns()
       }
-      const items = S.queue.filter((q) => !q.passive && !q.inflight && q.run === S.run && !predHas(q.id))
+      const items = S.queue.filter((q) => !passive(q) && !q.inflight && q.run === S.run && !predHas(q.id))
       if (!(items.length || S.turns.wake) || S.submitInflight) return
       if (busy()) return
       const ids = items.map((i) => i.id)
@@ -430,7 +493,7 @@ export function createCore(io) {
         if (io.now() - S.draftSince < DRAFT_WAIT_MS) return held('draft', ids)
       }
       S.draftSince = null
-      const batch = S.queue.filter((q) => !q.passive && !q.inflight && q.run === S.run && !predHas(q.id))
+      const batch = appendBatch(S.queue.filter((q) => !passive(q) && !q.inflight && q.run === S.run && !predHas(q.id)))
       if (!batch.length && !S.turns.wake) return
       const gen = S.gen
       for (const it of batch) it.inflight = true
@@ -461,7 +524,7 @@ export function createCore(io) {
       if (S.disposed) return
       // a resolution from before a session change touches nothing
       if (gen !== S.gen) return
-      for (const it of batch) it.inflight = false
+      releaseBatch(batch)
       if (r.missing) {
         S.submitInflight = false
         return goInert()
@@ -513,11 +576,13 @@ export function createCore(io) {
     void pump()
   }
 
-  /** Lazy rows are appended at once, busy or idle. */
+  const passive = (item) => item.kind === 'lazy' || item.kind === 'notice' || (item.kind === 'invitation' && !item.wakes) || (item.kind === 'message' && item.passive)
+
+  /** Passive items are appended at once, busy or idle, without a wake. */
   async function pumpLazy() {
     if (S.inert || S.disposed || S.appendInflight || !S.live) return
     if (io.now() < S.appendBackoffUntil) return
-    const batch = S.queue.filter((q) => q.passive && !q.inflight && q.run === S.run)
+    const batch = appendBatch(S.queue.filter((q) => passive(q) && !q.inflight && q.run === S.run))
     if (!batch.length) return
     const gen = S.gen
     for (const it of batch) it.inflight = true
@@ -537,7 +602,7 @@ export function createCore(io) {
       .then((r) => {
         if (gen !== S.gen) return
         S.appendInflight = false
-        for (const it of batch) it.inflight = false
+        releaseBatch(batch)
         if (r.missing) return goInert()
         if (r.deny !== undefined) {
           discardStale(batch, 'late_deny')
@@ -711,7 +776,7 @@ export function createCore(io) {
     const answered =
       result && result.result !== undefined && result.deny === undefined && result.isError !== true
     if (!answered || !S.live) return result
-    const batch = S.queue.filter((q) => !q.passive && !q.inflight && q.run === S.run && !predHas(q.id))
+    const batch = S.queue.filter((q) => !passive(q) && !q.inflight && q.run === S.run && !predHas(q.id))
     if (!batch.length) return result
     void complete(batch, 'context')
     return { ...result, context: [...(result.context ?? []), frame(batch)] }

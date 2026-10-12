@@ -1,0 +1,869 @@
+{
+  "review": "corrected-D-interface-review.md",
+  "status": "COMPLETE + QUIESCENT",
+  "base": "ee1e598c3ee96566ddc9b397185cdc97c8bf6218",
+  "frozen": "4c4988d9ee937c333d602bac25dca25fc2c07d37",
+  "head": "31e5879781904b9ec20ee5ea3cec7517856260f3",
+  "tree": "f165279e4acd8c43c3edc7cb0e22ab2e9bb08f34",
+  "inventory_count": 80,
+  "same_frozen_blobs": 61,
+  "changed_since_frozen": 19,
+  "all_head_blob_hashes_verified": true,
+  "verdicts": {
+    "inactive_production_spec": "PASS",
+    "inactive_production_quality": "PASS",
+    "prepared_package_spec": "WITH FIX",
+    "prepared_package_quality": "WITH FIX",
+    "revised_activation_plan_spec": "PASS",
+    "revised_activation_plan_quality": "PASS",
+    "activation_executed_clearance": false,
+    "merge_clearance": false
+  },
+  "findings": [
+    {
+      "id": "I4",
+      "severity": "P2",
+      "path": "tests/integration/mod_delivery.rs",
+      "line": 2560,
+      "kind": "prepared_test_source_defect",
+      "summary": "Lazy-message-only page has no presentation token, so the elected passive test waits for a nonexistent Confirm.",
+      "status": "open_on_reviewed_checkpoint_parent_assigned_narrow_fix"
+    }
+  ],
+  "prior_findings": {
+    "I1": "closed",
+    "I2": "closed",
+    "I3": "closed_in_reviewed_production_scope",
+    "explicit_confirm_token_negative_gap": "closed",
+    "CIR-1/CIR-2": "scoped_successor_review_closes_and_current_sweep_passes",
+    "WA-R1/WA-R2": "scoped_successor_review_closes_and_five_current_helper_regressions_pass"
+  },
+  "evidence": [
+    {
+      "path": "/private/tmp/ht-finish-capacity-successor-sweep.log",
+      "sha256": "b24cd7eb1fbc87fad2e086dd30035e6ce83dec0eae3d6800408d1ad69010eb03",
+      "meaning": "127/127 PASS, inactive production/seam selection; 5 helper regressions, no elected active Watch proof"
+    },
+    {
+      "path": "/private/tmp/ht-finish-hook-activation-inactive-diagnostic.log",
+      "sha256": "d03443f28c67dbe77ff785e54d6d21f9401f6aca269f94a92cc23631f2af4dac",
+      "meaning": "Historical parent mapping: 1 fallback PASS and 4 actual missing-capability RED"
+    },
+    {
+      "path": "/private/tmp/ht-finish-watch-actual-inactive.log",
+      "sha256": "9dd2ba5f36955c80de02dd0579e8406a5f4d1ab91e60fd71f9fc482b10f6d7bb",
+      "meaning": "5 actual early missing-capability RED, no later active assertions reached"
+    }
+  ],
+  "evidence_limits": [
+    "No execution by this reviewer",
+    "61 unchanged blobs explicitly reuse frozen audit scope; changed interface seams freshly inspected",
+    "No actual advertised Watch or registered AGY positive yet",
+    "No real captured Watch fixture or plugin active-consumer proof yet",
+    "No exhaustive independent SQL/migration/private-reader re-audit in this interface role",
+    "Final integration gates/default features/corrected test mapping and cleanup remain parent-owned",
+    "89s reported strict clippy PASS does not satisfy under-one-minute lint budget"
+  ],
+  "paths": [
+    {
+      "path": "TRUST-POLICY.md",
+      "base_blob": "a0912385fe0f9c4757817cd0d6359fe722592fa2",
+      "frozen4c_blob": "c6910510eb1bd0d6991e20daee6735bc8f67cb2a",
+      "head_blob": "877bf9c28cadfbbe842292a88bc5d55a9889f4d3",
+      "unchanged_since_frozen4c": false,
+      "method": "fresh_successor_scope",
+      "depth": "seam",
+      "coverage": "Read normative presentation, capacity, full-stamp cache and accepted render/uptake limits."
+    },
+    {
+      "path": "integrations/claude/mod/hooks/register.js",
+      "base_blob": "7a79fc7673b61725543da1a756dd3310bf822ebb",
+      "frozen4c_blob": "3361029f6ae937819eebba09cc1e2b860a5680ab",
+      "head_blob": "3361029f6ae937819eebba09cc1e2b860a5680ab",
+      "unchanged_since_frozen4c": true,
+      "method": "frozen_audit_reuse_plus_current_seam_trace",
+      "prior_coverage": "consumer: decimal epochs, scoped clear, passive Notice, invitation context cache, downstream inflight limit",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "integrations/claude/mod/tests/delivery.test.ts",
+      "base_blob": "81e160e9aa78048737799bbb0c9f41e63e3cecda",
+      "frozen4c_blob": "83e2bdf64bcfd38ce0ec3835cfd629db59333ea5",
+      "head_blob": "83e2bdf64bcfd38ce0ec3835cfd629db59333ea5",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "consumer: epoch/clear, mixed delivery, invitation revision/goal and inflight cases; historical helper evidence distinguished",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "migrations/0040_invitation_presentation.sql",
+      "base_blob": null,
+      "frozen4c_blob": "e5b0667838b2fa914a2d1213194cc30fac68b2c7",
+      "head_blob": "e5b0667838b2fa914a2d1213194cc30fac68b2c7",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "boundary: durable outbox/profile/control masks; exhaustive migration review delegated",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "migrations/0041_presentation_relevance.sql",
+      "base_blob": null,
+      "frozen4c_blob": "b0cfc959a9ce2339d8bbab7e1c5b085004c46dba",
+      "head_blob": "b0cfc959a9ce2339d8bbab7e1c5b085004c46dba",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "boundary: relevance continuation model; exhaustive migration review delegated",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "scripts/check-no-leaked-processes",
+      "base_blob": "7b09eb24fa775f067cfd18f6ec9b8fc0b6b52825",
+      "frozen4c_blob": "7b09eb24fa775f067cfd18f6ec9b8fc0b6b52825",
+      "head_blob": "ab81657673da76785d8aef8628ed6a3eec2e4934",
+      "unchanged_since_frozen4c": false,
+      "method": "fresh_successor_scope",
+      "depth": "boundary",
+      "coverage": "Read scoped-run filter and behavior; no consumer change. Full operational/tool proof remains scoped leak reviewer responsibility."
+    },
+    {
+      "path": "scripts/tests/test_check_no_leaked_processes.py",
+      "base_blob": "71b9009c3f74044abfb5286b3b638277324ed25a",
+      "frozen4c_blob": "71b9009c3f74044abfb5286b3b638277324ed25a",
+      "head_blob": "77386c90b4f8c2afe33f2e7cfc01b8e14e4cc1ab",
+      "unchanged_since_frozen4c": false,
+      "method": "fresh_successor_scope",
+      "depth": "boundary",
+      "coverage": "Inventory/delta mapping only; scoped leak review owns exhaustive checker test validation."
+    },
+    {
+      "path": "src/cli/hook.rs",
+      "base_blob": "8fe5615fb48bccd234a933aa9af4d0ab1cd25100",
+      "frozen4c_blob": "b67a61f89b55be863a3f46b26771a76a9ad78da9",
+      "head_blob": "b67a61f89b55be863a3f46b26771a76a9ad78da9",
+      "unchanged_since_frozen4c": true,
+      "method": "frozen_audit_reuse_plus_current_seam_trace",
+      "prior_coverage": "consumer: original connected completion scope, matching native claim, exact write/flush gate",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/cli/launch.rs",
+      "base_blob": "48d8228d03069433a480f0ac10108b40f0ae7f1a",
+      "frozen4c_blob": "1e79ce899ecfbb0a6b1c4a32a70301481e78de32",
+      "head_blob": "1e79ce899ecfbb0a6b1c4a32a70301481e78de32",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "consumer: optional selected hook fingerprint, prelaunch and executable recheck",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/cli/watch.rs",
+      "base_blob": "72cb3676ba810216b9949fc54a193ea0c85f0956",
+      "frozen4c_blob": "5cc0c2bfe387fbd39a2ce05a44844565b3e9abbd",
+      "head_blob": "5cc0c2bfe387fbd39a2ce05a44844565b3e9abbd",
+      "unchanged_since_frozen4c": true,
+      "method": "frozen_audit_reuse_plus_current_seam_trace",
+      "prior_coverage": "consumer: capability/lease admission, ordered capture, frame bounds, write/flush, exact Confirm, reply validation, close/continuation",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/daemon/control.rs",
+      "base_blob": "ad3b6bcbc3805c30d70fbfe4ada9415df1fb3854",
+      "frozen4c_blob": "a2b1d23110b7c459d08114c20e95eb99c3c69dc4",
+      "head_blob": "a2b1d23110b7c459d08114c20e95eb99c3c69dc4",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "seam: registered owner lease plumbing",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/daemon/transport/watch_connection.rs",
+      "base_blob": "440ff0e975e6efcd9395c07aa6c2b66805626e04",
+      "frozen4c_blob": "ae1316bc17a47e65a3bfc766fd04850bd11feb25",
+      "head_blob": "ae1316bc17a47e65a3bfc766fd04850bd11feb25",
+      "unchanged_since_frozen4c": true,
+      "method": "frozen_audit_reuse_plus_current_seam_trace",
+      "prior_coverage": "consumer: actual accepted-outcome omission while inactive; advertised helper arm distinguished",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/delivery/assemble.rs",
+      "base_blob": "5cedb5b40d36378e274ed1b8371d449d9039f856",
+      "frozen4c_blob": "1a9f4aab5d10132a9790fa8ed5800b5215ec8d6e",
+      "head_blob": "1a9f4aab5d10132a9790fa8ed5800b5215ec8d6e",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "seam: invitation classification/content extraction",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/delivery/invitation.rs",
+      "base_blob": null,
+      "frozen4c_blob": "377e24fe3e395ac5b1a07cfdcff5a1a78421fdb9",
+      "head_blob": "377e24fe3e395ac5b1a07cfdcff5a1a78421fdb9",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "consumer: exact canonical topic/goal/revision/command rendering and partial-context limits",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/delivery/ledger.rs",
+      "base_blob": "9b112a911f7b05cfd83e34d97a9ba6e3ea3f00ea",
+      "frozen4c_blob": "66df729e5f1a84d14a8ee1ff3bd5966153c8313d",
+      "head_blob": "852f41ea0a2bf6b8cf1707aeadf7e57bb80b47b9",
+      "unchanged_since_frozen4c": false,
+      "method": "fresh_successor_scope",
+      "depth": "consumer",
+      "coverage": "Fresh delta and actual cache snapshot/application, full Offer equality, generation/session/incarnation and lifetime tracing."
+    },
+    {
+      "path": "src/delivery/mod.rs",
+      "base_blob": "a3972dd2bcb20c0bbde212f91af23308a1a984c3",
+      "frozen4c_blob": "285bfbcb8f0b148f95a1c735e371c702c6e0437a",
+      "head_blob": "285bfbcb8f0b148f95a1c735e371c702c6e0437a",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "seam: presentation module export",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/delivery/page.rs",
+      "base_blob": "e56e7106de6e5bf75abc2abf823a960b966286e6",
+      "frozen4c_blob": "df1e880d4a18e2888390ff01add9a50d634318fc",
+      "head_blob": "df1e880d4a18e2888390ff01add9a50d634318fc",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "seam: invitation class/page accounting",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/delivery/presentation.rs",
+      "base_blob": null,
+      "frozen4c_blob": "b254b485e76fb8297a9ab3fb826f0ce122425fb0",
+      "head_blob": "b254b485e76fb8297a9ab3fb826f0ce122425fb0",
+      "unchanged_since_frozen4c": true,
+      "method": "frozen_audit_reuse_plus_current_seam_trace",
+      "prior_coverage": "consumer: registered codecs, actual capped native serialization, ordered WatchLine+LF and candidate/RPC budgets",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/harness/adapter.rs",
+      "base_blob": "5fb0e995b8c5c9e4d56b743b6f5b3c95f7be0116",
+      "frozen4c_blob": "95ec94f3dc7a3369482905f3e60a629fb9f59661",
+      "head_blob": "95ec94f3dc7a3369482905f3e60a629fb9f59661",
+      "unchanged_since_frozen4c": true,
+      "method": "frozen_audit_reuse_plus_current_seam_trace",
+      "prior_coverage": "consumer: finite static descriptors and inert completion defaults",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/harness/agy/decode.rs",
+      "base_blob": "3e48f1107288c4a3921f7189ecec21a003f38ee8",
+      "frozen4c_blob": "2347150797087c90a08c64f977421048fbcb5674",
+      "head_blob": "2347150797087c90a08c64f977421048fbcb5674",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "consumer: native System/User envelopes and capped encoding",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/harness/agy/delivery.rs",
+      "base_blob": "cde59c5bf7eb4f5ec195a8cd616d774d1cd3d279",
+      "frozen4c_blob": "9c93e97c42b8d193d657cf93cd6f3f706985a84f",
+      "head_blob": "9c93e97c42b8d193d657cf93cd6f3f706985a84f",
+      "unchanged_since_frozen4c": true,
+      "method": "frozen_audit_reuse_plus_current_seam_trace",
+      "prior_coverage": "consumer: selector snapshots, reply projection, frozen encoding, typed captured completion/subset and hint boundaries",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/harness/agy/launch.rs",
+      "base_blob": "e258be38d33f300e5f43825c1889cdbdbffd7207",
+      "frozen4c_blob": "887af29504e619a591c6fa123e7652578310e206",
+      "head_blob": "887af29504e619a591c6fa123e7652578310e206",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "consumer: advisory readiness with unchanged native admission safety",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/harness/agy/mod.rs",
+      "base_blob": "57402647798452e71b4a5be0661fa12d50064a50",
+      "frozen4c_blob": "d69ff67bea1a08495af90e26e05554f58b688eea",
+      "head_blob": "d69ff67bea1a08495af90e26e05554f58b688eea",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "seam: codec/completion adapter wiring",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/harness/agy/paths.rs",
+      "base_blob": "0da023b5cce5fef44c1f33e52ddb1ddcfd1f1117",
+      "frozen4c_blob": "2eff8776f88522bb0a6ef20e6c2e570edd1ac743",
+      "head_blob": "2eff8776f88522bb0a6ef20e6c2e570edd1ac743",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "consumer: stable installed native hook-event argv",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/harness/registry.rs",
+      "base_blob": "5726ee32b36a71ec9cec2e27e1e7a8256b1a2f6e",
+      "frozen4c_blob": "d707f18ecc3eee0bd09c38f25f1241657c2756c6",
+      "head_blob": "d707f18ecc3eee0bd09c38f25f1241657c2756c6",
+      "unchanged_since_frozen4c": true,
+      "method": "frozen_audit_reuse_plus_current_seam_trace",
+      "prior_coverage": "consumer: codec/completion registry forwarding",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/ports.rs",
+      "base_blob": "61425f9c07c153acc05ec439870feef8d4e17a1c",
+      "frozen4c_blob": "1ccf6c82d49adec94f49474fd07b7fdc1fd1eeaf",
+      "head_blob": "82556975e190d1609c4e77a5849817f90e2c715a",
+      "unchanged_since_frozen4c": false,
+      "method": "fresh_successor_scope",
+      "depth": "seam",
+      "coverage": "Fresh internal snapshot/delta/work accounting interface, no public serde change."
+    },
+    {
+      "path": "src/protocol/capabilities.rs",
+      "base_blob": "ae33a7407d71f9366306e5bf13161290525f2b3d",
+      "frozen4c_blob": "94cb2c9e9d4e0b8efe9cf8292bc775b362765118",
+      "head_blob": "94cb2c9e9d4e0b8efe9cf8292bc775b362765118",
+      "unchanged_since_frozen4c": true,
+      "method": "frozen_audit_reuse_plus_current_seam_trace",
+      "prior_coverage": "consumer: V2 defined and still absent from ADVERTISED",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/protocol/commands.rs",
+      "base_blob": "a152dfd62a12b9d925d1d9dc71f4490c4b8ff659",
+      "frozen4c_blob": "818d91a69aeea87e1443df552bb2f16451563685",
+      "head_blob": "818d91a69aeea87e1443df552bb2f16451563685",
+      "unchanged_since_frozen4c": true,
+      "method": "frozen_audit_reuse_plus_current_seam_trace",
+      "prior_coverage": "consumer: V2 claims, validation and distinct explicit Confirm",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/protocol/delivery.rs",
+      "base_blob": "451e1d79cb75c48244a3b18d3170619c8befcb0c",
+      "frozen4c_blob": "ae0cb5471c9266dec6c93e41c5dc5e9e7e0ffa83",
+      "head_blob": "ae0cb5471c9266dec6c93e41c5dc5e9e7e0ffa83",
+      "unchanged_since_frozen4c": true,
+      "method": "frozen_audit_reuse_plus_current_seam_trace",
+      "prior_coverage": "consumer: required render, deny unknown fields, matching consumer, canonical token/lease/epoch and bounded unique stamps",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/protocol/output_compact.rs",
+      "base_blob": "cf4386ab422228ce794f63c33150092fcf18f98a",
+      "frozen4c_blob": "168fbe023e40c649bb4e4b88f773cae37de86192",
+      "head_blob": "168fbe023e40c649bb4e4b88f773cae37de86192",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "seam: optional invitation goal/revision compact output",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/protocol/results.rs",
+      "base_blob": "f1321a60493912989fdd8367482cd52e8686a0e7",
+      "frozen4c_blob": "ba934dc1fbb8944285b4d3574b508a31b85d56cd",
+      "head_blob": "ba934dc1fbb8944285b4d3574b508a31b85d56cd",
+      "unchanged_since_frozen4c": true,
+      "method": "frozen_audit_reuse_plus_current_seam_trace",
+      "prior_coverage": "consumer: typed confirmation reply versus stale scalar fixture",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/protocol/watch.rs",
+      "base_blob": "c655b0cbc8e27b53c42bdef03d85d9441ba5180a",
+      "frozen4c_blob": "a4cc46f36d6c3c9efc3d5172bb692acf6d7acdbe",
+      "head_blob": "a4cc46f36d6c3c9efc3d5172bb692acf6d7acdbe",
+      "unchanged_since_frozen4c": true,
+      "method": "frozen_audit_reuse_plus_current_seam_trace",
+      "prior_coverage": "consumer: optional lease/control epochs, omission and additive decoder compatibility",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/scheduler/mod.rs",
+      "base_blob": "7656d0f5480c594e75ce99d181e09422a05f4a52",
+      "frozen4c_blob": "8740ef5a0fff2f0c75e8c9ca66c59ad9bb76f092",
+      "head_blob": "8740ef5a0fff2f0c75e8c9ca66c59ad9bb76f092",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "seam: passive publication observation plumbing",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/service/delivery_presentation.rs",
+      "base_blob": null,
+      "frozen4c_blob": "4172d41451c4dc61c2bbad7b1e08e59d00653025",
+      "head_blob": "6d429140d141e9569baf4932f09139ef95f4a36a",
+      "unchanged_since_frozen4c": false,
+      "method": "fresh_successor_scope",
+      "depth": "consumer",
+      "coverage": "Fresh complete admission/owner/codec/snapshot/reclamation/cache/Confirm-health consumer path."
+    },
+    {
+      "path": "src/service/delivery_pull.rs",
+      "base_blob": "46ac93b06bd86484132541ca687052605c6fbc33",
+      "frozen4c_blob": "65e61098d3fe328c216a5088aced7ba976f05b39",
+      "head_blob": "65e61098d3fe328c216a5088aced7ba976f05b39",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "consumer: shared Hook/Watch admission, legacy ledger cleanup and V2 coexistence",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/service/dispatch.rs",
+      "base_blob": "8327a703e66b2acc7aac396be378ad142add513d",
+      "frozen4c_blob": "73a8d39135062dc384833d8f7b4f182668cda326",
+      "head_blob": "73a8d39135062dc384833d8f7b4f182668cda326",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "consumer: V2 routing and actual receipt/manual ACK ledger behavior",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/service/kicks.rs",
+      "base_blob": "bb25c9c9fac5c56d65619196f277962730fa9eb1",
+      "frozen4c_blob": "b117bdcef7c7bf27c236f25808c1785e1f96bb58",
+      "head_blob": "b117bdcef7c7bf27c236f25808c1785e1f96bb58",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "seam: publication drain signals rather than health arming",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/service/mod.rs",
+      "base_blob": "7da54c78b6657aa462cf678cf613307568c0d8f9",
+      "frozen4c_blob": "9a97d0c74d83efb6aab149e83f40d7707f5c8f76",
+      "head_blob": "9a97d0c74d83efb6aab149e83f40d7707f5c8f76",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "seam: service module wiring",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/service/mod_channels.rs",
+      "base_blob": "543086a3c869e76d74c1809989700a23a8b2148f",
+      "frozen4c_blob": "e192631257c243bd55b42136814e1475d82ae16a",
+      "head_blob": "e192631257c243bd55b42136814e1475d82ae16a",
+      "unchanged_since_frozen4c": true,
+      "method": "frozen_audit_reuse_plus_current_seam_trace",
+      "prior_coverage": "consumer: exact live lease, permit replacement/close, grace refusal, atomic cutoff and old receipt stall",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/store/attention.rs",
+      "base_blob": "b74f2840b0ae5e2d1122d2c5b0c7da905f77ed5b",
+      "frozen4c_blob": "db5351d94ffed13cefec3349848c91397cf4c543",
+      "head_blob": "db5351d94ffed13cefec3349848c91397cf4c543",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "boundary: invitation-bearing delivery seam; exhaustive producer accounting delegated",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/store/control.rs",
+      "base_blob": "9ee0abafd659de5688122f9cc4eaa8dd67629c82",
+      "frozen4c_blob": "051bc7e929a567d75ed9532b970cf0b9afd6a9b9",
+      "head_blob": "051bc7e929a567d75ed9532b970cf0b9afd6a9b9",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "boundary: canonical context/relevance seam; exhaustive writer accounting delegated",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/store/invitation_content.rs",
+      "base_blob": null,
+      "frozen4c_blob": "2cc2ab287ab8756853faaf83fd6880abaae8871a",
+      "head_blob": "509283ac9688675bac78f5e6a06cb4237370742d",
+      "unchanged_since_frozen4c": false,
+      "method": "fresh_successor_scope",
+      "depth": "consumer-boundary",
+      "coverage": "Fresh terminal reconciliation, snapshot validation, due mode/continuation, parked normal state, replay/Confirm interface, private-ID reader seams; exhaustive SQL/schema delegated to independent reviews."
+    },
+    {
+      "path": "src/store/mod.rs",
+      "base_blob": "776c48b4e9395b3797a8728be88fb1dd666d250a",
+      "frozen4c_blob": "d1ff4fa7e5465a2fad90ea35667cb9d08b7aa7d2",
+      "head_blob": "d1ff4fa7e5465a2fad90ea35667cb9d08b7aa7d2",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "seam: invitation/presentation module wiring",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/store/presentation_relevance.rs",
+      "base_blob": null,
+      "frozen4c_blob": "76406381467fe3c416e70d80e24e80f2502ba4c5",
+      "head_blob": "76406381467fe3c416e70d80e24e80f2502ba4c5",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "boundary: publication/relevance before replay and Unknown suppression; exhaustive traversal/query proof delegated",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/store/queries.rs",
+      "base_blob": "c4d9eec099f1ec21cb5980b1801e1ab091f65f24",
+      "frozen4c_blob": "f400502c08711716272ea4cb7b89b38cc83ce496",
+      "head_blob": "95ac0032c610dbec07f4c87d19c406ea91ba6f57",
+      "unchanged_since_frozen4c": false,
+      "method": "fresh_successor_scope",
+      "depth": "boundary",
+      "coverage": "Fresh exact-key due context/eligibility/hydration and shared assembler seam; reviewed scoped SQL observer evidence, no independent SQL execution."
+    },
+    {
+      "path": "src/store/schema.rs",
+      "base_blob": "c358571824d04298b62bcbc6297aa66a084da31e",
+      "frozen4c_blob": "c971b321ac6139271d4eedab3f3d715b25310fac",
+      "head_blob": "c971b321ac6139271d4eedab3f3d715b25310fac",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "boundary: schema registration; exhaustive migration proof delegated",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/store/seats.rs",
+      "base_blob": "d3b061bd5a26a66dff88cf0c9623e513c8316df2",
+      "frozen4c_blob": "12ce7eea04f017cf0da63bb58f758959af9452ec",
+      "head_blob": "12ce7eea04f017cf0da63bb58f758959af9452ec",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "boundary: binding/retirement seam; exhaustive canonical writer inventory delegated",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/store/service_controls.rs",
+      "base_blob": "6be01a78086cc7e6f83fc59b7383c1ba8a88fbb9",
+      "frozen4c_blob": "90fab13af4238ce8f433531677ffea6f0ec59996",
+      "head_blob": "90fab13af4238ce8f433531677ffea6f0ec59996",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "boundary: service-control publication seam; exhaustive writer inventory delegated",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "src/test_support/mod.rs",
+      "base_blob": "c7b049cd95912eed2095667610b63a4b2da2bb5f",
+      "frozen4c_blob": "4117de26c5ce3dbbe8f18d817e3e3a6ab611eda8",
+      "head_blob": "4117de26c5ce3dbbe8f18d817e3e3a6ab611eda8",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "seam: scoped fixture wiring",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/cli/hook.rs",
+      "base_blob": "7a66fd66df3b0d6069444321746057daf983a7e0",
+      "frozen4c_blob": "e717dd6c178e419245f3978829dc244b34583d18",
+      "head_blob": "e717dd6c178e419245f3978829dc244b34583d18",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "seam: mechanical optional step-completion additions",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/cli/hook_neutral.rs",
+      "base_blob": "c712ba51b6649638da6dd12f63f53d49533f4317",
+      "frozen4c_blob": "909d0dd5a7603c226feca0635be26f6add27fcf5",
+      "head_blob": "909d0dd5a7603c226feca0635be26f6add27fcf5",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "consumer: actual writer failure/flush/success completion seam; not external native-process proof",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/cli/launch.rs",
+      "base_blob": "10a1e360c26a6f7207a172bcdd956fd742796b6a",
+      "frozen4c_blob": "9be29f593104aada5cc9f331de0e6698abff7826",
+      "head_blob": "9be29f593104aada5cc9f331de0e6698abff7826",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "consumer: advisory readiness success and native safety regression",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/cli/lazy_display.rs",
+      "base_blob": "5086da445d96d0690cf4d0580775129d765ef0e3",
+      "frozen4c_blob": "a0d70c46cf2acfdef3e770869c2f9933df3da207",
+      "head_blob": "a0d70c46cf2acfdef3e770869c2f9933df3da207",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "seam: mechanical optional goal/revision additions",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/cli/output.rs",
+      "base_blob": "f747603d418ff90000a3a33a443c826d4fd69856",
+      "frozen4c_blob": "901dc5f823745f0575505b9490c438976d91f3ed",
+      "head_blob": "901dc5f823745f0575505b9490c438976d91f3ed",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "seam: compact tuple/optional output fixture updates",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/cli/watch.rs",
+      "base_blob": "d70b4ca21c5cc2325f2c04d8ff78b856ddbfdd8f",
+      "frozen4c_blob": "05cc361c0dda62e63556fdf387e2cdd65dcfd750",
+      "head_blob": "cda89f943d3378088a7d3f90a5a1a20c1601b200",
+      "unchanged_since_frozen4c": false,
+      "method": "fresh_successor_scope",
+      "depth": "consumer",
+      "coverage": "Fresh cross-product fallback and unchanged failure/confirm/continuation tests with frozen reuse; actual successor sweep evidence."
+    },
+    {
+      "path": "tests/combined.rs",
+      "base_blob": "a10c405a3969a750c69383dbf69c17a2f1069126",
+      "frozen4c_blob": "951c070f519779aafe68765ecdf8870d51be72b6",
+      "head_blob": "951c070f519779aafe68765ecdf8870d51be72b6",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "seam: explicit test module registration",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/daemon/watch_connection.rs",
+      "base_blob": "055588a647f4947cd85be7300219d3cc0ef03bf0",
+      "frozen4c_blob": "3d9fa0454d377737a39498625e64932d603c06f8",
+      "head_blob": "589deaa177cb5ed55be3d4112898732a32311bd9",
+      "unchanged_since_frozen4c": false,
+      "method": "fresh_successor_scope",
+      "depth": "consumer",
+      "coverage": "Fresh unconditional inactive omitted bytes, retained actual current transport test."
+    },
+    {
+      "path": "tests/delivery/extraction.rs",
+      "base_blob": "bc5f5bf7a98a9abb0e51f3ec60616d66ec59895e",
+      "frozen4c_blob": "b45f6e0ebb02d540d743d21446f7ec8ba69504a6",
+      "head_blob": "b45f6e0ebb02d540d743d21446f7ec8ba69504a6",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "consumer: invitation content+Attention classification, goal and no-cache behavior",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/delivery/ledger.rs",
+      "base_blob": "cfc023f9b7a47e60c7275ee0fbe9a25ada56fc94",
+      "frozen4c_blob": "cfc023f9b7a47e60c7275ee0fbe9a25ada56fc94",
+      "head_blob": "0d7f5c78cad79e895fc90210d2c5a7c013781242",
+      "unchanged_since_frozen4c": false,
+      "method": "fresh_successor_scope",
+      "depth": "seam",
+      "coverage": "Fresh full-stamp/lifecycle test delta with scoped capacity review and actual run names."
+    },
+    {
+      "path": "tests/fixtures/agy/plugin/hooks.json",
+      "base_blob": "b4553803657d8bad9f78648ec6bfbf996cc1c211",
+      "frozen4c_blob": "6d0f5e342f60e0bca16382b44ee0a11736dbcad9",
+      "head_blob": "6d0f5e342f60e0bca16382b44ee0a11736dbcad9",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "seam: installed hook-event argv fixture",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/harness/agy_decode.rs",
+      "base_blob": "34ec0c8b9af2d9304f63c88829bf27a137507a7c",
+      "frozen4c_blob": "5552b141f671c9d22b3545f3d9a06cf570f05c3e",
+      "head_blob": "5552b141f671c9d22b3545f3d9a06cf570f05c3e",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "consumer: native codec shapes and actual encoded limit",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/harness/agy_delivery.rs",
+      "base_blob": "c14311213733ae2fc5ebc2324e14b298c8f73580",
+      "frozen4c_blob": "094c2f5b0236148686d08967f9a4de72fa577c42",
+      "head_blob": "094c2f5b0236148686d08967f9a4de72fa577c42",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "consumer: actual canonical native producer/codec/confirm bounds and complementary scripted reply failures/subsets",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/harness/agy_launch.rs",
+      "base_blob": "aa7a6113c0cac549b195c363df8edc5ee2ba4295",
+      "frozen4c_blob": "5d596edd82d64cf154c6a12b8c8097cf13fc4cf6",
+      "head_blob": "5d596edd82d64cf154c6a12b8c8097cf13fc4cf6",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "consumer: missing/stale/disabled/unreadable advisory readiness and unsafe native argv",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/harness/agy_setup.rs",
+      "base_blob": "b3466d2fe5e577e24a850e5c63f048dacc3593df",
+      "frozen4c_blob": "c44765cf9ca2412fb3d6d71f97c9fece3f85ac94",
+      "head_blob": "c44765cf9ca2412fb3d6d71f97c9fece3f85ac94",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "consumer: actual installed native event routes",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/hook_entrypoint.rs",
+      "base_blob": "c42b07bef2f0e2d8d0ca2c3a84e88644033139b8",
+      "frozen4c_blob": "c42b07bef2f0e2d8d0ca2c3a84e88644033139b8",
+      "head_blob": "2526d7570d6e4a2c0b39a78ef997fe5ca6e22485",
+      "unchanged_since_frozen4c": false,
+      "method": "fresh_successor_scope",
+      "depth": "seam",
+      "coverage": "Fresh elected fixture diagnostic-restoration delta; actual inactive diagnostic evidence."
+    },
+    {
+      "path": "tests/hook_entrypoint/agy.rs",
+      "base_blob": "a799f753186a6c82d1e7f5793b6b68ce90a74b9b",
+      "frozen4c_blob": "c4ed6a6ce0afefe5cc05fe9e74e409fdfa8f4131",
+      "head_blob": "cee2855f110fcf70c04698f5ab038ca7bfb1a232",
+      "unchanged_since_frozen4c": false,
+      "method": "fresh_successor_scope",
+      "depth": "consumer",
+      "coverage": "Fresh elected observer/installed bridge/System-User/write-loss/lost-confirm/historical fallback tests; actual inactive-only execution."
+    },
+    {
+      "path": "tests/integration/agy_sweep.rs",
+      "base_blob": "7b4316d68ed989fb42cc6a9b36d14aeb4d187124",
+      "frozen4c_blob": "d8660666ddbeae3fa8106f340fcc971287cc1dff",
+      "head_blob": "d8660666ddbeae3fa8106f340fcc971287cc1dff",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "seam: stable event route integration fixture; not rerun",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/integration/mod_delivery.rs",
+      "base_blob": "033dd1c679cbca2abd7d93ea64dee2cca29ab339",
+      "frozen4c_blob": "033dd1c679cbca2abd7d93ea64dee2cca29ab339",
+      "head_blob": "17376d1aa20857b88bde1e9dd4f46b0d21aa65e0",
+      "unchanged_since_frozen4c": false,
+      "method": "fresh_successor_scope",
+      "depth": "consumer",
+      "coverage": "Fresh elected Watch producer and transparent relay, same-child selection, mixed output/subset/replay, capacity and passive tests. Found I4 lazy-only impossible Confirm. Reused scoped WA-R1/R2 corrective audit and five executed helper regressions."
+    },
+    {
+      "path": "tests/protocol/capabilities.rs",
+      "base_blob": "d9e80922b1a24b1afedd0ba79eb7b26c73388c17",
+      "frozen4c_blob": "d9e80922b1a24b1afedd0ba79eb7b26c73388c17",
+      "head_blob": "4dae4a81020b4838024cfb4d7a8ef8cb94f5c036",
+      "unchanged_since_frozen4c": false,
+      "method": "fresh_successor_scope",
+      "depth": "consumer",
+      "coverage": "Fresh constant expectation and actual configured route/Confirm probe; tests-first intentionally red while unadvertised."
+    },
+    {
+      "path": "tests/protocol/delivery.rs",
+      "base_blob": "3b3a477af12e85636815ab836ca3b3e1b276f829",
+      "frozen4c_blob": "0b0fee3e0c9d466eb882e66abbdad2df975ea421",
+      "head_blob": "2c71cc967b711295663ba9c337b9b8010edc1581",
+      "unchanged_since_frozen4c": false,
+      "method": "fresh_successor_scope",
+      "depth": "consumer",
+      "coverage": "Fresh actual explicit Confirm token/lease negatives; prior wire/max-envelope coverage reused and selected regression passes."
+    },
+    {
+      "path": "tests/protocol/lazy_inbox_v2.rs",
+      "base_blob": "72e6d80b80659fd90162825c4982ce4e3eccc0ae",
+      "frozen4c_blob": "ea90fad960f8aeee692494f029c403fd8ca41b0f",
+      "head_blob": "ea90fad960f8aeee692494f029c403fd8ca41b0f",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "consumer: exact old omission and optional goal/revision roundtrip",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/protocol/watch.rs",
+      "base_blob": "d496c48da9d3490f295d23f7ad818afb19a0d6ea",
+      "frozen4c_blob": "797b25562961edb8c54b87d72186062549be1475",
+      "head_blob": "797b25562961edb8c54b87d72186062549be1475",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "consumer: old/new nested decoder and lease/epoch omission",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/service/delivery_pull.rs",
+      "base_blob": "89efa73a1744e9e07e01b5e9ef73b70f9fac5b1f",
+      "frozen4c_blob": "09a87ff2b8b842ee63250f1a8f458c23d6c496d7",
+      "head_blob": "230633b13ed505562d27a286fbc372df64024318",
+      "unchanged_since_frozen4c": false,
+      "method": "fresh_successor_scope",
+      "depth": "consumer-boundary",
+      "coverage": "Fresh repaired raw replay and capacity/reclamation/continuation-facing test seams, scoped capacity reviews and actual 127 sweep; not exhaustive reread of all 7349 added lines."
+    },
+    {
+      "path": "tests/service/kicks_contract.rs",
+      "base_blob": "54a5169fcaae2daec4c885353675aa709f918458",
+      "frozen4c_blob": "bc0c26b6802d6d1de8a20d5ee908139df9982994",
+      "head_blob": "bc0c26b6802d6d1de8a20d5ee908139df9982994",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "seam: passive publication contract fixture",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/service/mod_channels.rs",
+      "base_blob": "086a525735afc929bbaca8582e7fb0a4698ce95c",
+      "frozen4c_blob": "b4f718e6f7c223c575c7f6dbd8cf8e1f46e799db",
+      "head_blob": "b4f718e6f7c223c575c7f6dbd8cf8e1f46e799db",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "consumer: real owner admission/rotation/grace, permit replacement exclusion and exact cutoff tuple",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/store/attention.rs",
+      "base_blob": "8f903319c2aae262cedd0415504d7fa93f4c7792",
+      "frozen4c_blob": "fce7dd9990bab04b707c0c8da9828227df24b99a",
+      "head_blob": "62aef9fe342edab1cf26d03d27fddad36a105544",
+      "unchanged_since_frozen4c": false,
+      "method": "fresh_successor_scope",
+      "depth": "boundary",
+      "coverage": "Reviewed exact-key observer purpose and scoped CIR-2 closure/current actual result; exhaustive query-plan/source matrix belongs independent schema/whole reviewers."
+    },
+    {
+      "path": "tests/store/control.rs",
+      "base_blob": "e48cbdeb44181b3c57dfe9a4e797a300c9f7c60e",
+      "frozen4c_blob": "f8586eb0cb24a41569d795c110a4f8ea32c22b66",
+      "head_blob": "f8586eb0cb24a41569d795c110a4f8ea32c22b66",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "boundary: canonical context changes; exhaustive writer proof delegated",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/store/invitation_content.rs",
+      "base_blob": null,
+      "frozen4c_blob": "fe26042e79c97c708f5b81f5aba68fb7bc71e195",
+      "head_blob": "fe26042e79c97c708f5b81f5aba68fb7bc71e195",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "boundary: fixed replay/mask/partial/query fixtures; exhaustive SQL/private-loader proof delegated",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/store/queries.rs",
+      "base_blob": "3a18e3b9449c76a2328a6005f399f6e5d7714d3f",
+      "frozen4c_blob": "f7e1288f39abe596a47308ad7d8a36c4c8432951",
+      "head_blob": "f7e1288f39abe596a47308ad7d8a36c4c8432951",
+      "unchanged_since_frozen4c": true,
+      "method": "explicit_frozen_audit_reuse",
+      "prior_coverage": "boundary: query interface fixtures; exhaustive physical/query proof delegated",
+      "reuse_source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/finish-frozen4c-interface-coverage.md"
+    },
+    {
+      "path": "tests/store/schema.rs",
+      "base_blob": "37e287161857b69a4476623e7cdc442a275fe758",
+      "frozen4c_blob": "f7b96af8785f87e9cbb57c0896a92fb7261f89f1",
+      "head_blob": "097cd776f37368e0bc3201741dc6a30dc8523f2b",
+      "unchanged_since_frozen4c": false,
+      "method": "fresh_successor_scope",
+      "depth": "boundary",
+      "coverage": "Inventory/delta mapping and actual migration/private-state evidence; exhaustive schema/migration audit belongs independent schema reviewer."
+    }
+  ]
+}

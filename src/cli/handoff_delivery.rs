@@ -50,6 +50,7 @@ pub fn run_automatic_existing<C: LocalClient + ?Sized, W: Write>(
     writer: &mut W,
 ) -> Result<(), RunError> {
     require_automatic_capability(inputs.client, inputs.clock)?;
+    require_policy_capabilities(inputs.client, inputs.clock, request.policy.as_ref())?;
     let claim = inputs.claim.clone();
     let namespace = inputs.namespace.clone();
     let clock = inputs.clock;
@@ -57,6 +58,9 @@ pub fn run_automatic_existing<C: LocalClient + ?Sized, W: Write>(
     let plan = prepare_automatic(request, inputs)?;
     let original = crate::protocol::handoff::AutomaticOriginal::Delivery(Box::new(plan));
     let envelope = automatic_envelope(&claim, original.clone())?;
+    envelope
+        .validate_admission()
+        .map_err(super::invalid_request)?;
     match client.call(
         Command::AutomaticHandoffDelivery(Box::new(envelope)),
         &super::cooperative_budget(clock),
@@ -97,6 +101,23 @@ pub(crate) fn require_automatic_capability<C: LocalClient + ?Sized>(
     }
 }
 
+pub(crate) fn require_policy_capabilities<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    policy: Option<&crate::protocol::handoff::HandoffPolicy>,
+) -> Result<(), RunError> {
+    super::require_handoff_capabilities(client, clock, policy)?;
+    if policy.is_some() {
+        super::require_mutation_capability(
+            client,
+            clock,
+            crate::protocol::capabilities::ENSURE_CREATION_POLICY_V1,
+            "freezing direct invitation creation policy",
+        )?;
+    }
+    Ok(())
+}
+
 pub(crate) fn automatic_envelope(
     claim: &CallerClaim,
     original: crate::protocol::handoff::AutomaticOriginal,
@@ -109,13 +130,89 @@ pub(crate) fn automatic_envelope(
         .map_err(super::invalid_request)
 }
 
+pub(crate) fn validate_automatic_local_admission(
+    journal: &Journal,
+    envelope: &crate::protocol::handoff::AutomaticDeliveryMutation,
+) -> Result<(), RunError> {
+    if envelope.plan().payload.policy.is_none() {
+        return Ok(());
+    }
+    envelope
+        .validate_admission()
+        .map_err(super::invalid_request)?;
+    let thread = crate::protocol::ids::ThreadId::new("\\".repeat(128));
+    let selection = crate::protocol::results::DirectThreadEnsured::admission_witness(
+        thread.clone(),
+        envelope.plan().recipient.clone(),
+    );
+    let reference = IntentRef {
+        ordinal: u64::MAX,
+        operation: OperationId::new("ffffffff-ffff-ffff-ffff-ffffffffffff"),
+    };
+    for summary in envelope
+        .admission_summaries()
+        .map_err(super::invalid_request)?
+    {
+        let mut progress = AutomaticProgress {
+            selection: Some(selection.clone()),
+            thread: Some(thread.clone()),
+            message: Some(CommandResult::MessageSent(
+                crate::protocol::ids::MessageId::new("\\".repeat(128)),
+            )),
+            possible_start: true,
+            launch: if summary.is_null() {
+                None
+            } else {
+                Some(summary.clone())
+            },
+            report: None,
+            report_digest: Some("f".repeat(64)),
+        };
+        let report = automatic_report_value(&reference, &envelope.original, &progress);
+        progress.report = Some(report);
+        let progress_bytes = serde_json::to_vec(&progress).map_err(io::Error::other)?;
+        if progress_bytes.len() > 4 * 1024 * 1024 {
+            return Err(super::invalid_request(
+                "automatic future progress exceeds retained limit",
+            ));
+        }
+        let status = crate::protocol::handoff::HandoffResult {
+            compound: envelope.plan().payload.keys.compound.clone(),
+            state: HandoffState::Completed,
+            thread: Some(thread.clone()),
+        };
+        let terminal = AutomaticTerminal {
+            version: 2,
+            original: serde_json::to_string(&envelope.original.semantic(envelope.claim.clone()))
+                .map_err(io::Error::other)?,
+            completed: status,
+            progress_digest: "f".repeat(64),
+            progress,
+        };
+        if serde_json::to_vec(&terminal)
+            .map_err(io::Error::other)?
+            .len()
+            + crate::cli::journal::MAX_AUTOMATIC_ORIGIN_BYTES
+            > 2 * crate::cli::journal::MAX_AUTOMATIC_ORIGIN_BYTES + 4 * 1024 * 1024
+        {
+            return Err(super::invalid_request(
+                "automatic future terminal exceeds retained limit",
+            ));
+        }
+        handoff::validate_automatic_presentation_admission(journal.root(), &envelope.plan().payload.namespace,
+            &summary, &selection, serde_json::json!({"compound":envelope.plan().payload.keys.compound,"caller_target":envelope.claim.target,"possible_start":true,"status_is_last_observed":true,"status_unknown":false}))
+            .map_err(super::invalid_request)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn publish_automatic(
     journal: &Journal,
     original: crate::protocol::handoff::AutomaticOriginal,
     claim: CallerClaim,
     clock: &dyn Clock,
 ) -> Result<IntentRef, RunError> {
-    automatic_envelope(&claim, original.clone())?;
+    validate_automatic_local_admission(journal, &automatic_envelope(&claim, original.clone())?)?;
     let scope = IntentScope::Cooperative {
         instance: claim.instance.clone(),
         seat: claim.seat.clone(),
@@ -189,6 +286,7 @@ pub(crate) fn prepare_automatic<C: LocalClient + ?Sized>(
         OperationId::new(uuid::Uuid::new_v4().to_string()),
         request.body.clone(),
     )
+    .and_then(|payload| payload.with_policy(request.policy.clone()))
     .map_err(fail)?;
     crate::protocol::handoff::AutomaticDeliveryPlan::new(payload, recipient).map_err(fail)
 }
@@ -233,6 +331,10 @@ pub fn prepare<C: LocalClient + ?Sized>(
         ));
     }
     let fail = super::invalid_request;
+    if let Some(policy) = &request.policy {
+        policy.validate().map_err(super::invalid_request)?;
+        super::require_handoff_capabilities(inputs.client, inputs.clock, Some(policy))?;
+    }
     if !request.existing
         || request.new_tab.is_some()
         || request.cwd.is_some()
@@ -321,6 +423,7 @@ pub fn prepare<C: LocalClient + ?Sized>(
         version: 1,
         recipient,
         payload: HandoffPayload {
+            policy: request.policy.clone(),
             namespace: inputs.namespace.clone(),
             channel,
             body: request.body.clone(),
@@ -410,6 +513,18 @@ impl<'a, C: LocalClient + ?Sized> FrozenDeliveryClient<'a, C> {
     fn wrap(&self, command: Command) -> Result<Command, ApiError> {
         use crate::protocol::handoff::DeliveryAction;
         let action = match command {
+            Command::HandoffDelivery(envelope) => {
+                let mut expected = self.envelope.clone();
+                expected.action =
+                    crate::protocol::handoff::DeliveryAction::Status(expected.identity());
+                if *envelope != expected {
+                    return Err(ApiError::invalid_request(
+                        "delivery status differs from frozen envelope",
+                    ));
+                }
+                envelope.validate().map_err(ApiError::invalid_request)?;
+                return Ok(Command::HandoffDelivery(envelope));
+            }
             Command::BeginHandoff(v) => DeliveryAction::Begin(v),
             Command::CreateThread(v) => DeliveryAction::Create(v),
             Command::Invite(v) => DeliveryAction::Invite(v),
@@ -634,6 +749,25 @@ fn execute_locked<C: LocalClient + ?Sized>(
     {
         return Err(super::invalid_request("delivery original scope mismatch"));
     }
+    // Read the exact canonical frozen identity before deciding whether any new
+    // operation is needed. Local staged reports cannot establish completion.
+    let status_client = FrozenDeliveryClient::from_plan(
+        client,
+        pending.header.scope.clone(),
+        claim.clone(),
+        pending.header.semantic_digest.clone(),
+        (*plan).clone(),
+    )?;
+    let status = match status_client.query(false, clock) {
+        Ok(CommandResult::Handoff(current)) => Some(current),
+        Err(RunError::Api(error)) if error.code == ErrorCode::NotFound => None,
+        Err(error) => return Err(error),
+        Ok(_) => return Err(super::invalid_request("unexpected delivery status result")),
+    };
+    let completed = status.filter(|current| current.state == HandoffState::Completed);
+    if completed.is_none() {
+        super::require_handoff_capabilities(client, clock, plan.payload.policy.as_ref())?;
+    }
     let keys = &plan.payload.keys;
     let identity = HandoffIdentity {
         compound: keys.compound.clone(),
@@ -654,7 +788,9 @@ fn execute_locked<C: LocalClient + ?Sized>(
         staged: Default::default(),
         last_observed: None,
     });
-    let current = match handoff::keyed_fence(client, clock, &identity, keys.begin.clone(), false) {
+    let current = match completed.map(Ok).unwrap_or_else(|| {
+        handoff::keyed_fence(client, clock, &identity, keys.begin.clone(), false)
+    }) {
         Ok(current) => current,
         Err(error) => {
             if !begin_uncertain(&error) {
@@ -718,6 +854,7 @@ fn execute_locked<C: LocalClient + ?Sized>(
     };
     let staging = handoff::stage_work(
         handoff::Staging {
+            policy: plan.payload.policy.as_ref(),
             channel: &plan.payload.channel,
             body: &plan.payload.body,
             recipient: &plan.recipient,
@@ -758,9 +895,24 @@ fn execute_locked<C: LocalClient + ?Sized>(
     progress.report = Some(report.clone());
     progress.report_digest = Some(retained_digest(&report)?);
     handoff::save_progress(journal, reference, &progress)?;
+    // Exact retained terminal capacity is known before canonical completion.
+    // Preserve the original bytes rather than rebuilding its historical JSON.
+    let preview = Terminal {
+        version: 1,
+        original: String::from_utf8(journal.snapshot_delivery_origin(reference)?)
+            .map_err(io::Error::other)?,
+        completed: HandoffResult {
+            compound: identity.compound.clone(),
+            thread: staged.thread.clone(),
+            state: HandoffState::Completed,
+        },
+        progress_digest: retained_digest(&progress)?,
+        progress,
+    };
+    terminal_bytes(&preview)?;
     observe(observed, "complete", &staged);
     let completed = handoff::keyed_fence(client, clock, &identity, keys.complete.clone(), true)?;
-    retained_report(reference, &plan, &completed, &progress)?;
+    retained_report(reference, &plan, &completed, &preview.progress)?;
     observe(observed, "terminal", &staged);
     if let Some(observed) = observed.as_mut() {
         observed.last_observed = Some(completed.clone());
@@ -778,6 +930,9 @@ struct Terminal {
     progress: Progress,
     progress_digest: String,
 }
+// A maximum body consumes 393216 JSON bytes in the original and 458752
+// when that exact JSON is nested as a string. Keep bounded report headroom.
+pub(crate) const MAX_DELIVERY_TERMINAL_BYTES: usize = 1024 * 1024;
 fn terminal_path(journal: &Journal, reference: &IntentRef) -> std::path::PathBuf {
     journal.root().join(format!(
         "delivery-{:020}-{}.terminal",
@@ -817,14 +972,15 @@ fn read_terminal(journal: &Journal, reference: &IntentRef) -> Result<Option<Term
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    if !file.metadata()?.is_file() || file.metadata()?.len() > 131072 {
+    if !file.metadata()?.is_file() || file.metadata()?.len() > MAX_DELIVERY_TERMINAL_BYTES as u64 {
         return Err(super::invalid_request(
             "unsafe or oversized delivery terminal record",
         ));
     }
     let mut bytes = Vec::new();
-    file.take(131073).read_to_end(&mut bytes)?;
-    if bytes.len() > 131072 {
+    file.take((MAX_DELIVERY_TERMINAL_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_DELIVERY_TERMINAL_BYTES {
         return Err(super::invalid_request("oversized delivery terminal record"));
     }
     let terminal: Terminal = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
@@ -871,15 +1027,19 @@ fn read_terminal(journal: &Journal, reference: &IntentRef) -> Result<Option<Term
     }
     Ok(Some(terminal))
 }
+fn terminal_bytes(terminal: &Terminal) -> Result<Vec<u8>, RunError> {
+    let bytes = serde_json::to_vec(terminal).map_err(io::Error::other)?;
+    if bytes.len() > MAX_DELIVERY_TERMINAL_BYTES {
+        return Err(super::invalid_request("oversized delivery terminal record"));
+    }
+    Ok(bytes)
+}
 fn save_terminal(
     journal: &Journal,
     reference: &IntentRef,
     terminal: &Terminal,
 ) -> Result<(), RunError> {
-    let bytes = serde_json::to_vec(terminal).map_err(io::Error::other)?;
-    if bytes.len() > 131072 {
-        return Err(super::invalid_request("oversized delivery terminal record"));
-    }
+    let bytes = terminal_bytes(terminal)?;
     let temp = journal
         .root()
         .join(format!(".delivery-terminal-{}", uuid::Uuid::new_v4()));
@@ -992,18 +1152,16 @@ pub fn retry_to_writer<C: LocalClient + ?Sized, W: Write>(
     }
     let terminal = if let Some(terminal) = retained {
         let claim = pending.semantic.frozen_claim().unwrap().clone();
-        let keys = &plan.payload.keys;
-        let identity = HandoffIdentity {
-            compound: keys.compound.clone(),
-            digest: pending.header.semantic_digest.clone(),
+        let frozen = FrozenDeliveryClient::from_plan(
+            client,
+            pending.header.scope.clone(),
             claim,
-            thread: plan.payload.channel.thread().cloned(),
-            recipient: plan.recipient.clone(),
-            create_key: keys.create.clone(),
-            invite_key: keys.invite.clone(),
-            send_key: keys.send.clone(),
+            pending.header.semantic_digest.clone(),
+            plan.clone(),
+        )?;
+        let CommandResult::Handoff(canonical) = frozen.query(false, clock)? else {
+            return Err(super::invalid_request("unexpected delivery status result"));
         };
-        let canonical = handoff::keyed_fence(client, clock, &identity, keys.begin.clone(), false)?;
         if canonical != terminal.completed {
             return Err(super::invalid_request(
                 "delivery terminal disagrees with canonical completion",
@@ -1171,6 +1329,8 @@ fn remove_completed_files(journal: &Journal, reference: &IntentRef) -> io::Resul
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AutomaticProgress {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selection: Option<crate::protocol::results::DirectThreadEnsured>,
     thread: Option<crate::protocol::ids::ThreadId>,
     message: Option<CommandResult>,
     possible_start: bool,
@@ -1316,6 +1476,39 @@ fn save_automatic_terminal(
     Ok(())
 }
 
+fn automatic_report_value(
+    reference: &IntentRef,
+    original: &crate::protocol::handoff::AutomaticOriginal,
+    progress: &AutomaticProgress,
+) -> serde_json::Value {
+    let mut report = serde_json::json!({
+        "compound":original.delivery().payload.keys.compound,
+        "thread":progress.thread,"recipient":original.delivery().recipient,
+        "message":progress.message,"launch":progress.launch,
+        "outcome":if matches!(original, crate::protocol::handoff::AutomaticOriginal::Handoff(_)) {"started"} else {"staged"},
+        "recovery_ref":reference.recovery_ref(),
+    });
+    if let Some(selection) = &progress.selection {
+        report["selection"] = selection.presentation();
+    }
+    report
+}
+fn validate_automatic_selection(
+    original: &crate::protocol::handoff::AutomaticOriginal,
+    progress: &AutomaticProgress,
+) -> Result<(), RunError> {
+    if let Some(selection) = &progress.selection {
+        selection.validate().map_err(super::invalid_request)?;
+        if original.delivery().payload.policy.is_none()
+            || Some(&selection.thread) != progress.thread.as_ref()
+            || selection.recipient != original.delivery().recipient
+        {
+            return Err(super::invalid_request("automatic selection differs"));
+        }
+    }
+    Ok(())
+}
+
 fn automatic_report(
     reference: &IntentRef,
     original: &crate::protocol::handoff::AutomaticOriginal,
@@ -1350,15 +1543,8 @@ fn automatic_report(
             "incomplete automatic handoff report",
         ));
     }
-    let report = serde_json::json!({
-        "compound":keys.compound,
-        "thread":progress.thread,
-        "recipient":original.delivery().recipient,
-        "message":progress.message,
-        "launch":progress.launch,
-        "outcome":if matches!(original, crate::protocol::handoff::AutomaticOriginal::Handoff(_)) {"started"} else {"staged"},
-        "recovery_ref":reference.recovery_ref(),
-    });
+    validate_automatic_selection(original, progress)?;
+    let report = automatic_report_value(reference, original, progress);
     if saved_report != &report {
         return Err(super::invalid_request(
             "automatic report differs from retained original",
@@ -1524,7 +1710,7 @@ fn write_automatic_pending<W: Write>(
         "possible_start":progress.possible_start,
         "recovery_ref":reference.recovery_ref(),
         "retry_argv":retry,
-        "guidance":"Retry the exact original reference after inspecting the pair lifecycle. Ensure creates the initial invitation once; a reject or leave needs explicit repair on the same pair. A possible native start must be inspected before any manual launch. No automatic invitation acceptance, ACK or topology cleanup occurs."
+        "guidance":handoff::AUTOMATIC_PENDING_GUIDANCE
     });
     let bytes = if output.format == OutputFormat::Json {
         if matches!(
@@ -1618,9 +1804,25 @@ fn retry_automatic_inner<C: LocalClient + ?Sized, W: Write>(
         File::open(journal.root())?.sync_all()?;
         terminal
     } else {
+        let mut query = envelope.clone();
+        query.action = crate::protocol::handoff::AutomaticDeliveryAction::Status;
+        let completed = matches!(call(query), Ok(CommandResult::Handoff(s)) if s.state == HandoffState::Completed);
+        if !completed {
+            require_policy_capabilities(
+                client,
+                clock,
+                original.delivery().payload.policy.as_ref(),
+            )?;
+        }
         let exact_original = journal.snapshot_automatic_origin(reference)?;
         let mut progress: AutomaticProgress = handoff::load_progress(journal, reference)?;
-        if progress.possible_start && progress.launch.is_none() {
+        validate_automatic_selection(&original, &progress)?;
+        if progress
+            .launch
+            .as_ref()
+            .is_some_and(|report| report["format"] == "automatic_launch_noncompletion_v1")
+            || progress.possible_start && progress.launch.is_none()
+        {
             return Err(crate::protocol::results::ApiError::unknown_outcome(
                 "automatic handoff possible native start; inspect the exact pane before retry",
             )
@@ -1644,6 +1846,27 @@ fn retry_automatic_inner<C: LocalClient + ?Sized, W: Write>(
                     "automatic Ensure changed selected pair thread",
                 ));
             }
+            let selection = match &result {
+                CommandResult::DirectThreadEnsured(actual)
+                    if actual.recipient == envelope.plan().recipient =>
+                {
+                    Some(actual.clone())
+                }
+                CommandResult::ThreadCreated(_) if envelope.plan().payload.policy.is_none() => None,
+                _ => {
+                    return Err(super::invalid_request(
+                        "automatic Ensure returned no actual selection",
+                    ));
+                }
+            };
+            if progress
+                .selection
+                .as_ref()
+                .is_some_and(|saved| Some(saved) != selection.as_ref())
+            {
+                return Err(super::invalid_request("automatic Ensure selection changed"));
+            }
+            progress.selection = selection;
             progress.thread = Some(thread.clone());
             handoff::save_progress(journal, reference, &progress)?;
             let sent = call(envelope.send(thread.clone()))?;
@@ -1693,25 +1916,26 @@ fn retry_automatic_inner<C: LocalClient + ?Sized, W: Write>(
                         }
                         .map_err(|e| ApiError::new(ErrorCode::StoreCorrupt, e.to_string()))
                     })?;
-                if launched.report["outcome"] != "started" {
+                let started = launched.report["outcome"] == "started";
+                if started {
+                    progress.possible_start = false;
+                }
+                if plan.delivery.payload.policy.is_some() {
+                    progress.launch = Some(handoff::automatic_summary(&launched.report)?);
+                    handoff::save_progress(journal, reference, &progress)?;
+                    handoff::save_automatic_diagnostics(journal, reference, &launched.report)?;
+                } else if started {
+                    progress.launch = Some(launched.report);
+                    handoff::save_progress(journal, reference, &progress)?;
+                }
+                if !started {
                     return Err(ApiError::unknown_outcome(
                         "automatic native start outcome unknown",
                     )
                     .into());
                 }
-                progress.possible_start = false;
-                progress.launch = Some(launched.report);
-                handoff::save_progress(journal, reference, &progress)?;
             }
-            let report = serde_json::json!({
-                "compound":original.delivery().payload.keys.compound,
-                "thread":progress.thread,
-                "recipient":original.delivery().recipient,
-                "message":progress.message,
-                "launch":progress.launch,
-                "outcome":if matches!(original, crate::protocol::handoff::AutomaticOriginal::Handoff(_)) {"started"} else {"staged"},
-                "recovery_ref":reference.recovery_ref(),
-            });
+            let report = automatic_report_value(reference, &original, &progress);
             progress.report_digest = Some(retained_digest(&report)?);
             progress.report = Some(report);
             handoff::save_progress(journal, reference, &progress)?;
@@ -1733,12 +1957,19 @@ fn retry_automatic_inner<C: LocalClient + ?Sized, W: Write>(
         save_automatic_terminal(journal, reference, &terminal)?;
         terminal
     };
-    let report = automatic_report(
+    let mut report = automatic_report(
         reference,
         &original,
         &terminal.completed,
         &terminal.progress,
     )?;
+    if let Some(summary) = &terminal.progress.launch
+        && summary["format"] == "automatic_launch_summary_v1"
+    {
+        report["local_diagnostics"] =
+            handoff::automatic_diagnostics_marker(journal, reference, summary);
+        report["launch"] = handoff::automatic_launch_presentation(summary);
+    }
     let bytes = if output.format == OutputFormat::Json {
         let presented = if matches!(
             original,

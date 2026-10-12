@@ -290,6 +290,7 @@ impl Matrix {
         op: &str,
     ) {
         self.handle(Command::Invite(Invite {
+            confirmation: None,
             thread: thread.clone(),
             seat: SeatId::new(seat),
             deadline_millis,

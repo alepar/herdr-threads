@@ -548,20 +548,29 @@ fn v7_upgrade_backfills_only_pending_rows_into_the_digest_projections() {
 #[test]
 fn v6_upgrade_carries_the_current_occupant_offer_into_the_notice_frontier() {
     let db = v6_database();
-    // Seed only the rows the backfill reads (the publications' preparation
-    // rows are not needed for it).
-    db.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    // Keep the old publication graph realizable: publication rows retain their
+    // canonical preparations even though the notice backfill does not read them.
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
     db.execute_batch("\
         INSERT INTO host_instances(id,created_at,decision_seq) VALUES ('i',0,10);\
         INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0),('o','i','resolved','native',1,0);\
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);\
         INSERT INTO service_authors(id,instance_id,created_at) VALUES ('svc','i',0);\
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,event_json,decision_at,author_kind,author_service_id) VALUES ('n1','i','t',1,'warn',3,'{}',0,'programmatic','svc'),('n2','i','t',2,'warn',5,'{}',0,'programmatic','svc');\
+        INSERT INTO service_notification_preparations(id,instance_id,author_id,operation_key,digest,thread_id,membership_revision,lifecycle_revision,interval_high_water,requirement_high_water,recipient_count,status) VALUES ('p1','i','svc','p1',zeroblob(32),'t',0,0,0,0,2,'published'),('p2','i','svc','p2',zeroblob(32),'t',0,0,0,0,2,'published');\
         INSERT INTO service_notification_publications(preparation_id,message_id,decision_seq,recipient_count) VALUES ('p1','n1',3,2),('p2','n2',5,2);\
         INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('n2','s',5),('n2','o',5),('n1','s',3),('n1','o',3);\
         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at) VALUES ('s',1,'ps','b',1,'codex','ns','exec-s','fresh',0),('o',1,'po','b',1,'codex','no','exec-o','fresh',0);\
         INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES ('s',1,'exec-s',3),('o',1,'predecessor',5);\
     ").unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
     schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     let pending = |seat: &str| -> Vec<String> {
         crate::store::attention::seat_pending_warnings(&db, seat, &|| Ok(()))
@@ -5710,7 +5719,7 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
             "SELECT json_array(id,fetched_at,created_at) FROM summary_jobs ORDER BY id",
         ].into_iter().flat_map(|sql| db.prepare(sql).unwrap().query_map([], |r| r.get::<_,String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()).collect();
         let roots = db
-            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics','lazy_recipients','bootstrap_handoffs','bootstrap_child_keys','bootstrap_attempts','bootstrap_recovery_decisions','bootstrap_attachments','bootstrap_reports','direct_threads','automatic_handoff_companions','automatic_handoff_keys','automatic_bootstrap_parents','automatic_bootstrap_keys','automatic_bootstrap_attempts','automatic_bootstrap_attachments','automatic_bootstrap_reports','automatic_bootstrap_recoveries') ORDER BY name")
+            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics','lazy_recipients','bootstrap_handoffs','bootstrap_child_keys','bootstrap_attempts','bootstrap_recovery_decisions','bootstrap_attachments','bootstrap_reports','receipt_send_time_cutovers','receipt_deadline_backfill','receipt_discovery_backfill','receipt_due_sparse','receipt_warning_origins','direct_threads','automatic_handoff_companions','automatic_handoff_keys','automatic_bootstrap_parents','automatic_bootstrap_keys','automatic_bootstrap_attempts','automatic_bootstrap_attachments','automatic_bootstrap_reports','automatic_bootstrap_recoveries') ORDER BY name")
             .unwrap()
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap()
@@ -5779,10 +5788,67 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
         "harness_contract_evidence_v2",
         "harness_unattributed_v2",
     ];
+    // V45/46 create these six tables; none replaces a historical root. Audit
+    // their exact final DDL independently from the actual appended migration SQL.
+    let presentation45 = include_str!("../../migrations/0045_invitation_presentation.sql");
+    let relevance46 = include_str!("../../migrations/0046_presentation_relevance.sql");
+    let presentation_tables = [
+        ("invitation_context_latest", presentation45),
+        ("invitation_presentation_consumers", presentation45),
+        ("invitation_presentation_items", presentation45),
+        ("presentation_confirming_invitations", relevance46),
+        ("presentation_warning_fence", relevance46),
+        ("presentation_warning_proofs", relevance46),
+    ];
+    let expected_presentation = Connection::open_in_memory().unwrap();
+    for &(name, migration) in &presentation_tables {
+        assert!(
+            before.1.iter().all(|(old, _)| old.as_str() != name),
+            "new presentation table {name} must not hide a historical root"
+        );
+        let start = migration
+            .find(&format!("CREATE TABLE {name} (\n"))
+            .expect("named table is declared by its migration");
+        let declaration = &migration[start..];
+        let end = declaration.find("\n) STRICT;").unwrap() + "\n) STRICT;".len();
+        expected_presentation
+            .execute_batch(&declaration[..end])
+            .unwrap();
+    }
+    let consumer_alters: Vec<_> = relevance46
+        .lines()
+        .filter(|line| {
+            line.starts_with("ALTER TABLE invitation_presentation_consumers ADD COLUMN ")
+        })
+        .collect();
+    assert_eq!(consumer_alters.len(), 4);
+    for statement in consumer_alters {
+        expected_presentation.execute_batch(statement).unwrap();
+    }
+    for &(name, _) in &presentation_tables {
+        let table_sql = |db: &Connection| {
+            db.query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                [name],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            table_sql(&upgraded),
+            table_sql(&expected_presentation),
+            "exact appended presentation table DDL: {name}"
+        );
+    }
     let unchanged = |roots: &Vec<(String, i64)>| {
         roots
             .iter()
-            .filter(|(name, _)| !adapter_tables.contains(&name.as_str()))
+            .filter(|(name, _)| {
+                !adapter_tables.contains(&name.as_str())
+                    && !presentation_tables
+                        .iter()
+                        .any(|(table, _)| name.as_str() == *table)
+            })
             .cloned()
             .collect::<Vec<_>>()
     };
@@ -6219,8 +6285,9 @@ fn adapter_migration_main24_to26_preserves_archival_guards_and_intent_history() 
     }
 }
 
-/// V33 owns the narrowed insert and update fences of occupant_bindings; every other binding
-/// trigger must equal its pre-upgrade text. Returns the upgraded guards.
+/// V33 owns the narrowed insert and update fences of occupant_bindings; every other
+/// pre-existing trigger retains its text. Later guards match the full fresh catalog.
+/// Returns all upgraded guards.
 fn assert_v33_guards(
     before: &[(String, String)],
     after: &[(String, String)],
@@ -6229,11 +6296,12 @@ fn assert_v33_guards(
         "archival_fence_occupant_bindings_insert",
         "archival_fence_occupant_bindings_update",
     ];
-    assert_eq!(
-        before.iter().map(|g| &g.0).collect::<Vec<_>>(),
-        after.iter().map(|g| &g.0).collect::<Vec<_>>()
-    );
-    for (old, new) in before.iter().zip(after) {
+    assert_eq!(after, binding_archival_guards(&fresh_db()));
+    for old in before {
+        let new = after
+            .iter()
+            .find(|guard| guard.0 == old.0)
+            .unwrap_or_else(|| panic!("{} must survive the upgrade", old.0));
         if owned.contains(&old.0.as_str()) {
             assert_ne!(old.1, new.1, "{} must be narrowed by V33", old.0);
             assert!(new.1.contains("WHEN EXISTS"), "{}", new.1);
@@ -6285,7 +6353,7 @@ fn v28_upgrade_migrates_bindings_to_session_keyed_v32() {
             .unwrap(),
         schema::LATEST_VERSION
     );
-    assert_eq!(schema::LATEST_VERSION, 36);
+    assert_eq!(schema::LATEST_VERSION, 46);
     // ordinals, sequence and archival guards survive the rebuild
     assert_eq!(
         db.query_row(
@@ -6949,7 +7017,7 @@ fn v34_to_v35_moves_attention_frontiers_to_bindings() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        36
+        schema::LATEST_VERSION
     );
     let rows = |sql: &str| -> Vec<(String, String, i64)> {
         db.prepare(sql)
@@ -7132,15 +7200,15 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         // (in_turn_offer_seat).
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
-            85
+            96
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
-            148
+            168
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
-            198
+            307
         );
     }
 }
@@ -7207,36 +7275,18 @@ fn absorption_main25_missing_warning_guard_refuses_before_adapter_rebuild() {
 // neither a rewritten version stamp nor adapter tables are used as the precursor.
 #[test]
 fn absorption_main24_backfills_warning_delivery_before_adapter26() {
-    let mut db = adapter_historical_database(24);
+    let db = adapter_historical_database(24);
     user_intent_seed(&db);
     db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('upgrade-warning','t','s',1,'pending',0,1,50,50)").unwrap();
-    let tx = db.transaction().unwrap();
-    let warning = schema::record_overdue_if_pending(
-        &tx,
-        &crate::protocol::authority::ObligationRef::Invitation(
-            crate::protocol::ids::InvitationId::new("upgrade-warning"),
-        ),
-        &crate::ports::TimeBasis::Decision,
-        UtcMillis(100),
-    )
-    .unwrap()
-    .warning
-    .unwrap();
-    tx.commit().unwrap();
-    let budget = CallBudget {
-        deadline: MonoInstant(1000),
-        cancellation: Default::default(),
-    };
-    while crate::store::materialization::advance_work(
-        &mut db,
-        &format!("work:{}", warning.as_str()),
-        crate::ports::DurableWorkAdmission { max_units: 16 },
-        &budget,
-        &FixedClock,
-    )
-    .unwrap()
-    .has_more
-    {}
+    // Seed the completed immutable24 event, condition and exact recipient
+    // using its historical schema. Current post33 judges require confirmation
+    // columns and cannot be used as historical fixture writers.
+    let warning = crate::protocol::ids::MessageId::new("upgrade-warning-event");
+    db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq,source_invitation_id,author_kind) VALUES ('upgrade-warning-event','i','t',1,'warn','overdue:invitation:upgrade-warning','{\"obligation\":\"invitation\",\"seat\":\"s\",\"deadline_at\":50,\"classified_at\":100,\"materialized_at\":100,\"current_status\":\"pending\",\"physical_status\":\"pending\"}',100,2,'upgrade-warning','built_in');
+        UPDATE invitations SET warning_message_id='upgrade-warning-event' WHERE id='upgrade-warning';
+        INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('invitation','t','upgrade-warning','s','upgrade-warning-event',2);
+        INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('upgrade-warning-event','s',2);
+        UPDATE threads SET next_sequence=2 WHERE id='t'; UPDATE host_instances SET decision_seq=2 WHERE id='i';").unwrap();
     assert_eq!(
         db.query_row(
             "SELECT count(*) FROM warning_recipients WHERE warning_id=?1",
@@ -7330,6 +7380,48 @@ fn adapter_upgrade_rejects_tampered_diagnostics_from_main25_and_lazy26() {
 }
 
 #[test]
+fn invitation_confirmation_schema_migrates_legacy_and_retains_frozen_origin() {
+    let db = v11_populated_database();
+    db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('old','t','s',1,'pending',1,10,30,40);").unwrap();
+    schema::initialize(&db, || UtcMillis(900)).unwrap();
+    let legacy: (Option<String>, Option<String>, i64, i64) = db.query_row("SELECT confirmation,inviter_seat_id,frozen_duration_ms,deadline_at FROM invitations WHERE id='old'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+    assert_eq!(legacy, (None, None, 30, 40));
+    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('modern','t','s',2,'pending',2,100,50,150,'require_ack','s'),('quiet','t','s',3,'pending',3,100,50,150,'lazy','s');").unwrap();
+    assert!(db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation) VALUES ('missing-origin','t','s',4,'pending',4,100,50,150,'lazy')", []).is_err());
+    schema::initialize(&db, || UtcMillis(1000)).unwrap();
+    let modern: (String,String,i64,i64) = db.query_row("SELECT confirmation,inviter_seat_id,frozen_duration_ms,deadline_at FROM invitations WHERE id='modern'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+    assert_eq!(modern, ("require_ack".into(), "s".into(), 50, 150));
+    let ids = db.prepare("SELECT id FROM invitations INDEXED BY invitations_confirmation_due WHERE state='pending' AND warning_message_id IS NULL AND reject_recorded=0 AND (confirmation IS NULL OR confirmation='require_ack') ORDER BY deadline_at,ordinal").unwrap().query_map([],|r|r.get::<_,String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>();
+    assert_eq!(ids, ["old", "modern"]);
+    assert!(
+        db.execute(
+            "UPDATE invitations SET inviter_seat_id=NULL WHERE id='modern'",
+            []
+        )
+        .is_err()
+    );
+    assert!(
+        db.execute(
+            "UPDATE invitations SET confirmation='lazy' WHERE id='modern'",
+            []
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn invitation_confirmation_schema_refuses_missing_policy_guard() {
+    let db = Connection::open_in_memory().unwrap();
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    db.execute_batch("DROP TRIGGER invitations_confirmation_immutable")
+        .unwrap();
+    assert_eq!(
+        schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
+        ErrorCode::IncompatibleSchema
+    );
+}
+
+#[test]
 fn direct_pair_migration_preserves_v28_and_enforces_identity() {
     let db = Connection::open_in_memory().unwrap();
     db.pragma_update(None, "foreign_keys", true).unwrap();
@@ -7376,7 +7468,7 @@ fn direct_pair_migration_preserves_v28_and_enforces_identity() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        36
+        schema::LATEST_VERSION
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM direct_threads", [], |r| r
@@ -7412,4 +7504,926 @@ fn direct_pair_migration_preserves_v28_and_enforces_identity() {
     .unwrap();
     assert!(db.execute("DELETE FROM threads WHERE id='u'", []).is_err());
     assert!(db.execute("DELETE FROM seats WHERE id='b'", []).is_err());
+}
+
+// Catches losing released direct/automatic rows or omitting the additive capacity upgrade.
+#[test]
+fn released_main31_populated_automatic_graph_physically_upgrades_and_reopens() {
+    let path = std::env::temp_dir().join(format!("main31-upgrade-{}.db", uuid::Uuid::new_v4()));
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+        .unwrap()
+        .map(|p| p.unwrap().path())
+        .collect::<Vec<_>>();
+    migrations.sort();
+    for migration in migrations.into_iter().take(31) {
+        db.execute_batch(&std::fs::read_to_string(migration).unwrap())
+            .unwrap();
+    }
+    db.pragma_update(None, "user_version", 31).unwrap();
+    db.execute_batch(r#"INSERT INTO host_instances(id,created_at) VALUES('i',0);
+      INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('a','i','resolved','native',1,0),('b','i','resolved','native',1,0);
+      INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0);
+      INSERT INTO direct_threads VALUES('i','a','b','t');
+      INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,original_thread,thread_id,origin,state,created_at) VALUES('i','seat:a','child',printf('%064d',0),'{"generation":1,"provenance":"cooperative_top_level"}','b','begin','ensure','send',NULL,'t','cooperative_pending_claim','live',7);
+      INSERT INTO automatic_handoff_companions VALUES('i','seat:a','child','/state','/host',x'7b7d','begin','ensure','send','complete');
+      INSERT INTO automatic_handoff_keys VALUES('i','seat:a','child','send','send');
+      INSERT INTO automatic_bootstrap_parents VALUES(9,'i','seat:a','parent','/state','/host',x'7b7d','attached',1,1,'t');
+      INSERT INTO automatic_bootstrap_keys VALUES('i','seat:a','parent-key',9,'compound',0);
+      INSERT INTO automatic_bootstrap_attempts VALUES(9,1,'created',0,x'7b7d');
+      INSERT INTO automatic_bootstrap_attachments VALUES(9,1,x'7b7d');
+      INSERT INTO automatic_bootstrap_reports VALUES(9,x'7b7d');
+      INSERT INTO automatic_bootstrap_recoveries VALUES(9,1,'recovery','recovery-key',1,x'7b7d');"#).unwrap();
+    let tables = [
+        "direct_threads",
+        "channel_handoff_fences",
+        "automatic_handoff_companions",
+        "automatic_handoff_keys",
+        "automatic_bootstrap_parents",
+        "automatic_bootstrap_keys",
+        "automatic_bootstrap_attempts",
+        "automatic_bootstrap_attachments",
+        "automatic_bootstrap_reports",
+        "automatic_bootstrap_recoveries",
+    ];
+    let snapshot = |db: &Connection| {
+        tables
+            .iter()
+            .map(|table| {
+                let columns = db
+                    .prepare(&format!("PRAGMA table_info({table})"))
+                    .unwrap()
+                    .query_map([], |r| r.get::<_, String>(1))
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .collect::<Vec<_>>();
+                let values = columns
+                    .iter()
+                    .map(|column| format!("quote({column})"))
+                    .collect::<Vec<_>>()
+                    .join("||','||");
+                db.prepare(&format!("SELECT {values} FROM {table} ORDER BY rowid"))
+                    .unwrap()
+                    .query_map([], |r| r.get::<_, String>(0))
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = snapshot(&db);
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    drop(db);
+    let failure_path = path.with_extension("rollback.db");
+    std::fs::copy(&path, &failure_path).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        31
+    );
+    schema::initialize(&db, || UtcMillis(99)).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        schema::LATEST_VERSION
+    );
+    assert_eq!(snapshot(&db), before);
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    assert!(
+        db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+            .unwrap()
+    );
+    drop(db);
+    let db = Connection::open(&path).unwrap();
+    schema::initialize(&db, || UtcMillis(100)).unwrap();
+    assert_eq!(snapshot(&db), before);
+    drop(db);
+    let db = Connection::open(&failure_path).unwrap();
+    db.pragma_update(None, "foreign_keys", false).unwrap();
+    let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+        .unwrap()
+        .map(|p| p.unwrap().path())
+        .collect::<Vec<_>>();
+    migrations.sort();
+    for migration in migrations.into_iter().skip(31).take(12) {
+        db.execute_batch(&std::fs::read_to_string(migration).unwrap())
+            .unwrap();
+    }
+    db.pragma_update(None, "user_version", 43).unwrap();
+    db.execute(
+        "INSERT INTO automatic_bootstrap_keys VALUES('i','seat:a','orphan',999,'compound',0)",
+        [],
+    )
+    .unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    let catalog = |db: &Connection| {
+        db.prepare("SELECT type,name,tbl_name,rootpage,sql FROM sqlite_schema ORDER BY type,name")
+            .unwrap()
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                ))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+    };
+    let failed_before = snapshot(&db);
+    let catalog_before = catalog(&db);
+    let version_before: i64 = db
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(version_before, 43, "fixture precedes the V44 rebuild");
+    let error = schema::initialize(&db, || UtcMillis(101)).unwrap_err();
+    assert_eq!(error.code, ErrorCode::StoreCorrupt);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        version_before
+    );
+    assert!(
+        db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+            .unwrap()
+    );
+    assert_eq!(
+        catalog(&db),
+        catalog_before,
+        "failed rebuild rolls back every object and rootpage"
+    );
+    assert_eq!(
+        snapshot(&db),
+        failed_before,
+        "failed rebuild retains exact original bytes"
+    );
+    let trigger: String = db
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE name='automatic_bootstrap_keys_retained'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    db.execute_batch("DROP TRIGGER automatic_bootstrap_keys_retained; DELETE FROM automatic_bootstrap_keys WHERE operation_key='orphan';").unwrap();
+    db.execute_batch(&trigger).unwrap();
+    drop(db);
+    let db = Connection::open(&failure_path).unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    schema::initialize(&db, || UtcMillis(102)).unwrap();
+    assert_eq!(snapshot(&db), before);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        schema::LATEST_VERSION
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    drop(db);
+    std::fs::remove_file(failure_path).unwrap();
+    std::fs::remove_file(path).unwrap();
+}
+
+fn presentation_populated_v39() -> Connection {
+    presentation_populated_v39_with_confirmations(false)
+}
+fn presentation_populated_v39_with_confirmations(mixed: bool) -> Connection {
+    presentation_populate_v39(Connection::open_in_memory().unwrap(), mixed)
+}
+fn presentation_populate_v39(db: Connection, mixed: bool) -> Connection {
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+        .unwrap()
+        .map(|p| p.unwrap().path())
+        .collect::<Vec<_>>();
+    migrations.sort();
+    for path in migrations.into_iter().take(44) {
+        db.execute_batch(&std::fs::read_to_string(path).unwrap())
+            .unwrap();
+    }
+    db.pragma_update(None, "user_version", 44).unwrap();
+    let confirmation = if mixed {
+        "CASE WHEN n=2 THEN NULL WHEN n%8=0 OR n=1 THEN 'require_ack' ELSE 'lazy' END"
+    } else {
+        "'lazy'"
+    };
+    db.execute_batch(&format!("INSERT INTO host_instances(id,created_at,decision_seq) VALUES('i',0,1000); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('s','i','resolved','native',0,0),('x','i','resolved','native',0,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','retained topic','retained goal',0,0); WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<64) INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq,confirmation,inviter_seat_id) SELECT 'retained-'||n,'t','s',n,CASE WHEN n%2=0 THEN 'pending' ELSE 'recipient_retired' END,7,300,307,n,{confirmation},'x' FROM n;")).unwrap();
+    db
+}
+fn presentation_schema_catalog(
+    db: &Connection,
+) -> Vec<(String, String, String, i64, Option<String>)> {
+    db.prepare("SELECT type,name,tbl_name,rootpage,sql FROM sqlite_schema ORDER BY type,name")
+        .unwrap()
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+}
+fn presentation_retained_rows(db: &Connection) -> Vec<Vec<rusqlite::types::Value>> {
+    let mut stmt = db
+        .prepare("SELECT * FROM invitations ORDER BY ordinal")
+        .unwrap();
+    let columns = stmt.column_count();
+    stmt.query_map([], |r| {
+        (0..columns)
+            .map(|n| r.get(n))
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .unwrap()
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap()
+}
+// Read every old table through its old columns, including WITHOUT ROWID
+// tables. This also preserves exact retained private JSON/blob bytes.
+struct PresentationRetainedTable {
+    sql: String,
+    rows: Vec<Vec<rusqlite::types::Value>>,
+}
+fn presentation_query_rows(db: &Connection, sql: &str) -> Vec<Vec<rusqlite::types::Value>> {
+    let mut statement = db.prepare(sql).unwrap();
+    let columns = statement.column_count();
+    statement
+        .query_map([], |row| (0..columns).map(|n| row.get(n)).collect())
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+fn presentation_retained_tables(db: &Connection) -> Vec<PresentationRetainedTable> {
+    let names: Vec<String> = db
+        .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    names
+        .into_iter()
+        .map(|name| {
+            let quoted = format!("\"{}\"", name.replace('"', "\"\""));
+            let statement = db.prepare(&format!("SELECT * FROM {quoted}")).unwrap();
+            let columns = statement
+                .column_names()
+                .into_iter()
+                .map(|column| format!("\"{}\"", column.replace('"', "\"\"")))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!("SELECT {columns} FROM {quoted} ORDER BY {columns}");
+            PresentationRetainedTable {
+                rows: presentation_query_rows(db, &sql),
+                sql,
+            }
+        })
+        .collect()
+}
+fn presentation_assert_retained_tables(db: &Connection, tables: &[PresentationRetainedTable]) {
+    for table in tables {
+        assert_eq!(
+            presentation_query_rows(db, &table.sql),
+            table.rows,
+            "{}",
+            table.sql
+        );
+    }
+}
+fn presentation_assert_foreign_keys(db: &Connection) {
+    assert!(
+        db.pragma_query_value(None, "foreign_keys", |row| row.get::<_, bool>(0))
+            .unwrap()
+    );
+    assert!(presentation_query_rows(db, "PRAGMA foreign_key_check").is_empty());
+}
+fn presentation_reopen(path: &std::path::Path) -> Connection {
+    let db = Connection::open(path).unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    db
+}
+#[test]
+fn presentation_schema_populated_v39_upgrade_is_additive_and_reopens() {
+    // Policies are immutable: construct legacy NULL, timed and Lazy rows at
+    // insertion, never rewrite a released episode for the bootstrap fixture.
+    let file = ScratchStore::new("presentation-v39-upgrade");
+    let db = presentation_populate_v39(Connection::open(file.path()).unwrap(), true);
+    let retained = presentation_retained_tables(&db);
+    presentation_assert_foreign_keys(&db);
+    let before = presentation_retained_rows(&db);
+    let catalog = presentation_schema_catalog(&db);
+    let pending: i64 = db
+        .query_row("SELECT count(*) FROM digest_pending_invitations", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(pending, 32);
+    schema::initialize(&db, || UtcMillis(10000)).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        schema::LATEST_VERSION
+    );
+    let after = presentation_retained_rows(&db);
+    assert_eq!(before.len(), after.len());
+    for (old, new) in before.iter().zip(&after) {
+        assert_eq!(&new[..old.len()], old);
+        assert_eq!(new.last(), Some(&rusqlite::types::Value::Integer(0)));
+    }
+    let after_catalog = presentation_schema_catalog(&db);
+    for (kind, name, table, root, sql) in &catalog {
+        let new = after_catalog
+            .iter()
+            .find(|row| &row.0 == kind && &row.1 == name)
+            .unwrap();
+        assert_eq!(
+            (&new.2, new.3),
+            (table, *root),
+            "old object/rootpage {name}"
+        );
+        if name != "invitations" {
+            assert_eq!(&new.4, sql, "old object DDL {name}");
+        }
+    }
+    for table in [
+        "invitation_context_latest",
+        "invitation_presentation_consumers",
+        "invitation_presentation_items",
+    ] {
+        assert_eq!(
+            db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "no projection seeding/history"
+        );
+    }
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM digest_pending_invitations", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        pending
+    );
+    let confirming=db.prepare("SELECT invitation_id,ordinal FROM presentation_confirming_invitations WHERE seat_id='s' ORDER BY ordinal").unwrap().query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
+    let expected = std::iter::once(2)
+        .chain((8..=64).step_by(8))
+        .map(|n| (format!("retained-{n}"), n))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        confirming, expected,
+        "exact populated45 bootstrap membership"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM presentation_warning_proofs",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0,
+        "no per-recipient proof seeding"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT version FROM presentation_warning_fence WHERE singleton=1",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0,
+        "bootstrap precedes fence installation"
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    presentation_assert_retained_tables(&db, &retained);
+    let upgraded = presentation_retained_tables(&db);
+    db.close().unwrap();
+    let db = presentation_reopen(file.path());
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        46
+    );
+    schema::initialize(&db, || UtcMillis(20000)).unwrap();
+    assert_eq!(presentation_retained_rows(&db), after);
+    assert_eq!(presentation_schema_catalog(&db), after_catalog);
+    presentation_assert_retained_tables(&db, &upgraded);
+    presentation_assert_foreign_keys(&db);
+    db.close().unwrap();
+}
+#[test]
+fn presentation_schema_populated_v39_failed_ddl_rolls_back_epoch_and_catalog() {
+    let db = presentation_populated_v39();
+    db.execute_batch("CREATE INDEX invitation_content_initial ON threads(instance_id,ordinal)")
+        .unwrap();
+    let before = presentation_retained_rows(&db);
+    let catalog = presentation_schema_catalog(&db);
+    let error = schema::initialize(&db, || UtcMillis(10000)).unwrap_err();
+    assert!(
+        error.detail.contains("invitation_content_initial")
+            && error.detail.contains("already exists"),
+        "failure must reach new index DDL after epoch ADD: {error:?}"
+    );
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        44
+    );
+    assert_eq!(presentation_retained_rows(&db), before);
+    assert_eq!(presentation_schema_catalog(&db), catalog);
+    assert_eq!(db.query_row("SELECT count(*) FROM pragma_table_info('invitations') WHERE name='command_context_epoch'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn presentation_schema_pending_index_build_work_tracks_only_pending_projection() {
+    use rusqlite::StatementStatus;
+    let sql = include_str!("../../migrations/0045_invitation_presentation.sql")
+        .lines()
+        .find(|line| line.starts_with("CREATE INDEX invitation_content_initial "))
+        .unwrap();
+    let mut work = Vec::new();
+    for pending in [0, 1, 32] {
+        let db = presentation_populated_v39();
+        db.execute(
+            "UPDATE invitations SET state='recipient_retired' WHERE ordinal>?1",
+            [pending * 2],
+        )
+        .unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM invitations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            64
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM digest_pending_invitations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            pending
+        );
+        let mut statement = db.prepare(sql).unwrap();
+        statement.execute([]).unwrap();
+        let vm = statement.get_status(StatementStatus::VmStep);
+        let version: String = db
+            .query_row("SELECT sqlite_version()", [], |r| r.get(0))
+            .unwrap();
+        eprintln!(
+            "SQLite {version} actual upgrade-index DDL retained=64 pending={pending} VM={vm}"
+        );
+        work.push(vm);
+    }
+    assert!(
+        work[0] < work[1] && work[1] < work[2],
+        "one-time index construction scales with pending projection: {work:?}"
+    );
+}
+
+#[test]
+fn presentation_schema_populated_v40_failed_v41_rolls_back_bootstrap_and_catalog() {
+    let file = ScratchStore::new("presentation-v40-failed-v41");
+    let db = presentation_populate_v39(Connection::open(file.path()).unwrap(), true);
+    db.execute_batch(include_str!(
+        "../../migrations/0045_invitation_presentation.sql"
+    ))
+    .unwrap();
+    db.pragma_update(None, "user_version", 45).unwrap();
+    // Fail at the final46 trigger, after projection bootstrap and earlier fence
+    // objects, to prove the entire46 step rolls back to the durable45 boundary.
+    db.execute_batch("CREATE TRIGGER presentation_fence_warning_close_sweeps_delete AFTER DELETE ON warning_close_sweeps BEGIN SELECT 1; END;").unwrap();
+    let retained = presentation_retained_tables(&db);
+    presentation_assert_foreign_keys(&db);
+    let before = presentation_retained_rows(&db);
+    let catalog = presentation_schema_catalog(&db);
+    let error = schema::initialize(&db, || UtcMillis(10000)).unwrap_err();
+    assert!(
+        error
+            .detail
+            .contains("presentation_fence_warning_close_sweeps_delete")
+            && error.detail.contains("already exists"),
+        "actual late46 DDL collision: {error:?}"
+    );
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        45
+    );
+    assert_eq!(presentation_retained_rows(&db), before);
+    assert_eq!(presentation_schema_catalog(&db), catalog);
+    assert_eq!(db.query_row("SELECT count(*) FROM sqlite_schema WHERE name IN ('presentation_confirming_invitations','presentation_warning_proofs','presentation_warning_fence')",[],|r|r.get::<_,i64>(0)).unwrap(),0,"rollback removes bootstrapped projection and new proof/fence tables");
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    presentation_assert_retained_tables(&db, &retained);
+    db.close().unwrap();
+    let db = presentation_reopen(file.path());
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        45
+    );
+    assert_eq!(presentation_schema_catalog(&db), catalog);
+    presentation_assert_retained_tables(&db, &retained);
+    presentation_assert_foreign_keys(&db);
+    // The injected collision remains durable, and no46 bootstrap survived.
+    // Removing only that test obstruction permits the real45 ->46 retry.
+    db.execute_batch("DROP TRIGGER presentation_fence_warning_close_sweeps_delete")
+        .unwrap();
+    schema::initialize(&db, || UtcMillis(10001)).unwrap();
+    presentation_assert_retained_tables(&db, &retained);
+    let upgraded = presentation_retained_tables(&db);
+    let upgraded_catalog = presentation_schema_catalog(&db);
+    db.close().unwrap();
+    let db = presentation_reopen(file.path());
+    schema::initialize(&db, || UtcMillis(10002)).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        46
+    );
+    assert_eq!(presentation_schema_catalog(&db), upgraded_catalog);
+    presentation_assert_retained_tables(&db, &upgraded);
+    presentation_assert_foreign_keys(&db);
+    db.close().unwrap();
+}
+
+#[test]
+fn presentation_schema_populated_v40_consumers_upgrade_revised_v41_and_reopen() {
+    let file = ScratchStore::new("presentation-v40-consumers-upgrade");
+    let db = presentation_populate_v39(Connection::open(file.path()).unwrap(), true);
+    db.execute_batch(include_str!(
+        "../../migrations/0045_invitation_presentation.sql"
+    ))
+    .unwrap();
+    db.pragma_update(None, "user_version", 45).unwrap();
+    db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,binding_id) VALUES('s',0,'p','b',0,'codex','retained-session','retained-execution','cooperative_top_level',0,'retained-binding')").unwrap();
+    let columns=db.prepare("SELECT name,type,\"notnull\" FROM pragma_table_info('invitation_presentation_consumers') ORDER BY cid").unwrap().query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?))).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
+    let names = columns
+        .iter()
+        .map(|(name, _, _)| name.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    let values = columns
+        .iter()
+        .map(|(name, kind, required)| match name.as_str() {
+            "binding_id" => "'retained-binding'",
+            "seat_id" => "'s'",
+            "consumer" => "'hook'",
+            "instance_id" => "'i'",
+            "execution" => "'retained-execution'",
+            "ordinary_pending" => "'{\"prefix\":[],\"items\":[]}'",
+            "ordinary_partial" | "control_state" => "'{}'",
+            "last_descriptors" | "outbox_prefix" | "outbox_descriptors" => "'[]'",
+            _ if *required == 0 => "NULL",
+            _ if kind == "INTEGER" => "0",
+            _ => "''",
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    db.execute_batch(&format!(
+        "INSERT INTO invitation_presentation_consumers({names}) VALUES({values})"
+    ))
+    .unwrap();
+    let read_old = |db: &Connection| {
+        db.query_row(
+            &format!("SELECT {names} FROM invitation_presentation_consumers"),
+            [],
+            |r| {
+                (0..columns.len())
+                    .map(|n| r.get::<_, rusqlite::types::Value>(n))
+                    .collect::<Result<Vec<_>, _>>()
+            },
+        )
+        .unwrap()
+    };
+    let before = read_old(&db);
+    let retained = presentation_retained_tables(&db);
+    let catalog = presentation_schema_catalog(&db);
+    presentation_assert_foreign_keys(&db);
+    schema::initialize(&db, || UtcMillis(10000)).unwrap();
+    assert_eq!(
+        read_old(&db),
+        before,
+        "all retained40 presentation bytes preserved"
+    );
+    let scalars:(i64,i64,i64,i64)=db.query_row("SELECT ordinary_publication_after,ordinary_publication_high,ordinary_passive_generation,ordinary_scan_passive_generation FROM invitation_presentation_consumers",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+    assert_eq!(scalars, (0, 0, 0, 0));
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    presentation_assert_retained_tables(&db, &retained);
+    let upgraded = presentation_retained_tables(&db);
+    let upgraded_catalog = presentation_schema_catalog(&db);
+    for (kind, name, table, root, sql) in &catalog {
+        let new = upgraded_catalog
+            .iter()
+            .find(|row| &row.0 == kind && &row.1 == name)
+            .unwrap();
+        assert_eq!(
+            (&new.2, new.3),
+            (table, *root),
+            "old45 object/rootpage {name}"
+        );
+        if name != "invitation_presentation_consumers" {
+            assert_eq!(&new.4, sql, "old45 object DDL {name}");
+        }
+    }
+    db.close().unwrap();
+    let db = presentation_reopen(file.path());
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        46
+    );
+    schema::initialize(&db, || UtcMillis(10001)).unwrap();
+    assert_eq!(read_old(&db), before);
+    assert_eq!(presentation_schema_catalog(&db), upgraded_catalog);
+    presentation_assert_retained_tables(&db, &upgraded);
+    presentation_assert_foreign_keys(&db);
+    db.close().unwrap();
+}
+
+// Catches an appended receipt rebuild that drops published ACK binding attribution
+// or rewrites independent binding delivery/frontier history during an upgrade.
+#[test]
+fn published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history() {
+    published_binding_upgrade_preserves_exact_ack_bindings_and_delivery_history(35);
+}
+
+#[test]
+fn published_v36_upgrade_preserves_exact_in_turn_offers_and_delivery_history() {
+    published_binding_upgrade_preserves_exact_ack_bindings_and_delivery_history(36);
+}
+
+fn published_binding_upgrade_preserves_exact_ack_bindings_and_delivery_history(version: i64) {
+    for foreign_keys in [false, true] {
+        let source = v34_attention_fixture();
+        source.execute_batch("BEGIN IMMEDIATE").unwrap();
+        source
+            .execute_batch(include_str!(
+                "../../migrations/0035_binding_attention_frontiers.sql"
+            ))
+            .unwrap();
+        source.pragma_update(None, "user_version", 35).unwrap();
+        source.execute_batch("COMMIT").unwrap();
+        if version == 36 {
+            source
+                .execute_batch(include_str!("../../migrations/0036_in_turn_offer.sql"))
+                .unwrap();
+            source.pragma_update(None, "user_version", 36).unwrap();
+        }
+        let first = binding_id_of(&source, 1);
+        let second = binding_id_of(&source, 2);
+        // Attribution belongs to original publication: existing message history is immutable.
+        // These retained sends/ACKs lie inside the first two historical binding intervals.
+        source.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq,actor_seat_id,author_kind,author_role,sender_binding_id) VALUES('i','published35-physical','t',5,'ordinary','retained physical attribution',10,6,'agent','native','agent',?1),('i','published35-sparse','t',6,'ordinary','retained sparse attribution',21,7,'agent','native','agent',?2)", rusqlite::params![first,second]).unwrap();
+        source.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,ack_binding_id) VALUES('published35-physical','t','agent','acked',50,10,60,'agent',1,'cooperative_top_level',15,?1)", [&first]).unwrap();
+        source.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('published35-sparse-prep','i','seat:agent','published35-sparse-send',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed'); INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('published35-sparse-prep','t','agent',1,50,1); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','published35-sparse-prep','published35-sparse','t',7,21,6,0,1,0)").unwrap();
+        source.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,ack_binding_id) VALUES('published35-sparse','agent','acked',21,71,'agent',2,'cooperative_top_level',25,?1)", [&second]).unwrap();
+        if version == 36 {
+            source.execute("INSERT INTO in_turn_offer(binding_id,seat_id,item_id) VALUES (?1,'agent','published35-physical'),(?2,'agent','published35-sparse')", rusqlite::params![first, second]).unwrap();
+        }
+        let file = ScratchStore::new("published35-ack-binding-upgrade");
+        source
+            .execute("VACUUM INTO ?1", [file.path().to_str().unwrap()])
+            .unwrap();
+        source.close().unwrap();
+        let db = Connection::open(file.path()).unwrap();
+        db.pragma_update(None, "foreign_keys", foreign_keys)
+            .unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            version
+        );
+        let mut tables = vec![
+            "occupant_bindings",
+            "binding_cursors",
+            "catch_up",
+            "warning_offer",
+            "digest_notice_offer",
+            "lazy_recipients",
+            "messages",
+            "receipts",
+            "receipt_state",
+        ];
+        if version == 36 {
+            tables.push("in_turn_offer");
+        }
+        let in_turn_catalog_sql = "SELECT type,name,tbl_name,rootpage,sql FROM sqlite_schema WHERE tbl_name='in_turn_offer' ORDER BY type,name";
+        let in_turn_catalog = presentation_query_rows(&db, in_turn_catalog_sql);
+        let row_sql = |name: &str| {
+            if name == "binding_cursors" {
+                format!("SELECT * FROM {name} ORDER BY binding_id,thread_id")
+            } else {
+                format!("SELECT rowid,* FROM {name} ORDER BY rowid")
+            }
+        };
+        let captured: Vec<_> = tables
+            .iter()
+            .map(|name| presentation_query_rows(&db, &row_sql(name)))
+            .collect();
+        let receipt_catalog_sql = "SELECT type,name,tbl_name,rootpage,sql FROM sqlite_schema WHERE tbl_name IN ('receipts','receipt_state') ORDER BY type,name";
+        let receipt_catalog = presentation_query_rows(&db, receipt_catalog_sql);
+        // Force the new38 full receipt rebuild to fail its post-copy FK check.
+        // Both published ACK identities and every old receipt object must roll back.
+        db.pragma_update(None, "foreign_keys", false).unwrap();
+        db.execute_batch("CREATE TABLE published35_receipt_child(ordinal INTEGER REFERENCES receipts(ordinal)); INSERT INTO published35_receipt_child VALUES(999)").unwrap();
+        db.pragma_update(None, "foreign_keys", foreign_keys)
+            .unwrap();
+        let error = schema::initialize(&db, || UtcMillis(900)).unwrap_err();
+        assert!(
+            error
+                .detail
+                .contains("receipt upgrade foreign key violation"),
+            "must reach the new38 post-copy check: {error:?}"
+        );
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            37
+        );
+        assert_eq!(
+            presentation_query_rows(&db, receipt_catalog_sql),
+            receipt_catalog
+        );
+        if version == 36 {
+            assert_eq!(
+                presentation_query_rows(&db, in_turn_catalog_sql),
+                in_turn_catalog
+            );
+        }
+        for (name, expected) in tables.iter().zip(&captured) {
+            assert_eq!(
+                &presentation_query_rows(&db, &row_sql(name)),
+                expected,
+                "failed38 retains published35 {name}"
+            );
+        }
+        assert_eq!(
+            db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+                .unwrap(),
+            foreign_keys
+        );
+        db.execute("DELETE FROM published35_receipt_child", [])
+            .unwrap();
+        schema::initialize(&db, || UtcMillis(901)).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT ack_binding_id FROM receipts WHERE message_id='published35-physical'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            first
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT ack_binding_id FROM receipt_state WHERE message_id='published35-sparse'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            second
+        );
+        let retained = |db: &Connection| {
+            if version == 36 {
+                assert_eq!(
+                    presentation_query_rows(db, in_turn_catalog_sql),
+                    in_turn_catalog
+                );
+            }
+            for (name, expected) in tables.iter().zip(&captured) {
+                let rows = presentation_query_rows(db, &row_sql(name));
+                assert_eq!(&rows, expected, "published35 retained {name}");
+            }
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+                0
+            );
+            assert_eq!(
+                db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+                    .unwrap(),
+                foreign_keys
+            );
+            assert_eq!(
+                db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                schema::LATEST_VERSION
+            );
+        };
+        retained(&db);
+        db.close().unwrap();
+        let db = Connection::open(file.path()).unwrap();
+        db.pragma_update(None, "foreign_keys", foreign_keys)
+            .unwrap();
+        schema::initialize(&db, || {
+            panic!("latest reopened35 upgrade must not resample migration time")
+        })
+        .unwrap();
+        retained(&db);
+        db.close().unwrap();
+    }
+}
+
+// Real Main36 structural audits must precede appended feature work.
+#[test]
+fn published_v36_corrupt_offer_catalog_refuses_before_feature_migration() {
+    for corruption in ["DROP TABLE in_turn_offer", "DROP INDEX in_turn_offer_seat"] {
+        let db = v34_attention_fixture();
+        db.execute_batch(include_str!(
+            "../../migrations/0035_binding_attention_frontiers.sql"
+        ))
+        .unwrap();
+        db.execute_batch(include_str!("../../migrations/0036_in_turn_offer.sql"))
+            .unwrap();
+        db.pragma_update(None, "user_version", 36).unwrap();
+        db.execute_batch(corruption).unwrap();
+        let before = presentation_schema_catalog(&db);
+        assert!(schema::initialize(&db, || UtcMillis(900)).is_err());
+        assert_eq!(presentation_schema_catalog(&db), before);
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            36
+        );
+    }
+}
+
+#[test]
+fn published_v35_to_v36_late_offer_index_failure_rolls_back() {
+    let db = v34_attention_fixture();
+    db.execute_batch(include_str!(
+        "../../migrations/0035_binding_attention_frontiers.sql"
+    ))
+    .unwrap();
+    db.pragma_update(None, "user_version", 35).unwrap();
+    db.execute_batch("CREATE TABLE in_turn_offer_seat(blocker INTEGER)")
+        .unwrap();
+    let before = presentation_schema_catalog(&db);
+    assert!(schema::initialize(&db, || UtcMillis(900)).is_err());
+    assert_eq!(presentation_schema_catalog(&db), before);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        35
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name='in_turn_offer'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
 }

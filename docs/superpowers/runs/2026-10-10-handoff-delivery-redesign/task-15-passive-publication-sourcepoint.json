@@ -1,0 +1,25 @@
+{
+  "manifest_method": "sorted compact JSON OBJECT repo-relative path to sha256",
+  "source_sha256": "683cd1af15a464226bf5917bd4ab6632f6c149ff14f12db497ea421211182960",
+  "dirty_diff_sha256": "ff9f6b222c791aeb13e6477451e88e77bc34e337e9b041cb51b455985e93b75b",
+  "files": 3533,
+  "working_directory": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "target_dir": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "log": "/private/tmp/ht-task15-passive-publication-first-green-2.log",
+  "test": "presentation_quiet_channel_observes_new_lazy_ordinary_without_wake",
+  "capability_advertised": false,
+  "parent_authority": [
+    "48daad34",
+    "74411f83"
+  ],
+  "limits": {
+    "pull_source_visits": 433,
+    "refresh_source_visits": 160,
+    "publication_visits": 100,
+    "publication_probes": 200,
+    "publication_seeks": 3
+  },
+  "source_frozen": true,
+  "excluded_first_command": "Compile error E0505 in unrelated new stall fixture moving sender borrowed by later send closure; no test selected/no behavior evidence. Fixed sender.clone only.",
+  "first_compile_source_sha256": "479770bb41bdff9579bd7532ff1baba87eb534b3ff98e63964297e6daee02bbd"
+}

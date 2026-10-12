@@ -21,6 +21,50 @@ use crate::{
 };
 use std::sync::Arc;
 
+#[derive(Clone, Copy)]
+enum DeliveryRecheckClass {
+    Ack,
+    ModAck,
+    DeliveryConfirm,
+}
+
+impl DeliveryRecheckClass {
+    fn for_mutation(mutation: &PermitMutation) -> Option<Self> {
+        match mutation {
+            PermitMutation::Ack(_) | PermitMutation::AckDisplayed(_) => Some(Self::Ack),
+            PermitMutation::AckModDelivered(_) => Some(Self::ModAck),
+            PermitMutation::DeliveryConfirm(_) => Some(Self::DeliveryConfirm),
+            _ => None,
+        }
+    }
+
+    fn succeeded(self, result: &CommandResult) -> bool {
+        use crate::protocol::delivery::DeliveryConfirmOutcome;
+        match (self, result) {
+            (Self::Ack, CommandResult::Acknowledged(report)) => {
+                !report.acknowledged.is_empty() || !report.already_acknowledged.is_empty()
+            }
+            (Self::ModAck, CommandResult::ModDeliveryAcked(report)) => {
+                report.results.iter().any(|item| {
+                    matches!(
+                        item.result,
+                        ModAckOutcome::Settled | ModAckOutcome::AlreadySettled
+                    )
+                })
+            }
+            (Self::DeliveryConfirm, CommandResult::DeliveryConfirmed(report)) => {
+                report.results.iter().any(|item| {
+                    matches!(
+                        item.result,
+                        DeliveryConfirmOutcome::Settled | DeliveryConfirmOutcome::AlreadySettled
+                    )
+                })
+            }
+            _ => false,
+        }
+    }
+}
+
 struct BootstrapRuntime {
     canonical: crate::protocol::handoff::HandoffNamespace,
     observer: Arc<dyn BootstrapObserver>,
@@ -37,6 +81,7 @@ pub struct DomainService {
     cooperative_runtime: Option<(u32, Arc<FairWriter>)>,
     bootstrap: Option<BootstrapRuntime>,
     mod_channels: Arc<dyn crate::ports::ModChannels>,
+    pub(super) presentation: super::delivery_presentation::PresentationState,
     pub(super) delivery_pull: Arc<super::delivery_pull::DeliveryPullState>,
 }
 
@@ -53,6 +98,7 @@ impl DomainService {
             bootstrap: None,
             mod_channels: Arc::new(crate::ports::NoModChannels),
             delivery_pull: Default::default(),
+            presentation: Default::default(),
         }
     }
     /// Share the offered ledger with the wake lane (the same instance the wake worker reads).
@@ -660,6 +706,7 @@ impl DomainService {
         &self,
         claim: &CallerClaim,
         peer: PeerIdentity,
+        presentation: bool,
         budget: &CallBudget,
     ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
         let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
@@ -681,7 +728,7 @@ impl DomainService {
             ));
         }
         let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
-        self.store.hook_plain_reconnect(claim, budget)
+        self.store.hook_plain_reconnect(claim, presentation, budget)
     }
 
     /// A harness lifecycle event about a binding (spec §2, §3): authorised like a cooperative
@@ -786,43 +833,60 @@ impl DomainService {
         }
         // Admission precedes the issuer's bounded write. Retain this one turn
         // through the decision; the store rechecks context, budget and permit age.
-        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
-        let permit = self.store.issue_cooperative_permit(request, budget)?;
-        let permit = if matches!(
-            mutation,
-            PermitMutation::Invite(_) | PermitMutation::SendMessage(_)
-        ) {
-            if let Some(runtime) = &self.bootstrap {
-                permit.with_bootstrap_child(&runtime.canonical, &mutation)
+        let recheck = DeliveryRecheckClass::for_mutation(&mutation)
+            .map(|class| (class, request.claim.seat.clone()));
+        let result = {
+            let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+            let permit = self.store.issue_cooperative_permit(request, budget)?;
+            let permit = if matches!(
+                mutation,
+                PermitMutation::Invite(_) | PermitMutation::SendMessage(_)
+            ) {
+                if let Some(runtime) = &self.bootstrap {
+                    permit.with_bootstrap_child(&runtime.canonical, &mutation)
+                } else {
+                    permit
+                }
             } else {
                 permit
+            };
+            match mutation {
+                PermitMutation::CheckIn(command) => self.store.register_available(
+                    RegisterAvailableRequest {
+                        command,
+                        read,
+                        operator,
+                    },
+                    permit,
+                    budget,
+                ),
+                mutation
+                    if matches!(
+                        mutation,
+                        PermitMutation::BeginHandoff(_) | PermitMutation::CreateThread(_)
+                    ) && self.bootstrap.is_some() =>
+                {
+                    let runtime = self.bootstrap.as_ref().expect("equipped runtime");
+                    runtime.store.bootstrap_mutate(
+                        &runtime.canonical,
+                        mutation,
+                        permit,
+                        None,
+                        budget,
+                    )
+                }
+                mutation => self.store.mutate(mutation, permit, budget),
             }
-        } else {
-            permit
-        };
-        match mutation {
-            PermitMutation::CheckIn(command) => self.store.register_available(
-                RegisterAvailableRequest {
-                    command,
-                    read,
-                    operator,
-                },
-                permit,
-                budget,
-            ),
-            mutation
-                if matches!(
-                    mutation,
-                    PermitMutation::BeginHandoff(_) | PermitMutation::CreateThread(_)
-                ) && self.bootstrap.is_some() =>
-            {
-                let runtime = self.bootstrap.as_ref().expect("equipped runtime");
-                runtime
-                    .store
-                    .bootstrap_mutate(&runtime.canonical, mutation, permit, None, budget)
-            }
-            mutation => self.store.mutate(mutation, permit, budget),
+        }?;
+        // The canonical transaction and foreground writer turn ended above.
+        // Settled also covers Lazy completion; this is only a recheck hint.
+        if let Some((class, seat)) = recheck
+            && class.succeeded(&result)
+        {
+            self.mod_channels
+                .presentation_delivery_may_have_changed(&seat);
         }
+        Ok(result)
     }
     /// Spec D6 pre-decision for `watch ack`: classify the whole batch against
     /// the seat's open binding and the live channel registry, then route the
@@ -967,14 +1031,24 @@ impl LocalService for DomainService {
         if claim.role != CallerRole::TopLevel || claim.is_subagent() {
             return Err(Refusal::NO_PUSH_CHANNEL);
         }
-        let view = self
-            .store
-            .mod_binding_view(
+        let mode = if request.presentation_v2 {
+            crate::ports::ModChannelMode::PresentationV2
+        } else {
+            crate::ports::ModChannelMode::Legacy
+        };
+        let view = match mode {
+            crate::ports::ModChannelMode::Legacy => self.store.mod_binding_view(
                 &claim.seat,
                 crate::ports::ModBindingRef::Claim(claim),
                 budget,
-            )
-            .map_err(|_| Refusal::Busy)?;
+            ),
+            crate::ports::ModChannelMode::PresentationV2 => self.store.presentation_seat_view(
+                &claim.seat,
+                crate::ports::ModBindingRef::Claim(claim),
+                budget,
+            ),
+        }
+        .map_err(|_| Refusal::Busy)?;
         let Some(view) = view else {
             return Err(Refusal::Unresolved);
         };
@@ -999,6 +1073,7 @@ impl LocalService for DomainService {
         }
         let channel = self.mod_channels.register(
             crate::ports::ModChannelRegistration {
+                mode,
                 seat: claim.seat.clone(),
                 binding: binding.binding_id.clone(),
                 binding_generation: binding.generation,
@@ -1010,6 +1085,10 @@ impl LocalService for DomainService {
             sink,
         )?;
         Ok((channel, view.attention_version))
+    }
+
+    fn watch_presentation_lease(&self, channel: crate::ports::ModChannelId) -> Option<String> {
+        self.mod_channels.presentation_lease(channel)
     }
 
     fn watch_unregister(
@@ -1343,6 +1422,10 @@ impl LocalService for DomainService {
                 }
                 let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
                 self.store.record_managed_launch(launch, budget)
+            }
+            Command::DeliveryPullV2(pull) => self.presentation_pull(&pull, peer, budget),
+            Command::DeliveryPresentationConfirmV2(confirm) => {
+                self.presentation_confirm(&confirm, peer, budget)
             }
             Command::LocalIntents(_) => Err(error(
                 ErrorCode::Unsupported,

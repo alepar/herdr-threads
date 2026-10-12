@@ -1,0 +1,409 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 23d49601-eee9-481c-b6b6-01c6f7f76304 with nextest profile: default
+    Starting 26 tests across 1 binary (4841 tests skipped)
+        FAIL [   0.018s] ( 1/26) herdr-threads cli::watch::tests::q3_false_watch_opt_in_normalizes_to_historical_bytes
+  stdout ───
+
+    running 1 test
+    test cli::watch::tests::q3_false_watch_opt_in_normalizes_to_historical_bytes ... FAILED
+
+    failures:
+
+    failures:
+        cli::watch::tests::q3_false_watch_opt_in_normalizes_to_historical_bytes
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4866 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'cli::watch::tests::q3_false_watch_opt_in_normalizes_to_historical_bytes' (55784424) panicked at src/cli/../../tests/cli/watch.rs:1181:5:
+    explicit false must decode: Err(Error("unknown field `presentation_v2`, expected `claim`", line: 0, column: 0))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.019s] ( 2/26) herdr-threads cli::watch::tests::q3_true_watch_opt_in_is_explicit_and_strictly_typed
+  stdout ───
+
+    running 1 test
+    test cli::watch::tests::q3_true_watch_opt_in_is_explicit_and_strictly_typed ... FAILED
+
+    failures:
+
+    failures:
+        cli::watch::tests::q3_true_watch_opt_in_is_explicit_and_strictly_typed
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4866 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'cli::watch::tests::q3_true_watch_opt_in_is_explicit_and_strictly_typed' (55784421) panicked at src/cli/../../tests/cli/watch.rs:1189:5:
+    explicit true must decode: Err(Error("unknown field `presentation_v2`, expected `claim`", line: 0, column: 0))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.019s] ( 3/26) herdr-threads cli::watch::tests::q3_absent_watch_opt_in_preserves_historical_bytes
+        FAIL [   0.020s] ( 4/26) herdr-threads cli::watch::tests::q3_missing_binding_cursors_capability_keeps_old_wire_and_consumer
+  stdout ───
+
+    running 1 test
+    test cli::watch::tests::q3_missing_binding_cursors_capability_keeps_old_wire_and_consumer ... FAILED
+
+    failures:
+
+    failures:
+        cli::watch::tests::q3_missing_binding_cursors_capability_keeps_old_wire_and_consumer
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4866 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'cli::watch::tests::q3_missing_binding_cursors_capability_keeps_old_wire_and_consumer' (55784427) panicked at src/cli/../../tests/cli/watch.rs:1298:5:
+    [DeliveryPullV2(DeliveryPullV2 { render: WatchJsonLinesV1, claim: CallerClaim { instance: "00000000-0000-0000-0000-000000000001", seat: SeatId("me"), binding_generation: 1, role: TopLevel, harness: Agent(AgentHarnessId { id: "claude", context_spelling: "Claude" }), native_session: NativeSessionId("sess-1"), execution: ExecutionId("00000000-0000-0000-0000-000000000002"), target: HostTargetId("w1:p1"), agent_id: None, liveness: None }, consumer: Watch, presentation_lease: Some("0123456789abcdef0123456789abcdef"), marker_prefix: [] })]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.020s] ( 5/26) herdr-threads cli::watch::tests::q3_watch_discovery_failure_never_opens_a_registration_socket
+        PASS [   0.020s] ( 6/26) herdr-threads cli::watch::tests::q3_missing_generic_presentation_capability_keeps_old_wire_and_consumer
+        PASS [   0.021s] ( 7/26) herdr-threads cli::watch::tests::q3_missing_mod_watch_capability_never_opens_a_registration_socket
+        FAIL [   0.021s] ( 8/26) herdr-threads cli::watch::tests::q3_all_watch_mode_capabilities_send_true_and_use_the_accepted_lease
+  stdout ───
+
+    running 1 test
+    test cli::watch::tests::q3_all_watch_mode_capabilities_send_true_and_use_the_accepted_lease ... FAILED
+
+    failures:
+
+    failures:
+        cli::watch::tests::q3_all_watch_mode_capabilities_send_true_and_use_the_accepted_lease
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4866 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'cli::watch::tests::q3_all_watch_mode_capabilities_send_true_and_use_the_accepted_lease' (55784431) panicked at src/cli/../../tests/cli/watch.rs:1315:5:
+    assertion `left == right` failed
+      left: Null
+     right: true
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.023s] ( 9/26) herdr-threads cli::watch::tests::q3_missing_watch_mode_capability_keeps_old_wire_and_consumer
+  stdout ───
+
+    running 1 test
+    test cli::watch::tests::q3_missing_watch_mode_capability_keeps_old_wire_and_consumer ... FAILED
+
+    failures:
+
+    failures:
+        cli::watch::tests::q3_missing_watch_mode_capability_keeps_old_wire_and_consumer
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4866 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'cli::watch::tests::q3_missing_watch_mode_capability_keeps_old_wire_and_consumer' (55784434) panicked at src/cli/../../tests/cli/watch.rs:1276:5:
+    [DeliveryPullV2(DeliveryPullV2 { render: WatchJsonLinesV1, claim: CallerClaim { instance: "00000000-0000-0000-0000-000000000001", seat: SeatId("me"), binding_generation: 1, role: TopLevel, harness: Agent(AgentHarnessId { id: "claude", context_spelling: "Claude" }), native_session: NativeSessionId("sess-1"), execution: ExecutionId("00000000-0000-0000-0000-000000000002"), target: HostTargetId("w1:p1"), agent_id: None, liveness: None }, consumer: Watch, presentation_lease: Some("0123456789abcdef0123456789abcdef"), marker_prefix: [] })]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.327s] (10/26) herdr-threads service::mod_channels::tests::domain::q3_legacy_channel_cannot_capture_owner_replay
+  stdout ───
+
+    running 1 test
+    test service::mod_channels::tests::domain::q3_legacy_channel_cannot_capture_owner_replay ... FAILED
+
+    failures:
+
+    failures:
+        service::mod_channels::tests::domain::q3_legacy_channel_cannot_capture_owner_replay
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4866 filtered out; finished in 0.31s
+
+  stderr ───
+
+    thread 'service::mod_channels::tests::domain::q3_legacy_channel_cannot_capture_owner_replay' (55784461) panicked at src/service/../../tests/service/mod_channels.rs:1485:9:
+    assertion failed: rig.registry.presentation_replay_snapshot(&req.claim, &lease,
+            &q3_due(rig.binding())).is_none()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.344s] (11/26) herdr-threads service::mod_channels::tests::domain::q3_legacy_channel_cannot_confirm_with_an_issued_or_guessed_lease
+  stdout ───
+
+    running 1 test
+    test service::mod_channels::tests::domain::q3_legacy_channel_cannot_confirm_with_an_issued_or_guessed_lease ... FAILED
+
+    failures:
+
+    failures:
+        service::mod_channels::tests::domain::q3_legacy_channel_cannot_confirm_with_an_issued_or_guessed_lease
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4866 filtered out; finished in 0.33s
+
+  stderr ───
+
+    thread 'service::mod_channels::tests::domain::q3_legacy_channel_cannot_confirm_with_an_issued_or_guessed_lease' (55784462) panicked at src/service/../../tests/service/mod_channels.rs:1501:9:
+    assertion `left == right` failed
+      left: NotCurrentPage
+     right: StaleBinding
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.372s] (12/26) herdr-threads service::mod_channels::tests::domain::each_channel_receives_only_its_bindings_deliveries
+  stdout ───
+
+    running 1 test
+    test service::mod_channels::tests::domain::each_channel_receives_only_its_bindings_deliveries ... FAILED
+
+    failures:
+
+    failures:
+        service::mod_channels::tests::domain::each_channel_receives_only_its_bindings_deliveries
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4866 filtered out; finished in 0.36s
+
+  stderr ───
+
+    thread 'service::mod_channels::tests::domain::each_channel_receives_only_its_bindings_deliveries' (55784459) panicked at src/service/../../tests/service/mod_channels.rs:1644:9:
+    assertion `left == right` failed
+      left: []
+     right: [Attention { version: 5 }]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.396s] (13/26) herdr-threads service::delivery_pull::tests::presentation_q3_capable_registry_uses_only_bounded_real_store_reads
+        FAIL [   0.386s] (14/26) herdr-threads service::delivery_pull::tests::presentation_q3_reader_change_respects_current_primary_or_refresh_scope
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_q3_reader_change_respects_current_primary_or_refresh_scope ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_q3_reader_change_respects_current_primary_or_refresh_scope
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4866 filtered out; finished in 0.38s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_q3_reader_change_respects_current_primary_or_refresh_scope' (55784457) panicked at src/service/../../tests/service/delivery_pull.rs:895:9:
+    assertion `left == right` failed: primary
+      left: (0, 0)
+     right: (1, 1)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.015s] (15/26) herdr-threads service::mod_channels::tests::each_channel_receives_only_its_bindings_deliveries
+        FAIL [   0.011s] (16/26) herdr-threads service::mod_channels::tests::q3_closed_receiver_preserves_passive_drain_without_an_immediate_kick_loop
+  stdout ───
+
+    running 1 test
+    test service::mod_channels::tests::q3_closed_receiver_preserves_passive_drain_without_an_immediate_kick_loop ... FAILED
+
+    failures:
+
+    failures:
+        service::mod_channels::tests::q3_closed_receiver_preserves_passive_drain_without_an_immediate_kick_loop
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4866 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'service::mod_channels::tests::q3_closed_receiver_preserves_passive_drain_without_an_immediate_kick_loop' (55784482) panicked at src/service/../../tests/service/mod_channels.rs:2064:5:
+    assertion `left == right` failed: false means closed receiver; preserve the pending drain
+      left: 1
+     right: 2
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.413s] (17/26) herdr-threads service::delivery_pull::tests::presentation_q3_reader_change_failure_rolls_back_cursor_and_private_state
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_q3_reader_change_failure_rolls_back_cursor_and_private_state ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_q3_reader_change_failure_rolls_back_cursor_and_private_state
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4866 filtered out; finished in 0.40s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_q3_reader_change_failure_rolls_back_cursor_and_private_state' (55784460) panicked at src/service/../../tests/service/delivery_pull.rs:927:9:
+    applicable checked failure must abort: ordinary_passive_generation: Ok(CursorsAdvanced([MessageId("m5td28Efq")]))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.417s] (18/26) herdr-threads service::delivery_pull::tests::presentation_q3_quiet_ordinary_sibling_ack_before_materialization_drains_passively
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_q3_quiet_ordinary_sibling_ack_before_materialization_drains_passively ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_q3_quiet_ordinary_sibling_ack_before_materialization_drains_passively
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4866 filtered out; finished in 0.40s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_q3_quiet_ordinary_sibling_ack_before_materialization_drains_passively' (55784458) panicked at src/service/../../tests/service/delivery_pull.rs:264:9:
+    canonical change never requested the parked channel's next Pull
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.092s] (19/26) herdr-threads service::mod_channels::tests::domain::q3_legacy_channel_cannot_pull_with_an_issued_or_guessed_lease
+  stdout ───
+
+    running 1 test
+    test service::mod_channels::tests::domain::q3_legacy_channel_cannot_pull_with_an_issued_or_guessed_lease ... FAILED
+
+    failures:
+
+    failures:
+        service::mod_channels::tests::domain::q3_legacy_channel_cannot_pull_with_an_issued_or_guessed_lease
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4866 filtered out; finished in 0.07s
+
+  stderr ───
+
+    thread 'service::mod_channels::tests::domain::q3_legacy_channel_cannot_pull_with_an_issued_or_guessed_lease' (55784467) panicked at src/service/../../tests/service/mod_channels.rs:1467:9:
+    legacy registration cannot acquire V2 authority through a token
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.076s] (20/26) herdr-threads service::mod_channels::tests::domain::q3_legacy_claim_only_registration_has_no_presentation_lease
+  stdout ───
+
+    running 1 test
+    test service::mod_channels::tests::domain::q3_legacy_claim_only_registration_has_no_presentation_lease ... FAILED
+
+    failures:
+
+    failures:
+        service::mod_channels::tests::domain::q3_legacy_claim_only_registration_has_no_presentation_lease
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4866 filtered out; finished in 0.06s
+
+  stderr ───
+
+    thread 'service::mod_channels::tests::domain::q3_legacy_claim_only_registration_has_no_presentation_lease' (55784470) panicked at src/service/../../tests/service/mod_channels.rs:1451:9:
+    assertion `left == right` failed
+      left: Some("8d88fde4ba6e400988560c51259ae9f2")
+     right: None
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.074s] (21/26) herdr-threads service::mod_channels::tests::domain::q3_mixed_same_seat_modes_and_replacement_cannot_borrow_old_leases
+  stdout ───
+
+    running 1 test
+    test service::mod_channels::tests::domain::q3_mixed_same_seat_modes_and_replacement_cannot_borrow_old_leases ... FAILED
+
+    failures:
+
+    failures:
+        service::mod_channels::tests::domain::q3_mixed_same_seat_modes_and_replacement_cannot_borrow_old_leases
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4866 filtered out; finished in 0.06s
+
+  stderr ───
+
+    thread 'service::mod_channels::tests::domain::q3_mixed_same_seat_modes_and_replacement_cannot_borrow_old_leases' (55784475) panicked at src/service/../../tests/service/mod_channels.rs:1373:9:
+    explicit Watch mode must decode: Err(Error("unknown field `presentation_v2`, expected `claim`", line: 0, column: 0))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.483s] (22/26) herdr-threads service::delivery_pull::tests::presentation_q3_reader_change_is_binding_local_coalesced_and_noop_stable
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_q3_reader_change_is_binding_local_coalesced_and_noop_stable ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_q3_reader_change_is_binding_local_coalesced_and_noop_stable
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4866 filtered out; finished in 0.47s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_q3_reader_change_is_binding_local_coalesced_and_noop_stable' (55784454) panicked at src/service/../../tests/service/delivery_pull.rs:823:13:
+    assertion `left == right` failed: one coalesced change per existing current consumer
+      left: (0, 0)
+     right: (1, 1)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.527s] (23/26) herdr-threads service::delivery_pull::tests::presentation_q3_quiet_pending_and_lazy_publications_have_distinct_authority
+        FAIL [   0.629s] (24/26) herdr-threads service::delivery_pull::tests::presentation_q3_shared_ack_rechecks_read_captured_body_but_keeps_unread_sibling
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_q3_shared_ack_rechecks_read_captured_body_but_keeps_unread_sibling ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_q3_shared_ack_rechecks_read_captured_body_but_keeps_unread_sibling
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4866 filtered out; finished in 0.62s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_q3_shared_ack_rechecks_read_captured_body_but_keeps_unread_sibling' (55784455) panicked at src/service/../../tests/service/delivery_pull.rs:264:9:
+    canonical change never requested the parked channel's next Pull
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.997s] (25/26) herdr-threads service::delivery_pull::tests::presentation_q3_parked_ack_then_reader_resumes_existing_id257
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_q3_parked_ack_then_reader_resumes_existing_id257 ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_q3_parked_ack_then_reader_resumes_existing_id257
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4866 filtered out; finished in 0.99s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_q3_parked_ack_then_reader_resumes_existing_id257' (55784420) panicked at src/service/../../tests/service/delivery_pull.rs:264:9:
+    canonical change never requested the parked channel's next Pull
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   1.009s] (26/26) herdr-threads service::delivery_pull::tests::presentation_q3_parked_reader_then_ack_resumes_existing_id257
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_q3_parked_reader_then_ack_resumes_existing_id257 ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_q3_parked_reader_then_ack_resumes_existing_id257
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4866 filtered out; finished in 0.99s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_q3_parked_reader_then_ack_resumes_existing_id257' (55784437) panicked at src/service/../../tests/service/delivery_pull.rs:264:9:
+    canonical change never requested the parked channel's next Pull
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   1.023s] 26 tests run: 7 passed, 19 failed, 4841 skipped
+        FAIL [   0.018s] ( 1/26) herdr-threads cli::watch::tests::q3_false_watch_opt_in_normalizes_to_historical_bytes
+        FAIL [   0.019s] ( 2/26) herdr-threads cli::watch::tests::q3_true_watch_opt_in_is_explicit_and_strictly_typed
+        FAIL [   0.020s] ( 4/26) herdr-threads cli::watch::tests::q3_missing_binding_cursors_capability_keeps_old_wire_and_consumer
+        FAIL [   0.021s] ( 8/26) herdr-threads cli::watch::tests::q3_all_watch_mode_capabilities_send_true_and_use_the_accepted_lease
+        FAIL [   0.023s] ( 9/26) herdr-threads cli::watch::tests::q3_missing_watch_mode_capability_keeps_old_wire_and_consumer
+        FAIL [   0.327s] (10/26) herdr-threads service::mod_channels::tests::domain::q3_legacy_channel_cannot_capture_owner_replay
+        FAIL [   0.344s] (11/26) herdr-threads service::mod_channels::tests::domain::q3_legacy_channel_cannot_confirm_with_an_issued_or_guessed_lease
+        FAIL [   0.372s] (12/26) herdr-threads service::mod_channels::tests::domain::each_channel_receives_only_its_bindings_deliveries
+        FAIL [   0.386s] (14/26) herdr-threads service::delivery_pull::tests::presentation_q3_reader_change_respects_current_primary_or_refresh_scope
+        FAIL [   0.011s] (16/26) herdr-threads service::mod_channels::tests::q3_closed_receiver_preserves_passive_drain_without_an_immediate_kick_loop
+        FAIL [   0.413s] (17/26) herdr-threads service::delivery_pull::tests::presentation_q3_reader_change_failure_rolls_back_cursor_and_private_state
+        FAIL [   0.417s] (18/26) herdr-threads service::delivery_pull::tests::presentation_q3_quiet_ordinary_sibling_ack_before_materialization_drains_passively
+        FAIL [   0.092s] (19/26) herdr-threads service::mod_channels::tests::domain::q3_legacy_channel_cannot_pull_with_an_issued_or_guessed_lease
+        FAIL [   0.076s] (20/26) herdr-threads service::mod_channels::tests::domain::q3_legacy_claim_only_registration_has_no_presentation_lease
+        FAIL [   0.074s] (21/26) herdr-threads service::mod_channels::tests::domain::q3_mixed_same_seat_modes_and_replacement_cannot_borrow_old_leases
+        FAIL [   0.483s] (22/26) herdr-threads service::delivery_pull::tests::presentation_q3_reader_change_is_binding_local_coalesced_and_noop_stable
+        FAIL [   0.629s] (24/26) herdr-threads service::delivery_pull::tests::presentation_q3_shared_ack_rechecks_read_captured_body_but_keeps_unread_sibling
+        FAIL [   0.997s] (25/26) herdr-threads service::delivery_pull::tests::presentation_q3_parked_ack_then_reader_resumes_existing_id257
+        FAIL [   1.009s] (26/26) herdr-threads service::delivery_pull::tests::presentation_q3_parked_reader_then_ack_resumes_existing_id257
+error: test run failed

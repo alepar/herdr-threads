@@ -1,0 +1,67 @@
+{
+  "tested_head": "dc15706e",
+  "current_head": "6abdf38f931f5ad3d386ae85890cbcf6af0912c3",
+  "files": [
+    {
+      "path": "integrations/claude/mod/.claude-plugin/plugin.json",
+      "tested_blob": "42ba7465a46bba8f3cd7f749bd00bae624ae3409",
+      "current_blob": "42ba7465a46bba8f3cd7f749bd00bae624ae3409"
+    },
+    {
+      "path": "integrations/claude/mod/README.md",
+      "tested_blob": "5d4cfb91745455a5e978236b3c192993c9f13b92",
+      "current_blob": "5d4cfb91745455a5e978236b3c192993c9f13b92"
+    },
+    {
+      "path": "integrations/claude/mod/hooks/hooks.json",
+      "tested_blob": "687749f7833a4de4cf567d8381ea68ff87d86cb7",
+      "current_blob": "687749f7833a4de4cf567d8381ea68ff87d86cb7"
+    },
+    {
+      "path": "integrations/claude/mod/hooks/register.js",
+      "tested_blob": "1aa0b7a718e00ac389346f0052e4afa7da9872e0",
+      "current_blob": "1aa0b7a718e00ac389346f0052e4afa7da9872e0"
+    },
+    {
+      "path": "integrations/claude/mod/tests/delivery.test.ts",
+      "tested_blob": "34e1aabaf5618ae336432e83b7642d53d0acec09",
+      "current_blob": "34e1aabaf5618ae336432e83b7642d53d0acec09"
+    },
+    {
+      "path": "integrations/claude/mod/tests/fixtures/frame-goldens.ts",
+      "tested_blob": "2a6c6553842091a5c7d29ba89db36dc8c1e8c008",
+      "current_blob": "2a6c6553842091a5c7d29ba89db36dc8c1e8c008"
+    },
+    {
+      "path": "integrations/claude/mod/tests/fixtures/watch-activation.ts",
+      "tested_blob": "fcb80b114d4345cb6cff3fa6145f80ad3e94d1c0",
+      "current_blob": "fcb80b114d4345cb6cff3fa6145f80ad3e94d1c0"
+    },
+    {
+      "path": "integrations/claude/mod/tests/frame_golden.test.ts",
+      "tested_blob": "f10a7066610094b94dde810ba2dc08dba45506fa",
+      "current_blob": "f10a7066610094b94dde810ba2dc08dba45506fa"
+    },
+    {
+      "path": "integrations/claude/mod/tests/stress.test.ts",
+      "tested_blob": "3cd9b947b2ca5278205bbb5cf8cd4f51e64e4a90",
+      "current_blob": "3cd9b947b2ca5278205bbb5cf8cd4f51e64e4a90"
+    },
+    {
+      "path": "integrations/claude/mod/tsconfig.json",
+      "tested_blob": "aa8d527676867a82274e5103acd3190883c4c46e",
+      "current_blob": "aa8d527676867a82274e5103acd3190883c4c46e"
+    },
+    {
+      "path": "integrations/claude/mod/types/index.d.ts",
+      "tested_blob": "218e3b6ea3e0695da803bb6baca1f20030955e65",
+      "current_blob": "218e3b6ea3e0695da803bb6baca1f20030955e65"
+    },
+    {
+      "path": "scripts/test-claude-mod",
+      "tested_blob": "199be8363bc86307817f2290e3a126e85e1e7ea9",
+      "current_blob": "199be8363bc86307817f2290e3a126e85e1e7ea9"
+    }
+  ],
+  "scope": "strict Claude plugin validation and124 tests; no live uptake claim"
+}

@@ -103,7 +103,7 @@ fn parse(argv: &[String]) -> Result<Args, ApiError> {
 }
 struct Captured {
     observation: runtime::PrelaunchObservation,
-    fingerprint: String,
+    hook: Option<crate::ports::ConfiguredHook>,
 }
 fn observe(
     request: &LaunchRequest,
@@ -138,10 +138,10 @@ fn observe(
                 "source-bound prelaunch API/profile observation unavailable",
             )
         })?;
-    if observed.profile.home != *home || observed.profile.configured_enabled() != Some(true) {
+    if observed.profile.home != *home {
         return Err(error(
-            ErrorCode::MissingHook,
-            "Hermes selected profile must explicitly enable owned integration",
+            ErrorCode::Conflict,
+            "Hermes selected native profile home changed",
         ));
     }
     Ok(observed)
@@ -246,14 +246,10 @@ impl LaunchPolicy for HermesLaunch {
         budget: &CallBudget,
     ) -> Result<Box<dyn Any + Send + Sync>, ApiError> {
         let observation = observe(request, scope, budget)?;
-        let fingerprint = owned(request, &observation)?
-            .launch_hook
-            .unwrap()
-            .fingerprint;
-        Ok(Box::new(Captured {
-            observation,
-            fingerprint,
-        }))
+        let hook = owned(request, &observation)
+            .ok()
+            .and_then(|status| status.launch_hook);
+        Ok(Box::new(Captured { observation, hook }))
     }
     fn compose_argv(
         &self,
@@ -313,16 +309,18 @@ impl LaunchPolicy for HermesLaunch {
                 "wrong launch-only observation type",
             )
         })?;
-        let current = owned(request, &captured.observation)?;
-        let hook = current.launch_hook.unwrap();
-        if status.enabled != Some(true)
-            || status.configured_hook.as_ref() != Some(&hook)
-            || status.fingerprint.as_deref() != Some(captured.fingerprint.as_str())
-        {
-            return Err(error(
-                ErrorCode::Conflict,
-                "Hermes configuration changed during preparation",
-            ));
+        let hook = captured.hook.clone();
+        if let Some(hook) = &hook {
+            let current = owned(request, &captured.observation)?;
+            if status.enabled != Some(true)
+                || status.configured_hook.as_ref() != Some(hook)
+                || current.launch_hook.as_ref() != Some(hook)
+            {
+                return Err(error(
+                    ErrorCode::Conflict,
+                    "Hermes used configuration changed during preparation",
+                ));
+            }
         }
         Ok(LaunchPreparation {
             argv: self.compose_argv(request.argv.clone(), vec![])?,
@@ -348,13 +346,25 @@ impl LaunchPolicy for HermesLaunch {
             )
         })?;
         let current = observe(request, scope, budget)?;
-        if current.observation_fingerprint != captured.observation.observation_fingerprint {
+        if current.launch_input_fingerprint != captured.observation.launch_input_fingerprint {
             return Err(error(
                 ErrorCode::Conflict,
                 "Hermes API/profile/config observation changed before submission",
             ));
         }
-        Ok(owned(request, &current)?.launch_hook.unwrap().fingerprint)
+        if let Some(hook) = &captured.hook {
+            let current_hook = owned(request, &current)?.launch_hook;
+            if current_hook.as_ref() != Some(hook) {
+                return Err(error(
+                    ErrorCode::Conflict,
+                    "Hermes used owned configuration changed before submission",
+                ));
+            }
+        }
+        Ok(format!(
+            "{}:{:?}",
+            current.launch_input_fingerprint, captured.hook
+        ))
     }
     fn configuration_fingerprint(
         &self,

@@ -1,0 +1,72 @@
+{
+  "head": "31819c1f9f5c960f27541128f743614970b10a17",
+  "tree": "19c7e09e3c90cfec66ff6782775c6ef4cfdb699a",
+  "run_id": "9f5157a4-bb23-4701-b7d4-2bfb4a3baa99",
+  "expected": [
+    "mod_delivery::activation_v2_elected_watch_capabilities_lease_output_confirm",
+    "mod_delivery::activation_v2_watch_replacement_replays_uncommitted_output",
+    "mod_delivery::clear_rebind_pending_item_restreamed_to_new_session",
+    "mod_delivery::notice_published_while_live_reaches_the_next_pre_tool_use_once",
+    "mod_delivery::stale_attention_is_retracted_after_accept_and_after_a_notice_offer"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 6.167584000038914
+  },
+  "selected": [
+    [
+      "herdr-threads::integration",
+      "mod_delivery::activation_v2_elected_watch_capabilities_lease_output_confirm"
+    ],
+    [
+      "herdr-threads::integration",
+      "mod_delivery::activation_v2_watch_replacement_replays_uncommitted_output"
+    ],
+    [
+      "herdr-threads::integration",
+      "mod_delivery::clear_rebind_pending_item_restreamed_to_new_session"
+    ],
+    [
+      "herdr-threads::integration",
+      "mod_delivery::notice_published_while_live_reaches_the_next_pre_tool_use_once"
+    ],
+    [
+      "herdr-threads::integration",
+      "mod_delivery::stale_attention_is_retracted_after_accept_and_after_a_notice_offer"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/integration-72ddfdb23ea62d2e",
+      "sha256": "7241836baa9c114147db0000f98b5c6d823d41d55006db15decc07db2be1e816"
+    }
+  ],
+  "run": {
+    "exit": 0,
+    "seconds": 4.093501582974568,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--test",
+      "integration",
+      "--no-fail-fast",
+      "-E",
+      "test(=mod_delivery::activation_v2_elected_watch_capabilities_lease_output_confirm) | test(=mod_delivery::activation_v2_watch_replacement_replays_uncommitted_output) | test(=mod_delivery::clear_rebind_pending_item_restreamed_to_new_session) | test(=mod_delivery::notice_published_while_live_reaches_the_next_pre_tool_use_once) | test(=mod_delivery::stale_attention_is_retracted_after_accept_and_after_a_notice_offer)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.18897174997255206,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "9f5157a4-bb23-4701-b7d4-2bfb4a3baa99"
+    ]
+  },
+  "leak_exit": 0
+}

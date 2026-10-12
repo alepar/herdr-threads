@@ -152,3 +152,68 @@ fn parse_failure_report_follows_the_legacy_contract_predicate() {
         );
     }
 }
+
+// Adapter completion is gated by both real writer operations, not by preparation.
+#[test]
+fn adapter_completion_requires_successful_stdout_write_and_flush() {
+    struct Writer {
+        fail_write: bool,
+        fail_flush: bool,
+        bytes: Vec<u8>,
+        flushed: bool,
+    }
+    impl std::io::Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.fail_write {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            if self.fail_flush {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            self.flushed = true;
+            Ok(())
+        }
+    }
+    for (fail_write, fail_flush, completed) in [
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        let mut writer = Writer {
+            fail_write,
+            fail_flush,
+            bytes: vec![],
+            flushed: false,
+        };
+        let delivered = write_and_flush(b"native hook output", &mut writer);
+        let mut calls = 0;
+        complete_after_emit(delivered, || {
+            assert!(writer.flushed);
+            assert_eq!(writer.bytes, b"native hook output");
+            calls += 1;
+        });
+        assert_eq!(calls, usize::from(completed));
+    }
+}
+
+#[test]
+fn default_hook_step_completion_is_inert() {
+    struct Existing;
+    impl HookStep for Existing {
+        fn run(&self, _: &HookStepContext<'_>) -> Vec<u8> {
+            b"old native bytes".to_vec()
+        }
+    }
+    struct NoCalls;
+    impl HookStepDaemon for NoCalls {
+        fn call(&self, _: Command) -> Result<CommandResult, ApiError> {
+            panic!("default completion must be inert")
+        }
+    }
+    // The default completion accepts no authority or state from its payload.
+    Existing.complete(b"opaque", &NoCalls, Path::new("/unused"), Instant::now());
+}

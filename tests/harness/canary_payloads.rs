@@ -85,6 +85,16 @@ fn hook_argv_event(stdin_path: &Path, harness: &str) -> Option<Option<String>> {
     let argv = std::fs::read_to_string(stdin_path.with_extension("argv")).ok()?;
     let args: Vec<&str> = argv.lines().collect();
     match args.as_slice() {
+        [.., "hook-event", h, name]
+            if *h == harness
+                && match harness {
+                    "claude" => ["SessionStart", "PreToolUse"].contains(name),
+                    "codex" => ["SessionStart", "SubagentStart", "PreToolUse"].contains(name),
+                    _ => false,
+                } =>
+        {
+            Some(Some((*name).to_owned()))
+        }
         [.., "hook", h, "--event", name] if *h == harness => Some(Some((*name).to_owned())),
         [.., "hook", h] if *h == harness => Some(None),
         _ => None,
@@ -729,4 +739,36 @@ fn planted_capture_reports_contract_classification() {
         run.report["contract_id"],
         contract_id(contract_for("claude").unwrap())
     );
+}
+
+#[test]
+fn stable_capture_argv_is_replayed_only_for_declared_native_events() {
+    let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir).unwrap();
+    let stdin = dir.join("capture.stdin");
+    for (argv, harness, expected) in [
+        (
+            "--state-dir\n/s\n--host-endpoint\n/h\nhook-event\nclaude\nSessionStart\n",
+            "claude",
+            Some(Some("SessionStart".to_owned())),
+        ),
+        (
+            "hook-event\ncodex\nSubagentStart\n",
+            "codex",
+            Some(Some("SubagentStart".to_owned())),
+        ),
+        ("hook-event\nclaude\nSubagentStart\n", "claude", None),
+        ("hook-event\nclaude\nBogus\n", "claude", None),
+        ("hook-event\nclaude\nSessionStart\nextra\n", "claude", None),
+        (
+            "hook\nclaude\n--event\nSessionStart\n",
+            "claude",
+            Some(Some("SessionStart".to_owned())),
+        ),
+        ("hook\nclaude\n", "claude", Some(None)),
+    ] {
+        std::fs::write(stdin.with_extension("argv"), argv).unwrap();
+        assert_eq!(hook_argv_event(&stdin, harness), expected, "{argv}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -19,6 +19,7 @@ fn due_progress(
     DueScanProgress {
         state,
         examined_candidates: examined,
+        maintenance_sessions: 0,
         warnings_added: warnings,
         invitations: if more {
             DuePhaseProgress::More
