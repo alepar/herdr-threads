@@ -129,6 +129,7 @@ class Run:
         self.stopping = threading.Event()  # set (under self.lock) when cleanup begins
         self.children = set()              # in-flight helper processes, registered under self.lock
         self.workers = []
+        self.start_attempted = set()  # recorded just before Thread.start: a mid-start interrupt is still joined
         self.drain_timeout_s = 30.0
         self.child_term_grace_s = 3.0
 
@@ -414,9 +415,12 @@ class Run:
                     problems.append(f"helper pid {p.pid} did not exit: {p.args[:3]}")
         end = time.time() + self.drain_timeout_s
         for w in self.workers:
-            if w.ident is None:  # never started (interrupted or failed start): nothing to drain
+            if w not in self.start_attempted:  # never asked to start: nothing to drain
                 continue
-            w.join(timeout=max(0.0, end - time.time()))
+            try:
+                w.join(timeout=max(0.0, end - time.time()))
+            except RuntimeError:  # its start failed before the thread existed
+                continue
             if w.is_alive():
                 problems.append(f"worker {w.name} did not stop within {self.drain_timeout_s:.0f}s")
         with self.lock:
@@ -971,12 +975,11 @@ def main(argv=None):
                    for r in run.recipients]
         run.workers = workers  # registered before starting; drain skips any that never started
         for w in workers:
-            if run.stopping.is_set():
-                break
+            run.start_attempted.add(w)
             w.start()
         while any(w.is_alive() for w in workers):  # short joins keep Ctrl-C / SIGTERM responsive
             for w in workers:
-                if w.ident is not None:
+                if w.is_alive():
                     w.join(timeout=0.5)
         rc = EXIT_OK if summary(run, cases) else EXIT_FAIL
     except Refused as e:
