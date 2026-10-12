@@ -439,6 +439,29 @@ class PartialStartAndDrainErrors(TempDir):
         self.assert_all_resources_attempted(doc)
         self.assertEqual(doc["cleanup"]["problems"], [])
 
+    def test_drain_joins_a_thread_that_finishes_starting_late(self):
+        """The join retries while start() has not completed (the mid-start window), then joins the thread."""
+        r = real_run(self.tmp)
+        self.addCleanup(r.cmdlog.close)
+
+        class LateStart:  # join() raises like a not-yet-started Thread for 0.2 s, then joins
+            name = "cl-late"
+
+            def __init__(self):
+                self.ready, self.joined = time.time() + 0.2, False
+
+            def join(self, timeout=None):
+                if time.time() < self.ready:
+                    raise RuntimeError("cannot join thread before it is started")
+                self.joined = True
+
+            def is_alive(self):
+                return False
+        late = LateStart()
+        r.workers, r.start_attempted = [late], {late}
+        self.assertEqual(r.drain(), [])
+        self.assertTrue(late.joined)
+
     def test_a_drain_error_does_not_skip_owned_resources(self):
         def drain(run_):
             raise RuntimeError("drain exploded")
