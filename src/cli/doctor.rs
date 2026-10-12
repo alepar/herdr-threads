@@ -741,6 +741,10 @@ pub(crate) fn health_degrades_result(health: &crate::protocol::results::Health) 
     health.state == HealthState::Degraded && !health.starting()
 }
 
+/// Doctor's one text line for a starting daemon, in place of an `issue:`
+/// per not-yet-observed Health line (those print as `pending:`).
+pub(crate) const DAEMON_STARTING_TEXT: &str = "note: daemon starting; first reconciliation pending";
+
 fn writes_safe(report: &Value) -> bool {
     report["context"]["ok"] == true
         && report["state_dir"]["safe"] == true
@@ -1397,9 +1401,25 @@ pub(crate) fn render_text_in(
             }
         }
     }
+    // While the daemon is starting, lines that only say something has not
+    // been observed yet are `pending:`, not `issue:`; real issues stay.
+    let starting = report["daemon"]["state"] == "starting";
+    if starting {
+        out.push_str(DAEMON_STARTING_TEXT);
+        out.push('\n');
+    }
     if let Some(items) = report["daemon"]["limitations"].as_array() {
         for item in items {
-            out.push_str(&format!("issue: {}\n", scalar(item)));
+            let label = if starting
+                && item
+                    .as_str()
+                    .is_some_and(crate::daemon::health::is_pending_observation_line)
+            {
+                "pending"
+            } else {
+                "issue"
+            };
+            out.push_str(&format!("{label}: {}\n", scalar(item)));
         }
     }
     if let Some(items) = report["limitations"].as_array() {

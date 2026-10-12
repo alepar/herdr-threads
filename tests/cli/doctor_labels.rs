@@ -586,3 +586,38 @@ fn doctor_reports_starting_until_the_first_reconciliation_or_the_bound() {
     assert!(text.contains("daemon: starting\n"), "{text}");
     assert!(repairs_allowed(&report));
 }
+
+/// Review I4. Kills: doctor printing the not-yet-observed Health lines as
+/// `issue:` under `daemon: starting` (recreating the alarming output), and
+/// relabelling a real issue or a degraded daemon's lines.
+#[test]
+fn starting_daemon_text_relabels_pending_observation_lines_only() {
+    let starting = boot_health(1_000, false);
+    let pending = starting
+        .limitations
+        .iter()
+        .find(|line| line.starts_with("harness claude unknown:"))
+        .cloned()
+        .expect("the fresh boot lists the unobserved harness");
+    let real = "untested Herdr 9.9.9; report problems";
+    let report = |state: &str| {
+        json!({
+            "result": "ok", "context": {"ok": true}, "state_dir": {"safe": true},
+            "daemon": {"state": state, "version_matches": true,
+                       "limitations": [pending.clone(), real]},
+        })
+    };
+    let text = render_text(&report("starting"));
+    assert!(
+        text.contains(&format!("{DAEMON_STARTING_TEXT}\n")),
+        "{text}"
+    );
+    assert!(text.contains(&format!("pending: {pending}\n")), "{text}");
+    assert!(!text.contains(&format!("issue: {pending}")), "{text}");
+    assert!(text.contains(&format!("issue: {real}\n")), "{text}");
+
+    let text = render_text(&report("degraded"));
+    assert!(!text.contains(DAEMON_STARTING_TEXT), "{text}");
+    assert!(!text.contains("pending: "), "{text}");
+    assert!(text.contains(&format!("issue: {pending}\n")), "{text}");
+}

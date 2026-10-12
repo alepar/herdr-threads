@@ -154,6 +154,20 @@ pub const STARTUP_GRACE_MS: u64 = 30_000;
 pub const FIRST_RECONCILIATION_OVERDUE_LINE: &str =
     "reconciliation: none completed within 30 s of daemon start";
 
+/// The tail of the `harness NAME unknown: ...` limitation listed until the
+/// bounded boot observation of that harness finishes.
+const HARNESS_UNOBSERVED_SUFFIX: &str =
+    " unknown: executable availability has not been observed yet";
+
+/// Whether a Health limitation only says something has not been observed
+/// yet (`harness NAME unknown: ...`). Doctor labels these `pending:` instead
+/// of `issue:` while the daemon reports itself starting.
+pub fn is_pending_observation_line(line: &str) -> bool {
+    line.strip_prefix("harness ")
+        .and_then(|rest| rest.strip_suffix(HARNESS_UNOBSERVED_SUFFIX))
+        .is_some_and(|name| !name.is_empty() && !name.contains(' '))
+}
+
 /// The limitation shown while the harness version evidence cannot be read.
 pub const HARNESS_EVIDENCE_UNAVAILABLE_LINE: &str = "harness contract diagnostics unavailable: the evidence store could not be read, so actual input failures would not show here";
 
@@ -334,7 +348,7 @@ fn harness_line(
     match status {
         HarnessStatus::Unknown => push(
             limitations,
-            format!("harness {name} unknown: executable availability has not been observed yet"),
+            format!("harness {name}{HARNESS_UNOBSERVED_SUFFIX}"),
         ),
         HarnessStatus::NotInstalled(detail) => {
             push(notes, format!("harness {name} not installed: {detail}"))

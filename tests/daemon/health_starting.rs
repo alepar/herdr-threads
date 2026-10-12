@@ -107,6 +107,22 @@ fn real_problem_during_startup_is_degraded() {
         ("retirement degraded", |inputs| {
             inputs.retirement.degraded = true
         }),
+        // After a Herdr restart seats stay unresolved until the first
+        // coherent snapshot: conservatively degraded, not starting.
+        ("unresolved seats", |inputs| {
+            inputs.unresolved = Some(crate::ports::UnresolvedSeatSummary {
+                count: 1,
+                sample: Vec::new(),
+            })
+        }),
+        // A failed lane, with the scheduler component input still ready.
+        ("degraded lane", |inputs| {
+            inputs.degraded_lanes = vec![LaneDegradation {
+                lane: "observation",
+                summary: "lane observation failed: StoreBusy".into(),
+                class: None,
+            }]
+        }),
     ];
     for (name, apply) in problems {
         let mut inputs = fresh_boot_inputs(1_000);
@@ -151,4 +167,26 @@ fn starting_marker_needs_a_degraded_unreconciled_health() {
     let mut health = fresh_boot_inputs(1_000).assemble();
     health.state = HealthState::Unavailable;
     assert!(!health.starting());
+}
+
+/// Kills: a pending-observation matcher that relabels real issues.
+#[test]
+fn pending_observation_lines_are_only_the_unobserved_harness_lines() {
+    let health = fresh_boot_inputs(1_000).assemble();
+    let unknown: Vec<&String> = health
+        .limitations
+        .iter()
+        .filter(|line| line.starts_with("harness "))
+        .collect();
+    assert!(!unknown.is_empty());
+    assert!(unknown.iter().all(|line| is_pending_observation_line(line)));
+    for line in [
+        "harness claude unsupported: bad version",
+        "host unavailable: socket gone",
+        "untested Herdr 9.9.9",
+        FIRST_RECONCILIATION_OVERDUE_LINE,
+        "harness  unknown: executable availability has not been observed yet",
+    ] {
+        assert!(!is_pending_observation_line(line), "{line}");
+    }
 }
