@@ -764,6 +764,7 @@ fn deadline_commit_creating_a_warning_starts_a_kicked_wake_pass_within_100ms() {
             .unwrap()
     };
     let reserved_before = reservations();
+    let wake_commits = session.commits("wake");
     let starts = Arc::new(Mutex::new(Vec::<(Wake, Instant)>::new()));
     let recorded = Arc::clone(&starts);
     session.probe.set_registered_wake_hook(
@@ -783,9 +784,12 @@ fn deadline_commit_creating_a_warning_starts_a_kicked_wake_pass_within_100ms() {
     // it. The measured kick is still the deadline lane's own commit kicking
     // the wake lane.
     session.probe.kick_registered(Lane::Deadlines);
-    // Pin the kick to the publication: once the inviter's recipient row is
-    // committed, its commit's kick is logged; the latest deadline-origin Wakes
-    // kick from then on follows that commit.
+    // Pin the kick to the publication: the overdue commit creates the warning
+    // and the inviter's recipient row together, so the first deadline-origin
+    // Wakes kick after the baseline is that commit's. Later deadline commits
+    // (warning-job attribution) may kick while the pass it started is still
+    // dispatching the inviter's wake; such a latched kick waits for that pass,
+    // so it is not the latency this test measures.
     let attributed = || -> bool {
         session
             .db()
@@ -806,7 +810,6 @@ fn deadline_commit_creating_a_warning_starts_a_kicked_wake_pass_within_100ms() {
     let kicks = session.probe.kick_log().split_off(kicks_before);
     let (_, _, kicked_at) = *kicks
         .iter()
-        .rev()
         .find(|(lanes, origin, _)| lanes.contains(Lane::Wakes) && *origin == Some(Lane::Deadlines))
         .unwrap_or_else(|| panic!("no deadline-origin Wakes kick: {kicks:?}"));
     // Wait for the kicked wake pass to start and then finish (instead of a
@@ -876,6 +879,12 @@ fn deadline_commit_creating_a_warning_starts_a_kicked_wake_pass_within_100ms() {
         woken,
         std::collections::BTreeSet::from([inviter.seat.as_str()]),
         "only the timed invitation's original inviter is woken: {reserved_before:?} -> {reserved_after:?}"
+    );
+    // That one wake is exactly its reservation and its completion.
+    assert_eq!(
+        session.commits("wake") - wake_commits,
+        2,
+        "the wake lane committed only the inviter's one attempt"
     );
     assert!(lanes_for_table("warning_recipients").contains(Lane::Wakes));
     assert!(lanes_for_table("warning_jobs").contains(Lane::Deadlines));
