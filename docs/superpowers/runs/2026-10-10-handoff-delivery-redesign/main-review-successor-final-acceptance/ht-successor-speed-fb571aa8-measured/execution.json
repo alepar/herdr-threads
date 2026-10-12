@@ -1,0 +1,114 @@
+{
+  "status": "PASS",
+  "before": {
+    "head": "fb571aa8b18d0800072cf812691d937f09c84cc6",
+    "tree": "6fa18abe59085b57ecb2880f822d79a4a3fec02b",
+    "branch": "super-auto/handoff-delivery-redesign",
+    "index_sha256": "c4ab337c25319ce21ddaf7a875bc26cebf4d5c58fe780bcbb397080299e72cb4",
+    "tracked_status": "",
+    "source_sha256": "ca2a0277fcd4623d280781da2c42df8206e0f4f4f85db33756a3f37c32a37e87"
+  },
+  "file": "src/store/lazy_delivery.rs",
+  "base": "565def869ae50e47e6da7388ea333229050eaf8d",
+  "target": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "jobs": 4,
+  "edited_sha256": "958268751940c8a8bb1e9e5aa52b6d1085216b1eb52c25f7f647d0bded654a4e",
+  "commands": [
+    {
+      "stage": "warm-build",
+      "argv": [
+        "nice",
+        "cargo",
+        "build",
+        "--locked",
+        "--all-features"
+      ],
+      "exit": 0,
+      "seconds": 0.12433329201303422,
+      "measured_incremental": false,
+      "budget_seconds": null,
+      "log": "/private/tmp/ht-successor-speed-fb571aa8-measured/warm-build.log",
+      "log_sha256": "59639588a6f1826f129cbcd121edc07279dab94786f5fa5bde6b3439b2e845cc"
+    },
+    {
+      "stage": "warm-clippy",
+      "argv": [
+        "nice",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "seconds": 0.18791479105129838,
+      "measured_incremental": false,
+      "budget_seconds": null,
+      "log": "/private/tmp/ht-successor-speed-fb571aa8-measured/warm-clippy.log",
+      "log_sha256": "a5f4c585ee974ca44916ac30a98bbc189e067a7e0a6bc6d2e8d6bc525be724af"
+    },
+    {
+      "stage": "incremental-build",
+      "argv": [
+        "nice",
+        "cargo",
+        "build",
+        "--locked",
+        "--all-features"
+      ],
+      "exit": 0,
+      "seconds": 8.97225295798853,
+      "measured_incremental": true,
+      "budget_seconds": 60,
+      "log": "/private/tmp/ht-successor-speed-fb571aa8-measured/incremental-build.log",
+      "log_sha256": "2d81938af4daaa09c403dcc57791c109618e3f854598868728c1ba2fd60a248f"
+    },
+    {
+      "stage": "incremental-clippy",
+      "argv": [
+        "nice",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "seconds": 22.82877779204864,
+      "measured_incremental": true,
+      "budget_seconds": 60,
+      "log": "/private/tmp/ht-successor-speed-fb571aa8-measured/incremental-clippy.log",
+      "log_sha256": "42de0d0210884f0acd1a64c7e0fa9a37ef10eb7ec3dcf3eef6b9cc26750e5a71"
+    }
+  ],
+  "error": null,
+  "private_environment": {
+    "HOME": "/private/tmp/ht-successor-speed-fb571aa8-measured/HOME",
+    "CLAUDE_CONFIG_DIR": "/private/tmp/ht-successor-speed-fb571aa8-measured/CLAUDE_CONFIG_DIR",
+    "CODEX_HOME": "/private/tmp/ht-successor-speed-fb571aa8-measured/CODEX_HOME",
+    "GEMINI_CONFIG_DIR": "/private/tmp/ht-successor-speed-fb571aa8-measured/GEMINI_CONFIG_DIR",
+    "GEMINI_CLI_HOME": "/private/tmp/ht-successor-speed-fb571aa8-measured/GEMINI_CLI_HOME",
+    "HT_LEAK_RUN_ID": "bab6404b-2f23-4a32-8d6e-f5ca7925f8a8"
+  },
+  "compiler_environment": {
+    "CARGO_HOME": "/Users/alepar/.cargo",
+    "RUSTUP_HOME": "/Users/alepar/.rustup",
+    "CARGO_BUILD_JOBS": "4",
+    "CARGO_TARGET_DIR": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target"
+  },
+  "after": {
+    "head": "fb571aa8b18d0800072cf812691d937f09c84cc6",
+    "tree": "6fa18abe59085b57ecb2880f822d79a4a3fec02b",
+    "branch": "super-auto/handoff-delivery-redesign",
+    "index_sha256": "c4ab337c25319ce21ddaf7a875bc26cebf4d5c58fe780bcbb397080299e72cb4",
+    "tracked_status": "",
+    "source_sha256": "ca2a0277fcd4623d280781da2c42df8206e0f4f4f85db33756a3f37c32a37e87"
+  },
+  "restored_exact_bytes": true
+}

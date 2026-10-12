@@ -1,0 +1,3 @@
+# Independently reviewed Main successor final acceptance
+
+Frozenfb571aa8/tree6fa18abe:827/827 selectedRust+recoveryPASS; current strictplugin133PASS andfake47driverPASS; allsourcebookends match andscopedleaks0. Controlledincrementalbuild8.972s/lint22.829s below60s, exactsource restoration. Twoearlierbenchmarkguard refusals ran no measured edit/stage and preserveactualforeignprocessids; no processstopped. Everyfile copied islog/JSON/evidence, no credentials/privateconfigs/binaries copied. Mainintegrated/native/release qualification is distinct;5historicalunverifiednits remain. Original34bead report preserved; threefollowupfixbeads now37allclosed, originalroastRound2 unchanged.

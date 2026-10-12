@@ -7,4 +7,4 @@ Resolved under explicit user request mBjmMsKyF, without rewriting historical rep
 
 Remaining: five historical unverified nits (genericinvitewakewording, ownershipmarker guidance, launchpreflight help, handoffbody documentation, unusedrenderer). No newconfirmed/panelcaps/escalations in successor audit.
 
-Nativeprofile/liveuptake/Mainintegrated/release qualification remainsMain-owned; reportedCodex28/32/4FAIL and otherowners' repairs are notqualified here. Finalsource-bound successor827measurement pending at this checkpoint. OriginalGoal/acceptedF1-Q4 limits remainnormative.
+Nativeprofile/liveuptake/Mainintegrated/release qualification remainsMain-owned; reportedCodex28/32/4FAIL and otherowners' repairs are notqualified here. Finalsource-bound successor827/827PASS atfb571aa8; currentconsumer133PASS/fakedriver47PASS, speed8.972/22.829PASS/scopedleaks0. OriginalGoal/acceptedF1-Q4 limits remainnormative.

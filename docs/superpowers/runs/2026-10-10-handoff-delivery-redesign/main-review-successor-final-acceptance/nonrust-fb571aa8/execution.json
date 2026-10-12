@@ -1,0 +1,123 @@
+{
+  "run_id": "d084132d-87b6-4d1d-ad0d-2bfdc34a18e2",
+  "source_before": {
+    "head": "fb571aa8b18d0800072cf812691d937f09c84cc6",
+    "tree": "6fa18abe59085b57ecb2880f822d79a4a3fec02b",
+    "index_sha256": "c4ab337c25319ce21ddaf7a875bc26cebf4d5c58fe780bcbb397080299e72cb4",
+    "tracked_status": "",
+    "unmerged": "",
+    "files": {
+      "integrations/claude/mod/.claude-plugin/plugin.json": "68912aa5585082ba8296d5d9ef4aa88f19108c30dd61c6bed9981b5ddb65c7d5",
+      "integrations/claude/mod/README.md": "1c19174ec0b13921f874b7f54793695c4e472099ea16121fdd7632210c188f2f",
+      "integrations/claude/mod/hooks/hooks.json": "f36f3680952a0408d76eb9cb71c0fd250b65ef8aded0dd56565f8ec71e07aa06",
+      "integrations/claude/mod/hooks/register.js": "785a0bd3f998910440bf548a8ab7862a5a3439bc4c6239de093a2ee8b7c99651",
+      "integrations/claude/mod/tests/delivery.test.ts": "9bcc9d1e5e0646d596dc63cd6fffa64dabf88292b320ea81594e66961a9eab05",
+      "integrations/claude/mod/tests/fixtures/frame-goldens.ts": "cb2f72876832f39f17a9616dff112055f9544581fbc4eeb7917cf95cf3f1bdaf",
+      "integrations/claude/mod/tests/fixtures/watch-activation.ts": "7ecb675374e71029c31043ea82611a718015deb68282e0050274e575978df9ce",
+      "integrations/claude/mod/tests/frame_golden.test.ts": "c9edf8869a2d5d863a98d3ff4a325a451feb9cdba2ea457c2ecfdb402c40f838",
+      "integrations/claude/mod/tests/stress.test.ts": "93eced8683aad194536e438b0ee65906ea8b3c554e8243f0255fed466080e9fe",
+      "integrations/claude/mod/tsconfig.json": "7bb235b954c76671e8d83f7e54fa936a68e0dca01a2b66bfea8794128d1bdc7e",
+      "integrations/claude/mod/types/index.d.ts": "7384ccd66c24c9b85cfd70c912881cf7645e60a763d4816778ba9894f1d6c50a",
+      "scripts/test-claude-mod": "c9a5afc768616fd1be80c76bcab97a924e6b008be379798c39d6626bafabf0e2",
+      "scripts/wake-e2e.py": "fd240125bf00814bc7fb9235a6f652cdf75fc262871ec028a8e01ee3d28411bb",
+      "scripts/wake_e2e_selftest.py": "1355b84607636a7346546fe7a8f08389043eac23c695cf40335be1575bd1a6a2"
+    }
+  },
+  "commands": [
+    {
+      "stage": "plugin-validate",
+      "argv": [
+        "nice",
+        "claude",
+        "plugin",
+        "validate",
+        "--strict",
+        "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/integrations/claude/mod"
+      ],
+      "cwd": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign",
+      "owned_process_group": 81530,
+      "exit": 0,
+      "seconds": 0.33402420906350017,
+      "log_sha256": "ce6347b95f0f281ba67bb72b72eb98d8a363c42bb3fc070c8179017bf98fc387",
+      "log_bytes": 1758
+    },
+    {
+      "stage": "plugin-all-tests",
+      "argv": [
+        "nice",
+        "claude",
+        "plugin",
+        "test",
+        "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/integrations/claude/mod"
+      ],
+      "cwd": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign",
+      "owned_process_group": 81580,
+      "exit": 0,
+      "seconds": 0.7686002500122413,
+      "log_sha256": "313e6b8ada33f525d9edd6db3177024656b058f3d0298d4624b8495c436cd08f",
+      "log_bytes": 11442
+    },
+    {
+      "stage": "wake-driver-fake-selftests",
+      "argv": [
+        "python3",
+        "scripts/wake-e2e.py",
+        "--self-test"
+      ],
+      "cwd": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign",
+      "owned_process_group": 81640,
+      "exit": 0,
+      "seconds": 11.906032708007842,
+      "log_sha256": "d9b993ed052c3680aa9bc8347e4c9b42f32b79ad840c645666d584bb62418110",
+      "log_bytes": 12013
+    },
+    {
+      "stage": "scoped-leaks",
+      "argv": [
+        "scripts/check-no-leaked-processes",
+        "--run-id",
+        "d084132d-87b6-4d1d-ad0d-2bfdc34a18e2"
+      ],
+      "cwd": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign",
+      "owned_process_group": 81789,
+      "exit": 0,
+      "seconds": 0.20146387501154095,
+      "log_sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e",
+      "log_bytes": 25
+    }
+  ],
+  "child_environment": {
+    "HOME": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-12-handoff-main-review-successor/nonrust-evidence-d084132d-87b6-4d1d-ad0d-2bfdc34a18e2/isolated-config/home",
+    "CLAUDE_CONFIG_DIR": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-12-handoff-main-review-successor/nonrust-evidence-d084132d-87b6-4d1d-ad0d-2bfdc34a18e2/isolated-config/claude",
+    "CODEX_HOME": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-12-handoff-main-review-successor/nonrust-evidence-d084132d-87b6-4d1d-ad0d-2bfdc34a18e2/isolated-config/codex",
+    "GEMINI_CONFIG_DIR": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-12-handoff-main-review-successor/nonrust-evidence-d084132d-87b6-4d1d-ad0d-2bfdc34a18e2/isolated-config/gemini",
+    "GEMINI_CLI_HOME": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-12-handoff-main-review-successor/nonrust-evidence-d084132d-87b6-4d1d-ad0d-2bfdc34a18e2/isolated-config/gemini-home",
+    "AISW_CONFIG_DIR": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-12-handoff-main-review-successor/nonrust-evidence-d084132d-87b6-4d1d-ad0d-2bfdc34a18e2/isolated-config/aisw",
+    "TMPDIR": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-12-handoff-main-review-successor/nonrust-evidence-d084132d-87b6-4d1d-ad0d-2bfdc34a18e2/tmp",
+    "HT_LEAK_RUN_ID": "d084132d-87b6-4d1d-ad0d-2bfdc34a18e2"
+  },
+  "source_after": {
+    "head": "fb571aa8b18d0800072cf812691d937f09c84cc6",
+    "tree": "6fa18abe59085b57ecb2880f822d79a4a3fec02b",
+    "index_sha256": "c4ab337c25319ce21ddaf7a875bc26cebf4d5c58fe780bcbb397080299e72cb4",
+    "tracked_status": "",
+    "unmerged": "",
+    "files": {
+      "integrations/claude/mod/.claude-plugin/plugin.json": "68912aa5585082ba8296d5d9ef4aa88f19108c30dd61c6bed9981b5ddb65c7d5",
+      "integrations/claude/mod/README.md": "1c19174ec0b13921f874b7f54793695c4e472099ea16121fdd7632210c188f2f",
+      "integrations/claude/mod/hooks/hooks.json": "f36f3680952a0408d76eb9cb71c0fd250b65ef8aded0dd56565f8ec71e07aa06",
+      "integrations/claude/mod/hooks/register.js": "785a0bd3f998910440bf548a8ab7862a5a3439bc4c6239de093a2ee8b7c99651",
+      "integrations/claude/mod/tests/delivery.test.ts": "9bcc9d1e5e0646d596dc63cd6fffa64dabf88292b320ea81594e66961a9eab05",
+      "integrations/claude/mod/tests/fixtures/frame-goldens.ts": "cb2f72876832f39f17a9616dff112055f9544581fbc4eeb7917cf95cf3f1bdaf",
+      "integrations/claude/mod/tests/fixtures/watch-activation.ts": "7ecb675374e71029c31043ea82611a718015deb68282e0050274e575978df9ce",
+      "integrations/claude/mod/tests/frame_golden.test.ts": "c9edf8869a2d5d863a98d3ff4a325a451feb9cdba2ea457c2ecfdb402c40f838",
+      "integrations/claude/mod/tests/stress.test.ts": "93eced8683aad194536e438b0ee65906ea8b3c554e8243f0255fed466080e9fe",
+      "integrations/claude/mod/tsconfig.json": "7bb235b954c76671e8d83f7e54fa936a68e0dca01a2b66bfea8794128d1bdc7e",
+      "integrations/claude/mod/types/index.d.ts": "7384ccd66c24c9b85cfd70c912881cf7645e60a763d4816778ba9894f1d6c50a",
+      "scripts/test-claude-mod": "c9a5afc768616fd1be80c76bcab97a924e6b008be379798c39d6626bafabf0e2",
+      "scripts/wake-e2e.py": "fd240125bf00814bc7fb9235a6f652cdf75fc262871ec028a8e01ee3d28411bb",
+      "scripts/wake_e2e_selftest.py": "1355b84607636a7346546fe7a8f08389043eac23c695cf40335be1575bd1a6a2"
+    }
+  },
+  "exit": 0
+}

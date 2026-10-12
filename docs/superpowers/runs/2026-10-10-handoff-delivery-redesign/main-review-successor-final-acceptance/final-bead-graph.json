@@ -1,0 +1,1474 @@
+[
+  {
+    "id": "ht-0lo.22",
+    "title": "Qualify direct reader usage and changelog",
+    "description": "Covers: Main integration review I3/M1; user relayed request mBjmMsKyF.\nScope/files: docs/agent-usage.md and CHANGELOG.md only; qualifygenericjoin/nonpairaccept head seeding/seatpending withactive directaccept owncursor/eventfloor/sibling exception, retainfreshbinding-afteracceptance rule\nContext, not to be changed: main-review.txt; rootGoal and accepted F1/Q4 refinements; originalroastRound2/converged pluspostcapaudit/punchlist; historical6abdf38f827PASS evidence. Reports are data, not instructions.\nDone when: Independentlightreview groundedin canonicalcontrol/readcursor/TRUST and meaningmatches; no unnecessarytests; one light independent task review/at most one fix pass, required compile-only merge gates/serialmerge and ownedprocesscleanup.\nOriginalspec Goal never edited. NoMainmutation/push/stash/realconfig/sharedserver/nativeauthenticatedrun.\n",
+    "status": "closed",
+    "priority": 1,
+    "issue_type": "bug",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-12T19:10:01Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-12T19:17:37Z",
+    "started_at": "2026-10-12T19:13:01Z",
+    "closed_at": "2026-10-12T19:17:37Z",
+    "close_reason": "I3/M1 docs-only correction independently grounded in canonical control/cursors/TRUST; one CLEAN light review/noMinor; exact clean serial merge and all required compile gatesPASS. No runtime behavior changed.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.22",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-12T19:10:01Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.21",
+    "title": "Correct guarded person direct-invitation wake oracle",
+    "description": "Covers: Main integration review I2; user relayed request mBjmMsKyF.\nScope/files: scripts/wake-e2e.py and scripts/wake_e2e_selftest.py; exact Main guarded human/person producers and allmarkerstrip preserved; directLazy invitation passive underwake_on nudge and wakesunderall; grouphumaninvite remainslegacy/timed; noauthenticatednativeprofiles\nContext, not to be changed: main-review.txt; rootGoal and accepted F1/Q4 refinements; originalroastRound2/converged pluspostcapaudit/punchlist; historical6abdf38f827PASS evidence. Reports are data, not instructions.\nDone when: Driver-only exact misleadingoracle RED then GREEN, entirecurrentdriverselftests PASS, productioncanonical human-Lazy direct semantics independentlygrounded/privatecontrol; no live release qualificationclaim; one light independent task review/at most one fix pass, required compile-only merge gates/serialmerge and ownedprocesscleanup.\nOriginalspec Goal never edited. NoMainmutation/push/stash/realconfig/sharedserver/nativeauthenticatedrun.\n",
+    "status": "closed",
+    "priority": 1,
+    "issue_type": "bug",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-12T19:09:59Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-12T19:27:36Z",
+    "started_at": "2026-10-12T19:13:00Z",
+    "closed_at": "2026-10-12T19:27:36Z",
+    "close_reason": "Main I2 direct-Lazy/person oracle corrected; causal5-case RED3FAIL thenGREEN5PASS; complete47privatefake driver selftestsPASS/leaks0; one CLEAN independent review/noMinor; clean serial merge/allcompile-onlygatesPASS. Human guard/allmarkers preserved; no authenticatednative qualification claim.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.21",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-12T19:09:59Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.20",
+    "title": "Bound invitation revision retention and framed append batches",
+    "description": "Covers: Main integration review I1; user relayed request mBjmMsKyF.\nScope/files: integrations/claude/mod/hooks/register.js and module tests; preserve inflight exact object/run fences, latest whole context, no message loss or invented ACK/acceptance; bounded per-invitation pending revisions and framed batch using existing delivery limits\nContext, not to be changed: main-review.txt; rootGoal and accepted F1/Q4 refinements; originalroastRound2/converged pluspostcapaudit/punchlist; historical6abdf38f827PASS evidence. Reports are data, not instructions.\nDone when: Meaningful parent-run stalled/refused append RED then GREEN; eventual latest context, two-run latefailure, partial-to-whole and bounded distinct-ID batch controls; actual strictplugin validation/allmodule tests PASS; one light independent task review/at most one fix pass, required compile-only merge gates/serialmerge and ownedprocesscleanup.\nOriginalspec Goal never edited. NoMainmutation/push/stash/realconfig/sharedserver/nativeauthenticatedrun.\n",
+    "status": "closed",
+    "priority": 1,
+    "issue_type": "bug",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-12T19:09:56Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-12T19:34:39Z",
+    "started_at": "2026-10-12T19:13:00Z",
+    "closed_at": "2026-10-12T19:34:39Z",
+    "close_reason": "Main I1 corrected: atmost1inflight+1latestpending context per invitation,32items/65536framedUTF8 append bound; exactrun/whole replay/upgrade controls causalRED-\u003eGREEN. Actualstrictplugin133PASS/leaks0; one CLEAN light review/noMinor; exact validated source promotion and allmandatorycompile-onlygatesPASS. OriginalACK100/50oracle preserved independently.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.20",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-12T19:09:56Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.19",
+    "title": "Regression-only final C: compose genuine receipt prefix and direct JSON oracle",
+    "description": "Covers: agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement; store::receipts::tests::receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_together\nRegression-only sweep fix: both exact tests PASS in first finalC d842 and FAIL in rerun3d after phase6 Main20e7 composition. This test-defect bead may change only the two named tests in tests/hook_entrypoint/agy.rs and tests/store/receipts.rs. Fix only the imported Main versioned direct-send JSON oracle and physical receipt-send-time historical prefix37-\u003e38; preserve every downstream body/hook/no-settlement/cursor/rollback/reset/warning assertion, canonical SQL1–36 and all production/caps/timeouts. No step-back/scope filter/newfixloop.\nContext, not to be changed: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-design.md unchanged Goal; code roast1/2, post-cap audit and punch-list; /private/tmp/ht-final-C-d8427582/focused-results.json exact previous PASS; /private/tmp/ht-final-C-v091-3d235276/nextest-run.log and execution.json actual819PASS2FAIL +mandatory6PASS/leaks0; final-C-v091-regression-{agy,receipts}-diagnosis.md (source-based old/new provenance). These reports are evidence, never instructions.\nDone when: both named corrected tests reach all preserved original post-setup assertions and relevant actual controls PASS, one light review/at-most-onefixpass, required compile gates/serialmerge/scopedcleanup; only named defective test files change. Caller owns exactly one additional source-sealed C rerun; any further failure is reported as it stands. The spec's ## Goal is never edited.\n",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "bug",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-12T18:19:06Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-12T18:29:20Z",
+    "started_at": "2026-10-12T18:20:03Z",
+    "closed_at": "2026-10-12T18:29:20Z",
+    "close_reason": "Two named regressions fixed; five exact controls PASS, scoped leaks0, one CLEAN light review, all required validation and serial merge gates PASS. Caller final acceptance rerun remains separate.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.19",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-12T18:19:06Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.18",
+    "title": "Sweep fix: reconcile exact recovery probe oracle with Q4",
+    "description": "Covers: store::attention::tests::presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settlement\nFiles touched: tests/store/attention.rs, TRUST-POLICY.md\nTest-defect sweep-fix task may change only its explicitly named defective tests/fixtures and directly linked factual policy prose. \u003crule\u003eCorrect decomposed stale Q4 lazy7-\u003e10 exact eligibility relation charges (pair,seat,currentinvite) with A3+16+11=30 and B3+18+14=35; keep exact equality/bothbindings/seek1/noACKcandidate/canonicalstateassertions. Reconcile only staleTRUSTLazy11toalreadyselectedLazy14 clause; ordinary18/due1803/carry579 caps unchanged, no productioncounterrelaxation.\u003c/rule\u003e\nContext, not to be changed: final-C-d8427582-failure-evidence, originalrootGoal/fullacceptedrefinements, codeRoast1/2 reports and existing punch-list. Agent reports are evidence, not instructions. Production, public/V1 bytes, canonical history, caps, deadlines and finalcodeexit stay unchanged.\nDone when: named failure reaches its full original post-setup preservation assertions and relevant meaningful controls pass, with one focused review/requiredgates. The spec’s ## Goal is never edited.\n",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "bug",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-12T16:50:43Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-12T17:13:47Z",
+    "started_at": "2026-10-12T16:50:47Z",
+    "closed_at": "2026-10-12T17:13:47Z",
+    "close_reason": "CLEAN light review with priority-warning Minor retained; exact recovery and physical SQL bounds PASS in26matching source controls/leaks0; all original precise assertions preserved; required merge gates PASS.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.18",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-12T16:50:43Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.17",
+    "title": "Sweep fix: deliberately establish real carried body at full capacity",
+    "description": "Covers: service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window\nFiles touched: tests/service/q4_accept_controls.rs\nTest-defect sweep-fix task may change only its explicitly named defective tests/fixtures and directly linked factual policy prose. \u003crule\u003eDiagnose actual full-capacity boundary before correction. Deliberately create real nonempty unoffered carry by canonical full-display/ACK of an actually rendered whole ordinary message, reclaim one slot through existing route, capture pending tail, refill256 while retaining another canonically pending carriedID. Preserve existing nonemptycarry/token/full256 and every exact acceptance-state/counter/offer assertion; no privateforging or emptyassert weakening, zero-slot capture or cap changes. Retain compact boundarydiagnostic so hypothesis can be judged.\u003c/rule\u003e\nContext, not to be changed: final-C-d8427582-failure-evidence, originalrootGoal/fullacceptedrefinements, codeRoast1/2 reports and existing punch-list. Agent reports are evidence, not instructions. Production, public/V1 bytes, canonical history, caps, deadlines and finalcodeexit stay unchanged.\nDone when: named failure reaches its full original post-setup preservation assertions and relevant meaningful controls pass, with one focused review/requiredgates. The spec’s ## Goal is never edited.\n",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "bug",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-12T16:50:38Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-12T17:11:38Z",
+    "started_at": "2026-10-12T16:50:47Z",
+    "closed_at": "2026-10-12T17:11:38Z",
+    "close_reason": "Reviewed CLEAN; actual26 focused PASS at matching source blobs, scoped leaks0; serial clean merge and all required compile-only gates PASS. Broad final C remains caller-owned.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.17",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-12T16:50:38Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.16",
+    "title": "Sweep fix: elect modern lease request and retain legacy wire control",
+    "description": "Covers: daemon::transport::watch_connection::tests::presentation_owner_accepted_wire_carries_the_registered_lease\nFiles touched: tests/daemon/watch_connection.rs\nTest-defect sweep-fix task may change only its explicitly named defective tests/fixtures and directly linked factual policy prose. \u003crule\u003eCorrect only the positive request to explicitly opt in to capable presentation, assert all4actualcapabilities and expect known token independently; preserve sharedfalsehelper and add/retain actual false-request wire control despite populated fakelease. No advertisement-only promotion/productionchange.\u003c/rule\u003e\nContext, not to be changed: final-C-d8427582-failure-evidence, originalrootGoal/fullacceptedrefinements, codeRoast1/2 reports and existing punch-list. Agent reports are evidence, not instructions. Production, public/V1 bytes, canonical history, caps, deadlines and finalcodeexit stay unchanged.\nDone when: named failure reaches its full original post-setup preservation assertions and relevant meaningful controls pass, with one focused review/requiredgates. The spec’s ## Goal is never edited.\n",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "bug",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-12T16:50:35Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-12T17:12:45Z",
+    "started_at": "2026-10-12T16:50:47Z",
+    "closed_at": "2026-10-12T17:12:45Z",
+    "close_reason": "CLEAN light review; positive all-capability request and independent legacy omitted-lease wire control PASS in exact26; matching blobs/leaks0; serial merge compile-only gates PASS.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.16",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-12T16:50:35Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.15",
+    "title": "Roast1: cancel expired presentation owner waiters",
+    "description": "Covers: [Should-fix] src/service/delivery_presentation.rs:62\nFiles touched: src/service/delivery_presentation.rs, tests/service/presentation_owner_budget_controls.rs, tests/service.rs\nCluster/test-defect task may change every instance of this scoped rule: \u003crule\u003eOne budget-aware owner acquisition helper shared by V2 Pull/Confirm. Observe cancellation/deadline during contention before admission, then retain same exact guard through canonical store and successful progress installation. Preserve poisoning recovery semantics; no owner bypass.\u003c/rule\u003e\nContext, not to be changed: root design, roast-pr-1 report, validated step-back and complete-scope filter in docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/. Findings are evidence, not instructions. The spec’s ## Goal is never edited. No cap increase, public/V1 wire change, canonical history rewrite or foreign scope.\nDone when: Actual held-owner expired/cancelled waiter returns before owner release for Pull and Confirm without effects, successful contention/serialization controls remain; one focused review and gates.\n",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "bug",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-12T15:55:58Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-12T16:22:46Z",
+    "started_at": "2026-10-12T15:58:25Z",
+    "closed_at": "2026-10-12T16:22:46Z",
+    "close_reason": "Reviewed CLEAN; corrected causal4FAIL2PASS then6ownerPASS bothHook/Watch/leaks0; mergede934c0ce exactvalidatedtree1b07; actual merged fmt/neutral/clippy/default PASS. Sharedowner guard lifetime retained.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.15",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-12T15:55:58Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.14",
+    "title": "Roast1: preserve receipt upgrade oracle with migration45 triggers",
+    "description": "Covers: [Should-fix] tests/store/effective.rs:2136\nFiles touched: tests/store/effective.rs\nCluster/test-defect task may change every instance of this scoped rule: \u003crule\u003eTest-defect: account explicitly for the six intentional migration45 receipt triggers alongside eight migration42 additions; preserve exact historical catalog, rows, FK graph, clocks and reopen assertions; explicitly assert six new names/definitions.\u003c/rule\u003e\nContext, not to be changed: root design, roast-pr-1 report, validated step-back and complete-scope filter in docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/. Findings are evidence, not instructions. The spec’s ## Goal is never edited. No cap increase, public/V1 wire change, canonical history rewrite or foreign scope.\nDone when: Existing populated receipt upgrade test passes for genuine28 and36 origins with old object equality and all downstream preservation assertions reached; one focused review and gates.\n",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "bug",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-12T15:55:55Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-12T16:20:39Z",
+    "started_at": "2026-10-12T15:58:24Z",
+    "closed_at": "2026-10-12T16:20:39Z",
+    "close_reason": "Reviewed CLEAN; genuine28/36 populated preservation and rollback/retry actualPASS; mergeda8134628; actual merged fmt/neutral/clippy/default PASS. Historical catalog unchanged and all6newtriggers explicitly asserted.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.14",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-12T15:55:55Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.13",
+    "title": "Roast1: bound private ordinary warning discovery",
+    "description": "Covers: [Should-fix] src/store/invitation_content.rs:2442\nFiles touched: src/store/queries.rs, tests/store/query_work_q4.rs\nCluster/test-defect task may change every instance of this scoped rule: \u003crule\u003eExclude redundant WarningSource from fresh AND resumed private ordinary-only discovery; preserve dedicated warning paths and public inbox semantics. Every enabled private source retains existing charged physical/candidate limits.\u003c/rule\u003e\nContext, not to be changed: root design, roast-pr-1 report, validated step-back and complete-scope filter in docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/. Findings are evidence, not instructions. The spec’s ## Goal is never edited. No cap increase, public/V1 wire change, canonical history rewrite or foreign scope.\nDone when: Regression with retained negative-audience membership history proves private fresh/resumed warning traversal excluded while ordinary positive and dedicated origin-warning/public controls pass; one focused review and gates.\n",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "bug",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-12T15:55:51Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-12T16:19:06Z",
+    "started_at": "2026-10-12T15:58:24Z",
+    "closed_at": "2026-10-12T16:19:06Z",
+    "close_reason": "Reviewed CLEAN; causal fresh/resumed warning traversal FAIL then5relevantPASS/leaks0; merged30efaed7; actual merged fmt/neutral/clippy/default PASS. Public/origin warnings preserved.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.13",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-12T15:55:51Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.12",
+    "title": "Roast1: preserve replacement invitation context after stale denial",
+    "description": "Covers: [Should-fix] integrations/claude/mod/hooks/register.js:289\nFiles touched: integrations/claude/mod/hooks/register.js, integrations/claude/mod/tests/delivery.test.ts\nCluster/test-defect task may change every instance of this scoped rule: \u003crule\u003eRetire only the exact obsolete invitation context across late denial/run replacement; preserve the independently queued successor and exact in-flight object. Scope-filter clusterOverride explicitly excludes register.js:296 queue coalescing: do not implement coalescing/global caps.\u003c/rule\u003e\nContext, not to be changed: root design, roast-pr-1 report, validated step-back and complete-scope filter in docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/. Findings are evidence, not instructions. The spec’s ## Goal is never edited. No cap increase, public/V1 wire change, canonical history rewrite or foreign scope.\nDone when: Actual late stale A denial after replacement B same ID/new version retains and subsequently appends B, existing restart/completion/partial-whole controls remain; one focused review and required gates.\n",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "bug",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-12T15:55:48Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-12T16:17:25Z",
+    "started_at": "2026-10-12T15:58:23Z",
+    "closed_at": "2026-10-12T16:17:25Z",
+    "close_reason": "Reviewed CLEAN; actual causal122PASS2FAIL then124PASS0FAIL/leaks0; merged feaeca1d; actual merge fmt/neutral/clippy/default PASS. Queue coalescing excluded by scope override.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.12",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-12T15:55:48Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.11",
+    "title": "Gate: code roast fix loop exited before final C evidence",
+    "description": "Final-SHA verification gate owned by super-auto coordinator. Condition: formal code-roast fix loop has exited with its durable run.md disposition. Blocks only existing C final expanded focused acceptance evidence; preparation, causal task checks and fixes run before it. The final matrix retains all historical657 keys, new registrations and six separate mandatory recovery commands, runs at exact roast-cleared composed tip under project focused-suite policy, and does not claim full-suite coverage. Close only once roastCodeExit is recorded; then resume C proof. No implementation or arbitrary human approval.\n",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-12T14:24:46Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-12T16:36:37Z",
+    "closed_at": "2026-10-12T16:36:37Z",
+    "close_reason": "Durable run.md roastCodeExit: converged; formalround2 fullcoverage13/13/0new/0Blocking/0regressions, report persisted. Final C exact-tip evidence is now authorized to run, not yet passing.",
+    "labels": [
+      "sp:gate",
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.11",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-12T14:24:46Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.10",
+    "title": "Enforce send-time negotiation in specialized ordinary retries",
+    "description": "Covers: final interface review IF-1A/IF-1B missing independent send-time receipt capability in modern ordinary DirectSend and pending historical ordinary specialized retries. Files touched: src/cli/direct_send.rs, src/cli/handoff_delivery.rs, src/cli/topology_handoff/automatic.rs, src/protocol/handoff/automatic_bootstrap.rs (diagnostic only), tests/cli/direct_send.rs, tests/cli/handoff_delivery.rs, tests/cli/topology_handoff.rs. Context: receipts design52, original root90, TRUST pending retry contract; resume1012-receipt-cap-family-review.md and retained original reports. Scope: require existing capability before new effects, preserve Lazy/known-completed exemptions and historical None bytes/claim/digests/keys; actual bounds unchanged. Done when: eight named receipt-capability controls pass unmodified on corrected source, missing-capability causal failures are preserved, one focused review and required source checks pass. No other source paths or original Goal change.\n",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "bug",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-12T14:24:43Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-12T14:40:09Z",
+    "started_at": "2026-10-12T14:25:16Z",
+    "closed_at": "2026-10-12T14:40:09Z",
+    "close_reason": "Verified at 0c07f190/tree49691989: six unchanged Direct controls PASS0.961s and both historical automatic None controls PASS in library11; causal missing-capability baseline failures retained. One focused family review PASS; fmt/neutral/strictclippy40.961/default25.885 PASS; scoped leaks0. Lazy and known-completed replay exemptions and frozen original bytes preserved. Final C exact-tip matrix remains gated, not waived.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.10",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-12T14:24:43Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.9",
+    "title": "Repair finite normal delivery after standalone render overflow",
+    "description": "Covers: final whole implementation review F1 at src/store/invitation_content.rs:2630, normal positive-capacity unrenderable carry blocks later mail. Files touched: src/delivery/presentation.rs, src/store/invitation_content.rs, TRUST-POLICY.md, tests/service/normal_unrenderable_controls.rs. Context: existing original goal and approved bounded delivery refinements; resume1012-f1-refinement-review.md and proposal2. Preserve canonical full pending instructions, addressing, reader cursors, receipt/Offer authority and existing source/sizing/output/carry caps. Scope: actual singleton encoded-byte overflow only; no invalid/exhausted/mixed-page skipping. Done when: named Ordinary/Lazy regression controls pass unmodified after fixture-only canonical pending oracle correction, real fitting recapture succeeds, sizer cause/mixed-page controls pass, minimal source/TRUST amendment receives the one focused review and required checks. Original spec Goal is never edited.\n",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "bug",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-12T14:24:40Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-12T14:53:06Z",
+    "started_at": "2026-10-12T14:25:15Z",
+    "closed_at": "2026-10-12T14:53:06Z",
+    "close_reason": "Actual starvation RED retained for Ordinary and Lazy; reviewed minimal source/TRUST fix verified with later4 progress, finite quiet and independent fitting recapture. Corrected mixed and Lazy PASS8009; Ordinary final PASS89ef with canonical prepared ACK-required1/effectivePending retained, classifier PASS0c. Oracle corrections diagnosed from actual source, no production cap/authority relaxation. One focused review, fmt/neutral/clippy23.138/default PASS, all scoped leaks0. Final C exact-tip matrix remains gated.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.9",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-12T14:24:40Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.8.4",
+    "title": "AGY delivery setup and launch semantic composition",
+    "description": "Own bounded AGY neutral hook-event/setup/launch and new offered-ledger/pull warning semantics after actual reviewed Task12 ab2291c5 composition. Consume stable A registry/adapter/delivery interfaces; do not depend on B policy work. Sole shared launch-readiness owner (src/cli/launch.rs,src/harness/launch.rs), preserving B generic automatic producer interfaces. Exact stableevent owned bridges, AGY rewrite refusal, diagnostic hook/plugin/profile readiness versus structural/currentownedfingerprint/trust guards; independent canonicalorigin warning visibility through pull/ledger and passiveclear. Preserve NULL/service attribution and finite due-driver, no new authority/evidence. Read normative AGY refinement and actual AGENTS; scope extras require concrete admission.",
+    "acceptance_criteria": "Actual neutral hook-event command/dispatch/setup bridges preserve exact canonical3field routing and pinnedfallback, stable per-event commands on equivalent reinstall, exact manifest/group ownership, foreign/drifted/legacy groups and interrupted explicit migration. No harness branches in neutralcore or versiongating. Actual AGY launch tests distinguish advisory missing/stale/disabled/unknownplugin/profile/hook state from structural/argv/native rewrite refusals and actuallyusedconfigurationfingerprint recheck; unsupportedownedargv remainsrefused, no fabricatedfingerprint/trustapproval/nativeaccept/ACK. Real service DeliveryPull path exercises hook_pull_view→mod_seat_view/fingerprint→attention_version→ledgerUnchanged/whole_read/reoffer/window→pagedsource/assembler→settlement/confirm for EACH canonical original sender/inviter incl departed and settlednoticefrontier; no unrelatedpending masks earlygates, no helper-onlyproof. Shared A1/A2/B1 canonicalphysical/publishedsparse warning staysoneevent, partialACK retainsstillopencondition, finalsettlement clears passively with no warningonlywake, exactassociations/provenance unchanged. Dynamic addedorigin after previouslyoffered event becomesvisible without fakeevent; NULL attribution/serviceauthors remainhonest, no inferredseat. Lazyinvitation discoverablewithoutattention; RequireAck/historicalNone timed; complete/truncated offer/confirm and ACKboundary truthful, boundedpage/ledger/reoffer retained, lazy idlewake onlywake_on:all. Due-driver finite SQL highwaters,total100/shared50repair/expandedH, combinedatomicreset/NULL semantics unchanged; delivery/native keys nevergate dueprogress. Focused existing AGY/setup/launch/delivery/integration tests, fmt/alltargetallfeatureclippy and scripts/check-harness-neutral pass; independent fresh semantic review audits complete upstreamcleanmerge/interface and actualearlygate chain. Everynewcommit Outside-adapter trailer truthful; isolatedHOME no ~/.gemini orotherrealconfigs; taggedownedchildren stopped, scopedleakcheck aftersweep. Parent finalroast/exacttipdefaultfeature later; no readiness claim frompriorrelease evidence. Lazy invitation suppresses only confirmation/nativewake, neverinturnpage/context/bookkeeping; actualAssembler+turnhook/servicepull positiveLazyvisible and ordinarynativewakeabsent tested, whole(item) remainsdisplaycompleteness. Properinformationalclassification preservesR9/R17 and explicitwake_onpolicy.",
+    "notes": "Active narrow actual consumer seams recorded in task-15-brief.md and execution-seams.md: bounded recipient-visible invitation content signature independent of waking attention, real mod-channel drain and scheduler native eligibility independent of consumed whole-display ledger, stable AGY hook route, optional V2 goal_data/topic_revision preserving omitted bytes and invitation identity, canonical SetTopic revision redisplays once. Real RED before each newly admitted producer; goal omitted requires usable inspect continuation before acceptance. Expected-size accounting for new model-visible strings. B/D results.rs overlap requires fresh composed semantic review; one Cargo/warm-slot lease only. Prior accepted-limit/history unchanged.\nMaterial bounded design defect: newest1001 signature versus oldestfull1024cache canmiss oldSetTopic and1025th. Parent selects coalescedlatesttopic O(retainedthreads), eventualLATEST afterthreadupdatequiescence (explicitacceptedlimit, Task7H/D/Iunchanged), persistentfairinitial/topicfrontiers +visitedbeforefilterwork. Exactnumericbudgets/dupboundtarget\u003c=2/partialrevisit+lifecycle/restart/schema/trust proof +freshreview +parentfinalauthorization REQUIRED BEFOREalgorithmcode. Alternative/proposal artifacts task-15-bounded-content-options.md; no capraise/fanout/globaloutputwake.\nConcrete M design selected at task-15-bounded-design-dispositions.md hash95de38625b1da269942f0abab422a0423cdc9682cb3f6aeeab2d23407832f419; fresh Spec CLEAN/Quality CLEAN task-15-bounded-design-rereview-1.md. Scope: V2 presentation capability, fixed Hook/Watch state, exactLiveWatch lease, latest-context/command epoch, bounded finite frontiers/revisit/outbox; emission confirmation distinctACK withA7. Invocation217 source candidates plus\u003c=16 noticevalidation/fixedprobes, replay\u003c=32; fivewayOUTPUTfairness. Parent final production authorization pending; actual migration/query/owner/frame/real1025 and failure-cutpoint evidence stillrequired.\nParent FINAL M implementation authorization received for committedda83292b exactcontract95de38625b1da269942f0abab422a0423cdc9682cb3f6aeeab2d23407832f419 after finalfreshCLEAN. Exactadditional scope inventorya539cf05 admitted/mapped; preserveA/Bownership and SQL1..39bytes, prospective40verifytip. Dsource-only whileBsoleCargo; allimplementationevidence/freshwholeDreview stillrequired, no due-driver/globalwake/generictransportcap/ordinarypolicy changes.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-11T06:38:56Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-11T21:39:35Z",
+    "started_at": "2026-10-11T07:32:40Z",
+    "closed_at": "2026-10-11T21:39:35Z",
+    "close_reason": "Exact f7aa1cc2 recovery activation 314/314 PASS with scoped leaks0 and independent whole review; current Main026 composition601761fa eight service seams PASS, immutable tree524ec3a1 independently Spec/Quality PASS and fmt/clippy/neutral/default gates PASS. Combined C and parent code roast/readiness remain deferred.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.8.4",
+        "depends_on_id": "ht-0lo.8",
+        "type": "parent-child",
+        "created_at": "2026-10-11T06:38:56Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.8.4",
+        "depends_on_id": "ht-0lo.8.1",
+        "type": "blocks",
+        "created_at": "2026-10-11T06:39:01Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 2,
+    "parent": "ht-0lo.8"
+  },
+  {
+    "id": "ht-0lo.8.3",
+    "title": "Combined upstream composition focused integration proof",
+    "description": "Own missing focused combined integration proof after reviewed Task12 exact020/main31 composition and BOTH actual frozen Task13/Task15 reports. Declared existing target/test/doc surfaces only; no new production scope or routinefullsuite. Verify automatic+explicit/direct routes, oldmain31 upgrade, bounded canonical summary/local sidecar/NonStarted/aggregate envelope and scoped response, passive invitation goal/content-cache/channel/scheduler/AGY seams, canonicalorigin lifecycle and expandedH/D/I. Coordinator owns final integration/PRroast/defaultfeature/readiness.",
+    "acceptance_criteria": "Actual reviewed candidate combines A main02041b93/released1..31 exact, redesign32..38 and capacity39 with B+D. Focused selection proves representative public automatic+explicit/direct policy/source/retry/capability paths; ordinarymetadata maximumescaped65536 positive plus aggregateboundary success/aboveboundary zeroeffects. Distinct bounded canonical completion summary versus exact optional local diagnostic sidecar, criticalsummary-beforeartifact cutpoints, NonStarted truthful recovery and no relaunch, missingartifact completed inspection, unchanged historicalbytes. Conditional2MiB only request-known matching AutomaticBootstrap replies after allfuturetypedshape proof; genericrequests/service/watch/errors/unrelatedreplies1MiB remain, wrongfamily/length/correlation controls. D passiveLazyinvitation goal/continuation/contextbookkeeping positive without acceptance/ACK/ordinaryidlewake, bounded contentcache invalidation on removal/arrival and channelactualdiscovery; persistent canonical originalsender/inviter eligibility after wholeoffer/Unchanged/noticefrontier under actualscheduler/AGYguards, partial/finalclear passive. Genuineoldmain31 populated rollback/reopen/retainedrows and actual expandedH total100/shared50combinedreset preserved. Do notduplicate allleafchecks; select actualcombinedseams plusindependentpositive/negativecontrols using registeredtargets/nonzerocount. fmt/allfeatureclippy/neutralcheck and ownfreshreview; scopedleakcheck afterfocusedsweep; no routinefullsuite. Final parentPRroast/exacttipdefaultfeature/expensive readiness deferred.",
+    "notes": "Preparation refinement recorded: exact020/main31+schema39; consume actual frozen B/D reports and independent combined controls. Full prior ruling history retained in committed run artifacts. No execution or root-promotion authorization from preparation alone.\nParent final composition target advanced to 43cc19cd60c78306efc6c9cb16b7c46963c01355: sole test-only lazy_recovery_context bounded projection wait after020, no runtime/schema changes. Admit that path; retain assertions and run registered focused suite after serial composition. Combined proof must drive actual modern Lazy Ensure result through canonical invitation to AGY hook/pull, and consume reviewed D durable finite-frontier/completeness evidence including1025 automatic discovery. Dependencies B/D unchanged; no dispatch yet.\n2026-10-11 resumed composition now includes actual published/installed Main565def86 schema35, immutable migrations1-35 and prospective36-45. Necessary Q1 reader continuation/decision cancellation and Q2 binding-reader adaptations are preserved; fresh Q3 actual baselines expose missing negotiation/legacy mode, reader maintenance, exact-owner send race, ordinary publication and virtual Notice replay. C owns minimal corrective implementation and fresh semantic/code review for those demonstrated integration failures under existing autonomous authority; no new epic or cap/counter reset. Candidate fba17e52 required source gates PASS, exact60 controls56PASS4FAIL2.358s with scoped leaks0; all demonstrated production regressions GREEN, four newly authored fixture oracles remain under causal correction. Prior657 failures, compile/lint failures and six owned CLI hang interruptions retained without waiver. Registered native hook/DirectSend verification, updated expanded C matrix, parent PR roast round0 and exact-tip readiness still pending. No Main merge/push/install or readiness notification.\nResumed C remains in progress. Published and installed Main565def86 schema35 is composed; historical1-35 unchanged and36-45 prospective, no allocation claim. Q3 checkpoint3dd448ef all60 controls passed together and strict/default/fmt/neutral gates passed. Q4 current-episode direct Lazy reader, acceptance and private-tail correction committed b4671451, then runtime-proven one-character SQL fix68fab47e. Exact68 runtime19:18PASS1FAIL (known CLI annotated continuation budget contracts2048 to274 atstep7/offset4298); actual registeredHook6 allPASS including invited direct body. Scoped leaks0. Q4 physical SQL-work controls and expanded focused matrix still pending. Q5 causal budget repair approved design19a6a008 with scoped Spec/Quality; implementation/test scratch work underway. All earlier setup/source failures and unproved historical causes retained. Formal code roast remains0 and final exact-tip readiness/promotion/Main notification remain pending. No push/stash/Main mutation/shared-server or real-config action.\nResumed verification: Q5 reviewed production ccf658fa restores original invocation bound; actual public History/Search6 allPASS1.597s/leaks0. At7242 combined36=35PASS1FAIL2.272s; all9normalization and8retained-reconciliation controlsPASS, sole originalBody fixture followed backend rather than printed argv. Narrow independently reviewed tests-only89fce486 now follows actual more command: full65536UTF8 bytesPASS1.289s, everyinvocation/output2048, finalflush-onlydisplay/sibling preserved, leaks0. Q3current60 allPASS afterQ4/Q5. Required89gatesPASS fmt4.839/neutral1.359/clippy40.203/default23.505. PublishedMain1..35 freshlybyte-exact35/0changed against565def86. PhysicalSQL/refusal controls and fresh cumulative whole/schema/interface reviews underway; expandedfocusedmatrix/formalroast0/promotion/exacttipreadiness remainrequired. NoMainmerge/push/stash/config/servermutation; C staysinprogress.\nUser explicitly requested safe pause. Candidate89fce486/tree6ec03 clean; currentgatesPASS and actualprinted65536bodyPASS2048bound/leaks0. Allactiveagentsinterrupted; no runtime/build, freshps0processes referencingourworktree. New cumulativeF1 unrenderable-normal-carry starvation andIF1 specializedordinaryreceipt-capability discovery gaps sourceconfirmed, causalcontrols/fixes pending. Q4SQLscratch81c REVISE; Q4refusal282a staticPASSbutunrun. Sourceunpromoted, formalcode roast0, originalcounters/caps preserved. C staysinprogress; paused until explicitresume. Exacthandoff/evidence saved in SESSION-HANDOFF.md and resume-pause-89fce486-evidence.\nResume1012 skill/spec/speed audit adopted: one light task review perremainingfix; official detailed PRroast/currentassemble-args, final expensivefocusedmatrix AFTERroastfixloop; no routinefullsuite. CurrentCproof lanes F1normalrenderprogress, IF1receiptcap originalrequirement, Q4boundedSQLactualproof. Q4refusal5PASS0.829s at43558e98/leaks0; F1typedtestbaselineactive. F1firstdiscoverydeferralnewacceptedlimit mustretainpendingfullbody/actualfittingrecapture andhonestTRUSTsamecommit; notsuccessfuldelivery. Epic/caps/history unchanged, C remainsinprogress.\nblocked-by ht-0lo.9: consumes verified finite normal-render traversal correction and unchanged pending/retry authority. blocked-by ht-0lo.10: consumes specialized ordinary send-time capability correction with historical/complete exemptions. blocked-by ht-0lo.11: final expanded focused matrix consumes exact tip after code roast fix loop exits; preparation and targeted causal controls remain permitted in code phase. Existing acceptance and all historical proof requirements unchanged; final source evidence merely sequenced to current skill.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-11T06:21:00Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-12T18:33:56Z",
+    "started_at": "2026-10-11T21:39:34Z",
+    "closed_at": "2026-10-12T18:33:56Z",
+    "close_reason": "Final source-sealed acceptance6abdf38f PASS827/827 (focused821 plus separate mandatory6), zero errors/scoped leaks; exact source/binary bookends. Required merge gates, current consumer byte-equivalent124PASS, controlled incremental build5.990s/lint20.626s PASS. Main release qualification excluded; known post-cap Should-fix punch list retained.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.8.3",
+        "depends_on_id": "ht-0lo.8",
+        "type": "parent-child",
+        "created_at": "2026-10-11T06:21:00Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.8.3",
+        "depends_on_id": "ht-0lo.8.4",
+        "type": "blocks",
+        "created_at": "2026-10-11T06:39:00Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.8.3",
+        "depends_on_id": "ht-0lo.10",
+        "type": "blocks",
+        "created_at": "2026-10-12T14:25:08Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.8.3",
+        "depends_on_id": "ht-0lo.9",
+        "type": "blocks",
+        "created_at": "2026-10-12T14:25:06Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.8.3",
+        "depends_on_id": "ht-0lo.8.2",
+        "type": "blocks",
+        "created_at": "2026-10-11T06:21:00Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.8.3",
+        "depends_on_id": "ht-0lo.19",
+        "type": "blocks",
+        "created_at": "2026-10-12T18:20:06Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.8.3",
+        "depends_on_id": "ht-0lo.11",
+        "type": "blocks",
+        "created_at": "2026-10-12T14:25:12Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 6,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo.8"
+  },
+  {
+    "id": "ht-0lo.8.2",
+    "title": "Automatic Ensure creation policy and durable handoff composition",
+    "description": "Own optional frozen Ensure creation policy Lazy/RequireAck+duration absent=historical timed, modern directsend Lazy newpair and automatichandoff lazy/timed initial creation, body acquisition/freezing, independentACKbody/message deadline, capability-before-effects, canonical automatic validators/adapters/public routes/journal/retry/loader/archival/readiness and user docs. Consume Task12 actual additive schema/capacity map; do not edit released history or invent standalone Invite. Preserve existing joined/pending/rejected/left pair semantics exactly and actual outcome presentation. Normative refinement in upstream-composition-refinement.md supersedes prior flag refusal.",
+    "acceptance_criteria": "Actual automatic existing-seat/existing-pane/launched-pane/new-tab and explicit routes support nonemptyUTF8\u003c=65536 positional/file/stdin acquired once, maximum ordinary/escaped/NUL/whitespace exact bodies and source mutation/deletion retries. Initial Ensure Lazy/RequireAck/default/explicit durations correct; absent historical exact requests/digests unchanged; duplicate policy mismatch retains original episode/deadline/origin, AlreadyJoined creates no obligation, rejected/left never reinvite. Message remains addressed ordinaryACK independently,7second message/11second invite, creation/send-based clocks, registration/launch never acceptance/ACK. Capability discovery precedes journal/allocation/Ensure/topology/native effects incl ordinary directsend and pending retries; completed historical inspection unchanged with Task1 conservative unsupported limits. Exact frozen children/attachment/published proof, lostEnsure→reject/leave, lostSend, childcomplete/outerincomplete, possible-start/unknowncreate preserve no duplicate/restage/relaunch. Actual all body-bearing loader/recovery/terminal/archival paths honor Task12 proven ceilings and before-effect refusal. Advisory missing/untrusted/wrongprofile hooks with actualusedfingerprint and structural/grammar/trust guards retained. Focused public/canonical tests, fmt/clippy; independent interface+publicroute review includes clean-auto-merge paths, not just conflicts. New Ensure creation-policy capability direct_threads.ensure_creation_policy_v1 is independently required for modern policy, including Lazy directsend beforeeffects; advertise only actual canonical activation. Oldv0.7 automatic/direct peers includingLazy prove zeroeffects; Task13 owns semanticcapability, Task12 activation-ready schema ifneeded without speculativeDDL. Parent-settled aggregate envelope: escaped65536-byte body supported under ordinary bounded metadata, not simultaneous independent metadata maxima. Full-max combinations refuse truthfully before durable/native effects; general requests remain1MiB. Exact supported original must fit every later Complete/Recover request, reply, local/recovery serializer including near-aggregate boundary and future bounded fields, or initial preflight refuses. Never accept an origin that later becomes unrecoverable. Preserve exact retained bytes/digests; positive maxbody ordinarymetadata and fullmax negative controls required. Exceptional AutomaticBootstrap response only, final numeric limit derived from full supported-envelope fixtures.",
+    "notes": "Active parent-authorized refinements are normative in task-13-brief.md, task-13-wire-preflight.md and upstream-composition-refinement.md under docs/superpowers/runs/2026-10-10-handoff-delivery-redesign: bounded versioned canonical summary distinct from exact optional local sidecar, critical summary synced first/no relaunch including truthful NonStarted, public+canonical aggregate admission covering all future request/reply/local shapes, conditional request-known AutomaticBootstrap-only2MiB response with general1MiB retained. Task13 independent wire/durability review preparation is task-13-interface-review-brief.md. Newly model-visible strings require expected-size accounting. Prior ruling history remains in committed artifacts.\nParent-authorized R14 consistency refinement: NEW explicit RequireAck Ensure creation must mirror ordinary Invite canonical Human ISSUER/operator_human refusal before pair/row/obligation effects; Lazy and historicalNone unchanged, existing episodes immutable/reused/refused as before. No recipient-human receipt-waiver change or new caller verification. Actual service RED before guard +historical/Lazy/episode controls; normative brief/spec recorded before code.\nParent-authorized modern Ensure result: historical absent policy retains exact ThreadCreated bytes/replay. Modern gated bounded typed result returns canonical actual participation and invitation policy/deadline/outcome, new/existingpending/AlreadyJoined honest, mismatch preserves original, rejectleft refused. Public callers +loaders/retries +admission +wire families updated; no unrelated response allowance. Actual initial/historical/mismatch/joined/rejectleft/oldpeer controls and fresh interface review mandatory. Brief/normative artifacts updated before code.\nParent refinement: modern valid-original +positivelyvalidated canonical Completed may present with truly missing childprogress/artifact, truthful message=None/unavailable marker (canonical hasnoID), no mutation/native reconstruction; historicalNone unchanged; existing corrupt/mismatched child remains error. Actual completedmissinglocals RED/GREEN +None/Attached/live/corrupt controls, canonical bytes/timers unchanged, optionalterminal/admission updates. Normatives/brief recorded before code.\nFINAL compatibility supersession: the new AutomaticBootstrap response allowance is 2MiB ONLY for frozen modern Some policy; historical None keeps pre-B 1MiB transport, 256KiB canonical recovery RESULT and 128KiB original/attachment. Earlier kind-only wording is superseded. Inherited handcrafted None 256KiB..1MiB client acceptance remains, not newly broadened or silently repaired. Final f36 whole+independent interface corrective reviews CLEAN; exact serialized embedded identity correlation restored for both response families. Main43 rebased cdbf retains all33 B blobs/all39 migrations; independent seam CLEAN. Combined gate follows, final parent readiness deferred.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-11T06:20:59Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-11T10:40:49Z",
+    "started_at": "2026-10-11T07:30:08Z",
+    "closed_at": "2026-10-11T10:40:49Z",
+    "close_reason": "Implemented and fresh whole/interface corrective reviews CLEAN at f36; exact main43 rebased seam CLEAN at cdbf; combined Clippy37.95s/fmt/neutral PASS; candidate-only merge3ad07776 exact gated tree099a07fa. Parent final readiness remains deferred.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.8.2",
+        "depends_on_id": "ht-0lo.8",
+        "type": "parent-child",
+        "created_at": "2026-10-11T06:20:59Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.8.2",
+        "depends_on_id": "ht-0lo.8.1",
+        "type": "blocks",
+        "created_at": "2026-10-11T06:20:59Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 1,
+    "parent": "ht-0lo.8"
+  },
+  {
+    "id": "ht-0lo.8.1",
+    "title": "Released schema preservation and isolated upstream composition",
+    "description": "Own isolated mainab2291c5 merge import and exact mechanical composition, released29/30/31 preservation, our29..35→32..38 renumber, additive39 automatic body-bearing capacity migration and schema verification/catalog fixtures. All upstream imported paths are declared explicitly; import does not authorize unrelated semantic edits. Resolve mechanical conflicts without erasing either feature; report semantic seams to Task13. Preserve immutable released SQL, original requests/digests/keys/provenance and full old FK graph. Keep candidate isolated; no provisional root merge. Supply actual compilable branch/schema/interface/capacity map to Task13.",
+    "acceptance_criteria": "Genuine populated published main31→combined latest physically reopens/upgrades, rolls back failed migration atomically, restores FK enforcement, preserves every old row/JSON/key/digest and exact old definitions except explicitly additive/rebuilt capacity objects, and matches fresh catalog. Released29/30/31 git blobs exact; genuine older fixture cutpoints remain genuine. Additive39 enlarges only actual automatic body-bearing checks, with actual65536-byte ordinary/six-byte-escaped original/recovery serializers and independent metadata limits. Run focused schema/upgrade/capacity tests, fmt and per-change all-target/all-feature clippy; independent schema/mechanical review CLEAN. Mechanical compile checks do not claim Task13 automatic behavior. No placeholders or unresolved markers into root integration. New Ensure creation-policy capability direct_threads.ensure_creation_policy_v1 is independently required for modern policy, including Lazy directsend beforeeffects; advertise only actual canonical activation. Oldv0.7 automatic/direct peers includingLazy prove zeroeffects; Task13 owns semanticcapability, Task12 activation-ready schema ifneeded without speculativeDDL. Actual latest AGENTS constraints: scripts/check-harness-neutral and truthful Outside-adapter trailer on every NEW commit; no real ~/.gemini writes. Preserve AGY delivery/wake_on/schema addition and provide stable neutraladapter/launch/delivery interfaces to Task15; semantic readiness/pull earlygates deferred explicitly, not falselyclaimed mechanicalGREEN. Parent-settled aggregate envelope: escaped65536-byte body supported under ordinary bounded metadata, not simultaneous independent metadata maxima. Full-max combinations refuse truthfully before durable/native effects; general requests remain1MiB. Exact supported original must fit every later Complete/Recover request, reply, local/recovery serializer including near-aggregate boundary and future bounded fields, or initial preflight refuses. Never accept an origin that later becomes unrecoverable. Preserve exact retained bytes/digests; positive maxbody ordinarymetadata and fullmax negative controls required. Exceptional AutomaticBootstrap response only, final numeric limit derived from full supported-envelope fixtures.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-11T06:20:58Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-11T07:28:26Z",
+    "started_at": "2026-10-11T06:22:33Z",
+    "closed_at": "2026-10-11T07:28:26Z",
+    "close_reason": "Closed",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.8.1",
+        "depends_on_id": "ht-0lo.8",
+        "type": "parent-child",
+        "created_at": "2026-10-11T06:20:58Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-0lo.8"
+  },
+  {
+    "id": "ht-0lo.8",
+    "title": "Compose released automatic handoffs with delivery redesign",
+    "description": "Own the parent-authorized integration of landed main 478ec4a9 (v0.7.0 automatic one-to-one threads) into handoff delivery redesign. Main advanced materially after the original task tree: released migrations0029_direct_threads.sql/0030_automatic_handoff.sql and automatic existing-recipient/new-tab handoffs/direct sends must compose with the redesign. Preserve released main migration bytes and canonical automatic defaults; renumber unlanded redesign migrations additively with genuine historical upgrade coverage. Carry exact UTF-8 body/source bounds, independent frozen message/invitation policies where applicable, send-time deadlines, capability-before-effects, diagnostic readiness with structural/native/config guards, bounded original/progress/recovery envelopes and exact historical retries into all newly landed public paths. Review relevant clean auto-merges as well as conflicts. Split bounded schema/mechanical composition, automatic public-policy/envelope fixes and final focused combined sweep according to read-only composition plan. No root closure, whole-epic review or ready notification until children, independent schema/interface/public-route reviews and combined focused sweep are complete. Parent owns final PR roast/default-feature/readiness/report/notification. No full routine suite, foreign process actions or released SQL rewrite. Spec: existing redesign specs plus upstream automatic contracts; routine compatibility refinements durably recorded.",
+    "acceptance_criteria": "Released main migrations remain byte-exact; all automatic and explicit public paths preserve their canonical defaults while honoring redesigned body, receipt, capability, retry and diagnostic-launch contracts. Genuine upgrades, independent semantic/schema reviews and focused combined sweep pass; parent final readiness remains deferred.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-11T06:14:41Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-12T18:33:59Z",
+    "closed_at": "2026-10-12T18:33:59Z",
+    "close_reason": "All four composition children terminal; final combined C827PASS, published Main1–36 preserved and reviewed prospective37–46. No Main landing/release readiness claim.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.8",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-11T06:14:41Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.7",
+    "title": "Define ordinary-send receipt semantic compatibility boundary",
+    "description": "Design-only fix for confirmed roast R1-4. owns: named send-time receipt capability and pre-effect modern client refusal boundary; consumes: existing capability discovery mechanism. Update root/receipt/handoff specs and ht-0lo.1.1 acceptance. No historical request mutation or new adversarial verification.",
+    "acceptance_criteria": "Normative specs and implementation owners explicitly resolve the confirmed design finding; independent next roast verifies the changed contract.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T23:18:35Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-10T23:18:59Z",
+    "closed_at": "2026-10-10T23:18:59Z",
+    "close_reason": "Design contract and implementation task acceptance updated; independent round2 will verify.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.7",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-10T23:18:35Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.6",
+    "title": "Define fair due-scan progress and conditional detection bound",
+    "description": "Design-only fix for confirmed roast R1-1. owns: normative finite-backlog scanner progress/latency contract and early multi-batch validation; consumes: existing5s safety tick,100candidate batch and frozen cursor semantics. Update root/receipt/invitation specs and task acceptances; implementation remains owned by ht-0lo.1.2,ht-0lo.1.3 and ht-0lo.2.2.",
+    "acceptance_criteria": "Normative specs and implementation owners explicitly resolve the confirmed design finding; independent next roast verifies the changed contract.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T23:18:25Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-10T23:18:55Z",
+    "closed_at": "2026-10-10T23:18:55Z",
+    "close_reason": "Design contract and implementation task acceptance updated; independent round2 will verify.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.6",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-10T23:18:25Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.5",
+    "title": "Integration sweep: handoff delivery redesign",
+    "description": "owns: remaining cross-feature integration wiring, documentation consistency and end-to-end tests no owning leaf covers; consumes: all implementation leaves. Verify long durable inbox handoff, all native delivery paths, send-time unavailable-recipient expiry, lazy/timed invitation acceptance and independent sender warnings, retained keyed retry and stable per-event owned hooks. Fix small integration gaps inline; file blockers for larger discoveries. Run focused isolated tests, cargo fmt, nice cargo clippy --locked --all-targets --all-features -- -D warnings and nice scripts/check-default-features on the final candidate. Do not run the routine full suite while ht-zo4 restriction remains. Tests own/tag/stop all children/private sessions and never alter shared server or real user configs. Files: integration tests, embedded skills/help/docs, TRUST-POLICY.md and minimal seam wiring.\nblocked-by ht-0lo.1.1: consumes all leaves (integration sweep)\nblocked-by ht-0lo.1.2: consumes all leaves (integration sweep)\nblocked-by ht-0lo.1.3: consumes all leaves (integration sweep)\nblocked-by ht-0lo.2.1: consumes all leaves (integration sweep)\nblocked-by ht-0lo.2.2: consumes all leaves (integration sweep)\nblocked-by ht-0lo.2.3: consumes all leaves (integration sweep)\nblocked-by ht-0lo.3.1: consumes all leaves (integration sweep)\nblocked-by ht-0lo.3.2: consumes all leaves (integration sweep)\nblocked-by ht-0lo.4.1: consumes all leaves (integration sweep)\nblocked-by ht-0lo.4.2: consumes all leaves (integration sweep)\nblocked-by ht-0lo.6: consumes all leaves (integration sweep)\nblocked-by ht-0lo.7: consumes all leaves (integration sweep)",
+    "acceptance_criteria": "Main handoff flows complete end to end with exact frozen bodies/routing and independent receipt/invitation deadlines. Overdue originators receive durable guarded waking attention; late confirmation clears passively. All owned native configurations and legacy retries remain safe. Final format, focused tests, all-feature clippy and default-feature gates pass; owned processes stopped. (needs: ht-0lo.1.1) (needs: ht-0lo.1.2) (needs: ht-0lo.1.3) (needs: ht-0lo.2.1) (needs: ht-0lo.2.2) (needs: ht-0lo.2.3) (needs: ht-0lo.3.1) (needs: ht-0lo.3.2) (needs: ht-0lo.4.1) (needs: ht-0lo.4.2)\nBounded projection bootstrap refinement: H counts all Task5 physical/prepared plus migration35 physical/sparse bootstrap visits, including duplicates and terminal/future/waived/unpublished work. Constant-work indexed high-water capture only; no historical INSERTSELECT. Shared50 repair allowance within100 due candidates, same-quantum quota lending/end probes, combined atomic completion/reset only after all producers. Preserve H0 and conditional H/D/I formulas with actual-work proof. Test genuine34 upgrade rollback/reopen, old sparse/open origins, rowid reuse/deletion/reinsertion, all-terminal backlog, arrivals/restart and independent blocked wakes.",
+    "spec_id": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-design.md",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T23:09:38Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-11T06:14:23Z",
+    "started_at": "2026-10-11T06:01:02Z",
+    "closed_at": "2026-10-11T06:14:23Z",
+    "close_reason": "Closed",
+    "metadata": {
+      "depth": 1,
+      "order": 5
+    },
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.5",
+        "depends_on_id": "ht-0lo.2.3",
+        "type": "blocks",
+        "created_at": "2026-10-10T23:09:48Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.5",
+        "depends_on_id": "ht-0lo.2.2",
+        "type": "blocks",
+        "created_at": "2026-10-10T23:09:47Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.5",
+        "depends_on_id": "ht-0lo.6",
+        "type": "blocks",
+        "created_at": "2026-10-10T23:18:29Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.5",
+        "depends_on_id": "ht-0lo.1.3",
+        "type": "blocks",
+        "created_at": "2026-10-10T23:09:43Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.5",
+        "depends_on_id": "ht-0lo.1.1",
+        "type": "blocks",
+        "created_at": "2026-10-10T23:09:40Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.5",
+        "depends_on_id": "ht-0lo.7",
+        "type": "blocks",
+        "created_at": "2026-10-10T23:18:38Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.5",
+        "depends_on_id": "ht-0lo.3.2",
+        "type": "blocks",
+        "created_at": "2026-10-10T23:09:52Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.5",
+        "depends_on_id": "ht-0lo.2.1",
+        "type": "blocks",
+        "created_at": "2026-10-10T23:09:45Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.5",
+        "depends_on_id": "ht-0lo.4.1",
+        "type": "blocks",
+        "created_at": "2026-10-10T23:09:55Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.5",
+        "depends_on_id": "ht-0lo.4.2",
+        "type": "blocks",
+        "created_at": "2026-10-10T23:09:58Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.5",
+        "depends_on_id": "ht-0lo.3.1",
+        "type": "blocks",
+        "created_at": "2026-10-10T23:09:50Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.5",
+        "depends_on_id": "ht-0lo.1.2",
+        "type": "blocks",
+        "created_at": "2026-10-10T23:09:41Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.5",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-10T23:09:38Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 12,
+    "dependent_count": 0,
+    "comment_count": 1,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.1.3",
+    "title": "Upgrade dormant historical receipt obligations",
+    "description": "owns: transactional upgrade/backfill of formerly dormant historical ACK obligations, sparse/physical due projection consistency and idempotent schema marker; consumes: canonical send-time receipt projection. Preserve already running deadlines, terminal states/provenance and immutable request/result digests. Files: src/store/{schema,effective,materialization}.rs and focused migration/store tests. Exercise legacy unavailable receipts upgrade/restart/replay and overdue indexed discovery, bounded warning burst.\nblocked-by ht-0lo.1.1: consumes canonical send-time receipt projection\nExercise dormant historical upgrade over multiple100candidate batches and verify no overdue initial row is lost or starved by newly arriving work; discovery contract is owned by ht-0lo.1.2.",
+    "acceptance_criteria": "Legacy dormant physical/manifest ACK obligations receive send-time deadlines while existing started/terminal/waived obligations remain unchanged. Idempotent restart and focused migration tests pass. Exercise dormant historical upgrade over multiple100candidate batches and verify no overdue initial row is lost or starved by newly arriving work; discovery contract is owned by ht-0lo.1.2.\n\nAuthorized upgrade-aware refinement (supersedes the earlier formula when H\u003e0): Healthy-daemon discovery retains the 5,000ms safety tick and 100 actually inspected candidates per successful global due-driver quantum. Every two successful runnable global quanta give each unfinished receipt/invitation class one turn with a 100-candidate allowance; successful `more` continues immediately. All queries enforce finite captured high-water bounds before LIMIT, advance stable cursors, and count inspected rows even if future, terminal, waived or otherwise ineffective. Ordinary receipt scanning lends unused physical/sparse allowance so a non-final snapshot turn can consume its full allowance; native wake admission/completion never gates cursor progress. The 100 limit is a total row-inspection allowance, not 100 repaired rows plus 100 due rows.\n\nDuring unfinished historical receipt repair, reserve at most ceil(limit/2) candidates for repair and the remaining allowance for ordinary due discovery (at least 50 at limit=100); lend unused repair allowance to due discovery. Advance persistent finite physical/prepared ordinal repair cursors without restarting ordinary due traversal every batch. Inspect each captured repair candidate at most once; published projection alone is repaired, while any physically visited unpublished prepared candidate still counts. Repair completion emits a one-shot `completed` transition and resets the ordinary receipt cursor before due selection in that same committed transaction. Repair progress, that completion/reset decision and due-warning effects commit or roll back together. This fresh post-repair traversal catches repaired deadlines behind a previously advanced due cursor. Empty repair finalization uses zero row allowance and shares the ordinary turn at full capacity. Failed decisions cannot consume the completion transition. Standalone backfill callers retaining a due cursor must honor `completed` too.\n\nBound definitions: start at a fresh paired discovery cycle with the target obligations already overdue, or restart with reconstructed finite cursors. H is an upper bound on ALL actually inspected candidates in the captured historical physical/prepared repair workload, including future/terminal/waived/unpublished candidates; it is not the number changed. D bounds ALL inspected ordinary receipt candidates in the complete fresh post-repair snapshot, including repaired rows, duplicate physical/sparse projections and finite arrivals captured before that snapshot freezes. I bounds ALL inspected invitation candidates in its initial finite snapshot, including future or subsequently ineffective rows. Q bounds elapsed time of one successful runnable GLOBAL driver quantum, including storage, scheduling and other admitted work. Later insertions outside captured high waters cannot enter or restart those walks, even when their deadlines are earlier. A finite D bound must cover any arrivals before the post-repair snapshot freezes; unbounded arrivals during repair do not justify using only the initial receipt count.\n\nWhen H=0, empty repair bookkeeping completes within the first ordinary turn without reducing its capacity. With D and I at most N, the original two-class bound remains 5,000ms + (2*ceil(N/100)+2)*Q. For H\u003e0, set R=ceil(H/50)+2: the extra two receipt turns conservatively cover finite-stream/end probes and repair completion. After those R receipt turns, at most ceil(D/100)+1 further receipt turns finish the fresh post-repair snapshot; the +1 covers a full final page's empty completion. Invitations need at most ceil(I/100)+1 invitation turns. Fair alternation therefore gives the conservative GLOBAL bound:\n\n`5,000ms + 2*max(R + ceil(D/100)+1, ceil(I/100)+1)*Q` for H\u003e0.\n\nThe bound concerns durable warning detection for still-pending, unextended target obligations, not bounded native key submission. It is conditional on successful bounded storage/driver service, the stated finite workload/snapshot limits and Q; it does not cover outages, repeated errors, unbounded overload, newly expiring rows already passed by a snapshot cursor, or arbitrary arrivals outside the counted snapshots. Such rows belong to a subsequent fresh cycle. Restart resumes or reconstructs finite traversal without losing repair progress; a newly reconstructed traversal must count its inspected workload again. Tests must measure actual inspected work and global quanta, rather than changed rows or receipt-only calls.\n\nTask5 verifies the producer locally: multiple batches, finite captured high waters, late earlier-deadline arrivals excluded from repair, mixed future/terminal/waived/unpublished candidates, all-terminal old backlog, one-shot atomic completion/reset, and rollback/restart. Task7 verifies the global conversion with at least 250 candidates in EACH receipt and invitation class, both H=0 and H\u003e0, blocked native wakes, mixed future/due rows, continuing earlier-deadline arrivals, actual \u003c=100 total inspections per quantum, immediate successful continuation, early ordinary-due progress before long repair exhaustion, final post-repair discovery and restart. Task7 owns normal due-query high-water enforcement/full allowance lending and shared fairness; Task5 does not claim the combined bound from receipt-only tests.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:49:48Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-11T02:27:54Z",
+    "started_at": "2026-10-11T01:48:04Z",
+    "closed_at": "2026-10-11T02:27:54Z",
+    "close_reason": "Closed",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.1.3",
+        "depends_on_id": "ht-0lo.1.1",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:49:49Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.1.3",
+        "depends_on_id": "ht-0lo.1",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:49:48Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 2,
+    "comment_count": 1,
+    "parent": "ht-0lo.1"
+  },
+  {
+    "id": "ht-0lo.3.2",
+    "title": "Handoff confirmation policy wiring and recovery documentation",
+    "description": "owns: handoff --deadline/--require-invite-ack/--invite-deadline parsing/freeze/pass-through, modern lazy invitation plus addressed ACK-required body staging across new-tab/empty-pane/existing paths, retained child digest compatibility and source/help/skill docs; consumes: frozen handoff payload, invitation confirmation wire contract and send-time receipt semantics. Files: src/cli/{handoff,handoff_delivery,topology_handoff,mod}.rs, src/protocol/handoff.rs, src/store/{handoff,topology_handoff}.rs and related tests/help/skill. Run isolated actual handoff per all three paths/body sources; crash/retry after stage and possible-start/unknown-create never duplicates/restages/relaunches. Older plans absent new fields replay original keyed requests, modern deadlines freeze before staging; routing exact3field fallback and no auto trust/accept/ACK.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--handoff-design.md\nblocked-by ht-0lo.3.1: consumes frozen handoff payload\nblocked-by ht-0lo.2.1: consumes invitation confirmation wire contract\nblocked-by ht-0lo.1.1: consumes send-time receipt semantics\nAlso owns: separating hook/setup/trust/profile readiness diagnostics from launch admission; src/cli/launch.rs prepare_launch and src/harness/launch.rs configuration checks. Missing/untrusted/wrong-profile hooks do not block staged work or otherwise structurally safe launch. Preserve empty-shell/seat/caller/native argv and owned launch-configuration fingerprint safety, and truthful native trust refusal; never auto-approve. Test missing/stale profile hooks through guarded handoff and observe durable ACK deadline warning without registration.\nblocked-by ht-0lo.2.2: consumes canonical invitation lifecycle\nblocked-by ht-0lo.1.2: consumes overdue receipt warning lifecycle\nHook readiness is advisory: keep owned launch configuration fingerprint recheck only when that configuration is actually used; absence cannot veto and no fingerprint is fabricated. Unsupported environment-overrides/native grammar/host-kind safety refusals remain.\nRequire messages.send_time_receipts_v1 before new handoff effects; consume ht-0lo.1.1 capability contract and verify unsupported-daemon refusal before staging/launch.",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass. Observe durable overdue warning for an unregistered recipient (needs: ht-0lo.1.2). Require messages.send_time_receipts_v1 before new handoff effects; consume ht-0lo.1.1 capability contract and verify unsupported-daemon refusal before staging/launch.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:48:20Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-11T05:58:18Z",
+    "started_at": "2026-10-11T04:40:32Z",
+    "closed_at": "2026-10-11T05:58:18Z",
+    "close_reason": "Closed",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.3.2",
+        "depends_on_id": "ht-0lo.3",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:48:20Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.3.2",
+        "depends_on_id": "ht-0lo.1.1",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:48:30Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.3.2",
+        "depends_on_id": "ht-0lo.2.2",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:49:52Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.3.2",
+        "depends_on_id": "ht-0lo.2.1",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:48:29Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.3.2",
+        "depends_on_id": "ht-0lo.1.2",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:59:18Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.3.2",
+        "depends_on_id": "ht-0lo.3.1",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:48:28Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 5,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-0lo.3"
+  },
+  {
+    "id": "ht-0lo.3.1",
+    "title": "Handoff instruction source acquisition and frozen payload",
+    "description": "owns: positional/file/stdin source exclusivity, bounded nonempty UTF-8 65,536-byte acquisition and exact bytes frozen in all handoff intent forms; consumes: existing compound intent/body schema. Files: src/cli/handoff.rs parser and validation, src/cli/{handoff_delivery,topology_handoff}.rs saved plans and associated parser sources/tests. Preserve topic/goal limits separately; invalid sources fail before mutations; mutate/delete source after initial staging and prove retry keeps original content. Native argv contains fixed routing/inbox only.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--handoff-design.md\nAlso owns: body-bearing envelope capacity calculation and limits: bootstrap identity/progress512KiB, recovery1MiB; preserve metadata-only creation/attachment128KiB, completed2MiB/globalwire1MiB unless actual serializer worst-case fixtures prove a narrowly scoped bound adjustment necessary. Files additionally src/store/topology_handoff.rs and persistence.rs, src/cli/journal.rs, TRUST-POLICY encoded-limit clauses. Reuse src/cli/input.rs; protocol body validator must follow normal nonempty UTF-8 message bytes (NUL/whitespace are not identifier validation). Inventory all repeated bodies/nested originals; actual serializer64KiB six-byte escape public wire/canonical/local retained/retry fixtures prove support under ordinary bounded metadata. Exact serialized preflight before effects; retain historical bytes/digests and no clipping.",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:48:19Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-11T01:58:01Z",
+    "started_at": "2026-10-10T23:33:37Z",
+    "closed_at": "2026-10-11T01:58:01Z",
+    "close_reason": "Closed",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.3.1",
+        "depends_on_id": "ht-0lo.3",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:48:19Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-0lo.3"
+  },
+  {
+    "id": "ht-0lo.4.2",
+    "title": "Owned stable registration migration and tooling",
+    "description": "owns: manifest-recorded exact ownership/install identity, repeat setup in place, recoverable UUID/shared-command migration, safe unsetup and status/trust/canary/launcher command compatibility; consumes: stable native per-event command grammar. Files: src/harness/setup.rs and claude/codex setup modules, src/cli setup/launch consumers, canary/tooling/docs/tests. Invoke isolated Claude/Codex setup-repeat/migration/interruption/unsetup with foreign identical/drifted groups and ensure no ownership theft, no trust writes, no group shifting on equivalent reinstall. Hermes/Claude mod regressions stay passing.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--hooks-design.md\nblocked-by ht-0lo.4.1: consumes stable native per-event command grammar",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:48:18Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-11T03:36:10Z",
+    "started_at": "2026-10-11T02:03:20Z",
+    "closed_at": "2026-10-11T03:36:10Z",
+    "close_reason": "Closed",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.4.2",
+        "depends_on_id": "ht-0lo.4.1",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:48:27Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.4.2",
+        "depends_on_id": "ht-0lo.4",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:48:18Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-0lo.4"
+  },
+  {
+    "id": "ht-0lo.4.1",
+    "title": "Stable native event dispatch and command generation",
+    "description": "owns: hook-event HARNESS EVENT parser/registered-codec dispatch and stable per-event shell command grammar; consumes: existing harness event registry and canonical routing. Files: src/cli/{hook,mod,setup}.rs, src/harness/{setup,claude,codex}.rs, registry declarations/tests. Keep legacy hook syntax; validate invalid pairs before effects; command stability includes executable/route/harness/event only. Exercise declared Claude/Codex events with fixtures through dedicated entrypoints; retain Hermes callback and bundled mod route compatibility.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--hooks-design.md",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:48:17Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-11T02:01:18Z",
+    "started_at": "2026-10-11T00:49:15Z",
+    "closed_at": "2026-10-11T02:01:18Z",
+    "close_reason": "Closed",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.4.1",
+        "depends_on_id": "ht-0lo.4",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:48:17Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-0lo.4"
+  },
+  {
+    "id": "ht-0lo.2.3",
+    "title": "Invitation CLI and presentation contract",
+    "description": "owns: ordinary invite --lazy default, --require-ack/--deadline implication and conflicts, compact/JSON/inbox/help/embedded skill presentation; consumes: invitation confirmation protocol/store contract. Files: src/cli parser invitation branches/mod/output and help/skill resources, relevant CLI tests. Invoke actual CLI in isolated daemon/config for bare lazy, require-ack default duration, explicit deadline, conflicting flags, duplicate and historical keyed retry. Required/operator commands remain unchanged.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--invitations-design.md\nblocked-by ht-0lo.2.2: consumes invitation confirmation store behavior",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:48:15Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-11T03:54:41Z",
+    "started_at": "2026-10-11T03:15:00Z",
+    "closed_at": "2026-10-11T03:54:41Z",
+    "close_reason": "Closed",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.2.3",
+        "depends_on_id": "ht-0lo.2.2",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:48:26Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.2.3",
+        "depends_on_id": "ht-0lo.2",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:48:15Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-0lo.2"
+  },
+  {
+    "id": "ht-0lo.2.2",
+    "title": "Invitation acceptance, due and delivery lifecycle",
+    "description": "owns: canonical lazy/timed invitation create/duplicate/accept/reject/cancel/retire behavior, due scanner and inviter-addressed warning routing plus read/wake/mod projections; consumes: invitation mode schema/wire contract. Files: src/store/{control,invitation_due,wake,queries,service_controls,seats}.rs as needed, daemon projections, TRUST-POLICY invitation clauses and focused tests. Run lazy invite no native wake/deadline, timed never-register and register-without-accept expiry, acceptance clears, duplicate never mutates policy, inviter leaving warning, required membership and explicit rejection notice cases.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--invitations-design.md\nblocked-by ht-0lo.2.1: consumes invitation mode schema/wire contract\nOriginal inviter attribution frozen at invitation creation; overdue inviter open warning waking under existing native/mod guards even after leaving, clear passive; update TRUST-POLICY A7. Duplicate caller never retargets originator warning.\nHealthy-daemon discovery contract: retain the5,000ms safety tick and100candidate per-drive cap; continue immediately while successful due progress reports more. Each class advances a stable finite high-water cursor fairly; newly arriving obligations do not restart/starve the current snapshot. Native wake admission/completion never gates cursor progress. For a snapshot with at most N candidates per class and successful runnable driver quanta taking at most Q ms including storage/scheduling, durable pending-warning detection finishes within5,000ms +(2*ceil(N/100)+2)*Q; this is conditional on the daemon running and successful bounded storage, not a guarantee across outages, repeated errors, unbounded overload or native key submission. Restart resumes/reconstructs fair discovery and scans already overdue obligations. Early fake-clock tests use at least250candidates in EACH invitation and receipt class, blocked native wakes, mixed future/due rows, continuing arrivals and restart; verify every initial overdue row is warned within the formula and arrivals cannot starve either class. Historical upgrade also uses multiple bounded batches without losing overdue indexed discovery.",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass. Healthy-daemon discovery contract: retain the5,000ms safety tick and100candidate per-drive cap; continue immediately while successful due progress reports more. Each class advances a stable finite high-water cursor fairly; newly arriving obligations do not restart/starve the current snapshot. Native wake admission/completion never gates cursor progress. For a snapshot with at most N candidates per class and successful runnable driver quanta taking at most Q ms including storage/scheduling, durable pending-warning detection finishes within5,000ms +(2*ceil(N/100)+2)*Q; this is conditional on the daemon running and successful bounded storage, not a guarantee across outages, repeated errors, unbounded overload or native key submission. Restart resumes/reconstructs fair discovery and scans already overdue obligations. Early fake-clock tests use at least250candidates in EACH invitation and receipt class, blocked native wakes, mixed future/due rows, continuing arrivals and restart; verify every initial overdue row is warned within the formula and arrivals cannot starve either class. Historical upgrade also uses multiple bounded batches without losing overdue indexed discovery.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:48:14Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-11T03:11:21Z",
+    "started_at": "2026-10-11T00:27:22Z",
+    "closed_at": "2026-10-11T03:11:21Z",
+    "close_reason": "Closed",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.2.2",
+        "depends_on_id": "ht-0lo.2.1",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:48:25Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.2.2",
+        "depends_on_id": "ht-0lo.2",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:48:14Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 4,
+    "comment_count": 0,
+    "parent": "ht-0lo.2"
+  },
+  {
+    "id": "ht-0lo.2.1",
+    "title": "Invitation confirmation protocol and schema contract",
+    "description": "owns: additive invitation delivery/confirmation wire fields, capability refusal and schema fields/indexes/legacy defaults; consumes: existing operation digests and membership episodes. Files: src/protocol commands/results/capabilities or existing capability module, src/store/schema.rs and schema tests. Absent historical fields mean legacy timed behavior; explicit modern Lazy requests retain timing/inviter origin without altering old bytes. Freeze duration at creation, preserve required and human invitation semantics.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--invitations-design.md",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:48:13Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-11T00:25:41Z",
+    "started_at": "2026-10-10T23:33:31Z",
+    "closed_at": "2026-10-11T00:25:41Z",
+    "close_reason": "Closed",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.2.1",
+        "depends_on_id": "ht-0lo.2",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:48:13Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 3,
+    "comment_count": 0,
+    "parent": "ht-0lo.2"
+  },
+  {
+    "id": "ht-0lo.1.2",
+    "title": "Due discovery and originating-seat warning lifecycle",
+    "description": "owns: bounded indexed due discovery plus sender-addressed open/clear warning routing and guarded poke/wake calculations; consumes: send-anchored canonical receipt projection. Files: src/store/{receipts,poke,wake,queries,schema}.rs, scheduler tests. Exercise unbound/unregistered/unavailable/pending-invite recipient sends through expiry and late ACK; originator leaving does not lose notification.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--receipts-design.md\nblocked-by ht-0lo.1.1: consumes send-anchored canonical receipt projection\nblocked-by ht-0lo.1.3: consumes historical dormant receipt upgrade\nOriginator open warning is waking attention under existing safe composer/host/mod guards even after leaving; clear passive; update TRUST-POLICY A7. No invented seat for service authors. Test notification pending while drafts/working/host outage defer actual native wake.\nHealthy-daemon discovery contract: retain the5,000ms safety tick and100candidate per-drive cap; continue immediately while successful due progress reports more. Each class advances a stable finite high-water cursor fairly; newly arriving obligations do not restart/starve the current snapshot. Native wake admission/completion never gates cursor progress. For a snapshot with at most N candidates per class and successful runnable driver quanta taking at most Q ms including storage/scheduling, durable pending-warning detection finishes within5,000ms +(2*ceil(N/100)+2)*Q; this is conditional on the daemon running and successful bounded storage, not a guarantee across outages, repeated errors, unbounded overload or native key submission. Restart resumes/reconstructs fair discovery and scans already overdue obligations. Early fake-clock tests use at least250candidates in EACH invitation and receipt class, blocked native wakes, mixed future/due rows, continuing arrivals and restart; verify every initial overdue row is warned within the formula and arrivals cannot starve either class. Historical upgrade also uses multiple bounded batches without losing overdue indexed discovery.",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass. Healthy-daemon discovery contract: retain the5,000ms safety tick and100candidate per-drive cap; continue immediately while successful due progress reports more. Each class advances a stable finite high-water cursor fairly; newly arriving obligations do not restart/starve the current snapshot. Native wake admission/completion never gates cursor progress. For a snapshot with at most N candidates per class and successful runnable driver quanta taking at most Q ms including storage/scheduling, durable pending-warning detection finishes within5,000ms +(2*ceil(N/100)+2)*Q; this is conditional on the daemon running and successful bounded storage, not a guarantee across outages, repeated errors, unbounded overload or native key submission. Restart resumes/reconstructs fair discovery and scans already overdue obligations. Early fake-clock tests use at least250candidates in EACH invitation and receipt class, blocked native wakes, mixed future/due rows, continuing arrivals and restart; verify every initial overdue row is warned within the formula and arrivals cannot starve either class. Historical upgrade also uses multiple bounded batches without losing overdue indexed discovery.\n\nAuthorized upgrade-aware refinement (supersedes the earlier formula when H\u003e0): Healthy-daemon discovery retains the 5,000ms safety tick and 100 actually inspected candidates per successful global due-driver quantum. Every two successful runnable global quanta give each unfinished receipt/invitation class one turn with a 100-candidate allowance; successful `more` continues immediately. All queries enforce finite captured high-water bounds before LIMIT, advance stable cursors, and count inspected rows even if future, terminal, waived or otherwise ineffective. Ordinary receipt scanning lends unused physical/sparse allowance so a non-final snapshot turn can consume its full allowance; native wake admission/completion never gates cursor progress. The 100 limit is a total row-inspection allowance, not 100 repaired rows plus 100 due rows.\n\nDuring unfinished historical receipt repair, reserve at most ceil(limit/2) candidates for repair and the remaining allowance for ordinary due discovery (at least 50 at limit=100); lend unused repair allowance to due discovery. Advance persistent finite physical/prepared ordinal repair cursors without restarting ordinary due traversal every batch. Inspect each captured repair candidate at most once; published projection alone is repaired, while any physically visited unpublished prepared candidate still counts. Repair completion emits a one-shot `completed` transition and resets the ordinary receipt cursor before due selection in that same committed transaction. Repair progress, that completion/reset decision and due-warning effects commit or roll back together. This fresh post-repair traversal catches repaired deadlines behind a previously advanced due cursor. Empty repair finalization uses zero row allowance and shares the ordinary turn at full capacity. Failed decisions cannot consume the completion transition. Standalone backfill callers retaining a due cursor must honor `completed` too.\n\nBound definitions: start at a fresh paired discovery cycle with the target obligations already overdue, or restart with reconstructed finite cursors. H is an upper bound on ALL actually inspected candidates in the captured historical physical/prepared repair workload, including future/terminal/waived/unpublished candidates; it is not the number changed. D bounds ALL inspected ordinary receipt candidates in the complete fresh post-repair snapshot, including repaired rows, duplicate physical/sparse projections and finite arrivals captured before that snapshot freezes. I bounds ALL inspected invitation candidates in its initial finite snapshot, including future or subsequently ineffective rows. Q bounds elapsed time of one successful runnable GLOBAL driver quantum, including storage, scheduling and other admitted work. Later insertions outside captured high waters cannot enter or restart those walks, even when their deadlines are earlier. A finite D bound must cover any arrivals before the post-repair snapshot freezes; unbounded arrivals during repair do not justify using only the initial receipt count.\n\nWhen H=0, empty repair bookkeeping completes within the first ordinary turn without reducing its capacity. With D and I at most N, the original two-class bound remains 5,000ms + (2*ceil(N/100)+2)*Q. For H\u003e0, set R=ceil(H/50)+2: the extra two receipt turns conservatively cover finite-stream/end probes and repair completion. After those R receipt turns, at most ceil(D/100)+1 further receipt turns finish the fresh post-repair snapshot; the +1 covers a full final page's empty completion. Invitations need at most ceil(I/100)+1 invitation turns. Fair alternation therefore gives the conservative GLOBAL bound:\n\n`5,000ms + 2*max(R + ceil(D/100)+1, ceil(I/100)+1)*Q` for H\u003e0.\n\nThe bound concerns durable warning detection for still-pending, unextended target obligations, not bounded native key submission. It is conditional on successful bounded storage/driver service, the stated finite workload/snapshot limits and Q; it does not cover outages, repeated errors, unbounded overload, newly expiring rows already passed by a snapshot cursor, or arbitrary arrivals outside the counted snapshots. Such rows belong to a subsequent fresh cycle. Restart resumes or reconstructs finite traversal without losing repair progress; a newly reconstructed traversal must count its inspected workload again. Tests must measure actual inspected work and global quanta, rather than changed rows or receipt-only calls.\n\nTask5 verifies the producer locally: multiple batches, finite captured high waters, late earlier-deadline arrivals excluded from repair, mixed future/terminal/waived/unpublished candidates, all-terminal old backlog, one-shot atomic completion/reset, and rollback/restart. Task7 verifies the global conversion with at least 250 candidates in EACH receipt and invitation class, both H=0 and H\u003e0, blocked native wakes, mixed future/due rows, continuing earlier-deadline arrivals, actual \u003c=100 total inspections per quantum, immediate successful continuation, early ordinary-due progress before long repair exhaustion, final post-repair discovery and restart. Task7 owns normal due-query high-water enforcement/full allowance lending and shared fairness; Task5 does not claim the combined bound from receipt-only tests.\n\n### Authorized coalesced multi-originator warning acceptance refinement\n\nReceipt-overdue warning conditions remain coalesced by their existing thread/recipient backlog identity. Preserve exactly one canonical open event for that condition, exact physical/manifest receipt-to-warning associations, and the existing final clear event. Never manufacture per-sender warning conditions/events or derive original senders from current thread membership, the warning event's first source message alone, or a later caller. Enumerate canonical original seat authors of ALL messages exactly associated with the coalesced warning via receipts/receipt_state.warning_message_id; retain existing service-author handling without inventing a seat.\n\nFor EACH canonical original sender of an exactly associated receipt, the still-open shared condition must participate in actual native waking-attention selection and mod/watch pending-set/fingerprint paths under existing admission guards, including a sender who left the thread. A successful test of notice-row insertion or inbox history alone is insufficient. A later receipt association from another original sender must become actionable even when it reuses an older open event and an informational notice-offer frontier has already passed that event's sequence. Do not conflate informational offer settlement with the canonical open-condition/associated-origin state. Preserve the existing per-occupant wake-offer deduplication and safe composer/host/harness admission: this refinement does not authorize repeated native submission for an unchanged already-offered actionable state, new receipt provenance, or a task-adoption/completion claim. Cross-path attention versions/fingerprints must represent newly actionable associations honestly rather than inventing a new canonical warning event.\n\nExisting partial settlement semantics are verified in schema::clear_warning_conditions_for_receipts: the condition stays open while ANY exact associated receipt remains required/pending and not human-waived. ACK/waiver/terminal settlement of a subset must preserve all remaining origins' obligations and waking eligibility. Do not emit a condition clear, withdraw another origin's pending warning, or rewrite settled receipt/ACK provenance merely because the first event's source receipt settled. Historical informational delivery remains historical. Only settlement of the final required/pending/unwaived associated receipt clears the shared condition, once, through its existing passive-clear lifecycle; clears/observer notices create no waking attention. Routing preserves the backlog-wide open-condition lifetime; this refinement does not mandate quieting an individual sender after only its own receipts settle. All canonical associated original senders remain covered while the shared condition is open.\n\nTask7 fixture/review requirements: construct at least TWO canonical original senders and THREE exact associated receipts sharing the same thread/recipient condition (for example A1,A2 from sender A and B1 from sender B), with at least one original sender leaving before warning routing. Exercise physical and published-manifest associations, mixed original authors and repeat scans. Prove exactly one open condition/event and all exact associations. Advance informational notice-offer frontiers, then coalesce a receipt from the other original sender; show actual native selection and mod/watch state/fingerprint expose the new origin under normal guards. Partially ACK A1 and prove A2/B1 origins remain actionable; settle A2 (the event's first origin now has no pending associated receipt) and prove B1 remains actionable without premature clear or extra open event. Finally settle B1 and prove one passive clear, no warning-only native/mod wake, unchanged exact ACK actor/generation/proof/history, and no synthetic receipt/adoption evidence. Per-occupant offer deduplication and blocking admission still apply independently to each origin. Existing H/D/I upgrade discovery bound refinement remains normative and unchanged.\n\n\n### Required Task7 actual-discovery and shared early-gates acceptance refinement\n\nFor EVERY canonical original message sender in the coalesced-warning fixture, exercise the actual `discover_wake_candidates`/public wake-candidate discovery path before offer/load/reserve and native delivery; also exercise the real mod/watch path. Predicate-only `warning_wakes_seat`, direct attention calculation, hand-built WakeCandidate and direct reserve-only GREEN do not establish delivery/discovery. The fixture must leave original senders with the still-open condition as their sole waking source: settle informational offers, avoid unrelated pending invitation/receipt/notice rows masking discovery, include a sender who left, and coalesce messages from at least two canonical origins under one shared thread/recipient open warning. Verify actual discovery returns EACH original sender, then that downstream candidate/offer/load/reserve/native and mod fingerprints retain the open-origin work independently of informational notice frontiers. This must cover originators whose association is not the first warning event's source message. Existing per-occupant/reservation retry and native safety guards remain, but a generic informational `notice_frontier` or legacy warning-offer check must not silently discard this independent canonical open-origin source.\n\nFresh Task7 review MUST enumerate the full shared EARLY GATES chain, with source locations and real tests: (1) same-instance live non-human seat ordinal/high-water walk, page/continuation/budget limits; (2) `attention::seat_has_pending_rows` and actual indexed `WAKE_PROBES` inclusion of every canonical receipt-origin source, not just downstream predicates; (3) source publication/association, exact canonical author/instance attribution and remaining shared-condition lifetime; (4) bounded index-leading origin enumeration with SQL-enforced finite ordinal/high-water scope and honest inspection/continuation accounting, no full historical scan or first-event-only shortcut; (5) canonical attention pending-set narrowing, legacy/informational notice frontiers and independent open-origin selection; (6) candidate loading, current binding/occupant, actionable-work and offer-frontier gates; (7) canonical witness/freshness/reservation validation and native/mod admission. An origin source missing from ANY upstream exclusion invalidates the acceptance claim even if direct attention/reserve helpers pass. Task6's round1 rereview found exactly this gap at `seat_has_pending_rows`: direct downstream GREEN was not actual native discovery clearance.\n\nUse isolated fake-host/test-support fixtures to verify draft/composer content, active working turn and unavailable host defer native key submission under the existing guards while the durable open warning and recoverable discovery/mod source remain present. After each blocker clears, the actual discovery→offer/load/reserve/native path must resume for the correct sender without recreating the canonical warning or losing another sender's origin. Do not interpret a blocked native submission as absent durable warning, remove native safety guards, or claim bounded key submission. Check exact canonical source associations, no synthetic ACK/adoption/completion, and existing receipt actor/generation/proof/history. Audit dynamic coalescing after informational settlement, partial ACK while another associated receipt remains, and final passive clear through the actual paths rather than only stored rows.\n\nPreserve all settled Task7 requirements: one canonical shared condition/open event, origins derived from ALL exactly associated canonical messages (including departed senders), no individual quieting mandate after own ACK, same open condition while ANY required/pending/unwaived association remains, final single passive clear, and the full H/D/I upgrade-aware discovery bound/accounting/fairness contract. This is a tracked acceptance refinement on the existing owner, not a new leaf or responsibility transfer from Task6's invitation fix. Task7's implementation/reviewer must report every audited early gate and its actual path evidence explicitly before declaring sender notification complete.\n\nBounded projection bootstrap refinement: H counts all Task5 physical/prepared plus migration35 physical/sparse bootstrap visits, including duplicates and terminal/future/waived/unpublished work. Constant-work indexed high-water capture only; no historical INSERTSELECT. Shared50 repair allowance within100 due candidates, same-quantum quota lending/end probes, combined atomic completion/reset only after all producers. Preserve H0 and conditional H/D/I formulas with actual-work proof. Test genuine34 upgrade rollback/reopen, old sparse/open origins, rowid reuse/deletion/reinsertion, all-terminal backlog, arrivals/restart and independent blocked wakes.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:48:11Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-11T04:38:26Z",
+    "started_at": "2026-10-11T03:14:21Z",
+    "closed_at": "2026-10-11T04:38:26Z",
+    "close_reason": "Closed",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.1.2",
+        "depends_on_id": "ht-0lo.1.3",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:49:50Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.1.2",
+        "depends_on_id": "ht-0lo.1.1",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:48:24Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.1.2",
+        "depends_on_id": "ht-0lo.1",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:48:11Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.1.2",
+        "depends_on_id": "ht-0lo.2.2",
+        "type": "blocks",
+        "created_at": "2026-10-10T23:29:32Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 3,
+    "dependent_count": 2,
+    "comment_count": 5,
+    "parent": "ht-0lo.1"
+  },
+  {
+    "id": "ht-0lo.1.1",
+    "title": "Canonical send-time receipt projection",
+    "description": "owns: receipt original deadline semantics, preserving running deadlines and terminal provenance; consumes: existing immutable send timestamps/durations. Files: src/store/{effective,materialization,schema,messages}.rs and preparation modules, TRUST-POLICY deadline clauses, focused store tests. Cover sparse and physical receipts, restart, lazy/human waiver, registration not resetting and explicit A6 extension distinction.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--receipts-design.md\nReceipt semantic capability: advertise messages.send_time_receipts_v1 only when canonical send-time projection and its ordinary send handlers are active. Modern clients require this capability before every new ACK-required ordinary send or handoff durable/native effect; absent/refused discovery produces explicit unsupported-daemon error, with no silent legacy fallback. All CLI entry paths and service-capable client sends that promise this contract are covered. Old clients talking to an upgraded daemon receive canonical new-send semantics without modifying their old wire requests. Lazy/human-waived sends remain exempt; completed retained keyed historical operations remain inspectable/replayable with original bytes/digests/outcomes and are never rewritten. A pending historical retry on an unsupported daemon refuses before additional effects. Test newCLI/olddaemon refusal, oldCLI/newdaemon canonical send, current/current unbound sends and lazy/human exemptions using capability fixtures.",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass. Receipt semantic capability: advertise messages.send_time_receipts_v1 only when canonical send-time projection and its ordinary send handlers are active. Modern clients require this capability before every new ACK-required ordinary send or handoff durable/native effect; absent/refused discovery produces explicit unsupported-daemon error, with no silent legacy fallback. All CLI entry paths and service-capable client sends that promise this contract are covered. Old clients talking to an upgraded daemon receive canonical new-send semantics without modifying their old wire requests. Lazy/human-waived sends remain exempt; completed retained keyed historical operations remain inspectable/replayable with original bytes/digests/outcomes and are never rewritten. A pending historical retry on an unsupported daemon refuses before additional effects. Test newCLI/olddaemon refusal, oldCLI/newdaemon canonical send, current/current unbound sends and lazy/human exemptions using capability fixtures.",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:48:10Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-11T01:23:35Z",
+    "started_at": "2026-10-10T23:33:14Z",
+    "closed_at": "2026-10-11T01:23:35Z",
+    "close_reason": "Closed",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.1.1",
+        "depends_on_id": "ht-0lo.1",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:48:10Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 4,
+    "comment_count": 0,
+    "parent": "ht-0lo.1"
+  },
+  {
+    "id": "ht-0lo.4",
+    "title": "Stable hooks",
+    "description": "owns: native event command surface, exact command generation, owned migration/unsetup/status/canary/launcher consistency; consumes: existing registered harness codec declaration. Files: src/cli/{hook,setup,mod}.rs, src/harness/{setup,claude,codex}.rs and setup submodules, installed manifest/canary/tooling tests and docs. Exercise Claude/Codex per-event dispatch/setup repeat/migration/unsetup in isolated config; verify Hermes and mod route remain compatible before integration.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-design.md",
+    "acceptance_criteria": "Implement the corresponding spec contract and exercise all configurations named in this description with isolated owned children before terminal integration. Run focused tests and mandated per-change lint.",
+    "spec_id": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--hooks-design.md",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:45:47Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-11T03:36:16Z",
+    "closed_at": "2026-10-11T03:36:16Z",
+    "close_reason": "Closed",
+    "metadata": {
+      "sp_depth": 1,
+      "sp_order": 3
+    },
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.4",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:45:47Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.3",
+    "title": "Handoff payload",
+    "description": "owns: full frozen handoff payload and policy integration; consumes: send-time receipt semantics and invitation confirmation wire contract. Files: src/cli handoff paths, src/protocol/handoff.rs, src/store handoff paths and tests. Spec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--handoff-design.md",
+    "acceptance_criteria": "Implement the corresponding spec contract and exercise all configurations named in this description with isolated owned children before terminal integration. Run focused tests and mandated per-change lint.",
+    "spec_id": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--handoff-design.md",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:45:46Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-11T05:58:24Z",
+    "closed_at": "2026-10-11T05:58:24Z",
+    "close_reason": "Closed",
+    "metadata": {
+      "sp_depth": 1,
+      "sp_order": 4
+    },
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.3",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:45:46Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.2",
+    "title": "Invitation lifecycle",
+    "description": "owns: invitation mode/duration/acceptance contract, protocol capability and inviter warning routing through CLI/store/query/wake; consumes: existing membership lifecycle. Files: src/protocol/{commands,results,capabilities}.rs and wire negotiation, src/cli parser invitation branches, src/store/{control,invitation_due,wake,queries,schema}.rs, relevant tests, TRUST-POLICY invitation clauses. Exercise bare lazy invite, explicit timed invite, never-register expiry, register-without-accept expiry, acceptance/rejection, duplicates, legacy retry and required memberships before integration.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-design.md",
+    "acceptance_criteria": "Implement the corresponding spec contract and exercise all configurations named in this description with isolated owned children before terminal integration. Run focused tests and mandated per-change lint.",
+    "spec_id": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--invitations-design.md",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:45:45Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-11T03:54:47Z",
+    "closed_at": "2026-10-11T03:54:47Z",
+    "close_reason": "Closed",
+    "metadata": {
+      "sp_depth": 1,
+      "sp_order": 2
+    },
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.2",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:45:45Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.1",
+    "title": "Receipt deadlines",
+    "description": "owns: canonical send-time/upgrade receipt semantics, due materialization and originating-seat warning routing; consumes: existing preparation/projection schema. Files: src/store/{effective,materialization,receipts,messages,poke,wake,schema,queries}.rs, relevant send preparation modules and tests, TRUST-POLICY.md deadline clauses. Exercise unavailable/unbound/invited send+expiry, sparse/physical/restart, human/lazy exemptions and catch-up distinction before integration.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-design.md",
+    "acceptance_criteria": "Implement the corresponding spec contract and exercise all configurations named in this description with isolated owned children before terminal integration. Run focused tests and mandated per-change lint.",
+    "spec_id": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--receipts-design.md",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:45:44Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-11T04:38:37Z",
+    "closed_at": "2026-10-11T04:38:37Z",
+    "close_reason": "Closed",
+    "metadata": {
+      "sp_depth": 1,
+      "sp_order": 1
+    },
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.1",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:45:44Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo",
+    "title": "Handoff delivery redesign",
+    "description": "Deliver thread-carried complete handoff instructions with send-time receipt deadlines, lazy optional-confirmation invitations and stable native hook entrypoints. Spec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-design.md. User authorized autonomous implementation; integration merge remains coordinator decision.",
+    "spec_id": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-design.md",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:45:27Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-12T19:55:20Z",
+    "closed_at": "2026-10-12T19:55:20Z",
+    "close_reason": "Explicit user-requested Main successor complete: all three findings repaired under37bead history, three CLEAN independent light reviews, clean scopedpostcap audit11freshscouts/no newmaterialfindings; exactfb571aa8 source827/827PASS, strictplugin133PASS/fakedriver47PASS/scopedleaks0, incremental8.972s/22.829s PASS, allrequiredmergegates. Main integrated/native/release ownership and5historicalunverifiednits retained; no Main merge/push/config.",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  }
+]

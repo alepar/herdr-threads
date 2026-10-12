@@ -1,0 +1,58 @@
+{
+  "status": "INVALID_OR_FAILED",
+  "before": {
+    "head": "fb571aa8b18d0800072cf812691d937f09c84cc6",
+    "tree": "6fa18abe59085b57ecb2880f822d79a4a3fec02b",
+    "branch": "super-auto/handoff-delivery-redesign",
+    "index_sha256": "c4ab337c25319ce21ddaf7a875bc26cebf4d5c58fe780bcbb397080299e72cb4",
+    "tracked_status": "",
+    "source_sha256": "ca2a0277fcd4623d280781da2c42df8206e0f4f4f85db33756a3f37c32a37e87"
+  },
+  "file": "src/store/lazy_delivery.rs",
+  "base": "565def869ae50e47e6da7388ea333229050eaf8d",
+  "target": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "jobs": 4,
+  "edited_sha256": "958268751940c8a8bb1e9e5aa52b6d1085216b1eb52c25f7f647d0bded654a4e",
+  "commands": [
+    {
+      "stage": "warm-build",
+      "argv": [
+        "nice",
+        "cargo",
+        "build",
+        "--locked",
+        "--all-features"
+      ],
+      "exit": 0,
+      "seconds": 11.027347833034582,
+      "measured_incremental": false,
+      "budget_seconds": null,
+      "log": "/private/tmp/ht-successor-speed-fb571aa8-quiet/warm-build.log",
+      "log_sha256": "39a8642c0a4a86c8a19dbf368255a36f968363b97e4e9e12f07f707955e7b762"
+    }
+  ],
+  "error": "RuntimeError('concurrent Cargo/compiler process: 94700 /Users/alepar/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo-clippy; 94709 /Users/alepar/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo; 94713 /Users/alepar/.rustup/toolchains/stable-aarch64-apple-darwin/bin/clippy-driver; 94714 /Users/alepar/.rustup/toolchains/stable-aarch64-apple-darwin/bin/clippy-driver')",
+  "private_environment": {
+    "HOME": "/private/tmp/ht-successor-speed-fb571aa8-quiet/HOME",
+    "CLAUDE_CONFIG_DIR": "/private/tmp/ht-successor-speed-fb571aa8-quiet/CLAUDE_CONFIG_DIR",
+    "CODEX_HOME": "/private/tmp/ht-successor-speed-fb571aa8-quiet/CODEX_HOME",
+    "GEMINI_CONFIG_DIR": "/private/tmp/ht-successor-speed-fb571aa8-quiet/GEMINI_CONFIG_DIR",
+    "GEMINI_CLI_HOME": "/private/tmp/ht-successor-speed-fb571aa8-quiet/GEMINI_CLI_HOME",
+    "HT_LEAK_RUN_ID": "c38301d3-04ed-43c1-aabb-b3566968f779"
+  },
+  "compiler_environment": {
+    "CARGO_HOME": "/Users/alepar/.cargo",
+    "RUSTUP_HOME": "/Users/alepar/.rustup",
+    "CARGO_BUILD_JOBS": "4",
+    "CARGO_TARGET_DIR": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target"
+  },
+  "after": {
+    "head": "fb571aa8b18d0800072cf812691d937f09c84cc6",
+    "tree": "6fa18abe59085b57ecb2880f822d79a4a3fec02b",
+    "branch": "super-auto/handoff-delivery-redesign",
+    "index_sha256": "c4ab337c25319ce21ddaf7a875bc26cebf4d5c58fe780bcbb397080299e72cb4",
+    "tracked_status": "",
+    "source_sha256": "ca2a0277fcd4623d280781da2c42df8206e0f4f4f85db33756a3f37c32a37e87"
+  },
+  "restored_exact_bytes": true
+}
