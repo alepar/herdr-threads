@@ -685,7 +685,7 @@ linux_case() { # ARCH [HERDR] -> output in $out, status in $status
     mkdir -p "$lr/tools" "$lr/home" "$lr/rel/download/v0.1.0"
     if [ -n "${2:-}" ]; then ln -s "$2" "$lr/tools/herdr"; fi
     # shellcheck disable=SC2016 # the stand-in's own "$1" and "$@"
-    printf '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo %s ;; *) /usr/bin/uname "$@" ;; esac\n' \
+    printf '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo %s ;; *) for u in /usr/bin/uname /bin/uname; do [ -x "$u" ] && exec "$u" "$@"; done ;; esac\n' \
         "$larch" > "$lr/tools/uname"
     chmod 755 "$lr/tools/uname"
     TMPDIR="$root" "$repo/scripts/package-release.sh" --binary "$binary" --os linux --arch "$larch" \
@@ -707,7 +707,7 @@ for larch in aarch64 x86_64; do
         bash -c "! grep -qE 'declares macOS only|Unknown incarnation|unvalidated' '$out'"
     expect "linux $larch: names the exercised scope" has "exercised on Linux aarch64 only"
     expect "linux $larch: names x86_64 and harness sessions unverified" \
-        has "Linux x86_64 and agent harness sessions on Linux are unverified"
+        has "Linux x86_64, upgrade, uninstall and agent harness sessions on Linux are unverified"
     expect "linux $larch: next step keeps the experimental note" \
         has "Linux is experimental (x86_64 and agent harness sessions unverified)"
 done

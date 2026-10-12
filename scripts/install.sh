@@ -471,7 +471,7 @@ case "$(uname -m)" in
 esac
 if [ "$os" = linux ]; then
     warn "Linux support is experimental: install, Herdr link and daemon were exercised on Linux aarch64 only"
-    warn "(Ubuntu 24.04, Herdr 0.9.3); Linux x86_64 and agent harness sessions on Linux are unverified."
+    warn "(Ubuntu 24.04, Herdr 0.9.3); Linux x86_64, upgrade, uninstall and agent harness sessions on Linux are unverified."
 fi
 asset="herdr-threads-$os-$arch.tar.gz"
 

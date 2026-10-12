@@ -1,0 +1,7 @@
+v18.19.1
+9.2.0
+npm WARN EBADENGINE }
+
+added 5 packages in 11s
+2.1.296 (Claude Code)
+codex-cli 0.162.1
