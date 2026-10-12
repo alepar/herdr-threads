@@ -6,7 +6,9 @@ use crate::protocol::{
         Accept, Ack, CompleteInboxDelivery, DeliveryMode, EnsureCreationPolicy, EnsureDirectThread,
         InvitationConfirmation, Invite, Reject, SendMessage,
     },
-    delivery::{DeliveryPullReplyV2, PresentationItemV2},
+    delivery::{
+        DeliveryPullReplyV2, PresentationConsumer, PresentationItemV2, PresentationRenderSelection,
+    },
 };
 use rusqlite::{OptionalExtension, types::Value};
 use std::collections::BTreeMap;
@@ -81,16 +83,80 @@ fn message_sequence(f: &Fixture, message: &MessageId) -> i64 {
 fn collect_page(
     reply: &DeliveryPullReplyV2,
     output: &mut BTreeMap<MessageId, (String, bool, bool, bool)>,
+    consumer: PresentationConsumer,
 ) -> bool {
     match reply {
         DeliveryPullReplyV2::Unchanged { .. } => true,
         DeliveryPullReplyV2::Page(page) => {
+            use crate::{
+                delivery::presentation,
+                protocol::watch::{WATCH_LINE_SCHEMA, WatchItem, WatchLine},
+            };
+            let lines = match (consumer, &page.render) {
+                (PresentationConsumer::Watch, PresentationRenderSelection::WatchJsonLinesV1) => {
+                    // Watch's real RPC page carries structured items and intentionally empty
+                    // text. The CLI's output codec emits those items as JSON lines instead.
+                    assert!(
+                        page.text.is_empty(),
+                        "WatchJsonLinesV1 must not carry Hook text: {page:?}"
+                    );
+                    let mut encoded = Vec::new();
+                    for line in presentation::presentation_watch_lines(&page.items) {
+                        serde_json::to_writer(&mut encoded, &line).unwrap();
+                        encoded.push(b'\n');
+                    }
+                    assert_eq!(
+                        encoded.len(),
+                        page.output_bytes as usize,
+                        "actual Watch codec size must match the store page's measured output"
+                    );
+                    let decoded = encoded
+                        .split(|byte| *byte == b'\n')
+                        .filter(|line| !line.is_empty())
+                        .map(|line| {
+                            serde_json::from_slice::<WatchLine>(line)
+                                .expect("actual encoded Watch JSON line decodes")
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(decoded.len(), page.items.len());
+                    assert!(decoded.iter().all(|line| line.schema == WATCH_LINE_SCHEMA));
+                    Some(decoded)
+                }
+                (PresentationConsumer::Hook, PresentationRenderSelection::Hook { .. }) => {
+                    assert_eq!(
+                        page.text,
+                        presentation::presentation_hook_text(&page.items),
+                        "actual Hook page text must contain the production item framing"
+                    );
+                    None
+                }
+                _ => panic!("consumer/render mismatch: {consumer:?}, {:?}", page.render),
+            };
             for item in &page.items {
                 if let PresentationItemV2::Message { id, lazy, content } = item {
-                    assert!(
-                        page.text.contains(&content.body),
-                        "actual rendered body must accompany item"
-                    );
+                    if let Some(lines) = &lines {
+                        let line = lines
+                            .iter()
+                            .find(|line| line.id == id.as_str())
+                            .expect("actual encoded Watch line must name the message item");
+                        match (&line.item, *lazy) {
+                            (WatchItem::Lazy(decoded), true)
+                            | (WatchItem::Message(decoded), false) => {
+                                assert_eq!(
+                                    decoded, content,
+                                    "encoded/decoded Watch body and all delivery flags must match the actual store item"
+                                );
+                            }
+                            other => panic!(
+                                "actual Watch wire kind disagrees with the store item: {other:?}"
+                            ),
+                        }
+                    } else {
+                        assert!(
+                            page.text.contains(&content.body),
+                            "actual Hook rendered body must accompany item: {page:?}"
+                        );
+                    }
                     output.insert(
                         id.clone(),
                         (
@@ -112,7 +178,7 @@ fn drain_hook(f: &Fixture, claim: &CallerClaim) -> BTreeMap<MessageId, (String, 
     let mut output = BTreeMap::new();
     for _ in 0..256 {
         let reply = presentation_test_pull(f, claim);
-        let quiet = collect_page(&reply, &mut output);
+        let quiet = collect_page(&reply, &mut output, PresentationConsumer::Hook);
         if let DeliveryPullReplyV2::Page(page) = &reply {
             presentation_test_confirm(f, claim, page);
         }
@@ -130,7 +196,7 @@ fn drain_watch(
     let mut output = BTreeMap::new();
     let mut reply = initial.unwrap_or_else(|| q.window.pull());
     for _ in 0..256 {
-        if collect_page(&reply, &mut output) {
+        if collect_page(&reply, &mut output, PresentationConsumer::Watch) {
             return output;
         }
         reply = q.window.pull();
@@ -508,10 +574,40 @@ fn presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers() 
         let f = &rig.q.window.f;
         let hook_binding = binding_for_claim(f, &rig.hook);
         if failure == "later_binding_write" {
-            // The trigger itself distinguishes failure after a real earlier tentative update
-            // from failure before that update. The assertion below requires the former.
-            let watch_version: i64 = f.db.query_row("SELECT mod_version FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='watch'", [binding_for_claim(f, &rig.q.window.recipient).as_str()], |r| r.get(0)).unwrap();
-            f.db.execute_batch(&format!("CREATE TRIGGER q4_accept_late_failure BEFORE UPDATE OF mod_version ON invitation_presentation_consumers WHEN NEW.binding_id=(SELECT binding_id FROM occupant_bindings WHERE seat_id='c' AND native_session='q4-accept-hook' AND ended_at IS NULL) BEGIN SELECT CASE WHEN (SELECT mod_version FROM invitation_presentation_consumers WHERE binding_id=(SELECT binding_id FROM occupant_bindings WHERE seat_id='c' AND native_session='q3-reader-b' AND ended_at IS NULL) AND consumer='watch')={} THEN RAISE(ABORT,'q4 after earlier tentative update') ELSE RAISE(ABORT,'q4 missing earlier tentative update') END; END;", watch_version+1)).unwrap();
+            // Snapshot both target bindings' actual consumer counters. Abort an update only
+            // after another target binding has stored both increments inside this transaction;
+            // neither BindingId order nor Hook/Watch order is part of the acceptance contract.
+            let mut baselines = Vec::new();
+            for claim in [&rig.q.window.recipient, &rig.hook] {
+                let binding = binding_for_claim(f, claim);
+                let counters = q3_reader_counters(f, claim);
+                assert!(
+                    !counters.is_empty(),
+                    "SETUP: both affected bindings have real current consumers"
+                );
+                for (consumer, passive, version) in counters {
+                    baselines.push(serde_json::json!({
+                        "binding": binding.as_str(), "consumer": consumer,
+                        "passive": passive, "version": version,
+                    }));
+                }
+            }
+            let baseline = serde_json::to_string(&baselines)
+                .unwrap()
+                .replace('\'', "''");
+            f.db.execute_batch(&format!(
+                "CREATE TRIGGER q4_accept_late_failure \
+                 BEFORE UPDATE OF ordinary_passive_generation,mod_version ON invitation_presentation_consumers \
+                 WHEN NEW.binding_id IN (SELECT json_extract(value,'$.binding') FROM json_each('{baseline}')) \
+                  AND EXISTS(SELECT 1 FROM json_each('{baseline}') prior \
+                    JOIN invitation_presentation_consumers observed \
+                      ON observed.binding_id=json_extract(prior.value,'$.binding') \
+                     AND observed.consumer=json_extract(prior.value,'$.consumer') \
+                    WHERE observed.binding_id<>NEW.binding_id \
+                      AND observed.ordinary_passive_generation=json_extract(prior.value,'$.passive')+1 \
+                      AND observed.mod_version=json_extract(prior.value,'$.version')+1) \
+                 BEGIN SELECT RAISE(ABORT,'q4 after earlier tentative update'); END;"
+            )).unwrap();
         } else {
             f.db.execute(&format!("UPDATE invitation_presentation_consumers SET {failure}=?1 WHERE binding_id=?2 AND consumer='hook'"), params![i64::MAX, hook_binding.as_str()]).unwrap();
         }
