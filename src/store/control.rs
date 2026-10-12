@@ -138,7 +138,7 @@ pub(crate) fn begin_retirement_fence(
         )
         .map_err(store_error)?;
         tx.execute(
-            "DELETE FROM receipt_offer WHERE seat_id=?1",
+            "DELETE FROM in_turn_offer WHERE seat_id=?1",
             [seat.as_str()],
         )
         .map_err(store_error)?;
@@ -2493,9 +2493,9 @@ pub fn advance_cursors(
                     )?;
                 }
             }
-            // An in-turn top-level display of a message whose receipt is still pending served this
-            // occupant (ht-705): the wake candidate owes it no idle wake for that
-            // receipt. Nothing is settled; the receipt stays pending.
+            // An in-turn top-level display of a message whose receipt is still pending, or of a
+            // pending invitation, served this occupant (ht-705): the wake candidate owes it no
+            // idle wake for that item. Nothing is settled or accepted; the item stays pending.
             let top_level: bool = tx
                 .query_row(
                     "SELECT role='top_level' FROM occupant_bindings WHERE binding_id=?1",
@@ -2512,11 +2512,19 @@ pub fn advance_cursors(
                             });
                     if pending {
                         tx.execute(
-                            "INSERT OR IGNORE INTO receipt_offer(binding_id,seat_id,message_id) VALUES (?1,?2,?3)",
+                            "INSERT OR IGNORE INTO in_turn_offer(binding_id,seat_id,item_id) VALUES (?1,?2,?3)",
                             params![binding.as_str(), claim.seat.as_str(), id.as_str()],
                         )
                         .map_err(store_error)?;
                     }
+                }
+                for id in &request.invitations {
+                    // An unknown or settled invitation records nothing.
+                    tx.execute(
+                        "INSERT OR IGNORE INTO in_turn_offer(binding_id,seat_id,item_id) SELECT ?1,?2,id FROM invitations WHERE id=?3 AND seat_id=?2 AND state='pending'",
+                        params![binding.as_str(), claim.seat.as_str(), id.as_str()],
+                    )
+                    .map_err(store_error)?;
                 }
             }
             Ok(CommandResult::CursorsAdvanced(request.displayed.clone()))

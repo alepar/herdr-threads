@@ -17,9 +17,9 @@ use crate::{
     ports::LocalClient,
     protocol::{
         authority::{CallerClaim, CallerRole},
-        capabilities::{BINDING_CURSORS, INBOX_BATCH_V2, LAZY_HOOK_DELIVERY, RECEIPT_OFFER},
+        capabilities::{BINDING_CURSORS, IN_TURN_OFFER, INBOX_BATCH_V2, LAZY_HOOK_DELIVERY},
         commands::{AdvanceCursors, Command, CompleteInboxDelivery, InboxQuery, LazyCompletionVia},
-        ids::{MessageId, OperationId},
+        ids::{InvitationId, MessageId, OperationId},
         output::{ContinuationContext, OutputFormat, OutputSpec, encode_selected},
         pagination::{Page, PageRequest, StopReason},
         results::{ApiError, CommandResult, InboxBatchV2Item},
@@ -52,7 +52,7 @@ pub struct InboxOffer {
     /// display advances them (`AdvanceCursors`).
     pub cursors: bool,
     /// The daemon records in-turn receipt presentation (`AdvanceCursors.in_turn`).
-    pub receipt_offer: bool,
+    pub in_turn_offer: bool,
 }
 
 /// Read the page: top-level claims only, only from a daemon serving the v2
@@ -91,12 +91,12 @@ pub fn read_page<C: LocalClient + ?Sized>(
     else {
         return None;
     };
-    let receipt_offer = cursors && client.supports_capability(RECEIPT_OFFER, budget);
+    let in_turn_offer = cursors && client.supports_capability(IN_TURN_OFFER, budget);
     (!page.items.is_empty()).then_some(InboxOffer {
         page,
         claim,
         cursors,
-        receipt_offer,
+        in_turn_offer,
     })
 }
 
@@ -175,6 +175,17 @@ pub fn append_shown(
     prefix: &[String],
     budget: usize,
 ) -> (String, Vec<MessageId>, Vec<MessageId>) {
+    let (context, lazy, displayed, _) = append_presented(context, offer, prefix, budget);
+    (context, lazy, displayed)
+}
+
+/// [`append_shown`], also naming the invitations shown (an in-turn display records them, ht-705).
+pub fn append_presented(
+    context: String,
+    offer: &InboxOffer,
+    prefix: &[String],
+    budget: usize,
+) -> (String, Vec<MessageId>, Vec<MessageId>, Vec<InvitationId>) {
     let items = &offer.page.items;
     let shown_max = items.iter().take_while(|item| whole(item)).count();
     let render = |shown: usize| -> Option<String> {
@@ -238,7 +249,14 @@ pub fn append_shown(
                     _ => None,
                 })
                 .collect();
-            return (joined, lazy, displayed);
+            let invitations = items[..shown]
+                .iter()
+                .filter_map(|item| match item {
+                    InboxBatchV2Item::Invitation { invitation, .. } => Some(invitation.clone()),
+                    _ => None,
+                })
+                .collect();
+            return (joined, lazy, displayed, invitations);
         }
     }
     // Nothing whole fits (a large first body): still say so, with the exact
@@ -255,8 +273,8 @@ pub fn append_shown(
         format!("{context}\n{pointer}")
     };
     match fits(joined) {
-        Some(joined) => (joined, Vec::new(), Vec::new()),
-        None => (context, Vec::new(), Vec::new()),
+        Some(joined) => (joined, Vec::new(), Vec::new(), Vec::new()),
+        None => (context, Vec::new(), Vec::new(), Vec::new()),
     }
 }
 
@@ -279,6 +297,8 @@ pub struct LazyCommit {
     pub cursors: bool,
     /// The hook ran inside the occupant's turn and the daemon records it (`AdvanceCursors.in_turn`).
     pub in_turn: bool,
+    /// Invitations shown; sent only with `in_turn`.
+    pub invitations: Vec<InvitationId>,
     pub deadline: Instant,
 }
 
@@ -301,13 +321,19 @@ impl LazyCommit {
         let budget = super::hook::budget(deadline, self.link.clock.as_ref());
         // The binding's own read position first; a failure only means the messages are offered
         // again (at least once), so it never blocks the lazy completion.
-        if self.cursors && !self.displayed.is_empty() {
+        let invitations = if self.in_turn {
+            self.invitations.clone()
+        } else {
+            Vec::new()
+        };
+        if self.cursors && !(self.displayed.is_empty() && invitations.is_empty()) {
             let _ = client.call(
                 Command::AdvanceCursors(AdvanceCursors {
                     claim: self.claim.clone(),
                     operation: OperationId::new(uuid::Uuid::new_v4().to_string()),
                     displayed: self.displayed.clone(),
                     in_turn: self.in_turn,
+                    invitations,
                 }),
                 &budget,
             );

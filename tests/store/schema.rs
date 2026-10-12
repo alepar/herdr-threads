@@ -5765,14 +5765,14 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
     // Every other historical table must retain its original root page.
     // V32 adds binding_cursors; occupant_bindings is rebuilt again by V32.
     // V34 rebuilds catch_up (per-binding rows). V35 rebuilds the two attention frontier tables.
-    // V36 adds receipt_offer.
+    // V36 adds in_turn_offer.
     let adapter_tables = [
         "occupant_bindings",
         "binding_cursors",
         "catch_up",
         "warning_offer",
         "digest_notice_offer",
-        "receipt_offer",
+        "in_turn_offer",
         "harness_version_evidence",
         "harness_unattributed",
         "harness_runtime_identities",
@@ -7128,8 +7128,8 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         // V34 deltas: +3 indexes (catch_up_seat, lazy_recipients_legacy,
         // lazy_recipients_seat_ordinal); catch_up and its triggers are rebuilt one for one.
         // V35 deltas: +2 indexes (warning_offer_seat, digest_notice_offer_seat); the two
-        // frontier tables are rebuilt one for one. V36 deltas: +1 table (receipt_offer), +1 index
-        // (receipt_offer_seat).
+        // frontier tables are rebuilt one for one. V36 deltas: +1 table (in_turn_offer), +1 index
+        // (in_turn_offer_seat).
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
             85

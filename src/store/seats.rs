@@ -1708,7 +1708,7 @@ fn mark_seat_unresolved(
     )
     .map_err(store_error)?;
     tx.execute(
-        "DELETE FROM receipt_offer WHERE seat_id=?1",
+        "DELETE FROM in_turn_offer WHERE seat_id=?1",
         [seat.as_str()],
     )
     .map_err(store_error)?;
@@ -3342,7 +3342,7 @@ fn rebind_unresolved_seat(
     )
     .map_err(store_error)?;
     tx.execute(
-        "DELETE FROM receipt_offer WHERE seat_id=?1",
+        "DELETE FROM in_turn_offer WHERE seat_id=?1",
         [seat.as_str()],
     )
     .map_err(store_error)?;
@@ -4632,7 +4632,7 @@ pub fn register_available(
                 )
                 .map_err(store_error)?;
                 tx.execute(
-                    "DELETE FROM receipt_offer WHERE binding_id=?1",
+                    "DELETE FROM in_turn_offer WHERE binding_id=?1",
                     [binding_id.as_str()],
                 )
                 .map_err(store_error)?;

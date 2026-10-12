@@ -792,6 +792,7 @@ fn unenrolled_inbox_page_carries_stats_until_the_enrolling_advance() {
         .advance_cursors(
             &crate::protocol::commands::AdvanceCursors {
                 in_turn: false,
+                invitations: Vec::new(),
                 claim: claim.clone(),
                 operation: OperationId::new("enroll"),
                 displayed: vec![],

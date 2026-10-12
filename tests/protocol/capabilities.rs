@@ -272,7 +272,7 @@ fn capability_constants_are_stable() {
     assert_eq!(LAZY_HOOK_DELIVERY, "hook.lazy_delivery_v1");
     assert_eq!(BINDING_CURSORS, "inbox.binding_cursors_v1");
     assert_eq!(BINDING_DIGEST, "attention.binding_digest_v1");
-    assert_eq!(RECEIPT_OFFER, "inbox.receipt_offer_v1");
+    assert_eq!(IN_TURN_OFFER, "inbox.in_turn_offer_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -300,7 +300,7 @@ fn capability_constants_are_stable() {
             "hook.lazy_delivery_v1",
             "inbox.binding_cursors_v1",
             "attention.binding_digest_v1",
-            "inbox.receipt_offer_v1"
+            "inbox.in_turn_offer_v1"
         ]
     );
 }
@@ -468,9 +468,10 @@ fn every_advertised_capability_has_a_handler() {
                 );
             }
             BINDING_CURSORS => probe_binding_cursors(),
-            RECEIPT_OFFER => {
-                // The in-turn flag is on the wire only when set and round-trips; the store records
-                // it (`lazy_attention::in_turn_display_of_a_nudge_owes_no_idle_wake`).
+            IN_TURN_OFFER => {
+                // The in-turn flag and its invitations are on the wire only when set and
+                // round-trip; the store records them
+                // (`lazy_attention::in_turn_display_of_a_nudge_owes_no_idle_wake`).
                 let command = Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
                     in_turn: true,
                     claim: crate::protocol::authority::CallerClaim {
@@ -487,6 +488,7 @@ fn every_advertised_capability_has_a_handler() {
                     },
                     operation: crate::protocol::ids::OperationId::new("op"),
                     displayed: vec![crate::protocol::ids::MessageId::new("m")],
+                    invitations: vec![crate::protocol::ids::InvitationId::new("i")],
                 });
                 assert!(command.validate().is_ok());
                 let json = serde_json::to_value(&command).unwrap();
@@ -546,6 +548,7 @@ fn probe_binding_cursors() {
     };
     let command = Command::AdvanceCursors(AdvanceCursors {
         in_turn: false,
+        invitations: Vec::new(),
         claim: CallerClaim {
             instance: "probe-instance".into(),
             seat: SeatId::new("nobody"),
@@ -700,7 +703,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "hook.lazy_delivery_v1",
             "inbox.binding_cursors_v1",
             "attention.binding_digest_v1",
-            "inbox.receipt_offer_v1"
+            "inbox.in_turn_offer_v1"
         ]
     );
     let caps = Capabilities::from_list(advertised.capabilities);

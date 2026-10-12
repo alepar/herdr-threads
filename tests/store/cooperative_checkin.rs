@@ -4279,6 +4279,7 @@ mod hermes_lineage {
             .advance_cursors(
                 &crate::protocol::commands::AdvanceCursors {
                     in_turn: false,
+                    invitations: Vec::new(),
                     claim: session_claim("S", 7),
                     operation: OperationId::new("s-plain"),
                     displayed: Vec::new(),

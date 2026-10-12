@@ -71,7 +71,7 @@ const V32: &str = include_str!("../../migrations/0032_session_bindings.sql");
 const V33: &str = include_str!("../../migrations/0033_archival_scan_scope.sql");
 const V34: &str = include_str!("../../migrations/0034_binding_delivery_state.sql");
 const V35: &str = include_str!("../../migrations/0035_binding_attention_frontiers.sql");
-const V36: &str = include_str!("../../migrations/0036_receipt_offer.sql");
+const V36: &str = include_str!("../../migrations/0036_in_turn_offer.sql");
 pub(crate) const LATEST_VERSION: i64 = 36;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
@@ -735,8 +735,8 @@ fn migrate_v35_to_v36(conn: &Connection) -> Result<(), ApiError> {
 
 /// Objects V36 creates, audited exactly as written (see `V32_AUDITED`).
 const V36_AUDITED: [(&str, &str, &str); 2] = [
-    ("table", "receipt_offer", "receipt_offer"),
-    ("index", "receipt_offer_seat", "receipt_offer_seat"),
+    ("table", "in_turn_offer", "in_turn_offer"),
+    ("index", "in_turn_offer_seat", "in_turn_offer_seat"),
 ];
 
 fn verify_existing_v36(conn: &Connection) -> Result<(), ApiError> {

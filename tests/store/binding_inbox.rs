@@ -285,6 +285,7 @@ fn advance(fx: &Fx, claim: &CallerClaim, op: &str, displayed: &[&MessageId]) {
         .advance_cursors(
             &AdvanceCursors {
                 in_turn: false,
+                invitations: Vec::new(),
                 claim: claim.clone(),
                 operation: OperationId::new(op),
                 displayed: displayed.iter().map(|m| (*m).clone()).collect(),
@@ -649,6 +650,7 @@ fn no_duplicate_delivery_after_v29_migration() {
         .advance_cursors(
             &AdvanceCursors {
                 in_turn: false,
+                invitations: Vec::new(),
                 claim: claim("b", "nb1", EXEC_B1, None),
                 operation: OperationId::new("readopt-nofp"),
                 displayed: vec![MessageId::new("m2")],

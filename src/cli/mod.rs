@@ -1337,6 +1337,7 @@ fn advance_over_body_read<C: LocalClient + ?Sized>(
             operation: crate::protocol::ids::OperationId::new(uuid::Uuid::new_v4().to_string()),
             displayed: vec![message],
             in_turn: false,
+            invitations: Vec::new(),
         }),
         &cooperative_budget(clock),
     );
@@ -1734,6 +1735,7 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
                         ),
                         displayed: batch.to_vec(),
                         in_turn: false,
+                        invitations: Vec::new(),
                     }),
                     &cooperative_budget(clock),
                 );

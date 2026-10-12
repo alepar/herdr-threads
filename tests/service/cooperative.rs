@@ -1785,6 +1785,7 @@ fn subagent_reads_and_advance_cursors_are_allowed() {
         .handle(
             Command::AdvanceCursors(AdvanceCursors {
                 in_turn: false,
+                invitations: Vec::new(),
                 claim: sub.clone(),
                 operation: OperationId::new("advance"),
                 displayed: vec![],
@@ -2146,6 +2147,7 @@ fn hermes_registered_child_call_after_subagent_stop_stays_disconnected() {
         .handle(
             Command::AdvanceCursors(AdvanceCursors {
                 in_turn: false,
+                invitations: Vec::new(),
                 claim: child_cli,
                 operation: OperationId::new("child-after-stop"),
                 displayed: vec![],
@@ -2215,6 +2217,7 @@ fn hermes_child_early_call_then_subagent_start(parent_lifecycle: bool) {
             .handle(
                 Command::AdvanceCursors(AdvanceCursors {
                     in_turn: false,
+                    invitations: Vec::new(),
                     claim: child_cli.clone(),
                     operation: OperationId::new(operation),
                     displayed: vec![],
@@ -2423,6 +2426,7 @@ fn hermes_child_check_in_is_refused_read_only() {
         .handle(
             Command::AdvanceCursors(AdvanceCursors {
                 in_turn: false,
+                invitations: Vec::new(),
                 claim: child_cli,
                 operation: OperationId::new("child-advance"),
                 displayed: vec![],
