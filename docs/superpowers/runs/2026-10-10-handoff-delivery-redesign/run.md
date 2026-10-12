@@ -133,3 +133,5 @@ scope-filter: 4 in-scope · 1 punch-listed
 roastCodeExit: converged
 
 - codeRound2-exit · shippedengine clean(5priorunverifiednits)[converged];13/13freshscouts0raw/0panels/0dead/0caps, fullcoverage/emptyLateRoundtrue, nofixregressions/escalations. FourpriorSresolved, onefilteredSqueuecoalescingopen. No furtherfixbeads/roast; finalC/runtime/currentconsumer/speed stillunmeasured, gate.11 noweligible toclose.
+
+- finalC-d8427582 · actual777enumerated, focused771=768PASS3FAIL53.048s (process54.069, list/build69.960), mandatory6/6PASS12.217s, allscopedleaks0UUID5b9fb6b9. FailedleaseFalse-request-vsSomeoracle, carryfixturepreacceptnonemptysetup, staleQ4exactrecoveryprobe27vs30. Exactthreeunchangedrepro0PASS3FAIL.977s/leaks0UUID73df30b1. No prod/flaky/timeout waiver; onephase6sweep-fixpass nowstarts, threeindependent groundedtestdefectscopes, originalGoal/caps/codeexit/punchlistunchanged. Evidence final-C-d8427582-failure-evidence/.
