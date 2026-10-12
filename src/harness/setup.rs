@@ -1983,8 +1983,10 @@ pub struct Adoptable {
 /// apart from its owner marker, all with one valid marker, each exactly the declared group for
 /// `<command> # herdr-threads-owner:<id>`. A copy made by an older setup lacks the events declared
 /// since: it is adopted with the events it has (setup then upgrades it like a recorded older
-/// declaration; `owned` lists only those). An unmarked copy, a marked one without `--event`, a
-/// second or edited copy, two markers, or no event at all is not adoptable (those keep their existing install/refusal behavior).
+/// declaration; `owned` lists only those). An unmarked copy, a marked registration without
+/// `--event`, with another event's argument or under an undeclared event, a second or edited copy,
+/// two markers, or no event at all is not adoptable (those keep their existing install/refusal
+/// behavior).
 pub fn find_adoptable(
     kind: SettingsKind,
     bytes: &[u8],
@@ -1992,47 +1994,34 @@ pub fn find_adoptable(
 ) -> Result<Option<Adoptable>, SetupError> {
     let base = shell_command(hook_argv)?;
     let value = root(bytes)?;
+    let declared: Vec<String> = kind
+        .entries(&base)?
+        .into_iter()
+        .map(|entry| entry.event)
+        .collect();
+    // Unmarked copies keep their existing install/refusal behavior.
+    for event in &declared {
+        let evented = event_command(&base, event);
+        if hook_commands(&value, event).any(|command| command == base || command == evented) {
+            return Ok(None);
+        }
+    }
     let mut id: Option<String> = None;
-    let mut events = Vec::new();
-    for template in kind.entries(&base)? {
-        let evented = event_command(&base, &template.event);
-        let prefix = format!("{evented}{OWNER_MARKER}");
-        let Some(groups) = value["hooks"][&template.event].as_array() else {
-            continue;
-        };
-        let mut found = 0;
-        for hook in groups
-            .iter()
-            .filter_map(|group| group.get("hooks").and_then(Value::as_array))
-            .flatten()
+    let mut events: Vec<String> = Vec::new();
+    for marked in marked_commands(&value, &base) {
+        // Every marked registration of this command must be an authentic per-event group under
+        // its own declared event: one without `--event`, with another event's argument, or under
+        // an event this adapter does not declare would be left beside a second set.
+        if marked.argument.as_deref() != Some(marked.event.as_str())
+            || !declared.contains(&marked.event)
+            || events.contains(&marked.event)
+            || !uuid::Uuid::parse_str(&marked.marker)
+                .is_ok_and(|uuid| uuid.to_string() == marked.marker)
+            || id.get_or_insert_with(|| marked.marker.clone()) != &marked.marker
         {
-            let Some(command) = hook.get("command").and_then(Value::as_str) else {
-                continue;
-            };
-            // Unmarked, or marked without its `--event` (a spelling setup would not upgrade in
-            // place): adopting the rest would leave it beside a second set.
-            if command == base
-                || command == evented
-                || command.starts_with(&format!("{base}{OWNER_MARKER}"))
-            {
-                return Ok(None);
-            }
-            let Some(marker) = command.strip_prefix(&prefix) else {
-                continue;
-            };
-            if !uuid::Uuid::parse_str(marker).is_ok_and(|uuid| uuid.to_string() == marker) {
-                return Ok(None);
-            }
-            if id.get_or_insert_with(|| marker.to_owned()) != marker {
-                return Ok(None);
-            }
-            found += 1;
+            return Ok(None);
         }
-        match found {
-            0 => {}
-            1 => events.push(template.event),
-            _ => return Ok(None),
-        }
+        events.push(marked.event);
     }
     let Some(installation_id) = id else {
         return Ok(None);
@@ -2051,33 +2040,79 @@ pub fn find_adoptable(
     }))
 }
 
-/// The declared events under which `bytes` register this hook command more than once with an
-/// owner marker (for example a second owned set written beside a copied older one): every such
-/// group runs on each event.
+/// The hook commands registered under one event array.
+fn hook_commands<'a>(value: &'a Value, event: &str) -> impl Iterator<Item = &'a str> {
+    value["hooks"][event]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|group| group.get("hooks").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|hook| hook.get("command").and_then(Value::as_str))
+}
+
+/// One registration of this hook command carrying an owner marker, wherever it sits.
+struct MarkedCommand {
+    /// The event array it is registered under.
+    event: String,
+    /// Its `--event` argument; `None` for the pre-per-event spelling.
+    argument: Option<String>,
+    marker: String,
+}
+
+/// Every registration of the hook command `base` with an owner marker, under any event array,
+/// whatever its `--event` argument: `<base>[ '--event' '<X>'] # herdr-threads-owner:<marker>`.
+/// Another executable, state directory or instance has another `base` and is not listed.
+fn marked_commands(value: &Value, base: &str) -> Vec<MarkedCommand> {
+    let Some(hooks) = value["hooks"].as_object() else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for event in hooks.keys() {
+        for command in hook_commands(value, event) {
+            let Some(rest) = command.strip_prefix(base) else {
+                continue;
+            };
+            let (argument, rest) = match rest.strip_prefix(" '--event' '") {
+                Some(tail) => match tail.split_once('\'') {
+                    Some((argument, rest)) => (Some(argument.to_owned()), rest),
+                    None => continue,
+                },
+                None => (None, rest),
+            };
+            if let Some(marker) = rest.strip_prefix(OWNER_MARKER) {
+                found.push(MarkedCommand {
+                    event: event.clone(),
+                    argument,
+                    marker: marker.to_owned(),
+                });
+            }
+        }
+    }
+    found
+}
+
+/// The event arrays under which `bytes` register this hook command more than once with an owner
+/// marker (for example a second owned set written beside a copied older one, or an edited copy's
+/// group beside the canonical one): every such group runs on each event.
 pub(crate) fn doubled_events(
-    kind: SettingsKind,
+    _kind: SettingsKind,
     bytes: &[u8],
     hook_argv: &[String],
 ) -> Result<Vec<String>, SetupError> {
     let base = shell_command(hook_argv)?;
     let value = root(bytes)?;
-    let mut doubled = Vec::new();
-    for template in kind.entries(&base)? {
-        let prefixes = [
-            format!("{}{OWNER_MARKER}", event_command(&base, &template.event)),
-            format!("{base}{OWNER_MARKER}"),
-        ];
-        let count = value["hooks"][&template.event]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|group| group.get("hooks").and_then(Value::as_array))
-            .flatten()
-            .filter_map(|hook| hook.get("command").and_then(Value::as_str))
-            .filter(|command| prefixes.iter().any(|prefix| command.starts_with(prefix)))
-            .count();
-        if count > 1 {
-            doubled.push(template.event);
+    let mut doubled: Vec<String> = Vec::new();
+    let marked = marked_commands(&value, &base);
+    for entry in &marked {
+        if !doubled.contains(&entry.event)
+            && marked
+                .iter()
+                .filter(|other| other.event == entry.event)
+                .count()
+                > 1
+        {
+            doubled.push(entry.event.clone());
         }
     }
     Ok(doubled)
@@ -2095,37 +2130,17 @@ pub(crate) fn doubled_warning(file: &Path, events: &[String]) -> String {
     )
 }
 
-/// Whether `bytes` register this hook command under any declared event with some setup's owner
-/// marker (the per-event or the pre-per-event spelling), adoptable or not.
+/// Whether `bytes` register this hook command anywhere with some setup's owner marker, adoptable
+/// or not.
 pub(crate) fn holds_marked_groups(
-    kind: SettingsKind,
+    _kind: SettingsKind,
     bytes: &[u8],
     hook_argv: &[String],
 ) -> Result<bool, SetupError> {
     if bytes.is_empty() {
         return Ok(false);
     }
-    let base = shell_command(hook_argv)?;
-    let value = root(bytes)?;
-    for template in kind.entries(&base)? {
-        let prefixes = [
-            format!("{}{OWNER_MARKER}", event_command(&base, &template.event)),
-            format!("{base}{OWNER_MARKER}"),
-        ];
-        let Some(groups) = value["hooks"][&template.event].as_array() else {
-            continue;
-        };
-        if groups
-            .iter()
-            .filter_map(|group| group.get("hooks").and_then(Value::as_array))
-            .flatten()
-            .filter_map(|hook| hook.get("command").and_then(Value::as_str))
-            .any(|command| prefixes.iter().any(|prefix| command.starts_with(prefix)))
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    Ok(!marked_commands(&root(bytes)?, &shell_command(hook_argv)?).is_empty())
 }
 
 /// [`find_adoptable`] over the current file; `None` when the file does not exist.
@@ -2354,6 +2369,48 @@ mod adoption_tests {
         );
         assert_eq!(older.owned.len() + 1, found.owned.len());
         assert!(adoptable(&json!({"hooks": {}})).is_none());
+
+        // An older copy whose group runs the hook with another event's argument is an edit, not a
+        // missing event; so is a marked group under an event this adapter does not declare.
+        let kind = codex::settings_kind();
+        let mut wrong = missing.clone();
+        let text = serde_json::to_string(&wrong["hooks"]["PreToolUse"]).unwrap();
+        wrong["hooks"]["PreToolUse"] = serde_json::from_str(
+            &text.replace("'--event' 'PreToolUse'", "'--event' 'SessionStart'"),
+        )
+        .unwrap();
+        assert!(adoptable(&wrong).is_none());
+        let bytes = serde_json::to_vec(&wrong).unwrap();
+        assert!(holds_marked_groups(kind, &bytes, &argv()).unwrap());
+        let mut undeclared = missing.clone();
+        undeclared["hooks"]["SomeOtherEvent"] = value["hooks"]["SubagentStart"].clone();
+        assert!(adoptable(&undeclared).is_none());
+        // A second registration under one array, whatever its argument, is doubled.
+        let mut doubled = value.clone();
+        let extra = wrong["hooks"]["PreToolUse"][0].clone();
+        doubled["hooks"]["PreToolUse"]
+            .as_array_mut()
+            .unwrap()
+            .push(extra);
+        let bytes = serde_json::to_vec(&doubled).unwrap();
+        assert_eq!(
+            doubled_events(kind, &bytes, &argv()).unwrap(),
+            ["PreToolUse"]
+        );
+        assert!(
+            doubled_events(kind, &serde_json::to_vec(&value).unwrap(), &argv())
+                .unwrap()
+                .is_empty()
+        );
+        // Another state directory's groups are not this command's.
+        let foreign: Value = serde_json::from_str(
+            &serde_json::to_string(&value)
+                .unwrap()
+                .replace("'/s'", "'/t'"),
+        )
+        .unwrap();
+        let bytes = serde_json::to_vec(&foreign).unwrap();
+        assert!(!holds_marked_groups(kind, &bytes, &argv()).unwrap());
 
         let mut unmarked = value.clone();
         unmarked["hooks"]["SessionStart"]

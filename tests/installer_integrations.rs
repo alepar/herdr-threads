@@ -424,63 +424,99 @@ fn owner_of(copy: &std::path::Path) -> String {
 }
 
 const OLDER_CODEX_EVENTS: [&str; 3] = ["SessionStart", "SubagentStart", "PreToolUse"];
+/// The events v0.9.0 declared, before later releases added more.
+const V090_CODEX_EVENTS: [&str; 5] = [
+    "SessionStart",
+    "SubagentStart",
+    "PreToolUse",
+    "SubagentStop",
+    "SessionEnd",
+];
 
 // Kills: the installer refusing, and setup writing a second owned set beside, a hook file
 // copied from another setup by a release that declared fewer events (each copied event then
-// fired twice); unsetup unable to remove such a copy.
+// fired twice); unsetup unable to remove such a copy. The target is the adapter's current
+// declaration, whatever it holds.
 #[test]
 fn installer_and_setup_upgrade_an_older_copied_hook_file_in_place() {
-    let f = Fixture::new();
-    success(&f.install());
-    let copy = f.older_copy(&OLDER_CODEX_EVENTS);
-    let before = owners(&copy.join("hooks.json"));
-    let owner = before["SessionStart"][0].clone();
-    let out = f.run_codex_home(&copy, &["internal", "installer-integrations"]);
-    success(&out);
+    for older in [&OLDER_CODEX_EVENTS[..], &V090_CODEX_EVENTS[..]] {
+        let f = Fixture::new();
+        success(&f.install());
+        let declared: Vec<String> = owners(&f.0.join("codex/hooks.json")).into_keys().collect();
+        assert!(declared.len() > older.len(), "{declared:?}");
+        let copy = f.older_copy(older);
+        let owner = owner_of(&copy);
+        let out = f.run_codex_home(&copy, &["internal", "installer-integrations"]);
+        success(&out);
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("codex hooks: updated"),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let after = owners(&copy.join("hooks.json"));
+        assert_eq!(after.keys().cloned().collect::<Vec<_>>(), declared);
+        for markers in after.values() {
+            assert_eq!(markers, std::slice::from_ref(&owner), "{after:?}");
+        }
+        // Rerunning setup is idempotent, and unsetup removes the adopted groups.
+        let out = f.run_codex_home(&copy, &["setup", "codex"]);
+        success(&out);
+        assert_eq!(owners(&copy.join("hooks.json")), after);
+        success(&f.run_codex_home(&copy, &["unsetup", "codex"]));
+        assert!(owners(&copy.join("hooks.json")).values().all(Vec::is_empty));
+
+        // Setup itself on a fresh older copy: an installation naming the added events in
+        // declaration order, never "adopted ... the file was not changed".
+        let h = Fixture::new();
+        success(&h.install());
+        let copy = h.older_copy(older);
+        let out = h.run_codex_home(&copy, &["setup", "codex", "--json"]);
+        success(&out);
+        let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let report = &report["setup"];
+        assert_eq!(report["action"], "installed", "{report}");
+        assert_eq!(report["adopted"], owner_of(&copy), "{report}");
+        let added: Vec<&str> = report["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .filter(|event| !older.contains(event))
+            .collect();
+        let warnings = report["warnings"].to_string();
+        assert!(
+            warnings.contains(&format!("({})", added.join(", "))),
+            "{added:?} {warnings}"
+        );
+        assert!(!warnings.contains("not changed"), "{warnings}");
+        assert_eq!(report["trust"]["status"], "review_required", "{report}");
+    }
+
+    // A copy whose SubagentStart group runs the hook with another event's argument is an edit,
+    // not a missing event: refused with the hand-edit remedy, the file left alone, and the
+    // installer refuses it too.
+    let w = Fixture::new();
+    success(&w.install());
+    let copy = w.older_copy(&OLDER_CODEX_EVENTS);
+    let wrong = String::from_utf8(fs::read(copy.join("hooks.json")).unwrap())
+        .unwrap()
+        .replace("'--event' 'SubagentStart'", "'--event' 'SessionStart'");
+    fs::write(copy.join("hooks.json"), &wrong).unwrap();
+    let out = w.run_codex_home(&copy, &["setup", "codex"]);
+    assert!(!out.status.success());
     assert!(
-        String::from_utf8_lossy(&out.stdout).contains("codex hooks: updated"),
+        String::from_utf8_lossy(&out.stderr).contains("remove those groups from the file by hand"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = w.run_codex_home(&copy, &["internal", "installer-integrations"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("codex hooks: failed"),
         "{}",
         String::from_utf8_lossy(&out.stdout)
     );
-    let after = owners(&copy.join("hooks.json"));
-    assert_eq!(
-        after.keys().collect::<Vec<_>>(),
-        [
-            "PreToolUse",
-            "SessionEnd",
-            "SessionStart",
-            "SubagentStart",
-            "SubagentStop"
-        ]
-    );
-    for markers in after.values() {
-        assert_eq!(markers, std::slice::from_ref(&owner), "{after:?}");
-    }
-    // Rerunning setup is idempotent, and unsetup removes the adopted groups.
-    let out = f.run_codex_home(&copy, &["setup", "codex"]);
-    success(&out);
-    assert_eq!(owners(&copy.join("hooks.json")), after);
-    success(&f.run_codex_home(&copy, &["unsetup", "codex"]));
-    assert!(owners(&copy.join("hooks.json")).values().all(Vec::is_empty));
-
-    // Setup itself on a fresh older copy: an installation naming the added events, never
-    // "adopted ... the file was not changed".
-    let h = Fixture::new();
-    success(&h.install());
-    let copy = h.older_copy(&OLDER_CODEX_EVENTS);
-    let out = h.run_codex_home(&copy, &["setup", "codex", "--json"]);
-    success(&out);
-    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let report = &report["setup"];
-    assert_eq!(report["action"], "installed", "{report}");
-    assert_eq!(report["adopted"], owner_of(&copy), "{report}");
-    let warnings = report["warnings"].to_string();
-    assert!(
-        warnings.contains("(SubagentStop, SessionEnd)"),
-        "{warnings}"
-    );
-    assert!(!warnings.contains("not changed"), "{warnings}");
-    assert_eq!(report["trust"]["status"], "review_required", "{report}");
+    assert_eq!(fs::read(copy.join("hooks.json")).unwrap(), wrong.as_bytes());
 
     // A copy registered without `--event` is refused with the hand-edit remedy (unsetup does not
     // own it), and the file is left alone.
