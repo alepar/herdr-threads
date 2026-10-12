@@ -1296,6 +1296,26 @@ class CodexStartOrder(unittest.TestCase):
         self.assertEqual(self.starts("macos")[:2], ["run", "run"])
 
 
+class ReviewMinors(TempDir):
+    def test_marker_without_dockerenv_is_reported_and_keeps_the_sandbox(self):
+        missing = self.tmp / "no-dockerenv"
+        env = {W.CONTAINER_MARKER: "1"}
+        self.assertTrue(W.marker_without_dockerenv("linux", env, missing))
+        self.assertEqual(W.default_codex_args("linux", env, missing), W.CODEX_SANDBOXED_ARGS)
+        present = self.tmp / "dockerenv"
+        present.write_text("")
+        self.assertFalse(W.marker_without_dockerenv("linux", env, present))
+        self.assertFalse(W.marker_without_dockerenv("macos", env, missing))
+        self.assertFalse(W.marker_without_dockerenv("linux", {}, missing))
+
+    def test_abort_message_is_redacted(self):
+        key = "sk-ant-api03-" + "x" * 40 + "TAILTAILTAILTAILTAIL"
+        secrets = W.secret_values({"ANTHROPIC_API_KEY": key})
+        text = W.redact(f"wake-e2e: aborted: {RuntimeError('screen: ...' + key[-20:])!r}", secrets)
+        self.assertNotIn(key[-20:], text)
+        self.assertIn("<redacted>", text)
+
+
 def row(recipient, case, result="PASS"):
     return {"recipient": recipient, "case": case, "result": result, "wake_on": "nudge", "harness": "claude"}
 

@@ -152,6 +152,12 @@ def in_runner_container(env, dockerenv=None):
     return env.get(CONTAINER_MARKER) == "1" and (dockerenv or DOCKERENV).exists()
 
 
+def marker_without_dockerenv(harness_mode, env, dockerenv=None):
+    """The runner's marker is set but /.dockerenv is missing (e.g. podman, which writes /run/.containerenv): the
+    bypass stays off, so say why instead of letting the busy cases fail later on a bubblewrap error."""
+    return harness_mode == "linux" and env.get(CONTAINER_MARKER) == "1" and not (dockerenv or DOCKERENV).exists()
+
+
 def default_codex_args(harness_mode, env, dockerenv=None):
     """Codex's sandbox is bypassed only in the linux mode inside the runner container, where bubblewrap cannot run
     under Docker's default seccomp profile and the container is the boundary. Everywhere else (macOS, a bare Linux
@@ -1179,6 +1185,9 @@ def main(argv=None):
         args.claude_config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
     if args.codex_args is None:
         args.codex_args = default_codex_args(args.harness_mode, os.environ)
+        if marker_without_dockerenv(args.harness_mode, os.environ):
+            print(f"wake-e2e: {CONTAINER_MARKER}=1 but {DOCKERENV} is missing (not Docker?): Codex keeps its sandbox "
+                  "(--approve-for-me); pass --codex-args to choose explicitly", file=sys.stderr)
     args.harness = [h for h in args.harness.split(",") if h]
     cases = [c for c in args.cases.split(",") if c]
     unknown = [c for c in cases if c not in CASES] + [h for h in args.harness if h not in ("claude", "codex")]
@@ -1209,7 +1218,7 @@ def main(argv=None):
         print(f"wake-e2e: refused: {e}", file=sys.stderr)
         rc = EXIT_REFUSED
     except BaseException as e:  # including KeyboardInterrupt: cleanup still runs and the run fails
-        print(f"wake-e2e: aborted: {e!r}", file=sys.stderr)
+        print(redact(f"wake-e2e: aborted: {e!r}", secret_values(os.environ)), file=sys.stderr)
         rc = EXIT_FAIL
     finally:
         # Cleanup runs to the end: a second Ctrl-C or SIGTERM must not cut off the remaining steps.
