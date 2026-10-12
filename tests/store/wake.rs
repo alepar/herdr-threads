@@ -2695,3 +2695,65 @@ fn a_binding_served_one_reason_is_still_woken_for_another() {
     drop(store);
     let _ = std::fs::remove_file(path);
 }
+
+/// ht-705 (review of d894f2ac): a recovery-hint wake (the newest binding is unregistered but its
+/// execution is verified on the pane) reaches that newest binding; when it was served in its turn
+/// while an older connected sibling was not, the candidate survives for the sibling, but the
+/// prompt to the served binding is refused. Kills: skipping the served check for recovery hints.
+#[test]
+fn a_recovery_hint_wake_to_a_served_binding_is_refused() {
+    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let context = StoreContext::new(path.clone(), Arc::new(WakeClock));
+    let db = context.open_writer().unwrap();
+    db.execute_batch("\
+        INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1);\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','pane',1,1,0);\
+        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pane','host',1,1,0,'fresh','occupied','idle','exec',1,'term-pane','inc','coherent_enumeration',1);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);\
+        INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','invited');\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv','t','s',1,'pending',0,1,100,100);\
+        INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,binding_id,liveness_pid,liveness_start) VALUES ('s',1,1,'pane','host',1,'codex','session-a','exec-a','cooperative_top_level',0,0,'term-pane','inc','a',10,1);\
+        INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,binding_id,liveness_pid,liveness_start) VALUES ('s',1,1,'pane','host',1,'codex','session-b','exec','cooperative_top_level',0,NULL,'term-pane','inc','b',20,1);\
+        INSERT INTO in_turn_offer(binding_id,seat_id,item_id) VALUES ('b','s','inv');\
+    ").unwrap();
+    drop(db);
+    let store = SqliteStore::new(
+        context,
+        "i",
+        StoreSettings {
+            daemon_boot: Some(uuid::Uuid::parse_str(DAEMON_BOOT).unwrap()),
+            ..StoreSettings::default()
+        },
+    )
+    .unwrap();
+    let candidate =
+        owed_candidate(&store).expect("the unserved older sibling keeps the seat's wake owed");
+    let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
+        .unwrap()
+        .expect("reserved");
+    assert!(
+        matches!(
+            reservation.authority,
+            crate::ports::ReservedWakeAuthority::RecoveryHint { .. }
+        ),
+        "{:?}",
+        reservation.authority
+    );
+    assert!(StorePort::validate_wake_reservation(&store, &reservation, &budget()).unwrap());
+    assert!(
+        !StorePort::wake_owed_to_binding(&store, &reservation, None, &budget()).unwrap(),
+        "the hint reaches newest binding b, which was served in its turn"
+    );
+    store
+        .context
+        .open_writer()
+        .unwrap()
+        .execute("DELETE FROM in_turn_offer WHERE binding_id='b'", [])
+        .unwrap();
+    assert!(
+        StorePort::wake_owed_to_binding(&store, &reservation, None, &budget()).unwrap(),
+        "control: unserved, the hint is owed"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}

@@ -400,7 +400,7 @@ model open work, and summary closure never changes receipt state or installs glo
   reserved for inside its own turn is owed no wake for it; the seat-level candidate drops those items only
   when every target was served, so one binding's turn never hides a sibling's owed wake. Immediately before
   the prompt, after the reservation fence, the daemon rechecks the binding the composer chose (or, with no
-  composer choice, the seat-level binding a registered wake reaches) against its own records; a served
+  composer choice, the seat-level binding a registered or recovery-hint wake reaches) against its own records; a served
   binding gets a pre-send refusal (nothing typed, the ladder does not climb) and an unserved sibling's wake
   stays owed for a later attempt.
   Verified 2026-10-11 (`evidence/ht-54r.89/summary.md`, derived fingerprints, no harness logged in): the

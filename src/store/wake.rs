@@ -601,10 +601,10 @@ fn served_by_all(
 
 /// Whether the reserved wake still owes the binding its prompt reaches (ht-705), decided
 /// immediately before submission: `binding` is the composer's choice; `None` is the binding a
-/// registered or single-harness wake reaches (the seat-level binding). A wake reserved for any
+/// registered, recovery-hint or single-harness wake reaches (the seat-level binding). A wake reserved for any
 /// reason other than pending receipts or invitations is always owed; one reserved only for them
 /// is owed unless that binding was served every pending item of each reason in its turn. A
-/// recovery hint (the hook path failed) is always owed.
+/// recovery hint reaches the seat-level binding too, so it is checked the same way.
 pub fn wake_owed_to_binding(
     db: &Connection,
     reservation: &WakeReservation,
@@ -623,7 +623,6 @@ pub fn wake_owed_to_binding(
     let seat = reservation.seat.as_str();
     let binding = match (binding, &reservation.authority) {
         (Some(binding), _) => binding.as_str().to_owned(),
-        (None, ReservedWakeAuthority::RecoveryHint { .. }) => return Ok(true),
         (None, _) => match super::attention::seat_notice_binding(db, seat)? {
             Some(binding) => binding,
             None => return Ok(true),
