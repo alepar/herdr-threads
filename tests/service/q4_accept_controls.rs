@@ -734,18 +734,170 @@ fn presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_sta
 fn presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window() {
     let rig = AcceptRig::new();
     let f = &rig.q.window.f;
-    for n in 0..257 {
-        rig.q.window.send(
-            40_000 + n,
-            DeliveryMode::Ordinary,
-            "Q4 retained pending capacity body",
-        );
-    }
-    drain_watch(&rig.q, None);
+    let sent = (0..257)
+        .map(|n| {
+            rig.q.window.send(
+                40_000 + n,
+                DeliveryMode::Ordinary,
+                "Q4 retained pending capacity body",
+            )
+        })
+        .collect::<Vec<_>>();
+    let rendered = drain_watch(&rig.q, None);
     assert_eq!(
         rig.q.window.offers().len(),
         crate::delivery::ledger::MAX_OFFERS_PER_BINDING
     );
+    let binding = binding_for_claim(f, &rig.q.window.recipient);
+    // Keep actual capture geometry in successful output too. Never print bodies or the ledger.
+    let boundary = |stage: &str, completed: Option<&MessageId>, rendered_count: usize| {
+        use crate::protocol::pagination::InboxBatchV2CursorState;
+        let (done, encoded, pending, partial, skip): (i64, Option<String>, String, String, Option<String>) = f.db.query_row(
+            "SELECT ordinary_done,ordinary_cursor,ordinary_pending,ordinary_partial,ordinary_skip_body FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='watch'",
+            [binding.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
+        ).unwrap();
+        let capture = encoded.as_ref().map(|value| {
+            InboxBatchV2CursorState::decode_for(value, "i", &rig.q.window.recipient.seat).unwrap()
+        });
+        let carry: serde_json::Value = serde_json::from_str(&pending).unwrap();
+        let carry_ids = carry["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| MessageId::parse(item["content"]["id"].as_str().unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        let offers = rig.q.window.offers();
+        let unoffered = sent
+            .iter()
+            .filter(|id| Some(*id) != completed && !offers.contains_key(*id))
+            .collect::<Vec<_>>();
+        let partial: serde_json::Value = serde_json::from_str(&partial).unwrap();
+        eprintln!(
+            "Q4 carry {stage}: offers={} sent_offers={} lazy={} rendered={rendered_count} unoffered={} ids={:?} done={done} cursor={:?} carry={carry_ids:?} partial={} skip={skip:?}",
+            offers.len(),
+            sent.iter().filter(|id| offers.contains_key(*id)).count(),
+            offers.contains_key(&rig.lazy),
+            unoffered.len(),
+            &unoffered[..unoffered.len().min(2)],
+            capture.as_ref().map(|c| (
+                c.source,
+                c.unread,
+                c.lazy_after_ordinal,
+                c.lazy_high_water_ordinal,
+                c.publication_decision_high_water,
+                c.attention.receipts.as_ref().map(|r| (
+                    r.physical_after,
+                    r.physical_high_water,
+                    r.manifest_after,
+                    r.manifest_high_water
+                )),
+                c.body.as_ref().map(|b| (&b.message, b.offset))
+            )),
+            partial.as_object().unwrap().len(),
+        );
+        carry_ids
+    };
+    let initial = rig.q.window.offers();
+    let initial_carry = boundary("before-reclaim", None, rendered.len());
+    let unoffered = sent
+        .iter()
+        .filter(|id| !initial.contains_key(*id))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        unoffered.len(),
+        2,
+        "SETUP: two canonical sends remain beyond the full offer boundary"
+    );
+    assert!(
+        initial_carry.is_empty(),
+        "SETUP: this experiment starts at an empty capture boundary"
+    );
+    assert!(
+        initial.contains_key(&rig.lazy),
+        "SETUP: actual invited Lazy occupies the other slot"
+    );
+    // Send order is canonical thread-t sequence order. Only a whole body actually serialized
+    // by drain_watch may supply display evidence; explicit/manual ACK is insufficient.
+    let completed = sent
+        .iter()
+        .find(|id| {
+            rendered.contains_key(*id) && initial.get(*id).is_some_and(|stamp| !stamp.truncated)
+        })
+        .expect("SETUP: actually rendered whole ordinary in thread t");
+    assert_eq!(
+        rendered.get(completed),
+        Some(&(
+            "Q4 retained pending capacity body".into(),
+            false,
+            true,
+            false
+        ))
+    );
+    rig.q.window.ack(
+        std::slice::from_ref(completed),
+        true,
+        false,
+        "q4-retained-reclaim-one",
+    );
+    let refill_rendered = drain_watch(&rig.q, None);
+    let carried = boundary("after-reclaim", Some(completed), refill_rendered.len());
+    let refilled = rig.q.window.offers();
+    assert_eq!(
+        refilled.len(),
+        crate::delivery::ledger::MAX_OFFERS_PER_BINDING,
+        "SETUP: one reclaimed slot refills to 256"
+    );
+    assert!(
+        !refilled.contains_key(completed),
+        "SETUP: real whole display reclaims exactly its offer"
+    );
+    for (id, stamp) in &initial {
+        if id != completed {
+            assert_eq!(
+                refilled.get(id),
+                Some(stamp),
+                "SETUP: untouched offer count/timestamps/truncation survive reclamation: {id:?}"
+            );
+        }
+    }
+    assert_eq!(
+        unoffered
+            .iter()
+            .filter(|id| refilled.contains_key(*id))
+            .count(),
+        1,
+        "SETUP: only one previously unknown send is admitted"
+    );
+    assert_eq!(
+        refill_rendered.len(),
+        1,
+        "SETUP: bounded refill renders exactly one new body"
+    );
+    assert!(
+        refill_rendered
+            .keys()
+            .all(|id| unoffered.contains(id) && refilled.contains_key(id)),
+        "SETUP: refill renders the real pending tail"
+    );
+    assert!(
+        !carried.is_empty(),
+        "SETUP: bounded positive-slot capture retains a genuine pending tail"
+    );
+    for id in &carried {
+        assert!(
+            unoffered.contains(id) && !refilled.contains_key(id),
+            "SETUP: carried body is a real unoffered send"
+        );
+        let pending: bool = f.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages m JOIN send_manifests sm ON sm.message_id=m.id JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id AND pr.seat_id=?2 LEFT JOIN receipt_state rs ON rs.message_id=m.id AND rs.seat_id=pr.seat_id WHERE m.id=?1 AND m.thread_id='t' AND pr.ack_required=1 AND COALESCE(rs.state,'pending')='pending' AND m.sequence>COALESCE((SELECT seq FROM binding_cursors WHERE binding_id=?3 AND thread_id=m.thread_id),0))",
+            params![id.as_str(), rig.q.window.recipient.seat.as_str(), binding.as_str()], |r| r.get(0),
+        ).unwrap();
+        assert!(
+            pending,
+            "SETUP: carried ordinary remains canonically pending and unread: {id:?}"
+        );
+    }
     canonical_lazy_invitation_backlog(
         f,
         &rig.q.window.recipient,
@@ -758,7 +910,6 @@ fn presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_wi
         panic!("actual nonordinary outbox allocation")
     };
     assert!(page.presentation_token.is_some() && !presentation_invitations(&page).is_empty());
-    let binding = binding_for_claim(f, &rig.q.window.recipient);
     let retained: (String, Option<String>) = f.db.query_row("SELECT ordinary_pending,outbox_token FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='watch'", [binding.as_str()], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
     let carry: serde_json::Value = serde_json::from_str(&retained.0).unwrap();
     assert!(
@@ -769,6 +920,8 @@ fn presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_wi
     let fields = q3_preserved_reader_state(f, &rig.q.window.recipient);
     let offers = rig.q.window.offers();
     let counters = q3_reader_counters(f, &rig.q.window.recipient);
+    let receipts = q3_receipt_snapshot(f);
+    let cursors = q3_cursors(f, &rig.q.window.recipient);
     assert!(matches!(
         rig.accept("q4-retained-accept").unwrap(),
         CommandResult::Accepted(_)
@@ -783,5 +936,15 @@ fn presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_wi
         rig.q.window.offers(),
         offers,
         "full logical offer stamps survive acceptance"
+    );
+    assert_eq!(
+        q3_receipt_snapshot(f),
+        receipts,
+        "acceptance supplies no receipt/display evidence"
+    );
+    assert_eq!(
+        q3_cursors(f, &rig.q.window.recipient),
+        cursors,
+        "acceptance preserves this reader's canonical display cursors"
     );
 }
