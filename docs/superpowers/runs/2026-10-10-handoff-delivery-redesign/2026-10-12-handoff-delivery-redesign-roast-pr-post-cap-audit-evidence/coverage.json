@@ -1,0 +1,109 @@
+{
+  "triageDead": false,
+  "scoutsDispatched": 14,
+  "scoutsDead": 0,
+  "unknownLanes": [],
+  "domainsDropped": [],
+  "rawFindings": 2,
+  "dedupedFindings": 2,
+  "dedupeOrphans": 0,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "dedupeDead": false,
+  "panelCount": 2,
+  "spotCount": 0,
+  "promotedCount": 0,
+  "judgeLost": 0,
+  "spotLost": 0,
+  "laneYield": {
+    "correctness": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "security": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "premortem": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "simplicity-design": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "hot-path-perf": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "concurrency-async": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "regression": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "data-migrations": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "deploy-safety": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "api-contract": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "observability": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "testing": {
+      "found": 1,
+      "confirmed": 1,
+      "unique": 1,
+      "refuted": 0
+    },
+    "dependency": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "hygiene-docs": {
+      "found": 1,
+      "confirmed": 1,
+      "unique": 1,
+      "refuted": 0
+    }
+  },
+  "judgeCompletionPct": 100,
+  "lowCoverage": false,
+  "panelCappedTag": "",
+  "emptyLateRound": false,
+  "convergenceEligible": true
+}

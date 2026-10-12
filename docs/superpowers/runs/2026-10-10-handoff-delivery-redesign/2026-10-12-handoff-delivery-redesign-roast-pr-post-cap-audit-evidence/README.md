@@ -1,0 +1,5 @@
+# Actual scoped post-cap audit
+
+Shipped assemble-args/fullengine +resume1012-roast-engine-bridge actualmanualfanout, immutablec211 vsf4a8. Fourteenfreshnon-author scouts;2raw/deduped;2uncappedthree-methodpanels/6validvotes;0dead/caps/esc, fullcoverage. Allsixjudges CONFIRM Should-fix usingstructuralsourceproof, noruntimeclaims. Shippedengine Should-fix(2confirmed)[converged],0Blocking/0regressions; literaliterationpost-cap audit, nevernumberedround3/reset. Actualresponses remainverbatim; no inventedseats/verdicts/recategorizedstagecounts. SamefamilyOpenAI explicitlymethod-differentiated ratherthanvendor-independent.
+
+Priorcoalescingpunchlist staysopen, fivepriorunverifiednits carriedhonestly. Newdocs direct-accept policy mismatch andrelease-driverLazyinvitewake false-failureoracle arepost-capShouldfixpunchlist, notnewfixloop percurrent super-auto §Changeslandedafterloop. Realauthenticatedrelease matrix remainsMain-owned; driver39fake-selftests result doesnotresolveitsneworaclefinding. FinalC/speed stillpending.

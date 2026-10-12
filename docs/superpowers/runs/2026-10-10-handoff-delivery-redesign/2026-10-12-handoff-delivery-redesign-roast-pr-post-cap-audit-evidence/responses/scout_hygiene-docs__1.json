@@ -1,0 +1,12 @@
+{
+  "findings": [
+    {
+      "claim": "The newly added public join guidance incorrectly promises head seeding and seat-wide settlement for direct invitation acceptance, contradicting the preserved independent-reader contract.",
+      "location": "docs/agent-usage.md:159",
+      "category": "hygiene-docs",
+      "external": false,
+      "kind": "ISSUE",
+      "evidence": "At c211906a8801965efc61f3a90bb9d9de34cfaa6c the added guide text says \"Joining a thread (accept, join) starts every session of the seat at the thread head\" and explicitly describes \"the opening of a direct send\" as settled for every session by the first top-level display. The direct-channel section at docs/agent-usage.md:277 tells recipients to accept explicitly, without identifying an exception. Actual acceptance at src/store/control.rs:1097-1106,1136-1142 selects init_for_direct_accept for an active direct invitation. src/store/read_cursors.rs:170-193 preserves existing cursors and inserts only missing cursors at the invitation event floor; it does not run the generic join seat-pending conversion. TRUST-POLICY.md:887-898 explicitly requires that behavior and permits settled ordinary messages above the retained baseline to become readable, preserving independent streams. The selected resume-v091-composition-design.md Reader composition decision specifically preserves this direct exception. The newly imported user-facing documentation therefore describes the opposite behavior for a central public accept operation, including whether sibling sessions can still receive the opening messages."
+    }
+  ]
+}

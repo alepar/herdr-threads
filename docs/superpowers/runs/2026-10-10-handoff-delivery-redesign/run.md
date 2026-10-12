@@ -23,7 +23,7 @@ approvals:
 - top-split · ht-0lo.1 PROMOTE, ht-0lo.2 PROMOTE, ht-0lo.3 PROMOTE, ht-0lo.4 PROMOTE, ht-0lo.5 LEAF, ht-0lo.6 LEAF (closed design fix), ht-0lo.7 LEAF (closed design fix) · exact updated child set accepted under explicit fully autonomous user delegation
 
 roastCodeRound: 2
-roast-code: 2026-10-10-handoff-delivery-redesign-roast-pr-1.md, 2026-10-10-handoff-delivery-redesign-roast-pr-2.md
+roast-code: 2026-10-10-handoff-delivery-redesign-roast-pr-1.md, 2026-10-10-handoff-delivery-redesign-roast-pr-2.md, 2026-10-12-handoff-delivery-redesign-roast-pr-post-cap-audit.md
 roastDesignRound: 2
 roast-design: 2026-10-10-handoff-delivery-redesign-roast-design-1.md, 2026-10-10-handoff-delivery-redesign-roast-design-2.md
 
@@ -31,13 +31,13 @@ parked:
 - 2026-10-10-handoff-delivery-redesign-roast-design-2.md · degraded-verdict · "clean (0 nits) [low coverage] — proceeded, not re-roasted under caller-owned fully autonomous exception; sole cause literal zero-raw rule despite all nine fresh scouts completed and both prior Blockings resolved; no dead stages, caps, escalations or unverified findings"
 
 codeBuckets:
-  completed: ht-0lo.6, ht-0lo.7, ht-0lo.2.1, ht-0lo.1.1, ht-0lo.3.1, ht-0lo.4.1, ht-0lo.1.3, ht-0lo.2.2, ht-0lo.4.2, ht-0lo.2.3, ht-0lo.1.2, ht-0lo.3.2, ht-0lo.5, ht-0lo.1, ht-0lo.2, ht-0lo.3, ht-0lo.4, ht-0lo.8.1, ht-0lo.8.2, ht-0lo.8.4, ht-0lo.9, ht-0lo.10, ht-0lo.12, ht-0lo.13, ht-0lo.14, ht-0lo.15
+  completed: ht-0lo.11, ht-0lo.16, ht-0lo.17, ht-0lo.18, ht-0lo.6, ht-0lo.7, ht-0lo.2.1, ht-0lo.1.1, ht-0lo.3.1, ht-0lo.4.1, ht-0lo.1.3, ht-0lo.2.2, ht-0lo.4.2, ht-0lo.2.3, ht-0lo.1.2, ht-0lo.3.2, ht-0lo.5, ht-0lo.1, ht-0lo.2, ht-0lo.3, ht-0lo.4, ht-0lo.8.1, ht-0lo.8.2, ht-0lo.8.4, ht-0lo.9, ht-0lo.10, ht-0lo.12, ht-0lo.13, ht-0lo.14, ht-0lo.15
   escalated:
-  pendingRetry: ht-0lo.8.3, ht-0lo.11, ht-0lo.8, ht-0lo
+  pendingRetry: ht-0lo.8.3, ht-0lo.8, ht-0lo
   parked:
   stalled: false
   review: not ready (final C measurement deferred; reviewed implementation and task-focused controls passed)
-  sweep: SWEEP DEFERRED (caller-owned)
+  sweep: d8427582 — 774 passed, 3 failed, 0 errors, 0 skipped; failing: lease, carry setup, recovery work oracle; focused771 plus mandatory6; command: source-sealed expanded focused C (project ht-zo4 restriction); single sweep-fix pass complete, final combined rerun pending @ d8427582d2d0bfca0ed50e5b58f29b130ee12640
 
 - resume2026-10-11 · user explicitly requested "$super-auto this, fully autonomous, design roast off, code roast on"; skipPlanRoast=true applies prospectively; retained completed designRound2 and low-coverage history, code phase/counters/epic unchanged.
 
@@ -148,3 +148,5 @@ baseAbsorbed: 20e7ca73e41a9449376169ab6875c0675da02edc → 79a0c3dd160a5733ba201
 - currentMain36-verification · actual95focused89PASS6FAIL6.821s/list224.156; singlecompositionlightreviewNEEDS_FIX7test/fixtureitems, onefixpass8d37/c53, normal11PASS6.833s/list63.468, allscopedleaks0. GenuineMain36schema/wake/directreader/Q4 controlsPASS95; no productionchangeafter495 and no source/error/assertionwaiver. Promotion79a0tree6068=validatedc53, all4compile-onlygatesPASS. Two[doc-drift]Minor retainedfromlightreview. Evidence resume-v091-composition-evidence/.
 - postLoopAudit-required · materialbehavioralMainabsorption mandates one scoped PR post-cap audit fromlastreviewedf4a8 tocurrenttip; codeRoastRound2/convergedexit remainsunchanged, no newfixloop. FinalC one rerunstillunspent behindaudit/freshsourceproof.
 - currentMain-helper · old3916572442aliases6mandatoryimmutable, additivecurrentMain55+separatefeature1/sourceSQL1–36map; onefocusedREVISE plusonefixpassverifiedAST, no rereview. No finalseal/count/PASSclaim yet.
+
+- post-cap-audit · c211 vsf4a8 officialengineShould-fix(2confirmed)[converged],14/14freshscouts2raw/2panels6/6votes/100%judgecoverage,0Blocking/dead/caps/escalations/regressions. Literalpost-cap audit; originalcodeRound2/convergedexit unchanged. NewShouldfix [scripts/wake-e2e.py:766] lazyinvitationwakeoracle and [docs/agent-usage.md:159] directaccept readerguidance go punchlist, no newfixloop percurrentSKILLChangeslandedafterloop. PriorSqueuecoalescing/5unverifiednits and changelogDocMinor remain. FinalC/speed/currentconsumerbyteproof/report pending.
