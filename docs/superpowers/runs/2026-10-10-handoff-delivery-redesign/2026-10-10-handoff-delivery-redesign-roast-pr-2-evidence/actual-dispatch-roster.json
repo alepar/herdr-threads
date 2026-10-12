@@ -1,0 +1,85 @@
+{
+  "mechanism": "manual-fan-out",
+  "head": "f4a8cf39dc6de49572ae2f1c214e05fc8a3a2cd2",
+  "triage": {
+    "task": "r2_triage",
+    "model": "gpt-6.1-sol",
+    "effort": "low"
+  },
+  "scouts": [
+    {
+      "task": "r2_correctness",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    {
+      "task": "r2_security",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    {
+      "task": "r2_premortem",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    {
+      "task": "r2_simplicity",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    {
+      "task": "r2_hotperf",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    {
+      "task": "r2_concurrency",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    {
+      "task": "r2_regression",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    {
+      "task": "r2_migrations",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    {
+      "task": "r2_api",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    {
+      "task": "r2_testing",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    {
+      "task": "r2_deploy",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    {
+      "task": "r2_observability",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    {
+      "task": "r2_docs",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    }
+  ],
+  "reporter": {
+    "task": "r2_reporter",
+    "model": "gpt-6.1-sol",
+    "effort": "high"
+  },
+  "panels": 0,
+  "spots": 0,
+  "runtime_tests": 0,
+  "engine": "complete shipped engine via unchanged parent-response bridge; no handwritten coverage/cap/default-route/convergence math"
+}

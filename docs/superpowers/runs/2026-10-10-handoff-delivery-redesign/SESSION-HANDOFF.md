@@ -1,3 +1,7 @@
+# Active final verification — 2026-10-12
+
+Authoritative run.md: phase report, codeRound2 complete, roastCodeExit converged. Exact reviewed feature f4a8cf39 with production e934c0ce/tree1b07, four fixes closed;13/13late-roundscouts,0new/Blocking/regressions, fullcoverage. Queuecoalescing filteredS and5unverifiedNits retained. Next: closegateht-0lo.11 only afterdurableexit then fresh exact-source777-key preparation/seal and finalfocused771+6mandatory run, currentconsumer qualification and controlledsingle-filebuild/lint<60s. FinalC.8.3/.8/root stillopen untilactualacceptance; no readinessmessage/Mainmerge. No ownruntimeactive; fournewhelperworktrees removed normally, source/warmtarget protected. Below is chronological evidence only.
+
 # Active round2 continuation — 2026-10-12
 
 `run.md` is authoritative: phase roast-code, code round2 starting with round1 report/punch-list. Four in-scope roast1 fixes are reviewed, tested, merged and closed (ht-0lo.12–.15). Product e934c0ce/tree1b07 equals parent validated candidate; finalreview reports no newMustfix. Four completed helper worktrees removed normally, branches/commits retained. The obsolete-revision queue finding remains punch-listed, no coalescing. C.8.3/gate.11 remain open until durable roastCodeExit then exact-tip final777 static selection (refresh count/seal then), consumerqualification and controlled<60s benchmarks. Historical pause/olderphase claims below are evidence only; user resumed/fullautonomy/designroastOFF/coderoastON remain. Main remains565def86/schema35; no readinesssent or Mainmerge.

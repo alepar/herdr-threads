@@ -1,0 +1,1 @@
+[Should-fix] integrations/claude/mod/hooks/register.js:296
