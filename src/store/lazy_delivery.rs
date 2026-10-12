@@ -45,9 +45,10 @@ pub struct PendingPage {
 /// so a binding WITHOUT a cursor row for the thread also needs the seat to have it joined (the
 /// lazy twin of `read_cursors::UNREAD_EXTRA`). A binding that holds a cursor row keeps its
 /// addressed rows after the seat leaves, as the lazy spec requires ("Leaving does not erase
-/// already addressed delivery"). The legacy branch (rows carried pending from before V34,
-/// delivered to top-level bindings until displayed) is deliberately not membership-gated, so no
-/// pre-upgrade pending lazy row disappears.
+/// already addressed delivery"). The legacy branch (rows carried pending from before V34, and rows
+/// addressed to the seat before it joined, flagged by `read_cursors::init_for_join`; delivered to
+/// top-level bindings until displayed) is deliberately not membership-gated, so no such pending
+/// lazy row disappears.
 macro_rules! binding_lazy_unread_sql {
     () => {
         "((m.sequence>COALESCE((SELECT c.seq FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=r.thread_id),0) AND (EXISTS(SELECT 1 FROM binding_cursors c2 WHERE c2.binding_id=b.binding_id AND c2.thread_id=r.thread_id) OR EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=r.thread_id AND mb.seat_id=r.seat_id AND mb.state='joined'))) OR (r.legacy_pending=1 AND b.role='top_level'))"

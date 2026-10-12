@@ -1060,6 +1060,12 @@ impl Fixture {
     fn count(&self, sql: &str) -> i64 {
         count(&self.db, sql)
     }
+    fn count_text(&self, sql: &str) -> String {
+        rusqlite::Connection::open(&self.db)
+            .unwrap()
+            .query_row(sql, [], |r| r.get(0))
+            .unwrap()
+    }
     fn cooperative(&self, seat: &str, pane: &str, command: &[&str]) -> serde_json::Value {
         cooperative(&self.state, &self.host, seat, pane, command)
     }
@@ -1679,6 +1685,155 @@ fn cooperative_seat_on_own_target_startup_clear_resume_register_session_bindings
         fx.count("SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'"),
         0
     );
+}
+
+// ht-8y9: a first-contact pair whose opening mail interleaves lazy and ordinary messages.
+// Before the accept only the invitation and the ordinary (receipt) messages are offered. The
+// accept delivers each lazy opening message once and never re-offers an ordinary one the seat
+// ACKed; a still-pending one stays on the page only as the pending receipt every new page carries.
+#[test]
+fn pair_accept_delivers_mixed_opening_mail_once() {
+    let fx = Fixture::start();
+    let started = fx.hook("w9:p1", &start("sess-1"));
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+    // The in-process CLI acts as session `sess-1` (`agent_origin`); direct send's ensure
+    // enrolls no binding, so the peer's binding must already be that session.
+    let peer = fx.hook("w9:p2", &start("sess-1"));
+    assert_eq!(peer.code, Some(0), "{}", peer.stderr);
+    let direct = |body: &str| {
+        fx.cooperative("peer", "w9:p2", &["send", "--seat", "seat", "--body", body]);
+    };
+    direct("lazy-open");
+    let thread = fx.count_text("SELECT thread_id FROM direct_threads");
+    let ordinary = |body: &str| {
+        fx.cooperative(
+            "peer",
+            "w9:p2",
+            &["send", &thread, "--body", body, "--require-ack", "seat"],
+        )["result"]["data"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let acked = ordinary("ordinary-acked");
+    direct("lazy-middle");
+    ordinary("ordinary-pending");
+    direct("lazy-last");
+    let hook = |label: &str| {
+        let hook = fx.hook("w9:p1", &tool("sess-1"));
+        assert_eq!(hook.code, Some(0), "{label}: {}", hook.stderr);
+        assert!(hook.stderr.is_empty(), "{label}: {}", hook.stderr);
+        if hook.stdout.is_empty() {
+            String::new()
+        } else {
+            context_of(&hook)
+        }
+    };
+    let times = |context: &str, body: &str| context.matches(&format!("\\n  {body}")).count();
+    let before = hook("before accept");
+    assert!(before.contains("invitation "), "{before}");
+    for (body, n) in [
+        ("ordinary-acked", 1),
+        ("ordinary-pending", 1),
+        ("lazy-open", 0),
+        ("lazy-middle", 0),
+        ("lazy-last", 0),
+    ] {
+        assert_eq!(times(&before, body), n, "before accept, {body}: {before}");
+    }
+    fx.cooperative("seat", "w9:p1", &["ack", &acked]);
+    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+    let after = hook("after accept");
+    for (body, n) in [
+        ("ordinary-acked", 0),
+        ("ordinary-pending", 1),
+        ("lazy-open", 1),
+        ("lazy-middle", 1),
+        ("lazy-last", 1),
+    ] {
+        assert_eq!(times(&after, body), n, "after accept, {body}: {after}");
+    }
+    assert_eq!(hook("after delivery"), "");
+    assert_eq!(
+        fx.count("SELECT count(*) FROM lazy_recipients WHERE legacy_pending=1"),
+        0,
+        "the displaying hook settles the pre-join lazy rows"
+    );
+}
+
+// ht-8y9: leave, reinvite and rejoin with two bindings of the seat at distinct read positions.
+// Mail addressed while the seat was joined keeps per-binding cursors; a rejoin raises a cursor
+// to the head (as before ht-8y9), so binding B skips joined-era mail binding A already read.
+// Lazy mail addressed while the seat was not joined is pending at seat level: the first
+// top-level binding that displays it settles it for the seat, like a receipt.
+#[test]
+fn pair_rejoin_with_two_bindings_pins_read_positions() {
+    let fx = Fixture::start();
+    // A is `sess-1`, the session the in-process CLI acts as (`agent_origin`).
+    fx.register("w9:p1", "sess-1");
+    let cleared = fx.hook("w9:p1", &Payload::session_start("sess-b", "clear").bytes());
+    assert_eq!(cleared.code, Some(0), "{}", cleared.stderr);
+    fx.register("w9:p2", "sess-1");
+    assert_eq!(
+        fx.count(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL"
+        ),
+        2
+    );
+    let direct = |body: &str| {
+        fx.cooperative("peer", "w9:p2", &["send", "--seat", "seat", "--body", body]);
+    };
+    let pull = |session: &str| {
+        let hook = fx.hook("w9:p1", &tool(session));
+        assert_eq!(hook.code, Some(0), "{session}: {}", hook.stderr);
+        if hook.stdout.is_empty() {
+            String::new()
+        } else {
+            context_of(&hook)
+        }
+    };
+    let shows = |context: &str, body: &str| context.contains(&format!("\\n  {body}"));
+    direct("first-contact");
+    let thread = fx.count_text("SELECT thread_id FROM direct_threads");
+    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+    // Pre-join lazy mail: A displays it first and settles it for the seat.
+    let a = pull("sess-1");
+    assert!(shows(&a, "first-contact"), "{a}");
+    let b = pull("sess-b");
+    assert!(!shows(&b, "first-contact"), "{b}");
+    // Joined-era mail: A reads it, B does not.
+    direct("joined-era");
+    let a = pull("sess-1");
+    assert!(shows(&a, "joined-era"), "{a}");
+    let cursor = |session: &str| {
+        fx.count(&format!(
+            "SELECT c.seq FROM binding_cursors c JOIN occupant_bindings o ON o.binding_id=c.binding_id \
+             WHERE o.seat_id='seat' AND o.native_session='{session}' AND c.thread_id='{thread}'"
+        ))
+    };
+    let joined_era = fx.count(&format!(
+        "SELECT sequence FROM messages WHERE thread_id='{thread}' AND body='joined-era'"
+    ));
+    assert!(cursor("sess-b") < joined_era && cursor("sess-1") >= joined_era);
+    fx.cooperative("seat", "w9:p1", &["leave", &thread]);
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
+    direct("rejoin-open");
+    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+    // B now pulls first: the rejoin raised its cursor past joined-era (read by A), and it
+    // takes the pre-join rejoin-open for the seat.
+    let b = pull("sess-b");
+    assert!(!shows(&b, "joined-era"), "{b}");
+    assert!(shows(&b, "rejoin-open"), "{b}");
+    let a = pull("sess-1");
+    assert!(!shows(&a, "joined-era"), "{a}");
+    assert!(!shows(&a, "rejoin-open"), "{a}");
+    // Mail after the rejoin reaches both bindings through their cursors.
+    direct("after-rejoin");
+    for session in ["sess-1", "sess-b"] {
+        let context = pull(session);
+        assert!(shows(&context, "after-rejoin"), "{session}: {context}");
+        assert!(!shows(&context, "rejoin-open"), "{session}: {context}");
+    }
 }
 
 // Required test 3: offer -> identical second tool call is quiet -> new message
