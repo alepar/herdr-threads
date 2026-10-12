@@ -1,0 +1,295 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 718bd057-8730-42cb-90ca-d0c9c63df9c5 with nextest profile: default
+    Starting 51 tests across 1 binary (4835 tests skipped)
+        PASS [   0.016s] ( 1/51) herdr-threads cli::watch::tests::q3_raw_watch_server_finishes_when_the_client_never_connects
+        PASS [   0.017s] ( 2/51) herdr-threads cli::watch::tests::q3_absent_watch_opt_in_preserves_historical_bytes
+        PASS [   0.017s] ( 3/51) herdr-threads cli::watch::tests::q3_true_watch_opt_in_is_explicit_and_strictly_typed
+        PASS [   0.018s] ( 4/51) herdr-threads cli::watch::tests::q3_missing_mod_watch_capability_never_opens_a_registration_socket
+        PASS [   0.020s] ( 5/51) herdr-threads cli::watch::tests::q3_false_watch_opt_in_normalizes_to_historical_bytes
+        PASS [   0.020s] ( 6/51) herdr-threads cli::watch::tests::q3_raw_watch_server_drop_joins_and_removes_socket_on_unwind
+        PASS [   0.010s] ( 7/51) herdr-threads protocol::capabilities::tests::bare_daemon_advertises_legacy_capabilities_without_v2_recorder
+        PASS [   0.010s] ( 8/51) herdr-threads protocol::capabilities::tests::capability_constants_are_stable
+        PASS [   0.011s] ( 9/51) herdr-threads cli::watch::tests::q3_watch_discovery_failure_never_opens_a_registration_socket
+        FAIL [   0.299s] (10/51) herdr-threads service::delivery_pull::tests::presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4885 filtered out; finished in 0.29s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap' (55964099) panicked at src/service/../../tests/service/delivery_pull.rs:1766:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: CallerUnverified, detail: "lifecycle execution UUID already used", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.317s] (11/51) herdr-threads service::delivery_pull::tests::presentation_q3_capable_registry_uses_only_bounded_real_store_reads
+        FAIL [   0.321s] (12/51) herdr-threads service::delivery_pull::tests::presentation_q3_advance_cursors_coalesces_many_real_thread_gaps
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_q3_advance_cursors_coalesces_many_real_thread_gaps ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_q3_advance_cursors_coalesces_many_real_thread_gaps
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4885 filtered out; finished in 0.31s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_q3_advance_cursors_coalesces_many_real_thread_gaps' (55964095) panicked at src/service/../../tests/service/delivery_pull.rs:1766:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: CallerUnverified, detail: "lifecycle execution UUID already used", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.315s] (13/51) herdr-threads service::delivery_pull::tests::presentation_q3_complete_inbox_delivery_coalesces_many_real_thread_gaps
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_q3_complete_inbox_delivery_coalesces_many_real_thread_gaps ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_q3_complete_inbox_delivery_coalesces_many_real_thread_gaps
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4885 filtered out; finished in 0.31s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_q3_complete_inbox_delivery_coalesces_many_real_thread_gaps' (55964100) panicked at src/service/../../tests/service/delivery_pull.rs:1766:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: CallerUnverified, detail: "lifecycle execution UUID already used", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.322s] (14/51) herdr-threads service::delivery_pull::tests::presentation_q3_ordinary_publication_generation_observes_early_store_ack_without_service_hint
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_q3_ordinary_publication_generation_observes_early_store_ack_without_service_hint ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_q3_ordinary_publication_generation_observes_early_store_ack_without_service_hint
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4885 filtered out; finished in 0.31s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_q3_ordinary_publication_generation_observes_early_store_ack_without_service_hint' (55964101) panicked at src/service/../../tests/service/delivery_pull.rs:901:5:
+    assertion `left == right` failed: an addressed ordinary publication must change the private source even after early terminal ACK
+      left: (0, 0)
+     right: (1, 1)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.155s] (15/51) herdr-threads service::delivery_pull::tests::presentation_q3_quiet_ordinary_sibling_ack_before_materialization_drains_passively
+        PASS [   0.243s] (16/51) herdr-threads service::delivery_pull::tests::presentation_q3_quiet_pending_and_lazy_publications_have_distinct_authority
+        PASS [   0.379s] (17/51) herdr-threads service::delivery_pull::tests::presentation_q3_reader_change_failure_rolls_back_cursor_and_private_state
+        FAIL [   0.145s] (18/51) herdr-threads service::delivery_pull::tests::presentation_q3_reader_change_preserves_nonempty_progress_outbox_and_offers
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_q3_reader_change_preserves_nonempty_progress_outbox_and_offers ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_q3_reader_change_preserves_nonempty_progress_outbox_and_offers
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4885 filtered out; finished in 0.13s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_q3_reader_change_preserves_nonempty_progress_outbox_and_offers' (55964123) panicked at src/service/../../tests/service/delivery_pull.rs:1766:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: CallerUnverified, detail: "lifecycle execution UUID already used", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.334s] (19/51) herdr-threads service::delivery_pull::tests::presentation_q3_reader_change_is_binding_local_coalesced_and_noop_stable
+        PASS [   0.110s] (20/51) herdr-threads service::mod_channels::tests::domain::each_channel_receives_only_its_bindings_deliveries
+        PASS [   0.068s] (21/51) herdr-threads service::mod_channels::tests::domain::q3_legacy_channel_cannot_capture_owner_replay
+        PASS [   0.993s] (22/51) herdr-threads protocol::capabilities::tests::every_advertised_capability_has_a_handler
+        PASS [   0.067s] (23/51) herdr-threads service::mod_channels::tests::domain::q3_legacy_channel_cannot_confirm_with_an_issued_or_guessed_lease
+        PASS [   0.066s] (24/51) herdr-threads service::mod_channels::tests::domain::q3_legacy_channel_cannot_pull_with_an_issued_or_guessed_lease
+        PASS [   0.068s] (25/51) herdr-threads service::mod_channels::tests::domain::q3_legacy_claim_only_registration_has_no_presentation_lease
+        PASS [   0.011s] (26/51) herdr-threads service::mod_channels::tests::each_channel_receives_only_its_bindings_deliveries
+        FAIL [   0.010s] (27/51) herdr-threads service::mod_channels::tests::q3_capable_to_legacy_replacement_cannot_receive_the_old_active_push
+  stdout ───
+
+    running 1 test
+    test service::mod_channels::tests::q3_capable_to_legacy_replacement_cannot_receive_the_old_active_push ... FAILED
+
+    failures:
+
+    failures:
+        service::mod_channels::tests::q3_capable_to_legacy_replacement_cannot_receive_the_old_active_push
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4885 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'service::mod_channels::tests::q3_capable_to_legacy_replacement_cannot_receive_the_old_active_push' (55964179) panicked at src/service/../../tests/service/mod_channels.rs:2611:5:
+    assertion `left == right` failed: a replaced channel must receive no old frame, health or observation state
+      left: ([Attention { version: 3 }], Some(UtcMillis(1000000)), true, None)
+     right: ([], None, true, None)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.833s] (28/51) herdr-threads service::delivery_pull::tests::presentation_q3_parked_reader_then_ack_resumes_existing_id257
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_q3_parked_reader_then_ack_resumes_existing_id257 ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_q3_parked_reader_then_ack_resumes_existing_id257
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4885 filtered out; finished in 0.82s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_q3_parked_reader_then_ack_resumes_existing_id257' (55964111) panicked at src/service/../../tests/service/delivery_pull.rs:276:14:
+    called `Result::unwrap()` on an `Err` value: QueryReturnedNoRows
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.010s] (29/51) herdr-threads service::mod_channels::tests::q3_closed_receiver_preserves_passive_drain_without_an_immediate_kick_loop
+        FAIL [   0.447s] (30/51) herdr-threads service::delivery_pull::tests::presentation_q3_reader_change_respects_current_primary_or_refresh_scope
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_q3_reader_change_respects_current_primary_or_refresh_scope ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_q3_reader_change_respects_current_primary_or_refresh_scope
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4885 filtered out; finished in 0.44s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_q3_reader_change_respects_current_primary_or_refresh_scope' (55964130) panicked at src/service/../../tests/service/delivery_pull.rs:1476:15:
+    called `Result::unwrap()` on an `Err` value: SqliteFailure(Error { code: ConstraintViolation, extended_code: 787 }, Some("FOREIGN KEY constraint failed"))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.010s] (31/51) herdr-threads service::mod_channels::tests::q3_failed_hint_work_does_not_transfer_to_either_replacement_mode
+        PASS [   0.009s] (32/51) herdr-threads service::mod_channels::tests::q3_failed_hint_work_restores_the_same_exact_owner
+        PASS [   0.009s] (33/51) herdr-threads service::mod_channels::tests::q3_failed_store_work_keeps_a_newer_hint_without_a_captured_hint
+        PASS [   0.010s] (34/51) herdr-threads service::mod_channels::tests::q3_legacy_to_capable_replacement_cannot_receive_the_old_passive_push
+        PASS [   0.009s] (35/51) herdr-threads service::mod_channels::tests::q3_passive_hints_coalesce_without_health_or_crossing_legacy_and_seat_scope
+        FAIL [   0.009s] (36/51) herdr-threads service::mod_channels::tests::q3_replacement_after_observation_cannot_receive_the_old_active_push
+  stdout ───
+
+    running 1 test
+    test service::mod_channels::tests::q3_replacement_after_observation_cannot_receive_the_old_active_push ... FAILED
+
+    failures:
+
+    failures:
+        service::mod_channels::tests::q3_replacement_after_observation_cannot_receive_the_old_active_push
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4885 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'service::mod_channels::tests::q3_replacement_after_observation_cannot_receive_the_old_active_push' (55964210) panicked at src/service/../../tests/service/mod_channels.rs:2611:5:
+    assertion `left == right` failed: a replaced channel must receive no old frame, health or observation state
+      left: ([Attention { version: 3 }], Some(UtcMillis(1000000)), true, None)
+     right: ([], None, true, None)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.009s] (37/51) herdr-threads service::mod_channels::tests::q3_replacement_after_observation_cannot_receive_the_old_passive_push
+        PASS [   0.010s] (38/51) herdr-threads service::mod_channels::tests::q3_second_hint_during_store_work_survives_the_first_successful_pass
+        FAIL [   0.010s] (39/51) herdr-threads store::queries::tests::presentation_q3_prospective_publication_recipient_keys_have_constant_sqlite_work
+  stdout ───
+
+    running 1 test
+    test store::queries::tests::presentation_q3_prospective_publication_recipient_keys_have_constant_sqlite_work ... FAILED
+
+    failures:
+
+    failures:
+        store::queries::tests::presentation_q3_prospective_publication_recipient_keys_have_constant_sqlite_work
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4885 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'store::queries::tests::presentation_q3_prospective_publication_recipient_keys_have_constant_sqlite_work' (55964227) panicked at src/store/../../tests/store/queries.rs:6562:317:
+    called `Result::unwrap()` on an `Err` value: SqliteFailure(Error { code: Unknown, extended_code: 1 }, Some("no such table: main.invitations"))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.019s] (40/51) herdr-threads store::queries::tests::presentation_publication_range_uses_exact_index_and_bounded_sqlite_work
+        PASS [   0.154s] (41/51) herdr-threads service::mod_channels::tests::domain::q3_mixed_same_seat_modes_and_replacement_cannot_borrow_old_leases
+        FAIL [   0.948s] (42/51) herdr-threads service::delivery_pull::tests::presentation_q3_parked_ack_then_reader_resumes_existing_id257
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_q3_parked_ack_then_reader_resumes_existing_id257 ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_q3_parked_ack_then_reader_resumes_existing_id257
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4885 filtered out; finished in 0.94s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_q3_parked_ack_then_reader_resumes_existing_id257' (55964105) panicked at src/service/../../tests/service/delivery_pull.rs:276:14:
+    called `Result::unwrap()` on an `Err` value: QueryReturnedNoRows
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.120s] (43/51) herdr-threads store::invitation_content::notice_replay_tests::presentation_virtual_notice_replays_and_confirms_original_slots_without_materializing
+  stdout ───
+
+    running 1 test
+    test store::invitation_content::notice_replay_tests::presentation_virtual_notice_replays_and_confirms_original_slots_without_materializing ... FAILED
+
+    failures:
+
+    failures:
+        store::invitation_content::notice_replay_tests::presentation_virtual_notice_replays_and_confirms_original_slots_without_materializing
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4885 filtered out; finished in 0.11s
+
+  stderr ───
+
+    thread 'store::invitation_content::notice_replay_tests::presentation_virtual_notice_replays_and_confirms_original_slots_without_materializing' (55964221) panicked at src/store/../../tests/store/notice_replay.rs:419:5:
+    assertion `left == right` failed: full descriptor order, body, stamps, token, codec selection and bytes survive replay
+      left: DeliveryPageV2 { attention_version: 13912005168234933956, text: "[herdr-threads] new messages:\n\n[herdr-threads] invitation i8n5N4yd1 in tSjyfGTmD \"virtual warning replay invitation\" from unknown:\n  virtual warning replay invitation\n  goal: review\n  deadline: 1300000\n  next: herdr-threads accept tSjyfGTmD\n\n[herdr-threads] attention attention:1:\n  herdr-threads: attention pending; run herdr-threads inbox", offered: [], truncated: [], more: true, presentation_token: Some("44cad106813247aab486b6ca64a088d8"), render: Hook { selector: 0 }, output_bytes: 353, items: [Invitation { id: InvitationId("i8n5N4yd1"), content: WatchInvitation { command_context_epoch: Some("0"), topic_revision: Some("0"), thread: ThreadId("tSjyfGTmD"), thread_name: Some("virtual warning replay invitation"), body: "virtual warning replay invitation\ngoal: review\ndeadline: 1300000\nnext: herdr-threads accept tSjyfGTmD", truncated: false, wakes: true } }, Attention { epoch: "1", attention_version: 13912005168234933956, text: "herdr-threads: attention pending; run herdr-threads inbox" }], emitted_controls: [Attention { epoch: "1", version: 13912005168234933956 }] }
+     right: DeliveryPageV2 { attention_version: 13912005168234933956, text: "[herdr-threads] new messages:\n\n[herdr-threads] notice w32feeb97-81c3-8124-8083-ed74980c2da2 in t from unknown:\n  informational, no ACK; read: herdr-threads body w32feeb97-81c3-8124-8083-ed74980c2da2\n\n[herdr-threads] invitation i8n5N4yd1 in tSjyfGTmD \"virtual warning replay invitation\" from unknown:\n  virtual warning replay invitation\n  goal: review\n  deadline: 1300000\n  next: herdr-threads accept tSjyfGTmD\n\n[herdr-threads] attention attention:1:\n  herdr-threads: attention pending; run herdr-threads inbox", offered: [], truncated: [], more: true, presentation_token: Some("44cad106813247aab486b6ca64a088d8"), render: Hook { selector: 0 }, output_bytes: 525, items: [Notice { warning: MessageId("w32feeb97-81c3-8124-8083-ed74980c2da2"), thread: ThreadId("t"), body: "informational, no ACK; read: herdr-threads body w32feeb97-81c3-8124-8083-ed74980c2da2" }, Invitation { id: InvitationId("i8n5N4yd1"), content: WatchInvitation { command_context_epoch: Some("0"), topic_revision: Some("0"), thread: ThreadId("tSjyfGTmD"), thread_name: Some("virtual warning replay invitation"), body: "virtual warning replay invitation\ngoal: review\ndeadline: 1300000\nnext: herdr-threads accept tSjyfGTmD", truncated: false, wakes: true } }, Attention { epoch: "1", attention_version: 13912005168234933956, text: "herdr-threads: attention pending; run herdr-threads inbox" }], emitted_controls: [Attention { epoch: "1", version: 13912005168234933956 }] }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.259s] (44/51) herdr-threads store::queries::tests::presentation_q3_reader_helper_exact_keys_have_constant_sqlite_work
+        PASS [   1.537s] (45/51) herdr-threads service::delivery_pull::tests::presentation_q3_shared_ack_rechecks_read_captured_body_but_keeps_unread_sibling
+        SLOW [> 60.000s] (─────) herdr-threads cli::watch::tests::q3_missing_binding_cursors_capability_keeps_old_wire_and_consumer
+        SLOW [> 60.000s] (─────) herdr-threads cli::watch::tests::q3_all_watch_mode_capabilities_send_true_and_use_the_accepted_lease
+        SLOW [> 60.000s] (─────) herdr-threads cli::watch::tests::q3_missing_generic_presentation_capability_keeps_old_wire_and_consumer
+        SLOW [> 60.000s] (─────) herdr-threads cli::watch::tests::q3_missing_watch_mode_capability_keeps_old_wire_and_consumer
+        SLOW [> 60.000s] (─────) herdr-threads cli::watch::tests::presentation_watch_requires_both_capability_and_valid_accepted_lease
+        SLOW [> 60.000s] (─────) herdr-threads cli::watch::tests::capable_watch_streams_ordered_v2_then_explicitly_confirms_captured_controls
+        SLOW [>120.000s] (─────) herdr-threads cli::watch::tests::capable_watch_streams_ordered_v2_then_explicitly_confirms_captured_controls
+        SLOW [>120.000s] (─────) herdr-threads cli::watch::tests::q3_missing_generic_presentation_capability_keeps_old_wire_and_consumer
+        SLOW [>120.000s] (─────) herdr-threads cli::watch::tests::q3_missing_binding_cursors_capability_keeps_old_wire_and_consumer
+        SLOW [>120.000s] (─────) herdr-threads cli::watch::tests::q3_all_watch_mode_capabilities_send_true_and_use_the_accepted_lease
+        SLOW [>120.000s] (─────) herdr-threads cli::watch::tests::q3_missing_watch_mode_capability_keeps_old_wire_and_consumer
+        SLOW [>120.000s] (─────) herdr-threads cli::watch::tests::presentation_watch_requires_both_capability_and_valid_accepted_lease
+  Cancelling due to interrupt: 6 tests still running
+      SIGINT [ 142.070s] (46/51) herdr-threads cli::watch::tests::capable_watch_streams_ordered_v2_then_explicitly_confirms_captured_controls
+      SIGINT [ 142.070s] (47/51) herdr-threads cli::watch::tests::q3_missing_watch_mode_capability_keeps_old_wire_and_consumer
+      SIGINT [ 142.071s] (48/51) herdr-threads cli::watch::tests::q3_all_watch_mode_capabilities_send_true_and_use_the_accepted_lease
+      SIGINT [ 142.070s] (49/51) herdr-threads cli::watch::tests::q3_missing_binding_cursors_capability_keeps_old_wire_and_consumer
+      SIGINT [ 142.070s] (50/51) herdr-threads cli::watch::tests::presentation_watch_requires_both_capability_and_valid_accepted_lease
+      SIGINT [ 142.070s] (51/51) herdr-threads cli::watch::tests::q3_missing_generic_presentation_capability_keeps_old_wire_and_consumer
+────────────
+     Summary [ 142.083s] 51 tests run: 33 passed, 18 failed, 4835 skipped
+error: test run failed

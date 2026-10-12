@@ -1,0 +1,45 @@
+   Compiling herdr-threads v0.9.0 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/upstream-composition-v090)
+error[E0599]: no method named `handle` found for reference `&service::dispatch::DomainService` in the current scope
+  --> src/store/../../tests/store/direct_lazy_readers.rs:64:14
+   |
+63 |           let CommandResult::CheckedIn(result) = service
+   |  ________________________________________________-
+64 | |             .handle(
+   | |             -^^^^^^ method not found in `&service::dispatch::DomainService`
+   | |_____________|
+   |
+   |
+   = help: items from traits can only be used if the trait is in scope
+help: trait `LocalService` which provides `handle` is implemented but not in scope; perhaps you want to import it
+   |
+ 3 + use crate::ports::LocalService;
+   |
+
+error[E0599]: no method named `handle` found for struct `service::dispatch::DomainService` in the current scope
+    --> src/store/../../tests/store/direct_lazy_readers.rs:103:14
+     |
+ 102 | /         self.service
+ 103 | |             .handle(command, PeerIdentity::from_kernel(501), &budget())
+     | |             -^^^^^^ method not found in `service::dispatch::DomainService`
+     | |_____________|
+     |
+     |
+    ::: src/ports.rs:4152:8
+     |
+4152 |       fn handle(
+     |          ------ the method is available for `service::dispatch::DomainService` here
+     |
+    ::: src/service/dispatch.rs:74:1
+     |
+  74 |   pub struct DomainService {
+     |   ------------------------ method `handle` not found for this struct
+     |
+     = help: items from traits can only be used if the trait is in scope
+help: trait `LocalService` which provides `handle` is implemented but not in scope; perhaps you want to import it
+     |
+   3 + use crate::ports::LocalService;
+     |
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `herdr-threads` (lib test) due to 2 previous errors
+error: command `/Users/alepar/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --lib --all-features --locked` exited with code 101

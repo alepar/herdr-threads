@@ -1,0 +1,141 @@
+{
+  "head": "b46714512fed8a1ef532e0a17a1771ea92d4e238",
+  "tree": "a8a61d810002eb857068a1331ba6d858c70db9cc",
+  "run_id": "113b7a7e-9c9c-4507-90ea-8004da0547f6",
+  "expected": [
+    "store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor",
+    "store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings",
+    "store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap",
+    "store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog",
+    "store::control::tests::direct_threads::reader_controls::q4_rejection_prevents_cursorless_direct_lazy_revival_or_display_bootstrap",
+    "store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept",
+    "service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer",
+    "service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate",
+    "service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display",
+    "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader",
+    "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers",
+    "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers",
+    "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window",
+    "store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream",
+    "store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream",
+    "store::control::tests::direct_threads::writer_floor_controls::q4_native_pending_episode_reused_by_native_and_service_writers_keeps_exact_floor_rows",
+    "store::control::tests::direct_threads::writer_floor_controls::q4_service_pending_episode_reused_by_service_and_native_writers_keeps_exact_floor_rows",
+    "store::control::tests::direct_threads::writer_floor_controls::q4_pair_refuses_managed_ownership_and_required_writer_without_changing_floor_authority",
+    "service::delivery_pull::tests::q4_body_controls::private_old_episode_lazy_tail_retires_and_reaches_fresh_preaccept_body"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 80.0592000419274
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_body_controls::private_old_episode_lazy_tail_retires_and_reaches_fresh_preaccept_body"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::reader_controls::q4_rejection_prevents_cursorless_direct_lazy_revival_or_display_bootstrap"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::writer_floor_controls::q4_native_pending_episode_reused_by_native_and_service_writers_keeps_exact_floor_rows"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::writer_floor_controls::q4_pair_refuses_managed_ownership_and_required_writer_without_changing_floor_authority"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::writer_floor_controls::q4_service_pending_episode_reused_by_service_and_native_writers_keeps_exact_floor_rows"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-bc80e388954f6954",
+      "sha256": "e7ab7f284c8bab690169758f0bfd4a0a4eec177f5bf4f64860a270dff0c05bc4"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 1.1297141669783741,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor) | test(=store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings) | test(=store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap) | test(=store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog) | test(=store::control::tests::direct_threads::reader_controls::q4_rejection_prevents_cursorless_direct_lazy_revival_or_display_bootstrap) | test(=store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept) | test(=service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer) | test(=service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate) | test(=service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display) | test(=service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader) | test(=service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers) | test(=service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers) | test(=service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window) | test(=store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream) | test(=store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream) | test(=store::control::tests::direct_threads::writer_floor_controls::q4_native_pending_episode_reused_by_native_and_service_writers_keeps_exact_floor_rows) | test(=store::control::tests::direct_threads::writer_floor_controls::q4_service_pending_episode_reused_by_service_and_native_writers_keeps_exact_floor_rows) | test(=store::control::tests::direct_threads::writer_floor_controls::q4_pair_refuses_managed_ownership_and_required_writer_without_changing_floor_authority) | test(=service::delivery_pull::tests::q4_body_controls::private_old_episode_lazy_tail_retires_and_reaches_fresh_preaccept_body)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.19986024999525398,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "113b7a7e-9c9c-4507-90ea-8004da0547f6"
+    ]
+  },
+  "leak_exit": 0
+}

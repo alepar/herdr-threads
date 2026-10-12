@@ -1,0 +1,66 @@
+{
+  "head": "c3fdba6b442c8ea3de3924cd29efd5c1fc175db3",
+  "tree": "7df0407f214c6ad47e60912f804a1b9b949987e1",
+  "run_id": "1a9fc9bb-c526-4d45-a47e-71f723465edd",
+  "expected": [
+    "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader",
+    "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers",
+    "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers",
+    "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 57.260945249930955
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-bc80e388954f6954",
+      "sha256": "90e2a150454c5a88f49cc44bdf216a401569e3fc698c8c50a96c583c8748fd4f"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 1.259980084025301,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader) | test(=service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers) | test(=service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers) | test(=service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.2960185830015689,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "1a9fc9bb-c526-4d45-a47e-71f723465edd"
+    ]
+  },
+  "leak_exit": 0
+}

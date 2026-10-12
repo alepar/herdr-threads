@@ -1,0 +1,48 @@
+{
+  "staged_tree": "3a371f3c8fad4fd2ddf02d9ad904fb70eaee2f99",
+  "index_sha256": "f3ca590c2c9f33d6f330f31d3a1a7179d6799beb267a4d07289932fd1f332954",
+  "commands": [
+    {
+      "stage": "fmt",
+      "argv": [
+        "cargo",
+        "fmt",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "seconds": 4.374003499979153,
+      "log": "/private/tmp/ht-C-v090-q3-repaired-gates-first/fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "stage": "neutral",
+      "argv": [
+        "scripts/check-harness-neutral"
+      ],
+      "exit": 0,
+      "seconds": 1.3018338750116527,
+      "log": "/private/tmp/ht-C-v090-q3-repaired-gates-first/neutral.log",
+      "sha256": "7561605afc0af5f27527d99451825bc26c55fa2f7083bb392ad4244e406b0536"
+    },
+    {
+      "stage": "clippy",
+      "argv": [
+        "nice",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 101,
+      "seconds": 22.333235875004902,
+      "log": "/private/tmp/ht-C-v090-q3-repaired-gates-first/clippy.log",
+      "sha256": "2f9b146f302f505849e737a91a0d06043b471c3f97250eceb1a5b710d2f558a9"
+    }
+  ],
+  "exit": 101
+}

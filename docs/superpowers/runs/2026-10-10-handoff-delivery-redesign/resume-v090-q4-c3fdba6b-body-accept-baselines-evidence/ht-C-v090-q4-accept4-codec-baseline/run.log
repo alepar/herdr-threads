@@ -1,0 +1,93 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 23cf3a60-853f-4062-8143-99083c0958a6 with nextest profile: default
+    Starting 4 tests across 1 binary (4904 tests skipped)
+        FAIL [   0.464s] (1/4) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4907 filtered out; finished in 0.45s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers' (56237433) panicked at src/service/../../tests/service/q4_accept_controls.rs:617:9:
+    ACCEPTANCE ATOMICITY RED: checked private failure aborts whole canonical acceptance: ordinary_passive_generation: Ok(Accepted(AcceptedInvitation { invitation: InvitationId("ihtGZUW8l"), summary_available: None }))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.472s] (2/4) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4907 filtered out; finished in 0.46s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader' (56237432) panicked at src/service/../../tests/service/q4_accept_controls.rs:466:5:
+    assertion `left == right` failed: ACCEPTANCE READER RED: actual framed Watch drain must render newly joined settled ordinary
+      left: None
+     right: Some(("Q4 joined-only settled direct ordinary body", false, false, false))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.496s] (3/4) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4907 filtered out; finished in 0.49s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers' (56237430) panicked at src/service/../../tests/service/delivery_pull.rs:1042:9:
+    assertion `left == right` failed: one signal per operation/binding, independent of moved gap count
+      left: ("hook", 1, 1)
+     right: ("hook", 2, 2)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   1.029s] (4/4) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4907 filtered out; finished in 1.02s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window' (56237431) panicked at src/service/../../tests/service/delivery_pull.rs:1042:9:
+    assertion `left == right` failed: one signal per operation/binding, independent of moved gap count
+      left: ("watch", 5, 6)
+     right: ("watch", 6, 7)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   1.044s] 4 tests run: 0 passed, 4 failed, 4904 skipped
+        FAIL [   0.464s] (1/4) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers
+        FAIL [   0.472s] (2/4) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader
+        FAIL [   0.496s] (3/4) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers
+        FAIL [   1.029s] (4/4) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window
+error: test run failed

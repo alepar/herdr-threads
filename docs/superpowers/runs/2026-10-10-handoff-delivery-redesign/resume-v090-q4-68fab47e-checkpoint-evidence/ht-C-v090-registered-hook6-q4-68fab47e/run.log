@@ -1,0 +1,12 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 9b1365fe-069a-4cb5-9abc-04cda636be1b with nextest profile: default
+    Starting 6 tests across 1 binary (77 tests skipped)
+        PASS [   1.810s] (1/6) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion
+        PASS [   1.110s] (2/6) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_lost_completion_preserves_exact_recovery
+        PASS [   0.533s] (3/6) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_system_hook_round_trip
+        PASS [   0.535s] (4/6) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_user_hook_round_trip
+        PASS [   0.654s] (5/6) herdr-threads::hook_entrypoint agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement
+        PASS [   1.023s] (6/6) herdr-threads::hook_entrypoint agy::activation::registered_agy_omitted_or_refused_capability_uses_historical_pull
+────────────
+     Summary [   5.668s] 6 tests run: 6 passed, 77 skipped

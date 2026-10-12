@@ -1,0 +1,74 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 5047134c-16c1-4085-9f78-1f892c125caa with nextest profile: default
+    Starting 6 tests across 1 binary (4908 tests skipped)
+        PASS [   0.448s] (1/6) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_pair_refuses_managed_ownership_and_required_writer_without_changing_floor_authority
+        FAIL [   0.460s] (2/6) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream ... FAILED
+
+    failures:
+
+    failures:
+        store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4913 filtered out; finished in 0.40s
+
+  stderr ───
+
+    thread 'store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream' (56244113) panicked at src/store/../../tests/store/direct_lazy_writer_floors.rs:499:9:
+    assertion `left == right` failed: cursorless binding gets current episode body, excluding old backlog
+      left: []
+     right: [(MessageId("mCi7tmbpX"), "new episode exact body")]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.460s] (3/6) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream ... FAILED
+
+    failures:
+
+    failures:
+        store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4913 filtered out; finished in 0.45s
+
+  stderr ───
+
+    thread 'store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream' (56244111) panicked at src/store/../../tests/store/direct_lazy_writer_floors.rs:499:9:
+    assertion `left == right` failed: cursorless binding gets current episode body, excluding old backlog
+      left: []
+     right: [(MessageId("muamxyzWK"), "new episode exact body")]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.505s] (4/6) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_native_pending_episode_reused_by_native_and_service_writers_keeps_exact_floor_rows
+        PASS [   0.518s] (5/6) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_service_pending_episode_reused_by_service_and_native_writers_keeps_exact_floor_rows
+        FAIL [   0.570s] (6/6) herdr-threads service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4913 filtered out; finished in 0.56s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer' (56244112) panicked at src/service/../../tests/service/q4_body_controls.rs:418:17:
+    body output step=7 argv=["herdr-threads", "body", "mtnQTfsW3", "--cursor", "c3:BwAByiG23gMIc73zG7ehPyg", "--max-bytes", "274"] last_offset=Some(4298): Api(ApiError { code: InvalidBudget, detail: "annotated read exceeds byte budget", restart_argv: None, required_minimum_bytes: Some(288), class_override: None })
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.584s] 6 tests run: 3 passed, 3 failed, 4908 skipped
+        FAIL [   0.460s] (2/6) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream
+        FAIL [   0.460s] (3/6) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream
+        FAIL [   0.570s] (6/6) herdr-threads service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer
+error: test run failed

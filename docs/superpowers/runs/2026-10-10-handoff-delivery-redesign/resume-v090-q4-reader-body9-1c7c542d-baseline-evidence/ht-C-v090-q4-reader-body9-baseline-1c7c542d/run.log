@@ -1,0 +1,176 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+────────────
+ Nextest run ID 4a1867e0-cc51-4df1-b38d-04f05237df07 with nextest profile: default
+    Starting 9 tests across 1 binary (4895 tests skipped)
+        FAIL [   0.329s] (1/9) herdr-threads store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings ... FAILED
+
+    failures:
+
+    failures:
+        store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4903 filtered out; finished in 0.32s
+
+  stderr ───
+
+    thread 'store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings' (56203591) panicked at src/store/../../tests/store/direct_lazy_readers.rs:334:5:
+    assertion `left == right` failed
+      left: []
+     right: [(MessageId("mrbLWi5nf"), "one body for independent bindings")]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.331s] (2/9) herdr-threads store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap ... FAILED
+
+    failures:
+
+    failures:
+        store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4903 filtered out; finished in 0.32s
+
+  stderr ───
+
+    thread 'store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap' (56203595) panicked at src/store/../../tests/store/direct_lazy_readers.rs:383:9:
+    assertion failed: f.cursor(&f.a, &thread).unwrap() < f.sequence(&first)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.341s] (3/9) herdr-threads store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor ... FAILED
+
+    failures:
+
+    failures:
+        store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4903 filtered out; finished in 0.33s
+
+  stderr ───
+
+    thread 'store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor' (56203593) panicked at src/store/../../tests/store/direct_lazy_readers.rs:305:5:
+    assertion `left == right` failed
+      left: []
+     right: [(MessageId("mF02Hdees"), "initial exact passive body")]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.348s] (4/9) herdr-threads store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog ... FAILED
+
+    failures:
+
+    failures:
+        store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4903 filtered out; finished in 0.34s
+
+  stderr ───
+
+    thread 'store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog' (56203596) panicked at src/store/../../tests/store/direct_lazy_readers.rs:424:5:
+    existing unread sibling is preserved by initial accept
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.353s] (5/9) herdr-threads store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept ... FAILED
+
+    failures:
+
+    failures:
+        store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4903 filtered out; finished in 0.34s
+
+  stderr ───
+
+    thread 'store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept' (56203598) panicked at src/store/../../tests/store/direct_lazy_readers.rs:517:5:
+    assertion `left == right` failed
+      left: []
+     right: [(MessageId("mDHhyyOMK"), "fresh episode two body")]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.354s] (6/9) herdr-threads service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4903 filtered out; finished in 0.34s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display' (56203590) panicked at src/service/../../tests/service/q4_body_controls.rs:537:5:
+    assertion failed: first.items.iter().any(|item|
+            matches!(item,PresentationItemV2::Message { id,lazy:true,content } if
+                id==&message && content.truncated))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.359s] (7/9) herdr-threads service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4903 filtered out; finished in 0.35s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer' (56203594) panicked at src/service/../../tests/service/q4_body_controls.rs:278:10:
+    called `Result::unwrap()` on an `Err` value: Io("No such file or directory (os error 2)")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.361s] (8/9) herdr-threads service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4903 filtered out; finished in 0.35s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate' (56203592) panicked at src/service/../../tests/service/q4_body_controls.rs:278:10:
+    called `Result::unwrap()` on an `Err` value: Io("No such file or directory (os error 2)")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.361s] (9/9) herdr-threads store::control::tests::direct_threads::reader_controls::q4_rejection_prevents_cursorless_direct_lazy_revival_or_display_bootstrap
+────────────
+     Summary [   0.375s] 9 tests run: 1 passed, 8 failed, 4895 skipped
+        FAIL [   0.329s] (1/9) herdr-threads store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings
+        FAIL [   0.331s] (2/9) herdr-threads store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap
+        FAIL [   0.341s] (3/9) herdr-threads store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor
+        FAIL [   0.348s] (4/9) herdr-threads store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog
+        FAIL [   0.353s] (5/9) herdr-threads store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept
+        FAIL [   0.354s] (6/9) herdr-threads service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display
+        FAIL [   0.359s] (7/9) herdr-threads service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer
+        FAIL [   0.361s] (8/9) herdr-threads service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate
+error: test run failed

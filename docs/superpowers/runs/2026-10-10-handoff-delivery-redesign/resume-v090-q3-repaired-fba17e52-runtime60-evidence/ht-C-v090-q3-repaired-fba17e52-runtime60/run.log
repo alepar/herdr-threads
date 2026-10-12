@@ -1,0 +1,145 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID b842fe7f-43b2-49ea-83de-bca43f01a40f with nextest profile: default
+    Starting 60 tests across 1 binary (4835 tests skipped)
+        PASS [   0.014s] ( 1/60) herdr-threads cli::watch::tests::q3_raw_watch_server_finishes_when_the_client_never_connects
+        PASS [   0.014s] ( 2/60) herdr-threads cli::watch::tests::q3_raw_watch_server_success_closes_the_socket_before_finish
+        PASS [   0.016s] ( 3/60) herdr-threads cli::watch::tests::q3_absent_watch_opt_in_preserves_historical_bytes
+        PASS [   0.018s] ( 4/60) herdr-threads cli::watch::tests::q3_raw_watch_server_drop_joins_and_removes_socket_on_unwind
+        PASS [   0.018s] ( 5/60) herdr-threads cli::watch::tests::q3_false_watch_opt_in_normalizes_to_historical_bytes
+        PASS [   0.019s] ( 6/60) herdr-threads cli::watch::tests::q3_missing_mod_watch_capability_never_opens_a_registration_socket
+        PASS [   0.027s] ( 7/60) herdr-threads cli::watch::tests::q3_missing_generic_presentation_capability_keeps_old_wire_and_consumer
+        PASS [   0.011s] ( 8/60) herdr-threads protocol::capabilities::tests::bare_daemon_advertises_legacy_capabilities_without_v2_recorder
+        PASS [   0.013s] ( 9/60) herdr-threads cli::watch::tests::q3_true_watch_opt_in_is_explicit_and_strictly_typed
+        PASS [   0.027s] (10/60) herdr-threads cli::watch::tests::q3_missing_binding_cursors_capability_keeps_old_wire_and_consumer
+        PASS [   0.012s] (11/60) herdr-threads cli::watch::tests::q3_watch_discovery_failure_never_opens_a_registration_socket
+        PASS [   0.011s] (12/60) herdr-threads protocol::capabilities::tests::capability_constants_are_stable
+        PASS [   0.031s] (13/60) herdr-threads cli::watch::tests::q3_all_watch_mode_capabilities_send_true_and_use_the_accepted_lease
+        PASS [   0.031s] (14/60) herdr-threads cli::watch::tests::capable_watch_streams_ordered_v2_then_explicitly_confirms_captured_controls
+        PASS [   0.032s] (15/60) herdr-threads cli::watch::tests::q3_missing_watch_mode_capability_keeps_old_wire_and_consumer
+        PASS [   0.047s] (16/60) herdr-threads cli::watch::tests::presentation_watch_requires_both_capability_and_valid_accepted_lease
+        PASS [   0.409s] (17/60) herdr-threads service::delivery_pull::tests::presentation_q3_capable_registry_uses_only_bounded_real_store_reads
+        PASS [   0.419s] (18/60) herdr-threads service::delivery_pull::tests::presentation_q3_ordinary_publication_generation_observes_early_store_ack_without_service_hint
+        PASS [   0.471s] (19/60) herdr-threads service::delivery_pull::tests::presentation_q3_quiet_ordinary_sibling_ack_before_materialization_drains_passively
+        PASS [   0.555s] (20/60) herdr-threads service::delivery_pull::tests::presentation_q3_quiet_pending_and_lazy_publications_have_distinct_authority
+        FAIL [   0.599s] (21/60) herdr-threads service::delivery_pull::tests::presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4894 filtered out; finished in 0.59s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap' (56126155) panicked at src/service/../../tests/service/delivery_pull.rs:1250:13:
+    assertion `left == right` failed
+      left: 1
+     right: 2
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.616s] (22/60) herdr-threads service::delivery_pull::tests::presentation_q3_complete_inbox_delivery_coalesces_many_real_thread_gaps
+        PASS [   0.668s] (23/60) herdr-threads service::delivery_pull::tests::presentation_q3_advance_cursors_coalesces_many_real_thread_gaps
+        PASS [   0.690s] (24/60) herdr-threads service::delivery_pull::tests::presentation_q3_reader_change_failure_rolls_back_cursor_and_private_state
+        PASS [   0.681s] (25/60) herdr-threads service::delivery_pull::tests::presentation_q3_reader_change_is_binding_local_coalesced_and_noop_stable
+        PASS [   0.125s] (26/60) herdr-threads service::dispatch::cooperative_tests::q3_completion_hint_ack_errors_and_rollback_are_inert
+        FAIL [   0.129s] (27/60) herdr-threads service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_delivery_confirm_lazy_mixed_and_retained_offer
+  stdout ───
+
+    running 1 test
+    test service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_delivery_confirm_lazy_mixed_and_retained_offer ... FAILED
+
+    failures:
+
+    failures:
+        service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_delivery_confirm_lazy_mixed_and_retained_offer
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4894 filtered out; finished in 0.12s
+
+  stderr ───
+
+    thread 'service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_delivery_confirm_lazy_mixed_and_retained_offer' (56126192) panicked at src/service/../../tests/service/mod_ack_dispatch.rs:582:153:
+    called `Result::unwrap()` on an `Err` value: SqliteFailure(Error { code: ConstraintViolation, extended_code: 275 }, Some("CHECK constraint failed: message_id IS CASE\n        WHEN substr(preparation_id,1,5)='prep-' AND length(preparation_id)>5 THEN 'msg-'||substr(preparation_id,6)\n        WHEN length(preparation_id)=9 AND substr(preparation_id,1,1)='p' AND substr(preparation_id,2) NOT GLOB '*[^A-Za-z0-9]*' THEN 'm'||substr(preparation_id,2)\n        ELSE NULL END"))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.362s] (28/60) herdr-threads service::delivery_pull::tests::presentation_q3_reader_change_preserves_nonempty_progress_outbox_and_offers
+        PASS [   0.243s] (29/60) herdr-threads service::dispatch::cooperative_tests::q3_completion_hint_ack_and_displayed_release_foreground_writer
+        PASS [   0.142s] (30/60) herdr-threads service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_delivery_confirm_no_progress_is_inert
+        PASS [   0.124s] (31/60) herdr-threads service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_mod_ack_no_progress_is_inert
+        FAIL [   0.133s] (32/60) herdr-threads service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_mod_ack_lazy_mixed_and_already_settled
+  stdout ───
+
+    running 1 test
+    test service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_mod_ack_lazy_mixed_and_already_settled ... FAILED
+
+    failures:
+
+    failures:
+        service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_mod_ack_lazy_mixed_and_already_settled
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4894 filtered out; finished in 0.12s
+
+  stderr ───
+
+    thread 'service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_mod_ack_lazy_mixed_and_already_settled' (56126200) panicked at src/service/../../tests/service/mod_ack_dispatch.rs:582:153:
+    called `Result::unwrap()` on an `Err` value: SqliteFailure(Error { code: ConstraintViolation, extended_code: 275 }, Some("CHECK constraint failed: message_id IS CASE\n        WHEN substr(preparation_id,1,5)='prep-' AND length(preparation_id)>5 THEN 'msg-'||substr(preparation_id,6)\n        WHEN length(preparation_id)=9 AND substr(preparation_id,1,1)='p' AND substr(preparation_id,2) NOT GLOB '*[^A-Za-z0-9]*' THEN 'm'||substr(preparation_id,2)\n        ELSE NULL END"))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.134s] (33/60) herdr-threads service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_successful_presentation_confirm_is_inert
+  stdout ───
+
+    running 1 test
+    test service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_successful_presentation_confirm_is_inert ... FAILED
+
+    failures:
+
+    failures:
+        service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_successful_presentation_confirm_is_inert
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4894 filtered out; finished in 0.12s
+
+  stderr ───
+
+    thread 'service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_successful_presentation_confirm_is_inert' (56126204) panicked at src/service/../../tests/service/mod_ack_dispatch.rs:972:10:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: InvalidCursor, detail: "invalid v2 position", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.096s] (34/60) herdr-threads service::mod_channels::tests::domain::q3_legacy_channel_cannot_capture_owner_replay
+        PASS [   0.016s] (35/60) herdr-threads service::mod_channels::tests::each_channel_receives_only_its_bindings_deliveries
+        PASS [   0.012s] (36/60) herdr-threads service::mod_channels::tests::q3_capable_to_legacy_replacement_cannot_receive_the_old_active_push
+        PASS [   0.137s] (37/60) herdr-threads service::mod_channels::tests::domain::each_channel_receives_only_its_bindings_deliveries
+        PASS [   0.088s] (38/60) herdr-threads service::mod_channels::tests::domain::q3_legacy_channel_cannot_confirm_with_an_issued_or_guessed_lease
+        PASS [   0.020s] (39/60) herdr-threads service::mod_channels::tests::q3_closed_receiver_preserves_passive_drain_without_an_immediate_kick_loop
+        PASS [   0.094s] (40/60) herdr-threads service::mod_channels::tests::domain::q3_legacy_channel_cannot_pull_with_an_issued_or_guessed_lease
+        PASS [   0.024s] (41/60) herdr-threads service::mod_channels::tests::q3_failed_hint_work_does_not_transfer_to_either_replacement_mode
+        PASS [   0.014s] (42/60) herdr-threads service::mod_channels::tests::q3_failed_store_work_keeps_a_newer_hint_without_a_captured_hint
+        PASS [   0.023s] (43/60) herdr-threads service::mod_channels::tests::q3_failed_hint_work_restores_the_same_exact_owner
+        PASS [   0.015s] (44/60) herdr-threads service::mod_channels::tests::q3_legacy_to_capable_replacement_cannot_receive_the_old_passive_push
+        PASS [   0.015s] (45/60) herdr-threads service::mod_channels::tests::q3_passive_hints_coalesce_without_health_or_crossing_legacy_and_seat_scope
+        PASS [   0.091s] (46/60) herdr-threads service::mod_channels::tests::domain::q3_legacy_claim_only_registration_has_no_presentation_lease
+        PASS [   0.014s] (47/60) herdr-threads service::mod_channels::tests::q3_replacement_after_observation_cannot_receive_the_old_passive_push
+        PASS [   0.016s] (48/60) herdr-threads service::mod_channels::tests::q3_replacement_after_observation_cannot_receive_the_old_active_push
+        PASS [   0.016s] (49/60) herdr-threads service::mod_channels::tests::q3_second_hint_during_store_work_survives_the_first_successful_pass
+        PASS [   0.022s] (50/60) herdr-threads store::queries::tests::presentation_publication_range_uses_exact_index_and_bounded_sqlite_work
+        PASS [   0.176s] (51/60) herdr-threads service::mod_channels::tests::domain::q3_mixed_same_seat_modes_and_replacement_cannot_borrow_old_leases
+        PASS [   0.611s] (52/60) herdr-threads service::delivery_pull::tests::presentation_q3_reader_change_respects_current_primary_or_refresh_scope
+        PASS [   0.155s] (53/60) herdr-threads store::invitation_content::notice_replay_tests::presentation_virtual_notice_replays_and_confirms_original_slots_without_materializing
+        PASS [   0.229s] (54/60) herdr-threads store::invitation_content::notice_replay_tests::retained_virtual_notice_lookup_uses_indexed_constant_vm_work
+        PASS [   0.276s] (55/60) herdr-threads store::queries::tests::presentation_q3_publication_recipient_keys_have_constant_sqlite_work
+        PASS [   1.210s] (56/60) herdr-threads protocol::capabilities::tests::every_advertised_capability_has_a_handler
+        PASS [   0.301s] (57/60) herdr-threads store::queries::tests::presentation_q3_reader_helper_exact_keys_have_constant_sqlite_work
+        PASS [   1.279s] (58/60) herdr-threads service::delivery_pull::tests::presentation_q3_parked_reader_then_ack_resumes_existing_id257
+        PASS [   1.407s] (59/60) herdr-threads service::delivery_pull::tests::presentation_q3_parked_ack_then_reader_resumes_existing_id257
+        PASS [   1.843s] (60/60) herdr-threads service::delivery_pull::tests::presentation_q3_shared_ack_rechecks_read_captured_body_but_keeps_unread_sibling
+────────────
+     Summary [   2.358s] 60 tests run: 56 passed, 4 failed, 4835 skipped
+        FAIL [   0.599s] (21/60) herdr-threads service::delivery_pull::tests::presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap
+        FAIL [   0.129s] (27/60) herdr-threads service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_delivery_confirm_lazy_mixed_and_retained_offer
+        FAIL [   0.133s] (32/60) herdr-threads service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_mod_ack_lazy_mixed_and_already_settled
+        FAIL [   0.134s] (33/60) herdr-threads service::dispatch::mod_ack_dispatch_tests::q3_completion_hint_successful_presentation_confirm_is_inert
+error: test run failed

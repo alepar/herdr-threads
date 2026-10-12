@@ -1,0 +1,61 @@
+{
+  "head": "a6daa3ec644569a5b3c1cdd0a53272a5fb6e083b",
+  "tree": "7eb66f3b1e1eebfdd4ce0ac381fddf1b98c2202e",
+  "run_id": "830fcdb4-e68f-49de-b455-a5af74b17813",
+  "expected": [
+    "service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer",
+    "service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate",
+    "service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 39.452642249991186
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-bc80e388954f6954",
+      "sha256": "5a4152cfa2fce0a3efd591976dbc68a2885b5f22354d2322e788e4fa734ac256"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 0.5697159999981523,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer) | test(=service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate) | test(=service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.2701030829921365,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "830fcdb4-e68f-49de-b455-a5af74b17813"
+    ]
+  },
+  "leak_exit": 0
+}

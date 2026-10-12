@@ -1,0 +1,76 @@
+{
+  "head": "107da32f07ca90adb8cda96c025b092288fbe7ed",
+  "tree": "f1362465754c02bc19652d661e841491a418719a",
+  "run_id": "00cfd362-a8a8-4f23-a257-f710991d7911",
+  "expected": [
+    "store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream",
+    "store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream",
+    "store::control::tests::direct_threads::writer_floor_controls::q4_native_pending_episode_reused_by_native_and_service_writers_keeps_exact_floor_rows",
+    "store::control::tests::direct_threads::writer_floor_controls::q4_service_pending_episode_reused_by_service_and_native_writers_keeps_exact_floor_rows",
+    "store::control::tests::direct_threads::writer_floor_controls::q4_pair_refuses_managed_ownership_and_required_writer_without_changing_floor_authority",
+    "service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 46.55468199995812
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::writer_floor_controls::q4_native_pending_episode_reused_by_native_and_service_writers_keeps_exact_floor_rows"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::writer_floor_controls::q4_pair_refuses_managed_ownership_and_required_writer_without_changing_floor_authority"
+    ],
+    [
+      "herdr-threads",
+      "store::control::tests::direct_threads::writer_floor_controls::q4_service_pending_episode_reused_by_service_and_native_writers_keeps_exact_floor_rows"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-bc80e388954f6954",
+      "sha256": "2cbb629ef55a8f5ac4d3eca88b61de743453570f1d5e763e5cee73d31643d4e0"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 0.7947809160687029,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream) | test(=store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream) | test(=store::control::tests::direct_threads::writer_floor_controls::q4_native_pending_episode_reused_by_native_and_service_writers_keeps_exact_floor_rows) | test(=store::control::tests::direct_threads::writer_floor_controls::q4_service_pending_episode_reused_by_service_and_native_writers_keeps_exact_floor_rows) | test(=store::control::tests::direct_threads::writer_floor_controls::q4_pair_refuses_managed_ownership_and_required_writer_without_changing_floor_authority) | test(=service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.19411704200319946,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "00cfd362-a8a8-4f23-a257-f710991d7911"
+    ]
+  },
+  "leak_exit": 0
+}

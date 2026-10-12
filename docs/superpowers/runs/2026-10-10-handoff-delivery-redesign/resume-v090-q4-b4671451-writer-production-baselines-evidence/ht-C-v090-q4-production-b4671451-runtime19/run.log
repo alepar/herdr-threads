@@ -1,0 +1,256 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 56fa714d-aa7f-4e22-8e62-ec7044055907 with nextest profile: default
+    Starting 19 tests across 1 binary (4895 tests skipped)
+        FAIL [   0.492s] ( 1/19) herdr-threads store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept ... FAILED
+
+    failures:
+
+    failures:
+        store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4913 filtered out; finished in 0.48s
+
+  stderr ───
+
+    thread 'store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept' (56254805) panicked at src/store/../../tests/store/direct_lazy_readers.rs:105:14:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: StoreBusy, detail: "SQLite (unclassified, transient): incomplete input", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.580s] ( 2/19) herdr-threads store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog ... FAILED
+
+    failures:
+
+    failures:
+        store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4913 filtered out; finished in 0.56s
+
+  stderr ───
+
+    thread 'store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog' (56254813) panicked at src/store/../../tests/store/direct_lazy_readers.rs:105:14:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: StoreBusy, detail: "SQLite (unclassified, transient): incomplete input", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.616s] ( 3/19) herdr-threads store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings ... FAILED
+
+    failures:
+
+    failures:
+        store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4913 filtered out; finished in 0.60s
+
+  stderr ───
+
+    thread 'store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings' (56254815) panicked at src/store/../../tests/store/direct_lazy_readers.rs:105:14:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: StoreBusy, detail: "SQLite (unclassified, transient): incomplete input", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.628s] ( 4/19) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4913 filtered out; finished in 0.62s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window' (56254807) panicked at src/service/../../tests/service/q4_accept_controls.rs:274:14:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: StoreBusy, detail: "SQLite (unclassified, transient): incomplete input", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.628s] ( 5/19) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4913 filtered out; finished in 0.61s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers' (56254809) panicked at src/service/../../tests/service/q4_accept_controls.rs:274:14:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: StoreBusy, detail: "SQLite (unclassified, transient): incomplete input", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.200s] ( 6/19) herdr-threads store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor
+        FAIL [   0.696s] ( 7/19) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4913 filtered out; finished in 0.68s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers' (56254814) panicked at src/service/../../tests/service/q4_accept_controls.rs:274:14:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: StoreBusy, detail: "SQLite (unclassified, transient): incomplete input", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.697s] ( 8/19) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4913 filtered out; finished in 0.68s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader' (56254812) panicked at src/service/../../tests/service/q4_accept_controls.rs:274:14:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: StoreBusy, detail: "SQLite (unclassified, transient): incomplete input", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.707s] ( 9/19) herdr-threads service::delivery_pull::tests::q4_body_controls::private_old_episode_lazy_tail_retires_and_reaches_fresh_preaccept_body
+        PASS [   0.717s] (10/19) herdr-threads service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate
+        FAIL [   0.717s] (11/19) herdr-threads service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4913 filtered out; finished in 0.70s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display' (56254817) panicked at src/service/../../tests/service/q4_body_controls.rs:610:5:
+    assertion `left == right` failed
+      left: None
+     right: Some(3)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.163s] (12/19) herdr-threads store::control::tests::direct_threads::reader_controls::q4_rejection_prevents_cursorless_direct_lazy_revival_or_display_bootstrap
+        FAIL [   0.791s] (13/19) herdr-threads store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap ... FAILED
+
+    failures:
+
+    failures:
+        store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4913 filtered out; finished in 0.78s
+
+  stderr ───
+
+    thread 'store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap' (56254811) panicked at src/store/../../tests/store/direct_lazy_readers.rs:105:14:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: StoreBusy, detail: "SQLite (unclassified, transient): incomplete input", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.816s] (14/19) herdr-threads service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4913 filtered out; finished in 0.80s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer' (56254816) panicked at src/service/../../tests/service/q4_body_controls.rs:418:17:
+    body output step=7 argv=["herdr-threads", "body", "mIMcfuHGp", "--cursor", "c3:BwAByiG23gP2p23hQRlcgUc", "--max-bytes", "274"] last_offset=Some(4298): Api(ApiError { code: InvalidBudget, detail: "annotated read exceeds byte budget", restart_argv: None, required_minimum_bytes: Some(288), class_override: None })
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.179s] (15/19) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream ... FAILED
+
+    failures:
+
+    failures:
+        store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4913 filtered out; finished in 0.17s
+
+  stderr ───
+
+    thread 'store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream' (56254836) panicked at src/store/../../tests/store/direct_lazy_writer_floors.rs:109:14:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: StoreBusy, detail: "SQLite (unclassified, transient): incomplete input", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.186s] (16/19) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream ... FAILED
+
+    failures:
+
+    failures:
+        store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4913 filtered out; finished in 0.17s
+
+  stderr ───
+
+    thread 'store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream' (56254837) panicked at src/store/../../tests/store/direct_lazy_writer_floors.rs:109:14:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: StoreBusy, detail: "SQLite (unclassified, transient): incomplete input", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.141s] (17/19) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_pair_refuses_managed_ownership_and_required_writer_without_changing_floor_authority
+        PASS [   0.248s] (18/19) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_native_pending_episode_reused_by_native_and_service_writers_keeps_exact_floor_rows
+        PASS [   0.201s] (19/19) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_service_pending_episode_reused_by_service_and_native_writers_keeps_exact_floor_rows
+────────────
+     Summary [   0.912s] 19 tests run: 7 passed, 12 failed, 4895 skipped
+        FAIL [   0.492s] ( 1/19) herdr-threads store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept
+        FAIL [   0.580s] ( 2/19) herdr-threads store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog
+        FAIL [   0.616s] ( 3/19) herdr-threads store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings
+        FAIL [   0.628s] ( 4/19) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window
+        FAIL [   0.628s] ( 5/19) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers
+        FAIL [   0.696s] ( 7/19) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers
+        FAIL [   0.697s] ( 8/19) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader
+        FAIL [   0.717s] (11/19) herdr-threads service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display
+        FAIL [   0.791s] (13/19) herdr-threads store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap
+        FAIL [   0.816s] (14/19) herdr-threads service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer
+        FAIL [   0.179s] (15/19) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream
+        FAIL [   0.186s] (16/19) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream
+error: test run failed

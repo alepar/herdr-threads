@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID b6559486-1eb7-407f-8d9d-686e6c725cf8 with nextest profile: default
+    Starting 2 tests across 1 binary (727 tests skipped)
+        PASS [   0.488s] (1/2) herdr-threads::combined direct_send::frozen_some_claim_survives_direct_send_durable_retry_with_changed_caller
+        PASS [   0.488s] (2/2) herdr-threads::combined direct_send::historical_none_claim_survives_direct_send_durable_retry_with_changed_caller
+────────────
+     Summary [   0.491s] 2 tests run: 2 passed, 727 skipped

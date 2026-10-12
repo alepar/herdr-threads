@@ -1,0 +1,51 @@
+{
+  "head": "07fdf88da984869eb2908c25f9ff20caf253dc28",
+  "tree": "063aa3709e46e1ed2a21214f763c079d10e86785",
+  "run_id": "707085e3-28d0-48c8-af69-2a2fc54c7064",
+  "expected": [
+    "service::delivery_pull::tests::presentation_publication_walk_counts_foreign_prefix_before_filter_and_progresses"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 0.203917833045125
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_publication_walk_counts_foreign_prefix_before_filter_and_progresses"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-bc80e388954f6954",
+      "sha256": "ccb77913ef73615f192802aa3be3b4fc5f910f359f09ac7fc30198bd6122d894"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 0.4236935420194641,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=service::delivery_pull::tests::presentation_publication_walk_counts_foreign_prefix_before_filter_and_progresses)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.19111704104579985,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "707085e3-28d0-48c8-af69-2a2fc54c7064"
+    ]
+  },
+  "leak_exit": 0
+}
