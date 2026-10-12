@@ -2078,10 +2078,22 @@ fn marked_commands(value: &Value, base: &str) -> Vec<MarkedCommand> {
             let Some(rest) = command.strip_prefix(base) else {
                 continue;
             };
-            let Some(at) = rest.find(OWNER_MARKER) else {
+            // Found by its comment text alone, so other whitespace before `#` (a tab) is still
+            // ours; only the exact single space is canonical.
+            let comment = OWNER_MARKER.trim_start();
+            let Some(at) = rest.find(comment) else {
                 continue;
             };
-            let (between, marker) = (&rest[..at], &rest[at + OWNER_MARKER.len()..]);
+            let marker = &rest[at + comment.len()..];
+            let Some(between) = rest[..at].strip_suffix(' ') else {
+                found.push(MarkedCommand {
+                    event: event.clone(),
+                    argument: None,
+                    canonical: false,
+                    marker: marker.to_owned(),
+                });
+                continue;
+            };
             let argument = between
                 .strip_prefix(" '--event' '")
                 .and_then(|tail| tail.strip_suffix('\''))
@@ -2381,19 +2393,36 @@ mod adoption_tests {
         // under an event this adapter does not declare.
         let kind = codex::settings_kind();
         for edit in [
-            "'--event' 'PreToolUse' '--verbose'",
-            "'--verbose' '--event' 'PreToolUse'",
-            "'--event' 'PreToolUse' ",
+            "'--event' 'PreToolUse' '--verbose' #",
+            "'--verbose' '--event' 'PreToolUse' #",
+            "'--event' 'PreToolUse'  #",
+            "'--event' 'PreToolUse'\t#",
         ] {
             let mut edited = missing.clone();
-            let text = serde_json::to_string(&edited["hooks"]["PreToolUse"]).unwrap();
-            edited["hooks"]["PreToolUse"] =
-                serde_json::from_str(&text.replace("'--event' 'PreToolUse'", edit)).unwrap();
-            assert!(adoptable(&edited).is_none(), "{edit}");
+            let command = edited["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .replace("'--event' 'PreToolUse' #", edit);
+            assert!(command.contains(edit), "{command}");
+            edited["hooks"]["PreToolUse"][0]["hooks"][0]["command"] = json!(command);
+            assert!(adoptable(&edited).is_none(), "{edit:?}");
             let bytes = serde_json::to_vec(&edited).unwrap();
             assert!(
                 holds_marked_groups(kind, &bytes, &argv()).unwrap(),
-                "{edit}"
+                "{edit:?}"
+            );
+            // Beside the canonical group, the edited one is a second registration.
+            let mut beside = value.clone();
+            let group = edited["hooks"]["PreToolUse"][0].clone();
+            beside["hooks"]["PreToolUse"]
+                .as_array_mut()
+                .unwrap()
+                .push(group);
+            let bytes = serde_json::to_vec(&beside).unwrap();
+            assert_eq!(
+                doubled_events(kind, &bytes, &argv()).unwrap(),
+                ["PreToolUse"],
+                "{edit:?}"
             );
         }
         let mut wrong = missing.clone();
