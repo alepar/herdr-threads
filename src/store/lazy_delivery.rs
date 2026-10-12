@@ -340,7 +340,7 @@ pub(super) fn displayed_episode_floor(
              JOIN occupant_bindings b ON b.binding_id=?6 AND b.seat_id=r.seat_id \
              WHERE m.thread_id=?1 AND m.sequence=?2 AND m.instance_id=?3 AND r.seat_id=?4 \
                AND m.kind='ordinary' AND m.delivery_mode='lazy' AND sm.instance_id=m.instance_id \
-               AND sm.decision_seq=m.decision_seq AND m.decision_seq>?5",
+               AND sm.decision_seq=m.decision_seq AND m.decision_seq>?5)",
             params![thread.as_str(), sequence, instance, seat.as_str(), episode.created_decision, binding.as_str()], |r| r.get(0),
         ).map_err(store_error)?;
         if eligible {
