@@ -1691,7 +1691,7 @@ IDs then use exact canonical keys instead of the normal ordinary source: at most
 probe allowance is three setup probes plus 100 attempts at at most 18 probes:
 settled-but-unread ordinary eligibility needs five binding-reader probes beyond
 the prior 13-probe pending-receipt path. Pending ordinary and Lazy branches remain
-bounded by 13 and 11 probes per attempt respectively. This explicitly supersedes
+bounded by 13 and 14 probes per attempt respectively. This explicitly supersedes
 the former 1303-probe allowance; attempts, hydration and seek counts do not grow.
 Reconciliation separately inspects at most 256 known keys with at most 10 indexed
 probes each: 2560 probes, explicitly replacing the former 1280-probe allowance.
