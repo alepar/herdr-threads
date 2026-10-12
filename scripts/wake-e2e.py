@@ -512,6 +512,7 @@ class Recipient:
         elif action == "invite":
             # First contact: the direct send creates the pair and its invitation; the lazy body itself never wakes.
             ref = {"message": self.send("lazy", f"pair-open {self.run.run_id}", direct=True)}
+            self.pair = "pending"
         else:
             ref = {"message": self.send(action.split("-")[1], body, direct=channel == "1:1")}
         t_wake = self.watch_for_wake(WAKE_WINDOW_S)
@@ -561,15 +562,41 @@ class Recipient:
                "checks": checks, "ref": ref, "result": "PASS" if passed else "FAIL", "utc": utc()}
         self.run.record(row)
 
+    def ensure_channel(self, channel):
+        """Unmeasured setup when the matching invite case did not run first: the recipient joins the ordinary
+        thread / accepts the 1:1 pair, so the send cases test delivery and not first contact."""
+        if channel == "group" and not self.group:
+            name = f"wake-e2e-{self.name}-{self.run.run_id}"
+            self.group = self.coord("thread", "create", "--name", name, "--topic", f"wake-e2e test thread for {self.name}",
+                                    "--goal", "wake e2e test traffic")["result"]["data"]
+            self.coord("invite", self.group, "--seat", self.seat)
+            thread = self.group
+        elif channel == "1:1" and not self.pair:
+            self.send("nudge", f"pair-setup {self.run.run_id}", direct=True)
+            thread = None
+            for row in walk(self.coord("thread", "list", "--joined")):
+                if str(row.get("topic_data", "")).startswith("1:1") and self.seat in str(row.get("topic_data")):
+                    thread = row.get("thread")
+            self.pair = thread
+        else:
+            return
+        end = time.time() + 120
+        while time.time() < end and not self.joined(thread)[0]:
+            if self.status() in IDLE and time.time() > end - 90:
+                self.prompt("Handle any pending herdr-threads items as your standing instructions say.")
+            time.sleep(2)
+        if not self.joined(thread)[0]:
+            raise RuntimeError(f"setup: {self.name} did not join the {channel} channel")
+        self.wait_idle()
+        self.settled()
+
     def run_cases(self, cases):
         try:
             self.start()
             for case in cases:
-                if case.endswith("/group") and "invite" not in case and not self.group:
-                    self.run.record({"case": case, "harness": self.harness, "wake_on": self.wake_on,
-                                     "recipient": self.name, "result": "BLOCKED", "checks": {"reason": "no group thread"}})
-                    continue
                 try:
+                    if not case.startswith("invite/") and "invite" not in case.split("/")[0]:
+                        self.ensure_channel(case.split("/")[1])
                     self.case(case)
                 except Exception as e:  # a driver or agent error fails the case, never passes it
                     self.run.record({"case": case, "harness": self.harness, "wake_on": self.wake_on,
