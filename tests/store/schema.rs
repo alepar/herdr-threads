@@ -5788,10 +5788,67 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
         "harness_contract_evidence_v2",
         "harness_unattributed_v2",
     ];
+    // V45/46 create these six tables; none replaces a historical root. Audit
+    // their exact final DDL independently from the actual appended migration SQL.
+    let presentation45 = include_str!("../../migrations/0045_invitation_presentation.sql");
+    let relevance46 = include_str!("../../migrations/0046_presentation_relevance.sql");
+    let presentation_tables = [
+        ("invitation_context_latest", presentation45),
+        ("invitation_presentation_consumers", presentation45),
+        ("invitation_presentation_items", presentation45),
+        ("presentation_confirming_invitations", relevance46),
+        ("presentation_warning_fence", relevance46),
+        ("presentation_warning_proofs", relevance46),
+    ];
+    let expected_presentation = Connection::open_in_memory().unwrap();
+    for &(name, migration) in &presentation_tables {
+        assert!(
+            before.1.iter().all(|(old, _)| old.as_str() != name),
+            "new presentation table {name} must not hide a historical root"
+        );
+        let start = migration
+            .find(&format!("CREATE TABLE {name} (\n"))
+            .expect("named table is declared by its migration");
+        let declaration = &migration[start..];
+        let end = declaration.find("\n) STRICT;").unwrap() + "\n) STRICT;".len();
+        expected_presentation
+            .execute_batch(&declaration[..end])
+            .unwrap();
+    }
+    let consumer_alters: Vec<_> = relevance46
+        .lines()
+        .filter(|line| {
+            line.starts_with("ALTER TABLE invitation_presentation_consumers ADD COLUMN ")
+        })
+        .collect();
+    assert_eq!(consumer_alters.len(), 4);
+    for statement in consumer_alters {
+        expected_presentation.execute_batch(statement).unwrap();
+    }
+    for &(name, _) in &presentation_tables {
+        let table_sql = |db: &Connection| {
+            db.query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                [name],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            table_sql(&upgraded),
+            table_sql(&expected_presentation),
+            "exact appended presentation table DDL: {name}"
+        );
+    }
     let unchanged = |roots: &Vec<(String, i64)>| {
         roots
             .iter()
-            .filter(|(name, _)| !adapter_tables.contains(&name.as_str()))
+            .filter(|(name, _)| {
+                !adapter_tables.contains(&name.as_str())
+                    && !presentation_tables
+                        .iter()
+                        .any(|(table, _)| name.as_str() == *table)
+            })
             .cloned()
             .collect::<Vec<_>>()
     };

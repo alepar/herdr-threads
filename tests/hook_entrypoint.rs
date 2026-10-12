@@ -521,12 +521,11 @@ fn run_hook_traced(
     record(started, HookPhase::CommandBuildStart);
     // A native hook runs under its harness: the shim gives the installed command line a `claude`,
     // `codex` or `hermes` parent, which is where the hook takes its liveness fingerprint from.
-    let mut words = command.split_whitespace();
+    let words = shlex::split(command).expect("native hook shell argv");
     let harness = words
-        .by_ref()
-        .find(|word| word.trim_matches('\'') == "hook")
-        .and_then(|_| words.next())
-        .map_or("claude", |word| word.trim_matches('\''));
+        .windows(2)
+        .find(|pair| matches!(pair[0].as_str(), "hook" | "hook-event"))
+        .map_or("claude", |pair| pair[1].as_str());
     let mut command_line = herdr_threads::test_support::harness_shim::under_harness(
         harness,
         Path::new("/bin/sh"),
@@ -6650,7 +6649,15 @@ fn native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_be
         let before = fx.check_ins.load(Ordering::SeqCst);
         let started = run_hook(&command(harness, "SessionStart"), pane, &fx.host, &payload);
         assert_eq!(started.code, Some(0), "{}", started.stderr);
-        assert!(!started.stdout.is_empty(), "{}", started.stderr);
+        assert!(
+            !started.stdout.is_empty(),
+            "{harness:?}: {}",
+            started.stderr
+        );
+        assert_eq!(
+            started.context()["hookSpecificOutput"]["hookEventName"],
+            "SessionStart"
+        );
         assert!(fx.check_ins.load(Ordering::SeqCst) > before);
         let payload = if harness == Harness::Claude {
             tool(session)
@@ -6664,7 +6671,7 @@ fn native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_be
         assert!(fx.digests.load(Ordering::SeqCst) > before);
     }
     let child = serde_json::to_vec(&serde_json::json!({
-        "hook_event_name":"SubagentStart", "session_id":"stable-child", "turn_id":"child-turn",
+        "hook_event_name":"SubagentStart", "session_id":"stable-codex", "turn_id":"child-turn",
         "agent_id":"child", "agent_type":"worker", "transcript_path":null,
         "cwd":"/tmp", "model":"gpt-test", "permission_mode":"default",
     }))
@@ -6673,6 +6680,10 @@ fn native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_be
     let child_result = run_hook(&child_command, "w9:p3", &fx.host, &child);
     assert_eq!(child_result.code, Some(0));
     assert!(child_result.stderr.is_empty(), "{}", child_result.stderr);
+    assert_eq!(
+        child_result.context()["hookSpecificOutput"]["hookEventName"],
+        "SubagentStart"
+    );
     // Malforming a required child field proves this surface reaches the child
     // codec, rather than quietly ignoring every payload for the event.
     let mut malformed: serde_json::Value = serde_json::from_slice(&child).unwrap();
@@ -6707,7 +6718,8 @@ fn native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_be
         ]
         .map(str::to_owned);
         let raw = herdr_threads::harness::setup::shell_command(&argv).unwrap();
-        let refused = run_hook(&raw, "w9:p1", &fx.host, &start("invalid"));
+        // Unknown registration is refused from argv before the hook reads stdin.
+        let refused = run_hook(&raw, "w9:p1", &fx.host, &[]);
         assert_eq!(refused.code, Some(0));
         assert!(refused.stdout.is_empty());
         assert!(
