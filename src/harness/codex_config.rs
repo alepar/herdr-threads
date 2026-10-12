@@ -623,6 +623,10 @@ pub struct AllowanceInspection {
     pub recorded: Option<AllowanceManifest>,
     /// Every owned and pre-existing key is present with its value.
     pub present: bool,
+    /// The recorded allowance left nothing in the file: no key setup added is there with any
+    /// value (or the file is gone). The keys were removed by hand, so no user data is at stake;
+    /// owned unsetup retires the record.
+    pub removed: bool,
 }
 
 impl AllowanceInspection {
@@ -637,17 +641,39 @@ impl AllowanceInspection {
     }
 }
 
+/// No key setup added is left in the file with any value (a hand-removed allowance).
+fn owned_absent(doc: &DocumentMut, keys: &[AllowanceKey]) -> bool {
+    keys.iter().filter(|key| !key.pre_existing).all(|key| {
+        match (lookup(doc, &key.path), &key.value) {
+            (None, _) => true,
+            (Some(item), AllowanceValue::Member(_)) => {
+                item.as_array().is_some() && !matches(item, &key.value)
+            }
+            (Some(_), _) => false,
+        }
+    })
+}
+
 pub fn inspect(config: &Path, manifest_path: &Path) -> Result<AllowanceInspection, SetupError> {
     let recorded = read_manifest(manifest_path)?;
-    let present = match &recorded {
+    let (present, removed) = match &recorded {
         Some(manifest) if manifest_valid(manifest, config)? => match config_bytes(config) {
-            Ok(bytes) => owned_present(&parse(&bytes)?, &manifest.keys),
-            Err(_) => false,
+            Ok(bytes) => {
+                let doc = parse(&bytes)?;
+                let present = owned_present(&doc, &manifest.keys);
+                (present, !present && owned_absent(&doc, &manifest.keys))
+            }
+            Err(SetupError::Io) if !config.exists() => (false, true),
+            Err(_) => (false, false),
         },
         Some(_) => return Err(SetupError::Conflict),
-        None => false,
+        None => (false, false),
     };
-    Ok(AllowanceInspection { recorded, present })
+    Ok(AllowanceInspection {
+        recorded,
+        present,
+        removed,
+    })
 }
 
 /// Remove the owned allowance keys and the manifest. `Ok(false)`: nothing was recorded.
@@ -689,6 +715,36 @@ mod tests {
     }
 
     const SOCK: &str = "/s d/instances/abc/daemon.sock";
+
+    /// Kills: a hand-removed allowance read as edited (refusing hook setup), or a partly
+    /// removed or edited one read as removed.
+    #[test]
+    fn inspection_tells_a_hand_removed_allowance_from_an_edited_one() {
+        let dir = tmp();
+        let config = dir.join("config.toml");
+        let manifest = dir.join("m.json");
+        let user = b"model = \"x\"\n";
+        std::fs::write(&config, user).unwrap();
+        install(&config, &manifest, SOCK, &[]).unwrap();
+        let installed = std::fs::read_to_string(&config).unwrap();
+        let state = |text: &[u8]| {
+            std::fs::write(&config, text).unwrap();
+            let inspection = inspect(&config, &manifest).unwrap();
+            (inspection.present, inspection.removed)
+        };
+        assert_eq!(state(installed.as_bytes()), (true, false));
+        assert_eq!(state(user), (false, true));
+        let edited = installed.replace("network_access = true", "network_access = false");
+        assert_ne!(edited, installed);
+        assert_eq!(state(edited.as_bytes()), (false, false));
+        let partial = installed.replace("network_access = true\n", "");
+        assert_ne!(partial, installed);
+        assert_eq!(state(partial.as_bytes()), (false, false));
+        std::fs::remove_file(&config).unwrap();
+        let gone = inspect(&config, &manifest).unwrap();
+        assert!(!gone.present && gone.removed);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// Kills config.toml install or removal without keeping the prior version.
     #[test]

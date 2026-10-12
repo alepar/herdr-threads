@@ -302,8 +302,14 @@ pub(crate) fn codex_unmeasured_allowance_warning(
     }
     let paths = codex_paths(env).ok()?;
     // An unreadable manifest is treated as recorded: the warning must not
-    // go quiet because the ownership record is damaged.
+    // go quiet because the ownership record is damaged. A record whose keys were all
+    // removed by hand has nothing installed to warn about.
     if let Ok(None) = codex_config::read_manifest(&paths.config_manifest) {
+        return None;
+    }
+    if codex_config::inspect(&paths.config, &paths.config_manifest)
+        .is_ok_and(|inspection| inspection.removed)
+    {
         return None;
     }
     let observed = match version {
@@ -431,6 +437,16 @@ pub fn codex_paths(env: &SetupEnv) -> Result<CodexPaths, RunError> {
     })
 }
 
+/// A recorded historical allowance that is interrupted or edited: setup no longer writes
+/// allowances, but it still refuses to change the hooks beside one. A complete allowance, or one
+/// whose keys were all removed by hand (nothing of the user's at stake), is no reason to refuse.
+fn allowance_blocks_hooks(inspection: &codex_config::AllowanceInspection) -> bool {
+    inspection.recorded.as_ref().is_some_and(|manifest| {
+        manifest.phase != lib::InstallPhase::Installed
+            || !(inspection.present || inspection.removed)
+    })
+}
+
 /// The installer's check of the historical owned allowance beside the hook file: a recorded
 /// allowance that is partial or edited refuses before hooks are inspected.
 pub(crate) fn installer_allowance_precheck(env: &SetupEnv) -> Result<(), RunError> {
@@ -438,9 +454,7 @@ pub(crate) fn installer_allowance_precheck(env: &SetupEnv) -> Result<(), RunErro
     let paths = codex_paths(env)?;
     let allowance = codex_config::inspect(&paths.config, &paths.config_manifest)
         .map_err(|error| failure(format!("invalid Codex allowance ownership: {error:?}")))?;
-    if allowance.recorded.as_ref().is_some_and(|manifest| {
-        manifest.phase != lib::InstallPhase::Installed || !allowance.present
-    }) {
+    if allowance_blocks_hooks(&allowance) {
         return Err(failure(
             "recorded Codex allowance is partial or edited; preserved".into(),
         ));
@@ -582,13 +596,18 @@ pub(crate) fn allowance_error(error: codex_config::AllowanceError, config: &Path
 }
 
 pub(crate) fn allowance_json(inspection: Option<&codex_config::AllowanceInspection>) -> Value {
-    json!({
+    let mut report = json!({
         "socket_path": inspection.and_then(|i| i.recorded.as_ref()).map(|m| &m.socket),
         "validation": "unvalidated",
         "omitted": "setup uses approved outside-sandbox commands and installs no sandbox allowance",
         "recorded": inspection.is_some_and(|i| i.recorded.is_some()),
         "present": inspection.is_some_and(|i| i.present),
-    })
+    });
+    // Only a record whose keys were all removed by hand says so; owned unsetup retires it.
+    if inspection.is_some_and(|i| i.removed) {
+        report["removed_by_hand"] = json!(true);
+    }
+    report
 }
 
 /// Attach the unmeasured-allowance warning to a `sandbox` report.
@@ -732,7 +751,8 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
     let layers = observe_codex_config(env, &owned_command);
     refuse_duplicate(&layers, &owned_command, &paths.hooks)?;
     // Legacy allowances are left for owned unsetup. Incomplete or edited
-    // records still refuse before hooks change, preserving the installer seam.
+    // records still refuse before hooks change, preserving the installer seam;
+    // one whose keys were all removed by hand does not.
     // A dangling symlink is still an ownership record, never absence.
     if fs::symlink_metadata(&paths.config_manifest)
         .is_ok_and(|metadata| metadata.file_type().is_symlink())
@@ -746,9 +766,7 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
         codex_config::inspect(&paths.config, &paths.config_manifest).map_err(|error| {
             allowance_error(codex_config::AllowanceError::Setup(error), &paths.config)
         })?;
-    if let Some(manifest) = &inspection.recorded
-        && (manifest.phase != lib::InstallPhase::Installed || !inspection.present)
-    {
+    if allowance_blocks_hooks(&inspection) {
         return Err(allowance_error(
             codex_config::AllowanceError::Setup(SetupError::Conflict),
             &paths.config,

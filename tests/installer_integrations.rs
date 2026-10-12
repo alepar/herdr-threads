@@ -350,3 +350,186 @@ fn installer_refuses_incomplete_skill_manifest_states_independently() {
         );
     }
 }
+
+impl Fixture {
+    /// Runs with `CODEX_HOME` at `codex_home` instead of the fixture's default root.
+    fn run_codex_home(&self, codex_home: &std::path::Path, args: &[&str]) -> Output {
+        let mut command = herdr_threads::test_support::spawn::command(std::path::Path::new(env!(
+            "CARGO_BIN_EXE_herdr-threads"
+        )));
+        herdr_threads::test_support::isolation::scrub_env(&mut command);
+        command
+            .current_dir(&self.0)
+            .env("HOME", self.0.join("home"))
+            .env("CODEX_HOME", codex_home)
+            .env("CLAUDE_CONFIG_DIR", self.0.join("claude"))
+            .env("PATH", self.0.join("bin"))
+            .args(herdr_threads::test_support::isolation::routed_argv(
+                &[
+                    std::ffi::OsString::from("--state-dir"),
+                    self.0.join("state").into_os_string(),
+                    std::ffi::OsString::from("--host-endpoint"),
+                    self.0.join("herdr.sock").into_os_string(),
+                ],
+                args,
+            ))
+            .output()
+            .unwrap()
+    }
+    /// A second CODEX_HOME holding a copy of the default root's owned hook file as an older
+    /// release wrote it: only `events` registered, no manifest of its own.
+    fn older_copy(&self, events: &[&str]) -> PathBuf {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(self.0.join("codex/hooks.json")).unwrap()).unwrap();
+        value["hooks"]
+            .as_object_mut()
+            .unwrap()
+            .retain(|event, _| events.contains(&event.as_str()));
+        let copy = self.0.join("codex-copy");
+        fs::create_dir_all(&copy).unwrap();
+        fs::write(copy.join("hooks.json"), serde_json::to_vec(&value).unwrap()).unwrap();
+        copy
+    }
+}
+
+/// Owner markers per event in a hook file.
+fn owners(hooks: &std::path::Path) -> std::collections::BTreeMap<String, Vec<String>> {
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(hooks).unwrap()).unwrap();
+    value["hooks"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(event, groups)| {
+            let markers = groups
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|group| group["hooks"].as_array().unwrap())
+                .filter_map(|hook| {
+                    hook["command"]
+                        .as_str()?
+                        .split("herdr-threads-owner:")
+                        .nth(1)
+                })
+                .map(str::to_owned)
+                .collect();
+            (event.clone(), markers)
+        })
+        .collect()
+}
+
+const OLDER_CODEX_EVENTS: [&str; 3] = ["SessionStart", "SubagentStart", "PreToolUse"];
+
+// Kills: the installer refusing, and setup writing a second owned set beside, a hook file
+// copied from another setup by a release that declared fewer events (each copied event then
+// fired twice); unsetup unable to remove such a copy.
+#[test]
+fn installer_and_setup_upgrade_an_older_copied_hook_file_in_place() {
+    let f = Fixture::new();
+    success(&f.install());
+    let copy = f.older_copy(&OLDER_CODEX_EVENTS);
+    let before = owners(&copy.join("hooks.json"));
+    let owner = before["SessionStart"][0].clone();
+    let out = f.run_codex_home(&copy, &["internal", "installer-integrations"]);
+    success(&out);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("codex hooks: updated"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let after = owners(&copy.join("hooks.json"));
+    assert_eq!(
+        after.keys().collect::<Vec<_>>(),
+        [
+            "PreToolUse",
+            "SessionEnd",
+            "SessionStart",
+            "SubagentStart",
+            "SubagentStop"
+        ]
+    );
+    for markers in after.values() {
+        assert_eq!(markers, std::slice::from_ref(&owner), "{after:?}");
+    }
+    // Rerunning setup is idempotent, and unsetup removes the adopted groups.
+    let out = f.run_codex_home(&copy, &["setup", "codex"]);
+    success(&out);
+    assert_eq!(owners(&copy.join("hooks.json")), after);
+    success(&f.run_codex_home(&copy, &["unsetup", "codex"]));
+    assert!(owners(&copy.join("hooks.json")).values().all(Vec::is_empty));
+
+    // A copy whose group was edited is not adopted: setup refuses rather than add a second set.
+    let g = Fixture::new();
+    success(&g.install());
+    let copy = g.older_copy(&OLDER_CODEX_EVENTS);
+    let edited = String::from_utf8(fs::read(copy.join("hooks.json")).unwrap())
+        .unwrap()
+        .replacen("\"timeout\":10", "\"timeout\":11", 1);
+    fs::write(copy.join("hooks.json"), &edited).unwrap();
+    let out = g.run_codex_home(&copy, &["setup", "codex"]);
+    assert!(
+        !out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(
+        fs::read(copy.join("hooks.json")).unwrap(),
+        edited.as_bytes()
+    );
+}
+
+// Kills: a legacy sandbox allowance whose keys were all removed by hand blocking the hook
+// refresh, or still being reported as installed; an edited allowance no longer refusing.
+#[test]
+fn installer_refreshes_hooks_beside_a_hand_removed_codex_allowance() {
+    let f = Fixture::new();
+    success(&f.install());
+    let config_path = f.0.join("codex/config.toml");
+    let manifest =
+        herdr_threads::cli::setup::manifest_path(&f.0.join("state"), "codex-config", &config_path);
+    let user = b"model = \"x\"\n";
+    fs::write(&config_path, user).unwrap();
+    herdr_threads::harness::codex_config::install(
+        &config_path,
+        &manifest,
+        "/tmp/ht-installer-fixture.sock",
+        &[],
+    )
+    .unwrap();
+    let installed = fs::read(&config_path).unwrap();
+    // Edited (one key changed): still refused, nothing changed.
+    let edited = String::from_utf8(installed.clone())
+        .unwrap()
+        .replace("network_access = true", "network_access = false");
+    assert_ne!(edited.as_bytes(), installed.as_slice());
+    fs::write(&config_path, &edited).unwrap();
+    let out = f.run(&["internal", "installer-integrations"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout)
+            .contains("recorded Codex allowance is partial or edited"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(fs::read(&config_path).unwrap(), edited.as_bytes());
+    // Every key removed by hand: the hooks refresh, the file and record are left alone.
+    fs::write(&config_path, user).unwrap();
+    let record = fs::read(&manifest).unwrap();
+    let out = f.run(&["internal", "installer-integrations"]);
+    success(&out);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("codex hooks: updated"));
+    success(&f.run(&["setup", "codex"]));
+    assert_eq!(fs::read(&config_path).unwrap(), user);
+    assert_eq!(fs::read(&manifest).unwrap(), record);
+    let status: serde_json::Value =
+        serde_json::from_slice(&f.run(&["setup-status", "codex", "--json"]).stdout).unwrap();
+    let sandbox = &status["setup"]["sandbox"];
+    assert_eq!(sandbox["recorded"], true, "{sandbox}");
+    assert_eq!(sandbox["present"], false, "{sandbox}");
+    assert_eq!(sandbox["removed_by_hand"], true, "{sandbox}");
+    assert!(sandbox.get("warning").is_none(), "{sandbox}");
+    // Owned unsetup still retires the record.
+    success(&f.run(&["unsetup", "codex"]));
+    assert!(!manifest.exists());
+    assert_eq!(fs::read(&config_path).unwrap(), user);
+}

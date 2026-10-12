@@ -1260,7 +1260,13 @@ fn install_user_settings_inner<F: FnOnce()>(
         if config_bytes(config)? != expected_base {
             return Err(SetupError::Conflict);
         }
-        adopt_user_settings(kind, config, manifest_path, hook_argv)?;
+        // Another setup's groups for this command that are not adoptable (edited, duplicated)
+        // refuse: a second owned set beside them would run the hook twice per event.
+        if adopt_user_settings(kind, config, manifest_path, hook_argv)?.is_none()
+            && holds_marked_groups(kind, expected_base, hook_argv)?
+        {
+            return Err(SetupError::Conflict);
+        }
     }
     if let Some(mut manifest) = read_manifest(manifest_path)? {
         let expected_command = owned_command(hook_argv, &manifest.installation_id)?;
@@ -1788,6 +1794,10 @@ pub fn inspect_user_settings_for(
             // Best effort: a file that cannot be read or parsed is simply not installed here,
             // as it was before adoption existed.
             && let Ok(Some(adoptable)) = adoptable_user_settings(kind, config, argv)
+            // An older copy lacking events declared since is not installed: setup upgrades it.
+            && shell_command(argv)
+                .and_then(|base| kind.entries(&base))
+                .is_ok_and(|declared| declared.len() == adoptable.owned.len())
             && let Ok(current) = config_bytes(config)
         {
             return Ok(HookInspection {
@@ -1968,11 +1978,13 @@ pub struct Adoptable {
     pub owned: Vec<OwnedEntry>,
 }
 
-/// Whether `bytes` hold, under every declared event, exactly one group running this hook command
-/// registered for that event (`--event <event>`)
+/// Whether `bytes` hold, under each declared event they register at all, exactly one group
+/// running this hook command registered for that event (`--event <event>`)
 /// apart from its owner marker, all with one valid marker, each exactly the declared group for
-/// `<command> # herdr-threads-owner:<id>`. An unmarked copy, a second or edited copy, two markers,
-/// or a missing event is not adoptable (those keep their existing install/refusal behavior).
+/// `<command> # herdr-threads-owner:<id>`. A copy made by an older setup lacks the events declared
+/// since: it is adopted with the events it has (setup then upgrades it like a recorded older
+/// declaration; `owned` lists only those). An unmarked copy, a marked one without `--event`, a
+/// second or edited copy, two markers, or no event at all is not adoptable (those keep their existing install/refusal behavior).
 pub fn find_adoptable(
     kind: SettingsKind,
     bytes: &[u8],
@@ -1981,11 +1993,12 @@ pub fn find_adoptable(
     let base = shell_command(hook_argv)?;
     let value = root(bytes)?;
     let mut id: Option<String> = None;
+    let mut events = Vec::new();
     for template in kind.entries(&base)? {
         let evented = event_command(&base, &template.event);
         let prefix = format!("{evented}{OWNER_MARKER}");
         let Some(groups) = value["hooks"][&template.event].as_array() else {
-            return Ok(None);
+            continue;
         };
         let mut found = 0;
         for hook in groups
@@ -1996,7 +2009,12 @@ pub fn find_adoptable(
             let Some(command) = hook.get("command").and_then(Value::as_str) else {
                 continue;
             };
-            if command == base || command == evented {
+            // Unmarked, or marked without its `--event` (a spelling setup would not upgrade in
+            // place): adopting the rest would leave it beside a second set.
+            if command == base
+                || command == evented
+                || command.starts_with(&format!("{base}{OWNER_MARKER}"))
+            {
                 return Ok(None);
             }
             let Some(marker) = command.strip_prefix(&prefix) else {
@@ -2010,14 +2028,20 @@ pub fn find_adoptable(
             }
             found += 1;
         }
-        if found != 1 {
-            return Ok(None);
+        match found {
+            0 => {}
+            1 => events.push(template.event),
+            _ => return Ok(None),
         }
     }
     let Some(installation_id) = id else {
         return Ok(None);
     };
-    let owned = kind.entries(&owned_command(hook_argv, &installation_id)?)?;
+    let owned: Vec<OwnedEntry> = kind
+        .entries(&owned_command(hook_argv, &installation_id)?)?
+        .into_iter()
+        .filter(|entry| events.contains(&entry.event))
+        .collect();
     if exact_present(&value, &owned).len() != owned.len() {
         return Ok(None);
     }
@@ -2025,6 +2049,39 @@ pub fn find_adoptable(
         installation_id,
         owned,
     }))
+}
+
+/// Whether `bytes` register this hook command under any declared event with some setup's owner
+/// marker (the per-event or the pre-per-event spelling), adoptable or not.
+fn holds_marked_groups(
+    kind: SettingsKind,
+    bytes: &[u8],
+    hook_argv: &[String],
+) -> Result<bool, SetupError> {
+    if bytes.is_empty() {
+        return Ok(false);
+    }
+    let base = shell_command(hook_argv)?;
+    let value = root(bytes)?;
+    for template in kind.entries(&base)? {
+        let prefixes = [
+            format!("{}{OWNER_MARKER}", event_command(&base, &template.event)),
+            format!("{base}{OWNER_MARKER}"),
+        ];
+        let Some(groups) = value["hooks"][&template.event].as_array() else {
+            continue;
+        };
+        if groups
+            .iter()
+            .filter_map(|group| group.get("hooks").and_then(Value::as_array))
+            .flatten()
+            .filter_map(|hook| hook.get("command").and_then(Value::as_str))
+            .any(|command| prefixes.iter().any(|prefix| command.starts_with(prefix)))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// [`find_adoptable`] over the current file; `None` when the file does not exist.
@@ -2211,7 +2268,7 @@ mod adoption_tests {
     /// edited group, a missing event, or a different command; and an
     /// adoption base that does not restore the file without the groups.
     #[test]
-    fn setup_adoption_requires_one_marker_and_exact_groups_for_every_event() {
+    fn setup_adoption_requires_one_marker_and_exact_groups_for_every_registered_event() {
         let id = uuid::Uuid::new_v4().to_string();
         let value = marked(&id);
         let found = adoptable(&value).expect("exact marked copy is adoptable");
@@ -2241,7 +2298,18 @@ mod adoption_tests {
             .as_object_mut()
             .unwrap()
             .remove("SubagentStart");
-        assert!(adoptable(&missing).is_none());
+        // An older copy lacking an event declared since is adopted with the events it has.
+        let older = adoptable(&missing).expect("older marked copy is adoptable");
+        assert_eq!(older.installation_id, id);
+        assert!(!older.owned.is_empty());
+        assert!(
+            older
+                .owned
+                .iter()
+                .all(|entry| entry.event != "SubagentStart")
+        );
+        assert_eq!(older.owned.len() + 1, found.owned.len());
+        assert!(adoptable(&json!({"hooks": {}})).is_none());
 
         let mut unmarked = value.clone();
         unmarked["hooks"]["SessionStart"]
@@ -2399,7 +2467,13 @@ pub(crate) mod legacy {
         .map_err(|error| {
             installer_failure(format!("hook ownership inspection failed: {error:?}"))
         })?;
-        if inspection.installed {
+        // Another setup's groups copied here by an older release: setup adopts and upgrades them.
+        if inspection.installed
+            || matches!(
+                owned::adoptable_user_settings(kind, &path, &argv),
+                Ok(Some(_))
+            )
+        {
             return Ok(true);
         }
         if let Some(bytes) = bytes {
