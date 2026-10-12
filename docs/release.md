@@ -101,7 +101,7 @@ Done by a person after this work merges; nothing here has been done. Every step 
 3. **Tag.** Push the tag `v0.1.0`. Confirm the release workflow creates a draft, uploads all five assets, verifies the checksums and then publishes.
 4. **Clean-machine rehearsal, macOS and Linux.** `curl | bash` install, upgrade from the tag's own artifact, and uninstall, each with Herdr up and with Herdr down. Confirm the final status lines and exit codes match the [installer contract](install.md#installer-contract-final-status-and-exit-codes).
 5. **Linux link.** If Herdr refuses the Linux link, flip `platforms` back to `["macos"]` or file an upstream Herdr issue, and update the README and these docs accordingly.
-6. **Parallel tests on CI.** Done for macOS locally (ht-zo4: 5 consecutive green unpinned runs; it now runs under cargo-nextest) and for Linux in a local Ubuntu 24.04 container; CI runs the suite on Linux in two shards. A failure is filed as a test-isolation bug against the merged suite.
+6. **Parallel tests on CI.** The suite runs with no thread pin (no `--test-threads=1`) on both OSes: done for macOS locally (ht-zo4: 5 consecutive green unpinned runs; it now runs under cargo-nextest) and for Linux in a local Ubuntu 24.04 container; CI runs the suite on Linux in two parallel shards (nextest `ci` profile, 7 test threads). A failure is filed as a test-isolation bug against the merged suite.
 
 ## Marketplace prerequisites (follow-on, not done)
 
