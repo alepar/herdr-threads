@@ -45,8 +45,10 @@ point, after `--timeout` + 30 min for `wake-e2e` (2 h for the others), or on `do
 staged and driver-copied credentials and exits, which stops the container and kills the agents. A killed runner
 still leaves a stopped container (and, if it held one, its env-file dir `$TMPDIR/ht-linux-e2e-cred.<pid>.*`): the
 next run removes this worktree's stopped containers itself (their evidence saved under `leftovers/`; the watchdog
-has already scrubbed their credentials), warns about everything else, and `clean` removes stale env-file dirs (a
-live runner holds a lock on its dir, so pid reuse cannot hide a stale one). `clean` (no flag) touches only this worktree's containers and
+has already scrubbed their credentials), except one whose runner is still alive (it holds its run lock
+`$TMPDIR/ht-linux-e2e-run.<run>.lock`) or that stopped less than 60 s ago; it warns about everything else.
+`clean` removes stale env-file dirs and run locks: older than 60 s and unlocked (a live runner locks its dir before
+writing to it, so pid reuse cannot hide a stale one). `clean` (no flag) touches only this worktree's containers and
 volumes, its stale env-file dirs and unused dangling runner images; `clean --all` removes every object with the
 shared label, including containers someone started by hand from the image (they inherit its label). This is fail-safe, not resumable: a host that sleeps, or a runner suspended with Ctrl-Z, for longer than the
 lease (60 s) stops a live run too. Lease renewal failures are counted in `runner.json` (`lease`) and logged in

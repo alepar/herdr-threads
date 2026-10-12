@@ -128,35 +128,47 @@ def listed_herdr_versions(repo):
     return versions
 
 
-LOCK_GRACE_S = 60  # a dir without its lock file is a runner between mkdtemp and flock, or a stale one after this
+LOCK_GRACE_S = 60  # anything younger is left alone: its runner may be between creating it and locking it
+RUN_LOCK_PREFIX = "ht-linux-e2e-run."  # <tmp>/ht-linux-e2e-run.<run id>.lock, flocked for the runner's whole life
+
+
+def lock_held(path):
+    """True when another process holds an flock on path (False when it is absent or free)."""
+    try:
+        fd = os.open(path, os.O_RDWR)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return False
+    except OSError:
+        return True
+    finally:
+        os.close(fd)
+
+
+def older_than_grace(path):
+    try:
+        return time.time() - path.stat().st_mtime > LOCK_GRACE_S
+    except OSError:
+        return False
 
 
 def stale_cred_dirs():
-    """Env-file dirs of runners that died without cleanup (SIGKILL). A live runner holds an exclusive flock on
-    <dir>/lock for the dir's whole life, so a dir whose lock can be taken is stale whatever its name's pid now is
-    (pid reuse cannot hide it); a dir without a lock file is stale once older than LOCK_GRACE_S."""
-    stale = []
-    for d in Path(tempfile.gettempdir()).glob(CRED_PREFIX + "*"):
-        lock = d / "lock"
-        try:
-            fd = os.open(lock, os.O_RDWR)
-        except FileNotFoundError:
-            try:
-                if time.time() - d.stat().st_mtime > LOCK_GRACE_S:
-                    stale.append(d)
-            except OSError:
-                pass
-            continue
-        except OSError:
-            continue
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            stale.append(d)
-        except OSError:
-            pass  # held: a live runner's
-        finally:
-            os.close(fd)
-    return stale
+    """Env-file dirs of runners that died without cleanup (SIGKILL). A live runner flocks <dir>/lock as the first
+    step after creating the dir and holds it while the dir exists, so a dir older than LOCK_GRACE_S whose lock is
+    missing or free is stale, whatever pid its name carries (pid reuse cannot hide it)."""
+    return [d for d in Path(tempfile.gettempdir()).glob(CRED_PREFIX + "*")
+            if older_than_grace(d) and not lock_held(d / "lock")]
+
+
+def stale_run_locks():
+    return [f for f in Path(tempfile.gettempdir()).glob(RUN_LOCK_PREFIX + "*.lock")
+            if older_than_grace(f) and not lock_held(f)]
+
+
+def run_alive(run_id):
+    return bool(run_id) and lock_held(Path(tempfile.gettempdir()) / f"{RUN_LOCK_PREFIX}{run_id}.lock")
 
 
 def credential_file(path, what):
@@ -351,12 +363,29 @@ class Runner:
 
     def remove_exited(self):
         """This worktree's stopped containers (a killed run's, stopped by its watchdog, which already scrubbed the
-        credentials): their evidence is saved under evidence/leftovers/<name>/, then they are removed."""
+        credentials): their evidence is saved under evidence/leftovers/<name>/, then they are removed. Skipped: a
+        container whose run is still alive (its runner holds the run lock: it copies and removes it itself) and
+        one stopped less than LOCK_GRACE_S ago."""
         try:
-            names = self.capture("ps", "-a", "--filter", f"label={WORKTREE_LABEL}={self.worktree}",
-                                 "--filter", "status=exited", "--format", "{{.Names}}").split()
+            rows = self.capture("ps", "-a", "--filter", f"label={WORKTREE_LABEL}={self.worktree}",
+                                "--filter", "status=exited", "--format",
+                                '{{.Names}}\t{{.Label "' + RUN_LABEL + '"}}').splitlines()
         except (subprocess.CalledProcessError, OSError):
             return
+        names = []
+        for row in rows:
+            name, _, run_id = row.partition("\t")
+            if not name.strip() or run_alive(run_id.strip()):
+                continue
+            finished = detached([self.docker, "inspect", "-f", "{{.State.FinishedAt}}", name]).stdout.strip()
+            try:
+                at = datetime.datetime.strptime(finished[:19], "%Y-%m-%dT%H:%M:%S").replace(
+                    tzinfo=datetime.timezone.utc)
+                if (datetime.datetime.now(datetime.timezone.utc) - at).total_seconds() < LOCK_GRACE_S:
+                    continue
+            except ValueError:
+                continue
+            names.append(name.strip())
         for name in names:
             out = self.evidence / "leftovers" / name
             out.mkdir(parents=True, exist_ok=True)
@@ -623,9 +652,8 @@ class Runner:
     def env_file(self, lines):
         """A mode-0600 env-file in a private 0700 dir whose lock this runner holds while the dir exists (so
         `clean` and later runs can tell a stale one)."""
-        self.private = Path(tempfile.mkdtemp(prefix=f"{CRED_PREFIX}{os.getpid()}."))
-        os.chmod(self.private, 0o700)
-        self.lock_fd = os.open(self.private / "lock", os.O_RDWR | os.O_CREAT, 0o600)
+        self.private = Path(tempfile.mkdtemp(prefix=f"{CRED_PREFIX}{os.getpid()}."))  # mode 0700
+        self.lock_fd = os.open(self.private / "lock", os.O_RDWR | os.O_CREAT, 0o600)  # first: lock, then content
         fcntl.flock(self.lock_fd, fcntl.LOCK_EX)
         path = self.private / "claude.env"
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -708,6 +736,8 @@ def clean(args):
     stale = stale_cred_dirs()
     for d in stale:
         shutil.rmtree(d, ignore_errors=True)
+    for f in stale_run_locks():
+        f.unlink(missing_ok=True)
     print(f"linux-e2e clean: stale credential dirs: {' '.join(map(str, stale)) if stale else 'none'}")
     return rc
 
@@ -719,6 +749,9 @@ def main(argv=None):
     if args.command == "clean":
         return clean(args)
     runner = Runner(args)
+    run_lock = Path(tempfile.gettempdir()) / f"{RUN_LOCK_PREFIX}{runner.run_id}.lock"
+    run_lock_fd = os.open(run_lock, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(run_lock_fd, fcntl.LOCK_EX)  # held until exit: later runs leave this run's container to it
     stopping = []
 
     def interrupt(signum, _frame):
@@ -757,6 +790,8 @@ def main(argv=None):
         except OSError:
             pass
         print(f"evidence: {runner.evidence} (exit {rc})", flush=True)
+        run_lock.unlink(missing_ok=True)
+        os.close(run_lock_fd)
         for s, handler in saved.items():
             signal.signal(s, handler)
     return rc

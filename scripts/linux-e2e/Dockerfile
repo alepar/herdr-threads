@@ -68,14 +68,18 @@ RUN read -r _ node_arch _ node_sha < /etc/ht-arch; \
 # --ignore-scripts: no package lifecycle script runs. The only one in this tree is Claude Code's postinstall
 # (`node install.cjs`, reviewed for 2.1.296): it copies the binary of the already-installed, lockfile-verified
 # native package (@anthropic-ai/claude-code-linux-<arch>) over the bin/claude.exe stub, with no network access
-# (its only subprocess is `sysctl` on macOS). It is run explicitly below; Codex 0.162.1 and both native packages
-# declare no scripts. Re-check this when bumping the lockfile.
+# (its only subprocess is `sysctl` on macOS). It runs explicitly below, under --network=none; Codex 0.162.1
+# and both native packages declare no scripts. Re-check this when bumping the lockfile.
 ENV PATH=/opt/node/bin:$PATH
 COPY scripts/linux-e2e/npm/package.json scripts/linux-e2e/npm/package-lock.json /opt/harnesses/
-RUN cd /opt/harnesses && npm ci --ignore-scripts --no-audit --no-fund && npm cache clean --force \
-    && (cd node_modules/@anthropic-ai/claude-code && node install.cjs) \
-    && mkdir bin && ln -s ../node_modules/.bin/claude bin/claude && ln -s ../node_modules/.bin/codex bin/codex \
-    && bin/claude --version && bin/codex --version
+RUN cd /opt/harnesses && npm ci --ignore-scripts --no-audit --no-fund && npm cache clean --force
+# The postinstall without a network (structurally no fetch), then proof that bin/claude.exe is exactly the
+# lockfile-verified native package's binary.
+RUN --network=none read -r _ node_arch _ _ < /etc/ht-arch \
+    && cd /opt/harnesses/node_modules/@anthropic-ai/claude-code && node install.cjs \
+    && cmp bin/claude.exe "../claude-code-linux-$node_arch/claude"
+RUN cd /opt/harnesses && mkdir bin && ln -s ../node_modules/.bin/claude bin/claude \
+    && ln -s ../node_modules/.bin/codex bin/codex && bin/claude --version && bin/codex --version
 
 # The non-root user and its cached build directories (named volumes mount here when the run script
 # is given --cache; their first mount copies this ownership).
