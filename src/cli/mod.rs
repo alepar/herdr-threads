@@ -1,4 +1,5 @@
 //! Typed CLI client, selected renderer and local journal composition.
+pub mod accept_delivery;
 pub mod actor_route;
 pub mod caller;
 pub mod commands;
@@ -3577,6 +3578,14 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             if matches!(&mutation, MutationSpec::Reject { .. }) {
                 require_rejection_capability(client, clock)?;
             }
+            // ht-br0: an accept's own text output also shows the joined thread's opening lazy
+            // mail (the caller's text-inbox display, thread-scoped).
+            let accepted_thread = match &mutation {
+                MutationSpec::Accept(thread) | MutationSpec::AcceptRequired { thread, .. } => {
+                    Some((thread.clone(), claim.clone()))
+                }
+                _ => None,
+            };
             let semantic = SemanticMutation::freeze(cooperative_semantic(mutation)?, claim)?;
             require_invitation_confirmation_capability(client, clock, &semantic)?;
             if semantic.is_lazy_send() {
@@ -3587,7 +3596,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             {
                 require_send_time_receipts_capability(client, clock)?;
             }
-            retry::run_new_api_to_writer_discarding_rejection(
+            let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
                 journal,
                 scope,
                 semantic,
@@ -3598,6 +3607,28 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 writer,
             )
             .map_err(retry_failure)?;
+            if let Some((thread, claim)) = accepted_thread
+                && matches!(
+                    result,
+                    CommandResult::Accepted(_) | CommandResult::RequiredAccepted(_)
+                )
+            {
+                accept_delivery::show(
+                    &accept_delivery::AcceptPage {
+                        presentation: parsed.presentation,
+                        thread: &thread,
+                        claim: &claim,
+                        output: &parsed.output,
+                        journal,
+                        grace: accept_delivery::ChannelGrace::configured(),
+                    },
+                    client,
+                    clock,
+                    &|| cooperative_budget(clock),
+                    writer,
+                    &mut io::stderr(),
+                );
+            }
         }
         CliAction::Retry(recovery) => {
             let reference = journal.resolve_recovery_ref(recovery.as_str())?;

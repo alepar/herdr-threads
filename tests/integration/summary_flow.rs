@@ -498,6 +498,7 @@ impl World {
             pagination::PageRequest,
         };
         self.daemon_call(Command::InboxBatch(InboxQuery {
+            thread: None,
             claim: None,
             seat: Some(SeatId::new(seat)),
             page: PageRequest {

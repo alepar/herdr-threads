@@ -720,6 +720,7 @@ fn repair_receipt_discovery(
 ) -> Result<super::materialization::ReceiptBackfillResult, ApiError> {
     let deadlines = super::materialization::backfill_receipt_deadlines_in(tx, limit)?;
     let (mut physical,physical_high,mut sparse,sparse_high,completed):(i64,i64,i64,i64,bool)=tx.query_row("SELECT physical_after,physical_high_water,sparse_after,sparse_high_water,completed FROM receipt_discovery_backfill WHERE singleton=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(store_error)?;
+    let (physical_before, sparse_before) = (physical, sparse);
     let mut inspected = deadlines.inspected;
     if !completed {
         for (table, after, high) in [
@@ -772,7 +773,11 @@ fn repair_receipt_discovery(
         )
         .map_err(store_error)?;
     let now_complete = deadline_complete && physical == physical_high && sparse == sparse_high;
-    tx.execute("UPDATE receipt_discovery_backfill SET physical_after=?1,sparse_after=?2,completed=?3 WHERE singleton=1",params![physical,sparse,now_complete]).map_err(store_error)?;
+    // An unchanged marker is not rewritten: the due scan runs on every
+    // deadline tick, and an idle daemon commits nothing.
+    if (physical, sparse, now_complete) != (physical_before, sparse_before, completed) {
+        tx.execute("UPDATE receipt_discovery_backfill SET physical_after=?1,sparse_after=?2,completed=?3 WHERE singleton=1",params![physical,sparse,now_complete]).map_err(store_error)?;
+    }
     Ok(super::materialization::ReceiptBackfillResult {
         inspected,
         more: !now_complete,

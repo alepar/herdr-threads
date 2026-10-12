@@ -4528,7 +4528,9 @@ fn receipt_discovery_sparse_episodes_survive_source_rowid_reuse_and_snapshot_res
 
 #[test]
 fn receipt_discovery_populated34_upgrade_rolls_back_and_reopens_with_bounded_bootstrap() {
-    let (context, mut db, _) = receipt_discovery_historical(37);
+    // "populated34" is the genuine prefix just before receipt warning origins:
+    // composed 42 (invitation warning origin) before 43.
+    let (context, mut db, _) = receipt_discovery_historical(42);
     for n in 0..125 {
         db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary',NULL,?3,'x',0,?2)",params![format!("historical-{n}"),n+1,if n==1{"b"}else{"a"}]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','b','pending',1,0,5000)",[format!("historical-{n}")]).unwrap();
@@ -4563,7 +4565,7 @@ fn receipt_discovery_populated34_upgrade_rolls_back_and_reopens_with_bounded_boo
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        37
+        42
     );
     assert_eq!(
         db.query_row(
@@ -4705,7 +4707,7 @@ fn receipt_discovery_populated34_upgrade_rolls_back_and_reopens_with_bounded_boo
         reopened
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        39
+        crate::store::schema::LATEST_VERSION
     );
 }
 
@@ -4725,7 +4727,7 @@ fn discovery_manifest(
 
 #[test]
 fn receipt_discovery_four_historical_streams_charge_every_visit_and_reset_once() {
-    let (context, db, clock) = receipt_discovery_historical(34);
+    let (context, db, clock) = receipt_discovery_historical(39);
     for n in 0..50 {
         discovery_receipt(&db, &format!("four-{n}"), n + 1, 5000);
         discovery_manifest(
@@ -4739,13 +4741,15 @@ fn receipt_discovery_four_historical_streams_charge_every_visit_and_reset_once()
     }
     // Populate31 before the actual32 capture, then reach genuine34 through
     // immutable migration DDL. No relabeled current image or synthetic bounds.
+    // (Pre-composition names: composed 39 = handoff bounds, 40 = deadline
+    // backfill capture, 42 = invitation warning origin, 43 = receipt origins.)
     let mut migrations =
         std::fs::read_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"))
             .unwrap()
             .map(|p| p.unwrap().path())
             .collect::<Vec<_>>();
     migrations.sort();
-    for (n, path) in migrations.into_iter().enumerate().skip(34).take(3) {
+    for (n, path) in migrations.into_iter().enumerate().skip(39).take(3) {
         db.execute_batch(&std::fs::read_to_string(path).unwrap())
             .unwrap();
         db.pragma_update(None, "user_version", (n + 1) as i64)
@@ -4862,8 +4866,17 @@ fn receipt_discovery_four_historical_streams_charge_every_visit_and_reset_once()
 
 #[test]
 fn receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_together() {
-    // Main36 shifts the genuine post-send-time, pre-backfill prefix to 38.
-    let (context, mut db, _) = receipt_discovery_historical(38);
+    // f93279dd wrote this at its genuine 34: the populated prefix just before receipt
+    // warning origins, deadline-backfill capture already behind it; composed, that is 42
+    // (before 43). 38 (post-send-time, pre-backfill, so the seeded receipt also enters
+    // migration 40's capture) is kept as extra coverage.
+    for prefix in [42, 38] {
+        combined_reset_warning_and_cursors_roll_back_together_from(prefix);
+    }
+}
+
+fn combined_reset_warning_and_cursors_roll_back_together_from(prefix: usize) {
+    let (context, mut db, _) = receipt_discovery_historical(prefix);
     discovery_receipt(&db, "rollback-source", 1, 500);
     db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES ('rollback-source','c','pending',1,5000)",[]).unwrap();
     db.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
@@ -4946,7 +4959,7 @@ fn receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_togeth
 
 #[test]
 fn receipt_discovery_terminal_upgrade_counts_rows_and_catalog_rejects_missing_projection() {
-    let (context, mut db, _) = receipt_discovery_historical(37);
+    let (context, mut db, _) = receipt_discovery_historical(42);
     for n in 0..125 {
         discovery_receipt(&db, &format!("terminal-{n}"), n + 1, 500);
         db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES (?1,'c','acked',0,500)",[format!("terminal-{n}")]).unwrap();
@@ -5525,4 +5538,64 @@ fn display_ack_settles_for_a_readopted_migrated_binding() {
     conn.execute("UPDATE occupant_bindings SET observation_provenance='cooperative_env_session',migrated=1,liveness='connected',registered_at=0 WHERE seat_id='b'", []).unwrap();
     display_ack_for_b(&context, &mut conn).unwrap();
     assert_eq!(receipt_state_b(&conn), "acked");
+}
+
+/// A due scan over a store whose receipt deadline and discovery backfills are
+/// both complete commits nothing: the deadline lane runs it on every safety
+/// tick, and an idle daemon must stay idle (no row change, no Deadlines kick).
+/// The one false->true completion still writes the marker exactly once.
+#[test]
+fn completed_receipt_discovery_scan_commits_nothing_and_completion_writes_once() {
+    use crate::service::kicks::Lane;
+    let (context, mut db, _) = setup();
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    let completed = |db: &Connection| -> (i64, i64) {
+        db.query_row(
+            "SELECT a.completed,b.completed FROM receipt_deadline_backfill a CROSS JOIN receipt_discovery_backfill b",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    for _ in 0..100 {
+        if completed(&db) == (1, 1) {
+            break;
+        }
+        receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+    }
+    assert_eq!(completed(&db), (1, 1), "both backfills complete");
+    let hooks = crate::store::connection::KickHooks::install(&db);
+    let _ = hooks.take_sealed();
+    for pass in 0..2 {
+        let before = db.total_changes();
+        receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+        assert_eq!(
+            db.total_changes() - before,
+            0,
+            "idle scan {pass} changed rows"
+        );
+        assert!(
+            !hooks.take_sealed().contains(Lane::Deadlines),
+            "idle scan {pass} kicked the deadline lane"
+        );
+    }
+    // The completion transition still records its marker, exactly once.
+    db.execute("UPDATE receipt_discovery_backfill SET completed=0", [])
+        .unwrap();
+    let _ = hooks.take_sealed();
+    let before = db.total_changes();
+    receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+    assert_eq!(completed(&db), (1, 1));
+    assert_eq!(
+        db.total_changes() - before,
+        1,
+        "one marker write on completion"
+    );
+    assert!(hooks.take_sealed().contains(Lane::Deadlines));
+    let before = db.total_changes();
+    receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+    assert_eq!(db.total_changes() - before, 0, "and nothing after it");
+    // The hooks' user data must outlive every use of the connection.
+    drop(db);
+    drop(hooks);
 }

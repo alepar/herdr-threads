@@ -1302,10 +1302,21 @@ fn cooperative_typed_rejection_discards_intent_but_transport_failure_keeps_it() 
         crate::default_output_local_client!();
         fn call(
             &self,
-            _: Command,
+            command: Command,
             _: &crate::protocol::time::CallBudget,
         ) -> Result<CommandResult, ApiError> {
-            unreachable!("cooperative mutations use the definitive call")
+            // A non-lazy send first probes messages.send_time_receipts_v1
+            // (75b9cc05); the mutation itself still uses the definitive call.
+            match command {
+                Command::Capabilities => Ok(CommandResult::Capabilities(
+                    crate::protocol::results::CapabilityList {
+                        capabilities: vec![
+                            crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.into(),
+                        ],
+                    },
+                )),
+                _ => unreachable!("cooperative mutations use the definitive call"),
+            }
         }
         fn call_definitive(
             &self,

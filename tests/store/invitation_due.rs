@@ -410,7 +410,7 @@ fn failed_page_retries_from_its_original_physical_cursor() {
 fn lazy_invitation_is_discoverable_but_never_due_or_waking() {
     let (context, mut conn, _, _) = setup(1_000);
     let binding = crate::protocol::ids::BindingId::new(conn.query_row(
-        "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at) VALUES('seat',1,'recipient-pane','binding-boot',1,'claude','lazy-recipient-session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0) RETURNING binding_id",
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES('seat',1,'recipient-pane','binding-boot',1,'claude','lazy-recipient-session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'recipient-terminal','binding-boot') RETURNING binding_id",
         [],
         |row| row.get::<_, String>(0),
     ).unwrap());
@@ -623,8 +623,9 @@ fn invitation_backlog_restart_reconstructs_progress_without_recipient_activity()
 
 #[test]
 fn invitation_confirmation_prior_schema_upgrade_preserves_exact_open_origins() {
+    // The genuine prefix just before invitation warning origin (42).
     let path =
-        std::env::temp_dir().join(format!("invitation-origin-v33-{}.db", uuid::Uuid::new_v4()));
+        std::env::temp_dir().join(format!("invitation-origin-v41-{}.db", uuid::Uuid::new_v4()));
     let conn = Connection::open(&path).unwrap();
     conn.pragma_update(None, "foreign_keys", "ON").unwrap();
     let mut migrations: Vec<_> =
@@ -634,23 +635,23 @@ fn invitation_confirmation_prior_schema_upgrade_preserves_exact_open_origins() {
             .filter(|path| {
                 path.file_name().unwrap().to_str().unwrap()[..4]
                     .parse::<u32>()
-                    .is_ok_and(|version| version <= 36)
+                    .is_ok_and(|version| version <= 41)
             })
             .collect();
     migrations.sort();
-    assert_eq!(migrations.len(), 36);
+    assert_eq!(migrations.len(), 41);
     for migration in migrations {
         conn.execute_batch(&std::fs::read_to_string(migration).unwrap())
             .unwrap();
     }
-    conn.pragma_update(None, "user_version", 36).unwrap();
+    conn.pragma_update(None, "user_version", 41).unwrap();
     drop(conn);
     let conn = Connection::open(&path).unwrap();
     conn.pragma_update(None, "foreign_keys", "ON").unwrap();
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        36
+        41
     );
     conn.execute(
         "INSERT INTO host_instances(id,created_at,decision_seq) VALUES ('host',0,10)",
@@ -711,7 +712,7 @@ fn invitation_confirmation_prior_schema_upgrade_preserves_exact_open_origins() {
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        39
+        crate::store::schema::LATEST_VERSION
     );
     for origin in ["origin", "legacy"] {
         assert!(
@@ -765,12 +766,16 @@ fn invitation_confirmation_prior_schema_upgrade_preserves_exact_open_origins() {
     let _ = std::fs::remove_file(path);
 }
 
-// Exercise both transaction boundaries in the composed chain using real prior32.
+// Exercise both transaction boundaries in the composed chain using a real
+// prefix through receipt deadline backfill (40; the logical "prior32" of the
+// pre-composition numbering). The host exists from invitation confirmation (37)
+// so receipt send time (38) captures its cutover; lifecycle (41) and warning
+// origin (42) are the two boundaries.
 #[test]
 fn invitation_confirmation_actual32_upgrade_rolls_back_reopens_and_preserves_receipt_progress() {
     for (obstruction, failed_version) in [
-        ("invitations_confirmation_pending_seat", 35),
-        ("warning_conditions_invitation_origin", 36),
+        ("invitations_confirmation_pending_seat", 40),
+        ("warning_conditions_invitation_origin", 41),
     ] {
         let path =
             std::env::temp_dir().join(format!("invitation-chain-{}.db", uuid::Uuid::new_v4()));
@@ -780,12 +785,12 @@ fn invitation_confirmation_actual32_upgrade_rolls_back_reopens_and_preserves_rec
             .map(|p| p.unwrap().path())
             .collect::<Vec<_>>();
         paths.sort();
-        for (index, migration) in paths.iter().take(35).enumerate() {
+        for (index, migration) in paths.iter().take(40).enumerate() {
             db.execute_batch(&std::fs::read_to_string(migration).unwrap())
                 .unwrap();
             db.pragma_update(None, "user_version", index as i64 + 1)
                 .unwrap();
-            if index == 31 {
+            if index == 36 {
                 db.execute_batch(
                     "INSERT INTO host_instances(id,created_at,decision_seq) VALUES('host',0,12)",
                 )
@@ -804,7 +809,7 @@ fn invitation_confirmation_actual32_upgrade_rolls_back_reopens_and_preserves_rec
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            35
+            40
         );
         assert!(crate::store::schema::initialize(&db, || UtcMillis(200)).is_err());
         assert!(db.is_autocommit());
@@ -818,7 +823,7 @@ fn invitation_confirmation_actual32_upgrade_rolls_back_reopens_and_preserves_rec
                 .unwrap()
         );
         assert_eq!(db.query_row("SELECT count(*) FROM pragma_table_info('warning_conditions') WHERE name LIKE 'invitation_originator_%'", [], |r| r.get::<_,i64>(0)).unwrap(),0);
-        if failed_version == 35 {
+        if failed_version == 40 {
             assert_eq!(
                 db.query_row(
                     "SELECT count(*) FROM sqlite_master WHERE name='invitations_confirmation_scan'",
@@ -844,7 +849,7 @@ fn invitation_confirmation_actual32_upgrade_rolls_back_reopens_and_preserves_rec
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                     .unwrap(),
-                39
+                crate::store::schema::LATEST_VERSION
             );
             assert_eq!(db.query_row("SELECT physical_after,physical_high_water,prepared_after,prepared_high_water,completed FROM receipt_deadline_backfill", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?))).unwrap(),(2,7,3,9,0));
             assert_eq!(db.query_row("SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='host'", [], |r| r.get::<_,i64>(0)).unwrap(),12);
@@ -856,7 +861,7 @@ fn invitation_confirmation_actual32_upgrade_rolls_back_reopens_and_preserves_rec
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            39
+            crate::store::schema::LATEST_VERSION
         );
         drop(db);
         std::fs::remove_file(path).unwrap();

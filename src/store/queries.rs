@@ -6726,6 +6726,7 @@ mod inbox_v2 {
         continuation: Option<&ContinuedOrdinary>,
         lazy_scope_probes: &mut usize,
         retired_body: &mut Option<MessageId>,
+        scope: Option<&ThreadId>,
     ) -> Result<(Option<Item>, usize), ApiError> {
         let seat = &state.seat.clone();
         match state.source {
@@ -6908,11 +6909,12 @@ mod inbox_v2 {
                         1,
                     ));
                 }
-                let pending = super::super::lazy_delivery::pending_page(
+                let pending = super::super::lazy_delivery::pending_page_in(
                     db,
                     instance,
                     seat,
                     reading,
+                    scope,
                     state.lazy_after_ordinal as i64,
                     super::super::lazy_delivery::HighWater {
                         recipient_ordinal: state.lazy_high_water_ordinal as i64,
@@ -7144,6 +7146,14 @@ mod inbox_v2 {
                 "inbox batch requires a resolved seat",
             )
         })?;
+        // A thread-scoped page (ht-br0) is a first page only: a continuation cursor does not
+        // carry the scope, so a scoped request never resumes one.
+        if q.thread.is_some() && q.page.cursor.is_some() {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "a thread-scoped inbox page has no continuation",
+            ));
+        }
         let owned:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2 AND state!='retired')",params![seat.as_str(),instance],|r|r.get(0)).map_err(store_error)?;
         if !owned {
             return Err(api_error(ErrorCode::NotFound, "seat not found"));
@@ -7152,6 +7162,11 @@ mod inbox_v2 {
         let reading = bound(&reader);
         if ordinary_only && reading.is_none() {
             return Err(invalid("presentation reader has no binding"));
+        }
+        // The private ordinary presentation has its own lazy eligibility probe and never reads a
+        // thread-scoped page (ht-br0 is a public text-inbox read only).
+        if ordinary_only && q.thread.is_some() {
+            return Err(invalid("presentation page has no thread scope"));
         }
         let mut state = match q.page.cursor.as_ref() {
             Some(raw) => State::decode_for(raw, instance, seat).map_err(invalid)?,
@@ -7189,6 +7204,24 @@ mod inbox_v2 {
         // settlement), never a fixed harness list:
         // a Hermes binding's pending receipts are ACK candidates too.
         let current_agent = current_agent(db, seat, reading)?;
+        // Thread scope (ht-br0): only the reader's unread lazy rows of that thread, under the
+        // unchanged per-binding (or seat) lazy eligibility. Every other source starts done, so the
+        // page shows (and a display settles) nothing else: no ordinary, receipt, invitation or
+        // warning rows and no first-contact stats. A scoped page is a first page, so there is no
+        // continued body to validate here.
+        if q.thread.is_some() {
+            state.attention.invitations_done = true;
+            state.attention.receipts_done = true;
+            state.attention.next_manifest_warning = true;
+            if let Some(unread) = &mut state.unread {
+                unread.after_ordinal = unread.high_water_ordinal;
+            }
+            // A claim that names no binding of the seat would complete in the pre-binding
+            // seat-wide form, whose cursor walks this page cannot bound: it shows no row.
+            if matches!(reader, Reader::Unknown) {
+                state.lazy_after_ordinal = state.lazy_high_water_ordinal;
+            }
+        }
         // Progress is compared to the original capture, before retirement.
         let initial = state.clone();
         let mut continuation = None;
@@ -7257,7 +7290,11 @@ mod inbox_v2 {
         // with the history stats it would start from (spec §2 First-contact stats). Only the
         // first page, and only when it leaves room for mail; the CLI's advance right after the
         // display enrolls the binding, so it is shown once.
-        if matches!(reader, Reader::Unknown) && q.page.cursor.is_none() && q.page.limit >= 2 {
+        if matches!(reader, Reader::Unknown)
+            && q.page.cursor.is_none()
+            && q.thread.is_none()
+            && q.page.limit >= 2
+        {
             let first_contact = super::super::first_contact::first_contact(db, seat, &|thread| {
                 super::super::read_cursors::seed_preview(db, seat, thread).unwrap_or(0)
             })?;
@@ -7315,6 +7352,7 @@ mod inbox_v2 {
                 continuation.as_ref(),
                 &mut lazy_scope_probes,
                 &mut retired_body,
+                q.thread.as_ref(),
             )?;
             visited += work;
             state.body = None;
@@ -7449,6 +7487,7 @@ pub(super) fn ordinary_presentation_page(
     budget: &CallBudget,
 ) -> Result<OrdinaryPresentationPage, ApiError> {
     let query = InboxQuery {
+        thread: None,
         seat: Some(claim.seat.clone()),
         claim: Some(claim.clone()),
         page: PageRequest {

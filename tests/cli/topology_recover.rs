@@ -104,9 +104,11 @@ impl LocalClient for Canonical {
         if matches!(command, Command::Capabilities) {
             return Ok(CommandResult::Capabilities(
                 crate::protocol::results::CapabilityList {
+                    // A bootstrap retry also requires send-time receipts (673a27ad).
                     capabilities: vec![
                         crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1.into(),
                         crate::protocol::capabilities::BOOTSTRAP_INSPECTED_RECOVERY_V1.into(),
+                        crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.into(),
                     ],
                 },
             ));

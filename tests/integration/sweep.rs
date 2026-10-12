@@ -443,9 +443,11 @@ fn installed_flow_prelaunch_handoff_to_explicit_receipt_survives_daemon_restart(
     let prelaunch = plugin
         .pending_for(&b, &handoff)
         .expect("prelaunch obligation");
+    // TRUST-POLICY A6 (75b9cc05): the deadline freezes at committed send time even
+    // with no eligible occupant; availability is still unobserved.
     assert!(
-        prelaunch["deadline"].is_null() && prelaunch["available_at"].is_null(),
-        "no eligible occupant yet, so the receipt timer has not started: {prelaunch}"
+        prelaunch["deadline"].as_u64().is_some() && prelaunch["available_at"].is_null(),
+        "the send-time deadline runs before any eligible occupant exists: {prelaunch}"
     );
 
     // The handoff survives a daemon restart before the recipient launches.
@@ -470,8 +472,12 @@ fn installed_flow_prelaunch_handoff_to_explicit_receipt_survives_daemon_restart(
     assert!(inbox.to_string().contains(&thread), "{inbox}");
     let started = plugin.pending_for(&b, &handoff).expect("still pending");
     assert!(
-        started["deadline"].as_u64().is_some() && started["available_at"].as_u64().is_some(),
-        "the verified check-in starts the timer and never ACKs: {started}"
+        started["available_at"].as_u64().is_some(),
+        "the verified check-in records availability and never ACKs: {started}"
+    );
+    assert_eq!(
+        started["deadline"], prelaunch["deadline"],
+        "registration cannot restart the send-time clock (A6)"
     );
 
     // Topic/history reads confer nothing and settle nothing.

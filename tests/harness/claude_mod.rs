@@ -599,7 +599,8 @@ fn launch_prefix_accepts_stable_and_legacy_event_routes() {
     }
     for tail in [
         vec!["hook-event", "codex", "SessionStart"],
-        vec!["hook-event", "claude", "SubagentStart"],
+        // Declared for Codex only (Claude declares SubagentStart since 86bb0385).
+        vec!["hook-event", "claude", "UserPromptSubmit"],
         vec!["hook-event", "claude"],
         vec!["hook", "claude", "--event", "Unknown"],
     ] {

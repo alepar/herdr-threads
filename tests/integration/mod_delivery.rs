@@ -803,6 +803,11 @@ impl Rig {
 
     /// B's text-mode CLI (no `--json`), as the cooperative stand-in caller.
     fn cli_text_b(&self, args: &[&str]) -> Out {
+        self.cli_text_b_env(args, &[])
+    }
+
+    /// `cli_text_b` with extra environment (test-support overrides).
+    fn cli_text_b_env(&self, args: &[&str], env: &[(&str, &str)]) -> Out {
         let mut all = vec![
             "--cooperative-seat",
             self.b.as_str(),
@@ -816,6 +821,7 @@ impl Rig {
         all.extend_from_slice(args);
         let mut command = self.command_with(false, None, &all);
         herdr_threads::test_support::isolation::as_agent(&mut command, "claude", SESSION_B);
+        command.envs(env.iter().copied());
         collect(
             command
                 .stdin(Stdio::null())
@@ -3549,6 +3555,106 @@ fn lazy_row_appended_then_completed() {
     assert_eq!(again["result"], "already_settled", "{again}");
 }
 
+/// The accept CLI's live-channel grace (`HT_TEST_ACCEPT_CHANNEL_GRACE_MS`, test builds only).
+const ACCEPT_GRACE_ENV: &str = "HT_TEST_ACCEPT_CHANNEL_GRACE_MS";
+
+/// A pair opener from A to B, streamed to B's live watch before B accepts: (pair, id).
+fn pair_opener_streamed(rig: &Rig, watch: &mut Watch, body: &str) -> (String, String) {
+    rig.cli(
+        Some((&rig.a, PANE_A)),
+        &["send", "--seat", &rig.b, "--body", body],
+    )
+    .data("direct send");
+    let (pair, id): (String, String) = rig
+        .db()
+        .query_row(
+            "SELECT m.thread_id,m.id FROM messages m JOIN direct_threads d ON d.thread_id=m.thread_id WHERE m.body=?1",
+            [body],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let line = watch.wait_item(&id);
+    assert_eq!(line["kind"], "lazy", "{line}");
+    assert_eq!(line["body"], body);
+    (pair, id)
+}
+
+/// ht-br0 handshake, channel in time: B's live mod channel completes the opener (its `append`
+/// ack) while B's text `accept` is still running. The accept waits for that completion within
+/// its bounded grace (a generous bound here: the test ends on the completion, not the bound),
+/// prints no opening body, and the watch streams the opener exactly once.
+#[test]
+fn text_accept_with_a_live_mod_channel_prints_nothing_when_the_channel_completes_in_time() {
+    let rig = Rig::new();
+    let mut watch = rig.watch(SESSION_B);
+    watch.wait_connected();
+    let (pair, id) = pair_opener_streamed(&rig, &mut watch, "pair opener via mod");
+    let accept = std::thread::scope(|scope| {
+        let accept =
+            scope.spawn(|| rig.cli_text_b_env(&["accept", &pair], &[(ACCEPT_GRACE_ENV, "20000")]));
+        // The channel appends and acks only once the accept committed, so the accept is inside
+        // its grace (or has not peeked yet) when the completion lands.
+        wait_until("B joined the pair", STEP, || {
+            rig.db()
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM memberships WHERE thread_id=?1 AND seat_id=?2 AND state='joined')",
+                    [pair.as_str(), rig.b.as_str()],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap()
+                .then_some(())
+        });
+        let result = rig.ack_result(SESSION_B, "append", &id);
+        assert_eq!(result["result"], "settled", "{result}");
+        accept.join().unwrap()
+    });
+    assert_eq!(accept.code, 0, "{}{}", accept.stdout, accept.stderr);
+    assert!(accept.stdout.starts_with("accepted"), "{}", accept.stdout);
+    assert!(
+        !accept.stdout.contains("pair opener via mod"),
+        "{}",
+        accept.stdout
+    );
+    assert!(accept.stderr.is_empty(), "{}", accept.stderr);
+    assert_eq!(rig.lazy_state(&id), "displayed");
+    // Only lines after the first copy count (`seen` keeps the one `wait_item` returned).
+    assert_eq!(
+        watch.seen.iter().filter(|line| line["id"] == id).count(),
+        1,
+        "{:#?}",
+        watch.seen
+    );
+    watch.seen.clear();
+    watch.assert_no_line("a second copy of the opener", QUIET, |line| {
+        line["id"] == id
+    });
+}
+
+/// ht-br0 handshake, channel late: B's live watch streamed the opener but the mod never completes
+/// it (not consuming, or slower than the grace). After its bounded grace (shortened here) B's
+/// text `accept` shows the opener itself and settles it as its own text-inbox display; the
+/// channel's late `append` ack then finds it already settled (at least once).
+#[test]
+fn text_accept_with_a_live_mod_channel_shows_the_opener_after_the_grace() {
+    let rig = Rig::new();
+    let mut watch = rig.watch(SESSION_B);
+    watch.wait_connected();
+    let (pair, id) = pair_opener_streamed(&rig, &mut watch, "pair opener the mod missed");
+    let accept = rig.cli_text_b_env(&["accept", &pair], &[(ACCEPT_GRACE_ENV, "200")]);
+    assert_eq!(accept.code, 0, "{}{}", accept.stdout, accept.stderr);
+    assert!(accept.stdout.starts_with("accepted"), "{}", accept.stdout);
+    assert_eq!(
+        accept.stdout.matches("pair opener the mod missed").count(),
+        1,
+        "{}",
+        accept.stdout
+    );
+    assert!(accept.stderr.is_empty(), "{}", accept.stderr);
+    assert_eq!(rig.lazy_state(&id), "displayed");
+    let late = rig.ack_result(SESSION_B, "append", &id);
+    assert_eq!(late["result"], "already_settled", "{late}");
+}
+
 /// Spec D4: a body over 8 KiB streams as its first 8 KiB plus the marker with
 /// `truncated: true`; the mod must not ack it, and when it does the ack is a
 /// terminal refusal decided by the daemon from the stored length (the local
@@ -4229,7 +4335,10 @@ fn watch_ack_already_settled_after_inbox_ack() {
 }
 
 /// Spec D4: invitations (anything without a body) reach the mod as one
-/// `attention` line carrying the fixed marker, never as an acked item.
+/// `attention` line carrying the fixed marker, never as an acked item. The
+/// invitation requests confirmation (`--require-ack`): an ordinary invitation
+/// is Lazy by default (handoff-delivery-redesign) and is presented as a
+/// passive `invitation` line that requests no attention.
 #[test]
 fn attention_marker_line_for_invitation() {
     let rig = Rig::new();
@@ -4243,7 +4352,7 @@ fn attention_marker_line_for_invitation() {
         .text("thread create");
     rig.cli(
         Some((&rig.a, PANE_A)),
-        &["invite", &other, "--seat", &rig.b],
+        &["invite", &other, "--seat", &rig.b, "--require-ack"],
     )
     .data("invite");
     let line = watch.wait_attention_marker();
@@ -5043,11 +5152,15 @@ fn watch_admission_over_cap_refuses_busy() {
         Instant::now() < deadline,
         "hook registration ran past the test deadline"
     );
+    // Each holder is its session's `watch` child, so it runs as the same
+    // harness process (execution identity) its SessionStart hook bound.
     let spawn_holder = |id: &str, session: &str| {
-        Watch::spawn(rig.command(
+        let mut command = rig.command(
             Some(id),
             &["watch", "--harness", "claude", "--session", session],
-        ))
+        );
+        herdr_threads::test_support::isolation::as_agent(&mut command, "claude", session);
+        Watch::spawn(command)
     };
     let mut spawned: Vec<Watch> = extra
         .iter()

@@ -2317,10 +2317,12 @@ fn receipt_send_time_upgrade_failure_rolls_back_constraint_and_cutover_then_retr
                     .unwrap(),
                 foreign_keys
             );
+            // Receipt send time is migration 38: the last committed step is
+            // invitation confirmation (37), never a partial receipt rebuild.
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                     .unwrap(),
-                36
+                37
             );
             assert_eq!(
                 db.query_row(

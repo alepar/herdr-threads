@@ -100,6 +100,20 @@ impl Fx {
             .unwrap()
     }
 
+    /// The schema-46 presentation warning fence singleton. Its triggers bump
+    /// it once per write to a presentation source (`work_jobs`,
+    /// `send_preparations`, ...) in the writer's transaction: constant keyed
+    /// bookkeeping on one row, which `total_changes` also counts.
+    fn presentation_fence(&self) -> u64 {
+        self.db()
+            .query_row(
+                "SELECT version FROM presentation_warning_fence WHERE singleton=1",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap() as u64
+    }
+
     fn generations(&self) -> BTreeSet<String> {
         self.ids("SELECT id FROM snapshot_generations")
     }
@@ -429,8 +443,13 @@ fn every_transaction_touches_at_most_256_rows() {
     let mut deleted = 0u64;
     loop {
         let before = fx.db().total_changes();
+        let fence_before = fx.presentation_fence();
         let pass = prune_once(&fx.store, &budget()).unwrap();
-        let delta = fx.db().total_changes() - before;
+        // Every job delete bumps the single presentation fence row once
+        // (schema 46); that singleton bookkeeping is not a pruned row.
+        let fence = fx.presentation_fence() - fence_before;
+        let delta = fx.db().total_changes() - before - fence;
+        assert_eq!(fence, delta, "one fence bump per deleted job");
         assert!(
             delta <= RETENTION_BATCH_ROWS as u64,
             "{delta} job rows in a pass"
@@ -943,9 +962,11 @@ fn candidate_and_job_queries_use_the_retention_indexes() {
 #[test]
 fn triggers_allow_discard_then_delete() {
     let fx = Fx::new("triggers");
-    // Only these observational archival triggers may touch pruned tables.
-    // Exercise their live effects below: pruning must succeed, invalidate
-    // archival certificates for removed releases, and retain every trigger.
+    // Only these observational archival triggers and the schema-46
+    // presentation warning fence (one singleton bump per job write, no
+    // projection fanout) may touch pruned tables. Exercise their live effects
+    // below: pruning must succeed, invalidate archival certificates for
+    // removed releases, and retain every trigger.
     let triggers: Vec<(String, String)> = {
         let db = fx.db();
         let mut stmt = db
@@ -990,6 +1011,9 @@ fn triggers_allow_discard_then_delete() {
                 "recovery_baseline_releases"
             ),
             ("archival_snapshot_structure", "snapshot_targets"),
+            ("presentation_fence_work_jobs_insert", "work_jobs"),
+            ("presentation_fence_work_jobs_update", "work_jobs"),
+            ("presentation_fence_work_jobs_delete", "work_jobs"),
         ]),
         "unexpected triggers on pruned tables"
     );
@@ -1094,10 +1118,13 @@ fn work_job_fk_trigger_audit() {
     };
     let before_digests = dump(&fx);
     let before_changes = fx.db().total_changes();
+    let before_fence = fx.presentation_fence();
     assert_eq!(fx.drain().jobs, 3);
     // total_changes counts trigger-fired changes too: exactly the three
-    // deleted jobs changed, so no digest projection row did.
-    assert_eq!(fx.db().total_changes() - before_changes, 3);
+    // deleted jobs changed, plus one schema-46 presentation fence bump each
+    // on its singleton row, so no digest projection row did.
+    assert_eq!(fx.presentation_fence() - before_fence, 3);
+    assert_eq!(fx.db().total_changes() - before_changes, 3 + 3);
     assert_eq!(dump(&fx), before_digests);
     assert_eq!(fx.count("work_jobs"), 0);
 }
@@ -1275,10 +1302,16 @@ fn expiry_batch_bounds_include_cleanup_enqueue_and_scan_uses_index() {
     );
     let before = db.total_changes();
     drop(db);
+    let fence_before = fx.presentation_fence();
     let pass = prune_once(&fx.store, &budget()).unwrap();
     assert_eq!(pass.preparations, 128);
     assert!(pass.has_more);
-    assert_eq!(fx.db().total_changes() - before, 256);
+    // 128 discards plus 128 cleanup enqueues; each of those source writes
+    // also bumps the one schema-46 presentation fence row, which is
+    // singleton bookkeeping and not a batch row.
+    let fence = fx.presentation_fence() - fence_before;
+    assert_eq!(fence, 256);
+    assert_eq!(fx.db().total_changes() - before - fence, 256);
     assert_eq!(fx.drain().preparations, 172);
 }
 
