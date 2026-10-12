@@ -417,10 +417,15 @@ class Run:
         for w in self.workers:
             if w not in self.start_attempted:  # never asked to start: nothing to drain
                 continue
-            try:
-                w.join(timeout=max(0.0, end - time.time()))
-            except RuntimeError:  # its start failed before the thread existed
-                continue
+            settle = time.time() + 1.0  # a thread still inside start() cannot be joined yet: retry briefly
+            while True:
+                try:
+                    w.join(timeout=max(0.0, end - time.time()))
+                    break
+                except RuntimeError:  # "cannot join thread before it is started"
+                    if time.time() >= min(settle, end):
+                        break  # its start failed before the thread existed
+                    time.sleep(0.05)
             if w.is_alive():
                 problems.append(f"worker {w.name} did not stop within {self.drain_timeout_s:.0f}s")
         with self.lock:
