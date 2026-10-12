@@ -872,7 +872,7 @@ fn q3_completion_hint_delivery_confirm_no_progress_is_inert() {
         hint_confirm(&f, wrong, &["m1"], "hint-confirm-stale").unwrap(),
         vec![Outcome::StaleGeneration]
     );
-    let nobody = claim("none", "pn", context.harness.clone(), "hint-absent", 0);
+    let nobody = claim("none", "pn", context.harness, "hint-absent", 0);
     assert_eq!(
         hint_confirm(&f, nobody, &["m1"], "hint-confirm-retryable").unwrap(),
         vec![Outcome::Retryable]
