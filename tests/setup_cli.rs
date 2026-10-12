@@ -486,10 +486,11 @@ fn installed_command_is_the_hook_entrypoint_argv() {
 const SUBAGENT_EVENTS: [&str; 2] = ["SubagentStart", "SubagentStop"];
 /// Every hook group `setup codex` owns (spec §4): the session and subagent starts, the Bash
 /// tool boundary, and the two end events that disconnect a binding.
-const CODEX_OWNED_EVENTS: [&str; 5] = [
+const CODEX_OWNED_EVENTS: [&str; 6] = [
     "SessionStart",
     "SubagentStart",
     "PreToolUse",
+    "UserPromptSubmit",
     "SubagentStop",
     "SessionEnd",
 ];
@@ -882,6 +883,7 @@ fn codex_setup_installs_user_hooks_and_unsetup_restores_bytes() {
             format!("{file}:session_start:1:0"),
             format!("{file}:subagent_start:0:0"),
             format!("{file}:pre_tool_use:0:0"),
+            format!("{file}:user_prompt_submit:0:0"),
             format!("{file}:subagent_stop:0:0"),
             format!("{file}:session_end:0:0"),
         ]

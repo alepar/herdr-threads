@@ -250,7 +250,7 @@ fn presentation_publication_scalar_checks_validate_retained_consumer_rows() -> r
                     "ordinary_done" | "outbox_more" => Value::Integer(1),
                     _ if kind == "INTEGER" => Value::Integer(2),
                     _ if kind == "TEXT" => Value::Text("retained".into()),
-                    _ => panic!("unsupported V44 consumer fixture column {name}: {kind}"),
+                    _ => panic!("unsupported V45 consumer fixture column {name}: {kind}"),
                 })
                 .collect::<Vec<_>>();
             db.execute(&insert, params_from_iter(values))?;
@@ -258,19 +258,19 @@ fn presentation_publication_scalar_checks_validate_retained_consumer_rows() -> r
         Ok((db, names))
     }
 
-    // Use the complete ACTUAL V44 consumer table and its two unique indexes,
+    // Use the complete ACTUAL V45 consumer table and its two unique indexes,
     // with minimal referenced parents. No copied/reduced consumer DDL.
-    let v44 = include_str!("../../migrations/0044_invitation_presentation.sql");
-    let start = v44
+    let v45 = include_str!("../../migrations/0045_invitation_presentation.sql");
+    let start = v45
         .find("CREATE TABLE invitation_presentation_consumers (")
-        .expect("V44 consumer DDL");
-    let end = v44[start..]
+        .expect("V45 consumer DDL");
+    let end = v45[start..]
         .find("CREATE TABLE invitation_presentation_items (")
-        .expect("V44 consumer DDL end")
+        .expect("V45 consumer DDL end")
         + start;
-    let ddl = &v44[start..end];
-    let v45 = include_str!("../../migrations/0045_presentation_relevance.sql");
-    let alters = v45
+    let ddl = &v45[start..end];
+    let v46 = include_str!("../../migrations/0046_presentation_relevance.sql");
+    let alters = v46
         .lines()
         .filter(|line| {
             line.starts_with("ALTER TABLE invitation_presentation_consumers ADD COLUMN ")
@@ -373,6 +373,7 @@ fn presentation_publication_scalar_checks_validate_retained_consumer_rows() -> r
 }
 
 #[test]
+// The historical test key is retained; the genuine composed precursor is now physical44.
 fn composed_v43_invitation_epoch_alter_records_nested_work_and_preserves_state()
 -> rusqlite::Result<()> {
     use rusqlite::{params, types::Value};
@@ -421,19 +422,20 @@ fn composed_v43_invitation_epoch_alter_records_nested_work_and_preserves_state()
         include_str!("../../migrations/0033_archival_scan_scope.sql"),
         include_str!("../../migrations/0034_binding_delivery_state.sql"),
         include_str!("../../migrations/0035_binding_attention_frontiers.sql"),
-        include_str!("../../migrations/0036_invitation_confirmation.sql"),
-        include_str!("../../migrations/0037_receipt_send_time.sql"),
-        include_str!("../../migrations/0038_handoff_body_bounds.sql"),
-        include_str!("../../migrations/0039_receipt_deadline_backfill.sql"),
-        include_str!("../../migrations/0040_invitation_lifecycle.sql"),
-        include_str!("../../migrations/0041_invitation_warning_origin.sql"),
-        include_str!("../../migrations/0042_receipt_warning_origins.sql"),
-        include_str!("../../migrations/0043_automatic_handoff_body_bounds.sql"),
+        include_str!("../../migrations/0036_in_turn_offer.sql"),
+        include_str!("../../migrations/0037_invitation_confirmation.sql"),
+        include_str!("../../migrations/0038_receipt_send_time.sql"),
+        include_str!("../../migrations/0039_handoff_body_bounds.sql"),
+        include_str!("../../migrations/0040_receipt_deadline_backfill.sql"),
+        include_str!("../../migrations/0041_invitation_lifecycle.sql"),
+        include_str!("../../migrations/0042_invitation_warning_origin.sql"),
+        include_str!("../../migrations/0043_receipt_warning_origins.sql"),
+        include_str!("../../migrations/0044_automatic_handoff_body_bounds.sql"),
     ];
-    let epoch_alter = include_str!("../../migrations/0044_invitation_presentation.sql")
+    let epoch_alter = include_str!("../../migrations/0045_invitation_presentation.sql")
         .lines()
         .find(|line| line.starts_with("ALTER TABLE invitations ADD COLUMN command_context_epoch "))
-        .expect("exact V44 epoch ALTER");
+        .expect("exact V45 epoch ALTER");
     for rows in [1_i64, 32, 128] {
         let db = Connection::open_in_memory()?;
         // Some released migrations rebuild tables. Enable FK enforcement
@@ -442,7 +444,7 @@ fn composed_v43_invitation_epoch_alter_records_nested_work_and_preserves_state()
         for migration in released {
             db.execute_batch(migration)?;
         }
-        db.execute_batch("PRAGMA user_version=43; PRAGMA foreign_keys=ON;")?;
+        db.execute_batch("PRAGMA user_version=44; PRAGMA foreign_keys=ON;")?;
         let foreign_keys: i64 = db.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
         assert_eq!(foreign_keys, 1);
         db.execute_batch(
@@ -493,7 +495,7 @@ fn composed_v43_invitation_epoch_alter_records_nested_work_and_preserves_state()
         // Record actual nested work; neither constant nor linear complexity
         // is assumed from the absence of a CHECK on the new column.
         eprintln!(
-            "sqlite_version={version} composed43_invitations={rows} exact44_epoch_alter_outer_vm={outer} including_nested_progress={progress}"
+            "sqlite_version={version} composed44_invitations={rows} exact45_epoch_alter_outer_vm={outer} including_nested_progress={progress}"
         );
         assert_eq!(snapshot(&db, &old_query)?, invitations_before);
         assert_eq!(snapshot(&db, digest_query)?, digest_before);
@@ -516,8 +518,8 @@ fn composed_v43_invitation_epoch_alter_records_nested_work_and_preserves_state()
         assert_eq!(new_column, ("INTEGER".into(), 1, "0".into()));
         let user_version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         assert_eq!(
-            user_version, 43,
-            "this probe applies one ALTER, not full migration44"
+            user_version, 44,
+            "this probe applies one ALTER, not full migration45"
         );
     }
     Ok(())
@@ -1135,6 +1137,8 @@ mod binding_presentation {
             .store
             .advance_cursors(
                 &AdvanceCursors {
+                    in_turn: false,
+                    invitations: vec![],
                     claim: claim.clone(),
                     operation: OperationId::new("body-read-b"),
                     displayed: vec![MessageId::new("m")],
@@ -1278,6 +1282,8 @@ mod binding_presentation {
         f.store
             .advance_cursors(
                 &AdvanceCursors {
+                    in_turn: false,
+                    invitations: vec![],
                     claim: claim.clone(),
                     operation: OperationId::new(operation),
                     displayed: vec![MessageId::new("m")],

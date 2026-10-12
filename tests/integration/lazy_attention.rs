@@ -157,7 +157,9 @@ impl Fixture {
         panic!("preparation did not converge")
     }
     fn check(&self, seat: &str, op: &str, startup: bool) -> CheckInResult {
-        let mut claim = self.claim(seat);
+        self.check_claim(self.claim(seat), op, startup)
+    }
+    fn check_claim(&self, mut claim: CallerClaim, op: &str, startup: bool) -> CheckInResult {
         claim.liveness = Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST);
         if startup {
             claim.execution = ExecutionId::new(uuid::Uuid::new_v4().to_string());
@@ -993,4 +995,197 @@ fn lazy_attention_backlog_allows_qualified_quiet_archive() {
     .unwrap();
     assert!(f.inbox("agent").is_empty());
     assert_eq!(f.count("receipts"), 0);
+}
+
+/// ht-705: a nudge shown whole inside the recipient's turn (a tool-boundary hook page, which
+/// sends `AdvanceCursors { in_turn: true }` after its output is flushed) was served in-turn, so
+/// the idle wake after that turn is owed to no one (delivery contract rule 4). The receipt stays
+/// pending (presentation is not an ACK). Kills: the post-turn duplicate wake on Codex; a display
+/// outside a turn (lifecycle hook, CLI) suppressing the wake; one shown receipt hiding a newer
+/// unshown one; a new occupant (lifecycle check-in) inheriting the old one's presentation.
+#[test]
+fn in_turn_display_of_a_nudge_owes_no_idle_wake() {
+    let f = Fixture::new();
+    let wake_owed = || {
+        f.store
+            .wake_candidates(PageRequest::default(), &budget())
+            .unwrap()
+            .items
+            .iter()
+            .any(|c| c.seat.as_str() == "agent" && c.has_actionable_work())
+    };
+    let display = |op: &str, displayed: Vec<MessageId>, in_turn: bool| {
+        f.store
+            .advance_cursors(
+                &AdvanceCursors {
+                    claim: f.claim("agent"),
+                    operation: OperationId::new(op),
+                    displayed,
+                    in_turn,
+                    invitations: Vec::new(),
+                },
+                &budget(),
+            )
+            .unwrap();
+    };
+    let receipt_pending = || {
+        attention::wake_seat_attention(&f.db, "agent")
+            .unwrap()
+            .attention
+            .has_pending_receipt
+    };
+    let first = f.send("nudge-1", DeliveryMode::Ordinary);
+    assert!(
+        wake_owed(),
+        "control: an unshown nudge wakes an idle session"
+    );
+    display("shown-idle", vec![first.clone()], false);
+    assert!(wake_owed(), "a display outside a turn leaves the wake owed");
+    display("shown-in-turn", vec![first.clone()], true);
+    assert!(!wake_owed(), "served in-turn: no idle wake");
+    assert!(receipt_pending(), "presentation settles nothing");
+    let second = f.send("nudge-2", DeliveryMode::Ordinary);
+    assert!(wake_owed(), "a newer unshown nudge still wakes");
+    display("shown-2", vec![second], true);
+    assert!(!wake_owed());
+    f.check("agent", "current", false);
+    assert!(!wake_owed(), "a Current check-in keeps the presentation");
+    f.check("agent", "new-session", true);
+    assert!(wake_owed(), "a new occupant was not served");
+}
+
+/// ht-705: an invitation shown inside the invitee's turn (tool-boundary hook page) owes no idle
+/// wake after the turn; it stays pending (nothing is accepted). (Warnings a Current check-in
+/// carried are already spared by `warning_offer`: `scheduler::policy` tests.) Kills: the
+/// post-turn invitation wake on Codex; an in-turn display accepting the invitation; a new
+/// occupant inheriting it.
+#[test]
+fn in_turn_display_of_an_invitation_owes_no_idle_wake() {
+    let f = Fixture::new();
+    f.member("outsider", "resolved", "left", Harness::Codex);
+    let wake_owed = |seat: &str| {
+        f.store
+            .wake_candidates(PageRequest::default(), &budget())
+            .unwrap()
+            .items
+            .iter()
+            .any(|c| c.seat.as_str() == seat && c.has_actionable_work())
+    };
+    f.mutate(PermitMutation::Invite(Invite {
+        confirmation: None,
+        thread: ThreadId::new("t"),
+        seat: SeatId::new("outsider"),
+        deadline_millis: None,
+        operation: OperationId::new("invite"),
+        claim: f.claim("author"),
+    }))
+    .unwrap();
+    let invitation: String =
+        f.db.query_row(
+            "SELECT id FROM invitations WHERE seat_id='outsider'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        wake_owed("outsider"),
+        "control: an unshown invitation wakes"
+    );
+    f.store
+        .advance_cursors(
+            &AdvanceCursors {
+                claim: f.claim("outsider"),
+                operation: OperationId::new("shown-in-turn"),
+                displayed: Vec::new(),
+                in_turn: true,
+                invitations: vec![InvitationId::new(invitation.clone())],
+            },
+            &budget(),
+        )
+        .unwrap();
+    assert!(!wake_owed("outsider"), "served in-turn: no idle wake");
+    assert!(
+        attention::wake_seat_attention(&f.db, "outsider")
+            .unwrap()
+            .attention
+            .has_pending_invitation,
+        "presentation accepts nothing"
+    );
+    f.check("outsider", "new-session", true);
+    assert!(wake_owed("outsider"), "a new occupant was not served");
+}
+
+/// ht-705: in-turn service is per binding. Seat `agent` holds two live top-level sessions, older
+/// `a` and newer `b` (distinct processes). Both served a nudge in their turns: nothing is owed. A
+/// lifecycle check-in by `b` (a new session in that process slot) starts only `b` over: `a` keeps
+/// its record, and the seat owes `b` its wake again. Kills: a lifecycle reset that clears the
+/// sibling's service, and one that leaves the reset binding counted as served.
+#[test]
+fn a_sibling_lifecycle_check_in_resets_only_its_own_in_turn_service() {
+    let f = Fixture::new();
+    f.db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES('agent',1,'agent','b',1,0,'codex','session-agent-b','00000000-0000-4000-8000-0000000000b2','cooperative_top_level',0,0,'term-agent','inc',20,1)",[]).unwrap();
+    f.db.execute("INSERT INTO binding_cursors(binding_id,thread_id,seq) SELECT binding_id,'t',0 FROM occupant_bindings WHERE native_session='session-agent-b'",[]).unwrap();
+    let binding = |session: &str| -> String {
+        f.db.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE native_session=?1 AND ended_at IS NULL",
+            [session],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let (a, b) = (binding("session-agent"), binding("session-agent-b"));
+    let claim_a = f.claim("agent");
+    assert_eq!(claim_a.native_session.as_str(), "session-agent");
+    let claim_b = CallerClaim {
+        native_session: NativeSessionId::new("session-agent-b"),
+        execution: ExecutionId::new("00000000-0000-4000-8000-0000000000b2"),
+        ..claim_a.clone()
+    };
+    let wake_owed = || {
+        f.store
+            .wake_candidates(PageRequest::default(), &budget())
+            .unwrap()
+            .items
+            .iter()
+            .any(|c| c.seat.as_str() == "agent" && c.has_actionable_work())
+    };
+    let served = |binding: &str| -> i64 {
+        f.db.query_row(
+            "SELECT count(*) FROM in_turn_offer WHERE binding_id=?1",
+            [binding],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let nudge = f.send("nudge", DeliveryMode::Ordinary);
+    let show = |claim: &CallerClaim, op: &str| {
+        f.store
+            .advance_cursors(
+                &AdvanceCursors {
+                    claim: claim.clone(),
+                    operation: OperationId::new(op),
+                    displayed: vec![nudge.clone()],
+                    in_turn: true,
+                    invitations: Vec::new(),
+                },
+                &budget(),
+            )
+            .unwrap();
+    };
+    show(&claim_b, "shown-b");
+    assert!(
+        wake_owed(),
+        "a was not served: the newer session's turn never hides a's wake"
+    );
+    show(&claim_a, "shown-a");
+    assert!(!wake_owed(), "both live sessions were served in-turn");
+    f.check_claim(claim_b, "b-new-session", true);
+    assert_eq!(
+        served(&a),
+        1,
+        "b's lifecycle check-in leaves a's service alone"
+    );
+    assert_eq!(served(&b), 0, "b starts over");
+    assert_eq!(binding("session-agent"), a, "a stays open");
+    assert!(wake_owed(), "the reset sibling is owed its wake again");
 }

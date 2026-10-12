@@ -77,6 +77,12 @@ Enforcement:
   (`src/cli/hook.rs:2114-2124` at a tool boundary, `:2176-2189` at a lifecycle check-in), then completes the lazy rows
   shown whole with `cooperative_hook_context` after its stdout was flushed. A live mod channel keeps the page out
   (`src/harness/bridge.rs:1218-1226`, `src/cli/hook.rs:2588-2593`).
+- Codex turn start (ht-mu3, 2026-10-11): a text-only Codex turn makes no tool call, so with only SessionStart and
+  Bash PreToolUse owned, a pending lazy item waited for the next tool call, wake or session start. The Codex adapter
+  now also owns `UserPromptSubmit` (`src/harness/codex.rs` `DECLARATION`), decoded as the same Current check-in as a
+  tool boundary and answered under its own `hookEventName`; a quiet turn coalesces to empty output. A Codex that never
+  fires it degrades to tool-boundary delivery. Pinned by `tests/hook_entrypoint.rs`
+  `lazy_mail_reaches_the_next_codex_user_prompt_hook`.
 - Hook-pull seats (agy) carry bodies only through `DeliveryPull` (`src/service/delivery_pull.rs`), completed by
   `DeliveryConfirm`. The decision is `src/delivery/routing.rs:35` `hook_inbox_page`: a hook-pull seat's standard hook
   reads no page at either boundary, and the daemon enforces it
@@ -120,6 +126,23 @@ Enforcement:
   mail. Rule 4 is enforced in `poke_eligibility` itself, with no exception (DC-3, fixed).
 - Claude mod channel: whether the mod submits a turn only when idle is decided in the mod (frozen at v0.5.0, R9) and
   is not verifiable from core code (DC-4).
+- Served in-turn (ht-705, 2026-10-11): a nudge or invitation a standard hook showed whole inside the recipient's
+  turn stayed pending (the hook never ACKs or accepts), so the idle wake fired after that turn and the model read
+  it again (found on Codex by `scripts/wake-e2e.py` busy-nudge and busy-invite). The hook's post-flush
+  `AdvanceCursors` now carries `in_turn` and the shown invitations at a tool boundary or turn start
+  (`src/cli/hook.rs`, `src/cli/hook_inbox.rs`), the daemon records the displayed pending receipts and invitations
+  in `in_turn_offer` for that top-level binding (`src/store/control.rs` `advance_cursors`), and
+  `WakeCandidate::has_actionable_work` skips pending receipts or invitations only when all are recorded for
+  every binding the wake could reach (`src/store/wake.rs` `served_by_all`); the native dispatcher rechecks the
+  binding the composer chose right before typing and refuses a served one pre-send
+  (`ReservationCheck::owes_wake`, `wake::wake_owed_to_binding`), so neither a served foreground binding is
+  woken nor an unserved sibling's wake hidden (review of 2026-10-12). The items stay pending; a lifecycle
+  check-in clears that binding's records only. Warnings were already covered by the check-in's warning offer
+  frontier. Pinned by `tests/integration/lazy_attention.rs` `in_turn_display_of_a_nudge_owes_no_idle_wake`,
+  `in_turn_display_of_an_invitation_owes_no_idle_wake` and
+  `a_sibling_lifecycle_check_in_resets_only_its_own_in_turn_service`, and `tests/store/wake.rs`
+  `in_turn_service_is_decided_for_the_binding_the_composer_reaches` and
+  `an_in_turn_offer_after_reservation_cancels_that_bindings_wake`.
 
 Pinning tests: `tests/scheduler/dispatch.rs` `active_attention_is_always_deferred_then_idle_delivers`,
 `blocked_or_human_input_target_is_never_prompted`, `nonempty_composer_skips_before_stash_or_restore`,

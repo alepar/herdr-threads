@@ -212,6 +212,63 @@ fn newer_persisted_reservation_baseline_cannot_be_mistaken_for_new_attention() {
     assert!(state.can_reserve(&seat, MonoInstant(60_000)));
 }
 
+/// ht-bz1: a pane that refused every wake for a while (a Codex modal over the composer) backed its refusal retry
+/// off toward 30 s. A new item must not wait out that step: it is retried at once, and the backoff keeps its count.
+#[test]
+fn new_attention_retries_a_refusal_backed_off_seat_at_once_and_keeps_the_backoff() {
+    let seat = SeatId::new("seat");
+    let boot = daemon_boot();
+    let mut state =
+        DispatchState::new(RetryConfig::default(), MonoInstant(0), boot).with_refusal_seed(7);
+    state.restore(seat.clone(), fresh()).unwrap();
+    let frontier = |decision_seq| LogicalAttentionFrontier {
+        invitation: Some(LogicalPublicationKey {
+            decision_seq,
+            event_offset: 0,
+        }),
+        ..Default::default()
+    };
+    state
+        .observe_frontier(&seat, Default::default(), frontier(1))
+        .unwrap();
+    let refuse = |state: &mut DispatchState, n: u32, now: u64| {
+        let attempt = WakeAttemptId::new(format!("attempt-{n}"));
+        state
+            .reserved(seat.clone(), attempt.clone(), boot, MonoInstant(now))
+            .unwrap();
+        assert!(
+            state
+                .finish(&seat, &attempt, &boot, MonoInstant(now))
+                .unwrap()
+        );
+        state.record_outcome(
+            &seat,
+            WakeOutcome::Refused(RefusalCause::Unsafe),
+            MonoInstant(now),
+        );
+        state.restore_prior_guard(&seat);
+    };
+    for n in 0..10 {
+        refuse(&mut state, n, 0);
+    }
+    assert_eq!(state.refusal_attempts(&seat), Some(10));
+    assert!(!state.can_reserve(&seat, MonoInstant(1_000)));
+    // Rediscovering the same item changes nothing.
+    state
+        .observe_frontier(&seat, frontier(1), frontier(1))
+        .unwrap();
+    assert!(!state.can_reserve(&seat, MonoInstant(1_000)));
+    // A new item is retried at once.
+    state
+        .observe_frontier(&seat, frontier(1), frontier(2))
+        .unwrap();
+    assert!(state.can_reserve(&seat, MonoInstant(1_000)));
+    // A pane still unsafe for it climbs on from the step it had reached.
+    refuse(&mut state, 10, 1_000);
+    assert_eq!(state.refusal_attempts(&seat), Some(11));
+    assert!(!state.can_reserve(&seat, MonoInstant(1_000 + 23_999)));
+}
+
 #[test]
 fn reservation_from_an_old_daemon_boot_never_occupies_a_slot() {
     let seat = SeatId::new("seat");
@@ -739,6 +796,8 @@ impl NotificationPort for FakeNotifier {
 }
 fn due_candidate() -> WakeCandidate {
     WakeCandidate {
+        receipts_served_in_turn: false,
+        invitations_served_in_turn: false,
         targets: Vec::new(),
         seat: SeatId::new("seat"),
         attention_witness: Some(test_witness(true, false)),

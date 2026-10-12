@@ -1407,4 +1407,4 @@ mod poke_flow;
 mod tests;
 #[cfg(test)]
 #[path = "../../tests/scheduler/wake_text.rs"]
-mod wake_text_tests;
+pub(crate) mod wake_text_tests;

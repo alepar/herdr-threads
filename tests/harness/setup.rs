@@ -2444,6 +2444,7 @@ fn codex_setup_registers_event_per_group() {
             "SessionStart",
             "SubagentStart",
             "PreToolUse",
+            "UserPromptSubmit",
             "SubagentStop",
             "SessionEnd"
         ]
@@ -2461,7 +2462,7 @@ fn codex_setup_registers_event_per_group() {
 fn codex_session_plan_registers_event_per_group() {
     let argv: Vec<String> = vec!["/x/herdr-threads".into(), "hook".into(), "codex".into()];
     let plan = plan_codex_for_version(&[], &argv, &pinned()).unwrap();
-    assert_eq!(plan.owned.len(), 5);
+    assert_eq!(plan.owned.len(), 6);
     for entry in &plan.owned {
         assert_eq!(
             command_of(entry),

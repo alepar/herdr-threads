@@ -450,11 +450,18 @@ pub(crate) fn retry<C: LocalClient + ?Sized, W: Write>(
         save(journal, reference, &progress)?;
         let bytes = match output.format {
             OutputFormat::Json => {
-                let mut report = serde_json::json!({"thread":thread,"message":message});
+                // The ordinary send envelope; `thread` names the pair's channel.
+                let mut result = serde_json::to_value(CommandResult::MessageSent(message.clone()))
+                    .map_err(io::Error::other)?;
+                result["thread"] = serde_json::to_value(&thread).map_err(io::Error::other)?;
                 if let Some(selection) = &progress.selection {
-                    report["selection"] = selection.presentation();
+                    result["selection"] = selection.presentation();
                 }
-                let mut b = serde_json::to_vec(&report).map_err(io::Error::other)?;
+                let mut b = serde_json::to_vec(&serde_json::json!({
+                    "version": crate::protocol::wire::PROTOCOL_VERSION,
+                    "result": result,
+                }))
+                .map_err(io::Error::other)?;
                 b.push(b'\n');
                 b
             }

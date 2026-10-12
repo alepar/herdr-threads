@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v0.9.1
+
+- **Codex turn-start delivery.** Pending lazy messages arrive on text-only turns through the owned `UserPromptSubmit` hook. Re-run `herdr-threads setup codex` and trust the updated hook contract in Codex.
+- **Session-aware wake suppression.** Receipts and invitations fully presented inside a binding's turn no longer cause an extra wake after that turn. Native dispatch checks the actual foreground binding, preserving sibling delivery and recovery-hint behavior. Presentation remains separate from ACK and acceptance.
+- **Pair opening messages.** Accepting an automatic one-to-one invitation preserves pending opening messages. Joining or rejoining seeds the head frontier and retains undisplayed lazy mail beyond the seat's furthest cursor for the first top-level reader; that pre-join pending mail settles once for the seat.
+- **Fresh-attention retries and JSON output.** New attention immediately retries a refusal-backed-off seat without resetting its failure count. `send --seat --json` returns the versioned send envelope.
+- **Upgrade and release checks.** Additive migration 36 records in-turn presentation; upgrade the CLI and daemon together. A private live wake matrix and startup/interruption cleanup controls accompany the fixes. Successful Claude evidence and the still-outstanding Codex gate are recorded separately in the release qualification.
+
 ## v0.9.0
 
 - **Independent session delivery.** Multiple sessions share a durable seat with their own read cursors, attention frontiers and bounded delivery ledgers. Memberships and receipt obligations remain shared; the first eligible top-level binding settles each receipt once. Subagents can advance only their own read position.

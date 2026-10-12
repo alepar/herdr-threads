@@ -204,6 +204,108 @@ fn direct_lazy_invited_target_is_frozen_without_receipt() {
     let _ = std::fs::remove_file(path);
 }
 
+fn send_direct(store: &SqliteStore, thread: &ThreadId, mode: DeliveryMode, key: &str) {
+    let v = SendMessage {
+        delivery_mode: mode,
+        thread: thread.clone(),
+        body: key.into(),
+        direct_recipient: Some(SeatId::new("s2")),
+        invited_recipients: vec![],
+        deadline_millis: None,
+        operation: OperationId::new(key),
+        claim: claim("s1"),
+        relays_user: false,
+        user_intent: None,
+    };
+    while let crate::ports::SendPreparationProgress::More { .. } = store
+        .prepare_send_step(
+            &v,
+            crate::ports::DurableWorkAdmission::new(16).unwrap(),
+            &budget(),
+        )
+        .unwrap()
+    {}
+    let hash = schema::canonical_digest(&crate::store::messages::send_payload(&v)).unwrap();
+    store
+        .mutate(
+            PermitMutation::SendMessage(v),
+            permit("s1", key, ObligationRef::Control(thread.clone()), hash, 100),
+            &budget(),
+        )
+        .unwrap();
+}
+
+/// ht-8y9: the opening lazy messages of a first-contact direct send stay pending for the invited
+/// target through its accept (seat-level `legacy_pending`), while its cursor joins at the head:
+/// ordinary ones already reached it as pending receipts and are not offered again.
+#[test]
+fn accepting_a_pair_invitation_keeps_the_opening_messages_unread() {
+    for mode in [DeliveryMode::Lazy, DeliveryMode::Ordinary] {
+        let (store, db, path) = store_fixture();
+        let pair = thread(ensure(&store, "s1", "s2", "ensure").unwrap());
+        send_direct(&store, &pair, mode, "open-1");
+        send_direct(&store, &pair, mode, "open-2");
+        let invitation: String = db
+            .query_row("SELECT id FROM invitations WHERE seat_id='s2'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let v = crate::protocol::commands::Accept {
+            thread: pair.clone(),
+            operation: OperationId::new("accept"),
+            claim: claim("s2"),
+        };
+        let hash = cooperative_payload_hash("accept", &v).unwrap();
+        store
+            .mutate(
+                PermitMutation::Accept(v),
+                permit(
+                    "s2",
+                    "accept",
+                    ObligationRef::Invitation(InvitationId::new(invitation)),
+                    hash,
+                    100,
+                ),
+                &budget(),
+            )
+            .unwrap();
+        let binding: String = db
+            .query_row(
+                "SELECT binding_id FROM occupant_bindings WHERE seat_id='s2' AND ended_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let binding = BindingId::parse(binding).unwrap();
+        let last: i64 = db
+            .query_row(
+                "SELECT MAX(sequence) FROM messages WHERE thread_id=?1 AND kind='ordinary'",
+                [pair.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let lazy = mode == DeliveryMode::Lazy;
+        assert_eq!(
+            crate::store::read_cursors::cursor_for(&db, &binding, &pair).unwrap(),
+            Some(u64::try_from(last).unwrap()),
+            "{mode:?}"
+        );
+        assert_eq!(
+            crate::store::read_cursors::has_unread(&db, &binding).unwrap(),
+            lazy,
+            "{mode:?}"
+        );
+        assert_eq!(
+            count(&db, "lazy_recipients WHERE legacy_pending=1"),
+            if lazy { 2 } else { 0 },
+            "{mode:?}"
+        );
+        drop(store);
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 #[test]
 fn pair_refuses_third_self_join() {
     let (store, db, path) = store_fixture();
@@ -1008,3 +1110,108 @@ mod reader_controls;
 
 #[path = "direct_lazy_writer_floors.rs"]
 mod writer_floor_controls;
+/// ht-8y9: a join never marks seat-pending a lazy row some completion already displayed. The
+/// binding displays `shown` while its cursor is held behind `held` (an earlier row no completion
+/// covered, as a truncated delivery leaves it), so `shown` is past the seat's furthest cursor at
+/// the rejoin; only `held` becomes seat-pending.
+#[test]
+fn rejoin_never_reshows_a_lazy_row_displayed_out_of_order() {
+    let (store, db, path) = store_fixture();
+    let pair = thread(ensure(&store, "s1", "s2", "ensure").unwrap());
+    accept_pair(&store, &db, &pair, "s2", "accept");
+    send_direct(&store, &pair, DeliveryMode::Lazy, "held");
+    send_direct(&store, &pair, DeliveryMode::Lazy, "shown");
+    let message = |body: &str| -> (MessageId, i64) {
+        db.query_row(
+            "SELECT id,sequence FROM messages WHERE body=?1",
+            [body],
+            |r| Ok((MessageId::new(r.get::<_, String>(0)?), r.get(1)?)),
+        )
+        .unwrap()
+    };
+    let ((held, held_seq), (shown, _)) = (message("held"), message("shown"));
+    let binding: String = db
+        .query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s2' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let binding = BindingId::parse(binding).unwrap();
+    let tx = db.unchecked_transaction().unwrap();
+    crate::store::lazy_delivery::complete_for_binding(
+        &tx,
+        "i",
+        &SeatId::new("s2"),
+        Some(&binding),
+        std::slice::from_ref(&shown),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let cursor = crate::store::read_cursors::cursor_for(&db, &binding, &pair)
+        .unwrap()
+        .unwrap();
+    assert!(
+        cursor < u64::try_from(held_seq).unwrap(),
+        "cursor held behind `held`"
+    );
+    let leave = Leave {
+        thread: pair.clone(),
+        operation: OperationId::new("leave"),
+        claim: claim("s2"),
+    };
+    let hash = cooperative_payload_hash("leave", &leave).unwrap();
+    store
+        .mutate(
+            PermitMutation::Leave(leave),
+            permit(
+                "s2",
+                "leave",
+                ObligationRef::Control(pair.clone()),
+                hash,
+                100,
+            ),
+            &budget(),
+        )
+        .unwrap();
+    let invite = Invite {
+        confirmation: None,
+        thread: pair.clone(),
+        seat: SeatId::new("s2"),
+        deadline_millis: None,
+        operation: OperationId::new("reinvite"),
+        claim: claim("s1"),
+    };
+    let hash = cooperative_payload_hash("invite", &invite).unwrap();
+    store
+        .mutate(
+            PermitMutation::Invite(invite),
+            permit(
+                "s1",
+                "reinvite",
+                ObligationRef::Control(pair.clone()),
+                hash,
+                100,
+            ),
+            &budget(),
+        )
+        .unwrap();
+    accept_pair(&store, &db, &pair, "s2", "reaccept");
+    let pending = |id: &MessageId| -> i64 {
+        db.query_row(
+            "SELECT legacy_pending FROM lazy_recipients WHERE message_id=?1 AND seat_id='s2'",
+            [id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        pending(&held),
+        1,
+        "the undisplayed row stays pending for the seat"
+    );
+    assert_eq!(pending(&shown), 0, "the displayed row is not shown again");
+    drop(store);
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
