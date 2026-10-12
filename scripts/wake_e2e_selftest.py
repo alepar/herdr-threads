@@ -248,7 +248,12 @@ class Interruption(TempDir):
                 self.after.append("refused")
 
     def start_worker(self, target):
-        t = threading.Thread(target=target, daemon=True, name="cl-test")
+        def quiet():  # a cut-off helper raises Stopped out of the worker, as in run_cases
+            try:
+                target()
+            except W.Stopped:
+                pass
+        t = threading.Thread(target=quiet, daemon=True, name="cl-test")
         self.r.workers.append(t)
         t.start()
         end = time.time() + 5
@@ -276,6 +281,35 @@ class Interruption(TempDir):
         self.r.drain_timeout_s = 0.5
         self.start_worker(stubborn)
         self.assertTrue(any("did not stop" in p for p in self.r.cleanup()))
+
+    def test_interrupt_in_the_calling_thread_kills_its_helper(self):
+        """Ctrl-C/SIGTERM while the main thread waits on a helper (e.g. `workspace create`): no orphan."""
+        marker = f"wake-e2e-selftest-{os.getpid()}-{time.time_ns()}"
+
+        def interrupt(_signum, _frame):
+            raise KeyboardInterrupt
+        previous = signal.signal(signal.SIGALRM, interrupt)
+        try:
+            signal.setitimer(signal.ITIMER_REAL, 0.5)
+            with self.assertRaises(KeyboardInterrupt):
+                self.r.run(["/bin/sh", "-c", f"sleep 30; : {marker}"])
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+        self.assertEqual(self.r.children, set())
+        self.assertEqual(subprocess.run(["pgrep", "-f", marker], capture_output=True).returncode, 1)
+
+    def test_helper_cut_off_by_the_drain_reports_stopped_not_a_result(self):
+        outcome = []
+
+        def worker():
+            try:
+                outcome.append(self.r.run(["sleep", "30"]))
+            except W.Stopped:
+                outcome.append("stopped")
+        self.start_worker(worker)
+        self.assertEqual(self.r.cleanup(), [])
+        self.assertEqual(outcome, ["stopped"])
 
     def test_a_helper_ignoring_sigterm_is_killed(self):
         def ignorer():
@@ -379,19 +413,24 @@ class MainExitCode(TempDir):
 
         def layout(run):
             def run_cases(cases):
-                run.run(["sleep", "30"], tag="blocked-helper")
-                run.run(["true"], tag="after-stop")  # must raise Stopped
-                helpers.append("launched after stop")
+                try:
+                    run.run(["sleep", "30"], tag="blocked-helper")  # cut off: raises Stopped
+                    helpers.append("returned normally after the drain")
+                    run.run(["true"], tag="after-stop")
+                    helpers.append("launched after stop")
+                except W.Stopped:
+                    pass
             recipient = SimpleNamespace(name="cl-nudge", run_cases=run_cases)
             run.recipients = [recipient]
             threading.Timer(0.5, os.kill, (os.getpid(), signal.SIGTERM)).start()
         W.Run.layout = layout
+        before = signal.getsignal(signal.SIGTERM)
         rc, doc = self.main()
         self.assertEqual(rc, W.EXIT_FAIL)
         self.assertEqual(helpers, [])
         self.assertEqual(doc["cleanup"]["problems"], [])
         self.assertEqual(doc["completeness"], None)  # interrupted: no summary claims completeness
-        self.assertIs(signal.getsignal(signal.SIGTERM), signal.SIG_DFL)  # handlers restored
+        self.assertIs(signal.getsignal(signal.SIGTERM), before)  # handlers restored
 
     def test_cleanup_raising_fails(self):
         def cleanup(run):

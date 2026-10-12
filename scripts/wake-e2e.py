@@ -148,8 +148,12 @@ class Run:
             rc = p.returncode
         except subprocess.TimeoutExpired:
             kill_group(p, signal.SIGKILL)
-            out, err = p.communicate()
+            out, err = reap(p)
             rc = "timeout"
+        except BaseException:  # Ctrl-C/SIGTERM in this thread: the helper (own session) must not outlive us
+            kill_group(p, signal.SIGKILL)
+            reap(p)
+            raise
         finally:
             with self.lock:
                 self.children.discard(p)
@@ -159,6 +163,8 @@ class Run:
                                           "elapsed_s": round(time.monotonic() - started, 3),
                                           "stdout": out[:4096], "stderr": err[:4096]}) + "\n")
             self.cmdlog.flush()
+        if self.stopping.is_set() and not cleanup:  # cut off by the drain: the case is interrupted, not failed
+            raise Stopped(f"cleanup interrupted {argv[:3]}")
         return rc, out, err
 
     def ht(self, *argv, pane=None, coop=None, human=False, env=None, tag=None, timeout=60, check=True):
@@ -462,11 +468,22 @@ class Run:
 
 
 def kill_group(p, sig):
-    """Signal a helper's whole process group (it was started in its own session); ignore one already gone."""
+    """Signal a helper's whole process group (it was started in its own session); a helper already reaped is
+    skipped, so a reused pid is never signalled."""
+    if p.poll() is not None:
+        return
     try:
         os.killpg(p.pid, sig)
     except (ProcessLookupError, PermissionError):
         pass
+
+
+def reap(p, timeout=5):
+    """Collect a killed helper's output with a bound (a descendant outside its group could hold the pipes)."""
+    try:
+        return p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return "", ""
 
 
 def file_sha256(path):
@@ -657,7 +674,7 @@ class Recipient:
         kind = action.split("-")[1]
         gap = SPACING_S - (time.time() - self.last_wake)
         if gap > 0:
-            time.sleep(gap)
+            self.run.stopping.wait(gap)  # spacing ends early when cleanup begins
         self.wait_idle()
         tag = f"{case} {self.run.run_id}"
         # Codex can swallow a prompt submitted right after a turn ends: confirm the busy turn started, retry once,
@@ -732,7 +749,7 @@ class Recipient:
         expect_wake = not (action == "send-lazy" and self.wake_on == "nudge")
         gap = SPACING_S - (time.time() - self.last_wake)
         if gap > 0:
-            time.sleep(gap)
+            self.run.stopping.wait(gap)  # spacing ends early when cleanup begins
         self.wait_idle()
         body = f"{case} {self.run.run_id}"
         checks = {}
