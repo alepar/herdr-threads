@@ -46,6 +46,17 @@ pub trait ReservationCheck: Send + Sync {
         reservation: &WakeReservation,
         budget: &CallBudget,
     ) -> Result<bool, ApiError>;
+    /// Whether the wake still owes the binding the prompt reaches (`None`: the seat-level
+    /// binding): a binding served the reserved items in its turn is never woken for them
+    /// (ht-705). Checked after `is_current`, so an offer recorded after reservation counts.
+    fn owes_wake(
+        &self,
+        _reservation: &WakeReservation,
+        _binding: Option<&crate::protocol::ids::BindingId>,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(true)
+    }
 }
 pub struct NativeWakeDispatcher<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> {
     host: &'a H,
@@ -358,6 +369,19 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             Ok(true) => {}
             Ok(false) => return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe),
             Err(err) => return refuse_error(err),
+        }
+        // A wake (not a scheduled poke) reaches one binding; one served in its turn owes no idle
+        // wake (delivery contract rule 4). Nothing is sent; an unserved sibling keeps the seat's
+        // wake reserved for the next attempt.
+        if !poke_only {
+            match self
+                .check
+                .owes_wake(&reservation, composer_binding.as_ref(), &context.budget)
+            {
+                Ok(true) => {}
+                Ok(false) => return refuse(RefusalCause::Unavailable, WakeOutcome::Unavailable),
+                Err(err) => return refuse_error(err),
+            }
         }
         if context.budget.is_exhausted(self.clock) {
             return refuse(RefusalCause::TimedOut, WakeOutcome::TimedOut);

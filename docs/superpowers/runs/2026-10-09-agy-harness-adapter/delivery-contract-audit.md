@@ -126,11 +126,17 @@ Enforcement:
   `AdvanceCursors` now carries `in_turn` and the shown invitations at a tool boundary or turn start
   (`src/cli/hook.rs`, `src/cli/hook_inbox.rs`), the daemon records the displayed pending receipts and invitations
   in `in_turn_offer` for that top-level binding (`src/store/control.rs` `advance_cursors`), and
-  `WakeCandidate::has_actionable_work` skips pending receipts or invitations all recorded for the current
-  occupant (`src/store/wake.rs` `all_offered`). The items stay pending; a lifecycle check-in clears the records.
-  Warnings were already covered by the check-in's warning offer frontier. Pinned by
-  `tests/integration/lazy_attention.rs` `in_turn_display_of_a_nudge_owes_no_idle_wake` and
-  `in_turn_display_of_an_invitation_owes_no_idle_wake`.
+  `WakeCandidate::has_actionable_work` skips pending receipts or invitations only when all are recorded for
+  every binding the wake could reach (`src/store/wake.rs` `served_by_all`); the native dispatcher rechecks the
+  binding the composer chose right before typing and refuses a served one pre-send
+  (`ReservationCheck::owes_wake`, `wake::wake_owed_to_binding`), so neither a served foreground binding is
+  woken nor an unserved sibling's wake hidden (review of 2026-10-12). The items stay pending; a lifecycle
+  check-in clears that binding's records only. Warnings were already covered by the check-in's warning offer
+  frontier. Pinned by `tests/integration/lazy_attention.rs` `in_turn_display_of_a_nudge_owes_no_idle_wake`,
+  `in_turn_display_of_an_invitation_owes_no_idle_wake` and
+  `a_sibling_lifecycle_check_in_resets_only_its_own_in_turn_service`, and `tests/store/wake.rs`
+  `in_turn_service_is_decided_for_the_binding_the_composer_reaches` and
+  `an_in_turn_offer_after_reservation_cancels_that_bindings_wake`.
 
 Pinning tests: `tests/scheduler/dispatch.rs` `active_attention_is_always_deferred_then_idle_delivers`,
 `blocked_or_human_input_target_is_never_prompted`, `nonempty_composer_skips_before_stash_or_restore`,

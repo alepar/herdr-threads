@@ -2459,3 +2459,239 @@ fn wake_fence_is_the_mapping_generation() {
     drop(store);
     let _ = std::fs::remove_file(path);
 }
+
+/// What a pending item served in-turn is, for the ht-705 two-binding proofs.
+#[derive(Clone, Copy, Debug)]
+enum InTurnKind {
+    Receipt,
+    Invitation,
+}
+
+/// Seat `s` with two connected top-level Codex bindings on one pane: older `a` (fingerprint pid
+/// 10) and newer `b` (pid 20). The item under test is pending; for receipts the fixture's
+/// invitation is served to both, so the receipt is the only reason left.
+fn two_binding_store(kind: InTurnKind) -> (SqliteStore, std::path::PathBuf, &'static str) {
+    let (store, path) = multi_store(&[row("a", "codex", 10), row("b", "codex", 20)]);
+    let item = match kind {
+        InTurnKind::Invitation => "inv",
+        InTurnKind::Receipt => {
+            let db = store.context.open_writer().unwrap();
+            db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('m','i','t',1,'ordinary','body',1,0);
+                INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t','s','pending',100000);
+                INSERT INTO in_turn_offer(binding_id,seat_id,item_id) VALUES ('a','s','inv'),('b','s','inv');").unwrap();
+            "m"
+        }
+    };
+    (store, path, item)
+}
+
+fn serve_in_turn(store: &SqliteStore, binding: &str, item: &str) {
+    store
+        .context
+        .open_writer()
+        .unwrap()
+        .execute(
+            "INSERT INTO in_turn_offer(binding_id,seat_id,item_id) VALUES (?1,'s',?2)",
+            [binding, item],
+        )
+        .unwrap();
+}
+
+/// The seat's wake candidate when it owes a wake at all.
+fn owed_candidate(store: &SqliteStore) -> Option<WakeCandidate> {
+    StorePort::wake_candidates(store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|c| c.seat.as_str() == "s" && c.has_actionable_work())
+}
+
+/// The real store as the dispatcher's final fence, including the per-binding in-turn recheck.
+struct StoreFence<'a>(&'a SqliteStore);
+impl crate::notification::dispatch::ReservationCheck for StoreFence<'_> {
+    fn is_current(
+        &self,
+        reservation: &crate::ports::WakeReservation,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        StorePort::validate_wake_reservation(self.0, reservation, budget)
+    }
+    fn owes_wake(
+        &self,
+        reservation: &crate::ports::WakeReservation,
+        binding: Option<&crate::protocol::ids::BindingId>,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        StorePort::wake_owed_to_binding(self.0, reservation, binding, budget)
+    }
+}
+
+/// Dispatches `reservation` through the real native dispatcher to a pane whose foreground
+/// process is `foreground`; returns what was typed.
+fn dispatch_to(
+    store: &SqliteStore,
+    reservation: &crate::ports::WakeReservation,
+    foreground: u32,
+) -> (WakeOutcome, Vec<String>) {
+    use crate::ports::{EvidenceKind, HostUiState, IncarnationEvidence, NotificationPort};
+    use crate::scheduler::wake_text_tests::{TextRecordingHost, observation};
+    let mut seen = observation(false);
+    seen.target = crate::protocol::ids::HostTargetId::new("pane");
+    seen.host_boot = crate::protocol::ids::HostBootId::new("host");
+    seen.terminal = Some(crate::protocol::ids::TerminalId::new("term-pane"));
+    seen.incarnation = IncarnationEvidence::Verified {
+        identity: "inc".into(),
+        evidence_kind: EvidenceKind::NativeCurrentTarget,
+    };
+    seen.ui = HostUiState::Idle;
+    let host = TextRecordingHost {
+        observation: seen,
+        host_bound_harness: None,
+        foreground: vec![foreground],
+        typed: std::sync::Mutex::new(Vec::new()),
+    };
+    let context = crate::ports::HostCallContext {
+        budget: budget(),
+        expected_boot: Some(crate::protocol::ids::HostBootId::new("host")),
+        expected_epoch: Some(1),
+    };
+    let fence = StoreFence(store);
+    let dispatcher =
+        crate::notification::dispatch::NativeWakeDispatcher::new(&host, &fence, &WakeClock);
+    let outcome = dispatcher
+        .attempt_wake(reservation.clone(), &context)
+        .unwrap();
+    (outcome, host.typed.into_inner().unwrap())
+}
+
+const FOREGROUND_A: u32 = 10;
+const FOREGROUND_B: u32 = 20;
+
+/// ht-705 review traces, older binding `a` in the foreground. Trace 1: `a` served the item in its
+/// turn, newer `b` did not: the seat still owes `b` a wake (never hidden), but the prompt the
+/// composer would type to `a` is refused. Trace 2: `b` served it, `a` did not: `a` keeps its owed
+/// wake. Kills: deciding in-turn service on the newest binding instead of the composer's choice,
+/// in either direction, for receipts and invitations alike.
+#[test]
+fn in_turn_service_is_decided_for_the_binding_the_composer_reaches() {
+    for kind in [InTurnKind::Receipt, InTurnKind::Invitation] {
+        let (store, path, _) = two_binding_store(kind);
+        let control = StorePort::reserve_wake(&store, &owed_candidate(&store).unwrap(), &budget())
+            .unwrap()
+            .expect("control: unserved item reserves a wake");
+        assert_eq!(target_ids(&control), ["a", "b"], "{kind:?}");
+        assert_eq!(
+            dispatch_to(&store, &control, FOREGROUND_A).1.len(),
+            1,
+            "{kind:?} control: nobody served, the foreground binding is woken"
+        );
+        drop(store);
+        let _ = std::fs::remove_file(path);
+
+        // Trace 1: a (foreground) served, b not.
+        let (store, path, item_1) = two_binding_store(kind);
+        serve_in_turn(&store, "a", item_1);
+        let candidate = owed_candidate(&store)
+            .unwrap_or_else(|| panic!("{kind:?}: an unserved sibling's wake is never hidden"));
+        let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
+            .unwrap()
+            .expect("reserved");
+        let (outcome, typed) = dispatch_to(&store, &reservation, FOREGROUND_A);
+        assert!(
+            typed.is_empty(),
+            "{kind:?}: a binding served in its turn is not woken"
+        );
+        assert_eq!(
+            outcome,
+            WakeOutcome::Refused(crate::ports::RefusalCause::Unavailable),
+            "{kind:?}: a pre-send refusal, so the ladder does not climb"
+        );
+        assert_eq!(
+            dispatch_to(&store, &reservation, FOREGROUND_B).1.len(),
+            1,
+            "{kind:?}: the unserved sibling, once in the foreground, is woken"
+        );
+        drop(store);
+        let _ = std::fs::remove_file(path);
+
+        // Trace 2: b served, a (foreground) not.
+        let (store, path, item_2) = two_binding_store(kind);
+        serve_in_turn(&store, "b", item_2);
+        let candidate = owed_candidate(&store)
+            .unwrap_or_else(|| panic!("{kind:?}: b's presentation never hides a's wake"));
+        let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
+            .unwrap()
+            .expect("reserved");
+        assert_eq!(
+            dispatch_to(&store, &reservation, FOREGROUND_A).1.len(),
+            1,
+            "{kind:?}: a was never served, so a is woken"
+        );
+        assert!(
+            dispatch_to(&store, &reservation, FOREGROUND_B).1.is_empty(),
+            "{kind:?}: b served, b is not woken"
+        );
+
+        // Both served: no wake is owed to anyone.
+        serve_in_turn(&store, "a", item_2);
+        assert!(owed_candidate(&store).is_none(), "{kind:?}: all served");
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// ht-705: an in-turn offer recorded after the wake was reserved (the binding's turn served the
+/// item while the wake was in flight) is honoured at dispatch, rechecked after the reservation
+/// fence. Kills: deciding only at discovery or reservation time.
+#[test]
+fn an_in_turn_offer_after_reservation_cancels_that_bindings_wake() {
+    for kind in [InTurnKind::Receipt, InTurnKind::Invitation] {
+        let (store, path, item) = two_binding_store(kind);
+        let reservation =
+            StorePort::reserve_wake(&store, &owed_candidate(&store).unwrap(), &budget())
+                .unwrap()
+                .expect("reserved");
+        serve_in_turn(&store, "a", item);
+        let (outcome, typed) = dispatch_to(&store, &reservation, FOREGROUND_A);
+        assert!(typed.is_empty(), "{kind:?}: served after reservation");
+        assert_eq!(
+            outcome,
+            WakeOutcome::Refused(crate::ports::RefusalCause::Unavailable)
+        );
+        assert_eq!(
+            dispatch_to(&store, &reservation, FOREGROUND_B).1.len(),
+            1,
+            "{kind:?}: the sibling's wake stands"
+        );
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// ht-705: a wake reserved for anything beyond served items (here a newer unserved receipt next
+/// to a served invitation) is owed even to a binding that was served part of it. Kills: a
+/// per-reason check that ignores the other reason.
+#[test]
+fn a_binding_served_one_reason_is_still_woken_for_another() {
+    let (store, path, _) = two_binding_store(InTurnKind::Invitation);
+    serve_in_turn(&store, "a", "inv");
+    serve_in_turn(&store, "b", "inv");
+    assert!(owed_candidate(&store).is_none());
+    store
+        .context
+        .open_writer()
+        .unwrap()
+        .execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('m','i','t',1,'ordinary','body',1,0);
+            INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t','s','pending',100000);")
+        .unwrap();
+    let reservation = StorePort::reserve_wake(&store, &owed_candidate(&store).unwrap(), &budget())
+        .unwrap()
+        .expect("the unserved receipt reserves a wake");
+    assert_eq!(
+        dispatch_to(&store, &reservation, FOREGROUND_A).1.len(),
+        1,
+        "a was served the invitation, not the receipt"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}

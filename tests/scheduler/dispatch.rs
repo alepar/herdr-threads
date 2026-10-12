@@ -738,8 +738,8 @@ impl NotificationPort for FakeNotifier {
 }
 fn due_candidate() -> WakeCandidate {
     WakeCandidate {
-        receipts_offered_to_current_occupant: false,
-        invitations_offered_to_current_occupant: false,
+        receipts_served_in_turn: false,
+        invitations_served_in_turn: false,
         targets: Vec::new(),
         seat: SeatId::new("seat"),
         attention_witness: Some(test_witness(true, false)),
