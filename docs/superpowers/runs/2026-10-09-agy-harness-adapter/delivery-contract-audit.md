@@ -77,6 +77,12 @@ Enforcement:
   (`src/cli/hook.rs:2114-2124` at a tool boundary, `:2176-2189` at a lifecycle check-in), then completes the lazy rows
   shown whole with `cooperative_hook_context` after its stdout was flushed. A live mod channel keeps the page out
   (`src/harness/bridge.rs:1218-1226`, `src/cli/hook.rs:2588-2593`).
+- Codex turn start (ht-mu3, 2026-10-11): a text-only Codex turn makes no tool call, so with only SessionStart and
+  Bash PreToolUse owned, a pending lazy item waited for the next tool call, wake or session start. The Codex adapter
+  now also owns `UserPromptSubmit` (`src/harness/codex.rs` `DECLARATION`), decoded as the same Current check-in as a
+  tool boundary and answered under its own `hookEventName`; a quiet turn coalesces to empty output. A Codex that never
+  fires it degrades to tool-boundary delivery. Pinned by `tests/hook_entrypoint.rs`
+  `lazy_mail_reaches_the_next_codex_user_prompt_hook`.
 - Hook-pull seats (agy) carry bodies only through `DeliveryPull` (`src/service/delivery_pull.rs`), completed by
   `DeliveryConfirm`. The decision is `src/delivery/routing.rs:35` `hook_inbox_page`: a hook-pull seat's standard hook
   reads no page at either boundary, and the daemon enforces it

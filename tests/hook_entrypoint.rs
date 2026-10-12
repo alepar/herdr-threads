@@ -2007,6 +2007,100 @@ fn lazy_mail_reaches_the_next_codex_tool_hook() {
     );
 }
 
+// ht-mu3: a text-only Codex turn makes no tool call, so the lazy item rides
+// the turn-start UserPromptSubmit hook, answered under its own event name; a
+// quiet turn stays empty. Kills: a Codex adapter with no turn-start hook (the
+// item waited for the next tool call).
+#[test]
+fn lazy_mail_reaches_the_next_codex_user_prompt_hook() {
+    let fx = Fixture::start();
+    fx.register("w9:p2", "peer-sess");
+    let started = fx.codex_hook(
+        "w9:p3",
+        &Payload::session_start("cx-sess", "startup")
+            .codex("t0")
+            .bytes(),
+    );
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+    let thread = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "codex-turn"],
+    ));
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "cx"]);
+    let mut out = Vec::new();
+    let _codex = agent_origin("codex", "cx-sess");
+    herdr_threads::cli::run(
+        [
+            "herdr-threads",
+            "--json",
+            "--state-dir",
+            fx.state.to_str().unwrap(),
+            "--host-endpoint",
+            fx.host.to_str().unwrap(),
+            "--cooperative-seat",
+            "cx",
+            "--cooperative-target",
+            "w9:p3",
+            "--cooperative-harness",
+            "codex",
+            "--cooperative-role",
+            "top-level",
+            "accept",
+            &thread,
+        ],
+        &mut out,
+    )
+    .unwrap();
+    let codex_turn = |n: u32| {
+        let hook = fx.codex_hook(
+            "w9:p3",
+            &Payload::bare("UserPromptSubmit")
+                .with("session_id", "cx-sess".into())
+                .with("transcript_path", serde_json::Value::Null)
+                .with("cwd", "/tmp".into())
+                .with("model", "gpt-5".into())
+                .with("permission_mode", "default".into())
+                .with("prompt", "hello".into())
+                .with("turn_id", format!("t{n}").into())
+                .bytes(),
+        );
+        assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+        assert!(hook.stderr.is_empty(), "{}", hook.stderr);
+        hook
+    };
+    let quiet = codex_turn(1);
+    assert!(
+        quiet.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&quiet.stdout)
+    );
+    let id = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", &thread, "--lazy", "--body", "codex turn body"],
+    ));
+    let delivered = codex_turn(2);
+    assert_eq!(
+        delivered.context()["hookSpecificOutput"]["hookEventName"],
+        "UserPromptSubmit"
+    );
+    let context = context_of(&delivered);
+    assert!(context.contains(INBOX_HEADER), "{context}");
+    assert!(context.contains("codex turn body"), "{context}");
+    assert!(context.contains(&id), "{context}");
+    assert_eq!(
+        fx.count("SELECT count(*) FROM lazy_recipients WHERE seat_id='cx' AND state='displayed'"),
+        1
+    );
+    let repeat = codex_turn(3);
+    assert!(
+        repeat.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&repeat.stdout)
+    );
+}
+
 // Retained from fix2 (root adoption, wave-1 fix1 item a): more than 100
 // instance threads, so the check-in inbox page (100 scanned threads) is
 // truncated; a new invitation, then a new require-ack message, in thread 106

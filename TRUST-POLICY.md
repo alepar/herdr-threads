@@ -695,8 +695,8 @@ cooperative claim that the row entered the model's context through the mod (`coo
 by the request; the daemon stores only the row's `displayed` progress and no per-row source. Like every lazy completion it is presentation bookkeeping: no ACK actor,
 adoption or proof of consumption.
 
-A standard native hook (top-level SessionStart, Bash PreToolUse or qualified turn; never a subagent event)
-is a third completion source. Only a digest the hook explicitly requests (`AttentionDigestQuery.lazy`)
+A standard native hook (top-level SessionStart, Bash PreToolUse, Codex UserPromptSubmit or qualified turn;
+never a subagent event) is a third completion source. Only a digest the hook explicitly requests (`AttentionDigestQuery.lazy`)
 reports pending lazy rows and a lazy token key, so a lazy arrival moves the hook's change marker; the wake
 frontier, wake candidates, prompts, pokes, deadlines and warnings never read lazy rows, except that a seat
 with `wake_on: all` is woken for its own lazy rows (wake eligibility only, above). When the hook
