@@ -9348,7 +9348,7 @@ fn assert_v2_offer_window_reclaimed(watch: bool, lazy: bool) {
             assert_eq!(work.offer_reconciliation_visits, 256);
             assert_eq!(
                 work.offer_reconciliation_probes,
-                if lazy { 2048 } else { 2304 }
+                if lazy { 2560 } else { 2304 }
             );
         }
         if emitted {
@@ -10102,7 +10102,7 @@ fn presentation_reclamation_requires_published_addressed_lazy_completion() {
             "historical seat display is not this binding's completion"
         );
         assert_eq!(output.work.offer_reconciliation_visits, 3);
-        assert_eq!(output.work.offer_reconciliation_probes, 24);
+        assert_eq!(output.work.offer_reconciliation_probes, 30);
     }
     let CommandResult::Message(read) = f
         .service
@@ -10155,14 +10155,14 @@ fn presentation_reclamation_requires_published_addressed_lazy_completion() {
     let output = reconcile(&recipient);
     assert_eq!(output.reclaimed_messages, shown);
     assert_eq!(output.work.offer_reconciliation_visits, 3);
-    assert_eq!(output.work.offer_reconciliation_probes, 24);
+    assert_eq!(output.work.offer_reconciliation_probes, 30);
     let other = reconcile(&sibling);
     assert!(
         other.reclaimed_messages.is_empty(),
         "the sibling still has unread published mail despite the seat display state"
     );
     assert_eq!(other.work.offer_reconciliation_visits, 3);
-    assert_eq!(other.work.offer_reconciliation_probes, 24);
+    assert_eq!(other.work.offer_reconciliation_probes, 30);
     assert_eq!(lazy_state(&f, "msg-old-pending"), "pending");
     assert_eq!(lazy_state(&f, "msg-old-displayed"), "displayed");
     assert_eq!(lazy_state(&f, "msg-unpublished-displayed"), "displayed");
