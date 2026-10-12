@@ -84,7 +84,7 @@ class FakeRun:
         r.cleanup_report = None
         r.lock = threading.Lock()
         r.stopping = threading.Event()
-        r.children, r.workers = set(), []
+        r.children, r.workers, r.start_attempted = set(), [], set()
         r.drain_timeout_s, r.child_term_grace_s = 1.0, 0.5
         r.bin, r.state, r.endpoint = "/fake/herdr-threads", tmp / "state", "/fake/sock"
         self.calls = []
@@ -220,7 +220,7 @@ def real_run(tmp):
     r.lock = threading.Lock()
     r.cmdlog = open(tmp / "commands.jsonl", "a")
     r.stopping = threading.Event()
-    r.children, r.workers = set(), []
+    r.children, r.workers, r.start_attempted = set(), [], set()
     r.drain_timeout_s, r.child_term_grace_s = 5.0, 1.0
     r.workspace, r.layout_attempted, r.daemon_attempted = None, False, False
     r.process_grace_s, r.stop_deadline_s = 0.5, 0.5
@@ -255,6 +255,7 @@ class Interruption(TempDir):
                 pass
         t = threading.Thread(target=quiet, daemon=True, name="cl-test")
         self.r.workers.append(t)
+        self.r.start_attempted.add(t)
         t.start()
         end = time.time() + 5
         while not self.r.children and time.time() < end:
@@ -422,10 +423,28 @@ class PartialStartAndDrainErrors(TempDir):
         self.assert_all_resources_attempted(doc)
         self.assertEqual(doc["cleanup"]["problems"], [])
 
+    def test_a_worker_interrupted_mid_start_is_still_joined(self):
+        """Thread.start launched the thread, then the interrupt arrived before start() returned."""
+        real = threading.Thread
+
+        class Thread(real):
+            def start(self):
+                super().start()
+                if self.name == "cl-nudge":
+                    raise KeyboardInterrupt("signal 15 inside start()")
+        W.threading = SimpleNamespace(**{**vars(threading), "Thread": Thread})
+        rc, doc = self.main()
+        self.assertEqual(rc, W.EXIT_FAIL)
+        self.assertIn(self.run_obj.workers[0], self.run_obj.start_attempted)
+        self.assert_all_resources_attempted(doc)
+        self.assertEqual(doc["cleanup"]["problems"], [])
+
     def test_a_drain_error_does_not_skip_owned_resources(self):
         def drain(run_):
             raise RuntimeError("drain exploded")
         W.Run.drain = drain
+        # the real drain never runs in this test: stop the still-blocked helper even if an assertion fails
+        self.addCleanup(lambda: self.saved["drain"](self.run_obj))
         self.fail_second_start(KeyboardInterrupt("signal 2"))
         rc, doc = self.main()
         self.assertEqual(rc, W.EXIT_FAIL)
@@ -434,8 +453,6 @@ class PartialStartAndDrainErrors(TempDir):
         self.assertFalse(self.auth_copy.exists())
         self.assertTrue(self.run_obj.stopping.is_set())  # admission closed before the drain ran
         self.assertTrue(any("drain raised" in p for p in doc["cleanup"]["problems"]))
-        # the real drain never ran here: stop the still-blocked helper so the test leaves nothing behind
-        self.saved["drain"](self.run_obj)
 
 
 def row(recipient, case, result="PASS"):
