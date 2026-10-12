@@ -163,7 +163,7 @@ impl AutomaticBootstrapIdentity {
                 131072
             }
         {
-            return Err("automatic bootstrap original exceeds 512 KiB");
+            return Err("automatic bootstrap original exceeds retained capacity");
         }
         Ok(())
     }

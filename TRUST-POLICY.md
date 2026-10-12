@@ -1752,6 +1752,31 @@ scope change retries it. Topic-only shortening is not guaranteed to retry until
 such a scope change occurs. This adds no wake timer, delivery guarantee, larger
 output limit or receipt authority.
 
+Accepted normal render limit: at positive post-reconciliation logical capacity,
+a canonically validated normal candidate whose unchanged inherited rendering
+actually exceeds the standalone encoded-output bound on an empty page may be
+deferred for that finite captured normal pass, including a previously unoffered
+ID. An exhausted sizing allowance, nonempty-page failure, invalid authority,
+malformed item or unavailable/drifted codec does not establish this size failure.
+Deferral advances only existing bounded private traversal; it does not change
+the candidate's canonical full body, exact addressing/publication, pending receipt,
+Lazy display state, binding read cursor or any preexisting full logical Offer
+stamp, and allocates no new logical offer. It supplies no ACK, acceptance,
+display, output or presentation-confirmation evidence. Later renderable mail may
+progress in the same capture, and a completed stable pass is quiet once its
+independent work is exhausted. A later independently admitted normal capture
+retries the pending candidate; automatic in-context delivery of its unrenderable
+shape and a new retry wake/timer are not promised. Unknown deferred IDs may remain
+unknown to the model; canonical inbox/history/body inspection remains available.
+No normal per-ID negative cache, body fragment or recovery cursor is introduced;
+existing source, sizing, output, carry, partial and ledger bounds remain unchanged.
+Pre-commit refusal or transaction rollback installs no deferral progress. After a
+successful private commit, response/transport/write/flush loss retains that
+private progress without granting delivery, ACK, display or confirmation authority.
+A caller-visible error with an uncertain commit outcome is not proof of rollback.
+Existing due-cache, owner-replay, capacity parking and downstream-loss limits
+remain unchanged.
+
 
 A newly admitted live Watch owner may physically restream its captured pending
 ordinary offers once per presentation lease, independently of DP5 logical retry

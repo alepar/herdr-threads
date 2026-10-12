@@ -238,7 +238,10 @@ fn unique_point(line: &str, alias: &str, event: bool) -> bool {
     };
     let terms = constraints.split(" AND ").collect::<Vec<_>>();
     let keys: &[&[&str]] = match alias {
-        "r" => &[&["message_id=?", "seat_id=?"]],
+        "r" => &[
+            &["message_id=?", "seat_id=?"],
+            &["preparation_id=?", "seat_id=?"],
+        ],
         "sm" => &[
             &["preparation_id=?"],
             &["message_id=?"],
@@ -567,19 +570,72 @@ fn q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers() {
         let (store, mut db, binding) = seeded_body(retained, false, 100, false);
         let tx = db.transaction().unwrap();
         let counter = CostCounter::default();
-        let fresh = count_vm_units(&tx, &counter, || {
-            queries::ordinary_presentation_page(&tx, &store, "i", &claim(), None, &budget())
-                .unwrap()
+        // Fresh capture starts at ordinal0. The real source rotation can
+        // reserve two warning slots at visit99 even when warning exhaustion
+        // is already captured. Follow its actual returned cursor to inspect
+        // all100 fixed raw candidates; do not invent an ordinal1 start, skip
+        // a candidate, raise the per-page cap, or reinterpret the cursor.
+        let trace = ScopeTrace::install(&tx);
+        let (visited, scope, items, pages) = count_vm_units(&tx, &counter, || {
+            let mut cursor = None;
+            let mut visited = 0;
+            let mut scope = 0;
+            let mut items = Vec::new();
+            let mut pages = 0;
+            loop {
+                let page = queries::ordinary_presentation_page(
+                    &tx,
+                    &store,
+                    "i",
+                    &claim(),
+                    cursor.take(),
+                    &budget(),
+                )
+                .unwrap();
+                pages += 1;
+                assert!(page.visited <= 100, "per-quantum physical cap");
+                assert_eq!(page.lazy_scope_probes, page.visited * 3);
+                assert_eq!(page.continuation_probes, 0);
+                assert_eq!(page.retired_body, None);
+                visited += page.visited;
+                scope += page.lazy_scope_probes;
+                items.extend(page.page.items);
+                cursor = page.page.next_cursor;
+                if let Some(raw) = &cursor {
+                    let captured =
+                        crate::protocol::pagination::InboxBatchV2CursorState::decode(raw).unwrap();
+                    assert_eq!(
+                        captured.lazy_after_ordinal, visited as u64,
+                        "actual cursor tracks all inspected ordinals from0"
+                    );
+                    assert_eq!(captured.lazy_high_water_ordinal, 100);
+                    assert!(captured.body.is_none(), "raw scan has no body tail");
+                    assert!(
+                        pages < 2,
+                        "fixed100 slice must exhaust within two real quanta"
+                    );
+                } else {
+                    break;
+                }
+            }
+            (visited, scope, items, pages)
         });
-        assert_eq!(fresh.visited, 100);
-        assert_eq!(fresh.lazy_scope_probes, 300);
         assert_eq!(
-            fresh.page.items.len(),
+            trace.counts(),
+            [100, 0],
+            "one actual eligibility SQL per raw candidate"
+        );
+        drop(trace);
+        assert_eq!(visited, 100);
+        assert_eq!(scope, 300);
+        assert_eq!(
+            items.len(),
             25,
             "three rejected groups consume source work without output"
         );
-        assert_eq!(fresh.continuation_probes, 0);
-        assert_eq!(fresh.retired_body, None);
+        assert!(items.iter().enumerate().all(|(n, item)| matches!(item,
+            crate::protocol::results::InboxBatchV2Item::LazyMessage {message,..}
+            if message.as_str()==format!("msg-q4-{n}"))));
         let mut due = crate::ports::PresentationWork::default();
         let due_counter = CostCounter::default();
         let item = count_vm_units(&tx, &due_counter, || {
@@ -605,7 +661,7 @@ fn q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers() {
         assert_eq!(due.offer_reconciliation_probes, 0);
         measured.push((counter.units(), due_counter.units()));
         eprintln!(
-            "Q4 noise={retained} actual_fresh_VM_units={} actual_due_VM_units={}",
+            "Q4 noise={retained} actual_raw100_VM_units={} actual_due_VM_units={} raw_quanta={pages}",
             counter.units(),
             due_counter.units()
         );

@@ -261,6 +261,9 @@ pub(crate) fn start<C: LocalClient + ?Sized, W: Write>(
         send_key: OperationId::new(uuid::Uuid::new_v4().to_string()),
     };
     p.validate_claim(&claim)?;
+    if p.request.delivery_mode == DeliveryMode::Ordinary {
+        super::require_send_time_receipts_capability(client, clock)?;
+    }
     capability(
         client,
         clock,
@@ -375,6 +378,9 @@ pub(crate) fn retry<C: LocalClient + ?Sized, W: Write>(
     let result = (|| -> Result<(), RunError> {
         let mut progress: Progress = super::handoff::load_progress(journal, reference)?;
         progress.validate(p, claim)?;
+        if p.request.delivery_mode == DeliveryMode::Ordinary && progress.message.is_none() {
+            super::require_send_time_receipts_capability(client, clock)?;
+        }
         capability(
             client,
             clock,

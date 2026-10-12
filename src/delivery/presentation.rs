@@ -235,13 +235,34 @@ impl Write for CappedCount {
         Ok(())
     }
 }
+/// Internal distinction: only counted encoded-byte overflow proves a size limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SizingFailure {
+    OutputLimit(usize),
+    InvalidRendering(usize),
+    AllowanceExhausted,
+}
+impl SizingFailure {
+    fn bytes(self) -> usize {
+        match self {
+            Self::OutputLimit(bytes) | Self::InvalidRendering(bytes) => bytes,
+            Self::AllowanceExhausted => OUTPUT_LIMIT + 1,
+        }
+    }
+}
 /// Exact serializer, including native envelope, all Watch typed fields and LF.
 pub fn measure(
     profile: &PresentationRenderProfile,
     items: &[Item],
 ) -> Result<(Selection, usize), usize> {
+    measure_classified(profile, items).map_err(SizingFailure::bytes)
+}
+fn measure_classified(
+    profile: &PresentationRenderProfile,
+    items: &[Item],
+) -> Result<(Selection, usize), SizingFailure> {
     if !valid_items(items) {
-        return Err(OUTPUT_LIMIT + 1);
+        return Err(SizingFailure::InvalidRendering(OUTPUT_LIMIT + 1));
     }
     let selection = profile.selection(items);
     if items.is_empty() {
@@ -269,9 +290,14 @@ pub fn measure(
         }
         Ok(())
     })();
-    result
-        .map(|()| (selection, count.bytes))
-        .map_err(|_| count.bytes.max(OUTPUT_LIMIT + 1))
+    result.map(|()| (selection, count.bytes)).map_err(|_| {
+        let bytes = count.bytes.max(OUTPUT_LIMIT + 1);
+        if count.bytes > OUTPUT_LIMIT && profile.validate() {
+            SizingFailure::OutputLimit(bytes)
+        } else {
+            SizingFailure::InvalidRendering(bytes)
+        }
+    })
 }
 
 impl PresentationRenderProfile {
@@ -350,14 +376,22 @@ impl Sizer {
         profile: &PresentationRenderProfile,
         items: &[Item],
     ) -> Result<(Selection, usize), usize> {
+        self.measure_classified(profile, items)
+            .map_err(SizingFailure::bytes)
+    }
+    pub(crate) fn measure_classified(
+        &mut self,
+        profile: &PresentationRenderProfile,
+        items: &[Item],
+    ) -> Result<(Selection, usize), SizingFailure> {
         if self.work.output_passes >= 352 {
-            return Err(OUTPUT_LIMIT + 1);
+            return Err(SizingFailure::AllowanceExhausted);
         }
         self.work.output_passes += 1;
-        let result = measure(profile, items);
+        let result = measure_classified(profile, items);
         self.work.output_bytes += match result {
             Ok((_, bytes)) => bytes,
-            Err(bytes) => bytes,
+            Err(failure) => failure.bytes(),
         };
         result
     }
@@ -411,4 +445,65 @@ pub fn descriptor_key(codec: PresentationCodec) -> String {
                 .as_bytes()
         )
     )
+}
+
+#[cfg(test)]
+mod sizing_failure_tests {
+    use super::*;
+
+    #[test]
+    fn actual_overflow_is_distinct_from_exhaustion_and_invalid_rendering() {
+        let profile = PresentationRenderProfile::WatchJsonLinesV1;
+        let item = Item::Attention {
+            epoch: "1".into(),
+            attention_version: 1,
+            text: "\0".repeat(OUTPUT_LIMIT),
+        };
+        let mut sizer = Sizer::new();
+        assert!(matches!(
+            sizer.measure_classified(&profile, std::slice::from_ref(&item)),
+            Err(SizingFailure::OutputLimit(bytes)) if bytes == OUTPUT_LIMIT + 1
+        ));
+        assert_eq!(sizer.work.output_passes, 1);
+        assert_eq!(sizer.work.output_bytes, OUTPUT_LIMIT + 1);
+
+        sizer.work.output_passes = 352;
+        let exhausted_work = sizer.work;
+        assert_eq!(
+            sizer.measure_classified(&profile, std::slice::from_ref(&item)),
+            Err(SizingFailure::AllowanceExhausted)
+        );
+        assert_eq!(sizer.work, exhausted_work);
+
+        let mut sizer = Sizer::new();
+        let invalid = Item::AttentionCleared {
+            epoch: "invalid".into(),
+            attention_version: 1,
+        };
+        assert!(matches!(
+            sizer.measure_classified(&profile, &[invalid]),
+            Err(SizingFailure::InvalidRendering(_))
+        ));
+        assert_eq!(sizer.work.output_passes, 1);
+
+        let invalid_profile = PresentationRenderProfile::Hook {
+            confirmable_selector: 0,
+            passive_selector: 0,
+            confirmable: PresentationCodec::JsonStringEnvelope {
+                prefix: "",
+                suffix: "",
+            },
+            passive: PresentationCodec::JsonStringEnvelope {
+                prefix: "[",
+                suffix: "]",
+            },
+        };
+        assert!(!invalid_profile.validate());
+        let mut sizer = Sizer::new();
+        assert!(matches!(
+            sizer.measure_classified(&invalid_profile, &[item]),
+            Err(SizingFailure::InvalidRendering(_))
+        ));
+        assert_eq!(sizer.work.output_passes, 1);
+    }
 }

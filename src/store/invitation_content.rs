@@ -2511,7 +2511,7 @@ pub(super) fn pull(
     let mut truncated = Vec::new();
     let mut descriptors = Vec::new();
     let mut carried_notices = Vec::new();
-    let mut shown_message_count = 0;
+    let mut processed_message_count = 0;
     let mut message_slots = input.new_message_slots;
     for n in 0..if control_only { 0 } else { 5 } {
         let class = (state.rotation as usize + n) % 5;
@@ -2615,7 +2615,7 @@ pub(super) fn pull(
                 if input.blocked_messages.contains(&message.content.id)
                     || (!input.retry_messages && input.known_messages.contains(&message.content.id))
                 {
-                    shown_message_count += 1;
+                    processed_message_count += 1;
                     continue;
                 }
                 if outputs.len() == 32 {
@@ -2627,14 +2627,26 @@ pub(super) fn pull(
                 let output = message_output(message, &carry.prefix);
                 let mut trial = outputs.clone();
                 trial.push(output.clone());
-                if sizer.measure(&input.render_profile, &trial).is_err() {
-                    break;
+                match sizer.measure_classified(&input.render_profile, &trial) {
+                    Ok(_) => {}
+                    Err(presentation::SizingFailure::OutputLimit(_))
+                        if outputs.is_empty() && message_slots > 0 =>
+                    {
+                        // Finish only this private rendering attempt. Canonical
+                        // pending content and logical offer stamps stay intact.
+                        processed_message_count += 1;
+                        continue;
+                    }
+                    Err(presentation::SizingFailure::InvalidRendering(_)) => {
+                        return Err(corrupt("invalid normal presentation rendering"));
+                    }
+                    Err(_) => break,
                 }
                 if !input.known_messages.contains(&message.content.id) {
                     message_slots -= 1;
                 }
                 outputs.push(output);
-                shown_message_count += 1;
+                processed_message_count += 1;
                 if message.content.content.truncated {
                     truncated.push(message.content.id.clone());
                 } else {
@@ -2714,7 +2726,7 @@ pub(super) fn pull(
     }
     state.control_state = encode(&controls)?;
     if normal_mode && !control_only {
-        messages.drain(..shown_message_count);
+        messages.drain(..processed_message_count);
         carry.items = messages.clone();
         state.ordinary_pending = ordinary_carry_json(&carry)?;
     }

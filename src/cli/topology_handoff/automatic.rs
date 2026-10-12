@@ -335,16 +335,14 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
     let id = super::automatic_bootstrap_identity(&pending)?;
     exact_namespace(&id, namespace)?;
     let _lock = super::super::handoff::lock(journal, reference)?;
-    if id.plan.payload.handoff.policy.is_some() {
-        let completed =
-            matches!(status(client, clock, &id), Ok(s) if s.state == BootstrapState::Completed);
-        if !completed {
-            super::super::handoff_delivery::require_policy_capabilities(
-                client,
-                clock,
-                id.plan.payload.handoff.policy.as_ref(),
-            )?;
-        }
+    let completed =
+        matches!(status(client, clock, &id), Ok(s) if s.state == BootstrapState::Completed);
+    if !completed {
+        super::super::handoff_delivery::require_policy_capabilities(
+            client,
+            clock,
+            id.plan.payload.handoff.policy.as_ref(),
+        )?;
     }
     let mut local = load_parent(journal, reference, &id)?;
     let begun = call(

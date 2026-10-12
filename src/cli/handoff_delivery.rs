@@ -1804,17 +1804,15 @@ fn retry_automatic_inner<C: LocalClient + ?Sized, W: Write>(
         File::open(journal.root())?.sync_all()?;
         terminal
     } else {
-        if original.delivery().payload.policy.is_some() {
-            let mut query = envelope.clone();
-            query.action = crate::protocol::handoff::AutomaticDeliveryAction::Status;
-            let completed = matches!(call(query), Ok(CommandResult::Handoff(s)) if s.state == HandoffState::Completed);
-            if !completed {
-                require_policy_capabilities(
-                    client,
-                    clock,
-                    original.delivery().payload.policy.as_ref(),
-                )?;
-            }
+        let mut query = envelope.clone();
+        query.action = crate::protocol::handoff::AutomaticDeliveryAction::Status;
+        let completed = matches!(call(query), Ok(CommandResult::Handoff(s)) if s.state == HandoffState::Completed);
+        if !completed {
+            require_policy_capabilities(
+                client,
+                clock,
+                original.delivery().payload.policy.as_ref(),
+            )?;
         }
         let exact_original = journal.snapshot_automatic_origin(reference)?;
         let mut progress: AutomaticProgress = handoff::load_progress(journal, reference)?;
