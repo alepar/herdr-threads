@@ -1568,14 +1568,14 @@ fn pane_agent_observation_reads_the_same_in_me_init_launch_and_diagnostics() {
     }
     let launch = |pane: &str| {
         let out = world.run(None, None, &["launch", "--pane", pane, "--kind", "claude"]);
-        out.refused("launch").to_owned()
+        (out.refused("launch").to_owned(), out.value.clone())
     };
     let me_init = |pane: &str| {
         let out = world.run(Some(pane), None, &["human", "me", "init"]);
         out.refused("me init").to_owned()
     };
     let (present_me, absent_me, error_me) = (me_init("w1:p1"), me_init("w1:p2"), me_init("w1:p3"));
-    let (present_launch, absent_launch, error_launch) =
+    let ((present_launch, _), (absent_launch, absent_report), (error_launch, _)) =
         (launch("w1:p1"), launch("w1:p2"), launch("w1:p3"));
     // Present: both guards name the agent Herdr reported.
     assert!(
@@ -1587,9 +1587,16 @@ fn pane_agent_observation_reads_the_same_in_me_init_launch_and_diagnostics() {
         "{present_launch}"
     );
     // Absent: neither saw an agent (`me init` was stopped later, by the seat's
-    // own agent context; `launch` went on to the hook preflight).
+    // own agent context; `launch` went past its agent guard to the native start, which
+    // advisory hook readiness no longer vetoes (TRUST-POLICY, 673a27ad), and the
+    // stand-in Herdr leaves unconfirmed).
     assert!(!absent_me.contains("Herdr reports"), "{absent_me}");
-    assert!(absent_launch.contains("missing_hook"), "{absent_launch}");
+    assert!(!absent_launch.contains("agent"), "{absent_launch}");
+    assert_eq!(absent_report["launch"]["pane"], "w1:p2", "{absent_report}");
+    assert_eq!(
+        absent_report["launch"]["outcome"], "outcome_unknown",
+        "{absent_report}"
+    );
     // Error: neither guesses. `launch` fails on the read itself; `me init`
     // treats the failed read as no evidence and is stopped by the daemon's own
     // check of the agent seat's binding.
