@@ -3582,6 +3582,23 @@ impl FakeHerdr {
 /// coalesced prompt, only after the fresh agent recheck. The minimum spacing
 /// then holds the seat, and a working or shell target is never prompted.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+/// Real UTC with monotonic time frozen at creation, on the real clock's own origin. The
+/// store (and so the scheduler's pre-send refusal backoff, pacer D5: 100 ms +-20 % first
+/// step) reads it, so "spacing admits one attempt" cannot depend on how fast three passes
+/// run on a loaded machine; host calls and prompt deadlines keep the real clock.
+struct FrozenMonotonic {
+    real: Arc<dyn Clock>,
+    mono: MonoInstant,
+}
+impl Clock for FrozenMonotonic {
+    fn utc_now(&self) -> UtcMillis {
+        self.real.utc_now()
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        self.mono
+    }
+}
+
 #[test]
 fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
     for (status, expect_prompt) in [
@@ -3611,7 +3628,11 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
         herdr.methods.lock().unwrap().clear();
         let path =
             std::env::temp_dir().join(format!("herdr-coop-wake-{}.db", uuid::Uuid::new_v4()));
-        let context = StoreContext::new(path.clone(), clock.clone());
+        let store_clock: Arc<dyn Clock> = Arc::new(FrozenMonotonic {
+            real: clock.clone(),
+            mono: clock.monotonic_now(),
+        });
+        let context = StoreContext::new(path.clone(), store_clock.clone());
         let db = context.open_writer().unwrap();
         db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,?1,1,10)", [observed.host_boot.as_str()]).unwrap();
         db.execute_batch("\
@@ -3628,7 +3649,7 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
         drop(db);
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(path.clone(), clock.clone()),
+                StoreContext::new(path.clone(), store_clock.clone()),
                 "i",
                 StoreSettings {
                     daemon_boot: Some(daemon_boot()),
