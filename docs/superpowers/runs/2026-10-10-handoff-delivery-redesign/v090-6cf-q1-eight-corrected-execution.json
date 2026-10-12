@@ -1,0 +1,87 @@
+{
+  "head": "6cfb31805ccb2b91b33615539514d545289ab214",
+  "tree": "18ea62085b7e47a3480e8d436ba5f369687e5168",
+  "run_id": "633b9ed6-ae76-4fdb-8254-8611e6afd0a2",
+  "expected": [
+    "invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read",
+    "invitation_content::binding_presentation::continued_body_retirement_is_private_and_charged_once",
+    "invitation_content::binding_presentation::continued_pending_body_survives_own_display_cursor",
+    "invitation_content::binding_presentation::continued_unread_body_survives_sibling_full_read",
+    "invitation_content::binding_presentation::continued_body_refuses_corrupt_accumulator_and_missing_authority_without_progress",
+    "invitation_content::binding_presentation::continued_body_retirement_rolls_back_when_final_state_write_fails",
+    "invitation_content::binding_presentation::continued_body_cancellation_before_final_save_rolls_back_and_retries",
+    "invitation_content::binding_presentation::continued_body_cancellation_during_decision_sample_rolls_back_tentative_save"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 38.71718470810447
+  },
+  "selected": [
+    [
+      "herdr-threads::combined",
+      "invitation_content::binding_presentation::continued_body_cancellation_before_final_save_rolls_back_and_retries"
+    ],
+    [
+      "herdr-threads::combined",
+      "invitation_content::binding_presentation::continued_body_cancellation_during_decision_sample_rolls_back_tentative_save"
+    ],
+    [
+      "herdr-threads::combined",
+      "invitation_content::binding_presentation::continued_body_refuses_corrupt_accumulator_and_missing_authority_without_progress"
+    ],
+    [
+      "herdr-threads::combined",
+      "invitation_content::binding_presentation::continued_body_retirement_is_private_and_charged_once"
+    ],
+    [
+      "herdr-threads::combined",
+      "invitation_content::binding_presentation::continued_body_retirement_rolls_back_when_final_state_write_fails"
+    ],
+    [
+      "herdr-threads::combined",
+      "invitation_content::binding_presentation::continued_pending_body_survives_own_display_cursor"
+    ],
+    [
+      "herdr-threads::combined",
+      "invitation_content::binding_presentation::continued_unread_body_survives_sibling_full_read"
+    ],
+    [
+      "herdr-threads::combined",
+      "invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/combined-1ca8fb8a6401d78a",
+      "sha256": "c6f760c1398d7439e72f7a67fda73984d3cc2917266776ff5e110b00de38161f"
+    }
+  ],
+  "run": {
+    "exit": 0,
+    "seconds": 2.1245037500048056,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--test",
+      "combined",
+      "--no-fail-fast",
+      "-E",
+      "test(=invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read) | test(=invitation_content::binding_presentation::continued_body_retirement_is_private_and_charged_once) | test(=invitation_content::binding_presentation::continued_pending_body_survives_own_display_cursor) | test(=invitation_content::binding_presentation::continued_unread_body_survives_sibling_full_read) | test(=invitation_content::binding_presentation::continued_body_refuses_corrupt_accumulator_and_missing_authority_without_progress) | test(=invitation_content::binding_presentation::continued_body_retirement_rolls_back_when_final_state_write_fails) | test(=invitation_content::binding_presentation::continued_body_cancellation_before_final_save_rolls_back_and_retries) | test(=invitation_content::binding_presentation::continued_body_cancellation_during_decision_sample_rolls_back_tentative_save)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.28613137488719076,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "633b9ed6-ae76-4fdb-8254-8611e6afd0a2"
+    ]
+  },
+  "leak_exit": 0
+}

@@ -1,0 +1,14 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+────────────
+ Nextest run ID 93b7014b-be71-4c11-9f70-8617b4477426 with nextest profile: default
+    Starting 8 tests across 1 binary (719 tests skipped)
+        PASS [   0.844s] (1/8) herdr-threads::combined invitation_content::binding_presentation::continued_unread_body_survives_sibling_full_read
+        PASS [   0.855s] (2/8) herdr-threads::combined invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read
+        PASS [   0.866s] (3/8) herdr-threads::combined invitation_content::binding_presentation::continued_body_retirement_is_private_and_charged_once
+        PASS [   0.927s] (4/8) herdr-threads::combined invitation_content::binding_presentation::continued_body_cancellation_during_decision_sample_rolls_back_tentative_save
+        PASS [   0.928s] (5/8) herdr-threads::combined invitation_content::binding_presentation::continued_body_retirement_rolls_back_when_final_state_write_fails
+        PASS [   0.957s] (6/8) herdr-threads::combined invitation_content::binding_presentation::continued_body_cancellation_before_final_save_rolls_back_and_retries
+        PASS [   0.970s] (7/8) herdr-threads::combined invitation_content::binding_presentation::continued_pending_body_survives_own_display_cursor
+        PASS [   1.726s] (8/8) herdr-threads::combined invitation_content::binding_presentation::continued_body_refuses_corrupt_accumulator_and_missing_authority_without_progress
+────────────
+     Summary [   1.730s] 8 tests run: 8 passed, 719 skipped

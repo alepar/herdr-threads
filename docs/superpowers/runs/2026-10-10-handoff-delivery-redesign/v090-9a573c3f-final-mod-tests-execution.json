@@ -1,0 +1,8 @@
+{
+  "head": "9a573c3f2a5420ff0c3fee07a3e836d189e88a83",
+  "run_id": "a5a62191-0830-4656-b34b-a946da1eddc0",
+  "exit": 0,
+  "seconds": 1.6191561250016093,
+  "leak_exit": 0,
+  "scope": "model-free registered mod validation/tests, isolated HOME/configs; no native model consumption or receipt claim"
+}

@@ -1,0 +1,28 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+────────────
+ Nextest run ID 4743a0e1-21aa-4b9c-9d3b-9c656f1fbe64 with nextest profile: default
+    Starting 2 tests across 1 binary (725 tests skipped)
+        FAIL [   0.793s] (1/2) herdr-threads::combined invitation_content::binding_presentation::continued_body_cancellation_during_decision_sample_rolls_back_tentative_save
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::continued_body_cancellation_during_decision_sample_rolls_back_tentative_save ... FAILED
+
+    failures:
+
+    failures:
+        invitation_content::binding_presentation::continued_body_cancellation_during_decision_sample_rolls_back_tentative_save
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 726 filtered out; finished in 0.78s
+
+  stderr ───
+
+    thread 'invitation_content::binding_presentation::continued_body_cancellation_during_decision_sample_rolls_back_tentative_save' (55538056) panicked at tests/store/invitation_content.rs:1642:18:
+    unaccepted presentation decision must roll back: PresentationOutput { owner_replay: WatchReplayProgress { snapshot: None, completed: {}, emitted: {}, source: Normal }, ordinary_due_update: None, reply: Unchanged { attention_version: 0 }, work: PresentationWork { ordinary_due_key_probes: 0, ordinary_due_seeks: 0, ordinary_due_hydrated: 0, ordinary_carry_key_probes: 0, ordinary_carry_seeks: 0, ordinary_carry_hydrated: 0, ordinary_continuation_key_probes: 15, offer_reconciliation_visits: 0, offer_reconciliation_probes: 0, ordinary_publication_visits: 0, ordinary_publication_probes: 0, ordinary_publication_seeks: 1, relevance_calls: 1, relevance_sources: 0, relevance_fallback: 0, relevance_point_probes: 0, relevance_seeks: 0, relevance_witness_probes: 0, output_passes: 0, output_bytes: 0, rpc_passes: 1, rpc_bytes: 88, initial: 0, context: 0, revisit: 0, ordinary: 1, notices: 0, notice_validations: 0, replay: 0 }, reclaimed_messages: [] }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.938s] (2/2) herdr-threads::combined invitation_content::binding_presentation::continued_unread_body_survives_sibling_full_read
+────────────
+     Summary [   0.948s] 2 tests run: 1 passed, 1 failed, 725 skipped
+        FAIL [   0.793s] (1/2) herdr-threads::combined invitation_content::binding_presentation::continued_body_cancellation_during_decision_sample_rolls_back_tentative_save
+error: test run failed

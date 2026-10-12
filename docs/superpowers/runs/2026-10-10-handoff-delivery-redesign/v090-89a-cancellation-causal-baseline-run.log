@@ -1,0 +1,47 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID d9700b8f-f708-491d-a346-4f08c63a53be with nextest profile: default
+    Starting 2 tests across 1 binary (724 tests skipped)
+        FAIL [   0.274s] (1/2) herdr-threads::combined invitation_content::binding_presentation::continued_unread_body_survives_sibling_full_read
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::continued_unread_body_survives_sibling_full_read ... FAILED
+
+    failures:
+
+    failures:
+        invitation_content::binding_presentation::continued_unread_body_survives_sibling_full_read
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 725 filtered out; finished in 0.27s
+
+  stderr ───
+
+    thread 'invitation_content::binding_presentation::continued_unread_body_survives_sibling_full_read' (55506651) panicked at tests/store/invitation_content.rs:1233:14:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: StoreBusy, detail: "SQLite (unclassified, transient): malformed JSON", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.279s] (2/2) herdr-threads::combined invitation_content::binding_presentation::continued_body_cancellation_before_final_save_rolls_back_and_retries
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::continued_body_cancellation_before_final_save_rolls_back_and_retries ... FAILED
+
+    failures:
+
+    failures:
+        invitation_content::binding_presentation::continued_body_cancellation_before_final_save_rolls_back_and_retries
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 725 filtered out; finished in 0.27s
+
+  stderr ───
+
+    thread 'invitation_content::binding_presentation::continued_body_cancellation_before_final_save_rolls_back_and_retries' (55506652) panicked at tests/store/invitation_content.rs:1543:28:
+    an actually cancelled terminal continuation must not commit its private progress: PresentationOutput { owner_replay: WatchReplayProgress { snapshot: None, completed: {}, emitted: {}, source: Normal }, ordinary_due_update: None, reply: Unchanged { attention_version: 0 }, work: PresentationWork { ordinary_due_key_probes: 0, ordinary_due_seeks: 0, ordinary_due_hydrated: 0, ordinary_carry_key_probes: 0, ordinary_carry_seeks: 0, ordinary_carry_hydrated: 0, ordinary_continuation_key_probes: 15, offer_reconciliation_visits: 0, offer_reconciliation_probes: 0, ordinary_publication_visits: 0, ordinary_publication_probes: 0, ordinary_publication_seeks: 1, relevance_calls: 1, relevance_sources: 0, relevance_fallback: 0, relevance_point_probes: 0, relevance_seeks: 0, relevance_witness_probes: 0, output_passes: 0, output_bytes: 0, rpc_passes: 1, rpc_bytes: 88, initial: 0, context: 0, revisit: 0, ordinary: 1, notices: 0, notice_validations: 0, replay: 0 }, reclaimed_messages: [] }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.281s] 2 tests run: 0 passed, 2 failed, 724 skipped
+        FAIL [   0.274s] (1/2) herdr-threads::combined invitation_content::binding_presentation::continued_unread_body_survives_sibling_full_read
+        FAIL [   0.279s] (2/2) herdr-threads::combined invitation_content::binding_presentation::continued_body_cancellation_before_final_save_rolls_back_and_retries
+error: test run failed

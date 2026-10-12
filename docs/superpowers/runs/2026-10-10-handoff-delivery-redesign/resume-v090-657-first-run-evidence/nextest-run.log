@@ -1,0 +1,1955 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+────────────
+ Nextest run ID d6d803d1-a093-4b03-bf5d-28eca040e03f with nextest profile: default
+    Starting 651 tests across 5 binaries (5331 tests skipped)
+        PASS [   7.737s] (  1/651) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_actual_admission_boundary_completes_and_next_metadata_size_has_zero_effects
+        PASS [   4.936s] (  2/651) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_maximum_escaped_body_completes_and_recovers_exactly
+        PASS [   0.013s] (  3/651) herdr-threads::integration mod_delivery::activation_capacity_flow_oracle_assertions_do_not_poison
+        PASS [   0.013s] (  4/651) herdr-threads::integration mod_delivery::activation_capacity_flow_stop_recovers_poison_and_releases_waiter
+        PASS [   0.014s] (  5/651) herdr-threads::integration mod_delivery::activation_capacity_flow_failed_or_unwritten_attention_has_no_marker
+        PASS [   0.008s] (  6/651) herdr-threads::integration mod_delivery::activation_capacity_flow_successful_frame_write_serializes_pull_observation
+        PASS [   0.102s] (  7/651) herdr-threads::integration mod_delivery::activation_capacity_flow_oracle_unwind_restores_relay
+        PASS [   0.102s] (  8/651) herdr-threads cli::cooperative_tests::subagent_own_inbox_displays_advances_only_its_cursor_and_machine_read_carries_the_claim
+        PASS [   0.130s] (  9/651) herdr-threads cli::cooperative_tests::subagent_text_inbox_without_binding_cursors_is_a_read_only_read
+        PASS [   0.378s] ( 10/651) herdr-threads cli::handoff::tests::acquired_stdin_survives_retry_after_reader_is_unavailable
+        PASS [   0.287s] ( 11/651) herdr-threads cli::handoff::tests::automatic_launched_pane_lost_start_never_resubmits_on_retry
+        PASS [   0.575s] ( 12/651) herdr-threads cli::handoff::tests::automatic_launched_noncompletion_keeps_exact_artifact_and_bounded_progress
+        PASS [   0.311s] ( 13/651) herdr-threads cli::handoff_delivery::tests::automatic_existing_pane_full_request_resolves_one_seat
+        PASS [   0.701s] ( 14/651) herdr-threads cli::handoff::tests::maximum_instruction_file_freezes_through_explicit_launch_retry
+        PASS [   0.274s] ( 15/651) herdr-threads cli::handoff_delivery::tests::automatic_existing_seat_full_request_ensures_and_sends
+        PASS [   0.514s] ( 16/651) herdr-threads cli::handoff_delivery::tests::automatic_existing_max_escaped_body_and_independent_frozen_deadlines
+        PASS [   1.093s] ( 17/651) herdr-threads cli::handoff::tests::automatic_launched_maximum_escaped_body_is_frozen_and_retries_without_relaunch
+        PASS [   0.014s] ( 18/651) herdr-threads cli::hook::neutral_tests::adapter_completion_requires_successful_stdout_write_and_flush
+        PASS [   0.010s] ( 19/651) herdr-threads cli::hook::neutral_tests::default_hook_step_completion_is_inert
+        PASS [   0.010s] ( 20/651) herdr-threads cli::hook::neutral_tests::every_hooks_own_harness_finds_its_resolved_binding
+        PASS [   0.010s] ( 21/651) herdr-threads cli::hook::neutral_tests::parse_failure_report_follows_the_legacy_contract_predicate
+        PASS [   0.011s] ( 22/651) herdr-threads cli::hook::tests::claude_subagent_pre_tool_use_rewrites_herdr_commands
+        PASS [   0.613s] ( 23/651) herdr-threads cli::handoff_delivery::tests::handoff_policy_lazy_invitation_still_warns_sender_for_unregistered_ack_required_recipient
+        PASS [   0.733s] ( 24/651) herdr-threads cli::handoff_delivery::tests::handoff_policy_completed_canonical_status_bypasses_missing_capabilities_but_pending_refuses
+        PASS [   0.877s] ( 25/651) herdr-threads cli::handoff_delivery::tests::handoff_policy_already_joined_unavailable_recipient_warns_without_new_invitation
+        PASS [   0.268s] ( 26/651) herdr-threads cli::hook::tests::registered_resume::claude_subagent_stop_reports_a_stop_binding_event_for_its_agent
+        PASS [   0.305s] ( 27/651) herdr-threads cli::hook::tests::registered_resume::claude_subagent_start_enrolls_its_binding_and_still_renders_guidance
+        FAIL [   1.936s] ( 28/651) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion
+  stdout ───
+
+    running 1 test
+    test agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion ... FAILED
+
+    failures:
+
+    failures:
+        agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 1.92s
+
+  stderr ───
+    elected daemon.log tail:
+    harness manifest: auto
+    store startup binding evidence: backfilled 0, still lacking 0
+    panicked at tests/hook_entrypoint/agy.rs:1861:23:
+    herdr-threads hook: no agy, claude, codex, hermes or other registered agent harness process among this process's ancestors
+
+
+
+        PASS [   0.674s] ( 29/651) herdr-threads cli::hook::tests::registered_resume::claude_session_start_reports_no_binding_event
+        PASS [   0.129s] ( 30/651) herdr-threads cli::hook_inbox::tests::cli_inbox_prints_first_contact_once
+        PASS [   0.011s] ( 31/651) herdr-threads cli::hook_inbox::tests::inbox_sends_claim_and_advances_after_full_flush
+        PASS [   0.507s] ( 32/651) herdr-threads cli::hook::tests::registered_resume::codex_session_end_and_subagent_stop_report_end_binding_events
+        PASS [   0.010s] ( 33/651) herdr-threads cli::hook_inbox::tests::truncated_page_advances_only_what_was_displayed
+        PASS [   0.016s] ( 34/651) herdr-threads cli::human::tests::presentation_flags_parse_and_conflict_with_json
+        PASS [   0.009s] ( 35/651) herdr-threads cli::human::tests::presentation_is_machine_unless_selected_and_never_for_json
+        PASS [   0.541s] ( 36/651) herdr-threads cli::hook::tests::registered_resume::hermes_finalize_and_delegate_events_report_binding_events
+        PASS [   1.275s] ( 37/651) herdr-threads cli::hook::tests::registered_resume::claude_binding_and_hermes_one_shot_coexist_on_one_seat
+        PASS [   0.019s] ( 38/651) herdr-threads cli::skill::tests::skill_prints_verbatim_in_every_presentation
+        PASS [   0.169s] ( 39/651) herdr-threads cli::hook_inbox::tests::subagent_inbox_never_sends_ack_displayed
+        PASS [   0.402s] ( 40/651) herdr-threads cli::launch::tests::adapter_launch_configuration_mutation_before_submit_refuses
+        PASS [   0.012s] ( 41/651) herdr-threads cli::topology_handoff::tests::live::automatic_live::automatic_old_peer_with_all_other_caps_refuses_before_selector_or_caller_allocation
+        PASS [   0.383s] ( 42/651) herdr-threads cli::topology_contract_retry_tests::topology_contract_retry_refuses_unavailable_or_unconfigured_runtime_before_presentation
+        PASS [   0.723s] ( 43/651) herdr-threads cli::launch::tests::agy_guarded_launch_keeps_plugin_readiness_advisory_and_native_guards
+        PASS [   0.564s] ( 44/651) herdr-threads cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_below_limit_replays_exact_bytes
+        PASS [   0.996s] ( 45/651) herdr-threads cli::topology_handoff::tests::live::automatic_live::automatic_child_begin_expired_permit_has_no_effects_and_fresh_permit_succeeds
+        FAIL [   1.641s] ( 46/651) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_lost_completion_preserves_exact_recovery
+  stdout ───
+
+    running 1 test
+    test agy::activation::activation_v2_registered_agy_lost_completion_preserves_exact_recovery ... FAILED
+
+    failures:
+
+    failures:
+        agy::activation::activation_v2_registered_agy_lost_completion_preserves_exact_recovery
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 1.63s
+
+  stderr ───
+    elected daemon.log tail:
+    harness manifest: auto
+    store startup binding evidence: backfilled 0, still lacking 0
+    panicked at tests/hook_entrypoint/agy.rs:1925:27:
+    herdr-threads hook: no agy, claude, codex, hermes or other registered agent harness process among this process's ancestors
+
+
+
+        FAIL [   3.794s] ( 47/651) herdr-threads::integration mod_delivery::activation_v2_elected_watch_capabilities_lease_output_confirm
+  stdout ───
+
+    running 1 test
+    test mod_delivery::activation_v2_elected_watch_capabilities_lease_output_confirm ... FAILED
+
+    failures:
+
+    failures:
+        mod_delivery::activation_v2_elected_watch_capabilities_lease_output_confirm
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 236 filtered out; finished in 3.78s
+
+  stderr ───
+    panicked at tests/integration/mod_delivery.rs:2594:11:
+    called `Result::unwrap()` on an `Err` value: SqlInputError { error: Error { code: Unknown, extended_code: 1 }, msg: "no such column: o.binding_generation", sql: "SELECT o.binding_generation,o.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id FROM digest_notice_offer o JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN seats s ON s.id=o.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE o.seat_id=?1 AND d.warning_id=?2", offset: 7 }
+
+        PASS [   3.733s] ( 48/651) herdr-threads::integration mod_delivery::activation_v2_watch_lost_confirm_response_replays_exact_subset
+        PASS [   3.040s] ( 49/651) herdr-threads cli::handoff_delivery::tests::maximum_instruction_file_freezes_through_existing_delivery_and_retry
+        PASS [   1.113s] ( 50/651) herdr-threads cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_over_limit_read_refuses
+        PASS [   4.056s] ( 51/651) herdr-threads::service graph_d2::registered_service_and_native_caller_complete_required_flow_with_exact_replay
+        PASS [   1.079s] ( 52/651) herdr-threads cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_over_limit_replay_refuses
+        PASS [   0.977s] ( 53/651) herdr-threads cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_over_limit_write_refuses_atomically
+        PASS [   1.145s] ( 54/651) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_artifact_failure_keeps_synced_summary_and_reopened_retry_never_starts
+        PASS [   4.838s] ( 55/651) herdr-threads::integration mod_delivery::activation_v2_watch_lazy_only_page_is_passive
+        FAIL [   1.449s] ( 56/651) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_system_hook_round_trip
+  stdout ───
+
+    running 1 test
+    test agy::activation::activation_v2_registered_agy_system_hook_round_trip ... FAILED
+
+    failures:
+
+    failures:
+        agy::activation::activation_v2_registered_agy_system_hook_round_trip
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 1.44s
+
+  stderr ───
+    elected daemon.log tail:
+    harness manifest: auto
+    store startup binding evidence: backfilled 0, still lacking 0
+    panicked at tests/hook_entrypoint/agy.rs:1340:23:
+    herdr-threads hook: no agy, claude, codex, hermes or other registered agent harness process among this process's ancestors
+
+
+
+        PASS [   1.113s] ( 57/651) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_canonical_completion_refuses_full_diagnostic_report
+        PASS [   1.256s] ( 58/651) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_committed_completion_reply_loss_reopens_without_artifact_or_relaunch
+        PASS [   0.438s] ( 59/651) herdr-threads cli::topology_recover::tests::root_operator_retry_refuses_before_completed_presentation_and_cleanup
+        PASS [   0.010s] ( 60/651) herdr-threads cli::watch::tests::a_drain_that_finds_nothing_pending_retracts_the_last_attention_line
+        PASS [   0.014s] ( 61/651) herdr-threads cli::watch::tests::a_failed_chunk_marks_only_its_ids_retryable
+        PASS [   0.011s] ( 62/651) herdr-threads cli::watch::tests::a_run_without_attention_never_retracts
+        PASS [   1.469s] ( 63/651) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_large_diagnostics_preserve_full_local_report_and_complete_summary
+        PASS [   0.020s] ( 64/651) herdr-threads cli::watch::tests::attention_frame_triggers_another_drain
+        PASS [   0.009s] ( 65/651) herdr-threads cli::watch::tests::busy_or_timed_out_probe_is_retryable
+        PASS [   0.030s] ( 66/651) herdr-threads cli::watch::tests::capable_watch_streams_ordered_v2_then_explicitly_confirms_captured_controls
+        PASS [   0.011s] ( 67/651) herdr-threads cli::watch::tests::chunked_body_is_reassembled_before_emitting
+        PASS [   0.071s] ( 68/651) herdr-threads cli::watch::tests::body_over_8_kib_is_truncated_with_marker_and_hint_file_records_id
+        PASS [   0.037s] ( 69/651) herdr-threads cli::watch::tests::dead_parent_stops_the_stream_loop_without_a_status_line
+        PASS [   0.010s] ( 70/651) herdr-threads cli::watch::tests::definitive_unknown_wire_version_probe_exits_3_unsupported
+        PASS [   1.463s] ( 71/651) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_recovery_above_historical_limit_succeeds_and_replays
+        PASS [   0.013s] ( 72/651) herdr-threads cli::watch::tests::drain_pages_until_exhausted_with_schema_kind_and_stable_ids
+        PASS [   0.079s] ( 73/651) herdr-threads cli::watch::tests::close_frame_prints_closing_status_and_exits_with_close_code
+        PASS [   0.016s] ( 74/651) herdr-threads cli::watch::tests::drain_surfaces_daemon_errors_and_closed_stdout
+        PASS [   0.779s] ( 75/651) herdr-threads cli::topology_handoff::tests::live::live_preallocation_budget_entry_and_final_presentation_zero_effect
+        PASS [   0.017s] ( 76/651) herdr-threads cli::watch::tests::env_off_exits_3_with_env_disabled_status_before_connecting
+        PASS [   0.016s] ( 77/651) herdr-threads cli::watch::tests::every_chunk_failing_prints_nothing_and_exits_1
+        PASS [   0.013s] ( 78/651) herdr-threads cli::watch::tests::failed_capability_probe_exits_retryable_daemon_unavailable
+        PASS [   0.014s] ( 79/651) herdr-threads cli::watch::tests::exactly_the_batch_limit_is_one_call
+        PASS [   0.009s] ( 80/651) herdr-threads cli::watch::tests::informational_warnings_raise_no_attention_line
+        PASS [   0.010s] ( 81/651) herdr-threads cli::watch::tests::invitation_policy_lazy_is_bookkeeping_while_timed_and_legacy_raise_attention
+        PASS [   0.010s] ( 82/651) herdr-threads cli::watch::tests::invitations_and_warnings_collapse_into_one_attention_line_per_version
+        PASS [   0.009s] ( 83/651) herdr-threads cli::watch::tests::lazy_rows_stream_as_lazy_without_ack_required
+        PASS [   0.009s] ( 84/651) herdr-threads cli::watch::tests::missing_mod_watch_capability_exits_3_unsupported
+        PASS [   0.009s] ( 85/651) herdr-threads cli::watch::tests::message_lines_carry_the_thread_topic_and_sender_names
+        PASS [   0.009s] ( 86/651) herdr-threads cli::watch::tests::missing_pane_exits_3_with_no_pane_status_and_registers_nothing
+        PASS [   0.010s] ( 87/651) herdr-threads cli::watch::tests::one_over_is_two_calls
+        PASS [   0.011s] ( 88/651) herdr-threads cli::watch::tests::missing_pane_through_run_in_pane_prints_one_status_and_exits_3
+        PASS [   0.009s] ( 89/651) herdr-threads cli::watch::tests::parent_death_ends_watch
+        PASS [   0.011s] ( 90/651) herdr-threads cli::watch::tests::parses_watch_ack_argv
+        PASS [   0.010s] ( 91/651) herdr-threads cli::watch::tests::presentation_watch_close_wins_before_next_more_quantum
+        PASS [   0.011s] ( 92/651) herdr-threads cli::watch::tests::parses_watch_argv
+        PASS [   0.010s] ( 93/651) herdr-threads cli::watch::tests::presentation_watch_failed_flush_never_confirms_or_writes_success_hint
+        PASS [   0.010s] ( 94/651) herdr-threads cli::watch::tests::presentation_watch_foreign_acknowledgement_is_error_not_success
+        PASS [   0.010s] ( 95/651) herdr-threads cli::watch::tests::presentation_watch_new_owner_physically_reemits_before_own_confirmation
+        PASS [   0.031s] ( 96/651) herdr-threads cli::watch::tests::presentation_watch_refused_confirmation_never_records_truncation_hint
+        PASS [   1.335s] ( 97/651) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_unknown_large_diagnostics_keep_bounded_truthful_progress
+        PASS [   0.037s] ( 98/651) herdr-threads cli::watch::tests::presentation_watch_requires_both_capability_and_valid_accepted_lease
+        PASS [   0.017s] ( 99/651) herdr-threads cli::watch::tests::rejects_bad_watch_argv
+        PASS [   0.010s] (100/651) herdr-threads cli::watch::tests::stub_mod_files_follow_the_layout
+        PASS [   0.028s] (101/651) herdr-threads cli::watch::tests::stdout_closed_exits_0_quietly
+        PASS [   0.024s] (102/651) herdr-threads cli::watch::tests::stream_eof_prints_stream_ended_and_exits_0
+        PASS [   0.011s] (103/651) herdr-threads cli::watch::tests::the_attention_line_follows_the_command_prefix
+        PASS [   0.022s] (104/651) herdr-threads cli::watch::tests::unlocated_caller_exits_2_no_binding
+        PASS [   0.024s] (105/651) herdr-threads cli::watch::tests::unknown_wire_version_reply_exits_3_unsupported
+        PASS [   0.082s] (106/651) herdr-threads cli::watch::tests::refusal_prints_status_line_and_exits_with_contract_code
+        PASS [   0.017s] (107/651) herdr-threads cli::watch::tests::unreachable_daemon_exits_1_daemon_unavailable
+        PASS [   0.011s] (108/651) herdr-threads cli::watch::tests::watch_ack_error_prints_nothing_and_exits_1
+        PASS [   0.011s] (109/651) herdr-threads cli::watch::tests::unreachable_socket_exits_1_daemon_unavailable
+        PASS [   0.013s] (110/651) herdr-threads cli::watch::tests::watch_ack_prints_one_line_per_id_and_exits_0
+        PASS [   0.016s] (111/651) herdr-threads cli::watch::tests::watch_ack_over_the_batch_limit_sends_chunks_and_settles_every_id
+        PASS [   0.012s] (112/651) herdr-threads cli::watch::tests::watch_carries_a_passive_invitation_as_invitation_content_never_a_message
+        PASS [   0.016s] (113/651) herdr-threads cli::watch::tests::watch_ack_refuses_hinted_truncated_ids_locally_and_sends_the_rest
+        PASS [   0.010s] (114/651) herdr-threads cli::watch::tests::watch_registers_with_its_own_session_claim
+        PASS [   0.018s] (115/651) herdr-threads cli::watch::tests::watch_drain_reads_the_seat_without_the_binding_cursors_capability
+        PASS [   0.018s] (116/651) herdr-threads cli::watch::tests::watch_drain_reads_the_registering_bindings_own_stream
+        PASS [   2.243s] (117/651) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_completed_missing_child_and_artifact_is_readonly_and_truthful
+        FAIL [   1.274s] (118/651) herdr-threads::hook_entrypoint agy::activation::activation_v2_registered_agy_user_hook_round_trip
+  stdout ───
+
+    running 1 test
+    test agy::activation::activation_v2_registered_agy_user_hook_round_trip ... FAILED
+
+    failures:
+
+    failures:
+        agy::activation::activation_v2_registered_agy_user_hook_round_trip
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 1.26s
+
+  stderr ───
+    elected daemon.log tail:
+    harness manifest: auto
+    store startup binding evidence: backfilled 0, still lacking 0
+    panicked at tests/hook_entrypoint/agy.rs:1340:23:
+    herdr-threads hook: no agy, claude, codex, hermes or other registered agent harness process among this process's ancestors
+
+
+
+        PASS [   0.484s] (119/651) herdr-threads daemon::transport::tests::automatic_historical_response_keeps_one_mib_scoped_encoder_limit
+        PASS [   0.484s] (120/651) herdr-threads daemon::transport::tests::automatic_known_request_rejects_unrelated_success_result_family
+        PASS [   0.011s] (121/651) herdr-threads daemon::transport::tests::automatic_response_overlimit_length_refuses_before_body_read
+        PASS [   0.504s] (122/651) herdr-threads daemon::transport::tests::automatic_recovery_response_larger_than_one_mib_survives_actual_local_client_transport
+        PASS [   0.010s] (123/651) herdr-threads daemon::transport::watch_connection::tests::presentation_owner_accepted_wire_carries_the_registered_lease
+        PASS [   0.009s] (124/651) herdr-threads delivery::ledger::tests::a_newer_generation_entry_is_not_touched
+        PASS [   0.011s] (125/651) herdr-threads delivery::ledger::tests::a_rotated_generation_discards_only_that_bindings_offers
+        PASS [   0.009s] (126/651) herdr-threads delivery::ledger::tests::due_cache_filters_full_stamps_and_isolates_consumer_and_session
+        PASS [   0.021s] (127/651) herdr-threads delivery::ledger::tests::due_cache_recreation_and_retention_never_reuse_an_old_incarnation
+        PASS [   0.023s] (128/651) herdr-threads delivery::ledger::tests::eviction_counts_bindings_and_keeps_the_seat_index_in_step
+        PASS [   0.011s] (129/651) herdr-threads delivery::ledger::tests::outlook_over_targets
+        PASS [   0.016s] (130/651) herdr-threads delivery::ledger::tests::two_bindings_of_one_seat_keep_separate_offers_counts_and_spacing
+        PASS [   0.017s] (131/651) herdr-threads harness::agy::decode::tests::native_presentation_encoder_caps_actual_final_bytes
+        PASS [   0.014s] (132/651) herdr-threads harness::agy::decode::tests::registered_presentation_codecs_equal_actual_native_shapes
+        PASS [   0.093s] (133/651) herdr-threads harness::agy::delivery::tests::a_cancelled_probation_turn_re_downgrades_with_a_fresh_timestamp
+        PASS [   0.055s] (134/651) herdr-threads harness::agy::delivery::tests::a_confirmed_probation_frame_clears_the_downgrade
+        PASS [   0.011s] (135/651) herdr-threads harness::agy::delivery::tests::a_downgrade_of_another_executable_identity_is_not_shown
+        PASS [   0.012s] (136/651) herdr-threads harness::agy::delivery::tests::a_forged_header_after_a_literal_backslash_n_in_a_body_does_not_confirm
+        FAIL [   3.017s] (137/651) herdr-threads::integration mod_delivery::activation_v2_watch_replacement_replays_uncommitted_output
+  stdout ───
+
+    running 1 test
+    test mod_delivery::activation_v2_watch_replacement_replays_uncommitted_output ... FAILED
+
+    failures:
+
+    failures:
+        mod_delivery::activation_v2_watch_replacement_replays_uncommitted_output
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 236 filtered out; finished in 3.00s
+
+  stderr ───
+    panicked at tests/integration/mod_delivery.rs:3179:7:
+    called `Result::unwrap()` on an `Err` value: SqliteFailure(Error { code: Unknown, extended_code: 1 }, Some("no such column: o.binding_generation"))
+
+        PASS [   0.526s] (138/651) herdr-threads daemon::transport::tests::automatic_response_embedded_identity_must_match_exact_request
+        PASS [   0.027s] (139/651) herdr-threads harness::agy::delivery::tests::a_frame_pushed_past_a_fixed_tail_by_tool_output_is_still_confirmed
+        PASS [   0.026s] (140/651) herdr-threads harness::agy::delivery::tests::a_full_page_of_offered_ids_is_tracked
+        PASS [   0.019s] (141/651) herdr-threads harness::agy::delivery::tests::a_genuine_system_message_frame_confirms
+        PASS [   0.019s] (142/651) herdr-threads harness::agy::delivery::tests::a_genuine_post_tool_call_frame_confirms
+        PASS [   0.012s] (143/651) herdr-threads harness::agy::delivery::tests::a_header_in_a_step_with_a_user_source_does_not_confirm
+        PASS [   0.014s] (144/651) herdr-threads harness::agy::delivery::tests::a_genuine_user_message_frame_confirms
+        PASS [   0.016s] (145/651) herdr-threads harness::agy::delivery::tests::a_header_in_a_tool_result_does_not_confirm
+        PASS [   0.016s] (146/651) herdr-threads harness::agy::delivery::tests::a_header_in_model_output_does_not_confirm
+        PASS [   0.406s] (147/651) herdr-threads daemon::transport::tests::unscoped_ordinary_encoder_keeps_one_mib_even_for_automatic_result
+        PASS [   0.020s] (148/651) herdr-threads harness::agy::delivery::tests::a_header_quoted_inside_a_body_is_not_a_frame_and_an_id_prefix_is_not_the_id
+        PASS [   0.029s] (149/651) herdr-threads harness::agy::delivery::tests::a_launcher_parent_falls_back_to_the_path_resolved_agy
+        PASS [   0.942s] (150/651) herdr-threads daemon::transport::tests::automatic_historical_response_keeps_one_mib_client_allocation_limit
+        PASS [   0.067s] (151/651) herdr-threads harness::agy::delivery::tests::a_new_binding_generation_forgets_the_previous_generations_ids
+        PASS [   0.049s] (152/651) herdr-threads harness::agy::delivery::tests::a_notices_only_page_renders_a_system_message_when_not_downgraded
+        FAIL [   0.756s] (153/651) herdr-threads::hook_entrypoint agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement
+  stdout ───
+
+    running 1 test
+    test agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement ... FAILED
+
+    failures:
+
+    failures:
+        agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.75s
+
+  stderr ───
+    elected daemon.log tail:
+    harness manifest: auto
+    store startup binding evidence: backfilled 0, still lacking 0
+    panicked at tests/hook_entrypoint/agy.rs:1435:23:
+    herdr-threads hook: no agy, claude, codex, hermes or other registered agent harness process among this process's ancestors
+
+
+
+        PASS [   0.180s] (154/651) herdr-threads harness::agy::delivery::tests::a_new_executable_identity_injects_a_system_message_again
+        PASS [   0.194s] (155/651) herdr-threads harness::agy::delivery::tests::a_page_with_no_offered_id_neither_opens_nor_spends_probation
+        PASS [   0.025s] (156/651) herdr-threads harness::agy::delivery::tests::a_shorter_transcript_than_the_offset_is_scanned_from_its_start
+        PASS [   3.326s] (157/651) herdr-threads::integration mod_delivery::agy_sweep::agy_pull_confirm_and_the_claude_watch_path_coexist_on_one_daemon
+        PASS [   0.189s] (158/651) herdr-threads harness::agy::delivery::tests::a_probation_confirmed_at_a_later_pre_invocation_clears_the_downgrade
+        PASS [   0.064s] (159/651) herdr-threads harness::agy::delivery::tests::a_retryable_confirm_keeps_the_id_for_the_next_attempt
+        PASS [   2.310s] (160/651) herdr-threads::integration mod_delivery::clear_new_binding_digests_and_wakes_for_its_unread_mail_without_grace
+        PASS [   0.192s] (161/651) herdr-threads harness::agy::delivery::tests::a_probation_with_no_stop_re_downgrades_at_the_next_injection_after_24_hours
+        PASS [   0.022s] (162/651) herdr-threads harness::agy::delivery::tests::a_window_that_starts_inside_a_record_skips_that_record
+        PASS [   0.030s] (163/651) herdr-threads harness::agy::delivery::tests::a_symlinked_binary_is_identified_by_its_resolved_target
+        PASS [   0.009s] (164/651) herdr-threads harness::agy::delivery::tests::agy_declares_hook_pull_with_native_idle_wake
+        PASS [   0.066s] (165/651) herdr-threads harness::agy::delivery::tests::a_single_injection_miss_does_not_downgrade
+        PASS [   0.091s] (166/651) herdr-threads harness::agy::delivery::tests::a_stale_never_found_id_does_not_block_confirming_newer_frames
+        PASS [   0.061s] (167/651) herdr-threads harness::agy::delivery::tests::admission_selects_user_message_only_for_the_current_identity
+        PASS [   0.074s] (168/651) herdr-threads harness::agy::delivery::tests::an_id_within_one_window_of_the_end_stays_tracked
+        PASS [   0.075s] (169/651) herdr-threads harness::agy::delivery::tests::an_existing_conversation_does_not_prune
+        PASS [   0.141s] (170/651) herdr-threads harness::agy::delivery::tests::an_errored_probation_turn_re_downgrades_with_a_fresh_timestamp
+        PASS [   0.177s] (171/651) herdr-threads harness::agy::delivery::tests::an_abort_style_stop_error_downgrades_at_once
+        PASS [   0.059s] (172/651) herdr-threads harness::agy::delivery::tests::an_unchanged_reply_caches_the_attention_version_and_the_next_pull_sends_it
+        PASS [   0.022s] (173/651) herdr-threads harness::agy::delivery::tests::completion_rejects_duplicate_captured_control_stamps
+        PASS [   0.071s] (174/651) herdr-threads harness::agy::delivery::tests::completion_applies_only_the_daemon_acknowledged_captured_control_subset
+        PASS [   0.114s] (175/651) herdr-threads harness::agy::delivery::tests::an_unreadable_transcript_ends_the_probation_turn
+        PASS [   0.192s] (176/651) herdr-threads harness::agy::delivery::tests::daemon::a_clear_rotation_discards_the_agy_pull_ledger
+        PASS [   0.080s] (177/651) herdr-threads harness::agy::delivery::tests::doctor_reports_the_downgrade_and_the_never_confirmed_count
+        PASS [   0.080s] (178/651) herdr-threads harness::agy::delivery::tests::emitted_v2_controls_apply_exact_epochs_and_old_replay_cannot_resurrect_a_clear
+        PASS [   0.301s] (179/651) herdr-threads harness::agy::delivery::tests::daemon::pull_inject_fixture_transcript_confirm_settles_with_hook_delivery_provenance
+        PASS [   0.060s] (180/651) herdr-threads harness::agy::delivery::tests::expired_probation_maintenance_remains_independent_of_page_emission
+        PASS [   0.061s] (181/651) herdr-threads harness::agy::delivery::tests::frozen_reply_codec_overrides_new_local_preference_without_opening_early_probation
+        PASS [   0.053s] (182/651) herdr-threads harness::agy::delivery::tests::historical_downgraded_user_message_scripted_page_preserves_native_bytes_and_oversize_geometry
+        PASS [   0.049s] (183/651) herdr-threads harness::agy::delivery::tests::historical_system_message_scripted_page_preserves_native_bytes_and_oversize_geometry
+        PASS [   0.016s] (184/651) herdr-threads harness::agy::delivery::tests::hook_step_does_not_commit_offered_page_before_stdout_emission
+        PASS [   0.017s] (185/651) herdr-threads harness::agy::delivery::tests::malformed_and_truncated_lines_are_skipped
+        PASS [   0.029s] (186/651) herdr-threads harness::agy::delivery::tests::malformed_or_oversized_completion_is_inert
+        PASS [   0.107s] (187/651) herdr-threads harness::agy::delivery::tests::invalid_acknowledged_control_subset_never_saves_hints_or_opens_probation
+        PASS [   0.047s] (188/651) herdr-threads harness::agy::delivery::tests::mismatched_or_unsupported_v2_native_output_is_not_emitted_or_confirmed
+        FAIL [   0.907s] (189/651) herdr-threads::hook_entrypoint agy::activation::registered_agy_omitted_or_refused_capability_uses_historical_pull
+  stdout ───
+
+    running 1 test
+    test agy::activation::registered_agy_omitted_or_refused_capability_uses_historical_pull ... FAILED
+
+    failures:
+
+    failures:
+        agy::activation::registered_agy_omitted_or_refused_capability_uses_historical_pull
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.90s
+
+  stderr ───
+    elected daemon.log tail:
+    harness manifest: auto
+    store startup binding evidence: backfilled 0, still lacking 0
+    panicked at tests/hook_entrypoint/agy.rs:1977:27:
+    herdr-threads hook: no agy, claude, codex, hermes or other registered agent harness process among this process's ancestors
+
+
+
+        PASS [   0.140s] (190/651) herdr-threads harness::agy::delivery::tests::misses_on_the_same_turn_twice_do_not_downgrade
+        PASS [   0.166s] (191/651) herdr-threads harness::agy::delivery::tests::misses_on_two_distinct_turns_downgrade_to_user_message
+        PASS [   0.030s] (192/651) herdr-threads harness::agy::delivery::tests::nothing_is_printed_for_unchanged_refusals_and_daemon_errors
+        PASS [   0.013s] (193/651) herdr-threads harness::agy::delivery::tests::only_a_hook_command_argv_names_a_state_dir
+        PASS [   0.020s] (194/651) herdr-threads harness::agy::delivery::tests::output_shapes_are_byte_locked
+        PASS [   0.019s] (195/651) herdr-threads harness::agy::delivery::tests::postflush_confirmation_loss_keeps_state_replayable_after_restart
+        PASS [   0.019s] (196/651) herdr-threads harness::agy::delivery::tests::postflush_state_hint_does_not_overwrite_an_observed_concurrent_change
+        PASS [   0.021s] (197/651) herdr-threads harness::agy::delivery::tests::preparing_probation_does_not_open_it_before_emission
+        PASS [   0.053s] (198/651) herdr-threads harness::agy::delivery::tests::probation_completion_preserves_an_observed_changed_downgrade_hint
+        PASS [   0.103s] (199/651) herdr-threads harness::agy::delivery::tests::probation_after_24_hours_is_one_system_message_turn
+        PASS [   0.047s] (200/651) herdr-threads harness::agy::delivery::tests::probation_confirmation_loss_keeps_the_retry_available
+        PASS [   0.013s] (201/651) herdr-threads harness::agy::delivery::tests::scan_finds_the_frame_ids_after_the_offset
+        PASS [   0.014s] (202/651) herdr-threads harness::agy::delivery::tests::scan_ignores_frames_before_the_recorded_offset
+        PASS [   0.035s] (203/651) herdr-threads harness::agy::delivery::tests::probation_opening_is_deferred_until_successful_completion
+        FAIL [   0.909s] (204/651) herdr-threads harness::agy::delivery::tests::daemon::canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec
+  stdout ───
+
+    running 1 test
+    test harness::agy::delivery::tests::daemon::canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec ... FAILED
+
+    failures:
+
+    failures:
+        harness::agy::delivery::tests::daemon::canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.90s
+
+  stderr ───
+
+    thread 'harness::agy::delivery::tests::daemon::canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec' (55637799) panicked at src/harness/agy/../../../tests/harness/agy_delivery.rs:1882:9:
+    assertion `left == right` failed: every canonical invitation becomes full through bounded V2 pages
+      left: 0
+     right: 24
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.021s] (205/651) herdr-threads harness::agy::delivery::tests::stale_confirmation_and_expired_completion_never_save_injected_state
+        PASS [   2.500s] (206/651) herdr-threads cli::watch::tests::hint_file_keeps_only_the_newest_1024_ids
+        PASS [   0.051s] (207/651) herdr-threads harness::agy::delivery::tests::state_files_untouched_for_30_days_are_pruned_when_a_new_conversation_starts
+        PASS [   0.073s] (208/651) herdr-threads harness::agy::delivery::tests::stop_confirms_a_frame_in_the_turns_last_call_and_records_no_miss
+        PASS [   0.084s] (209/651) herdr-threads harness::agy::delivery::tests::stop_confirms_newer_frames_past_a_stale_id_and_records_no_miss_for_it
+        PASS [   0.058s] (210/651) herdr-threads harness::agy::delivery::tests::the_next_pre_invocation_confirms_the_frame_it_finds_after_the_offset
+        FAIL [   0.981s] (211/651) herdr-threads harness::agy::delivery::tests::daemon::canonical_v2_system_allocated_pages_fit_actual_native_codec
+  stdout ───
+
+    running 1 test
+    test harness::agy::delivery::tests::daemon::canonical_v2_system_allocated_pages_fit_actual_native_codec ... FAILED
+
+    failures:
+
+    failures:
+        harness::agy::delivery::tests::daemon::canonical_v2_system_allocated_pages_fit_actual_native_codec
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.96s
+
+  stderr ───
+
+    thread 'harness::agy::delivery::tests::daemon::canonical_v2_system_allocated_pages_fit_actual_native_codec' (55637824) panicked at src/harness/agy/../../../tests/harness/agy_delivery.rs:1882:9:
+    assertion `left == right` failed: every canonical invitation becomes full through bounded V2 pages
+      left: 0
+     right: 24
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.073s] (212/651) herdr-threads harness::agy::delivery::tests::the_scan_is_bounded_at_8_mib_and_past_the_bound_is_non_evidence
+        PASS [   0.065s] (213/651) herdr-threads harness::agy::delivery::tests::the_state_file_is_created_after_a_pull_and_deleted_on_session_mismatch
+        PASS [   0.058s] (214/651) herdr-threads harness::agy::delivery::tests::the_state_file_never_exceeds_4_kib
+        PASS [   0.015s] (215/651) herdr-threads harness::agy::delivery::tests::unparseable_missing_and_non_file_transcripts_find_nothing
+        PASS [   0.185s] (216/651) herdr-threads harness::agy::delivery::tests::setup_clears_the_downgrade_record
+        PASS [   0.011s] (217/651) herdr-threads harness::registry::tests::required_hook_events_of_builtins_are_their_installed_sets
+        PASS [   0.050s] (218/651) herdr-threads harness::agy::delivery::tests::v2_invitation_only_empty_and_unchanged_pages_never_cache_current_metadata_as_seen
+        PASS [   0.010s] (219/651) herdr-threads harness::setup_tests::codex_session_plan_registers_event_per_group
+        PASS [   0.132s] (220/651) herdr-threads harness::agy::delivery::tests::typed_completion_fits_two_maximal_admitted_records_and_escaped_claim_fields
+        PASS [   2.069s] (221/651) herdr-threads daemon::transport::tests::automatic_response_path_alias_is_not_exact_identity_in_either_family
+        PASS [   0.009s] (222/651) herdr-threads protocol::authority::tests::binding_fields_validation_rejects_pid_zero
+        PASS [   0.009s] (223/651) herdr-threads protocol::authority::tests::claim_without_binding_fields_serializes_exactly_as_before
+        PASS [   0.009s] (224/651) herdr-threads protocol::authority::tests::session_binding_provenances_are_defined_in_trust_policy
+        PASS [   0.009s] (225/651) herdr-threads protocol::capabilities::tests::automatic_contract_declarations_do_not_advertise_an_unimplemented_runtime
+        PASS [   0.009s] (226/651) herdr-threads protocol::capabilities::tests::bare_daemon_advertises_legacy_capabilities_without_v2_recorder
+        PASS [   0.010s] (227/651) herdr-threads protocol::capabilities::tests::capabilities_reply_round_trips_and_defaults_empty
+        PASS [   0.009s] (228/651) herdr-threads protocol::capabilities::tests::capability_constants_are_stable
+        PASS [   0.009s] (229/651) herdr-threads protocol::capabilities::tests::control_without_a_recorder_accepts_and_drops_evidence
+        PASS [   0.010s] (230/651) herdr-threads protocol::capabilities::tests::daemon_counts_a_hook_parse_failure_report
+        PASS [   0.023s] (231/651) herdr-threads protocol::capabilities::tests::client_caches_capabilities_per_session
+        PASS [   0.180s] (232/651) herdr-threads harness::setup_tests::codex_setup_registers_event_per_group
+        PASS [   0.010s] (233/651) herdr-threads protocol::capabilities::tests::harness_evidence_round_trips_on_the_wire
+        PASS [   0.235s] (234/651) herdr-threads harness::setup_tests::claude_setup_registers_event_per_group
+        PASS [   0.011s] (235/651) herdr-threads protocol::capabilities::tests::harness_evidence_validation_bounds_every_field
+        PASS [   0.010s] (236/651) herdr-threads protocol::capabilities::tests::harness_states_round_trips_on_the_wire
+        PASS [   0.009s] (237/651) herdr-threads protocol::capabilities::tests::invitation_confirmation_capability_is_advertised_with_active_lifecycle
+        PASS [   0.274s] (238/651) herdr-threads harness::bridge_tests::cached_pinned_continuations_use_verified_recipient_presentation_without_changing_cache
+        PASS [   0.011s] (239/651) herdr-threads protocol::capabilities::tests::invitation_confirmation_wire_preserves_legacy_and_distinguishes_modern_requests
+        PASS [   0.014s] (240/651) herdr-threads protocol::capabilities::tests::old_daemon_that_answers_an_error_reads_as_no_capabilities
+        PASS [   0.019s] (241/651) herdr-threads protocol::capabilities::tests::old_daemon_that_closes_reads_as_no_capabilities
+        PASS [   0.009s] (242/651) herdr-threads protocol::capabilities::tests::picker_directory_wire_keeps_old_directory_shape_and_cursor_only_contract
+        PASS [   0.317s] (243/651) herdr-threads harness::agy::delivery::tests::unreadable_cancelled_errored_and_oversized_transcripts_are_non_evidence
+        PASS [   0.011s] (244/651) herdr-threads protocol::capabilities::tests::pre_change_cli_decodes_this_daemons_hello_and_history
+        PASS [   0.200s] (245/651) herdr-threads protocol::capabilities::tests::directory_search_generated_continuation_preserves_literal_scope_order_and_output
+        PASS [   0.011s] (246/651) herdr-threads protocol::delivery::tests::presentation_confirmation_exact_control_shape_and_removed_piggyback
+        PASS [   0.083s] (247/651) herdr-threads protocol::capabilities::tests::health_v2_capability_is_negotiated_only_with_cached_provider
+        PASS [   0.015s] (248/651) herdr-threads protocol::delivery::tests::presentation_confirmation_maximum_valid_controls_fit_actual_framed_wrapper_reserve
+        PASS [   0.012s] (249/651) herdr-threads protocol::delivery::tests::presentation_v2_decodes_scoped_commands_without_changing_v1
+        PASS [   0.010s] (250/651) herdr-threads protocol::watch::tests::accepted_presentation_lease_survives_new_decoder_and_old_bytes_stay_omitted
+        PASS [   0.010s] (251/651) herdr-threads protocol::delivery::tests::presentation_v2_rejects_invalid_tokens_consumers_and_watch_without_lease
+        PASS [   0.072s] (252/651) herdr-threads protocol::capabilities::tests::public_operation_status_cannot_bypass_send_time_capability_guard
+        FAIL [   1.708s] (253/651) herdr-threads::integration mod_delivery::clear_rebind_pending_item_restreamed_to_new_session
+  stdout ───
+
+    running 1 test
+    test mod_delivery::clear_rebind_pending_item_restreamed_to_new_session ... FAILED
+
+    failures:
+
+    failures:
+        mod_delivery::clear_rebind_pending_item_restreamed_to_new_session
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 236 filtered out; finished in 1.70s
+
+  stderr ───
+    panicked at tests/integration/mod_delivery.rs:1384:27:
+    timed out waiting for item m2kSKU4JN; saw [
+        Object {
+            "id": String("status:0"),
+            "kind": String("status"),
+            "schema": Number(1),
+            "state": String("connected"),
+        },
+        Object {
+            "exit": Number(1),
+            "id": String("status:1"),
+            "kind": String("status"),
+            "reason": String("error"),
+            "schema": Number(1),
+            "state": String("closing"),
+        },
+    ]; stderr: 
+
+        PASS [   0.082s] (254/651) herdr-threads protocol::capabilities::tests::v2_capability_is_negotiated_only_with_recorder
+        PASS [   0.166s] (255/651) herdr-threads protocol::capabilities::tests::presentation_capability_routes_use_configured_domain
+        PASS [   0.121s] (256/651) herdr-threads service::delivery_pull::lazy_hook_pull_tests::claude_seat_hook_context_completion_per_main
+        PASS [   0.141s] (257/651) herdr-threads service::delivery_pull::lazy_hook_pull_tests::hook_pull_confirm_of_ordinary_and_lazy_advances_the_cursor_and_does_not_reoffer
+        PASS [   0.141s] (258/651) herdr-threads service::delivery_pull::lazy_hook_pull_tests::hook_pull_late_first_pull_after_a_sibling_settled_delivers
+        PASS [   0.143s] (259/651) herdr-threads service::delivery_pull::lazy_hook_pull_tests::hook_pull_lazy_row_completed_by_one_binding_is_not_reoffered_to_it
+        PASS [   1.093s] (260/651) herdr-threads::hook_entrypoint agy::agy_turn_hook_carries_lazy_invitation_without_accepting_or_confirming_it
+        PASS [   0.128s] (261/651) herdr-threads service::delivery_pull::lazy_hook_pull_tests::hook_pull_lazy_row_is_delivered_exactly_once_through_pull
+        PASS [   0.119s] (262/651) herdr-threads service::delivery_pull::lazy_hook_pull_tests::hook_pull_seat_text_inbox_completion_still_works
+        FAIL [   0.130s] (263/651) herdr-threads service::delivery_pull::tests::a_departed_inviter_remains_actionable_after_whole_deadline_warning_until_acceptance
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::a_departed_inviter_remains_actionable_after_whole_deadline_warning_until_acceptance ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::a_departed_inviter_remains_actionable_after_whole_deadline_warning_until_acceptance
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.12s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::a_departed_inviter_remains_actionable_after_whole_deadline_warning_until_acceptance' (55639050) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.121s] (264/651) herdr-threads service::delivery_pull::tests::a_finite_invitation_backlog_progresses_beyond_the_whole_display_cache
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::a_finite_invitation_backlog_progresses_beyond_the_whole_display_cache ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::a_finite_invitation_backlog_progresses_beyond_the_whole_display_cache
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.11s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::a_finite_invitation_backlog_progresses_beyond_the_whole_display_cache' (55639073) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.180s] (265/651) herdr-threads service::delivery_pull::lazy_hook_pull_tests::hook_pull_ordinary_settled_by_a_sibling_still_reaches_the_other_binding
+        PASS [   0.147s] (266/651) herdr-threads service::delivery_pull::tests::a_new_session_of_one_binding_keeps_its_siblings_offers
+        PASS [   0.137s] (267/651) herdr-threads service::delivery_pull::tests::a_plain_call_enrolled_hook_pull_binding_is_served
+        PASS [   0.125s] (268/651) herdr-threads service::delivery_pull::tests::a_pull_on_a_binding_the_store_never_reconnects_writes_nothing
+        PASS [   0.159s] (269/651) herdr-threads service::delivery_pull::tests::a_pull_reconnects_a_disconnected_non_migrated_binding_and_delivers
+        PASS [   0.160s] (270/651) herdr-threads service::delivery_pull::tests::a_pull_re_adopts_a_migrated_binding_and_delivers
+        PASS [   0.122s] (271/651) herdr-threads service::delivery_pull::tests::a_pull_without_a_fingerprint_does_not_re_adopt_and_is_refused_no_binding
+        PASS [   0.142s] (272/651) herdr-threads service::delivery_pull::tests::a_resume_keeps_the_binding_and_its_offers
+        FAIL [   0.110s] (273/651) herdr-threads service::delivery_pull::tests::departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.10s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack' (55639342) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.113s] (274/651) herdr-threads service::delivery_pull::tests::an_old_visible_invitation_topic_change_survives_a_saturated_newest_window
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::an_old_visible_invitation_topic_change_survives_a_saturated_newest_window ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::an_old_visible_invitation_topic_change_survives_a_saturated_newest_window
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.10s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::an_old_visible_invitation_topic_change_survives_a_saturated_newest_window' (55639343) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.179s] (275/651) herdr-threads service::delivery_pull::tests::alternating_pulls_keep_each_bindings_reoffer_spacing_and_count
+        FAIL [   0.109s] (276/651) herdr-threads service::delivery_pull::tests::presentation_actual_candidate_sizing_and_rpc_wrapper_work_remain_bounded
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_actual_candidate_sizing_and_rpc_wrapper_work_remain_bounded ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_actual_candidate_sizing_and_rpc_wrapper_work_remain_bounded
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.09s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_actual_candidate_sizing_and_rpc_wrapper_work_remain_bounded' (55639398) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.141s] (277/651) herdr-threads service::delivery_pull::tests::interleaved_pulls_of_two_bindings_confirm_their_own_offers
+        PASS [   0.934s] (278/651) herdr-threads protocol::capabilities::tests::every_advertised_capability_has_a_handler
+        PASS [   0.184s] (279/651) herdr-threads service::delivery_pull::tests::presentation_capacity_due_promoted_lazy_defers_oversize_render_then_retries
+        PASS [   0.194s] (280/651) herdr-threads service::delivery_pull::tests::presentation_capacity_cache_progress_survives_lost_reply_but_not_ledger_restart
+        PASS [   0.172s] (281/651) herdr-threads service::delivery_pull::tests::presentation_capacity_due_size_failure_after_passive_output_retries_standalone
+        FAIL [   0.174s] (282/651) herdr-threads service::delivery_pull::tests::presentation_capacity_last_slot_parks_unknown_carry_and_only_continues_for_due_keys
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_capacity_last_slot_parks_unknown_carry_and_only_continues_for_due_keys ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_capacity_last_slot_parks_unknown_carry_and_only_continues_for_due_keys
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.16s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_capacity_last_slot_parks_unknown_carry_and_only_continues_for_due_keys' (55639503) panicked at src/service/../../tests/service/delivery_pull.rs:9646:13:
+    resume retained sibling
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.106s] (283/651) herdr-threads service::delivery_pull::tests::presentation_capacity_replay_preserves_finite_due_progress_and_positive_slot_quiet
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_capacity_replay_preserves_finite_due_progress_and_positive_slot_quiet ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_capacity_replay_preserves_finite_due_progress_and_positive_slot_quiet
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.10s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_capacity_replay_preserves_finite_due_progress_and_positive_slot_quiet' (55639546) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.179s] (284/651) herdr-threads service::delivery_pull::tests::presentation_capacity_missing_due_keys_finish_a_finite_pass
+        FAIL [   0.245s] (285/651) herdr-threads service::delivery_pull::tests::presentation_capacity_due_walk_preserves_partial_body_until_real_ack
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_capacity_due_walk_preserves_partial_body_until_real_ack ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_capacity_due_walk_preserves_partial_body_until_real_ack
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.23s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_capacity_due_walk_preserves_partial_body_until_real_ack' (55639502) panicked at src/service/../../tests/service/delivery_pull.rs:10184:13:
+    same-call partial resume
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.161s] (286/651) herdr-threads service::delivery_pull::tests::presentation_capacity_parked_ordinary_still_drains_passive_context_and_notices
+        PASS [   0.717s] (287/651) herdr-threads::hook_entrypoint cooperative_seat_on_own_target_startup_clear_resume_register_session_bindings
+        FAIL [   0.189s] (288/651) herdr-threads service::delivery_pull::tests::presentation_capacity_retained_concurrent_offer_count_does_not_refuse_passive_work
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_capacity_retained_concurrent_offer_count_does_not_refuse_passive_work ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_capacity_retained_concurrent_offer_count_does_not_refuse_passive_work
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.17s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_capacity_retained_concurrent_offer_count_does_not_refuse_passive_work' (55639588) panicked at src/service/../../tests/service/delivery_pull.rs:10383:5:
+    V2 canonical reclamation remains available
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.133s] (289/651) herdr-threads service::delivery_pull::tests::presentation_confirm_rejects_oversized_private_json_before_decoding
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_confirm_rejects_oversized_private_json_before_decoding ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_confirm_rejects_oversized_private_json_before_decoding
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.12s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_confirm_rejects_oversized_private_json_before_decoding' (55639622) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.128s] (290/651) herdr-threads service::delivery_pull::tests::presentation_confirmation_preserves_original_slots_and_exact_subsets_on_restart
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_confirmation_preserves_original_slots_and_exact_subsets_on_restart ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_confirmation_preserves_original_slots_and_exact_subsets_on_restart
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.11s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_confirmation_preserves_original_slots_and_exact_subsets_on_restart' (55639626) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.157s] (291/651) herdr-threads service::delivery_pull::tests::presentation_capacity_snapshot_validation_scope_and_failed_calls
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_capacity_snapshot_validation_scope_and_failed_calls ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_capacity_snapshot_validation_scope_and_failed_calls
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.14s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_capacity_snapshot_validation_scope_and_failed_calls' (55639620) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.114s] (292/651) herdr-threads service::delivery_pull::tests::presentation_current_handler_derives_timed_invitation_attention
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_current_handler_derives_timed_invitation_attention ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_current_handler_derives_timed_invitation_attention
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.10s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_current_handler_derives_timed_invitation_attention' (55639641) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.288s] (293/651) herdr-threads service::delivery_pull::tests::presentation_capacity_reclaimed_or_initially_free_with_missing_due_keys_quiets
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_capacity_reclaimed_or_initially_free_with_missing_due_keys_quiets ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_capacity_reclaimed_or_initially_free_with_missing_due_keys_quiets
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.28s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_capacity_reclaimed_or_initially_free_with_missing_due_keys_quiets' (55639544) panicked at src/service/../../tests/service/delivery_pull.rs:9573:9:
+    assertion `left == right` failed
+      left: 256
+     right: 255
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.115s] (294/651) herdr-threads service::delivery_pull::tests::presentation_final_watch_codec_counts_escaped_canonical_invitation_batch
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_final_watch_codec_counts_escaped_canonical_invitation_batch ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_final_watch_codec_counts_escaped_canonical_invitation_batch
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.10s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_final_watch_codec_counts_escaped_canonical_invitation_batch' (55639729) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.117s] (295/651) herdr-threads service::delivery_pull::tests::presentation_final_cleanup_preserves_passive_removal_observation
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_final_cleanup_preserves_passive_removal_observation ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_final_cleanup_preserves_passive_removal_observation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.10s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_final_cleanup_preserves_passive_removal_observation' (55639723) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.115s] (296/651) herdr-threads service::delivery_pull::tests::presentation_handler_clears_unconfirmed_epoch_then_reopens_new_episode
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_handler_clears_unconfirmed_epoch_then_reopens_new_episode ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_handler_clears_unconfirmed_epoch_then_reopens_new_episode
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.10s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_handler_clears_unconfirmed_epoch_then_reopens_new_episode' (55639757) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   1.128s] (297/651) herdr-threads::integration mod_delivery::full_body_read_of_truncated_message_unblocks_binding_cursor
+        FAIL [   0.111s] (298/651) herdr-threads service::delivery_pull::tests::presentation_handler_initial_ordinary_receipt_delivers_body_without_invented_attention
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_handler_initial_ordinary_receipt_delivers_body_without_invented_attention ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_handler_initial_ordinary_receipt_delivers_body_without_invented_attention
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.09s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_handler_initial_ordinary_receipt_delivers_body_without_invented_attention' (55639777) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.133s] (299/651) herdr-threads service::delivery_pull::tests::presentation_handler_published_warn_reopens_at_unchanged_native_version
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_handler_published_warn_reopens_at_unchanged_native_version ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_handler_published_warn_reopens_at_unchanged_native_version
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.12s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_handler_published_warn_reopens_at_unchanged_native_version' (55639841) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.144s] (300/651) herdr-threads service::delivery_pull::tests::presentation_handler_partial_confirmation_retains_canonical_slots_across_restart
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_handler_partial_confirmation_retains_canonical_slots_across_restart ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_handler_partial_confirmation_retains_canonical_slots_across_restart
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.13s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_handler_partial_confirmation_retains_canonical_slots_across_restart' (55639840) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.014s] (301/651) herdr-threads service::delivery_pull::tests::presentation_last_token_control_serializer_has_exact_bounded_witness
+        PASS [   0.178s] (302/651) herdr-threads service::delivery_pull::tests::presentation_hook_notice_settles_current_execution_without_reoffer
+        FAIL [   0.142s] (303/651) herdr-threads service::delivery_pull::tests::presentation_ordinary_carry_survives_completed_control_partial_and_invitation_priority
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_ordinary_carry_survives_completed_control_partial_and_invitation_priority ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_ordinary_carry_survives_completed_control_partial_and_invitation_priority
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.13s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_ordinary_carry_survives_completed_control_partial_and_invitation_priority' (55639915) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   3.091s] (304/651) herdr-threads::integration mod_delivery::fresh_watch_after_accept_prints_no_attention
+        PASS [   0.167s] (305/651) herdr-threads service::delivery_pull::tests::presentation_owner_replay_accepts_actual_v1_count_four_and_nonordinary_work
+        PASS [   0.591s] (306/651) herdr-threads::hook_entrypoint installed_claude_hook_rewrites_a_subagents_herdr_call_only
+        PASS [   0.223s] (307/651) herdr-threads service::delivery_pull::tests::presentation_owner_replay_mid_work_budget_keeps_first_capture_uninstalled
+        PASS [   0.192s] (308/651) herdr-threads service::delivery_pull::tests::presentation_owner_replay_mixed_invalid_keys_and_physical_fallback_drain_finitely
+        PASS [   0.452s] (309/651) herdr-threads service::delivery_pull::tests::presentation_owner_replay_missing_quanta_preserve_current_native_outlook
+        PASS [   1.106s] (310/651) herdr-threads service::delivery_pull::tests::presentation_full_pending_carry_reaches_quiet_without_evicting_offers
+        PASS [   0.830s] (311/651) herdr-threads service::delivery_pull::tests::presentation_owner_replay_deferred_control_only_preserves_current_outlook
+        PASS [   0.352s] (312/651) herdr-threads service::delivery_pull::tests::presentation_owner_replay_mixed_invitation_page_preserves_native_outlook
+        PASS [   0.153s] (313/651) herdr-threads service::delivery_pull::tests::presentation_owner_replay_owner_permit_fences_replacement_during_store
+        PASS [   1.210s] (314/651) herdr-threads service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity
+        PASS [   1.214s] (315/651) herdr-threads::integration mod_delivery::full_body_read_passes_later_message_the_binding_already_displayed
+        FAIL [   0.232s] (316/651) herdr-threads service::delivery_pull::tests::presentation_owner_replay_preserves_partial_body_until_real_ack
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_owner_replay_preserves_partial_body_until_real_ack ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_owner_replay_preserves_partial_body_until_real_ack
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.22s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_owner_replay_preserves_partial_body_until_real_ack' (55640757) panicked at src/service/../../tests/service/delivery_pull.rs:11480:13:
+    same-call partial resume
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   1.402s] (317/651) herdr-threads service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id
+        PASS [   1.138s] (318/651) herdr-threads::integration mod_delivery::lazy_row_appended_then_completed
+        PASS [   0.361s] (319/651) herdr-threads service::delivery_pull::tests::presentation_owner_replay_preserves_post_snapshot_native_outlook_and_newer_stamp
+        PASS [   0.142s] (320/651) herdr-threads service::delivery_pull::tests::presentation_owner_replay_registry_success_scope_and_incarnation_lifetime
+        PASS [   0.176s] (321/651) herdr-threads service::delivery_pull::tests::presentation_owner_replay_refusal_and_store_error_do_not_consume_first_capture
+        FAIL [   1.252s] (322/651) herdr-threads service::delivery_pull::tests::presentation_owner_replay_full_final_page_keeps_logical_due_continuation
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_owner_replay_full_final_page_keeps_logical_due_continuation ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_owner_replay_full_final_page_keeps_logical_due_continuation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 1.24s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_owner_replay_full_final_page_keeps_logical_due_continuation' (55640009) panicked at src/service/../../tests/service/delivery_pull.rs:10765:5:
+    assertion failed: resumed.offered.contains(&sent[256])
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.437s] (323/651) herdr-threads service::delivery_pull::tests::presentation_owner_replay_pruned_all_allows_real_logical_allocation_bookkeeping
+        PASS [   0.140s] (324/651) herdr-threads service::delivery_pull::tests::presentation_owner_replay_validates_full_scope_and_nonzero_count_domain
+        PASS [   0.221s] (325/651) herdr-threads service::delivery_pull::tests::presentation_owner_replay_restart_discards_lease_and_recovers_canonical_pending
+        FAIL [   0.120s] (326/651) herdr-threads service::delivery_pull::tests::presentation_private_context_cursors_refuse_invalid_thread_ids_before_effects
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_private_context_cursors_refuse_invalid_thread_ids_before_effects ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_private_context_cursors_refuse_invalid_thread_ids_before_effects
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.11s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_private_context_cursors_refuse_invalid_thread_ids_before_effects' (55641083) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.153s] (327/651) herdr-threads service::delivery_pull::tests::presentation_private_invitation_id_wrong_types_refuse_at_strict_storage_boundary
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_private_invitation_id_wrong_types_refuse_at_strict_storage_boundary ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_private_invitation_id_wrong_types_refuse_at_strict_storage_boundary
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.14s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_private_invitation_id_wrong_types_refuse_at_strict_storage_boundary' (55641092) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.924s] (328/651) herdr-threads service::delivery_pull::tests::presentation_owner_replay_nonfull_once_per_lease_preserves_physical_metadata
+        PASS [   0.321s] (329/651) herdr-threads service::delivery_pull::tests::presentation_owner_replay_standalone_unrenderable_attempt_is_finite_and_local
+        FAIL [   0.131s] (330/651) herdr-threads service::delivery_pull::tests::presentation_private_invitation_ids_allow_exact_128_byte_ids_in_each_reader
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_private_invitation_ids_allow_exact_128_byte_ids_in_each_reader ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_private_invitation_ids_allow_exact_128_byte_ids_in_each_reader
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.12s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_private_invitation_ids_allow_exact_128_byte_ids_in_each_reader' (55641142) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.136s] (331/651) herdr-threads service::delivery_pull::tests::presentation_private_invitation_ids_refuse_corruption_in_each_reader_without_effects
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_private_invitation_ids_refuse_corruption_in_each_reader_without_effects ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_private_invitation_ids_refuse_corruption_in_each_reader_without_effects
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.12s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_private_invitation_ids_refuse_corruption_in_each_reader_without_effects' (55641178) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.134s] (332/651) herdr-threads service::delivery_pull::tests::presentation_private_item_refresh_text_bounds_refuse_before_effects
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_private_item_refresh_text_bounds_refuse_before_effects ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_private_item_refresh_text_bounds_refuse_before_effects
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.12s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_private_item_refresh_text_bounds_refuse_before_effects' (55641209) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.139s] (333/651) herdr-threads service::delivery_pull::tests::presentation_private_skipped_body_requires_exact_retained_cursor
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_private_skipped_body_requires_exact_retained_cursor ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_private_skipped_body_requires_exact_retained_cursor
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.12s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_private_skipped_body_requires_exact_retained_cursor' (55641231) panicked at src/service/../../tests/service/delivery_pull.rs:4438:5:
+    assertion failed: error.detail.contains("skipped body cursor")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.137s] (334/651) herdr-threads service::delivery_pull::tests::presentation_private_state_rejects_typed_corruption_without_confirmation_effects
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_private_state_rejects_typed_corruption_without_confirmation_effects ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_private_state_rejects_typed_corruption_without_confirmation_effects
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.12s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_private_state_rejects_typed_corruption_without_confirmation_effects' (55641254) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.399s] (335/651) herdr-threads service::delivery_pull::tests::presentation_owner_replay_waits_for_original_outbox_then_continues
+        FAIL [   0.128s] (336/651) herdr-threads service::delivery_pull::tests::presentation_private_watch_cleanup_ids_allow_128_byte_id_without_canonical_owner_changes
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_private_watch_cleanup_ids_allow_128_byte_id_without_canonical_owner_changes ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_private_watch_cleanup_ids_allow_128_byte_id_without_canonical_owner_changes
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.11s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_private_watch_cleanup_ids_allow_128_byte_id_without_canonical_owner_changes' (55641316) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.118s] (337/651) herdr-threads service::delivery_pull::tests::presentation_private_watch_cleanup_ids_enforce_borrowed_text_bounds_without_effects
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_private_watch_cleanup_ids_enforce_borrowed_text_bounds_without_effects ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_private_watch_cleanup_ids_enforce_borrowed_text_bounds_without_effects
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.11s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_private_watch_cleanup_ids_enforce_borrowed_text_bounds_without_effects' (55641353) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.104s] (338/651) herdr-threads service::delivery_pull::tests::presentation_private_watch_cleanup_ids_refuse_malformed_identity_without_effects
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_private_watch_cleanup_ids_refuse_malformed_identity_without_effects ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_private_watch_cleanup_ids_refuse_malformed_identity_without_effects
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.09s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_private_watch_cleanup_ids_refuse_malformed_identity_without_effects' (55641364) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.102s] (339/651) herdr-threads service::delivery_pull::tests::presentation_promoted_lazy_raw_carry_survives_restart_with_frozen_prefix
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_promoted_lazy_raw_carry_survives_restart_with_frozen_prefix ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_promoted_lazy_raw_carry_survives_restart_with_frozen_prefix
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.09s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_promoted_lazy_raw_carry_survives_restart_with_frozen_prefix' (55641376) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.111s] (340/651) herdr-threads service::delivery_pull::tests::presentation_publication_foreign_refresh_refuses_without_touching_hook_or_watch
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_publication_foreign_refresh_refuses_without_touching_hook_or_watch ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_publication_foreign_refresh_refuses_without_touching_hook_or_watch
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.10s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_publication_foreign_refresh_refuses_without_touching_hook_or_watch' (55641379) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.105s] (341/651) herdr-threads service::delivery_pull::tests::presentation_publication_generation_overflow_rolls_back_frontier_and_version
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_publication_generation_overflow_rolls_back_frontier_and_version ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_publication_generation_overflow_rolls_back_frontier_and_version
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.09s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_publication_generation_overflow_rolls_back_frontier_and_version' (55641403) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.099s] (342/651) herdr-threads service::delivery_pull::tests::presentation_publication_invalid_scalars_refuse_before_confirmation_effects
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_publication_invalid_scalars_refuse_before_confirmation_effects ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_publication_invalid_scalars_refuse_before_confirmation_effects
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.09s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_publication_invalid_scalars_refuse_before_confirmation_effects' (55641427) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.101s] (343/651) herdr-threads service::delivery_pull::tests::presentation_publication_refresh_and_pull_rebind_preserve_each_others_progress
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_publication_refresh_and_pull_rebind_preserve_each_others_progress ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_publication_refresh_and_pull_rebind_preserve_each_others_progress
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.09s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_publication_refresh_and_pull_rebind_preserve_each_others_progress' (55641439) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.106s] (344/651) herdr-threads service::delivery_pull::tests::presentation_publication_scalar_maximum_roundtrips_without_changing_carry
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_publication_scalar_maximum_roundtrips_without_changing_carry ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_publication_scalar_maximum_roundtrips_without_changing_carry
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.10s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_publication_scalar_maximum_roundtrips_without_changing_carry' (55641452) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.109s] (345/651) herdr-threads service::delivery_pull::tests::presentation_publication_signal_preserves_active_capture_and_replays_across_restart
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_publication_signal_preserves_active_capture_and_replays_across_restart ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_publication_signal_preserves_active_capture_and_replays_across_restart
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.10s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_publication_signal_preserves_active_capture_and_replays_across_restart' (55641455) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   5.317s] (346/651) herdr-threads::integration mod_delivery::clear_new_binding_gets_no_digest_or_wake_for_mail_already_read
+        FAIL [   0.104s] (347/651) herdr-threads service::delivery_pull::tests::presentation_publication_walk_counts_foreign_prefix_before_filter_and_progresses
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_publication_walk_counts_foreign_prefix_before_filter_and_progresses ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_publication_walk_counts_foreign_prefix_before_filter_and_progresses
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.09s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_publication_walk_counts_foreign_prefix_before_filter_and_progresses' (55641473) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.043s] (348/651) herdr-threads service::delivery_pull::tests::presentation_raw_carry_serializer_accounting_witness
+        FAIL [   0.114s] (349/651) herdr-threads service::delivery_pull::tests::presentation_publication_watch_reconnect_keeps_positive_frontier_without_native_wake
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_publication_watch_reconnect_keeps_positive_frontier_without_native_wake ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_publication_watch_reconnect_keeps_positive_frontier_without_native_wake
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.10s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_publication_watch_reconnect_keeps_positive_frontier_without_native_wake' (55641486) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.109s] (350/651) herdr-threads service::delivery_pull::tests::presentation_quiet_channel_observes_new_lazy_ordinary_without_wake
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_quiet_channel_observes_new_lazy_ordinary_without_wake ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_quiet_channel_observes_new_lazy_ordinary_without_wake
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.10s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_quiet_channel_observes_new_lazy_ordinary_without_wake' (55641494) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.122s] (351/651) herdr-threads service::delivery_pull::tests::presentation_quiet_channel_observes_new_ordinary_ack_message
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_quiet_channel_observes_new_ordinary_ack_message ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_quiet_channel_observes_new_ordinary_ack_message
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.11s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_quiet_channel_observes_new_ordinary_ack_message' (55641508) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.120s] (352/651) herdr-threads service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work
+        PASS [   0.584s] (353/651) herdr-threads service::delivery_pull::tests::presentation_private_partial_guards_reject_corrupt_supported_shapes
+        PASS [   0.132s] (354/651) herdr-threads service::delivery_pull::tests::presentation_reclamation_refuses_oversize_hints_before_effects
+        PASS [   0.140s] (355/651) herdr-threads service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation
+        PASS [   0.163s] (356/651) herdr-threads service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion
+        FAIL [   0.144s] (357/651) herdr-threads service::delivery_pull::tests::presentation_refresh_observes_lazy_context_and_removal_without_consuming_output
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_refresh_observes_lazy_context_and_removal_without_consuming_output ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_refresh_observes_lazy_context_and_removal_without_consuming_output
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.13s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_refresh_observes_lazy_context_and_removal_without_consuming_output' (55641670) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.340s] (358/651) herdr-threads service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged
+        PASS [   1.115s] (359/651) herdr-threads::integration mod_delivery::machine_and_json_body_reads_do_not_advance_binding_cursor
+        FAIL [   0.122s] (360/651) herdr-threads service::delivery_pull::tests::presentation_refresh_preserves_live_presentation_header_and_outbox_across_rebind
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_refresh_preserves_live_presentation_header_and_outbox_across_rebind ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_refresh_preserves_live_presentation_header_and_outbox_across_rebind
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.11s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_refresh_preserves_live_presentation_header_and_outbox_across_rebind' (55641701) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.143s] (361/651) herdr-threads service::delivery_pull::tests::presentation_refresh_stub_allows_actual_watch_full_offer_and_replaced_owner_replay
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_refresh_stub_allows_actual_watch_full_offer_and_replaced_owner_replay ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_refresh_stub_allows_actual_watch_full_offer_and_replaced_owner_replay
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.13s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_refresh_stub_allows_actual_watch_full_offer_and_replaced_owner_replay' (55641777) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.125s] (362/651) herdr-threads service::delivery_pull::tests::presentation_registered_channel_materializes_each_published_warn_before_drain
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_registered_channel_materializes_each_published_warn_before_drain ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_registered_channel_materializes_each_published_warn_before_drain
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.11s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_registered_channel_materializes_each_published_warn_before_drain' (55641806) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.124s] (363/651) herdr-threads service::delivery_pull::tests::presentation_registry_pass_drives_bounded_passive_refresh_before_full_pull
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_registry_pass_drives_bounded_passive_refresh_before_full_pull ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_registry_pass_drives_bounded_passive_refresh_before_full_pull
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.11s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_registry_pass_drives_bounded_passive_refresh_before_full_pull' (55641805) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.155s] (364/651) herdr-threads service::delivery_pull::tests::presentation_two_live_bindings_keep_offer_stamps_replay_and_carry_independent
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_two_live_bindings_keep_offer_stamps_replay_and_carry_independent ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_two_live_bindings_keep_offer_stamps_replay_and_carry_independent
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.15s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_two_live_bindings_keep_offer_stamps_replay_and_carry_independent' (55641840) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.138s] (365/651) herdr-threads service::delivery_pull::tests::presentation_v2_replays_one_canonical_invitation_until_emit_confirmation
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_v2_replays_one_canonical_invitation_until_emit_confirmation ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_v2_replays_one_canonical_invitation_until_emit_confirmation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.12s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_v2_replays_one_canonical_invitation_until_emit_confirmation' (55641888) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.182s] (366/651) herdr-threads service::delivery_pull::tests::presentation_v2_resumes_control_heavy_ordinary_partial_without_changing_body_limit
+        PASS [   0.219s] (367/651) herdr-threads service::delivery_pull::tests::presentation_v2_keeps_truncated_ordinary_cursor_progress_across_quanta
+        FAIL [   0.243s] (368/651) herdr-threads service::delivery_pull::tests::presentation_v2_service_requirement_attach_release_fresh_replacement_keeps_exact_commands
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_v2_service_requirement_attach_release_fresh_replacement_keeps_exact_commands ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_v2_service_requirement_attach_release_fresh_replacement_keeps_exact_commands
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.23s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_v2_service_requirement_attach_release_fresh_replacement_keeps_exact_commands' (55641907) panicked at src/service/../../tests/service/delivery_pull.rs:2993:21:
+    assertion `left == right` failed
+      left: (None, "11e270c16eb240fc8fea6f5e1adb94a6", 1, "00000000-0000-4000-8000-000000000001")
+     right: (None, "c70220bc6f774410b38726af169658e8", 1, "00000000-0000-4000-8000-000000000002")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.129s] (369/651) herdr-threads service::delivery_pull::tests::presentation_watch_fresh_confirmation_records_exact_owner_publication_cutoff_once
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_watch_fresh_confirmation_records_exact_owner_publication_cutoff_once ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_watch_fresh_confirmation_records_exact_owner_publication_cutoff_once
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.11s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_watch_fresh_confirmation_records_exact_owner_publication_cutoff_once' (55642064) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   1.793s] (370/651) herdr-threads service::delivery_pull::tests::presentation_owner_replay_pruned_all_passive_page_preserves_current_outlook
+        PASS [   0.192s] (371/651) herdr-threads service::delivery_pull::tests::presentation_watch_notice_continuation_preserves_remaining_confirming_condition
+        PASS [   0.015s] (372/651) herdr-threads service::kicks::tests::invitation_presentation_bookkeeping_is_passive_but_context_producers_refresh_mod
+        PASS [   0.165s] (373/651) herdr-threads service::delivery_pull::tests::presentation_watch_notice_settles_current_execution_without_reoffer
+        PASS [   0.138s] (374/651) herdr-threads service::delivery_pull::tests::the_hook_pull_outlook_waits_for_every_target_binding
+        PASS [   0.108s] (375/651) herdr-threads service::liveness::liveness_worker_tests::a_dead_fingerprint_reconnect_is_disconnected_on_the_next_pass
+        PASS [  13.202s] (376/651) herdr-threads::integration session_bindings_e2e::a_one_shot_adds_sends_exits_and_a_later_call_reconnects_until_its_process_exits
+        PASS [   1.062s] (377/651) herdr-threads service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags
+        PASS [   0.094s] (378/651) herdr-threads service::liveness::liveness_worker_tests::a_plain_readopted_binding_loses_to_the_lifecycle_binding_of_its_process
+        PASS [   0.101s] (379/651) herdr-threads service::liveness::liveness_worker_tests::exited_process_disconnects_its_binding
+        PASS [   0.134s] (380/651) herdr-threads service::liveness::liveness_worker_tests::a_reconnected_superseded_lifecycle_binding_is_superseded_again
+        PASS [   0.280s] (381/651) herdr-threads service::liveness::liveness_worker_tests::a_managed_launch_placeholder_never_wins_the_same_process_rule
+        PASS [   0.111s] (382/651) herdr-threads service::liveness::liveness_worker_tests::fingerprintless_verdict_is_void_after_a_fingerprinted_reconnect
+        PASS [   0.146s] (383/651) herdr-threads service::liveness::liveness_worker_tests::fingerprintless_bindings_disconnect_on_first_pass
+        PASS [   0.405s] (384/651) herdr-threads service::liveness::liveness_worker_tests::a_plain_call_only_binding_loses_to_a_lifecycle_claimed_one_and_never_wins
+        PASS [   0.197s] (385/651) herdr-threads service::liveness::liveness_worker_tests::held_unresolved_or_retired_seats_are_skipped
+        PASS [   0.115s] (386/651) herdr-threads service::liveness::liveness_worker_tests::idle_pass_commits_nothing
+        PASS [   0.145s] (387/651) herdr-threads service::liveness::liveness_worker_tests::human_bindings_are_never_touched
+        PASS [   0.877s] (388/651) herdr-threads service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity
+        PASS [   0.125s] (389/651) herdr-threads service::liveness::liveness_worker_tests::pid_reuse_with_another_start_disconnects
+        PASS [   1.527s] (390/651) herdr-threads::integration mod_delivery::no_mod_or_env_off_keeps_native_wake_and_exits_3
+        FAIL [   1.199s] (391/651) herdr-threads::integration mod_delivery::notice_published_while_live_reaches_the_next_pre_tool_use_once
+  stdout ───
+
+    running 1 test
+    test mod_delivery::notice_published_while_live_reaches_the_next_pre_tool_use_once ... FAILED
+
+    failures:
+
+    failures:
+        mod_delivery::notice_published_while_live_reaches_the_next_pre_tool_use_once
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 236 filtered out; finished in 1.19s
+
+  stderr ───
+    panicked at tests/integration/mod_delivery.rs:4920:11:
+    called `Result::unwrap()` on an `Err` value: SqlInputError { error: Error { code: Unknown, extended_code: 1 }, msg: "no such column: o.binding_generation", sql: "SELECT o.binding_generation,o.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id,d.thread_id FROM digest_notice_offer o JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN seats s ON s.id=o.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE o.seat_id=?1 AND d.warning_id=?2", offset: 7 }
+
+        PASS [   0.155s] (392/651) herdr-threads service::liveness::liveness_worker_tests::recheck_before_wake_disconnects_a_dead_binding_before_it_is_targeted
+        PASS [   0.011s] (393/651) herdr-threads service::mod_channels::tests::ack_landing_during_the_stall_read_prevents_the_stall_close
+        PASS [   0.010s] (394/651) herdr-threads service::mod_channels::tests::close_binding_changed_starts_that_bindings_rebind_grace_only
+        PASS [   0.122s] (395/651) herdr-threads service::liveness::liveness_worker_tests::same_fingerprint_tie_goes_to_the_later_enrolled_binding
+        PASS [   0.011s] (396/651) herdr-threads service::mod_channels::tests::closing_one_channel_leaves_the_other_live
+        PASS [   0.155s] (397/651) herdr-threads service::liveness::liveness_worker_tests::same_fingerprint_newer_session_disconnects_the_older
+        PASS [   0.143s] (398/651) herdr-threads service::liveness::liveness_worker_tests::subagents_neither_supersede_nor_are_superseded
+        PASS [   0.146s] (399/651) herdr-threads service::liveness::liveness_worker_tests::the_thread_rechecks_on_its_cadence_and_stops_on_cancel
+        PASS [   2.606s] (400/651) herdr-threads::integration mod_delivery::live_channel_suppresses_native_wake
+        PASS [   1.622s] (401/651) herdr-threads service::delivery_pull::tests::presentation_reclamation_preserves_pending_truncated_and_reoffer_history
+        PASS [  13.821s] (402/651) herdr-threads::integration mod_delivery::activation_v2_watch_full_pending_capacity_parks_until_real_channel_input
+        PASS [   0.138s] (403/651) herdr-threads service::mod_channels::tests::domain::closing_one_channel_leaves_the_other_live
+        PASS [   0.109s] (404/651) herdr-threads service::mod_channels::tests::domain::re_registering_a_binding_replaces_only_its_own_channel
+        PASS [   0.142s] (405/651) herdr-threads service::mod_channels::tests::domain::no_binding
+        PASS [   0.177s] (406/651) herdr-threads service::mod_channels::tests::domain::disconnect_closes_that_bindings_channel
+        PASS [   0.140s] (407/651) herdr-threads service::mod_channels::tests::domain::presentation_owner_current_watch_is_admitted_and_old_lease_is_refused
+        FAIL [   0.180s] (408/651) herdr-threads service::mod_channels::tests::domain::each_channel_receives_only_its_bindings_deliveries
+  stdout ───
+
+    running 1 test
+    test service::mod_channels::tests::domain::each_channel_receives_only_its_bindings_deliveries ... FAILED
+
+    failures:
+
+    failures:
+        service::mod_channels::tests::domain::each_channel_receives_only_its_bindings_deliveries
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.17s
+
+  stderr ───
+
+    thread 'service::mod_channels::tests::domain::each_channel_receives_only_its_bindings_deliveries' (55643037) panicked at src/service/../../tests/service/mod_channels.rs:1413:9:
+    assertion `left == right` failed
+      left: []
+     right: [Attention { version: 5 }]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.011s] (409/651) herdr-threads service::mod_channels::tests::each_channel_receives_only_its_bindings_deliveries
+        PASS [   0.019s] (410/651) herdr-threads service::mod_channels::tests::pass_closes_channels_whose_seat_or_binding_no_longer_holds
+        PASS [   0.019s] (411/651) herdr-threads service::mod_channels::tests::pass_judges_each_channel_against_its_own_binding
+        PASS [   0.087s] (412/651) herdr-threads service::mod_channels::tests::domain::registration_uses_the_bindings_generation_not_the_claims
+        PASS [   0.016s] (413/651) herdr-threads service::mod_channels::tests::presentation_attention_cutoff_requires_exact_live_owner
+        PASS [   0.014s] (414/651) herdr-threads service::mod_channels::tests::presentation_owner_lease_is_exact_live_and_replacement_fenced
+        PASS [   0.013s] (415/651) herdr-threads service::mod_channels::tests::re_registering_a_binding_replaces_only_its_own_channel
+        PASS [   0.011s] (416/651) herdr-threads service::mod_channels::tests::rebind_grace_authorizes_acks_but_is_neither_seat_nor_binding_live
+        PASS [   0.016s] (417/651) herdr-threads service::mod_channels::tests::record_ack_and_attention_push_for_another_binding_are_ignored
+        PASS [   0.015s] (418/651) herdr-threads service::mod_channels::tests::record_ack_resets_stall_clock
+        PASS [   0.037s] (419/651) herdr-threads service::mod_channels::tests::presentation_owner_permit_serializes_replacement
+        PASS [   0.011s] (420/651) herdr-threads service::mod_channels::tests::registration_landing_between_pass_snapshot_and_close_survives
+        PASS [   0.013s] (421/651) herdr-threads service::mod_channels::tests::register_then_is_live_for_its_binding_only
+        PASS [   0.108s] (422/651) herdr-threads service::mod_channels::tests::domain::two_claude_bindings_hold_two_live_channels
+        PASS [   0.017s] (423/651) herdr-threads service::mod_channels::tests::registration_landing_during_the_stall_read_is_not_closed_and_arms_no_cooldown
+        PASS [   0.016s] (424/651) herdr-threads service::mod_channels::tests::registration_over_a_configured_cap_is_busy_but_replacement_is_not
+        PASS [   0.108s] (425/651) herdr-threads service::mod_channels::tests::domain::watch_register_accepts_matching_claude_binding
+        PASS [   0.021s] (426/651) herdr-threads service::mod_channels::tests::registration_over_the_connection_bound_is_busy_but_replacement_is_not
+        PASS [   0.016s] (427/651) herdr-threads service::mod_channels::tests::stall_close_pushes_close_stalled_to_the_channel
+        PASS [   0.018s] (428/651) herdr-threads service::mod_channels::tests::seat_stalled_needs_every_channel_stalled
+        PASS [   0.013s] (429/651) herdr-threads service::mod_channels::tests::stall_close_starts_cooldown_refusing_same_generation_for_ten_minutes
+        PASS [   0.012s] (430/651) herdr-threads service::mod_channels::tests::stall_cooldown_is_per_binding
+        PASS [   0.012s] (431/651) herdr-threads service::mod_channels::tests::stalled_requires_old_ack_old_receipt_published_before_last_push
+        PASS [   0.012s] (432/651) herdr-threads service::mod_channels::tests::truncated_receipts_never_count_toward_stall
+        PASS [   0.013s] (433/651) herdr-threads service::mod_channels::tests::two_claude_bindings_hold_two_live_channels
+        PASS [   0.131s] (434/651) herdr-threads service::mod_channels::tests::domain::watch_register_accepts_a_plain_call_enrolled_binding
+        PASS [   0.135s] (435/651) herdr-threads store::attention::tests::newest_pending_notice_follows_the_frontier
+        PASS [   0.230s] (436/651) herdr-threads store::attention::tests::bound_reader_informational_notice_follows_its_own_frontier
+        PASS [   0.231s] (437/651) herdr-threads store::attention::tests::display_by_one_binding_does_not_clear_the_others_notice
+        PASS [   0.238s] (438/651) herdr-threads store::attention::tests::held_mail_is_not_pushed_until_the_catch_up_releases_it
+        PASS [   0.258s] (439/651) herdr-threads store::attention::tests::presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settlement
+        PASS [   1.401s] (440/651) herdr-threads service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity
+        PASS [   0.198s] (441/651) herdr-threads store::attention::tests::presentation_relevance_canonical_receipt_sweep_closes_before_clear_publication
+        PASS [   0.197s] (442/651) herdr-threads store::attention::tests::presentation_relevance_direct_association_survives_prepared_same_id
+        PASS [   0.222s] (443/651) herdr-threads store::attention::tests::presentation_relevance_direct_legacy_survives_canonical_lazy_churn
+        PASS [   0.294s] (444/651) herdr-threads store::attention::tests::presentation_relevance_all_thirteen_physical_sources_progress_through_stale_candidates
+        PASS [   0.323s] (445/651) herdr-threads store::attention::tests::presentation_relevance_coverage_reserves_fallback_progress_under_source_load
+        PASS [   0.194s] (446/651) herdr-threads store::attention::tests::presentation_relevance_private_proof_refuses_corruption_without_effects
+        PASS [   0.191s] (447/651) herdr-threads store::attention::tests::presentation_relevance_quiet_proof_does_not_fence_itself_and_overflow_aborts_writer
+        PASS [   0.197s] (448/651) herdr-threads store::attention::tests::presentation_relevance_required_lazy_overlay_tracks_digest_and_requirement
+        PASS [   0.210s] (449/651) herdr-threads store::attention::tests::presentation_relevance_suspended_membership_unchanged_high_still_opens
+        PASS [   0.213s] (450/651) herdr-threads store::attention::tests::presentation_relevance_sweep_mutations_fence_and_overflow_roll_back_without_self_invalidation
+        PASS [   1.276s] (451/651) herdr-threads::integration mod_delivery::partial_body_read_does_not_advance_binding_cursor
+        PASS [   0.200s] (452/651) herdr-threads store::attention::tests::presentation_relevance_unavailable_exact_episode_and_late_publication_are_swept
+        PASS [   0.103s] (453/651) herdr-threads store::attention::tests::pulled_notice_settlement_uses_exact_binding_when_sessions_match_across_harnesses
+        PASS [   1.008s] (454/651) herdr-threads store::attention::tests::presentation_capacity_due_exact_keys_have_bounded_actual_sql_plans_and_vm
+        PASS [   0.122s] (455/651) herdr-threads store::attention::tests::settle_pulled_notices_refuses_a_stale_generation_another_session_or_a_non_prefix
+        PASS [   1.269s] (456/651) herdr-threads::integration mod_delivery::send_attention_drain_ack_settles_with_mod_delivery_provenance
+        PASS [   0.522s] (457/651) herdr-threads store::attention::tests::presentation_relevance_suspended_membership_respects_repaired_current_high
+        PASS [   0.255s] (458/651) herdr-threads store::attention::tests::presentation_relevance_walks_retained_membership_and_revalidates_exact_witness
+        PASS [   0.129s] (459/651) herdr-threads store::attention::tests::settle_pulled_notices_settles_exactly_the_carried_prefix_for_the_open_binding
+        PASS [   1.974s] (460/651) herdr-threads::integration session_bindings_e2e::two_agents_in_one_pane_settle_one_obligation_once_and_a_subagent_reads_only
+        PASS [   0.193s] (461/651) herdr-threads store::attention::tests::subagent_gets_its_own_notices_and_never_advances_the_parents
+        PASS [   0.187s] (462/651) herdr-threads store::attention::tests::two_bindings_both_get_a_notice_for_one_new_message
+        PASS [   0.185s] (463/651) herdr-threads store::bindings::liveness_apply_tests::superseded_verdict_is_dropped_when_the_group_shrank_to_one
+        PASS [   0.017s] (464/651) herdr-threads store::bindings::tests::binding_key_from_claim_reads_seat_harness_session_and_agent
+        PASS [   0.216s] (465/651) herdr-threads store::bindings::liveness_apply_tests::process_exit_verdicts_are_unchanged
+        PASS [   1.170s] (466/651) herdr-threads store::attention::tests::presentation_relevance_all_thirteen_actual_source_heads_and_ranges_have_bounded_plans_and_vm
+        PASS [   0.220s] (467/651) herdr-threads store::bindings::liveness_apply_tests::superseded_verdict_is_dropped_when_the_loser_reclaims_first
+        PASS [   0.140s] (468/651) herdr-threads store::bindings::tests::availability::lifecycle_reconnect_closes_the_episode
+        PASS [   0.188s] (469/651) herdr-threads store::bindings::liveness_apply_tests::superseded_verdict_still_applies_when_ordering_is_unchanged
+        PASS [   0.201s] (470/651) herdr-threads store::bindings::tests::exclusivity::a_plain_call_enrollment_never_adopts_the_placeholder
+        PASS [   0.191s] (471/651) herdr-threads store::bindings::tests::lineage::lineage_from_another_process_is_ignored
+        PASS [   0.203s] (472/651) herdr-threads store::bindings::tests::lineage::lineage_successor_starts_at_predecessor_cursors
+        PASS [   0.202s] (473/651) herdr-threads store::bindings::tests::lineage::link_lineage_never_moves_cursors
+        PASS [   0.195s] (474/651) herdr-threads store::bindings::tests::lineage::validate_lineage_requires_a_top_level_predecessor_of_the_same_seat_and_harness
+        PASS [   0.185s] (475/651) herdr-threads store::bindings::tests::lineage_successor_copies_predecessor_cursors
+        PASS [   0.181s] (476/651) herdr-threads store::bindings::tests::liveness::different_harness_same_pid_does_not_supersede
+        PASS [   0.182s] (477/651) herdr-threads store::bindings::tests::liveness::lineage_successor_copies_cursors_before_superseding
+        PASS [   0.174s] (478/651) herdr-threads store::bindings::tests::liveness::plain_call_enrollment_never_supersedes_a_same_process_binding
+        PASS [   0.189s] (479/651) herdr-threads store::bindings::tests::liveness::pid_reuse_does_not_supersede
+        PASS [   0.010s] (480/651) herdr-threads store::bindings::tests::registries::enroll_hooks_are_the_placeholder_replace_then_the_same_pid_supersede
+        PASS [   0.175s] (481/651) herdr-threads store::bindings::tests::liveness::same_pid_supersede_disconnects_the_prior_top_level_binding_at_enrollment
+        PASS [   0.181s] (482/651) herdr-threads store::bindings::tests::liveness::subagents_never_supersede_nor_are_superseded
+        PASS [   0.174s] (483/651) herdr-threads store::bindings::tests::match_claim_distinguishes_agent_ids
+        PASS [   0.174s] (484/651) herdr-threads store::bindings::tests::match_claim_ignores_ended_rows
+        PASS [   0.177s] (485/651) herdr-threads store::bindings::tests::resolution::codex_subagent_uses_env_session_provenance
+        PASS [   0.194s] (486/651) herdr-threads store::bindings::tests::resolution::attach_subagent_attaches_to_an_existing_parent_without_touching_it
+        PASS [   0.177s] (487/651) herdr-threads store::bindings::tests::resolution::hermes_cli_claim_of_a_registered_child_resolves_to_the_subagent_binding
+        PASS [   0.175s] (488/651) herdr-threads store::bindings::tests::resolution::lifecycle_enrollment_uses_the_harness_cooperative_provenance
+        PASS [   1.439s] (489/651) herdr-threads store::attention::tests::presentation_relevance_successor_plan_and_vm_stay_bounded_in_retained_canonical_sweeps
+        PASS [   0.178s] (490/651) herdr-threads store::bindings::tests::resolution::lifecycle_reconnects_a_disconnected_binding_and_runs_hooks
+        PASS [   0.193s] (491/651) herdr-threads store::bindings::tests::resolution::lifecycle_refreshes_the_placement_of_an_open_binding
+        PASS [   0.174s] (492/651) herdr-threads store::bindings::tests::resolution::migrated_binding_is_readopted_by_a_plain_call_with_its_session
+        PASS [   1.034s] (493/651) herdr-threads::integration mod_delivery::wake_on_all_promoted_lazy_line_carries_wakes
+        PASS [   0.196s] (494/651) herdr-threads store::bindings::tests::resolution::migrated_binding_with_another_session_is_not_readopted
+        PASS [   0.196s] (495/651) herdr-threads store::bindings::tests::resolution::plain_call_does_not_reconnect_an_end_event_binding
+        FAIL [   1.229s] (496/651) herdr-threads::integration mod_delivery::stale_attention_is_retracted_after_accept_and_after_a_notice_offer
+  stdout ───
+
+    running 1 test
+    test mod_delivery::stale_attention_is_retracted_after_accept_and_after_a_notice_offer ... FAILED
+
+    failures:
+
+    failures:
+        mod_delivery::stale_attention_is_retracted_after_accept_and_after_a_notice_offer
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 236 filtered out; finished in 1.22s
+
+  stderr ───
+    panicked at tests/integration/mod_delivery.rs:4430:11:
+    called `Result::unwrap()` on an `Err` value: SqlInputError { error: Error { code: Unknown, extended_code: 1 }, msg: "no such column: o.binding_generation", sql: "SELECT o.binding_generation,o.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id,d.thread_id FROM digest_notice_offer o JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN seats s ON s.id=o.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE o.seat_id=?1 AND d.warning_id=?2", offset: 7 }
+
+        PASS [   0.190s] (497/651) herdr-threads store::bindings::tests::resolution::plain_call_does_not_reconnect_when_a_lifecycle_binding_holds_the_process
+        PASS [   0.177s] (498/651) herdr-threads store::bindings::tests::resolution::plain_call_of_an_unknown_session_enrolls_with_env_provenance
+        PASS [   0.181s] (499/651) herdr-threads store::bindings::tests::resolution::plain_call_on_a_retired_seat_does_not_reconnect
+        PASS [   0.181s] (500/651) herdr-threads store::bindings::tests::resolution::plain_call_with_a_fingerprint_reconnects_a_disconnected_binding
+        PASS [   0.185s] (501/651) herdr-threads store::bindings::tests::resolution::plain_call_without_a_fingerprint_serves_a_disconnected_binding_without_reconnecting
+        PASS [   0.175s] (502/651) herdr-threads store::bindings::tests::resolution::readoption_records_the_fingerprint
+        PASS [   0.172s] (503/651) herdr-threads store::bindings::tests::resolution::subagent_role_without_agent_id_is_invalid
+        PASS [   0.203s] (504/651) herdr-threads store::bindings::tests::resolution::subagent_claim_attaches_to_its_parent_and_enrolls_a_missing_parent
+        PASS [   0.186s] (505/651) herdr-threads store::bindings::tests::resolution::superseded_binding_plain_call_stays_disconnected_and_supersedes_nothing
+        PASS [   0.208s] (506/651) herdr-threads store::bindings::tests::resolution::two_sessions_resolve_to_two_open_bindings
+        PASS [   0.218s] (507/651) herdr-threads store::bindings::tests::resolution::v32_readopt_refused_while_a_lifecycle_binding_holds_the_process
+        PASS [   0.223s] (508/651) herdr-threads store::bindings::tests::resolution::v32_readopted_binding_then_session_start_successor_stays_superseded
+        PASS [   0.210s] (509/651) herdr-threads store::bindings::tests::subagent_records_parent_and_parent_of_reads_it
+        PASS [   0.215s] (510/651) herdr-threads store::bindings::tests::two_sessions_hold_two_open_bindings_on_one_seat
+        PASS [   0.187s] (511/651) herdr-threads store::connection::tests::presentation_schema_populated_v39_failed_ddl_rolls_back_epoch_and_catalog
+        PASS [   0.365s] (512/651) herdr-threads store::connection::tests::presentation_schema_pending_index_build_work_tracks_only_pending_projection
+        PASS [   0.194s] (513/651) herdr-threads store::connection::tests::upgrade_from_v28_with_pending_lazy_and_catch_up_mail_delivers_exactly_once
+        PASS [   1.516s] (514/651) herdr-threads::integration session_bindings_smoke::config1_subagent_display_advances_its_own_cursor
+        PASS [   2.881s] (515/651) herdr-threads::integration mod_delivery::resume_keeps_binding_and_reack_settles
+        FAIL [   0.195s] (516/651) herdr-threads store::connection::tests::v28_upgrade_migrates_bindings_to_session_keyed_v32
+  stdout ───
+
+    running 1 test
+    test store::connection::tests::v28_upgrade_migrates_bindings_to_session_keyed_v32 ... FAILED
+
+    failures:
+
+    failures:
+        store::connection::tests::v28_upgrade_migrates_bindings_to_session_keyed_v32
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 0.18s
+
+  stderr ───
+
+    thread 'store::connection::tests::v28_upgrade_migrates_bindings_to_session_keyed_v32' (55645825) panicked at src/store/../../tests/store/schema.rs:6239:5:
+    assertion `left == right` failed
+      left: ["archival_binding_activity", "archival_binding_queue_delete", "archival_binding_queue_insert", "archival_fence_occupant_bindings_delete", "archival_fence_occupant_bindings_insert", "archival_fence_occupant_bindings_update"]
+     right: ["archival_binding_activity", "archival_binding_queue_delete", "archival_binding_queue_insert", "archival_fence_occupant_bindings_delete", "archival_fence_occupant_bindings_insert", "archival_fence_occupant_bindings_update", "presentation_fence_occupant_bindings_delete", "presentation_fence_occupant_bindings_insert", "presentation_fence_occupant_bindings_update"]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.325s] (517/651) herdr-threads store::connection::tests::v32_fresh_matches_upgraded_catalog
+        PASS [   0.202s] (518/651) herdr-threads store::connection::tests::v32_session_key_is_unique_only_among_open_rows
+        PASS [   0.200s] (519/651) herdr-threads store::connection::tests::v32_startup_rejects_missing_or_altered_binding_objects
+        PASS [   0.278s] (520/651) herdr-threads store::connection::tests::v33_startup_rejects_an_altered_archival_trigger
+        PASS [   0.231s] (521/651) herdr-threads store::connection::tests::v33_to_v34_carries_lazy_and_catch_up_state
+        PASS [   0.406s] (522/651) herdr-threads store::connection::tests::v33_fresh_matches_upgraded_catalog
+        PASS [   0.214s] (523/651) herdr-threads store::connection::tests::v34_to_v35_moves_attention_frontiers_to_bindings
+        PASS [   3.492s] (524/651) herdr-threads::integration mod_delivery::reconnect_within_grace_keeps_wake_suppressed_restreams_and_late_ack_settles_once
+        PASS [   0.419s] (525/651) herdr-threads store::connection::tests::v34_fresh_matches_upgraded_catalog_with_delivery_data
+        PASS [   0.426s] (526/651) herdr-threads store::connection::tests::v34_startup_rejects_altered_catch_up_and_lazy_objects
+        PASS [   0.298s] (527/651) herdr-threads store::connection::tests::v35_startup_rejects_altered_attention_frontier_objects
+        PASS [   0.317s] (528/651) herdr-threads store::control::tests::invitation_confirmation_required_service_gets_fresh_timed_episode_without_mutating_lazy
+        PASS [   1.116s] (529/651) herdr-threads store::connection::tests::published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history
+        PASS [   0.463s] (530/651) herdr-threads store::connection::tests::v35_fresh_matches_upgraded_catalog_with_attention_data
+        PASS [   0.373s] (531/651) herdr-threads store::control::tests::managed_release_cancels_only_required_invitation_and_replay_retains_history
+        PASS [   0.408s] (532/651) herdr-threads store::control::tests::managed_required_upgrade_preserves_deadline_and_demands_native_revision
+        PASS [   0.520s] (533/651) herdr-threads store::control::tests::managed_required_controls_preserve_left_history_and_independent_ordinary_invite
+        PASS [   0.286s] (534/651) herdr-threads store::control::tests::registration_ignores_an_exhausted_binding_history_generation_and_rolls_back_without_anchor
+        PASS [   0.514s] (535/651) herdr-threads store::control::tests::managed_required_reattach_preserves_upgraded_ordinary_invitation_and_history
+        PASS [   0.291s] (536/651) herdr-threads store::control::tests::same_invitation_requirement_attach_release_replacement_has_distinct_context_epochs
+        PASS [   0.365s] (537/651) herdr-threads store::control::tests::native_ordinary_offer_after_required_offer_can_be_accepted_after_join
+        PASS [   0.385s] (538/651) herdr-threads store::control::tests::required_then_independent_ordinary_acceptance_keeps_one_join_interval
+        PASS [   0.126s] (539/651) herdr-threads store::control::tests::service_requirement_uses_an_independent_episode_without_mutating_native_lazy_invitation
+        PASS [   0.072s] (540/651) herdr-threads store::first_contact::tests::a_peer_thread_name_cannot_add_lines
+        PASS [   1.588s] (541/651) herdr-threads store::connection::tests::presentation_schema_populated_v40_consumers_upgrade_revised_v41_and_reopen
+        PASS [   1.608s] (542/651) herdr-threads store::connection::tests::presentation_schema_populated_v39_upgrade_is_additive_and_reopens
+        PASS [   0.090s] (543/651) herdr-threads store::first_contact::tests::at_most_eight_threads_by_recent_activity_then_more_line
+        PASS [   0.194s] (544/651) herdr-threads store::effective::tests::unpublished_staging_is_invisible_and_first_later_anchor_is_immutable
+        PASS [   0.090s] (545/651) herdr-threads store::first_contact::tests::counts_cover_only_messages_up_to_the_cursor
+        PASS [   0.149s] (546/651) herdr-threads store::first_contact::tests::a_seat_with_no_history_gets_no_first_contact
+        PASS [   0.137s] (547/651) herdr-threads store::first_contact::tests::first_contact_is_attached_once_per_binding
+        PASS [   1.719s] (548/651) herdr-threads store::connection::tests::presentation_schema_populated_v40_failed_v41_rolls_back_bootstrap_and_catalog
+        PASS [   0.100s] (549/651) herdr-threads store::first_contact::tests::line_format_matches_the_spec
+        PASS [   0.088s] (550/651) herdr-threads store::first_contact::tests::open_requests_come_from_the_summary_ledger
+        PASS [   0.198s] (551/651) herdr-threads store::first_contact::tests::fast_forward_keeps_pending_obligations_listed
+        PASS [   0.187s] (552/651) herdr-threads store::first_contact::tests::threads_without_earlier_history_are_omitted
+        PASS [   0.231s] (553/651) herdr-threads store::first_contact::tests::unenrolled_inbox_page_carries_stats_until_the_enrolling_advance
+        PASS [   0.423s] (554/651) herdr-threads store::first_contact::tests::fast_forward_triggers_above_one_page_and_not_below
+        PASS [   0.337s] (555/651) herdr-threads store::first_contact::tests::plain_call_reconnect_never_fast_forwards
+        PASS [   0.113s] (556/651) herdr-threads store::first_contact::tests::unnamed_thread_label
+        FAIL [   1.925s] (557/651) herdr-threads store::connection::tests::released_main31_populated_automatic_graph_physically_upgrades_and_reopens
+  stdout ───
+
+    running 1 test
+    test store::connection::tests::released_main31_populated_automatic_graph_physically_upgrades_and_reopens ... FAILED
+
+    failures:
+
+    failures:
+        store::connection::tests::released_main31_populated_automatic_graph_physically_upgrades_and_reopens
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4841 filtered out; finished in 1.91s
+
+  stderr ───
+
+    thread 'store::connection::tests::released_main31_populated_automatic_graph_physically_upgrades_and_reopens' (55645792) panicked at src/store/../../tests/store/schema.rs:7594:5:
+    assertion `left == right` failed
+      left: 42
+     right: 38
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.361s] (558/651) herdr-threads store::first_contact::tests::subagent_fast_forward_never_settles
+        PASS [   0.363s] (559/651) herdr-threads store::first_contact::tests::supersede_never_fast_forwards_the_superseded_binding
+        PASS [   0.384s] (560/651) herdr-threads store::first_contact::tests::plain_touch_never_fast_forwards
+        PASS [   0.467s] (561/651) herdr-threads store::first_contact::tests::many_small_messages_past_a_page_fast_forward_with_gap_counts
+        PASS [   0.187s] (562/651) herdr-threads store::lazy_delivery::binding_lazy_tests::a_later_binding_inherits_the_seat_maximum_cursor
+        PASS [   0.190s] (563/651) herdr-threads store::lazy_delivery::binding_lazy_tests::a_seat_without_a_connected_top_level_binding_counts_only_legacy_rows
+        PASS [   0.207s] (564/651) herdr-threads store::lazy_delivery::binding_lazy_tests::a_binding_less_completion_counts_for_every_open_top_level_binding
+        PASS [   0.205s] (565/651) herdr-threads store::lazy_delivery::binding_lazy_tests::advance_through_displayed_stops_at_the_first_gap
+        PASS [   0.213s] (566/651) herdr-threads store::lazy_delivery::binding_lazy_tests::completion_state_follows_the_binding
+        PASS [   0.839s] (567/651) herdr-threads store::effective::tests::dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recapture
+        PASS [   0.197s] (568/651) herdr-threads store::lazy_delivery::binding_lazy_tests::lazy_message_is_delivered_once_per_binding
+        PASS [   0.221s] (569/651) herdr-threads store::lazy_delivery::binding_lazy_tests::has_unread_is_lazy_aware
+        PASS [   0.219s] (570/651) herdr-threads store::lazy_delivery::binding_lazy_tests::left_threads_are_not_lazy_unread_for_a_binding_without_a_cursor
+        PASS [   0.130s] (571/651) herdr-threads store::queries::binding_inbox_tests::binding_enrolled_after_leave_gets_no_old_lazy_history
+        PASS [   0.220s] (572/651) herdr-threads store::lazy_delivery::binding_lazy_tests::legacy_pending_is_shown_to_top_level_bindings_until_displayed
+        PASS [   0.095s] (573/651) herdr-threads store::queries::binding_inbox_tests::bound_warning_cutoff_is_the_reading_bindings_own_offer_frontier
+        PASS [   0.103s] (574/651) herdr-threads store::queries::binding_inbox_tests::invitations_are_listed_per_seat
+        PASS [   0.224s] (575/651) herdr-threads store::lazy_delivery::binding_lazy_tests::legacy_pending_survives_a_subagent_display_attempt
+        PASS [   0.222s] (576/651) herdr-threads store::lazy_delivery::binding_lazy_tests::legacy_pending_survives_leaving_the_thread
+        PASS [   0.013s] (577/651) herdr-threads store::queries::tests::presentation_generated_marker_inverse_refuses_wrong_variant_or_body
+        PASS [   0.228s] (578/651) herdr-threads store::queries::binding_inbox_tests::bound_lazy_stream_is_per_binding
+        PASS [   0.198s] (579/651) herdr-threads store::queries::binding_inbox_tests::join_gives_every_open_binding_a_cursor_at_the_join_point
+        PASS [   0.166s] (580/651) herdr-threads store::queries::binding_inbox_tests::subagent_display_advances_only_its_own_cursor
+        PASS [   0.030s] (581/651) herdr-threads store::queries::tests::presentation_publication_range_uses_exact_index_and_bounded_sqlite_work
+        PASS [   0.127s] (582/651) herdr-threads store::queries::tests::presentation_publication_observes_old_staging_only_after_late_manifest
+        PASS [   0.302s] (583/651) herdr-threads store::queries::binding_inbox_tests::pending_obligations_older_than_the_binding_are_listed
+        PASS [   1.202s] (584/651) herdr-threads store::effective::tests::dormant_upgrade_bounded_batches_survive_restart_and_continuing_arrivals
+        PASS [   0.352s] (585/651) herdr-threads store::queries::binding_inbox_tests::no_duplicate_delivery_after_v29_migration
+        PASS [   0.296s] (586/651) herdr-threads store::queries::binding_inbox_tests::unknown_session_inbox_shows_no_backlog_past_the_seat_maximum
+        PASS [   0.196s] (587/651) herdr-threads store::read_cursors::tests::advance_is_monotonic
+        PASS [   0.193s] (588/651) herdr-threads store::read_cursors::tests::advance_through_displayed_stops_at_the_first_gap
+        PASS [   0.381s] (589/651) herdr-threads store::queries::binding_inbox_tests::one_bindings_display_never_hides_mail_from_the_other
+        PASS [   0.363s] (590/651) herdr-threads store::queries::binding_inbox_tests::two_bindings_each_receive_every_message_exactly_once
+        PASS [   0.308s] (591/651) herdr-threads store::queries::tests::presentation_hydrate_exact_query_is_driven_by_bounded_wanted_ids
+        PASS [   0.220s] (592/651) herdr-threads store::read_cursors::tests::advance_through_displayed_counts_only_this_bindings_display_acks
+        PASS [   0.218s] (593/651) herdr-threads store::read_cursors::tests::copy_lineage_copies_and_keeps_the_higher_cursor
+        PASS [   0.079s] (594/651) herdr-threads store::receipts::mod_ack_tests::mod_ack_of_only_the_lazy_row_stops_before_an_unshown_ordinary_message
+        PASS [   0.085s] (595/651) herdr-threads store::receipts::mod_ack_tests::already_settled_ordinary_still_advances_a_second_bindings_cursor
+        PASS [   0.080s] (596/651) herdr-threads store::receipts::mod_ack_tests::mod_ack_of_ordinary_and_lazy_advances_the_cursor_past_both
+        PASS [   0.081s] (597/651) herdr-threads store::receipts::mod_ack_tests::truncated_ordinary_next_to_a_lazy_row_does_not_let_the_cursor_pass
+        PASS [   0.221s] (598/651) herdr-threads store::read_cursors::tests::has_unread_tracks_ordinary_mail_past_the_cursor
+        PASS [   0.212s] (599/651) herdr-threads store::read_cursors::tests::init_for_join_gives_every_open_binding_a_cursor_at_the_join_point
+        PASS [   0.188s] (600/651) herdr-threads store::read_cursors::tests::init_for_new_binding_starts_at_the_seat_maximum_else_head
+        PASS [   0.076s] (601/651) herdr-threads store::receipts::tests::binding_attribution::explicit_ack_records_the_acting_binding
+        PASS [   0.202s] (602/651) herdr-threads store::read_cursors::tests::readopt_never_lowers_a_cursor
+        PASS [   0.089s] (603/651) herdr-threads store::receipts::tests::binding_attribution::disconnected_binding_ack_reconnects_and_settles
+        PASS [   0.090s] (604/651) herdr-threads store::receipts::tests::binding_attribution::fingerprintless_ack_of_a_disconnected_binding_is_refused
+        PASS [   0.212s] (605/651) herdr-threads store::read_cursors::tests::seed_modes
+        PASS [   0.203s] (606/651) herdr-threads store::read_cursors::tests::seed_precedence_readopt_over_lineage_over_seat_max
+        PASS [   0.228s] (607/651) herdr-threads store::read_cursors::tests::retired_seat_keeps_its_cursor_rows
+        PASS [   0.081s] (608/651) herdr-threads store::receipts::tests::binding_attribution::two_top_level_bindings_may_display_ack_settled_once
+        PASS [   0.083s] (609/651) herdr-threads store::receipts::tests::display_ack_settles_for_a_readopted_migrated_binding
+        PASS [   0.089s] (610/651) herdr-threads store::receipts::tests::display_ack_reconnects_a_disconnected_plain_call_enrolled_binding
+        PASS [   0.092s] (611/651) herdr-threads store::receipts::tests::display_ack_settles_for_a_plain_call_enrolled_binding
+        PASS [   0.086s] (612/651) herdr-threads store::receipts::tests::fingerprintless_display_ack_of_a_disconnected_binding_is_refused
+        PASS [   0.117s] (613/651) herdr-threads store::receipts::tests::receipt_discovery_orphan_wrong_audience_and_service_markers_cannot_invent_origins
+        PASS [   0.091s] (614/651) herdr-threads store::wake_tests::candidate_binding_is_the_newest_connected_top_level_binding
+        PASS [   0.165s] (615/651) herdr-threads store::receipts::tests::receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack
+        PASS [   0.179s] (616/651) herdr-threads store::receipts::tests::receipt_origin_actual_ordinary_send_with_null_native_author_notifies_sender
+        PASS [   0.198s] (617/651) herdr-threads store::seats::mod_seat_view_tests::ended_or_disconnected_binding_view_reports_it
+        PASS [   0.208s] (618/651) herdr-threads store::seats::mod_seat_view_tests::binding_view_fingerprint_moves_with_that_bindings_unread_only
+        PASS [   0.473s] (619/651) herdr-threads::combined direct_send::historical_ensure_omits_new_result_and_modern_reuse_reports_old_timed_origin_honestly
+        PASS [   0.637s] (620/651) herdr-threads::combined direct_send::direct_file_body_is_frozen_across_send_failure
+        PASS [   0.648s] (621/651) herdr-threads::combined direct_send::modern_direct_send_creates_lazy_pending_invitation_without_invitation_wake
+        PASS [   0.691s] (622/651) herdr-threads::combined direct_send::old_direct_peer_with_lazy_support_refuses_creation_policy_before_any_effect
+        PASS [   0.733s] (623/651) herdr-threads::combined direct_send::modern_ensure_returns_actual_canonical_policy_and_selection_outcome
+        PASS [   0.775s] (624/651) herdr-threads::combined invitation_content::binding_presentation::carried_message_rechecks_own_unread_and_sibling_ack_without_touching_receipt
+        PASS [   0.783s] (625/651) herdr-threads::combined invitation_content::binding_presentation::binding_input_cannot_select_a_sibling_or_canonical_subagent
+        PASS [   0.802s] (626/651) herdr-threads::combined invitation_content::binding_presentation::continued_body_cancellation_during_decision_sample_rolls_back_tentative_save
+        PASS [   0.886s] (627/651) herdr-threads::combined invitation_content::binding_presentation::continued_body_cancellation_before_final_save_rolls_back_and_retries
+        FAIL [   1.074s] (628/651) herdr-threads::combined invitation_content::binding_presentation::carry_quantum_accounts_all_thirty_two_keys_and_refuses_a_thirty_third
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::carry_quantum_accounts_all_thirty_two_keys_and_refuses_a_thirty_third ... FAILED
+
+    failures:
+
+    failures:
+        invitation_content::binding_presentation::carry_quantum_accounts_all_thirty_two_keys_and_refuses_a_thirty_third
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 726 filtered out; finished in 1.06s
+
+  stderr ───
+
+    thread 'invitation_content::binding_presentation::carry_quantum_accounts_all_thirty_two_keys_and_refuses_a_thirty_third' (55647278) panicked at tests/store/invitation_content.rs:979:144:
+    called `Result::unwrap()` on an `Err` value: SqliteFailure(Error { code: ConstraintViolation, extended_code: 275 }, Some("CHECK constraint failed: length(CAST(ordinary_pending AS BLOB))<=155731 AND json_valid(ordinary_pending) AND json_type(ordinary_pending)='object' AND json_type(ordinary_pending,'$.items')='array' AND json_array_length(ordinary_pending,'$.items')<=32 AND json_type(ordinary_pending,'$.prefix')='array' AND json_array_length(ordinary_pending,'$.prefix')<=8"))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.795s] (629/651) herdr-threads::combined invitation_content::binding_presentation::continued_body_retirement_is_private_and_charged_once
+        PASS [   0.769s] (630/651) herdr-threads::combined invitation_content::binding_presentation::continued_body_retirement_rolls_back_when_final_state_write_fails
+        PASS [   0.766s] (631/651) herdr-threads::combined invitation_content::binding_presentation::continued_pending_body_survives_own_display_cursor
+        PASS [   0.012s] (632/651) herdr-threads::combined lazy_inbox_v2::invitation_decision_context_is_additive_and_old_omitted_bytes_stay_exact
+        PASS [   1.893s] (633/651) herdr-threads::combined direct_send::modern_ensure_joined_rejected_and_left_use_actual_canonical_lifecycle
+        PASS [   0.250s] (634/651) herdr-threads::combined setup_cli::doctor_flags_claude_install_missing_subagent_groups
+        PASS [   0.474s] (635/651) herdr-threads::combined invitation_content::binding_presentation::same_generation_binding_outboxes_and_notice_frontiers_are_independent
+        PASS [   2.075s] (636/651) herdr-threads store::receipts::tests::receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_together
+        PASS [   0.486s] (637/651) herdr-threads::combined invitation_content::binding_presentation::sibling_settled_receipt_remains_in_bound_normal_and_exact_recovery
+        PASS [   2.099s] (638/651) herdr-threads store::receipts::tests::receipt_discovery_global_fair_snapshots_cover_upgrade_and_restart_with_blocked_wakes
+        PASS [   0.595s] (639/651) herdr-threads::combined invitation_content::binding_presentation::continued_unread_body_survives_sibling_full_read
+        PASS [   0.395s] (640/651) herdr-threads::combined invitation_content::composed_v43_invitation_epoch_alter_records_nested_work_and_preserves_state
+        PASS [   0.239s] (641/651) herdr-threads::combined setup_cli::doctor_flags_codex_install_missing_subagent_stop_and_session_end
+        PASS [   0.236s] (642/651) herdr-threads::combined setup_cli::setup_codex_registers_subagent_stop_and_session_end
+        PASS [   2.391s] (643/651) herdr-threads::combined direct_send::lost_committed_replies_restart_with_exact_keys_body_and_lazy_audience
+        PASS [   0.417s] (644/651) herdr-threads::combined setup_cli::unsetup_claude_removes_subagent_groups
+        PASS [   1.653s] (645/651) herdr-threads::combined invitation_content::binding_presentation::continued_body_refuses_corrupt_accumulator_and_missing_authority_without_progress
+        PASS [   0.507s] (646/651) herdr-threads::combined setup_cli::setup_claude_registers_subagent_start_and_stop
+        PASS [   0.914s] (647/651) herdr-threads::combined invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read
+        PASS [   1.703s] (648/651) herdr-threads::integration setup_canary_seam::actual_claude_setup_consumer_rejects_bad_output_and_owned_configuration
+        PASS [   7.394s] (649/651) herdr-threads::integration session_bindings_smoke::config5_resume_within_a_page_and_past_it
+        PASS [   4.509s] (650/651) herdr-threads::integration session_bindings_smoke::config9_a_late_drain_after_a_sibling_settles_still_delivers
+        PASS [   5.905s] (651/651) herdr-threads::integration session_bindings_smoke::config9_foreground_and_background_agents_in_one_pane
+────────────
+     Summary [  47.188s] 651 tests run: 581 passed, 70 failed, 5331 skipped
+error: test run failed
