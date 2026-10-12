@@ -239,3 +239,7 @@ Compare enumerated names to the Task1/Task5 acceptance matrix before running; ap
 - Active feature proof precedes composition acceptance; real combined proof precedes root promotion; whole-epic review precedes PR roast; final readiness follows roast/report commits.
 - Current project merge/default-feature/leak/process/trailer rules take precedence over older plan snapshots. No task repeats completed B work or resets the epic/roast history.
 - Execution should retain a single coordinator and D writer, with fresh read-only review roles. This planning session makes no phase, tracker, source or capability change.
+
+## Current skill5.1 continuation ruling — 2026-10-12
+
+This ruling supersedes older sequencing above: production is promoted and code roast1 completed. Execute only validated in-scope round1 fixes; one light task review and at most one fix pass per family, no repeated paired or cumulative deep reviews. Queue coalescing is filtered out of scope; preserve that override in the mod lifecycle task. Re-roast with current shipped assembler/engine and prior report/punch-list. Final expanded focused C acceptance retains historical657 keys, new registrations and six separate mandatory recovery cases, but runs only after roastCodeExit; tracker gate ht-0lo.11 preserves actual C obligations without early closure. Final controlled incremental benchmark and exact-tip gates remain required. Metadata-only commits use the current skill’s evidence-equivalence rules rather than blindly repeating expensive tests. No design restart, Main merge or extra cleanup.

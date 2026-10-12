@@ -1,3 +1,7 @@
+# Current continuation — 2026-10-12 (ACTIVE)
+
+The user resumed and revoked the historical pause below. `run.md` is authoritative: phase fix-loop, code roast round1 complete (five Should-fix, zero Blocking, full coverage), design roast remains off. ROOT has promoted the clean v0.9.0 composition; reviewed production head3abee5a6, metadata head0fcd97fc. Corrected complete-spec scope filter routes four findings to fixes and queue coalescing at register.js:296 to the punch list with an explicit cluster override. Validated step-back is patch, no Goal change. Historical pause/source/phase claims below are evidence only. Final C matrix is gated by ht-0lo.11 until durable roastCodeExit; no early rerun, closure or readiness notification. Sole parent Cargo/jobs4/warm target and private runtime rules remain.
+
 # Session handoff — handoff delivery redesign
 
 ## Latest safe pause — 2026-10-11 at candidate89fce486
