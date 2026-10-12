@@ -1885,3 +1885,40 @@ fn historical_ensure_omits_new_result_and_modern_reuse_reports_old_timed_origin_
     let replay = ensure_call(&f, ensure_command(false, None, "historical-initial")).unwrap();
     assert_eq!(serde_json::to_value(replay).unwrap(), historical);
 }
+
+#[test]
+fn json_output_uses_the_versioned_send_envelope_with_the_thread() {
+    let f = Fixture::new(false);
+    let mut direct = vec![];
+    f.run(
+        &["send", "--seat", "seat-b", "--body", "hello", "--json"],
+        &mut direct,
+    )
+    .unwrap();
+    let direct: serde_json::Value = serde_json::from_slice(&direct).unwrap();
+    let thread = direct["result"]["thread"].as_str().unwrap().to_owned();
+    let mut ordinary = vec![];
+    f.run(
+        &["send", &thread, "--body", "again", "--json"],
+        &mut ordinary,
+    )
+    .unwrap();
+    let ordinary: serde_json::Value = serde_json::from_slice(&ordinary).unwrap();
+    assert_eq!(direct["version"], ordinary["version"]);
+    assert_eq!(direct["result"]["kind"], ordinary["result"]["kind"]);
+    let message: String =
+        f.db.query_row("SELECT id FROM messages WHERE body='hello'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(direct["result"]["data"], message.as_str());
+    assert_eq!(direct["result"]["selection"]["outcome"], "created");
+    assert_eq!(
+        direct["result"]["selection"]["invitation"]["confirmation"],
+        "lazy"
+    );
+    assert_eq!(
+        serde_json::from_value::<CommandResult>(direct["result"].clone()).unwrap(),
+        CommandResult::MessageSent(herdr_threads::protocol::ids::MessageId::new(message))
+    );
+}

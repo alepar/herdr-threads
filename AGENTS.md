@@ -86,6 +86,22 @@ What we do today:
 - Inbox ACKs on display, so reading needs no separate ACK call: `integrations/skill/SKILL.md` ("What an ACK means").
 - Agent-facing CLI output is compact: one row per item, ids not prose, `next:` continuation lines instead of dumps: `src/protocol/output_compact.rs`.
 
+## Pre-release wake e2e
+
+Before every release (tagging a `v*` version), run the wake e2e against the release candidate, locally: it drives real, authenticated Claude Code and Codex agents, so it never runs in CI and no agent runs it unattended for a release. A person (or an agent the person asked) runs it from a Herdr pane in a checkout of the release SHA:
+
+```sh
+nice scripts/build.sh                         # the candidate: bin/herdr-threads
+python3 scripts/wake-e2e.py --self-test       # the driver's own credential/cleanup/completeness paths, no agents
+python3 scripts/wake-e2e.py                   # both harnesses, all cases (~10 min)
+#   --codex-auth-home DIR   Codex home whose auth.json is copied (default $CODEX_HOME or ~/.codex)
+#   --harness claude|codex  --cases CASE,...  --keep (leave the workspace up)  --evidence-dir DIR
+```
+
+- It checks the wake matrix (invite and send lazy / `--nudge` / `--require-ack`, ordinary thread and 1:1 pair, recipient `wake-on nudge|all`, Claude and Codex): an idle recipient wakes within seconds for everything except a lazy send under `wake-on nudge`, which keeps it idle and arrives on its next turn; ACKs come back acknowledged, invitations are accepted, a pair's opening message is delivered on accept; and a busy (mid-turn) recipient is never nudged, during or after the turn, and gets the item inside that turn.
+- Isolation: own daemon and state dir, hooks installed by the public `setup` CLI into scratch HOME/CLAUDE_CONFIG_DIR/CODEX_HOME, one owned Herdr workspace closed at the end. Claude keeps its real config directory (keychain credentials) with the scratch installation as a `--settings` layer; Codex gets a scratch CODEX_HOME with a private mode-0600 copy of `auth.json`, so token refreshes land only in the copy (the evidence records, without contents, whether a refresh happened: it can rotate the source profile's refresh token). The script never writes the real user config and never touches panes it did not create; Claude Code itself still records session state in its real config directory, as any session does.
+- Exit 0 means every expected recipient × case row is present and passed and cleanup verified that the owned workspace, daemon and processes are gone; a missing row or incomplete cleanup exits 1. Any FAIL blocks the release until fixed or explicitly accepted by the user and recorded in `docs/release.md`. Keep the printed evidence directory (`report.md`, `results.json`, pane captures) with the release evidence.
+
 ## Speed budgets
 
 - The full test suite must stay under **5 minutes** wall-clock (`cargo nextest run --locked --all-targets --all-features`). Treat a regression past it as a bug: fix slow or serialized tests rather than raising the budget.

@@ -90,6 +90,11 @@ impl Backoff {
         self.attempts = 0;
         self.next_retry_at = None;
     }
+    /// Makes the next retry due at once and keeps the failure count, so a
+    /// further failure waits the next, longer step.
+    pub fn retry_now(&mut self) {
+        self.next_retry_at = None;
+    }
     pub fn attempts(&self) -> u32 {
         self.attempts
     }

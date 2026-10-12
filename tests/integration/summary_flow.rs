@@ -3262,6 +3262,8 @@ fn inbox_first_useful_page_v2_sparse_settled_history() {
     fx.world
         .daemon_call(herdr_threads::protocol::commands::Command::AdvanceCursors(
             herdr_threads::protocol::commands::AdvanceCursors {
+                in_turn: false,
+                invitations: Vec::new(),
                 claim: fx.world.seat_claim(&fx.b),
                 operation: herdr_threads::protocol::ids::OperationId::new(
                     "sparse-history-displayed",

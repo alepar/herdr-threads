@@ -230,6 +230,38 @@ pub fn load_candidate(
             || attention.has_pending_receipt
             || attention.latest_warning_seq.is_some(),
     )?;
+    // Served in-turn is per binding (ht-705): the seat's pending items count as served only when
+    // every binding a wake could reach saw them, so one binding's turn never hides a sibling's
+    // owed wake. Which binding the prompt reaches is decided at dispatch (`wake_owed_to_binding`).
+    let reachable: Vec<String> = if !targets.is_empty() {
+        targets
+            .iter()
+            .map(|t| t.binding.as_str().to_owned())
+            .collect()
+    } else if current_binding.is_some() {
+        super::attention::seat_notice_binding(db, seat.as_str())?
+            .into_iter()
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let receipts_served_in_turn = attention.has_pending_receipt
+        && served_by_all(
+            db,
+            &reachable,
+            &super::attention::pending_receipts(db, seat.as_str(), None)?,
+        )?;
+    let invitations_served_in_turn = attention.has_pending_invitation
+        && served_by_all(
+            db,
+            &reachable,
+            &super::attention::pending_confirming_invitations(
+                db,
+                seat.as_str(),
+                None,
+                decision_seq,
+            )?,
+        )?;
     Ok(WakeCandidate {
         seat: seat.clone(),
         attention_witness: Some(witness),
@@ -249,6 +281,8 @@ pub fn load_candidate(
         },
         actionable_warning_seq: latest_warning_seq,
         warning_offer,
+        receipts_served_in_turn,
+        invitations_served_in_turn,
         attention_version: nonnegative(attention_version)?,
         checkpoint_version: nonnegative(checkpoint_version)?,
         retry_step: u32::try_from(retry_step)
@@ -531,12 +565,114 @@ fn cooperative_authority(
     }))
 }
 
+/// Whether every item of `pending` (the seat's pending receipts or invitations) was shown whole
+/// to `binding` inside its turn (`in_turn_offer`, ht-705). A saturated walk may hide an unshown
+/// item, so it counts as not offered; so does an empty set.
+fn all_offered(
+    db: &Connection,
+    binding: &str,
+    pending: &super::attention::PendingSet,
+) -> Result<bool, ApiError> {
+    if pending.saturated || pending.items.is_empty() {
+        return Ok(false);
+    }
+    let mut statement = db
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM in_turn_offer WHERE binding_id=?1 AND item_id=?2)",
+        )
+        .map_err(store_error)?;
+    for item in &pending.items {
+        let offered: bool = statement
+            .query_row(params![binding, item.id], |r| r.get(0))
+            .map_err(store_error)?;
+        if !offered {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// `all_offered` for each of `bindings`; no binding, nothing was served.
+fn served_by_all(
+    db: &Connection,
+    bindings: &[String],
+    pending: &super::attention::PendingSet,
+) -> Result<bool, ApiError> {
+    if bindings.is_empty() {
+        return Ok(false);
+    }
+    for binding in bindings {
+        if !all_offered(db, binding, pending)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether the reserved wake still owes the binding its prompt reaches (ht-705), decided
+/// immediately before submission: `binding` is the composer's choice; `None` is the binding a
+/// registered, recovery-hint or single-harness wake reaches (the seat-level binding). A wake reserved for any
+/// reason other than pending receipts or invitations is always owed; one reserved only for them
+/// is owed unless that binding was served every pending item of each reason in its turn. A
+/// recovery hint reaches the seat-level binding too, so it is checked the same way.
+pub fn wake_owed_to_binding(
+    db: &Connection,
+    reservation: &WakeReservation,
+    binding: Option<&crate::protocol::ids::BindingId>,
+) -> Result<bool, ApiError> {
+    const RECEIPT: &str = "pending_receipt";
+    const INVITATION: &str = "pending_invitation";
+    if reservation.reasons.is_empty()
+        || reservation
+            .reasons
+            .iter()
+            .any(|reason| reason != RECEIPT && reason != INVITATION)
+    {
+        return Ok(true);
+    }
+    let seat = reservation.seat.as_str();
+    let binding = match (binding, &reservation.authority) {
+        (Some(binding), _) => binding.as_str().to_owned(),
+        (None, _) => match super::attention::seat_notice_binding(db, seat)? {
+            Some(binding) => binding,
+            None => return Ok(true),
+        },
+    };
+    let has = |reason: &str| reservation.reasons.iter().any(|r| r == reason);
+    if has(RECEIPT)
+        && !all_offered(
+            db,
+            &binding,
+            &super::attention::pending_receipts(db, seat, None)?,
+        )?
+    {
+        return Ok(true);
+    }
+    if has(INVITATION) {
+        let decision_seq: i64 = db
+            .query_row(
+                "SELECT h.decision_seq FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1",
+                [seat],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if !all_offered(
+            db,
+            &binding,
+            &super::attention::pending_confirming_invitations(db, seat, None, decision_seq)?,
+        )? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn reason_labels(candidate: &WakeCandidate) -> Vec<String> {
     let mut reasons = Vec::with_capacity(3);
-    if candidate.has_pending_invitation {
+    if candidate.has_unoffered_invitation() {
         reasons.push("pending_invitation".into());
     }
-    if candidate.has_pending_receipt {
+    if candidate.has_unoffered_receipt() {
         reasons.push("pending_receipt".into());
     }
     if candidate.actionable_warning_seq.is_some()
@@ -593,7 +729,9 @@ pub fn reserve(
         if !current.has_actionable_work() || !current.continuity_resolved || current.reservation_id.is_some()
             || current.binding_generation!=candidate.binding_generation || current.binding_execution!=candidate.binding_execution
             || current.target!=candidate.target || current.reason_bits!=candidate.reason_bits
-            || current.warning_offer!=candidate.warning_offer || current.attention_version!=candidate.attention_version
+            || current.warning_offer!=candidate.warning_offer || current.receipts_served_in_turn!=candidate.receipts_served_in_turn
+            || current.invitations_served_in_turn!=candidate.invitations_served_in_turn
+            || current.attention_version!=candidate.attention_version
             || current.checkpoint_version!=candidate.checkpoint_version || current.retry_step!=candidate.retry_step
             || current.reservation_boot!=candidate.reservation_boot || current.last_reservation_id!=candidate.last_reservation_id
             || current.last_reservation_boot!=candidate.last_reservation_boot || current.minimum_delay_ms!=candidate.minimum_delay_ms

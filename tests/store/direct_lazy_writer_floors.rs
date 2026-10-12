@@ -249,6 +249,8 @@ impl Q4WriterReaders {
     fn advance(&self, caller: &CallerClaim, shown: &[MessageId], key: &str) {
         assert!(matches!(
             self.call(Command::AdvanceCursors(AdvanceCursors {
+                in_turn: false,
+                invitations: vec![],
                 claim: caller.clone(),
                 displayed: shown.to_vec(),
                 operation: OperationId::new(key),
