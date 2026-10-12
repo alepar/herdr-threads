@@ -159,3 +159,5 @@ friction: 23 events
 
 feedback: none (one fresh gpt-6-astra/high analyst; no upstream-worthy findings, nothing filed)
 - finish-handback · authoritative report-status clean[degraded:lowcoverage,planroastskipped]; report committedbeforeonce-onlyfeedbackanalysis, all34beadsterminal. Existinguserauthorization selectsretainedfeaturecandidate forMain-owned integrationdecision andqualifiednotification; noMainmerge/push/config/release. Rootworktreereviewartifacts/warmtarget retaineduntilMainchoice. Source/evidenceunchangedoutsideRUNafter6abdf38f, no repeatedsuite.
+
+- Main-notified · verified taQXwBH7X topic/goal/self+canonicalMain sRpHoWRVk participation; user-authorized qualifiedcandidate notification mWupGkbzO sent asnudge (receipt/adoption/merge notinferred). Candidate d3b459b5, frozenaccepted6abdf38f; final-main-ready-message.txt retained. No externalupstreamissue or Mainmutation.
