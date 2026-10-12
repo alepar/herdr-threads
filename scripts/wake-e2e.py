@@ -215,7 +215,12 @@ class Run:
             text = cfg.read_text() if cfg.exists() else ""
             key = f'[projects."{self.cwd}"]'
             if key not in text:
-                cfg.write_text(text.rstrip("\n") + f"\n\n{key}\ntrust_level = \"trusted\"\n")
+                text = text.rstrip("\n") + f"\n\n{key}\ntrust_level = \"trusted\"\n"
+            # A low-quota account otherwise raises a "switch model?" modal over the composer: every wake is then
+            # (correctly) refused, and the driver's next Enter would pick a menu option.
+            if "[notice]" not in text:
+                text = text.rstrip("\n") + "\n\n[notice]\nhide_rate_limit_model_nudge = true\n"
+            cfg.write_text(text)
         print(f"  isolated daemon up; hooks installed by setup for {', '.join(self.args.harness)}", flush=True)
 
     def tab(self, label):
