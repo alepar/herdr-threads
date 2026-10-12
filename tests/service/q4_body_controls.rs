@@ -49,7 +49,8 @@ impl BodyFixture {
     fn new() -> Self {
         use std::os::unix::fs::DirBuilderExt;
         let instance = uuid::Uuid::new_v4();
-        let directory = std::env::temp_dir().join(format!("q4-body-{instance}"));
+        let temp_base = std::env::temp_dir().canonicalize().unwrap();
+        let directory = temp_base.join(format!("q4-body-{instance}"));
         std::fs::DirBuilder::new()
             .mode(0o700)
             .create(&directory)
