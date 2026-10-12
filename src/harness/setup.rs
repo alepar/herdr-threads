@@ -3791,9 +3791,9 @@ pub(crate) mod legacy {
                 format!(
                     "{} holds herdr-threads hook registrations beside the recorded installation \
                      that setup does not own: copies of the hook command that are edited, \
-                     moved to another event or duplicated. Setup does not add or migrate groups \
-                     beside them: remove them from the file by hand, then set up again; nothing \
-                     was changed",
+                     moved to another event or duplicated (or a recorded group whose command was \
+                     edited). Setup does not add or migrate groups beside them: remove or restore \
+                     them by hand, then set up again; nothing was changed",
                     file.path.display()
                 ),
             ));
