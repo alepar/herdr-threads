@@ -803,9 +803,10 @@ deciding-transaction step, `read_cursors::init_for_join`, in this order:
 
 A seat-pending row is unread for every top-level binding of the seat whatever its cursor (the lazy predicate's
 legacy branch, not membership-gated), and it counts as seat-level unread lazy mail (digest; wake only for
-`wake_on: all`, A8). The first completion that displays it from a top-level binding, or one matching no open
-binding (which completes for the whole seat), clears the flag for the seat and advances only that binding's
-cursors: a sibling top-level binding then gets no copy of it, even though its own cursor never moved. A
+`wake_on: all`, A8). The first completion that displays it clears the flag for the seat. A completion from a
+matched top-level binding advances only that binding's cursors: a sibling top-level binding then gets no copy
+of it, even though its own cursor never moved. A completion matching no open binding (the pre-binding legacy
+form, which completes for the whole seat) advances the cursors of every open top-level binding of the seat. A
 subagent binding never sees a seat-pending row (the branch requires `top_level`) and, like every subagent,
 cannot complete one; it sees only mail past its head cursor. A binding enrolled later sees still-pending rows
 if it is top-level. Ordinary messages are not part of this: one addressed to the seat before it joined (an
