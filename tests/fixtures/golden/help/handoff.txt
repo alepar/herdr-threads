@@ -1,49 +1,55 @@
 Deliver durable work to a new tab, explicit launch pane, or existing peer
 
-Usage: herdr-threads handoff [OPTIONS] -- <BODY>
+Usage: herdr-threads handoff [OPTIONS] <BODY|--file <FILE>|--stdin>
 
 Arguments:
-  <BODY>  Exactly one quoted durable message after --; never native argv
+  [BODY]  Exactly one quoted durable message after --; never native argv
 
 Options:
-      --new-tab <NEW_TAB>
-          
+      --deadline <DEADLINE>
+          Addressed instructions receipt deadline in positive seconds
       --state-dir <STATE_DIR>
           Select the local herdr-threads state directory. May repeat with an identical value; conflicting values are refused
-      --existing
-          
       --host-endpoint <HOST_ENDPOINT>
           Select the local Herdr host socket path. May repeat with an identical value; conflicting values are refused
+      --require-invite-ack
+          Request timed invitation acceptance independently of message receipt
+      --invite-deadline <INVITE_DEADLINE>
+          Invitation acceptance deadline in positive seconds; implies --require-invite-ack
       --json
           Emit a structured JSON result on stdout
-      --seat <SEAT>
-          
-      --cwd <CWD>
-          
       --human
           Human-readable tables and transcripts (the default on a terminal)
+      --new-tab <NEW_TAB>
+          
+      --existing
+          
       --machine
           The stable `key: value` text form for scripts and models (the default when stdout is not a terminal)
-      --space <SPACE>
-          Exact workspace ID or label; omitted inherits the caller's live workspace, never focus
       --cooperative-seat <COOPERATIVE_SEAT>
           Explicit seat ID for a cooperative agent call; requires all four --cooperative-* options
-      --tab <TAB>
-          Exact tab ID or label in the selected workspace; a tab ID supplies its workspace
+      --seat <SEAT>
+          
       --cooperative-target <COOPERATIVE_TARGET>
           Exact live pane ID or scoped name bound to the cooperative seat
-      --pane <PANE>
-          Exact pane ID, label or live agent name in the selected tab. Omitted parents inherit the live caller; outside Herdr supply parents or a pane ID. Qualify duplicate names with --space/--tab or use an ID; conflicts never pick a pane
+      --cwd <CWD>
+          
       --cooperative-harness <COOPERATIVE_HARNESS>
           Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, synthetic_fourth]
-      --new-thread
-          
+      --space <SPACE>
+          Exact workspace ID or label; omitted inherits the caller's live workspace, never focus
       --cooperative-role <COOPERATIVE_ROLE>
           Agent role for the cooperative call [possible values: top-level, subagent]
-      --thread <THREAD>
-          
+      --tab <TAB>
+          Exact tab ID or label in the selected workspace; a tab ID supplies its workspace
       --agent-id <ID>
           Subagent agent id, inserted by herdr-threads' Claude PreToolUse hook (spec §1). Carried into the cooperative claim; no behaviour change until session bindings land
+      --pane <PANE>
+          Exact pane ID, label or live agent name in the selected tab. Omitted parents inherit the live caller; outside Herdr supply parents or a pane ID. Qualify duplicate names with --space/--tab or use an ID; conflicts never pick a pane
+      --new-thread
+          
+      --thread <THREAD>
+          
       --thread-name <THREAD_NAME>
           
       --topic <TOPIC>
@@ -58,6 +64,10 @@ Options:
           Herdr agent name, distinct from --thread-name
       --agent-arg <AGENT_ARGS>
           Repeat for each native argument (use --agent-arg=-a for flags)
+      --file <FILE>
+          Read the complete durable instructions from this UTF-8 file
+      --stdin
+          Read the complete durable instructions from standard input
   -h, --help
           Print help
 
@@ -91,7 +101,8 @@ Explicit new threads join the sender; explicit existing threads require a joined
 are 1:1 SEAT_A SEAT_B with sorted IDs. Explicit new topic defaults to Handoff to DISPLAY:
 legacy launch uses the pane display, new-tab uses its label, delivery uses the
 canonical seat ID. Goal defaults to topic. --name names the native agent, not the channel.
-The one quoted body after -- is durable work (1..1024 UTF-8 bytes), never native argv.
+One positional body after --, --file PATH or --stdin supplies durable work (1..65536 UTF-8 bytes), acquired once and frozen exactly, never native argv.
+The body always requires an addressed ACK. --deadline SECONDS sets its independent duration; omitted defaults resolve once at canonical send. Invitations default lazy; --require-invite-ack or --invite-deadline SECONDS requests timed acceptance with an independent deadline. Registration/launch is never acceptance or ACK. The message timer starts at send even without registration or join. Missed requested deadlines notify the original sender.
 Native launch options use repeatable --agent-arg=OPTION; launch -- native arguments
 is unchanged. HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_AGY_OPTS prepend optional
 arguments using shell-style quotes and escapes without variable or command
@@ -102,7 +113,7 @@ use Ensure for initial invitation only. Handoff stages a message addressed to th
 recipient; launch modes then perform guarded launch. Startup gets fixed inbox
 instructions, not a second copy of the body. Handoff never accepts or ACKs for
 the recipient, nor declares task adoption or task completion.
-Native execution still needs the selected harness's approval/configuration.
+Native execution respects the selected harness's approval and structural safety; missing/stale/wrong-profile hook readiness is diagnostic.
 
 Committed work survives failure. pending-ops lists the compound reference; retry REF
 resumes exact keyed steps without duplicate messages or invitations. A confirmed

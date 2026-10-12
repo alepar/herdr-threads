@@ -64,9 +64,10 @@ Scope (user level, like Herdr's own agent hooks):
           owned `Bash(herdr-threads *)` rule is kept and gains the ask rules. A rule you already
           have is left as yours.
   codex   $CODEX_HOME/hooks.json (default ~/.codex/hooks.json) for the hook groups
-          (SessionStart, SubagentStart, Bash PreToolUse). With consent, agent permissions go
-          in their own file, $CODEX_HOME/rules/herdr-threads.rules: an allow rule for
-          `herdr-threads` and `ht` and prompt rules for the same human and setup commands.
+          (SessionStart, SubagentStart, Bash PreToolUse, UserPromptSubmit). With consent,
+          agent permissions go in their own file, $CODEX_HOME/rules/herdr-threads.rules:
+          an allow rule for `herdr-threads` and `ht` and prompt rules for the same human
+          and setup commands.
           Setup installs no sandbox socket, writable-root or network allowance. Run
           herdr-threads commands through Codex's approved outside-sandbox execution; a
           denied approval is a policy refusal.
@@ -112,13 +113,17 @@ HERDR_SOCKET_PATH (set inside Herdr), else Herdr's defaults when they exist
 ~/.config, then herdr/herdr.sock), else detected with the herdr CLI (`herdr plugin list`,
 `herdr status server`).
 Ambiguity is refused. The installed hook command is
-`<this executable> --state-dir <state> --host-endpoint <socket> hook <harness>`, registered
-for each event with `--event <EVENT>` appended (hooks installed before that keep working;
+`<this executable> --state-dir <state> --host-endpoint <socket> hook-event <harness> <EVENT>`
+for each native event (legacy hook commands keep working;
 `doctor` suggests re-running setup); in any session that is not a pane of that Herdr
 instance it prints nothing, runs no version probe and starts no daemon, and only sends a
 short best-effort evidence note to a daemon already running (gate files under
 <state>/harness/evidence).
-Each harness's ownership manifest lives in <state>/setup/.
+Each harness's ownership manifest lives in <state>/setup/. Native commands use the stable
+hook-event HARNESS EVENT entrypoint with canonical routing. Installation UUIDs remain in the
+manifest, outside shell commands. Equivalent setup retains exact owned groups in place; unrecorded
+identical stable groups are foreign and cause a safe refusal. Setup explicitly migrates recorded
+legacy hooks; status only inspects them. Changed native commands may require review again.
 
 A hook file that already holds exactly this command's hook groups under another setup's
 owner marker (for example a hook file copied with its trust into a second config root) is

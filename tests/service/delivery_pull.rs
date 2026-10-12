@@ -1629,6 +1629,8 @@ fn presentation_q3_reader_change_failure_rolls_back_cursor_and_private_state() {
         let native = wake_attention(&f);
         let result = f.service.handle(
             Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
+                in_turn: false,
+                invitations: vec![],
                 claim: a.clone(),
                 operation: OperationId::new("q3-reader-rollback"),
                 displayed: vec![message],
@@ -9241,6 +9243,8 @@ fn reclamation_advance_displayed(
             .service
             .handle(
                 Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
+                    in_turn: false,
+                    invitations: vec![],
                     claim: claim.clone(),
                     operation: OperationId::new(format!("{operation}-{n}")),
                     displayed: batch.to_vec(),

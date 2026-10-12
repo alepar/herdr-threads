@@ -106,6 +106,7 @@ const WAKE_TABLES: &[&str] = &[
     "warning_recipients",
     "warning_offer",
     "receipt_warning_origins",
+    "in_turn_offer",
 ];
 /// Tables whose commits wake the deadline lane (spec D1).
 const DEADLINE_TABLES: &[&str] = &[

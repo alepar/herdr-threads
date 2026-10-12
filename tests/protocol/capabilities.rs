@@ -274,6 +274,7 @@ fn capability_constants_are_stable() {
     assert_eq!(MOD_WATCH_PRESENTATION_V2, "mod.watch_presentation_v2");
     assert_eq!(BINDING_CURSORS, "inbox.binding_cursors_v1");
     assert_eq!(BINDING_DIGEST, "attention.binding_digest_v1");
+    assert_eq!(IN_TURN_OFFER, "inbox.in_turn_offer_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -304,7 +305,8 @@ fn capability_constants_are_stable() {
             "hook.lazy_delivery_v1",
             "delivery.presentation_v2",
             "inbox.binding_cursors_v1",
-            "attention.binding_digest_v1"
+            "attention.binding_digest_v1",
+            "inbox.in_turn_offer_v1"
         ]
     );
 }
@@ -481,6 +483,33 @@ fn every_advertised_capability_has_a_handler() {
                 );
             }
             BINDING_CURSORS => probe_binding_cursors(),
+            IN_TURN_OFFER => {
+                // The in-turn flag and its invitations are on the wire only when set and
+                // round-trip; the store records them
+                // (`lazy_attention::in_turn_display_of_a_nudge_owes_no_idle_wake`).
+                let command = Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
+                    in_turn: true,
+                    claim: crate::protocol::authority::CallerClaim {
+                        instance: "probe-instance".into(),
+                        seat: crate::protocol::ids::SeatId::new("s"),
+                        binding_generation: 1,
+                        role: crate::protocol::authority::CallerRole::TopLevel,
+                        harness: crate::protocol::authority::Harness::Codex,
+                        native_session: crate::protocol::ids::NativeSessionId::new("n"),
+                        execution: crate::protocol::ids::ExecutionId::new("e"),
+                        target: crate::protocol::ids::HostTargetId::new("p"),
+                        agent_id: None,
+                        liveness: None,
+                    },
+                    operation: crate::protocol::ids::OperationId::new("op"),
+                    displayed: vec![crate::protocol::ids::MessageId::new("m")],
+                    invitations: vec![crate::protocol::ids::InvitationId::new("i")],
+                });
+                assert!(command.validate().is_ok());
+                let json = serde_json::to_value(&command).unwrap();
+                assert_eq!(json.to_string().matches("\"in_turn\":true").count(), 1);
+                assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
+            }
             BINDING_DIGEST => {
                 // A claimed digest request round-trips and is routed to the store's seat-scoped
                 // read: an unknown seat is NotFound, whoever the claim names.
@@ -533,6 +562,8 @@ fn probe_binding_cursors() {
         store::{SqliteStore, StoreSettings, connection::StoreContext},
     };
     let command = Command::AdvanceCursors(AdvanceCursors {
+        in_turn: false,
+        invitations: Vec::new(),
         claim: CallerClaim {
             instance: "probe-instance".into(),
             seat: SeatId::new("nobody"),
@@ -697,6 +728,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "delivery.presentation_v2",
             "inbox.binding_cursors_v1",
             "attention.binding_digest_v1",
+            "inbox.in_turn_offer_v1",
             "invitation.confirmation_v1"
         ]
     );

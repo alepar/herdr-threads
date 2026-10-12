@@ -521,12 +521,11 @@ fn run_hook_traced(
     record(started, HookPhase::CommandBuildStart);
     // A native hook runs under its harness: the shim gives the installed command line a `claude`,
     // `codex` or `hermes` parent, which is where the hook takes its liveness fingerprint from.
-    let mut words = command.split_whitespace();
+    let words = shlex::split(command).expect("native hook shell argv");
     let harness = words
-        .by_ref()
-        .find(|word| word.trim_matches('\'') == "hook")
-        .and_then(|_| words.next())
-        .map_or("claude", |word| word.trim_matches('\''));
+        .windows(2)
+        .find(|pair| matches!(pair[0].as_str(), "hook" | "hook-event"))
+        .map_or("claude", |pair| pair[1].as_str());
     let mut command_line = herdr_threads::test_support::harness_shim::under_harness(
         harness,
         Path::new("/bin/sh"),
@@ -1059,6 +1058,12 @@ impl Fixture {
     }
     fn count(&self, sql: &str) -> i64 {
         count(&self.db, sql)
+    }
+    fn count_text(&self, sql: &str) -> String {
+        rusqlite::Connection::open(&self.db)
+            .unwrap()
+            .query_row(sql, [], |r| r.get(0))
+            .unwrap()
     }
     fn cooperative(&self, seat: &str, pane: &str, command: &[&str]) -> serde_json::Value {
         cooperative(&self.state, &self.host, seat, pane, command)
@@ -1681,6 +1686,174 @@ fn cooperative_seat_on_own_target_startup_clear_resume_register_session_bindings
     );
 }
 
+// Q4: current direct-invitation Lazy work is visible before acceptance. Ordinary
+// pending bodies are also shown, but their unjoined display does not move a cursor.
+// The explicit ACK below is not display evidence: acceptance preserves that gap,
+// so settled ordinary and later Lazy bodies remain in this binding's own stream.
+#[test]
+// Keep the upstream registration key; direct acceptance preserves the actual reader gap.
+fn pair_accept_delivers_mixed_opening_mail_once() {
+    let fx = Fixture::start();
+    let started = fx.hook("w9:p1", &start("sess-1"));
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+    // The in-process CLI acts as session `sess-1` (`agent_origin`); direct send's ensure
+    // enrolls no binding, so the peer's binding must already be that session.
+    let peer = fx.hook("w9:p2", &start("sess-1"));
+    assert_eq!(peer.code, Some(0), "{}", peer.stderr);
+    let direct = |body: &str| {
+        fx.cooperative("peer", "w9:p2", &["send", "--seat", "seat", "--body", body]);
+    };
+    direct("lazy-open");
+    let thread = fx.count_text("SELECT thread_id FROM direct_threads");
+    let ordinary = |body: &str| {
+        fx.cooperative(
+            "peer",
+            "w9:p2",
+            &["send", &thread, "--body", body, "--require-ack", "seat"],
+        )["result"]["data"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let acked = ordinary("ordinary-acked");
+    direct("lazy-middle");
+    ordinary("ordinary-pending");
+    direct("lazy-last");
+    let hook = |label: &str| {
+        let hook = fx.hook("w9:p1", &tool("sess-1"));
+        assert_eq!(hook.code, Some(0), "{label}: {}", hook.stderr);
+        assert!(hook.stderr.is_empty(), "{label}: {}", hook.stderr);
+        if hook.stdout.is_empty() {
+            String::new()
+        } else {
+            context_of(&hook)
+        }
+    };
+    let times = |context: &str, body: &str| context.matches(&format!("\\n  {body}")).count();
+    let before = hook("before accept");
+    assert!(before.contains("invitation "), "{before}");
+    for (body, n) in [
+        ("ordinary-acked", 1),
+        ("ordinary-pending", 1),
+        ("lazy-open", 1),
+        ("lazy-middle", 1),
+        ("lazy-last", 1),
+    ] {
+        assert_eq!(times(&before, body), n, "before accept, {body}: {before}");
+    }
+    let read_position = || {
+        fx.count(&format!(
+        "SELECT c.seq FROM binding_cursors c JOIN occupant_bindings b ON b.binding_id=c.binding_id WHERE b.seat_id='seat' AND b.native_session='sess-1' AND c.thread_id='{thread}'"
+    ))
+    };
+    let lazy_open = fx.count(&format!(
+        "SELECT sequence FROM messages WHERE thread_id='{thread}' AND body='lazy-open'"
+    ));
+    assert_eq!(
+        read_position(),
+        lazy_open,
+        "unjoined ordinary display does not pass its cursor gap"
+    );
+    fx.cooperative("seat", "w9:p1", &["ack", &acked]);
+    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+    assert_eq!(
+        read_position(),
+        lazy_open,
+        "acceptance preserves the existing reader cursor"
+    );
+    let after = hook("after accept");
+    for (body, n) in [
+        ("ordinary-acked", 1),
+        ("ordinary-pending", 1),
+        ("lazy-open", 0),
+        ("lazy-middle", 1),
+        ("lazy-last", 1),
+    ] {
+        assert_eq!(times(&after, body), n, "after accept, {body}: {after}");
+    }
+    assert_eq!(hook("after delivery"), "");
+    assert_eq!(
+        fx.count("SELECT count(*) FROM lazy_recipients WHERE legacy_pending=1"),
+        0,
+        "direct acceptance never replaces this binding stream with seat-wide legacy rows"
+    );
+}
+
+// ht-8y9: leave, reinvite and rejoin with two bindings of the seat at distinct read positions.
+// Q4 direct invitation acceptance preserves each established cursor, including across rejoin.
+// Both readers retain their own opening mail; one binding's display does not consume its sibling's stream.
+#[test]
+fn pair_rejoin_with_two_bindings_pins_read_positions() {
+    let fx = Fixture::start();
+    // A is `sess-1`, the session the in-process CLI acts as (`agent_origin`).
+    fx.register("w9:p1", "sess-1");
+    let cleared = fx.hook("w9:p1", &Payload::session_start("sess-b", "clear").bytes());
+    assert_eq!(cleared.code, Some(0), "{}", cleared.stderr);
+    fx.register("w9:p2", "sess-1");
+    assert_eq!(
+        fx.count(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL"
+        ),
+        2
+    );
+    let direct = |body: &str| {
+        fx.cooperative("peer", "w9:p2", &["send", "--seat", "seat", "--body", body]);
+    };
+    let pull = |session: &str| {
+        let hook = fx.hook("w9:p1", &tool(session));
+        assert_eq!(hook.code, Some(0), "{session}: {}", hook.stderr);
+        if hook.stdout.is_empty() {
+            String::new()
+        } else {
+            context_of(&hook)
+        }
+    };
+    let shows = |context: &str, body: &str| context.contains(&format!("\\n  {body}"));
+    direct("first-contact");
+    let thread = fx.count_text("SELECT thread_id FROM direct_threads");
+    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+    // Direct acceptance preserves both readers; A's display leaves B's copy unread.
+    let a = pull("sess-1");
+    assert!(shows(&a, "first-contact"), "{a}");
+    let b = pull("sess-b");
+    assert!(shows(&b, "first-contact"), "{b}");
+    // Joined-era mail: A reads it, B does not.
+    direct("joined-era");
+    let a = pull("sess-1");
+    assert!(shows(&a, "joined-era"), "{a}");
+    let cursor = |session: &str| {
+        fx.count(&format!(
+            "SELECT c.seq FROM binding_cursors c JOIN occupant_bindings o ON o.binding_id=c.binding_id \
+             WHERE o.seat_id='seat' AND o.native_session='{session}' AND c.thread_id='{thread}'"
+        ))
+    };
+    let joined_era = fx.count(&format!(
+        "SELECT sequence FROM messages WHERE thread_id='{thread}' AND body='joined-era'"
+    ));
+    assert!(cursor("sess-b") < joined_era && cursor("sess-1") >= joined_era);
+    fx.cooperative("seat", "w9:p1", &["leave", &thread]);
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
+    direct("rejoin-open");
+    let before_reaccept = (cursor("sess-1"), cursor("sess-b"));
+    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+    assert_eq!((cursor("sess-1"), cursor("sess-b")), before_reaccept);
+    // B now pulls first: its retained cursor still owns joined-era and rejoin-open.
+    // A independently receives rejoin-open, without repeating joined-era.
+    let b = pull("sess-b");
+    assert!(shows(&b, "joined-era"), "{b}");
+    assert!(shows(&b, "rejoin-open"), "{b}");
+    let a = pull("sess-1");
+    assert!(!shows(&a, "joined-era"), "{a}");
+    assert!(shows(&a, "rejoin-open"), "{a}");
+    // Mail after the rejoin reaches both bindings through their cursors.
+    direct("after-rejoin");
+    for session in ["sess-1", "sess-b"] {
+        let context = pull(session);
+        assert!(shows(&context, "after-rejoin"), "{session}: {context}");
+        assert!(!shows(&context, "rejoin-open"), "{session}: {context}");
+    }
+}
+
 // Required test 3: offer -> identical second tool call is quiet -> new message
 // is emitted. Kills: no coalescing (every call re-injects the same offer),
 // coalescing on counts or text (an ACK of one message plus a new one in the
@@ -2000,6 +2173,100 @@ fn lazy_mail_reaches_the_next_codex_tool_hook() {
         1
     );
     let repeat = codex_tool(3);
+    assert!(
+        repeat.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&repeat.stdout)
+    );
+}
+
+// ht-mu3: a text-only Codex turn makes no tool call, so the lazy item rides
+// the turn-start UserPromptSubmit hook, answered under its own event name; a
+// quiet turn stays empty. Kills: a Codex adapter with no turn-start hook (the
+// item waited for the next tool call).
+#[test]
+fn lazy_mail_reaches_the_next_codex_user_prompt_hook() {
+    let fx = Fixture::start();
+    fx.register("w9:p2", "peer-sess");
+    let started = fx.codex_hook(
+        "w9:p3",
+        &Payload::session_start("cx-sess", "startup")
+            .codex("t0")
+            .bytes(),
+    );
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+    let thread = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "codex-turn"],
+    ));
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "cx"]);
+    let mut out = Vec::new();
+    let _codex = agent_origin("codex", "cx-sess");
+    herdr_threads::cli::run(
+        [
+            "herdr-threads",
+            "--json",
+            "--state-dir",
+            fx.state.to_str().unwrap(),
+            "--host-endpoint",
+            fx.host.to_str().unwrap(),
+            "--cooperative-seat",
+            "cx",
+            "--cooperative-target",
+            "w9:p3",
+            "--cooperative-harness",
+            "codex",
+            "--cooperative-role",
+            "top-level",
+            "accept",
+            &thread,
+        ],
+        &mut out,
+    )
+    .unwrap();
+    let codex_turn = |n: u32| {
+        let hook = fx.codex_hook(
+            "w9:p3",
+            &Payload::bare("UserPromptSubmit")
+                .with("session_id", "cx-sess".into())
+                .with("transcript_path", serde_json::Value::Null)
+                .with("cwd", "/tmp".into())
+                .with("model", "gpt-5".into())
+                .with("permission_mode", "default".into())
+                .with("prompt", "hello".into())
+                .with("turn_id", format!("t{n}").into())
+                .bytes(),
+        );
+        assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+        assert!(hook.stderr.is_empty(), "{}", hook.stderr);
+        hook
+    };
+    let quiet = codex_turn(1);
+    assert!(
+        quiet.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&quiet.stdout)
+    );
+    let id = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", &thread, "--lazy", "--body", "codex turn body"],
+    ));
+    let delivered = codex_turn(2);
+    assert_eq!(
+        delivered.context()["hookSpecificOutput"]["hookEventName"],
+        "UserPromptSubmit"
+    );
+    let context = context_of(&delivered);
+    assert!(context.contains(INBOX_HEADER), "{context}");
+    assert!(context.contains("codex turn body"), "{context}");
+    assert!(context.contains(&id), "{context}");
+    assert_eq!(
+        fx.count("SELECT count(*) FROM lazy_recipients WHERE seat_id='cx' AND state='displayed'"),
+        1
+    );
+    let repeat = codex_turn(3);
     assert!(
         repeat.stdout.is_empty(),
         "{}",
@@ -6382,7 +6649,15 @@ fn native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_be
         let before = fx.check_ins.load(Ordering::SeqCst);
         let started = run_hook(&command(harness, "SessionStart"), pane, &fx.host, &payload);
         assert_eq!(started.code, Some(0), "{}", started.stderr);
-        assert!(!started.stdout.is_empty(), "{}", started.stderr);
+        assert!(
+            !started.stdout.is_empty(),
+            "{harness:?}: {}",
+            started.stderr
+        );
+        assert_eq!(
+            started.context()["hookSpecificOutput"]["hookEventName"],
+            "SessionStart"
+        );
         assert!(fx.check_ins.load(Ordering::SeqCst) > before);
         let payload = if harness == Harness::Claude {
             tool(session)
@@ -6396,7 +6671,7 @@ fn native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_be
         assert!(fx.digests.load(Ordering::SeqCst) > before);
     }
     let child = serde_json::to_vec(&serde_json::json!({
-        "hook_event_name":"SubagentStart", "session_id":"stable-child", "turn_id":"child-turn",
+        "hook_event_name":"SubagentStart", "session_id":"stable-codex", "turn_id":"child-turn",
         "agent_id":"child", "agent_type":"worker", "transcript_path":null,
         "cwd":"/tmp", "model":"gpt-test", "permission_mode":"default",
     }))
@@ -6405,6 +6680,10 @@ fn native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_be
     let child_result = run_hook(&child_command, "w9:p3", &fx.host, &child);
     assert_eq!(child_result.code, Some(0));
     assert!(child_result.stderr.is_empty(), "{}", child_result.stderr);
+    assert_eq!(
+        child_result.context()["hookSpecificOutput"]["hookEventName"],
+        "SubagentStart"
+    );
     // Malforming a required child field proves this surface reaches the child
     // codec, rather than quietly ignoring every payload for the event.
     let mut malformed: serde_json::Value = serde_json::from_slice(&child).unwrap();
@@ -6426,7 +6705,7 @@ fn native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_be
         fx.digests.load(Ordering::SeqCst),
         fx.parse_failures.load(Ordering::SeqCst),
     );
-    for (harness, event) in [("claude", "SubagentStart"), ("codex", "Bogus")] {
+    for (harness, event) in [("claude", "Bogus"), ("codex", "Bogus")] {
         let argv = [
             BIN,
             "--state-dir",
@@ -6439,7 +6718,8 @@ fn native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_be
         ]
         .map(str::to_owned);
         let raw = herdr_threads::harness::setup::shell_command(&argv).unwrap();
-        let refused = run_hook(&raw, "w9:p1", &fx.host, &start("invalid"));
+        // Unknown registration is refused from argv before the hook reads stdin.
+        let refused = run_hook(&raw, "w9:p1", &fx.host, &[]);
         assert_eq!(refused.code, Some(0));
         assert!(refused.stdout.is_empty());
         assert!(

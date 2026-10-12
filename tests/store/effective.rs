@@ -1071,17 +1071,18 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
                 35,
                 include_str!("../../migrations/0035_binding_attention_frontiers.sql"),
             ),
-            (
-                36,
-                include_str!("../../migrations/0036_invitation_confirmation.sql"),
-            ),
+            (36, include_str!("../../migrations/0036_in_turn_offer.sql")),
             (
                 37,
-                include_str!("../../migrations/0037_receipt_send_time.sql"),
+                include_str!("../../migrations/0037_invitation_confirmation.sql"),
             ),
             (
                 38,
-                include_str!("../../migrations/0038_handoff_body_bounds.sql"),
+                include_str!("../../migrations/0038_receipt_send_time.sql"),
+            ),
+            (
+                39,
+                include_str!("../../migrations/0039_handoff_body_bounds.sql"),
             ),
         ] {
             db.execute_batch("BEGIN IMMEDIATE").unwrap();
@@ -1097,7 +1098,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            38
+            39
         );
         assert_eq!(
             db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1144,7 +1145,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
             .map(Result::unwrap)
             .collect::<Vec<_>>()
         };
-        // V43 rebuilds exactly these four body-bearing tables and their implicit indexes.
+        // V44 rebuilds exactly these four body-bearing tables and their implicit indexes.
         // Compare their exact transformed DDL while retaining rootpages for every other object.
         let normalize_capacity = |rows: &mut Vec<(String, String, String, i64, Option<String>)>| {
             for row in rows {
@@ -1188,7 +1189,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
         expected
             .execute_batch(warning.4.as_deref().unwrap())
             .unwrap();
-        let additions = include_str!("../../migrations/0041_invitation_warning_origin.sql")
+        let additions = include_str!("../../migrations/0042_invitation_warning_origin.sql")
             .split("WITH origins AS")
             .next()
             .unwrap();
@@ -1202,7 +1203,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
                 )
                 .unwrap(),
         );
-        // Derive the declared44/45 objects independently of initialize's output.
+        // Derive the declared45/46 objects independently of initialize's output.
         // The scratch schema needs only historical table declarations and the
         // separately excluded38 origin table; no current catalog is an oracle.
         for row in &expected_catalog {
@@ -1214,7 +1215,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
         }
         expected
             .execute_batch(
-                include_str!("../../migrations/0042_receipt_warning_origins.sql")
+                include_str!("../../migrations/0043_receipt_warning_origins.sql")
                     .split("CREATE INDEX receipt_warning_origins_seat")
                     .next()
                     .unwrap(),
@@ -1224,12 +1225,12 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
             catalog(&expected).into_iter().map(|row| row.1).collect();
         expected
             .execute_batch(include_str!(
-                "../../migrations/0044_invitation_presentation.sql"
+                "../../migrations/0045_invitation_presentation.sql"
             ))
             .unwrap();
         expected
             .execute_batch(include_str!(
-                "../../migrations/0045_presentation_relevance.sql"
+                "../../migrations/0046_presentation_relevance.sql"
             ))
             .unwrap();
         let mut presentation_objects: Vec<_> = catalog(&expected)
@@ -1244,7 +1245,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
                     .filter(|row| row.0 == kind)
                     .count(),
                 count,
-                "declared44/45 {kind}"
+                "declared45/46 {kind}"
             );
         }
         let new_names: std::collections::HashSet<_> = presentation_objects
@@ -1252,7 +1253,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
             .map(|row| row.1.clone())
             .collect();
         // New page allocation is unconstrained; old pages retain their exact
-        // witness, apart from the existing four-table43 rebuild exception.
+        // witness, apart from the existing four-table44 rebuild exception.
         let normalize_new_pages =
             |rows: &mut Vec<(String, String, String, i64, Option<String>)>| {
                 for row in rows {
@@ -1294,7 +1295,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            38
+            39
         );
         assert_eq!(
             db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
@@ -1325,7 +1326,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            38
+            39
         );
         schema::initialize(&db, || UtcMillis(1)).unwrap();
         assert_eq!(
@@ -2086,9 +2087,9 @@ fn dormant_upgrade_ack_before_repair_preserves_original_not_extended_deadline() 
 
 #[test]
 fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_once() {
-    for version in [28, 36] {
+    for version in [28, 37] {
         let db = v28_fixture();
-        if version == 36 {
+        if version == 37 {
             db.execute_batch(include_str!("../../migrations/0029_direct_threads.sql"))
                 .unwrap();
             db.execute_batch(include_str!("../../migrations/0030_automatic_handoff.sql"))
@@ -2096,11 +2097,13 @@ fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_
             db.execute_batch(include_str!("../../migrations/0031_seat_wake_on.sql"))
                 .unwrap();
             apply_published_bindings32_to35(&db);
+            db.execute_batch(include_str!("../../migrations/0036_in_turn_offer.sql"))
+                .unwrap();
             db.execute_batch(include_str!(
-                "../../migrations/0036_invitation_confirmation.sql"
+                "../../migrations/0037_invitation_confirmation.sql"
             ))
             .unwrap();
-            db.pragma_update(None, "user_version", 36).unwrap();
+            db.pragma_update(None, "user_version", 37).unwrap();
             db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('modern','t','s',1,'pending',1,100,50,150,'require_ack','s'),('quiet','t','s',2,'pending',2,100,50,150,'lazy','s');").unwrap();
         }
         for (index, (name, state, available, required)) in [
@@ -2174,7 +2177,7 @@ fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_
             retained_objects, old_objects,
             "v{version} historical catalog"
         );
-        // Assert the six migration45 additions independently, including their
+        // Assert the six migration46 additions independently, including their
         // event, table and fail-closed fence updates, rather than ignoring them.
         let expected_triggers: Vec<_> = presentation_triggers
             .iter()
@@ -2196,7 +2199,7 @@ END"#
             .collect();
         assert_eq!(
             new_triggers, expected_triggers,
-            "v{version} migration45 triggers"
+            "v{version} migration46 triggers"
         );
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
@@ -2248,7 +2251,7 @@ END"#
         .unwrap(),
         10
     );
-        if version == 36 {
+        if version == 37 {
             let invitations: Vec<(String, String, String, i64)> = db.prepare("SELECT id,confirmation,inviter_seat_id,deadline_at FROM invitations ORDER BY id").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().collect::<Result<_, _>>().unwrap();
             assert_eq!(
                 invitations,
@@ -2279,10 +2282,10 @@ END"#
 
 #[test]
 fn receipt_send_time_upgrade_failure_rolls_back_constraint_and_cutover_then_retries() {
-    for version in [28, 36] {
+    for version in [28, 37] {
         for foreign_keys in [false, true] {
             let db = v28_fixture();
-            if version == 36 {
+            if version == 37 {
                 db.execute_batch(include_str!("../../migrations/0029_direct_threads.sql"))
                     .unwrap();
                 db.execute_batch(include_str!("../../migrations/0030_automatic_handoff.sql"))
@@ -2290,11 +2293,13 @@ fn receipt_send_time_upgrade_failure_rolls_back_constraint_and_cutover_then_retr
                 db.execute_batch(include_str!("../../migrations/0031_seat_wake_on.sql"))
                     .unwrap();
                 apply_published_bindings32_to35(&db);
+                db.execute_batch(include_str!("../../migrations/0036_in_turn_offer.sql"))
+                    .unwrap();
                 db.execute_batch(include_str!(
-                    "../../migrations/0036_invitation_confirmation.sql"
+                    "../../migrations/0037_invitation_confirmation.sql"
                 ))
                 .unwrap();
-                db.pragma_update(None, "user_version", 36).unwrap();
+                db.pragma_update(None, "user_version", 37).unwrap();
             }
             db.execute_batch(
                 "CREATE TABLE receipt_upgrade_child(ordinal INTEGER REFERENCES receipts(ordinal));",

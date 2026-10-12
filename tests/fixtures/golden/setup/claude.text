@@ -1,7 +1,11 @@
 action: installed
 adopted: none
 allow_rule: none
-command: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook' 'claude' # herdr-threads-owner:<uuid>
+command: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook' 'claude'
+commands.PreToolUse: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'claude' 'PreToolUse'
+commands.SessionStart: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'claude' 'SessionStart'
+commands.SubagentStart: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'claude' 'SubagentStart'
+commands.SubagentStop: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'claude' 'SubagentStop'
 created_settings: true
 events: SessionStart PreToolUse SubagentStart SubagentStop
 foreground.CLAUDE_CODE_DISABLE_AGENT_VIEW: none

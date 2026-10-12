@@ -382,6 +382,7 @@ fn declaration_reports_native_transport_and_receipt_unsupported() {
                 Some("^Bash$"),
                 HookPurpose::ToolBoundaryContext
             ),
+            ("UserPromptSubmit", None, HookPurpose::TurnStartContext),
             ("SubagentStop", None, HookPurpose::EndEvent),
             ("SessionEnd", None, HookPurpose::EndEvent),
         ]
@@ -858,6 +859,19 @@ fn every_declared_hook_is_installed_by_setup_and_encodes_context_only() {
                     Err(TransportError::Unsupported(codex::DECLARATION.limitation))
                 );
                 bytes(&v)
+            }
+            HookPurpose::TurnStartContext => {
+                assert_eq!(hook.matcher, None);
+                bytes(&json!({
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "session-1",
+                    "turn_id": "turn-1",
+                    "transcript_path": null,
+                    "cwd": "/tmp",
+                    "model": "gpt-5",
+                    "permission_mode": "default",
+                    "prompt": "hello",
+                }))
             }
         };
         let event = codex::parse_event_for_version(&input, "event", &pinned()).unwrap();

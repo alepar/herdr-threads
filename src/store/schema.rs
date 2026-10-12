@@ -71,18 +71,19 @@ const V32: &str = include_str!("../../migrations/0032_session_bindings.sql");
 const V33: &str = include_str!("../../migrations/0033_archival_scan_scope.sql");
 const V34: &str = include_str!("../../migrations/0034_binding_delivery_state.sql");
 const V35: &str = include_str!("../../migrations/0035_binding_attention_frontiers.sql");
-const V36: &str = include_str!("../../migrations/0036_invitation_confirmation.sql");
+const V36: &str = include_str!("../../migrations/0036_in_turn_offer.sql");
+const V37: &str = include_str!("../../migrations/0037_invitation_confirmation.sql");
 
-const V37: &str = include_str!("../../migrations/0037_receipt_send_time.sql");
-const V38: &str = include_str!("../../migrations/0038_handoff_body_bounds.sql");
-const V39: &str = include_str!("../../migrations/0039_receipt_deadline_backfill.sql");
-const V40: &str = include_str!("../../migrations/0040_invitation_lifecycle.sql");
-const V41: &str = include_str!("../../migrations/0041_invitation_warning_origin.sql");
-const V42: &str = include_str!("../../migrations/0042_receipt_warning_origins.sql");
-const V43: &str = include_str!("../../migrations/0043_automatic_handoff_body_bounds.sql");
-const V44: &str = include_str!("../../migrations/0044_invitation_presentation.sql");
-const V45: &str = include_str!("../../migrations/0045_presentation_relevance.sql");
-pub(crate) const LATEST_VERSION: i64 = 45;
+const V38: &str = include_str!("../../migrations/0038_receipt_send_time.sql");
+const V39: &str = include_str!("../../migrations/0039_handoff_body_bounds.sql");
+const V40: &str = include_str!("../../migrations/0040_receipt_deadline_backfill.sql");
+const V41: &str = include_str!("../../migrations/0041_invitation_lifecycle.sql");
+const V42: &str = include_str!("../../migrations/0042_invitation_warning_origin.sql");
+const V43: &str = include_str!("../../migrations/0043_receipt_warning_origins.sql");
+const V44: &str = include_str!("../../migrations/0044_automatic_handoff_body_bounds.sql");
+const V45: &str = include_str!("../../migrations/0045_invitation_presentation.sql");
+const V46: &str = include_str!("../../migrations/0046_presentation_relevance.sql");
+pub(crate) const LATEST_VERSION: i64 = 46;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -604,7 +605,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    if version <= 37 {
+    if version <= 38 {
         verify_existing_v28(conn)?;
     } else {
         verify_handoff_body_bounds_schema(conn)?;
@@ -646,7 +647,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    if version <= 42 {
+    if version <= 43 {
         verify_existing_v30(conn)?;
     } else {
         verify_automatic_body_bounds_schema(conn)?;
@@ -687,13 +688,17 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
     }
     verify_existing_v35(conn)?;
     if version <= 35 {
+        migrate_v35_to_v36(conn)?;
+    }
+    verify_existing_v36(conn)?;
+    if version <= 36 {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let result = conn
-            .execute_batch(V36)
+            .execute_batch(V37)
             .map_err(store_error)
             .and_then(|_| verify_invitation_confirmation_schema(conn))
             .and_then(|_| {
-                conn.pragma_update(None, "user_version", 36)
+                conn.pragma_update(None, "user_version", 37)
                     .map_err(store_error)
             });
         match result {
@@ -705,19 +710,19 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
         }
     }
     verify_invitation_confirmation_schema(conn)?;
-    if version <= 36 {
-        migrate_receipts_v36_to_v37(conn)?;
+    if version <= 37 {
+        migrate_receipts_v37_to_v38(conn)?;
     }
     verify_receipt_send_time_schema(conn)?;
-    if version <= 37 {
-        migrate_handoff_v37_to_v38(conn)?;
+    if version <= 38 {
+        migrate_handoff_v38_to_v39(conn)?;
     }
     verify_handoff_body_bounds_schema(conn)?;
-    if version <= 38 {
+    if version <= 39 {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let result = conn
-            .execute_batch(V39)
-            .and_then(|_| conn.pragma_update(None, "user_version", 39));
+            .execute_batch(V40)
+            .and_then(|_| conn.pragma_update(None, "user_version", 40));
         match result {
             Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
             Err(error) => {
@@ -727,31 +732,12 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
         }
     }
     verify_receipt_deadline_backfill_schema(conn)?;
-    if version <= 39 {
-        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
-        let result = conn
-            .execute_batch(V40)
-            .map_err(store_error)
-            .and_then(|_| verify_invitation_lifecycle_schema(conn))
-            .and_then(|_| {
-                conn.pragma_update(None, "user_version", 40)
-                    .map_err(store_error)
-            });
-        match result {
-            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
-            Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(error);
-            }
-        }
-    }
-    verify_invitation_lifecycle_schema(conn)?;
     if version <= 40 {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let result = conn
             .execute_batch(V41)
             .map_err(store_error)
-            .and_then(|_| verify_invitation_warning_origin_schema(conn))
+            .and_then(|_| verify_invitation_lifecycle_schema(conn))
             .and_then(|_| {
                 conn.pragma_update(None, "user_version", 41)
                     .map_err(store_error)
@@ -764,13 +750,13 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    verify_invitation_warning_origin_schema(conn)?;
+    verify_invitation_lifecycle_schema(conn)?;
     if version <= 41 {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let result = conn
             .execute_batch(V42)
             .map_err(store_error)
-            .and_then(|_| verify_receipt_warning_origins_schema(conn))
+            .and_then(|_| verify_invitation_warning_origin_schema(conn))
             .and_then(|_| {
                 conn.pragma_update(None, "user_version", 42)
                     .map_err(store_error)
@@ -783,19 +769,15 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    verify_receipt_warning_origins_schema(conn)?;
+    verify_invitation_warning_origin_schema(conn)?;
     if version <= 42 {
-        migrate_automatic_v42_to_v43(conn)?;
-    }
-    verify_automatic_body_bounds_schema(conn)?;
-    if version <= 43 {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let result = conn
-            .execute_batch(V44)
+            .execute_batch(V43)
             .map_err(store_error)
-            .and_then(|_| verify_invitation_presentation_schema(conn, false))
+            .and_then(|_| verify_receipt_warning_origins_schema(conn))
             .and_then(|_| {
-                conn.pragma_update(None, "user_version", 44)
+                conn.pragma_update(None, "user_version", 43)
                     .map_err(store_error)
             });
         match result {
@@ -806,15 +788,38 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    verify_invitation_presentation_schema(conn, version >= 45)?;
+    verify_receipt_warning_origins_schema(conn)?;
+    if version <= 43 {
+        migrate_automatic_v43_to_v44(conn)?;
+    }
+    verify_automatic_body_bounds_schema(conn)?;
     if version <= 44 {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let result = conn
             .execute_batch(V45)
             .map_err(store_error)
-            .and_then(|_| verify_presentation_relevance_schema(conn))
+            .and_then(|_| verify_invitation_presentation_schema(conn, false))
             .and_then(|_| {
                 conn.pragma_update(None, "user_version", 45)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_invitation_presentation_schema(conn, version >= 46)?;
+    if version <= 45 {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V46)
+            .map_err(store_error)
+            .and_then(|_| verify_presentation_relevance_schema(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 46)
                     .map_err(store_error)
             });
         match result {
@@ -864,6 +869,37 @@ const V35_AUDITED: [(&str, &str, &str); 4] = [
 
 fn verify_existing_v35(conn: &Connection) -> Result<(), ApiError> {
     audit_rebuilt_objects(conn, V35, &V35_AUDITED, "binding attention frontier")
+}
+
+/// V36 (ht-705): per-binding receipt presentation, the wake candidate's in-turn evidence. One
+/// transaction.
+fn migrate_v35_to_v36(conn: &Connection) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let result = conn
+        .execute_batch(V36)
+        .map_err(store_error)
+        .and_then(|_| verify_existing_v36(conn))
+        .and_then(|_| {
+            conn.pragma_update(None, "user_version", 36)
+                .map_err(store_error)
+        });
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
+/// Objects V36 creates, audited exactly as written (see `V32_AUDITED`).
+const V36_AUDITED: [(&str, &str, &str); 2] = [
+    ("table", "in_turn_offer", "in_turn_offer"),
+    ("index", "in_turn_offer_seat", "in_turn_offer_seat"),
+];
+
+fn verify_existing_v36(conn: &Connection) -> Result<(), ApiError> {
+    audit_rebuilt_objects(conn, V36, &V36_AUDITED, "receipt offer")
 }
 
 /// V33 (ht-54r.15): archival scan scope. Narrows the mutation-revision triggers so the revision
@@ -4610,7 +4646,7 @@ fn verify_existing_v24(conn: &Connection) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn migrate_handoff_v37_to_v38(conn: &Connection) -> Result<(), ApiError> {
+fn migrate_handoff_v38_to_v39(conn: &Connection) -> Result<(), ApiError> {
     // SQLite ignores foreign_keys changes inside a transaction. Disable it
     // before BEGIN so rebuilding the cyclic parent/recovery tables cannot
     // delete child rows; verify the complete graph before committing.
@@ -4627,7 +4663,7 @@ fn migrate_handoff_v37_to_v38(conn: &Connection) -> Result<(), ApiError> {
         .map_err(store_error)?;
     let migrate = (|| {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
-        conn.execute_batch(V38).map_err(store_error)?;
+        conn.execute_batch(V39).map_err(store_error)?;
         verify_handoff_body_bounds_schema(conn)?;
         let violation: Option<String> = conn
             .query_row("PRAGMA foreign_key_check", [], |r| r.get(0))
@@ -4639,7 +4675,7 @@ fn migrate_handoff_v37_to_v38(conn: &Connection) -> Result<(), ApiError> {
                 "handoff bounds migration found a foreign-key violation",
             ));
         }
-        conn.pragma_update(None, "user_version", 38)
+        conn.pragma_update(None, "user_version", 39)
             .map_err(store_error)?;
         conn.execute_batch("COMMIT").map_err(store_error)
     })();
@@ -4652,7 +4688,7 @@ fn migrate_handoff_v37_to_v38(conn: &Connection) -> Result<(), ApiError> {
     migrate.and(restore)
 }
 
-fn migrate_automatic_v42_to_v43(conn: &Connection) -> Result<(), ApiError> {
+fn migrate_automatic_v43_to_v44(conn: &Connection) -> Result<(), ApiError> {
     // SQLite ignores foreign_keys changes inside a transaction. Disable it
     // before BEGIN so rebuilding the cyclic parent/recovery tables cannot
     // delete child rows; verify the complete graph before committing.
@@ -4669,7 +4705,7 @@ fn migrate_automatic_v42_to_v43(conn: &Connection) -> Result<(), ApiError> {
         .map_err(store_error)?;
     let migrate = (|| {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
-        conn.execute_batch(V43).map_err(store_error)?;
+        conn.execute_batch(V44).map_err(store_error)?;
         verify_automatic_body_bounds_schema(conn)?;
         let violation: Option<String> = conn
             .query_row("PRAGMA foreign_key_check", [], |r| r.get(0))
@@ -4681,7 +4717,7 @@ fn migrate_automatic_v42_to_v43(conn: &Connection) -> Result<(), ApiError> {
                 "automatic handoff bounds migration found a foreign-key violation",
             ));
         }
-        conn.pragma_update(None, "user_version", 43)
+        conn.pragma_update(None, "user_version", 44)
             .map_err(store_error)?;
         conn.execute_batch("COMMIT").map_err(store_error)
     })();
@@ -4780,7 +4816,7 @@ fn verify_presentation_relevance_schema(conn: &Connection) -> Result<(), ApiErro
         "seats",
         "invitation_presentation_consumers",
     ]);
-    for line in V45
+    for line in V46
         .lines()
         .filter(|line| line.starts_with("CREATE TRIGGER "))
     {
@@ -4800,7 +4836,7 @@ fn verify_presentation_relevance_schema(conn: &Connection) -> Result<(), ApiErro
                 .map_err(store_error)?;
         }
     }
-    expected.execute_batch(V45).map_err(store_error)?;
+    expected.execute_batch(V46).map_err(store_error)?;
     let mut statement = expected
         .prepare("SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
         .map_err(store_error)?;
@@ -4839,11 +4875,11 @@ fn verify_presentation_relevance_schema(conn: &Connection) -> Result<(), ApiErro
 fn verify_invitation_presentation_schema(conn: &Connection, revised: bool) -> Result<(), ApiError> {
     let expected = Connection::open_in_memory().map_err(store_error)?;
     expected.execute_batch("CREATE TABLE invitations(id TEXT); CREATE TABLE digest_pending_invitations(seat_id TEXT,thread_id TEXT,ordinal INTEGER); CREATE TABLE threads(id TEXT,instance_id TEXT); CREATE TABLE host_instances(id TEXT);").map_err(store_error)?;
-    expected.execute_batch(V44).map_err(store_error)?;
+    expected.execute_batch(V45).map_err(store_error)?;
     if revised {
         // Reconstruct the final catalog using the exact released-in-this-change
         // ALTER statements. Keep the pre45 check exact during the upgrade.
-        for statement in V45
+        for statement in V46
             .lines()
             .filter(|line| line.starts_with("ALTER TABLE invitation_presentation_consumers "))
         {
@@ -4897,7 +4933,7 @@ fn verify_receipt_warning_origins_schema(conn: &Connection) -> Result<(), ApiErr
     // Population statements require the canonical parent schema. Parse only
     // CREATE objects, retaining whole trigger bodies.
     let mut sql = String::new();
-    for line in V42.lines() {
+    for line in V43.lines() {
         if sql.is_empty() && !line.trim_start().starts_with("CREATE ") {
             continue;
         }
@@ -4962,14 +4998,14 @@ fn verify_invitation_warning_origin_schema(conn: &Connection) -> Result<(), ApiE
             ));
         }
     }
-    let index = V41
+    let index = V42
         .split("CREATE INDEX ")
         .nth(1)
         .unwrap()
         .split(';')
         .next()
         .unwrap();
-    let trigger = V41
+    let trigger = V42
         .split("CREATE TRIGGER ")
         .nth(1)
         .unwrap()
@@ -4999,7 +5035,7 @@ fn verify_invitation_warning_origin_schema(conn: &Connection) -> Result<(), ApiE
 }
 
 fn verify_invitation_lifecycle_schema(conn: &Connection) -> Result<(), ApiError> {
-    let ddl = V40
+    let ddl = V41
         .lines()
         .filter(|line| !line.trim_start().starts_with("--"))
         .collect::<Vec<_>>()
@@ -5025,7 +5061,7 @@ fn verify_invitation_lifecycle_schema(conn: &Connection) -> Result<(), ApiError>
 }
 
 fn verify_receipt_deadline_backfill_schema(conn: &Connection) -> Result<(), ApiError> {
-    let expected = V39
+    let expected = V40
         .lines()
         .filter(|line| !line.trim_start().starts_with("--"))
         .collect::<Vec<_>>()
@@ -5084,7 +5120,7 @@ fn verify_invitation_confirmation_schema(conn: &Connection) -> Result<(), ApiErr
             ));
         }
     }
-    for statement in V36.split("\n\n").filter(|sql| sql.starts_with("CREATE ")) {
+    for statement in V37.split("\n\n").filter(|sql| sql.starts_with("CREATE ")) {
         let expected = statement.trim().trim_end_matches(';');
         let mut words = expected.split_whitespace().skip(1);
         let kind = words.next().unwrap_or_default().to_ascii_lowercase();
@@ -5107,7 +5143,7 @@ fn verify_invitation_confirmation_schema(conn: &Connection) -> Result<(), ApiErr
     Ok(())
 }
 
-fn migrate_receipts_v36_to_v37(conn: &Connection) -> Result<(), ApiError> {
+fn migrate_receipts_v37_to_v38(conn: &Connection) -> Result<(), ApiError> {
     if !conn.is_autocommit() {
         return Err(api_error(
             ErrorCode::IncompatibleSchema,
@@ -5121,7 +5157,7 @@ fn migrate_receipts_v36_to_v37(conn: &Connection) -> Result<(), ApiError> {
         .map_err(store_error)?;
     let result = (|| {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
-        conn.execute_batch(V37).map_err(store_error)?;
+        conn.execute_batch(V38).map_err(store_error)?;
         verify_receipt_send_time_schema(conn)?;
         let violation: bool = conn
             .query_row(
@@ -5136,7 +5172,7 @@ fn migrate_receipts_v36_to_v37(conn: &Connection) -> Result<(), ApiError> {
                 "receipt upgrade foreign key violation",
             ));
         }
-        conn.pragma_update(None, "user_version", 37)
+        conn.pragma_update(None, "user_version", 38)
             .map_err(store_error)?;
         conn.execute_batch("COMMIT").map_err(store_error)
     })();
@@ -5150,7 +5186,7 @@ fn migrate_receipts_v36_to_v37(conn: &Connection) -> Result<(), ApiError> {
 }
 
 fn verify_receipt_send_time_schema(conn: &Connection) -> Result<(), ApiError> {
-    let ddl = V37
+    let ddl = V38
         .lines()
         .filter(|line| !line.trim_start().starts_with("--"))
         .collect::<Vec<_>>()

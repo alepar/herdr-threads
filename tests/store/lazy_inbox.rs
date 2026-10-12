@@ -872,6 +872,7 @@ fn lazy_inbox_v2_ack_candidates_follow_registered_agent_harnesses() {
     assert_eq!(hermes.as_ref(), Some(&ordinary));
     // The renderer reads only the page; the claim matters for completion.
     let offer = InboxOffer {
+        in_turn_offer: false,
         page,
         claim: claim(),
         cursors: false,

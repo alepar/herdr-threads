@@ -2,12 +2,18 @@ action: installed
 adopted: none
 codex_config.codex_home: <root>/codex home
 codex_config.layers: []
-command: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook' 'codex' # herdr-threads-owner:<uuid>
+command: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook' 'codex'
+commands.PreToolUse: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'codex' 'PreToolUse'
+commands.SessionEnd: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'codex' 'SessionEnd'
+commands.SessionStart: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'codex' 'SessionStart'
+commands.SubagentStart: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'codex' 'SubagentStart'
+commands.SubagentStop: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'codex' 'SubagentStop'
+commands.UserPromptSubmit: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'codex' 'UserPromptSubmit'
 config_file: <root>/codex home/config.toml
 config_manifest: <root>/state/setup/codex-config-<hash32>.json
 created_config_file: false
 created_hooks_file: true
-events: SessionStart SubagentStart PreToolUse SubagentStop SessionEnd
+events: SessionStart SubagentStart PreToolUse UserPromptSubmit SubagentStop SessionEnd
 foreground.advice: Codex 0.160.1 has no persistent user config/environment opt-out for daemon attachment. features.daemon_auto_start = false prevents automatic startup only: Codex still attaches to an existing daemon. Use native codex --no-daemon, or set HERDR_THREADS_CODEX_OPTS='--no-daemon' for herdr-threads launch when the selected binary/wrapper supports and forwards that argument. These configured arguments do not prove that a wrapper runs in the foreground; verify its behavior.
 foreground.execution: unknown
 foreground.explanation: herdr-threads requires each managed agent to remain in its pane: a shared harness server may run hooks/tools with its own pane environment instead of the TUI environment used for seat attribution. Setup inspects user settings only and never changes foreground settings. User settings and launch arguments are not proof of execution; project/managed settings, environment, and wrapper behavior may override them.
@@ -40,7 +46,7 @@ sandbox.recorded: false
 sandbox.socket_path: none
 sandbox.validation: unvalidated
 scope: user
-trust.hooks: [{"key":"<root>/codex home/hooks.json:session_start:0:0","trust_recorded":false},{"key":"<root>/codex home/hooks.json:subagent_start:0:0","trust_recorded":false},{"key":"<root>/codex home/hooks.json:pre_tool_use:0:0","trust_recorded":false},{"key":"<root>/codex home/hooks.json:subagent_stop:0:0","trust_recorded":false},{"key":"<root>/codex home/hooks.json:session_end:0:0","trust_recorded":false}]
+trust.hooks: [{"key":"<root>/codex home/hooks.json:session_start:0:0","trust_recorded":false},{"key":"<root>/codex home/hooks.json:subagent_start:0:0","trust_recorded":false},{"key":"<root>/codex home/hooks.json:pre_tool_use:0:0","trust_recorded":false},{"key":"<root>/codex home/hooks.json:user_prompt_submit:0:0","trust_recorded":false},{"key":"<root>/codex home/hooks.json:subagent_stop:0:0","trust_recorded":false},{"key":"<root>/codex home/hooks.json:session_end:0:0","trust_recorded":false}]
 trust.note: Codex runs hooks from hooks.json only once you trust them. The next interactive `codex` start lists the new hooks as needing review (or open /hooks); trusting them makes Codex record each hook's hash in config.toml [hooks.state] under the key `<hooks.json>:<event>:<group>:<hook>`. That is how Herdr's own hooks.json entry is trusted: Herdr writes the hook, Codex's review records the trust. setup never writes trust. `codex exec` cannot review: trust once interactively, or (scratch only) pass --dangerously-bypass-hook-trust. Editing or moving a trusted group asks for review again
 trust.status: review_required
 warning: Foreground user settings required. herdr-threads requires each managed agent to remain in its pane: a shared harness server may run hooks/tools with its own pane environment instead of the TUI environment used for seat attribution. Setup inspects user settings only and never changes foreground settings. User settings and launch arguments are not proof of execution; project/managed settings, environment, and wrapper behavior may override them. Codex 0.160.1 has no persistent user config/environment opt-out for daemon attachment. features.daemon_auto_start = false prevents automatic startup only: Codex still attaches to an existing daemon. Use native codex --no-daemon, or set HERDR_THREADS_CODEX_OPTS='--no-daemon' for herdr-threads launch when the selected binary/wrapper supports and forwards that argument. These configured arguments do not prove that a wrapper runs in the foreground; verify its behavior.

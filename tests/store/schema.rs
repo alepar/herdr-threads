@@ -5774,22 +5774,81 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
     // Every other historical table must retain its original root page.
     // V32 adds binding_cursors; occupant_bindings is rebuilt again by V32.
     // V34 rebuilds catch_up (per-binding rows). V35 rebuilds the two attention frontier tables.
+    // V36 adds in_turn_offer.
     let adapter_tables = [
         "occupant_bindings",
         "binding_cursors",
         "catch_up",
         "warning_offer",
         "digest_notice_offer",
+        "in_turn_offer",
         "harness_version_evidence",
         "harness_unattributed",
         "harness_runtime_identities",
         "harness_contract_evidence_v2",
         "harness_unattributed_v2",
     ];
+    // V45/46 create these six tables; none replaces a historical root. Audit
+    // their exact final DDL independently from the actual appended migration SQL.
+    let presentation45 = include_str!("../../migrations/0045_invitation_presentation.sql");
+    let relevance46 = include_str!("../../migrations/0046_presentation_relevance.sql");
+    let presentation_tables = [
+        ("invitation_context_latest", presentation45),
+        ("invitation_presentation_consumers", presentation45),
+        ("invitation_presentation_items", presentation45),
+        ("presentation_confirming_invitations", relevance46),
+        ("presentation_warning_fence", relevance46),
+        ("presentation_warning_proofs", relevance46),
+    ];
+    let expected_presentation = Connection::open_in_memory().unwrap();
+    for &(name, migration) in &presentation_tables {
+        assert!(
+            before.1.iter().all(|(old, _)| old.as_str() != name),
+            "new presentation table {name} must not hide a historical root"
+        );
+        let start = migration
+            .find(&format!("CREATE TABLE {name} (\n"))
+            .expect("named table is declared by its migration");
+        let declaration = &migration[start..];
+        let end = declaration.find("\n) STRICT;").unwrap() + "\n) STRICT;".len();
+        expected_presentation
+            .execute_batch(&declaration[..end])
+            .unwrap();
+    }
+    let consumer_alters: Vec<_> = relevance46
+        .lines()
+        .filter(|line| {
+            line.starts_with("ALTER TABLE invitation_presentation_consumers ADD COLUMN ")
+        })
+        .collect();
+    assert_eq!(consumer_alters.len(), 4);
+    for statement in consumer_alters {
+        expected_presentation.execute_batch(statement).unwrap();
+    }
+    for &(name, _) in &presentation_tables {
+        let table_sql = |db: &Connection| {
+            db.query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                [name],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            table_sql(&upgraded),
+            table_sql(&expected_presentation),
+            "exact appended presentation table DDL: {name}"
+        );
+    }
     let unchanged = |roots: &Vec<(String, i64)>| {
         roots
             .iter()
-            .filter(|(name, _)| !adapter_tables.contains(&name.as_str()))
+            .filter(|(name, _)| {
+                !adapter_tables.contains(&name.as_str())
+                    && !presentation_tables
+                        .iter()
+                        .any(|(table, _)| name.as_str() == *table)
+            })
             .cloned()
             .collect::<Vec<_>>()
     };
@@ -6294,7 +6353,7 @@ fn v28_upgrade_migrates_bindings_to_session_keyed_v32() {
             .unwrap(),
         schema::LATEST_VERSION
     );
-    assert_eq!(schema::LATEST_VERSION, 45);
+    assert_eq!(schema::LATEST_VERSION, 46);
     // ordinals, sequence and archival guards survive the rebuild
     assert_eq!(
         db.query_row(
@@ -7137,14 +7196,15 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         // V34 deltas: +3 indexes (catch_up_seat, lazy_recipients_legacy,
         // lazy_recipients_seat_ordinal); catch_up and its triggers are rebuilt one for one.
         // V35 deltas: +2 indexes (warning_offer_seat, digest_notice_offer_seat); the two
-        // frontier tables are rebuilt one for one.
+        // frontier tables are rebuilt one for one. V36 deltas: +1 table (in_turn_offer), +1 index
+        // (in_turn_offer_seat).
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
-            95
+            96
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
-            167
+            168
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
@@ -7562,11 +7622,11 @@ fn released_main31_populated_automatic_graph_physically_upgrades_and_reopens() {
         .map(|p| p.unwrap().path())
         .collect::<Vec<_>>();
     migrations.sort();
-    for migration in migrations.into_iter().skip(31).take(11) {
+    for migration in migrations.into_iter().skip(31).take(12) {
         db.execute_batch(&std::fs::read_to_string(migration).unwrap())
             .unwrap();
     }
-    db.pragma_update(None, "user_version", 42).unwrap();
+    db.pragma_update(None, "user_version", 43).unwrap();
     db.execute(
         "INSERT INTO automatic_bootstrap_keys VALUES('i','seat:a','orphan',999,'compound',0)",
         [],
@@ -7594,7 +7654,7 @@ fn released_main31_populated_automatic_graph_physically_upgrades_and_reopens() {
     let version_before: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version_before, 42, "fixture precedes the V43 rebuild");
+    assert_eq!(version_before, 43, "fixture precedes the V44 rebuild");
     let error = schema::initialize(&db, || UtcMillis(101)).unwrap_err();
     assert_eq!(error.code, ErrorCode::StoreCorrupt);
     assert_eq!(
@@ -7661,11 +7721,11 @@ fn presentation_populate_v39(db: Connection, mixed: bool) -> Connection {
         .map(|p| p.unwrap().path())
         .collect::<Vec<_>>();
     migrations.sort();
-    for path in migrations.into_iter().take(43) {
+    for path in migrations.into_iter().take(44) {
         db.execute_batch(&std::fs::read_to_string(path).unwrap())
             .unwrap();
     }
-    db.pragma_update(None, "user_version", 43).unwrap();
+    db.pragma_update(None, "user_version", 44).unwrap();
     let confirmation = if mixed {
         "CASE WHEN n=2 THEN NULL WHEN n%8=0 OR n=1 THEN 'require_ack' ELSE 'lazy' END"
     } else {
@@ -7870,7 +7930,7 @@ fn presentation_schema_populated_v39_upgrade_is_additive_and_reopens() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        45
+        46
     );
     schema::initialize(&db, || UtcMillis(20000)).unwrap();
     assert_eq!(presentation_retained_rows(&db), after);
@@ -7895,7 +7955,7 @@ fn presentation_schema_populated_v39_failed_ddl_rolls_back_epoch_and_catalog() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        43
+        44
     );
     assert_eq!(presentation_retained_rows(&db), before);
     assert_eq!(presentation_schema_catalog(&db), catalog);
@@ -7913,7 +7973,7 @@ fn presentation_schema_populated_v39_failed_ddl_rolls_back_epoch_and_catalog() {
 #[test]
 fn presentation_schema_pending_index_build_work_tracks_only_pending_projection() {
     use rusqlite::StatementStatus;
-    let sql = include_str!("../../migrations/0044_invitation_presentation.sql")
+    let sql = include_str!("../../migrations/0045_invitation_presentation.sql")
         .lines()
         .find(|line| line.starts_with("CREATE INDEX invitation_content_initial "))
         .unwrap();
@@ -7959,12 +8019,12 @@ fn presentation_schema_populated_v40_failed_v41_rolls_back_bootstrap_and_catalog
     let file = ScratchStore::new("presentation-v40-failed-v41");
     let db = presentation_populate_v39(Connection::open(file.path()).unwrap(), true);
     db.execute_batch(include_str!(
-        "../../migrations/0044_invitation_presentation.sql"
+        "../../migrations/0045_invitation_presentation.sql"
     ))
     .unwrap();
-    db.pragma_update(None, "user_version", 44).unwrap();
-    // Fail at the final41 trigger, after projection bootstrap and earlier fence
-    // objects, to prove the entire41 step rolls back to the durable40 boundary.
+    db.pragma_update(None, "user_version", 45).unwrap();
+    // Fail at the final46 trigger, after projection bootstrap and earlier fence
+    // objects, to prove the entire46 step rolls back to the durable45 boundary.
     db.execute_batch("CREATE TRIGGER presentation_fence_warning_close_sweeps_delete AFTER DELETE ON warning_close_sweeps BEGIN SELECT 1; END;").unwrap();
     let retained = presentation_retained_tables(&db);
     presentation_assert_foreign_keys(&db);
@@ -7976,12 +8036,12 @@ fn presentation_schema_populated_v40_failed_v41_rolls_back_bootstrap_and_catalog
             .detail
             .contains("presentation_fence_warning_close_sweeps_delete")
             && error.detail.contains("already exists"),
-        "actual late41 DDL collision: {error:?}"
+        "actual late46 DDL collision: {error:?}"
     );
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        44
+        45
     );
     assert_eq!(presentation_retained_rows(&db), before);
     assert_eq!(presentation_schema_catalog(&db), catalog);
@@ -8000,13 +8060,13 @@ fn presentation_schema_populated_v40_failed_v41_rolls_back_bootstrap_and_catalog
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        44
+        45
     );
     assert_eq!(presentation_schema_catalog(&db), catalog);
     presentation_assert_retained_tables(&db, &retained);
     presentation_assert_foreign_keys(&db);
-    // The injected collision remains durable, and no41 bootstrap survived.
-    // Removing only that test obstruction permits the real40 ->41 retry.
+    // The injected collision remains durable, and no46 bootstrap survived.
+    // Removing only that test obstruction permits the real45 ->46 retry.
     db.execute_batch("DROP TRIGGER presentation_fence_warning_close_sweeps_delete")
         .unwrap();
     schema::initialize(&db, || UtcMillis(10001)).unwrap();
@@ -8019,7 +8079,7 @@ fn presentation_schema_populated_v40_failed_v41_rolls_back_bootstrap_and_catalog
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        45
+        46
     );
     assert_eq!(presentation_schema_catalog(&db), upgraded_catalog);
     presentation_assert_retained_tables(&db, &upgraded);
@@ -8032,10 +8092,10 @@ fn presentation_schema_populated_v40_consumers_upgrade_revised_v41_and_reopen() 
     let file = ScratchStore::new("presentation-v40-consumers-upgrade");
     let db = presentation_populate_v39(Connection::open(file.path()).unwrap(), true);
     db.execute_batch(include_str!(
-        "../../migrations/0044_invitation_presentation.sql"
+        "../../migrations/0045_invitation_presentation.sql"
     ))
     .unwrap();
-    db.pragma_update(None, "user_version", 44).unwrap();
+    db.pragma_update(None, "user_version", 45).unwrap();
     db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,binding_id) VALUES('s',0,'p','b',0,'codex','retained-session','retained-execution','cooperative_top_level',0,'retained-binding')").unwrap();
     let columns=db.prepare("SELECT name,type,\"notnull\" FROM pragma_table_info('invitation_presentation_consumers') ORDER BY cid").unwrap().query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?))).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
     let names = columns
@@ -8107,10 +8167,10 @@ fn presentation_schema_populated_v40_consumers_upgrade_revised_v41_and_reopen() 
         assert_eq!(
             (&new.2, new.3),
             (table, *root),
-            "old44 object/rootpage {name}"
+            "old45 object/rootpage {name}"
         );
         if name != "invitation_presentation_consumers" {
-            assert_eq!(&new.4, sql, "old44 object DDL {name}");
+            assert_eq!(&new.4, sql, "old45 object DDL {name}");
         }
     }
     db.close().unwrap();
@@ -8118,7 +8178,7 @@ fn presentation_schema_populated_v40_consumers_upgrade_revised_v41_and_reopen() 
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        45
+        46
     );
     schema::initialize(&db, || UtcMillis(10001)).unwrap();
     assert_eq!(read_old(&db), before);
@@ -8132,6 +8192,15 @@ fn presentation_schema_populated_v40_consumers_upgrade_revised_v41_and_reopen() 
 // or rewrites independent binding delivery/frontier history during an upgrade.
 #[test]
 fn published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history() {
+    published_binding_upgrade_preserves_exact_ack_bindings_and_delivery_history(35);
+}
+
+#[test]
+fn published_v36_upgrade_preserves_exact_in_turn_offers_and_delivery_history() {
+    published_binding_upgrade_preserves_exact_ack_bindings_and_delivery_history(36);
+}
+
+fn published_binding_upgrade_preserves_exact_ack_bindings_and_delivery_history(version: i64) {
     for foreign_keys in [false, true] {
         let source = v34_attention_fixture();
         source.execute_batch("BEGIN IMMEDIATE").unwrap();
@@ -8142,6 +8211,12 @@ fn published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history() {
             .unwrap();
         source.pragma_update(None, "user_version", 35).unwrap();
         source.execute_batch("COMMIT").unwrap();
+        if version == 36 {
+            source
+                .execute_batch(include_str!("../../migrations/0036_in_turn_offer.sql"))
+                .unwrap();
+            source.pragma_update(None, "user_version", 36).unwrap();
+        }
         let first = binding_id_of(&source, 1);
         let second = binding_id_of(&source, 2);
         // Attribution belongs to original publication: existing message history is immutable.
@@ -8150,6 +8225,9 @@ fn published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history() {
         source.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,ack_binding_id) VALUES('published35-physical','t','agent','acked',50,10,60,'agent',1,'cooperative_top_level',15,?1)", [&first]).unwrap();
         source.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('published35-sparse-prep','i','seat:agent','published35-sparse-send',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed'); INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('published35-sparse-prep','t','agent',1,50,1); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','published35-sparse-prep','published35-sparse','t',7,21,6,0,1,0)").unwrap();
         source.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,ack_binding_id) VALUES('published35-sparse','agent','acked',21,71,'agent',2,'cooperative_top_level',25,?1)", [&second]).unwrap();
+        if version == 36 {
+            source.execute("INSERT INTO in_turn_offer(binding_id,seat_id,item_id) VALUES (?1,'agent','published35-physical'),(?2,'agent','published35-sparse')", rusqlite::params![first, second]).unwrap();
+        }
         let file = ScratchStore::new("published35-ack-binding-upgrade");
         source
             .execute("VACUUM INTO ?1", [file.path().to_str().unwrap()])
@@ -8161,9 +8239,9 @@ fn published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history() {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            35
+            version
         );
-        let tables = [
+        let mut tables = vec![
             "occupant_bindings",
             "binding_cursors",
             "catch_up",
@@ -8174,6 +8252,11 @@ fn published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history() {
             "receipts",
             "receipt_state",
         ];
+        if version == 36 {
+            tables.push("in_turn_offer");
+        }
+        let in_turn_catalog_sql = "SELECT type,name,tbl_name,rootpage,sql FROM sqlite_schema WHERE tbl_name='in_turn_offer' ORDER BY type,name";
+        let in_turn_catalog = presentation_query_rows(&db, in_turn_catalog_sql);
         let row_sql = |name: &str| {
             if name == "binding_cursors" {
                 format!("SELECT * FROM {name} ORDER BY binding_id,thread_id")
@@ -8187,7 +8270,7 @@ fn published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history() {
             .collect();
         let receipt_catalog_sql = "SELECT type,name,tbl_name,rootpage,sql FROM sqlite_schema WHERE tbl_name IN ('receipts','receipt_state') ORDER BY type,name";
         let receipt_catalog = presentation_query_rows(&db, receipt_catalog_sql);
-        // Force the new37 full receipt rebuild to fail its post-copy FK check.
+        // Force the new38 full receipt rebuild to fail its post-copy FK check.
         // Both published ACK identities and every old receipt object must roll back.
         db.pragma_update(None, "foreign_keys", false).unwrap();
         db.execute_batch("CREATE TABLE published35_receipt_child(ordinal INTEGER REFERENCES receipts(ordinal)); INSERT INTO published35_receipt_child VALUES(999)").unwrap();
@@ -8198,22 +8281,28 @@ fn published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history() {
             error
                 .detail
                 .contains("receipt upgrade foreign key violation"),
-            "must reach the new37 post-copy check: {error:?}"
+            "must reach the new38 post-copy check: {error:?}"
         );
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            36
+            37
         );
         assert_eq!(
             presentation_query_rows(&db, receipt_catalog_sql),
             receipt_catalog
         );
+        if version == 36 {
+            assert_eq!(
+                presentation_query_rows(&db, in_turn_catalog_sql),
+                in_turn_catalog
+            );
+        }
         for (name, expected) in tables.iter().zip(&captured) {
             assert_eq!(
                 &presentation_query_rows(&db, &row_sql(name)),
                 expected,
-                "failed37 retains published35 {name}"
+                "failed38 retains published35 {name}"
             );
         }
         assert_eq!(
@@ -8243,6 +8332,12 @@ fn published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history() {
             second
         );
         let retained = |db: &Connection| {
+            if version == 36 {
+                assert_eq!(
+                    presentation_query_rows(db, in_turn_catalog_sql),
+                    in_turn_catalog
+                );
+            }
             for (name, expected) in tables.iter().zip(&captured) {
                 let rows = presentation_query_rows(db, &row_sql(name));
                 assert_eq!(&rows, expected, "published35 retained {name}");
@@ -8278,4 +8373,57 @@ fn published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history() {
         retained(&db);
         db.close().unwrap();
     }
+}
+
+// Real Main36 structural audits must precede appended feature work.
+#[test]
+fn published_v36_corrupt_offer_catalog_refuses_before_feature_migration() {
+    for corruption in ["DROP TABLE in_turn_offer", "DROP INDEX in_turn_offer_seat"] {
+        let db = v34_attention_fixture();
+        db.execute_batch(include_str!(
+            "../../migrations/0035_binding_attention_frontiers.sql"
+        ))
+        .unwrap();
+        db.execute_batch(include_str!("../../migrations/0036_in_turn_offer.sql"))
+            .unwrap();
+        db.pragma_update(None, "user_version", 36).unwrap();
+        db.execute_batch(corruption).unwrap();
+        let before = presentation_schema_catalog(&db);
+        assert!(schema::initialize(&db, || UtcMillis(900)).is_err());
+        assert_eq!(presentation_schema_catalog(&db), before);
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            36
+        );
+    }
+}
+
+#[test]
+fn published_v35_to_v36_late_offer_index_failure_rolls_back() {
+    let db = v34_attention_fixture();
+    db.execute_batch(include_str!(
+        "../../migrations/0035_binding_attention_frontiers.sql"
+    ))
+    .unwrap();
+    db.pragma_update(None, "user_version", 35).unwrap();
+    db.execute_batch("CREATE TABLE in_turn_offer_seat(blocker INTEGER)")
+        .unwrap();
+    let before = presentation_schema_catalog(&db);
+    assert!(schema::initialize(&db, || UtcMillis(900)).is_err());
+    assert_eq!(presentation_schema_catalog(&db), before);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        35
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name='in_turn_offer'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
 }

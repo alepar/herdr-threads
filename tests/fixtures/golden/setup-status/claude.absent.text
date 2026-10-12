@@ -46,6 +46,7 @@ prompt_suggestions.set_by_setup: false
 prompt_suggestions.setting: promptSuggestionEnabled
 prompt_suggestions.state: default (enabled)
 recipes: claude-hooks-2.1.283 [2.1.283, 2.1.286]; claude-hooks-2.1.287 {2.1.287}
+registration_conflict: none
 scope: user
 settings: <root>/claude config/settings.json
 warning: Foreground user settings required. herdr-threads requires each managed agent to remain in its pane: a shared harness server may run hooks/tools with its own pane environment instead of the TUI environment used for seat attribution. Setup inspects user settings only and never changes foreground settings. User settings and launch arguments are not proof of execution; project/managed settings, environment, and wrapper behavior may override them. Set disableAgentView to true in Claude's user settings.json (merge {"disableAgentView":true} into the existing object), or set env.CLAUDE_CODE_DISABLE_AGENT_VIEW to "1" there. This disables agent view, --bg/background and on-demand daemon mode. CLAUDE_CODE_DISABLE_BACKGROUND_TASKS is a different setting and does not replace this choice.
