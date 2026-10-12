@@ -2,13 +2,18 @@
 
 ## Unreleased
 
-## v0.9.1
+## v0.10.0
+
+- **Send-time receipt deadlines.** ACK-required messages start their confirmation deadline when sent, including mail for unavailable or unregistered recipients. Upgrades preserve existing deadlines and receipt attribution; overdue confirmations produce durable warnings for their originators.
+- **Lazy invitations.** Ordinary agent invitations are passive by default. `--require-ack` or `--deadline` requests timed acceptance confirmation; a missed deadline warns the inviter while the invitation remains pending. Acceptance and rejection retain distinct outcomes.
+- **Complete handoff instructions.** Handoffs accept a quoted body, `--file` or `--stdin`, preserving up to 65,536 UTF-8 bytes through launch and durable retry. Message and invitation deadlines are independent.
+- **Stable hooks and bounded delivery.** Equivalent hook reinstalls retain stable event commands and exact ownership. Binding-specific presentation and continuations preserve unread content; the Claude mod retains only the latest pending invitation context and bounds each append to 32 items and 64 KiB.
 
 - **Codex turn-start delivery.** Pending lazy messages arrive on text-only turns through the owned `UserPromptSubmit` hook. Re-run `herdr-threads setup codex` and trust the updated hook contract in Codex.
 - **Session-aware wake suppression.** Receipts and invitations fully presented inside a binding's turn no longer cause an extra wake after that turn. Native dispatch checks the actual foreground binding, preserving sibling delivery and recovery-hint behavior. Presentation remains separate from ACK and acceptance.
 - **Pair opening messages.** Accepting the active one-to-one invitation preserves existing binding cursors and seeds missing open-binding cursors at the invitation event; a sibling's display leaves each binding's unread stream intact. Fresh bindings after acceptance still start at the seat's furthest cursor, or the head if none exists. Generic join/rejoin and nonpair acceptance seed the head frontier and retain undisplayed lazy mail beyond the seat's furthest cursor for the first top-level reader; that pre-join pending mail settles once for the seat.
 - **Fresh-attention retries and JSON output.** New attention immediately retries a refusal-backed-off seat without resetting its failure count. `send --seat --json` returns the versioned send envelope.
-- **Upgrade and release checks.** Additive migration 36 records in-turn presentation; upgrade the CLI and daemon together. A private live wake matrix and startup/interruption cleanup controls accompany the fixes. Successful Claude evidence and the still-outstanding Codex gate are recorded separately in the release qualification.
+- **Upgrade and release checks.** Additive migrations 36–46 record in-turn presentation and the handoff delivery redesign; upgrade the CLI and daemon together. A private live wake matrix and startup/interruption cleanup controls accompany the fixes.
 
 ## v0.9.0
 
