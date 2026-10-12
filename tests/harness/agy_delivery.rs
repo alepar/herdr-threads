@@ -1704,7 +1704,7 @@ mod daemon {
         for caller in [&recipient, &origin] {
             let state: (String, Option<String>) = world.db.query_row(
                 "SELECT liveness,disconnect_reason FROM occupant_bindings WHERE seat_id=?1 AND harness=?2 AND native_session=?3 AND agent_id='' AND generation=?4 AND execution_id=?5 AND ended_at IS NULL",
-                rusqlite::params![caller.seat.as_str(), caller.harness.as_str(), caller.native_session.as_str(), caller.binding_generation, caller.execution.as_str()],
+                rusqlite::params![caller.seat.as_str(), caller.harness.as_str(), caller.native_session.as_str(), i64::try_from(caller.binding_generation).expect("canonical fixture generation fits SQLite"), caller.execution.as_str()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             ).unwrap();
             assert_eq!(
