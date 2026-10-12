@@ -104,9 +104,10 @@ def utc():
 
 
 def short_tmp_root(platform=None):
-    """The run root's parent: short enough for the Unix sockets the daemon and Herdr bind under it (104 bytes
-    on macOS, 108 on Linux). macOS's per-user $TMPDIR (/var/folders/...) is too long, so macOS uses /private/tmp
-    (what /tmp resolves to there); elsewhere /tmp. $TMPDIR is deliberately not consulted."""
+    """The run root's parent: a short system temp dir that exists on this platform. macOS keeps /private/tmp
+    (what /tmp resolves to there, so the paths the driver records and scans for processes are canonical) rather
+    than the long per-user $TMPDIR under /var/folders; elsewhere /tmp, as Linux has no /private/tmp (and creating
+    one would move the daemon's runtime socket dir, ht-3yi). $TMPDIR is deliberately not consulted."""
     return Path("/private/tmp") if (platform or sys.platform) == "darwin" else Path("/tmp")
 
 

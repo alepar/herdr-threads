@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import platform
@@ -107,9 +108,20 @@ def fetch(version: str, asset: str, digest: str, cache: Path) -> Path:
         binary.parent.mkdir(parents=True, exist_ok=True)
         part = binary.with_suffix(".part")
         url = f"https://github.com/{REPO}/releases/download/v{version}/{asset}"
-        with urllib.request.urlopen(url, timeout=300) as response, part.open("wb") as out:
-            while chunk := response.read(1 << 20):
-                out.write(chunk)
+        for attempt in range(3):  # a transient network failure or truncation is retried, then reported
+            try:
+                with urllib.request.urlopen(url, timeout=300) as response, part.open("wb") as out:
+                    while chunk := response.read(1 << 20):
+                        out.write(chunk)
+                if sha256(part) == digest:
+                    break
+                error: Exception = RuntimeError(f"checksum mismatch downloading {asset} {version}")
+            except (OSError, http.client.HTTPException) as e:  # URLError, HTTPError, timeouts, IncompleteRead
+                error = e
+            part.unlink(missing_ok=True)
+            if attempt == 2:
+                raise error
+            time.sleep(5 * (attempt + 1))
         part.rename(binary)
     actual = sha256(binary)
     if actual != digest:

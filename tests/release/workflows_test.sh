@@ -91,8 +91,11 @@ check "ci.yml: linux-e2e runs the wake-e2e self-test and the Herdr release smoke
   'yq ".jobs.linux-e2e.steps[].run" "$1" | grep -qxF "python3 scripts/wake-e2e.py --self-test" \
    && yq ".jobs.linux-e2e.steps[].run" "$1" | grep -qF "scripts/herdr-release-smoke --cache"' _ "$ci"
 check "ci.yml: linux-e2e never runs the live wake matrix or --check-upstream" bash -c \
-  '! yq ".jobs.linux-e2e.steps[].run" "$1" | grep -E "wake-e2e.py( |$)" | grep -vqF -- "--self-test" \
+  'test "$(yq -o=json -I=0 "[.jobs.linux-e2e.steps[].run | select(. != null) | select(test(\"wake-e2e\"))]" "$1")" \
+     = "[\"python3 scripts/wake-e2e.py --self-test\"]" \
    && ! yq ".jobs.linux-e2e.steps[].run" "$1" | grep -qF -- "--check-upstream"' _ "$ci"
+check "ci.yml: linux-e2e references no secrets or tokens" bash -c \
+  '! yq ".jobs.linux-e2e" "$1" | grep -qE "secrets\b|GITHUB_TOKEN|github\.token"' _ "$ci"
 check "ci.yml: linux-e2e ends with an always() leak check" bash -c \
   'test "$(yq ".jobs.linux-e2e.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "always()"' _ "$ci"
 

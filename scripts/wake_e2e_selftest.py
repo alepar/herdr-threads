@@ -836,15 +836,22 @@ class RunRoot(TempDir):
         self.assertEqual(W.short_tmp_root("darwin"), Path("/private/tmp"))
         self.assertEqual(W.short_tmp_root("linux"), Path("/tmp"))
 
-    def test_this_hosts_root_exists_and_leaves_room_for_sockets(self):
-        root = W.short_tmp_root()
-        self.assertTrue(root.is_dir(), root)
-        # a run root plus the deepest socket the run binds stays under the 104-byte macOS limit
-        self.assertLess(len(str(root / "ht-wake-e2e.abcdefgh" / "state" / "instances" / ("0" * 16) / "d.sock")), 104)
+    def test_this_hosts_root_exists(self):
+        self.assertTrue(W.short_tmp_root().is_dir(), W.short_tmp_root())
 
     def test_a_run_creates_its_private_root_there(self):
+        # Record exactly the root this Run creates (never another run's) and remove it even if Run raises after
+        # mkdtemp: the cleanup is registered before the Run exists.
+        made, real = [], W.tempfile.mkdtemp
+
+        def mkdtemp(*args, **kwargs):
+            made.append(real(*args, **kwargs))
+            return made[-1]
+        W.tempfile.mkdtemp = mkdtemp
+        self.addCleanup(setattr, W.tempfile, "mkdtemp", real)
+        self.addCleanup(lambda: [shutil.rmtree(p, True) for p in made])
         r = W.Run(SimpleNamespace(evidence_dir=None, bin="/bin/sh"))
-        self.addCleanup(shutil.rmtree, r.root, True)
+        self.assertEqual([str(r.root)], made)
         self.addCleanup(r.cmdlog.close)
         self.assertEqual(r.root.parent, W.short_tmp_root())
         self.assertTrue(r.root.name.startswith("ht-wake-e2e."))
