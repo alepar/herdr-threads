@@ -1,0 +1,184 @@
+{
+  "base": "565def869ae50e47e6da7388ea333229050eaf8d",
+  "head": "89fce486047a6af124d3f6bffcc9b1d91054a7dd",
+  "tree": "6ec03c64c0fbb5355bde576ed74dcfbc769a220f",
+  "immutable_count": 35,
+  "changed": 0,
+  "rows": [
+    {
+      "path": "migrations/0001_initial.sql",
+      "sha256": "987b8ba240af579c64f6e622f35854f2e6b59cf7d2d28b61e02a487422ce59d2",
+      "bytes": 34595
+    },
+    {
+      "path": "migrations/0002_service_substrate.sql",
+      "sha256": "9b91d697bc713397e276e3814545b1934872cc90bd066e22293d5110ac550f1e",
+      "bytes": 8179
+    },
+    {
+      "path": "migrations/0003_invitation_cancellations.sql",
+      "sha256": "2b58325a2dfb5ae2ca25a01e3897d7e0dd8d62bcd61d5abf3d69250a502f2fac",
+      "bytes": 1148
+    },
+    {
+      "path": "migrations/0004_voluntary_membership.sql",
+      "sha256": "ace84ea5090fb9ba579641eab59cf2664846ee011d778df1e52bc3144b82eaa3",
+      "bytes": 1727
+    },
+    {
+      "path": "migrations/0005_service_notifications.sql",
+      "sha256": "4483d608cbdc871145114825d54da25d9ffae6b337a1037413226c27a63642fa",
+      "bytes": 2022
+    },
+    {
+      "path": "migrations/0006_retirement_health.sql",
+      "sha256": "6137f9393ef15758558c7dec39c5899dfcad9726d5a2cd50a780482c64cd5495",
+      "bytes": 115
+    },
+    {
+      "path": "migrations/0007_attention_digest.sql",
+      "sha256": "de9d2ccae1d86fef0a74c0215276a338268e00efafda3c7b2ef677c7000978dc",
+      "bytes": 666
+    },
+    {
+      "path": "migrations/0008_digest_pending_paths.sql",
+      "sha256": "f1d0385323435a429e72478458cb1dbb1f3998dd7db3017677ba53d673740101",
+      "bytes": 13615
+    },
+    {
+      "path": "migrations/0009_human_occupant.sql",
+      "sha256": "43a85a3642b1df9eecb613c84243a3b4432f45a8ab7ebed8ea5cf5904bf36c79",
+      "bytes": 1915
+    },
+    {
+      "path": "migrations/0010_b5_trust_guards.sql",
+      "sha256": "1ae7ac8a64e3735e8c416123dccc82d3ecb443dc5bb73d4ddeab942e29d104ee",
+      "bytes": 1961
+    },
+    {
+      "path": "migrations/0011_cooperative_only.sql",
+      "sha256": "7bc928a3203e851c3ad7ee3727a6933f95322a137e50b43a4c6fced5d7950011",
+      "bytes": 1386
+    },
+    {
+      "path": "migrations/0012_harness_version_evidence.sql",
+      "sha256": "30653883773fc1cbf4264f546fbc5d3254213227663bb8d521e61cd8084674d4",
+      "bytes": 1024
+    },
+    {
+      "path": "migrations/0013_thread_summaries.sql",
+      "sha256": "ae82fc0dcdb58e35da333f6e3768d2dca1d1fd97981e8eb07f6d47238049c889",
+      "bytes": 6548
+    },
+    {
+      "path": "migrations/0014_catch_up_release.sql",
+      "sha256": "560c1247f23c045bd7db6f3aef854f5fab0b9d431f26f1e2b3f50b9e5eaff4aa",
+      "bytes": 298
+    },
+    {
+      "path": "migrations/0015_preparation_retention.sql",
+      "sha256": "733197e3e2ec367ca8ab978c9e5fa1f84b5fd7020273f073d2efa491e9d27c14",
+      "bytes": 461
+    },
+    {
+      "path": "migrations/0016_human_receipt_waivers.sql",
+      "sha256": "e5c9337a7a02c6c06dc0b08cf711298a4b0fdb75183719c4b2b1b0a59fb27b60",
+      "bytes": 9867
+    },
+    {
+      "path": "migrations/0017_wake_batches.sql",
+      "sha256": "f28763acbbc032906e9864c5e52b14fdb40083d2b847f3b871553718c73ba115",
+      "bytes": 1703
+    },
+    {
+      "path": "migrations/0018_warning_conditions.sql",
+      "sha256": "4f9d4ba662067632bb1cd285c16a4a15bef73af3746e57d58781f90bebcc8b4f",
+      "bytes": 4293
+    },
+    {
+      "path": "migrations/0019_thread_names.sql",
+      "sha256": "3dd24c210d32f35f703b7712c67dfff88563c645b0f2a912f2c5412f3f56a41b",
+      "bytes": 162
+    },
+    {
+      "path": "migrations/0020_recent_activity.sql",
+      "sha256": "f771782df955e347412474ca40c189855adda0891672bc6df88905d9c50952a4",
+      "bytes": 1314
+    },
+    {
+      "path": "migrations/0021_invitation_rejections.sql",
+      "sha256": "a6213407b257ffd92136dac2da78e73a65d8e227ef5b873fe0cf6576258531fb",
+      "bytes": 2649
+    },
+    {
+      "path": "migrations/0022_user_message_intent.sql",
+      "sha256": "cdc20ce86f3c98179cae7eeb507b3d7ccedc384332eab04d1b6cff7f2279d384",
+      "bytes": 632
+    },
+    {
+      "path": "migrations/0023_channel_archival.sql",
+      "sha256": "f10b178cebe67c226da3be753ff14bf6ac4facdd0fac65b23880d4047574125b",
+      "bytes": 24669
+    },
+    {
+      "path": "migrations/0024_harness_contract_diagnostics.sql",
+      "sha256": "c7d919671587677085f1b7cf2ded8c9bbc8b4bd80b5683f70d4bc9f2a6a963d1",
+      "bytes": 852
+    },
+    {
+      "path": "migrations/0025_warning_notice_delivery.sql",
+      "sha256": "be0ff728fb17015517364604d2d2fe55a5a826665fb1f34e23ecf2f854431417",
+      "bytes": 2876
+    },
+    {
+      "path": "migrations/0026_lazy_message_delivery.sql",
+      "sha256": "fc0d7cbef24a613fc5b96bebb06f653ed2af10b84424128d969b601e11b9f088",
+      "bytes": 4542
+    },
+    {
+      "path": "migrations/0027_harness_adapters.sql",
+      "sha256": "b755fbed6f9c0b61e9e2f1bbe8dcd7c5cd967d06a200fcf6fde383dbc1f25a7a",
+      "bytes": 9409
+    },
+    {
+      "path": "migrations/0028_handoff_topology.sql",
+      "sha256": "cadc1fbfd7246deeec836b9236a0e5b69486e630306fe31d2a5c0851bfb19f22",
+      "bytes": 9026
+    },
+    {
+      "path": "migrations/0029_direct_threads.sql",
+      "sha256": "8eb79b580a05c907e31854efeb3b8fe91dd493dff07230a31278457c8e39b112",
+      "bytes": 488
+    },
+    {
+      "path": "migrations/0030_automatic_handoff.sql",
+      "sha256": "3b3a7f837df0f53f5f7506243f6ee3bdef1f350e94708d0666a2aa904f51f644",
+      "bytes": 7983
+    },
+    {
+      "path": "migrations/0031_seat_wake_on.sql",
+      "sha256": "32f9c35e3ebc657c6e4227454cd276c3fceebe6043b13a60cba4fad29f3f55f2",
+      "bytes": 442
+    },
+    {
+      "path": "migrations/0032_session_bindings.sql",
+      "sha256": "8c64d36344aceefb7fbbf82487d24d5a93d33da9d20297ad4547bf48abcd1033",
+      "bytes": 6499
+    },
+    {
+      "path": "migrations/0033_archival_scan_scope.sql",
+      "sha256": "8cab27994ee53b25a5e08fb75b5c8dd18a5d0ac5ea48e06029abc85974f1309a",
+      "bytes": 2959
+    },
+    {
+      "path": "migrations/0034_binding_delivery_state.sql",
+      "sha256": "64636bb15a05555a37f418c1041bcc84782aba881e0fa17ca4c7b78d3d7e2d3b",
+      "bytes": 3152
+    },
+    {
+      "path": "migrations/0035_binding_attention_frontiers.sql",
+      "sha256": "628f64be5f80b7813445f79f2b747dcdffd2d6a3b64d463ff5c9a9cbc6dea960",
+      "bytes": 2457
+    }
+  ]
+}

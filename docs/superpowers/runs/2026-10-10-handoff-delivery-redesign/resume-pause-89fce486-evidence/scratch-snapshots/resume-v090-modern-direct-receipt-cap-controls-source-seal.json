@@ -1,0 +1,7 @@
+{
+  "candidate_source_sha256": "34a807346a7cb62afb2f8c9dc283d29a66db36c50bb0329720e4c6f7bb8ade89",
+  "scratch_source_sha256": "cb56db96aeb339441df4663311716508cdd0338c0878a6c5ca38b72aeb66c136",
+  "patch_sha256": "951616628ecb86a424625480f6ed654dfb9c7a07af663c7053024335a583cdbc",
+  "scratch_path": "/private/tmp/ht-modern-direct-receipt-controls-author-b/tests/cli/direct_send.rs",
+  "patch_lines": 478
+}

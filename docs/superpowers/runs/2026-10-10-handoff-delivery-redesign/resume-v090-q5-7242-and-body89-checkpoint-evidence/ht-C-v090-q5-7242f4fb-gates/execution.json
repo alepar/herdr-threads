@@ -1,0 +1,20 @@
+{
+  "staged_tree": "9f70a75ed47dc5b1e05f3d75e993a46aabd3aac5",
+  "index_sha256": "36edb5f43c4d77f547d3b50657d1e1147bd7e2241ef77567bccd37b2ad9de978",
+  "commands": [
+    {
+      "stage": "fmt",
+      "argv": [
+        "cargo",
+        "fmt",
+        "--",
+        "--check"
+      ],
+      "exit": 1,
+      "seconds": 4.5953262919792905,
+      "log": "/private/tmp/ht-C-v090-q5-7242f4fb-gates/fmt.log",
+      "sha256": "3b01cb87179c6bb8c4d05067262d39da4a64263c9e1a48762339d5dc099e5908"
+    }
+  ],
+  "exit": 1
+}

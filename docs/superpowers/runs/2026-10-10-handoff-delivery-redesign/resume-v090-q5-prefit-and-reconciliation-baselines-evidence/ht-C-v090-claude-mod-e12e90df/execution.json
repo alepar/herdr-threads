@@ -1,0 +1,25 @@
+{
+  "head": "e12e90df6ac0d45f8b7183a598066b5e555c8484",
+  "tree": "bba5b70a9f8f6eadc07a10978852fc6bcbd1fa21",
+  "run_id": "a1ced764-b1f2-4c48-b205-55bb7a5ed412",
+  "mod": {
+    "exit": 0,
+    "seconds": 1.1944576250389218,
+    "argv": [
+      "nice",
+      "scripts/test-claude-mod"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.18098387506324798,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "a1ced764-b1f2-4c48-b205-55bb7a5ed412"
+    ]
+  },
+  "head_after": "e12e90df6ac0d45f8b7183a598066b5e555c8484",
+  "tree_after": "bba5b70a9f8f6eadc07a10978852fc6bcbd1fa21",
+  "clean_after": true
+}

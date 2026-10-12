@@ -1,0 +1,28 @@
+{
+  "head": "94fde7aeed80d3febbd1cee86c0184fbcb161133",
+  "tree": "840a7daedad3c041f40c89f634511d20356711b2",
+  "run_id": "ec21f18d-8705-4222-bd83-51d74b7dbef1",
+  "expected": [
+    "cli::lazy_markers::q5_continuation_public::q5_history_public_refits_preserve_1400_byte_and_row_bounds_through_completion",
+    "cli::lazy_markers::q5_continuation_public::q5_search_public_refits_preserve_2048_byte_filter_route_actor_and_cursor",
+    "cli::lazy_markers::q5_continuation_public::q5_history_public_reselected_no_lazy_page_still_restores_original_bound",
+    "cli::lazy_markers::q5_continuation_public::q5_search_public_reselected_no_lazy_page_still_restores_original_bound",
+    "cli::lazy_markers::q5_continuation_public::q5_public_json_and_unadvertised_modes_keep_initial_serialization_unchanged",
+    "cli::lazy_markers::q5_continuation_public::q5_public_insufficient_original_bound_writes_nothing_and_performs_no_display_effect"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 10.43413116701413
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.22087899991311133,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "ec21f18d-8705-4222-bd83-51d74b7dbef1"
+    ]
+  },
+  "leak_exit": 0
+}

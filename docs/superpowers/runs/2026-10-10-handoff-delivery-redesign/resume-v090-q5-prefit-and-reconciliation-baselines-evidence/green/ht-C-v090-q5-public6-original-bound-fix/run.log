@@ -1,0 +1,12 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 06e77c9b-e19d-44bc-856b-30d9ee5cbc65 with nextest profile: default
+    Starting 6 tests across 1 binary (729 tests skipped)
+        PASS [   0.348s] (1/6) herdr-threads::combined lazy_markers::q5_continuation_public::q5_public_insufficient_original_bound_writes_nothing_and_performs_no_display_effect
+        PASS [   1.206s] (2/6) herdr-threads::combined lazy_markers::q5_continuation_public::q5_search_public_refits_preserve_2048_byte_filter_route_actor_and_cursor
+        PASS [   1.275s] (3/6) herdr-threads::combined lazy_markers::q5_continuation_public::q5_search_public_reselected_no_lazy_page_still_restores_original_bound
+        PASS [   1.440s] (4/6) herdr-threads::combined lazy_markers::q5_continuation_public::q5_history_public_refits_preserve_1400_byte_and_row_bounds_through_completion
+        PASS [   1.585s] (5/6) herdr-threads::combined lazy_markers::q5_continuation_public::q5_public_json_and_unadvertised_modes_keep_initial_serialization_unchanged
+        PASS [   1.595s] (6/6) herdr-threads::combined lazy_markers::q5_continuation_public::q5_history_public_reselected_no_lazy_page_still_restores_original_bound
+────────────
+     Summary [   1.597s] 6 tests run: 6 passed, 729 skipped

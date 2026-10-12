@@ -1,0 +1,18 @@
+{
+  "status": "scratch-only, not applied; parsing/format only, no Cargo or SQL runtime",
+  "mount_base_sha256": "be00df205deaaa6dc115a84a48161d03ff7ec19424fecff058e00b06b9738395",
+  "module_sha256": "c6802b591f410654d74aa2e4ce6831cd99887ad8ac942ab8e388646598d87e67",
+  "patch_sha256": "81c92843e18fb546f19162b6f42b0c08589558c766e1d9d6281e739c6ad7c211",
+  "production": {
+    "src/store/lazy_delivery.rs": "d271124b66b1515e3b5d8f6df159a6cf18c933867591e221a4f3c18f1b1a1b7c",
+    "src/store/invitation_content.rs": "07937cfaf68524f5b47f903470c4aa836766eaa0bd51b539c3897ccf90451e87",
+    "src/store/queries.rs": "8aa9b787f9a939eadf61f8634dde4937a332421847ac68700c9572a8104030d2"
+  },
+  "selectors": [
+    "store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work",
+    "store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope",
+    "store::queries::tests::query_work_q4::q4_three_event_keys_and_actual_floor_have_constant_sqlite_work",
+    "store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers",
+    "store::queries::tests::query_work_q4::q4_actual_continued_tail_checks_scope_once_and_charges_retirement"
+  ]
+}

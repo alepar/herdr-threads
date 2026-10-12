@@ -1,0 +1,57 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 7e6f6832-8cc1-48fe-b05e-77d9a7726bae with nextest profile: default
+    Starting 8 tests across 1 binary (4906 tests skipped)
+        PASS [   0.126s] (1/8) herdr-threads service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work
+        FAIL [   0.131s] (2/8) herdr-threads service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4913 filtered out; finished in 0.12s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion' (56309211) panicked at src/service/../../tests/service/delivery_pull.rs:10105:9:
+    assertion `left == right` failed
+      left: 30
+     right: 24
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.134s] (3/8) herdr-threads service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation
+        PASS [   0.342s] (4/8) herdr-threads service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged
+        FAIL [   0.717s] (5/8) herdr-threads service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4913 filtered out; finished in 0.71s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity' (56309208) panicked at src/service/../../tests/service/delivery_pull.rs:9349:13:
+    assertion `left == right` failed
+      left: 2560
+     right: 2048
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.883s] (6/8) herdr-threads service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags
+        PASS [   0.907s] (7/8) herdr-threads service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity
+        PASS [   0.925s] (8/8) herdr-threads service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity
+────────────
+     Summary [   0.940s] 8 tests run: 6 passed, 2 failed, 4906 skipped
+        FAIL [   0.131s] (2/8) herdr-threads service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion
+        FAIL [   0.717s] (5/8) herdr-threads service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity
+error: test run failed

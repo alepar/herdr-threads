@@ -1,0 +1,62 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+────────────
+ Nextest run ID dc45ded7-da1f-4ef2-81e2-78660e7b15e1 with nextest profile: default
+    Starting 36 tests across 1 binary (4887 tests skipped)
+        PASS [   0.019s] ( 1/36) herdr-threads cli::q5_continuation_normalization::q5_post_refit_empty_lazy_modes_still_guard_actual_final_bytes
+        PASS [   0.492s] ( 2/36) herdr-threads cli::q5_continuation_normalization::q5_normalizer_actual_complete_message_has_no_continuation_to_rewrite
+        PASS [   0.515s] ( 3/36) herdr-threads service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work
+        PASS [   0.521s] ( 4/36) herdr-threads cli::q5_continuation_normalization::q5_normalizer_default_history_omission_adds_only_original_byte_bound
+        PASS [   0.524s] ( 5/36) herdr-threads cli::q5_continuation_normalization::q5_normalizer_actual_partial_utf8_body_restores_only_continuation_budget
+        PASS [   0.528s] ( 6/36) herdr-threads cli::q5_continuation_normalization::q5_normalizer_changes_only_budget_value_and_preserves_flag_like_raw_data
+        PASS [   0.541s] ( 7/36) herdr-threads cli::q5_continuation_normalization::q5_normalizer_mismatched_unrelated_result_kind_is_unchanged
+        PASS [   0.563s] ( 8/36) herdr-threads cli::q5_continuation_normalization::q5_normalizer_terminal_and_never_refit_results_remain_exactly_unchanged
+        PASS [   0.574s] ( 9/36) herdr-threads cli::q5_continuation_normalization::q5_normalizer_route_thresholds_and_identical_duplicate_values_preserve_existing_grammar
+        PASS [   0.174s] (10/36) herdr-threads service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation
+        PASS [   0.192s] (11/36) herdr-threads service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion
+        PASS [   0.792s] (12/36) herdr-threads service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged
+        PASS [   0.255s] (13/36) herdr-threads service::delivery_pull::tests::q4_body_controls::preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate
+        PASS [   0.407s] (14/36) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader
+        PASS [   0.489s] (15/36) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers
+        PASS [   0.296s] (16/36) herdr-threads service::delivery_pull::tests::q4_body_controls::private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display
+        PASS [   0.169s] (17/36) herdr-threads store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog
+        PASS [   0.220s] (18/36) herdr-threads service::delivery_pull::tests::q4_body_controls::private_old_episode_lazy_tail_retires_and_reaches_fresh_preaccept_body
+        FAIL [   0.462s] (19/36) herdr-threads service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4922 filtered out; finished in 0.44s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer' (56350124) panicked at src/service/../../tests/service/q4_body_controls.rs:418:17:
+    body output step=7 argv=["herdr-threads", "body", "mYq6Ex14s", "--cursor", "c3:BwAByiG23gNy8itR_zba_Y4", "--max-bytes", "274"] last_offset=Some(4298): Api(ApiError { code: InvalidBudget, detail: "annotated read exceeds byte budget", restart_argv: None, required_minimum_bytes: Some(288), class_override: None })
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.177s] (20/36) herdr-threads store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings
+        PASS [   0.180s] (21/36) herdr-threads store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor
+        PASS [   0.252s] (22/36) herdr-threads store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept
+        PASS [   0.172s] (23/36) herdr-threads store::control::tests::direct_threads::reader_controls::q4_rejection_prevents_cursorless_direct_lazy_revival_or_display_bootstrap
+        PASS [   0.350s] (24/36) herdr-threads store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap
+        PASS [   0.297s] (25/36) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_native_pending_episode_reused_by_native_and_service_writers_keeps_exact_floor_rows
+        PASS [   0.178s] (26/36) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_pair_refuses_managed_ownership_and_required_writer_without_changing_floor_authority
+        PASS [   0.967s] (27/36) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers
+        PASS [   0.257s] (28/36) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream
+        PASS [   0.279s] (29/36) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream
+        PASS [   1.597s] (30/36) herdr-threads service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags
+        PASS [   1.145s] (31/36) herdr-threads service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity
+        PASS [   0.244s] (32/36) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_service_pending_episode_reused_by_service_and_native_writers_keeps_exact_floor_rows
+        PASS [   1.782s] (33/36) herdr-threads service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity
+        PASS [   1.301s] (34/36) herdr-threads service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity
+        PASS [   1.311s] (35/36) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window
+        PASS [   2.258s] (36/36) herdr-threads cli::q5_continuation_normalization::q5_malformed_post_refit_continuations_stop_actual_writer_before_output_or_mutation
+────────────
+     Summary [   2.272s] 36 tests run: 35 passed, 1 failed, 4887 skipped
+        FAIL [   0.462s] (19/36) herdr-threads service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer
+error: test run failed

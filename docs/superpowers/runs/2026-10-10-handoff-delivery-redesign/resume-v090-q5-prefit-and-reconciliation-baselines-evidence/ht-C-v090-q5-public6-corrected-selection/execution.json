@@ -1,0 +1,77 @@
+{
+  "head": "94fde7aeed80d3febbd1cee86c0184fbcb161133",
+  "tree": "840a7daedad3c041f40c89f634511d20356711b2",
+  "run_id": "5f6293f4-cbc8-422e-b213-c9d0510e1bbf",
+  "expected": [
+    "lazy_markers::q5_continuation_public::q5_history_public_refits_preserve_1400_byte_and_row_bounds_through_completion",
+    "lazy_markers::q5_continuation_public::q5_search_public_refits_preserve_2048_byte_filter_route_actor_and_cursor",
+    "lazy_markers::q5_continuation_public::q5_history_public_reselected_no_lazy_page_still_restores_original_bound",
+    "lazy_markers::q5_continuation_public::q5_search_public_reselected_no_lazy_page_still_restores_original_bound",
+    "lazy_markers::q5_continuation_public::q5_public_json_and_unadvertised_modes_keep_initial_serialization_unchanged",
+    "lazy_markers::q5_continuation_public::q5_public_insufficient_original_bound_writes_nothing_and_performs_no_display_effect"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 0.22346745908726007
+  },
+  "selected": [
+    [
+      "herdr-threads::combined",
+      "lazy_markers::q5_continuation_public::q5_history_public_refits_preserve_1400_byte_and_row_bounds_through_completion"
+    ],
+    [
+      "herdr-threads::combined",
+      "lazy_markers::q5_continuation_public::q5_history_public_reselected_no_lazy_page_still_restores_original_bound"
+    ],
+    [
+      "herdr-threads::combined",
+      "lazy_markers::q5_continuation_public::q5_public_insufficient_original_bound_writes_nothing_and_performs_no_display_effect"
+    ],
+    [
+      "herdr-threads::combined",
+      "lazy_markers::q5_continuation_public::q5_public_json_and_unadvertised_modes_keep_initial_serialization_unchanged"
+    ],
+    [
+      "herdr-threads::combined",
+      "lazy_markers::q5_continuation_public::q5_search_public_refits_preserve_2048_byte_filter_route_actor_and_cursor"
+    ],
+    [
+      "herdr-threads::combined",
+      "lazy_markers::q5_continuation_public::q5_search_public_reselected_no_lazy_page_still_restores_original_bound"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/combined-1ca8fb8a6401d78a",
+      "sha256": "0a1cc5a956e9b87f3defdb8fcbc28d600d8eeb1dd765f4136a0c6ff18afb7bd1"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 1.3659008749527857,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--test",
+      "combined",
+      "--no-fail-fast",
+      "-E",
+      "test(=lazy_markers::q5_continuation_public::q5_history_public_refits_preserve_1400_byte_and_row_bounds_through_completion) | test(=lazy_markers::q5_continuation_public::q5_search_public_refits_preserve_2048_byte_filter_route_actor_and_cursor) | test(=lazy_markers::q5_continuation_public::q5_history_public_reselected_no_lazy_page_still_restores_original_bound) | test(=lazy_markers::q5_continuation_public::q5_search_public_reselected_no_lazy_page_still_restores_original_bound) | test(=lazy_markers::q5_continuation_public::q5_public_json_and_unadvertised_modes_keep_initial_serialization_unchanged) | test(=lazy_markers::q5_continuation_public::q5_public_insufficient_original_bound_writes_nothing_and_performs_no_display_effect)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.2332032920094207,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "5f6293f4-cbc8-422e-b213-c9d0510e1bbf"
+    ]
+  },
+  "leak_exit": 0
+}

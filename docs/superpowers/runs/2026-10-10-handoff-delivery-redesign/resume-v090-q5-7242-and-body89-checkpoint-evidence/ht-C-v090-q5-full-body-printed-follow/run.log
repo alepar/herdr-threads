@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+────────────
+ Nextest run ID f70e4564-0ecf-489e-a828-20a19e7de6a2 with nextest profile: default
+    Starting 1 test across 1 binary (4922 tests skipped)
+        PASS [   1.274s] (1/1) herdr-threads service::delivery_pull::tests::q4_body_controls::preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer
+────────────
+     Summary [   1.289s] 1 test run: 1 passed, 4922 skipped

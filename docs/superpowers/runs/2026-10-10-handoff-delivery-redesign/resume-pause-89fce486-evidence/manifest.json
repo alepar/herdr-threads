@@ -1,0 +1,300 @@
+{
+  "paused_at_utc": "2026-10-12T06:14:04.646680+00:00",
+  "candidate_head": "89fce486047a6af124d3f6bffcc9b1d91054a7dd",
+  "candidate_tree": "6ec03c64c0fbb5355bde576ed74dcfbc769a220f",
+  "candidate_status": "",
+  "main": "565def869ae50e47e6da7388ea333229050eaf8d",
+  "origin_main": "565def869ae50e47e6da7388ea333229050eaf8d",
+  "formal_code_roast_started": false,
+  "artifacts": [
+    {
+      "source": "/private/tmp/ht-C-v090-q5-89fce486-gates/clippy.log",
+      "destination": "gates/clippy.log",
+      "bytes": 219,
+      "sha256": "57b2b95a1a06a68e636c360eb533b219646750dd2ef8a12fbade4576dc86bae7"
+    },
+    {
+      "source": "/private/tmp/ht-C-v090-q5-89fce486-gates/default.log",
+      "destination": "gates/default.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "source": "/private/tmp/ht-C-v090-q5-89fce486-gates/execution.json",
+      "destination": "gates/execution.json",
+      "bytes": 1579,
+      "sha256": "0703b1fba6d35cdb3822aa4e326b353d7d32d996cb4baba21cecc668d1f84fef"
+    },
+    {
+      "source": "/private/tmp/ht-C-v090-q5-89fce486-gates/fmt.log",
+      "destination": "gates/fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "source": "/private/tmp/ht-C-v090-q5-89fce486-gates/neutral.log",
+      "destination": "gates/neutral.log",
+      "bytes": 130,
+      "sha256": "7561605afc0af5f27527d99451825bc26c55fa2f7083bb392ad4244e406b0536"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-89fce486-published-migrations-check.json",
+      "destination": "scratch-snapshots/resume-v090-89fce486-published-migrations-check.json",
+      "bytes": 6270,
+      "sha256": "2f614c056d6777ba06a03e92da7854f2d53f90bc095e20e37be5964790dad47e"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-final-interface-implementation-review.md",
+      "destination": "scratch-snapshots/resume-v090-final-interface-implementation-review.md",
+      "bytes": 19081,
+      "sha256": "18b1074c06b9ba2aae219c9c98778210d8f4e79637b301ae8f6f204d187f1727"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-final-matrix-preparation-audit.md",
+      "destination": "scratch-snapshots/resume-v090-final-matrix-preparation-audit.md",
+      "bytes": 9104,
+      "sha256": "22364926bee4caa52dc66a8b284667872c9d4476c84fd1bef7c083862f59aaa4"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-final-schema-implementation-review.md",
+      "destination": "scratch-snapshots/resume-v090-final-schema-implementation-review.md",
+      "bytes": 17178,
+      "sha256": "ac902f44205b15e4e441114d6aef3e5130e0e37bcf53f0c3e16c326645172e14"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-final-whole-implementation-review.md",
+      "destination": "scratch-snapshots/resume-v090-final-whole-implementation-review.md",
+      "bytes": 12228,
+      "sha256": "9c333b1798d0c56391b281492e4cdaac2c5fa806dd3fabd16f5996d6a80cdc2b"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-matrix-historical-floor-rationale.md",
+      "destination": "scratch-snapshots/resume-v090-matrix-historical-floor-rationale.md",
+      "bytes": 3298,
+      "sha256": "9bde3cd2537b882284ecfcc03816bdb18e9f91b69a7d98faf0c4d6fe4936def8"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-matrix-historical-floor-review.md",
+      "destination": "scratch-snapshots/resume-v090-matrix-historical-floor-review.md",
+      "bytes": 6342,
+      "sha256": "f815bc4fa4c47a7f31eb92107df283b0cc471766d2dbd77cc47d196aa856b718"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-matrix-historical-floor.patch",
+      "destination": "scratch-snapshots/resume-v090-matrix-historical-floor.patch",
+      "bytes": 15354,
+      "sha256": "79865e314cd3f8ed752a94c003e86359a4002bcb60a02037cfc6239b7775a5ff"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-modern-direct-receipt-cap-controls-source-seal.json",
+      "destination": "scratch-snapshots/resume-v090-modern-direct-receipt-cap-controls-source-seal.json",
+      "bytes": 405,
+      "sha256": "acebe192bb25f2934a2963c9c93156fce0d19b92e8351084685f33170e04eadd"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-modern-direct-receipt-cap-controls.patch",
+      "destination": "scratch-snapshots/resume-v090-modern-direct-receipt-cap-controls.patch",
+      "bytes": 17413,
+      "sha256": "951616628ecb86a424625480f6ed654dfb9c7a07af663c7053024335a583cdbc"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-normal-unrenderable-design-proposal.md",
+      "destination": "scratch-snapshots/resume-v090-normal-unrenderable-design-proposal.md",
+      "bytes": 14973,
+      "sha256": "0ee5529298f8496bd630dc7dfeb4f9a260fb92a5f78ca9c2a6085691cbb19c43"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-q4-query-controls-author.md",
+      "destination": "scratch-snapshots/resume-v090-q4-query-controls-author.md",
+      "bytes": 6069,
+      "sha256": "db6c775ae148236d9b9557edc42337542b43d92744f2ff19713940d1a6e5520d"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-q4-query-controls-proposal.md",
+      "destination": "scratch-snapshots/resume-v090-q4-query-controls-proposal.md",
+      "bytes": 14434,
+      "sha256": "aa1645626fbb9e391ec718c8965ad2b573d2237b78d1765f6baf142a104f878e"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-q4-query-controls-source-seal.json",
+      "destination": "scratch-snapshots/resume-v090-q4-query-controls-source-seal.json",
+      "bytes": 1254,
+      "sha256": "20d33afc79413d14198e694ebd6759f87917c5a85185b29713f4d98b95c63b64"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-q4-query-controls.patch",
+      "destination": "scratch-snapshots/resume-v090-q4-query-controls.patch",
+      "bytes": 25358,
+      "sha256": "81c92843e18fb546f19162b6f42b0c08589558c766e1d9d6281e739c6ad7c211"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-q4-query-controls.rs",
+      "destination": "scratch-snapshots/resume-v090-q4-query-controls.rs",
+      "bytes": 24465,
+      "sha256": "c6802b591f410654d74aa2e4ce6831cd99887ad8ac942ab8e388646598d87e67"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-q4-retirement-refusal-controls-rationale.md",
+      "destination": "scratch-snapshots/resume-v090-q4-retirement-refusal-controls-rationale.md",
+      "bytes": 7798,
+      "sha256": "7089e8a96b02971bed58194df0b1c9e0be174ae2529e61db1a0d8242b13b3762"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-q4-retirement-refusal-controls.patch",
+      "destination": "scratch-snapshots/resume-v090-q4-retirement-refusal-controls.patch",
+      "bytes": 21572,
+      "sha256": "282a560ccb99083c60b1b63e83621bf23b9ee6886b52d68e07f378ce64f2da5d"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-q4-sql-refusal-tests-quality-review.md",
+      "destination": "scratch-snapshots/resume-v090-q4-sql-refusal-tests-quality-review.md",
+      "bytes": 10039,
+      "sha256": "f1246412d3c79a8b9d07f5cc95e11e614938f45c0a2bcab7ce9255e894263a29"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-q4-sql-refusal-tests-spec-review.md",
+      "destination": "scratch-snapshots/resume-v090-q4-sql-refusal-tests-spec-review.md",
+      "bytes": 12143,
+      "sha256": "c12a550e009b9cdc3714030b473da5e0bfa442826a708ae827804ca0685204f3"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/roast-code-1-final-prompts/api-contract.txt",
+      "destination": "scratch-snapshots/roast-code-1-final-prompts/api-contract.txt",
+      "bytes": 7328,
+      "sha256": "9f1ef373a1348de133e1a1a6350d600f17973cb1d8f58985d404b85ba9cd683c"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/roast-code-1-final-prompts/concurrency-async.txt",
+      "destination": "scratch-snapshots/roast-code-1-final-prompts/concurrency-async.txt",
+      "bytes": 8542,
+      "sha256": "035ba7810d001cf257f224cabe140b3cbef912c4174c7144c97d7b6e22d7c1b9"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/roast-code-1-final-prompts/correctness.txt",
+      "destination": "scratch-snapshots/roast-code-1-final-prompts/correctness.txt",
+      "bytes": 7200,
+      "sha256": "cd8716f2bfc2c884caa7105010f6099d21f6d19f1a550dad0f90c8694208f205"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/roast-code-1-final-prompts/data-migrations.txt",
+      "destination": "scratch-snapshots/roast-code-1-final-prompts/data-migrations.txt",
+      "bytes": 7424,
+      "sha256": "28ff05abd166100712b95acf26faede140a14ce0d629247cb65eb900ce3e47ad"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/roast-code-1-final-prompts/deploy-safety.txt",
+      "destination": "scratch-snapshots/roast-code-1-final-prompts/deploy-safety.txt",
+      "bytes": 7046,
+      "sha256": "22381682c01a74624294ff97e86c3a42c61d3c09bbe606f989ea10ed9695db7c"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/roast-code-1-final-prompts/hot-path-perf.txt",
+      "destination": "scratch-snapshots/roast-code-1-final-prompts/hot-path-perf.txt",
+      "bytes": 8290,
+      "sha256": "89a8735c126c66a8f4b2f5d5879b3dfc4370629bbce2fb5e0863e86aea9c3be8"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/roast-code-1-final-prompts/hygiene-docs.txt",
+      "destination": "scratch-snapshots/roast-code-1-final-prompts/hygiene-docs.txt",
+      "bytes": 7766,
+      "sha256": "0ecb9d43214ff6303fd65b38ad671fcb1296d89c57f01689fd93ad30c5832cc3"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/roast-code-1-final-prompts/observability.txt",
+      "destination": "scratch-snapshots/roast-code-1-final-prompts/observability.txt",
+      "bytes": 6972,
+      "sha256": "c7f58fadedd26a1775000b6fe1329e073a624aba8a926e010bce3cd33dfa41e4"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/roast-code-1-final-prompts/premortem.txt",
+      "destination": "scratch-snapshots/roast-code-1-final-prompts/premortem.txt",
+      "bytes": 7813,
+      "sha256": "090480d47152ff04174a3f225f1b70afd1ff015b0f8a149e054783bb65b8bf82"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/roast-code-1-final-prompts/prepared-hash-manifest.json",
+      "destination": "scratch-snapshots/roast-code-1-final-prompts/prepared-hash-manifest.json",
+      "bytes": 11461,
+      "sha256": "94b748f06d27158448fb310bc653e93e0fcfcc91837f00c6964acbf30069691c"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/roast-code-1-final-prompts/security.txt",
+      "destination": "scratch-snapshots/roast-code-1-final-prompts/security.txt",
+      "bytes": 7586,
+      "sha256": "0c5030dcc8a06cad0f082e2a3be3158352a7353112f4402bc8eb30ccbae32b3b"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/roast-code-1-final-prompts/simplicity-design.txt",
+      "destination": "scratch-snapshots/roast-code-1-final-prompts/simplicity-design.txt",
+      "bytes": 9107,
+      "sha256": "ffc6d59ef9b5582dc21ba07f44815d01829621bc46f306c8f5e2e9cc02533d2e"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/roast-code-1-final-prompts/testing.txt",
+      "destination": "scratch-snapshots/roast-code-1-final-prompts/testing.txt",
+      "bytes": 7629,
+      "sha256": "16a53ae4af7660158b47b791a2e90a3f5636d4ec7dcae87500e86fec6bb81f3b"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-specialized-receipt-cap-implementation-before/src/cli/direct_send.rs",
+      "destination": "scratch-snapshots/resume-v090-specialized-receipt-cap-implementation-before/src/cli/direct_send.rs",
+      "bytes": 17674,
+      "sha256": "cb403dd7223556b1fa12b8f1cce7ef7b937f5f0514103ad732c7745259be2f67"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-specialized-receipt-cap-implementation-before/src/cli/handoff_delivery.rs",
+      "destination": "scratch-snapshots/resume-v090-specialized-receipt-cap-implementation-before/src/cli/handoff_delivery.rs",
+      "bytes": 79457,
+      "sha256": "509b90ca90f80b6e86223316e8f7bbf4c5958f22647eb31045b8ac7cdd2465ef"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-specialized-receipt-cap-implementation-before/src/cli/topology_handoff/automatic.rs",
+      "destination": "scratch-snapshots/resume-v090-specialized-receipt-cap-implementation-before/src/cli/topology_handoff/automatic.rs",
+      "bytes": 46839,
+      "sha256": "950e310187c001b13aa3ff43208cea3532aa94898b68eca076fe48dd0f5e8c5c"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-specialized-receipt-cap-implementation-after/src/cli/direct_send.rs",
+      "destination": "scratch-snapshots/resume-v090-specialized-receipt-cap-implementation-after/src/cli/direct_send.rs",
+      "bytes": 17986,
+      "sha256": "95f8aac7d821763f0cbdb5c384be692dc5af9e2cd994c1cf397ceaa193346e54"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-specialized-receipt-cap-implementation-after/src/cli/handoff_delivery.rs",
+      "destination": "scratch-snapshots/resume-v090-specialized-receipt-cap-implementation-after/src/cli/handoff_delivery.rs",
+      "bytes": 79349,
+      "sha256": "700c13635541be1a26e5b3451d144c89272c0aaa8bb33529f918c0b56c8f87ac"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-specialized-receipt-cap-implementation-after/src/cli/topology_handoff/automatic.rs",
+      "destination": "scratch-snapshots/resume-v090-specialized-receipt-cap-implementation-after/src/cli/topology_handoff/automatic.rs",
+      "bytes": 46747,
+      "sha256": "0959125fbb5e2a5570492a826017fdf1c665a48437d717be73558b6f9459d7e4"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-prepare.py",
+      "destination": "helpers/resume-v090-prepare.py",
+      "bytes": 16601,
+      "sha256": "d71e0c61650a32776d7031b85fbc6a4ca34e5d273f0c0281b89e0ec96862f514"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-v090-run.py",
+      "destination": "helpers/resume-v090-run.py",
+      "bytes": 45548,
+      "sha256": "70a1c545ac1dda7b103f063ca11cb16539dc4d061ee4095d386c7ef4484fb5cf"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-focused-run.py",
+      "destination": "helpers/resume-focused-run.py",
+      "bytes": 3057,
+      "sha256": "ec11037c84081d38fae41170d39b737db5d211cff1e9ee8ca556f1e3a532a561"
+    },
+    {
+      "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.superpowers/sdd/2026-10-11-handoff-delivery-redesign-finish/resume-composition-gates.py",
+      "destination": "helpers/resume-composition-gates.py",
+      "bytes": 1914,
+      "sha256": "ea52e28ea6e942ca2453b677f9b2cd1a8874567b57b6889b739b0a06375832a5"
+    }
+  ],
+  "partial_artifact_rule": "Scratch snapshots are preserved bytes only. Interrupted or unreviewed drafts are not approval, compilation, causal RED, runtime GREEN or clearance."
+}
