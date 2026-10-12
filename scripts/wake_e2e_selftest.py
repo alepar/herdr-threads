@@ -7,7 +7,11 @@ import json
 import os
 import shutil
 import stat
+import signal
+import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -78,6 +82,10 @@ class FakeRun:
         r.auth_refreshed = None
         r.codex_home = tmp / "codex-home"
         r.cleanup_report = None
+        r.lock = threading.Lock()
+        r.stopping = threading.Event()
+        r.children, r.workers = set(), []
+        r.drain_timeout_s, r.child_term_grace_s = 1.0, 0.5
         r.bin, r.state, r.endpoint = "/fake/herdr-threads", tmp / "state", "/fake/sock"
         self.calls = []
         self.script = {
@@ -89,7 +97,8 @@ class FakeRun:
         }
         r.run = self.run
 
-    def run(self, argv, env=None, timeout=60, tag=None):
+    def run(self, argv, env=None, timeout=60, tag=None, cleanup=False):
+        assert cleanup, f"cleanup ran a non-cleanup helper: {argv}"
         words = " ".join(str(a) for a in argv if not str(a).startswith(("/", "--")))
         for key, fn in self.script.items():
             if key in words:
@@ -185,11 +194,129 @@ class Cleanup(TempDir):
         self.assertTrue(f.r.auth_refreshed)
         self.assertEqual((self.tmp / "src.json").read_bytes(), FAKE_AUTH)
 
+    def test_failed_process_scan_is_unknown_not_clean(self):
+        f = FakeRun(self.tmp)
+        f.script["pgrep"] = lambda: (2, "", "pgrep: bad option")
+        self.assertTrue(any("scan failed" in p for p in f.r.cleanup()))
+
+    def test_timed_out_process_scan_is_unknown_not_clean(self):
+        f = FakeRun(self.tmp)
+        f.script["pgrep"] = lambda: ("timeout", "", "")
+        self.assertTrue(any("scan failed" in p for p in f.r.cleanup()))
+
     def test_keep_skips_cleanup_without_failing(self):
         f = FakeRun(self.tmp, keep=True)
         self.assertEqual(f.r.cleanup(), [])
         self.assertEqual(f.calls, [])
         self.assertEqual(f.r.cleanup_report["skipped"], "--keep")
+
+
+def real_run(tmp):
+    """A Run whose helpers are real processes (harmless `sleep` / `true`) but owns no workspace or daemon."""
+    r = object.__new__(W.Run)
+    r.args = SimpleNamespace(keep=False)
+    r.root = tmp / "root"
+    r.root.mkdir()
+    r.lock = threading.Lock()
+    r.cmdlog = open(tmp / "commands.jsonl", "a")
+    r.stopping = threading.Event()
+    r.children, r.workers = set(), []
+    r.drain_timeout_s, r.child_term_grace_s = 5.0, 1.0
+    r.workspace, r.layout_attempted, r.daemon_attempted = None, False, False
+    r.process_grace_s, r.stop_deadline_s = 0.5, 0.5
+    r.auth_digest = r.auth_refreshed = r.cleanup_report = None
+    return r
+
+
+class Interruption(TempDir):
+    """Cleanup begins while a recipient worker is blocked in a helper (like `herdr agent prompt --wait`)."""
+
+    def setUp(self):
+        super().setUp()
+        self.r = real_run(self.tmp)
+        self.addCleanup(self.r.cmdlog.close)
+        self.started, self.after = [], []
+
+    def worker(self):
+        try:
+            self.r.run(["sleep", "30"], tag="blocked-helper")
+        finally:
+            try:
+                self.r.run(["true"], tag="after-stop")
+                self.after.append("launched")
+            except W.Stopped:
+                self.after.append("refused")
+
+    def start_worker(self, target):
+        def quiet():  # a cut-off helper raises Stopped out of the worker, as in run_cases
+            try:
+                target()
+            except W.Stopped:
+                pass
+        t = threading.Thread(target=quiet, daemon=True, name="cl-test")
+        self.r.workers.append(t)
+        t.start()
+        end = time.time() + 5
+        while not self.r.children and time.time() < end:
+            time.sleep(0.02)
+        with self.r.lock:
+            self.started = list(self.r.children)
+        self.assertEqual(len(self.started), 1)
+
+    def test_cleanup_terminates_the_helper_drains_the_worker_and_refuses_new_helpers(self):
+        self.start_worker(self.worker)
+        problems = self.r.cleanup()
+        self.assertEqual(problems, [])
+        self.assertIsNotNone(self.started[0].poll())  # the blocked helper was terminated
+        self.assertFalse(self.r.workers[0].is_alive())
+        self.assertEqual(self.after, ["refused"])  # no child launched after cleanup began
+        self.assertEqual(self.r.children, set())
+
+    def test_a_worker_that_does_not_stop_fails_cleanup(self):
+        def stubborn():
+            try:
+                self.r.run(["sleep", "30"])
+            finally:
+                time.sleep(3)  # ignores the stop for longer than the drain allows
+        self.r.drain_timeout_s = 0.5
+        self.start_worker(stubborn)
+        self.assertTrue(any("did not stop" in p for p in self.r.cleanup()))
+
+    def test_interrupt_in_the_calling_thread_kills_its_helper(self):
+        """Ctrl-C/SIGTERM while the main thread waits on a helper (e.g. `workspace create`): no orphan."""
+        marker = f"wake-e2e-selftest-{os.getpid()}-{time.time_ns()}"
+
+        def interrupt(_signum, _frame):
+            raise KeyboardInterrupt
+        previous = signal.signal(signal.SIGALRM, interrupt)
+        try:
+            signal.setitimer(signal.ITIMER_REAL, 0.5)
+            with self.assertRaises(KeyboardInterrupt):
+                self.r.run(["/bin/sh", "-c", f"sleep 30; : {marker}"])
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+        self.assertEqual(self.r.children, set())
+        self.assertEqual(subprocess.run(["pgrep", "-f", marker], capture_output=True).returncode, 1)
+
+    def test_helper_cut_off_by_the_drain_reports_stopped_not_a_result(self):
+        outcome = []
+
+        def worker():
+            try:
+                outcome.append(self.r.run(["sleep", "30"]))
+            except W.Stopped:
+                outcome.append("stopped")
+        self.start_worker(worker)
+        self.assertEqual(self.r.cleanup(), [])
+        self.assertEqual(outcome, ["stopped"])
+
+    def test_a_helper_ignoring_sigterm_is_killed(self):
+        def ignorer():
+            self.r.run(["/bin/sh", "-c", "trap '' TERM; sleep 30"])
+        self.start_worker(ignorer)
+        self.assertEqual(self.r.cleanup(), [])
+        self.assertIsNotNone(self.started[0].poll())
 
 
 def row(recipient, case, result="PASS"):
@@ -279,6 +406,31 @@ class MainExitCode(TempDir):
         rc, doc = self.main()
         self.assertEqual((rc, cleaned), (W.EXIT_FAIL, [True]))
         self.assertEqual(doc["facts"]["exit_code"], W.EXIT_FAIL)
+
+    def test_sigterm_while_joining_a_blocked_worker_drains_it(self):
+        W.Run.cleanup = self.saved["cleanup"]  # the real cleanup: this run owns no workspace or daemon
+        helpers = []
+
+        def layout(run):
+            def run_cases(cases):
+                try:
+                    run.run(["sleep", "30"], tag="blocked-helper")  # cut off: raises Stopped
+                    helpers.append("returned normally after the drain")
+                    run.run(["true"], tag="after-stop")
+                    helpers.append("launched after stop")
+                except W.Stopped:
+                    pass
+            recipient = SimpleNamespace(name="cl-nudge", run_cases=run_cases)
+            run.recipients = [recipient]
+            threading.Timer(0.5, os.kill, (os.getpid(), signal.SIGTERM)).start()
+        W.Run.layout = layout
+        before = signal.getsignal(signal.SIGTERM)
+        rc, doc = self.main()
+        self.assertEqual(rc, W.EXIT_FAIL)
+        self.assertEqual(helpers, [])
+        self.assertEqual(doc["cleanup"]["problems"], [])
+        self.assertEqual(doc["completeness"], None)  # interrupted: no summary claims completeness
+        self.assertIs(signal.getsignal(signal.SIGTERM), before)  # handlers restored
 
     def test_cleanup_raising_fails(self):
         def cleanup(run):

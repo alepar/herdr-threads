@@ -94,6 +94,10 @@ class Refused(Exception):
     pass
 
 
+class Stopped(Exception):
+    """Cleanup has begun: no new helper process may start (except cleanup's own)."""
+
+
 class Run:
     def __init__(self, args):
         self.args = args
@@ -122,20 +126,45 @@ class Run:
         self.auth_digest = None
         self.auth_refreshed = None
         self.cleanup_report = None
+        self.stopping = threading.Event()  # set (under self.lock) when cleanup begins
+        self.children = set()              # in-flight helper processes, registered under self.lock
+        self.workers = []
+        self.drain_timeout_s = 30.0
+        self.child_term_grace_s = 3.0
 
     # ---------- process helpers ----------
-    def run(self, argv, env=None, timeout=60, tag=None):
+    def run(self, argv, env=None, timeout=60, tag=None, cleanup=False):
+        """Run one helper process. Every helper is registered while it runs, so cleanup can terminate it; once
+        cleanup has begun only cleanup's own helpers may start (others raise Stopped)."""
         started = time.monotonic()
+        with self.lock:  # admission and registration are atomic with cleanup's stop
+            if self.stopping.is_set() and not cleanup:
+                raise Stopped(f"cleanup has begun: not starting {argv[:3]}")
+            p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+                                 start_new_session=True)
+            self.children.add(p)
         try:
-            p = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=timeout, check=False)
-            rc, out, err = p.returncode, p.stdout, p.stderr
-        except subprocess.TimeoutExpired as e:
-            rc, out, err = "timeout", str(e.stdout or ""), str(e.stderr or "")
+            out, err = p.communicate(timeout=timeout)
+            rc = p.returncode
+        except subprocess.TimeoutExpired:
+            kill_group(p, signal.SIGKILL)
+            out, err = reap(p)
+            rc = "timeout"
+        except BaseException:  # Ctrl-C/SIGTERM in this thread: the helper (own session) must not outlive us
+            kill_group(p, signal.SIGKILL)
+            reap(p)
+            raise
+        finally:
+            with self.lock:
+                self.children.discard(p)
+        out, err = out or "", err or ""
         with self.lock:
             self.cmdlog.write(json.dumps({"utc": utc(), "tag": tag, "argv": argv, "rc": rc,
                                           "elapsed_s": round(time.monotonic() - started, 3),
                                           "stdout": out[:4096], "stderr": err[:4096]}) + "\n")
             self.cmdlog.flush()
+        if self.stopping.is_set() and not cleanup:  # cut off by the drain: the case is interrupted, not failed
+            raise Stopped(f"cleanup interrupted {argv[:3]}")
         return rc, out, err
 
     def ht(self, *argv, pane=None, coop=None, human=False, env=None, tag=None, timeout=60, check=True):
@@ -295,10 +324,10 @@ class Run:
     def cleanup(self):
         """Attempt every owned resource independently, then verify it is gone. Returns the problems found;
         any problem makes the run fail. `--keep` is the explicit diagnostic opt-out."""
-        problems, steps = [], []
+        problems, steps = self.drain(), []
         if self.args.keep:
             self.cleanup_report = {"skipped": "--keep", "workspace": self.workspace,
-                                   "daemon_attempted": self.daemon_attempted}
+                                   "daemon_attempted": self.daemon_attempted, "problems": problems}
             return problems
         if not self.workspace and self.layout_attempted:
             try:
@@ -308,7 +337,8 @@ class Run:
                 problems.append(f"workspace {self.workspace_label()}: create outcome not verified: {str(e)[:200]}")
         if self.workspace:
             try:
-                rc = self.run(["herdr", "workspace", "close", self.workspace], tag="cleanup:workspace", timeout=30)[0]
+                rc = self.run(["herdr", "workspace", "close", self.workspace], tag="cleanup:workspace", timeout=30,
+                              cleanup=True)[0]
                 steps.append({"workspace_close_rc": rc})
             except Exception as e:  # keep going: the daemon is ours too
                 steps.append({"workspace_close_error": str(e)[:200]})
@@ -339,22 +369,59 @@ class Run:
         # Exiting agents and their session-end hooks may still name the root for a moment: allow a grace period.
         # Codex agents carry the root only in their environment; the workspace check above covers them.
         end = time.time() + self.process_grace_s
-        leftover = self.owned_processes()
-        while leftover and time.time() < end:
+        while True:
+            try:
+                leftover = self.owned_processes()
+            except Exception as e:  # a failed scan is unknown, never "nothing left"
+                leftover = None
+                scan_error = str(e)[:200]
+            if leftover == [] or time.time() >= end:
+                break
             time.sleep(0.5)
-            leftover = self.owned_processes()
-        if leftover:
+        if leftover is None:
+            problems.append(f"owned-process scan failed: {scan_error}")
+        elif leftover:
             problems.append(f"owned processes still running {self.process_grace_s:.0f}s after cleanup: {leftover}")
         if self.auth_digest is not None:
             steps.append(self.retire_auth_copy())
         self.cleanup_report = {"steps": steps, "problems": problems}
         return problems
 
+    def drain(self):
+        """Stop admitting helpers, terminate the in-flight ones (each in its own process group), then join the
+        recipient workers, all with bounded waits. Returns the problems found."""
+        problems = []
+        with self.lock:
+            self.stopping.set()
+            inflight = list(self.children)
+        for p in inflight:
+            kill_group(p, signal.SIGTERM)
+        end = time.time() + self.child_term_grace_s
+        for p in inflight:
+            try:
+                p.wait(timeout=max(0.0, end - time.time()))
+            except subprocess.TimeoutExpired:
+                kill_group(p, signal.SIGKILL)
+                try:
+                    p.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    problems.append(f"helper pid {p.pid} did not exit: {p.args[:3]}")
+        end = time.time() + self.drain_timeout_s
+        for w in self.workers:
+            w.join(timeout=max(0.0, end - time.time()))
+            if w.is_alive():
+                problems.append(f"worker {w.name} did not stop within {self.drain_timeout_s:.0f}s")
+        with self.lock:
+            late = [p.pid for p in self.children if p.poll() is None]
+        if late:
+            problems.append(f"helpers still running after drain: {late}")
+        return problems
+
     def workspace_label(self):
         return f"wake-e2e-{self.run_id}"
 
     def workspace_by_label(self):
-        rc, out, _err = self.run(["herdr", "workspace", "list"], tag="cleanup:find-workspace", timeout=30)
+        rc, out, _err = self.run(["herdr", "workspace", "list"], tag="cleanup:find-workspace", timeout=30, cleanup=True)
         if rc != 0:
             raise RuntimeError(f"workspace list rc={rc}")
         for row in walk(json.loads(out or "{}")):
@@ -378,20 +445,45 @@ class Run:
         return {"codex_auth_copy": f"kept (refreshed): {copy}"}
 
     def workspace_alive(self):
-        rc, out, _err = self.run(["herdr", "workspace", "list"], tag="cleanup:verify-workspace", timeout=30)
+        rc, out, _err = self.run(["herdr", "workspace", "list"], tag="cleanup:verify-workspace", timeout=30,
+                                 cleanup=True)
         if rc != 0:
             raise RuntimeError(f"workspace list rc={rc}")
         return any(row.get("workspace_id") == self.workspace for row in walk(json.loads(out or "{}")))
 
     def owned_processes(self):
         """pids whose command line names this run's private root (the daemon's --state-dir, the shim)."""
-        rc, out, _err = self.run(["pgrep", "-f", str(self.root)], tag="cleanup:verify-processes", timeout=10)
-        return [int(p) for p in out.split() if p.isdigit() and int(p) != os.getpid()] if rc == 0 else []
+        rc, out, err = self.run(["pgrep", "-f", str(self.root)], tag="cleanup:verify-processes", timeout=10,
+                                cleanup=True)
+        if rc == 1:  # pgrep: no process matched
+            return []
+        if rc != 0:
+            raise RuntimeError(f"pgrep rc={rc} {err.strip()[:100]}")
+        return [int(p) for p in out.split() if p.isdigit() and int(p) != os.getpid()]
 
     def run_rc(self, *argv, timeout=10):
         e = {k: v for k, v in os.environ.items() if k not in CALLER_SESSION_ENV and k != "HERDR_PANE_ID"}
         return self.run([self.bin, "--state-dir", str(self.state), "--host-endpoint", self.endpoint, *argv],
-                        env=e, tag="cleanup:" + "-".join(argv), timeout=timeout)[0]
+                        env=e, tag="cleanup:" + "-".join(argv), timeout=timeout, cleanup=True)[0]
+
+
+def kill_group(p, sig):
+    """Signal a helper's whole process group (it was started in its own session); a helper already reaped is
+    skipped, so a reused pid is never signalled."""
+    if p.poll() is not None:
+        return
+    try:
+        os.killpg(p.pid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def reap(p, timeout=5):
+    """Collect a killed helper's output with a bound (a descendant outside its group could hold the pipes)."""
+    try:
+        return p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return "", ""
 
 
 def file_sha256(path):
@@ -582,7 +674,7 @@ class Recipient:
         kind = action.split("-")[1]
         gap = SPACING_S - (time.time() - self.last_wake)
         if gap > 0:
-            time.sleep(gap)
+            self.run.stopping.wait(gap)  # spacing ends early when cleanup begins
         self.wait_idle()
         tag = f"{case} {self.run.run_id}"
         # Codex can swallow a prompt submitted right after a turn ends: confirm the busy turn started, retry once,
@@ -657,7 +749,7 @@ class Recipient:
         expect_wake = not (action == "send-lazy" and self.wake_on == "nudge")
         gap = SPACING_S - (time.time() - self.last_wake)
         if gap > 0:
-            time.sleep(gap)
+            self.run.stopping.wait(gap)  # spacing ends early when cleanup begins
         self.wait_idle()
         body = f"{case} {self.run.run_id}"
         checks = {}
@@ -745,19 +837,28 @@ class Recipient:
         try:
             self.start()
             for case in cases:
+                if self.run.stopping.is_set():
+                    break
                 try:
                     if not case.startswith("invite/") and "invite" not in case.split("/")[0]:
                         self.ensure_channel(case.split("/")[1])
                     self.case(case)
+                except Stopped:
+                    break
                 except Exception as e:  # a driver or agent error fails the case, never passes it
                     self.run.record({"case": case, "harness": self.harness, "wake_on": self.wake_on,
                                      "recipient": self.name, "result": "FAIL", "checks": {"error": str(e)[:400]}})
+        except Stopped:
+            pass
         except Exception as e:
             for case in cases:
                 self.run.record({"case": case, "harness": self.harness, "wake_on": self.wake_on,
                                  "recipient": self.name, "result": "FAIL", "checks": {"error": f"startup: {str(e)[:400]}"}})
         finally:
-            (self.run.ev / f"pane-{self.name}.txt").write_text(self.screen(1000))
+            try:
+                (self.run.ev / f"pane-{self.name}.txt").write_text(self.screen(1000))
+            except Stopped:
+                pass  # interrupted: no pane capture, the summary marks unfinished cases missing
 
 
 def record(self, row):
@@ -860,10 +961,12 @@ def main(argv=None):
         run.layout()
         workers = [threading.Thread(target=r.run_cases, args=(cases,), name=r.name, daemon=True)
                    for r in run.recipients]
+        run.workers = workers
         for w in workers:
             w.start()
-        for w in workers:
-            w.join()
+        while any(w.is_alive() for w in workers):  # short joins keep Ctrl-C / SIGTERM responsive
+            for w in workers:
+                w.join(timeout=0.5)
         rc = EXIT_OK if summary(run, cases) else EXIT_FAIL
     except Refused as e:
         print(f"wake-e2e: refused: {e}", file=sys.stderr)
