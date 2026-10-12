@@ -31,13 +31,13 @@ parked:
 - 2026-10-10-handoff-delivery-redesign-roast-design-2.md · degraded-verdict · "clean (0 nits) [low coverage] — proceeded, not re-roasted under caller-owned fully autonomous exception; sole cause literal zero-raw rule despite all nine fresh scouts completed and both prior Blockings resolved; no dead stages, caps, escalations or unverified findings"
 
 codeBuckets:
-  completed: ht-0lo.11, ht-0lo.16, ht-0lo.17, ht-0lo.18, ht-0lo.6, ht-0lo.7, ht-0lo.2.1, ht-0lo.1.1, ht-0lo.3.1, ht-0lo.4.1, ht-0lo.1.3, ht-0lo.2.2, ht-0lo.4.2, ht-0lo.2.3, ht-0lo.1.2, ht-0lo.3.2, ht-0lo.5, ht-0lo.1, ht-0lo.2, ht-0lo.3, ht-0lo.4, ht-0lo.8.1, ht-0lo.8.2, ht-0lo.8.4, ht-0lo.9, ht-0lo.10, ht-0lo.12, ht-0lo.13, ht-0lo.14, ht-0lo.15
+  completed: ht-0lo.19, ht-0lo.8.3, ht-0lo.8, ht-0lo, ht-0lo.11, ht-0lo.16, ht-0lo.17, ht-0lo.18, ht-0lo.6, ht-0lo.7, ht-0lo.2.1, ht-0lo.1.1, ht-0lo.3.1, ht-0lo.4.1, ht-0lo.1.3, ht-0lo.2.2, ht-0lo.4.2, ht-0lo.2.3, ht-0lo.1.2, ht-0lo.3.2, ht-0lo.5, ht-0lo.1, ht-0lo.2, ht-0lo.3, ht-0lo.4, ht-0lo.8.1, ht-0lo.8.2, ht-0lo.8.4, ht-0lo.9, ht-0lo.10, ht-0lo.12, ht-0lo.13, ht-0lo.14, ht-0lo.15
   escalated:
-  pendingRetry: ht-0lo.8.3, ht-0lo.8, ht-0lo
+  pendingRetry:
   parked:
   stalled: false
-  review: not ready (final C measurement deferred; reviewed implementation and task-focused controls passed)
-  sweep: d8427582 — 774 passed, 3 failed, 0 errors, 0 skipped; failing: lease, carry setup, recovery work oracle; focused771 plus mandatory6; command: source-sealed expanded focused C (project ht-zo4 restriction); single sweep-fix pass complete, final combined rerun pending @ d8427582d2d0bfca0ed50e5b58f29b130ee12640
+  review: ready (after the phase-6 sweep @ 6abdf38f931f5ad3d386ae85890cbcf6af0912c3)
+  sweep: 6abdf38f — 827 passed, 0 failed, 0 errors, 0 skipped; focused821 plus mandatory6; command: source-sealed expanded focused C (project ht-zo4 restriction), all scoped leaks0 UUID7643628a @ 6abdf38f931f5ad3d386ae85890cbcf6af0912c3
 
 - resume2026-10-11 · user explicitly requested "$super-auto this, fully autonomous, design roast off, code roast on"; skipPlanRoast=true applies prospectively; retained completed designRound2 and low-coverage history, code phase/counters/epic unchanged.
 
@@ -136,7 +136,7 @@ roastCodeExit: converged
 
 - finalC-d8427582 · actual777enumerated, focused771=768PASS3FAIL53.048s (process54.069, list/build69.960), mandatory6/6PASS12.217s, allscopedleaks0UUID5b9fb6b9. FailedleaseFalse-request-vsSomeoracle, carryfixturepreacceptnonemptysetup, staleQ4exactrecoveryprobe27vs30. Exactthreeunchangedrepro0PASS3FAIL.977s/leaks0UUID73df30b1. No prod/flaky/timeout waiver; onephase6sweep-fixpass nowstarts, threeindependent groundedtestdefectscopes, originalGoal/caps/codeexit/punchlistunchanged. Evidence final-C-d8427582-failure-evidence/.
 
-sweepFix: single pass ht-0lo.16–.18 complete/closed at f4b74f311b28c39eec0c1a4a8d726c1fbd8e5c10; actual26PASS13.506s, allscopedleaks0; threeCLEAN lightreviews, serialcleanmerges/allcompile-onlygatesPASS; tree29f7 equals validation0b04. One broad rerun pending combinedMain20e7 absorption, not spent. No production change or cap/timeout/assertion waiver.
+sweepFix: single pass ht-0lo.16–.18 complete/closed at f4b74f31; rerun3d235276 actual825PASS2FAIL (both previouslyPASS, composition test defects); exactly one regression-only bead ht-0lo.19 CLEAN/merged6abdf38f/closed; last allowed rerun827/827PASS with scopedleaks0. No production/cap/deadline/assertion waiver, no new fix loop/re-roast.
 
 - baseDrift-20261012 · Main/origin now20e7ca73e41a9449376169ab6875c0675da02edc/schema36 (0036_in_turn_offer), prior565/schema35 historicalproof retained. Published-source1–36 immutable; feature36–45 must become prospective37–46, no allocation claim. Source/delivery/verification impact investigations source-only inparallel. FinalC remeasurement deferred until reviewedcombinedsource; codeRoastRound2/convergedexit/Goal unchanged; behavioralcomposition gets scopedpost-cap audit per current skill, no newfixloop. Main release/install/nativewake matrix ownership remainsMain; installed0.9.0/schema35 is distinctfromsource36.
 
@@ -150,3 +150,9 @@ baseAbsorbed: 20e7ca73e41a9449376169ab6875c0675da02edc → 79a0c3dd160a5733ba201
 - currentMain-helper · old3916572442aliases6mandatoryimmutable, additivecurrentMain55+separatefeature1/sourceSQL1–36map; onefocusedREVISE plusonefixpassverifiedAST, no rereview. No finalseal/count/PASSclaim yet.
 
 - post-cap-audit · c211 vsf4a8 officialengineShould-fix(2confirmed)[converged],14/14freshscouts2raw/2panels6/6votes/100%judgecoverage,0Blocking/dead/caps/escalations/regressions. Literalpost-cap audit; originalcodeRound2/convergedexit unchanged. NewShouldfix [scripts/wake-e2e.py:766] lazyinvitationwakeoracle and [docs/agent-usage.md:159] directaccept readerguidance go punchlist, no newfixloop percurrentSKILLChangeslandedafterloop. PriorSqueuecoalescing/5unverifiednits and changelogDocMinor remain. FinalC/speed/currentconsumerbyteproof/report pending.
+
+- final-acceptance · exact6abdf38f/treefb3f09b/source-seal827=focused821PASS62.801s plusmandatory6PASS, all3scopedchecks0UUID7643628a; source/binarybookends exact, parent configs untouched. Originald842 and3d failures retained in evidence. Finalregression19 onlytwo namedtests; oneCLEAN lightreview/noMinor and requiredserialmergecompilegatesPASS; no re-roast. Currentconsumer12files byte-exact todc157/strictvalidate+124PASS, no liveuptakeclaim. Controlledincrementalbuild5.990s/strictclippy20.626s PASS, exactsource/index/headrestored. All34trackerbeads closed; C/.8/root complete. Evidence final-acceptance-evidence/.
+- final-base-observation · Main/origin7ac8c4bf after20e7 differs onlyAGENTS.md andtwo nativewake-driverfiles; noRust/schema/protocol/consumer/runtime change. Not absorbed/retested as feature; Main-owned driver/native/integratedrelease qualification remains distinct. Candidate scripts unchanged since20e7, so currentMain scriptupdates survive ordinary3way landing. Frozenfeatureold-driverShouldfix remainsreported; newMain person-producer changes invalidate exactcooperative reproductionthere withoutproving realmatrixPASS.
+- cleanup-final · ourmergedregression19 helper removednormally --keep-branch, no processes/survivors; activefeature/reviewartifacts/warmtarget protected. Prior cleanup37.882GiBnetretained.
+
+friction: 23 events

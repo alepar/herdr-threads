@@ -1,0 +1,106 @@
+# Review package: 3d23527675170cacaec470aa13b3baf53688d4ba..HEAD
+
+## Commits
+c3f9f6b5 test: compose receipt prefix and actual direct-send envelope
+
+## Files changed
+ tests/hook_entrypoint/agy.rs | 21 +++++++++++++++++----
+ tests/store/receipts.rs      |  3 ++-
+ 2 files changed, 19 insertions(+), 5 deletions(-)
+
+## Diff
+diff --git a/tests/hook_entrypoint/agy.rs b/tests/hook_entrypoint/agy.rs
+index b79d02dc..0816ae80 100644
+--- a/tests/hook_entrypoint/agy.rs
++++ b/tests/hook_entrypoint/agy.rs
+@@ -1632,23 +1632,32 @@ mod activation {
+         assert_eq!(actual.outcome, DirectThreadEnsureOutcome::Created);
+         assert_eq!(actual.recipient, elected.recipient.seat);
+         let invitation = actual
+             .invitation
+             .as_ref()
+             .expect("actual selected invitation");
+         assert_eq!(invitation.confirmation, InvitationConfirmation::Lazy);
+         assert_eq!(invitation.effective_deadline_at, None);
+         assert_eq!(invitation.episode, 1);
+         assert_eq!(invitation.inviter.as_ref(), Some(&origin.seat));
+-        assert_eq!(sent["thread"], json!(actual.thread));
+-        assert_eq!(sent["selection"]["outcome"], "created");
+-        assert_eq!(sent["selection"]["invitation"], json!(invitation));
++        assert_eq!(
++            sent["version"],
++            herdr_threads::protocol::wire::PROTOCOL_VERSION
++        );
++        let result = sent
++            .get("result")
++            .filter(|result| result.is_object())
++            .expect("versioned direct-send result object");
++        assert_eq!(result["kind"], "message_sent");
++        assert_eq!(result["thread"], json!(actual.thread));
++        assert_eq!(result["selection"]["outcome"], "created");
++        assert_eq!(result["selection"]["invitation"], json!(invitation));
+         assert_eq!(
+             producer
+                 .iter()
+                 .filter(|exchange| matches!(exchange.command, Command::SendMessage(_)))
+                 .count(),
+             1
+         );
+         let (send, message) = producer
+             .iter()
+             .find_map(|exchange| match (&exchange.command, &exchange.result) {
+@@ -1660,21 +1669,25 @@ mod activation {
+             .expect("actual public SendMessage result");
+         assert_eq!(send.claim, origin);
+         assert_eq!(send.thread, actual.thread);
+         assert_eq!(send.body, body);
+         assert_eq!(send.delivery_mode, DeliveryMode::Lazy);
+         assert_eq!(send.deadline_millis, None);
+         assert_eq!(
+             send.direct_recipient.as_ref(),
+             Some(&elected.recipient.seat)
+         );
+-        assert_eq!(sent["message"], json!(message));
++        assert_eq!(result["data"], json!(message));
++        assert_eq!(
++            serde_json::from_value::<CommandResult>(result.clone()).unwrap(),
++            CommandResult::MessageSent(message.clone())
++        );
+         assert!(
+             !producer
+                 .iter()
+                 .any(|exchange| matches!(exchange.command, Command::Invite(_)))
+         );
+ 
+         let db = elected.fx.db();
+         let mut pair = [origin.seat.as_str(), elected.recipient.seat.as_str()];
+         pair.sort();
+         let pair_rows: i64 = db.query_row(
+diff --git a/tests/store/receipts.rs b/tests/store/receipts.rs
+index 68ec22f2..bad5e3f9 100644
+--- a/tests/store/receipts.rs
++++ b/tests/store/receipts.rs
+@@ -4855,21 +4855,22 @@ fn receipt_discovery_four_historical_streams_charge_every_visit_and_reset_once()
+             |r| r.get::<_, i64>(0)
+         )
+         .unwrap(),
+         0,
+         "future candidates consume work without premature warnings"
+     );
+ }
+ 
+ #[test]
+ fn receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_together() {
+-    let (context, mut db, _) = receipt_discovery_historical(37);
++    // Main36 shifts the genuine post-send-time, pre-backfill prefix to 38.
++    let (context, mut db, _) = receipt_discovery_historical(38);
+     discovery_receipt(&db, "rollback-source", 1, 500);
+     db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES ('rollback-source','c','pending',1,5000)",[]).unwrap();
+     db.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
+         .unwrap();
+     crate::store::schema::initialize(&db, || UtcMillis(1000)).unwrap();
+     db.execute_batch("CREATE TRIGGER abort_discovery_warning BEFORE INSERT ON messages WHEN NEW.kind='warn' BEGIN SELECT RAISE(ABORT,'injected warning rollback');END;").unwrap();
+     let mut cursor = receipts::ReceiptDueCursor::default();
+     assert!(receipts::scan_due(&context, &mut db, 100, &mut cursor).is_err());
+     assert_eq!(cursor.high_water_ordinal, 0);
+     assert_eq!(cursor.sparse_high_water_ordinal, 0);

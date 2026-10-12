@@ -1,0 +1,51 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID fd807b75-dc5e-4d84-afcc-a878d15f4b91 with nextest profile: default
+    Starting 5 tests across 3 binaries (5781 tests skipped)
+        PASS [   0.579s] (1/5) herdr-threads::combined direct_send::json_output_uses_the_versioned_send_envelope_with_the_thread
+  stdout ───
+
+    running 1 test
+    test direct_send::json_output_uses_the_versioned_send_envelope_with_the_thread ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.57s
+
+
+        PASS [   0.691s] (2/5) herdr-threads store::connection::tests::published_v36_upgrade_preserves_exact_in_turn_offers_and_delivery_history
+  stdout ───
+
+    running 1 test
+    test store::connection::tests::published_v36_upgrade_preserves_exact_in_turn_offers_and_delivery_history ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.68s
+
+
+        PASS [   0.721s] (3/5) herdr-threads store::connection::tests::published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history
+  stdout ───
+
+    running 1 test
+    test store::connection::tests::published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.71s
+
+
+        PASS [   0.900s] (4/5) herdr-threads store::receipts::tests::receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_together
+  stdout ───
+
+    running 1 test
+    test store::receipts::tests::receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_together ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.89s
+
+
+        PASS [   1.990s] (5/5) herdr-threads::hook_entrypoint agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement
+  stdout ───
+
+    running 1 test
+    test agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 85 filtered out; finished in 1.98s
+
+
+────────────
+     Summary [   2.007s] 5 tests run: 5 passed, 5781 skipped

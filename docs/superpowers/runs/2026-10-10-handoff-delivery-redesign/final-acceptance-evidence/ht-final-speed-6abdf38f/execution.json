@@ -1,0 +1,114 @@
+{
+  "status": "PASS",
+  "before": {
+    "head": "6abdf38f931f5ad3d386ae85890cbcf6af0912c3",
+    "tree": "fb3f09bcc0349b05351ff308333388cc0cdd0d63",
+    "branch": "super-auto/handoff-delivery-redesign",
+    "index_sha256": "e4c5fb3f1cc50bbe06656b6bafa3a2f9eb4775792d4e678252d3e52e9b8f409b",
+    "tracked_status": "",
+    "source_sha256": "ca2a0277fcd4623d280781da2c42df8206e0f4f4f85db33756a3f37c32a37e87"
+  },
+  "file": "src/store/lazy_delivery.rs",
+  "base": "565def869ae50e47e6da7388ea333229050eaf8d",
+  "target": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "jobs": 4,
+  "edited_sha256": "958268751940c8a8bb1e9e5aa52b6d1085216b1eb52c25f7f647d0bded654a4e",
+  "commands": [
+    {
+      "stage": "warm-build",
+      "argv": [
+        "nice",
+        "cargo",
+        "build",
+        "--locked",
+        "--all-features"
+      ],
+      "exit": 0,
+      "seconds": 37.986153083038516,
+      "measured_incremental": false,
+      "budget_seconds": null,
+      "log": "/private/tmp/ht-final-speed-6abdf38f/warm-build.log",
+      "log_sha256": "bca8e5d56a84f4cb47f4f3c49c728f8d5aa8b55751bcefe2799336a6622569f5"
+    },
+    {
+      "stage": "warm-clippy",
+      "argv": [
+        "nice",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "seconds": 0.14939833292737603,
+      "measured_incremental": false,
+      "budget_seconds": null,
+      "log": "/private/tmp/ht-final-speed-6abdf38f/warm-clippy.log",
+      "log_sha256": "99f71393b9903dca098310bb446022a4bdee195ea9996f351a787195555210a6"
+    },
+    {
+      "stage": "incremental-build",
+      "argv": [
+        "nice",
+        "cargo",
+        "build",
+        "--locked",
+        "--all-features"
+      ],
+      "exit": 0,
+      "seconds": 5.989936250029132,
+      "measured_incremental": true,
+      "budget_seconds": 60,
+      "log": "/private/tmp/ht-final-speed-6abdf38f/incremental-build.log",
+      "log_sha256": "ac62b161a56fc6e26bf0a8a0f96a715b8dbadd613ca64c98423168f7f0170cec"
+    },
+    {
+      "stage": "incremental-clippy",
+      "argv": [
+        "nice",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "seconds": 20.62584562494885,
+      "measured_incremental": true,
+      "budget_seconds": 60,
+      "log": "/private/tmp/ht-final-speed-6abdf38f/incremental-clippy.log",
+      "log_sha256": "c176b21a3ff6ca4cfd62ff6459f490c90083488b982ae8ddc99185296a478f04"
+    }
+  ],
+  "error": null,
+  "private_environment": {
+    "HOME": "/private/tmp/ht-final-speed-6abdf38f/HOME",
+    "CLAUDE_CONFIG_DIR": "/private/tmp/ht-final-speed-6abdf38f/CLAUDE_CONFIG_DIR",
+    "CODEX_HOME": "/private/tmp/ht-final-speed-6abdf38f/CODEX_HOME",
+    "GEMINI_CONFIG_DIR": "/private/tmp/ht-final-speed-6abdf38f/GEMINI_CONFIG_DIR",
+    "GEMINI_CLI_HOME": "/private/tmp/ht-final-speed-6abdf38f/GEMINI_CLI_HOME",
+    "HT_LEAK_RUN_ID": "2f3d2bab-828b-425a-9433-2e3af0287950"
+  },
+  "compiler_environment": {
+    "CARGO_HOME": "/Users/alepar/.cargo",
+    "RUSTUP_HOME": "/Users/alepar/.rustup",
+    "CARGO_BUILD_JOBS": "4",
+    "CARGO_TARGET_DIR": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target"
+  },
+  "after": {
+    "head": "6abdf38f931f5ad3d386ae85890cbcf6af0912c3",
+    "tree": "fb3f09bcc0349b05351ff308333388cc0cdd0d63",
+    "branch": "super-auto/handoff-delivery-redesign",
+    "index_sha256": "e4c5fb3f1cc50bbe06656b6bafa3a2f9eb4775792d4e678252d3e52e9b8f409b",
+    "tracked_status": "",
+    "source_sha256": "ca2a0277fcd4623d280781da2c42df8206e0f4f4f85db33756a3f37c32a37e87"
+  },
+  "restored_exact_bytes": true
+}
