@@ -5,21 +5,23 @@
   scripts/linux-e2e/run release-smoke [--versions V ...] [common options]
   scripts/linux-e2e/run doctor        [--hide-harnesses] [common options]
   scripts/linux-e2e/run wake-e2e      [--codex-auth-file F] [--claude-oauth-token-file F | --anthropic-api-key-file F]
-                                      [--live] [--timeout S] [common options] [-- DRIVER ARGS...]
-  scripts/linux-e2e/run clean         [--keep-image]
+                                      [--live [--allow-dirty]] [--timeout S] [common options] [-- DRIVER ARGS...]
+  scripts/linux-e2e/run clean         [--all [--keep-image]]
   scripts/linux-e2e/run --self-test   # this script's own parsing/cleanup paths, with a fake docker (no Docker)
 
 Common options: --evidence-dir DIR (default: a new dir under the system temp dir, printed), --platform arm64|amd64
 (default: the Docker server's architecture; the other one runs emulated), --no-cache (no named cargo/target volumes).
 
-Every subcommand builds the image (scripts/linux-e2e/Dockerfile, context from `git archive HEAD`), starts one
-`docker run --init` container labelled dev.herdr-threads.linux-e2e, streams `git archive HEAD` into it (never a bind
-mount; uncommitted changes are not tested), proves the exported tree equals HEAD^{tree} and rebuilds HEAD's
-commit object over it (so `git rev-parse HEAD` inside is the host's SHA), runs its steps
-(scripts/linux-e2e/in-container.sh), copies the container's evidence into the evidence dir, and removes the
-container on every exit path, including Ctrl-C and SIGTERM. Nothing on the host is touched besides Docker objects
-carrying that label and the evidence dir. No credential ever enters an image or the evidence; wake-e2e copies the
-ones it is given into its container only (README.md, "Credentials").
+Every subcommand builds the image (scripts/linux-e2e/Dockerfile, context from `git archive <HEAD sha>`), starts one
+`docker run --init` container (labelled dev.herdr-threads.linux-e2e plus this worktree and run; all capabilities
+dropped, no-new-privileges, no bind mounts), streams `git archive <sha>` into it, proves the exported tree equals the
+commit's tree and rebuilds the commit object over it (so `git rev-parse HEAD` inside is the host's SHA), runs its
+steps (scripts/linux-e2e/in-container.sh), then stops the container, copies its evidence into the evidence dir and
+removes it, on every exit path, including Ctrl-C, SIGTERM and SIGHUP. The container bounds its own life: its PID 1
+child is a watchdog that scrubs staged credentials and exits when the host stops renewing its lease (the runner was
+SIGKILLed or the host died) or a maximum life passes. Nothing on the host is touched besides Docker objects with
+that label and the evidence dir. No credential ever enters an image or the evidence; wake-e2e copies the ones it is
+given into its container only (README.md, "Credentials").
 
 Exit codes: 0 passed; 1 failed; 2 refused (usage, preflight, missing credentials); 128+N interrupted by signal N.
 Python 3.9+, standard library only.
@@ -28,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import shutil
@@ -37,20 +40,48 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
 
 LABEL = "dev.herdr-threads.linux-e2e"
+WORKTREE_LABEL = LABEL + ".worktree"
+RUN_LABEL = LABEL + ".run"
 IMAGE = "ht-linux-e2e-runner"
 HOME = "/home/tester"
 SRC = f"{HOME}/src"
 STEP = ["bash", f"{SRC}/scripts/linux-e2e/in-container.sh"]
-# name -> mount point; the volume name carries the architecture (an amd64 target dir is no use to arm64).
+CRED_PREFIX = "ht-linux-e2e-cred."
+# name -> mount point; volume names carry the architecture and the worktree (no sharing across worktrees).
 VOLUMES = {"cargo": f"{HOME}/.cargo/registry", "target": f"{SRC}/target", "herdr": f"{HOME}/.cache/herdr-releases"}
 EXIT_OK, EXIT_FAIL, EXIT_REFUSED = 0, 1, 2
-# Driver options the runner sets itself inside the container.
-RUNNER_OWNED_DRIVER_ARGS = ("--bin", "--codex-auth-home", "--self-test")
+# scripts/wake-e2e.py's options (True: takes a value). The runner owns some, consumes --harness (passing a canonical
+# one itself) and refuses abbreviations of any of them, which the driver's argparse would otherwise expand.
+DRIVER_OPTIONS = {"--bin": True, "--harness": True, "--cases": True, "--evidence-dir": True, "--keep": False,
+                  "--claude-model": True, "--claude-permission-mode": True, "--claude-config-dir": True,
+                  "--codex-model": True, "--codex-args": True, "--codex-auth-home": True, "--self-test": False,
+                  "--help": False}
+RUNNER_OWNED_DRIVER_ARGS = ("--bin", "--codex-auth-home", "--self-test", "--evidence-dir")
+HARNESSES = ("claude", "codex")
+OAUTH_TOKEN_PREFIX = "sk-ant-oat"  # the prefix Claude Code's own binary checks for OAuth tokens (2.1.296 strings)
+LEASE_S = int(os.environ.get("HT_LINUX_E2E_LEASE_S", "60"))
+# The watchdog: the container's main process (under --init). It renews nothing itself; the runner touches the lease
+# file every LEASE_S/4 s. Without renewal for LEASE_S, or past MAX_LIFE_S, or on docker stop (SIGTERM), it removes
+# staged and driver-copied credentials and exits, which stops the container and kills everything in it.
+WATCHDOG = r'''
+lease=$HOME/run/lease; mkdir -p "$HOME/run" "$HOME/evidence"; touch "$lease"; start=$(date +%s)
+scrub() { rm -rf "$HOME/.ht-creds"; find /tmp -path '/tmp/ht-wake-e2e.*' \( -name auth.json -o -name .credentials.json \) -delete 2>/dev/null; }
+trap 'scrub; exit 0' TERM INT HUP
+while :; do
+  now=$(date +%s); age=$((now - $(stat -c %Y "$lease" 2>/dev/null || echo 0)))
+  if [ "$age" -gt "$HT_LE2E_LEASE_S" ]; then why="host lease expired (${age}s without a heartbeat)"
+  elif [ $((now - start)) -gt "$HT_LE2E_MAX_LIFE_S" ]; then why="maximum life ${HT_LE2E_MAX_LIFE_S}s reached"
+  else sleep 2 & wait $!; continue; fi
+  echo "watchdog: $why; scrubbed credentials, stopping the container" | tee "$HOME/evidence/watchdog.txt"
+  scrub; exit 3
+done
+'''
 
 
 class Refused(Exception):
@@ -63,6 +94,12 @@ class Interrupted(BaseException):
         self.signum = signum
 
 
+def detached(argv, **kw):
+    """Cleanup's commands run in their own session: a terminal Ctrl-C (sent to the whole foreground process group)
+    must not cut off `docker stop`, `docker cp` or `docker rm`."""
+    return subprocess.run(argv, capture_output=True, text=True, start_new_session=True, **kw)
+
+
 def docker_cmd():
     return os.environ.get("HT_LINUX_E2E_DOCKER", "docker")
 
@@ -70,6 +107,10 @@ def docker_cmd():
 def repo_root():
     override = os.environ.get("HT_LINUX_E2E_REPO")
     return Path(override).resolve() if override else Path(__file__).resolve().parent.parent.parent
+
+
+def worktree_id(repo):
+    return hashlib.sha256(str(repo).encode()).hexdigest()[:12]
 
 
 def git(repo, *argv):
@@ -84,6 +125,26 @@ def listed_herdr_versions(repo):
             if version not in versions:
                 versions.append(version)
     return versions
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def stale_cred_dirs():
+    """Env-file dirs of runners that died without cleanup (SIGKILL): ht-linux-e2e-cred.<pid>.* with a dead pid."""
+    stale = []
+    for d in Path(tempfile.gettempdir()).glob(CRED_PREFIX + "*"):
+        parts = d.name[len(CRED_PREFIX):].split(".")
+        if parts and parts[0].isdigit() and not pid_alive(int(parts[0])):
+            stale.append(d)
+    return stale
 
 
 def credential_file(path, what):
@@ -101,18 +162,72 @@ def credential_file(path, what):
     return p
 
 
-def token_from(path, what):
+def token_from(path, what, prefix=None):
+    """One bare token: no JSON, no second field or line. With prefix, it must start with it."""
     token = path.read_text().strip()
-    if not token or any(c in token for c in "\r\n\0"):
-        raise Refused(f"{what}: {path} must hold exactly one line")
+    if not token:
+        raise Refused(f"{what}: {path} is empty")
+    if token[0] in "{[\"'":
+        raise Refused(f"{what}: {path} looks like JSON or a quoted value; it must hold the bare token only")
+    if any(c.isspace() or c == "\0" for c in token) or "=" in token:
+        raise Refused(f"{what}: {path} must hold exactly one token (no spaces, lines or NAME=value)")
+    if prefix and not token.startswith(prefix):
+        raise Refused(f"{what}: {path} does not hold a `claude setup-token` token (expected the {prefix}... prefix)")
+    if not prefix and not token.startswith("sk-ant-"):
+        print(f"linux-e2e: warning: {what}: {path} does not start with sk-ant- (an Anthropic API key usually does)",
+              file=sys.stderr)
     return token
+
+
+def split_driver_args(rest):
+    """Validate driver args; returns (args without --harness, harness list). Raises ValueError on a refusal."""
+    out, harness, i = [], None, 0
+    while i < len(rest):
+        word = rest[i]
+        if word.startswith("--") and word != "--":
+            name, has_value = (word.split("=", 1)[0], "=" in word)
+            if name not in DRIVER_OPTIONS:
+                matches = [o for o in DRIVER_OPTIONS if o.startswith(name)]
+                if matches:
+                    raise ValueError(f"driver option abbreviations are refused: {name} (spell out {', '.join(matches)})")
+                out.append(word)  # an option this runner does not know (a newer driver's): passed through
+                i += 1
+                continue
+            if name in RUNNER_OWNED_DRIVER_ARGS:
+                raise ValueError(f"the runner sets this driver option itself: {name}")
+            takes = DRIVER_OPTIONS[name]
+            value = None
+            if takes and not has_value:
+                if i + 1 >= len(rest):
+                    raise ValueError(f"driver option {name} needs a value")
+                value = rest[i + 1]
+                i += 1
+            elif has_value:
+                value = word.split("=", 1)[1]
+            if name == "--harness":
+                harness = value
+            else:
+                out.append(word)
+                if takes and not has_value:
+                    out.append(value)
+        else:
+            out.append(word)
+        i += 1
+    harnesses = [h for h in (harness or ",".join(HARNESSES)).split(",") if h]
+    unknown = [h for h in harnesses if h not in HARNESSES]
+    if unknown or not harnesses:
+        raise ValueError(f"unknown harness: {', '.join(unknown) or '(none)'}")
+    return out, list(dict.fromkeys(harnesses))
 
 
 def parse(argv):
     ap = argparse.ArgumentParser(prog="scripts/linux-e2e/run", description=__doc__.splitlines()[0],
-                                 epilog="See scripts/linux-e2e/README.md.")
+                                 epilog="See scripts/linux-e2e/README.md.", allow_abbrev=False)
     ap.add_argument("--self-test", action="store_true", help="this script's own tests (fake docker, no Docker)")
     sub = ap.add_subparsers(dest="command")
+
+    def parser(name, **kw):
+        return sub.add_parser(name, allow_abbrev=False, **kw)
 
     def common(p):
         p.add_argument("--evidence-dir", help="host dir for the evidence (default: new dir under the temp dir)")
@@ -120,22 +235,25 @@ def parse(argv):
         p.add_argument("--no-cache", action="store_true", help="no named cargo/target/Herdr cache volumes")
         return p
 
-    common(sub.add_parser("self-test", help="wake-e2e driver --self-test in Linux"))
-    rs = common(sub.add_parser("release-smoke", help="scripts/herdr-release-smoke against listed Herdr releases"))
+    common(parser("self-test", help="wake-e2e driver --self-test in Linux"))
+    rs = common(parser("release-smoke", help="scripts/herdr-release-smoke against listed Herdr releases"))
     rs.add_argument("--versions", nargs="+", help="subset of tests/herdr-releases.tsv (default: all)")
-    dr = common(sub.add_parser("doctor", help="install the static release from a file:// tree; doctor in/out of a pane"))
+    dr = common(parser("doctor", help="install the static release from a file:// tree; doctor in/out of a pane"))
     dr.add_argument("--hide-harnesses", action="store_true", help="run without claude/codex on PATH")
-    we = common(sub.add_parser("wake-e2e", help="the live wake matrix in a Herdr pane (needs credentials and --live)"))
+    we = common(parser("wake-e2e", help="the live wake matrix in a Herdr pane (needs credentials and --live)"))
     we.add_argument("--codex-auth-file", help="Codex auth.json, copied mode 0600 into the container's scratch home")
     claude = we.add_mutually_exclusive_group()
     claude.add_argument("--claude-oauth-token-file",
                         help="file holding a `claude setup-token` token, passed as CLAUDE_CODE_OAUTH_TOKEN")
     claude.add_argument("--anthropic-api-key-file", help="file holding an API key, passed as ANTHROPIC_API_KEY")
     we.add_argument("--live", action="store_true", help="really start the harnesses (spends Claude/Codex quota)")
+    we.add_argument("--allow-dirty", action="store_true", help="--live with uncommitted changes (they are not tested)")
     we.add_argument("--timeout", type=int, default=3600, help="seconds to wait for the driver (default %(default)s)")
     we.add_argument("driver_args", nargs=argparse.REMAINDER, help="-- then scripts/wake-e2e.py arguments")
-    cl = sub.add_parser("clean", help="remove every container, volume and image labelled " + LABEL)
-    cl.add_argument("--keep-image", action="store_true", help="keep the runner image (only containers, volumes)")
+    cl = parser("clean", help="remove this worktree's containers, volumes and stale credential dirs, and dangling "
+                              "runner images (--all: every object labelled " + LABEL + ")")
+    cl.add_argument("--all", action="store_true", help="every labelled container, volume and image, any worktree")
+    cl.add_argument("--keep-image", action="store_true", help="with --all: keep the tagged runner images")
     args = ap.parse_args(argv)
     if not args.self_test and not args.command:
         ap.error("a subcommand is required")
@@ -143,27 +261,18 @@ def parse(argv):
         rest = list(args.driver_args)
         if rest[:1] == ["--"]:
             rest = rest[1:]
-        owned = [a for a in rest if a.split("=", 1)[0] in RUNNER_OWNED_DRIVER_ARGS]
-        if owned:
-            ap.error(f"the runner sets these driver options itself: {', '.join(owned)}")
-        args.driver_args = rest
+        try:
+            args.driver_args, args.harnesses = split_driver_args(rest)
+        except ValueError as e:
+            ap.error(str(e))
     return args
-
-
-def wake_harnesses(driver_args):
-    value = "claude,codex"
-    for i, word in enumerate(driver_args):
-        if word == "--harness" and i + 1 < len(driver_args):
-            value = driver_args[i + 1]
-        elif word.startswith("--harness="):
-            value = word.split("=", 1)[1]
-    return [h for h in value.split(",") if h]
 
 
 class Runner:
     def __init__(self, args):
         self.args = args
         self.repo = repo_root()
+        self.worktree = worktree_id(self.repo)
         self.docker = docker_cmd()
         self.run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
         self.name = f"ht-linux-e2e-{args.command}-{self.run_id}"
@@ -173,7 +282,12 @@ class Runner:
         self.container = False   # a `docker run` was attempted: cleanup must remove self.name
         self.child = None
         self.step_no = 0
-        self.facts = {"command": args.command, "run_id": self.run_id, "container": self.name, "steps": []}
+        self.beat_stop = threading.Event()
+        self.beat = None
+        max_life = args.timeout + 1800 if args.command == "wake-e2e" else 7200
+        self.max_life = int(os.environ.get("HT_LINUX_E2E_MAX_LIFE_S", max_life))
+        self.facts = {"command": args.command, "run_id": self.run_id, "container": self.name,
+                      "worktree": self.worktree, "lease_s": LEASE_S, "max_life_s": self.max_life, "steps": []}
 
     # ---------- helpers ----------
     def log_path(self, name):
@@ -217,26 +331,46 @@ class Runner:
         if self.args.platform:
             return self.args.platform
         arch = self.capture("info", "--format", "{{.Architecture}}")
-        return {"aarch64": "arm64", "arm64": "arm64", "x86_64": "amd64", "amd64": "amd64"}.get(arch) or \
-            self.refuse(f"unsupported Docker architecture {arch!r}")
+        known = {"aarch64": "arm64", "arm64": "arm64", "x86_64": "amd64", "amd64": "amd64"}
+        if arch not in known:
+            raise Refused(f"unsupported Docker architecture {arch!r}")
+        return known[arch]
 
-    def refuse(self, why):
-        raise Refused(why)
+    def warn_leftovers(self):
+        """Live or stopped labelled containers and stale credential dirs from runs that died (e.g. SIGKILL)."""
+        try:
+            rows = self.capture("ps", "-a", "--filter", f"label={LABEL}", "--format", "{{.Names}} ({{.Status}})")
+        except (subprocess.CalledProcessError, OSError):
+            rows = ""
+        rows = [r for r in rows.splitlines() if r.strip()]
+        if rows:
+            print("linux-e2e: warning: labelled containers exist (other runs, or leftovers of a killed one): " +
+                  "; ".join(rows) + ". Remove leftovers with `scripts/linux-e2e/run clean` (this worktree) or "
+                  "`clean --all`.", file=sys.stderr)
+        stale = stale_cred_dirs()
+        if stale:
+            print("linux-e2e: warning: stale credential dirs of killed runs: " + " ".join(map(str, stale)) +
+                  " (`scripts/linux-e2e/run clean` removes them)", file=sys.stderr)
 
     # ---------- phases ----------
     def source(self):
         self.sha = git(self.repo, "rev-parse", "HEAD")
-        self.tree = git(self.repo, "rev-parse", "HEAD^{tree}")
+        self.tree = git(self.repo, "rev-parse", f"{self.sha}^{{tree}}")
         dirty = bool(git(self.repo, "status", "--porcelain"))
         self.facts.update(sha=self.sha, tree=self.tree, host_worktree_dirty=dirty)
+        if dirty and getattr(self.args, "live", False) and not self.args.allow_dirty:
+            raise Refused("the worktree has uncommitted changes, which a live run would not test; commit them or "
+                          "pass --allow-dirty")
         print(f"linux-e2e {self.args.command}: HEAD {self.sha[:12]}" +
               (" (uncommitted changes are NOT exported)" if dirty else ""), flush=True)
+
+    def archive(self, *paths):
+        return ["git", "-C", str(self.repo), "archive", "--format=tar", self.sha, *paths]
 
     def build_image(self, arch):
         tag = f"{IMAGE}:{arch}"
         with tempfile.TemporaryDirectory(prefix="ht-linux-e2e-ctx.") as ctx:
-            archive = subprocess.run(["git", "-C", str(self.repo), "archive", "--format=tar", "HEAD",
-                                      "scripts/linux-e2e", "tests/herdr-releases.tsv"],
+            archive = subprocess.run(self.archive("scripts/linux-e2e", "tests/herdr-releases.tsv"),
                                      check=True, capture_output=True).stdout
             tar_path = Path(ctx) / "context.tar"
             tar_path.write_bytes(archive)
@@ -256,22 +390,33 @@ class Runner:
         return tag
 
     def start(self, tag, arch):
-        argv = [self.docker, "run", "-d", "--init", "--name", self.name, "--label", f"{LABEL}=1",
-                "--platform", f"linux/{arch}", "--hostname", "ht-linux-e2e"]
+        labels = [f"{LABEL}=1", f"{WORKTREE_LABEL}={self.worktree}", f"{RUN_LABEL}={self.run_id}"]
+        argv = [self.docker, "run", "-d", "--init", "--name", self.name, "--platform", f"linux/{arch}",
+                "--hostname", "ht-linux-e2e", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                "-e", f"HT_LE2E_LEASE_S={LEASE_S}", "-e", f"HT_LE2E_MAX_LIFE_S={self.max_life}"]
+        for label in labels:
+            argv += ["--label", label]
         if not self.args.no_cache:
             for key, mount in VOLUMES.items():
-                volume = f"{IMAGE}-{key}-{arch}"
-                self.capture("volume", "create", "--label", f"{LABEL}=1", volume)
+                volume = f"{IMAGE}-{key}-{arch}-{self.worktree}"
+                self.capture("volume", "create", "--label", labels[0], "--label", labels[1], volume)
                 argv += ["-v", f"{volume}:{mount}"]
-        argv += [tag, "sleep", "infinity"]
+        argv += [tag, "bash", "-c", WATCHDOG]
         self.container = True
         if self.call(argv, "container-start", quiet=True) != 0:
             raise RuntimeError("docker run failed")
-        print(f"  container {self.name}", flush=True)
+        self.beat = threading.Thread(target=self.heartbeat, name="lease", daemon=True)
+        self.beat.start()
+        print(f"  container {self.name} (lease {LEASE_S}s, max life {self.max_life}s)", flush=True)
+
+    def heartbeat(self):
+        interval = max(1.0, LEASE_S / 4)
+        while not self.beat_stop.wait(interval):
+            subprocess.run([self.docker, "exec", self.name, "touch", f"{HOME}/run/lease"],
+                           stdin=subprocess.DEVNULL, capture_output=True)
 
     def export_source(self):
-        archive = subprocess.Popen(["git", "-C", str(self.repo), "archive", "--format=tar", "HEAD"],
-                                   stdout=subprocess.PIPE)
+        archive = subprocess.Popen(self.archive(), stdout=subprocess.PIPE)
         try:
             rc = self.call([self.docker, "exec", "-i", self.name, "sh", "-c", f"mkdir -p {SRC} && tar -x -C {SRC}"],
                            "export-source", stdin=archive.stdout, quiet=True)
@@ -286,12 +431,10 @@ class Runner:
         if self.step("prepare-src", self.sha, self.tree, quiet=True) != 0:
             raise RuntimeError("the exported tree is not HEAD's tree")
 
-    def step(self, name, *argv, env=None, env_file=None, quiet=False, label=None):
+    def step(self, name, *argv, env_file=None, quiet=False, label=None):
         cmd = [self.docker, "exec"]
         if env_file:
             cmd += ["--env-file", str(env_file)]
-        for k, v in (env or {}).items():
-            cmd += ["-e", f"{k}={v}"]
         if getattr(self.args, "hide_harnesses", False):
             cmd += ["-e", "HT_HIDE_HARNESSES=1"]
         return self.call(cmd + [self.name, *STEP, name, *argv], label or name, quiet=quiet)
@@ -310,23 +453,26 @@ class Runner:
     def copy_evidence(self):
         out = self.evidence / "container"
         out.mkdir(parents=True, exist_ok=True)
-        r = subprocess.run([self.docker, "cp", f"{self.name}:{HOME}/evidence/.", str(out)],
-                           capture_output=True, text=True, timeout=300)
+        r = detached([self.docker, "cp", f"{self.name}:{HOME}/evidence/.", str(out)], timeout=300)
         if r.returncode != 0:
             print(f"linux-e2e: evidence copy failed: {r.stderr.strip()}", file=sys.stderr)
 
     def cleanup(self):
+        """Stop (agents die, the watchdog scrubs credentials), copy the evidence from the stopped container, remove."""
         problems = []
+        self.beat_stop.set()
         if self.child is not None and self.child.poll() is None:
             self.child.terminate()
         if self.container:
+            stop = detached([self.docker, "stop", "-t", "5", self.name])
+            if stop.returncode != 0 and "No such container" not in stop.stderr:
+                problems.append(f"docker stop {self.name}: {stop.stderr.strip()}")
             try:
                 self.copy_evidence()
             except Exception as e:  # noqa: BLE001 - cleanup continues
                 problems.append(f"evidence copy: {e!r}")
-            r = subprocess.run([self.docker, "rm", "-f", "-v", self.name], capture_output=True, text=True)
-            gone = subprocess.run([self.docker, "ps", "-a", "-q", "--filter", f"name=^{self.name}$"],
-                                  capture_output=True, text=True)
+            r = detached([self.docker, "rm", "-f", "-v", self.name])
+            gone = detached([self.docker, "ps", "-a", "-q", "--filter", f"name=^{self.name}$"])
             if r.returncode != 0 and "No such container" not in r.stderr:
                 problems.append(f"docker rm -f {self.name}: {r.stderr.strip()}")
             elif gone.stdout.strip():
@@ -337,11 +483,14 @@ class Runner:
         return problems
 
     # ---------- subcommands ----------
-    def run_self_test(self):
+    def prepared(self):
         self.source()
         arch = self.platform()
         self.start(self.build_image(arch), arch)
         self.export_source()
+
+    def run_self_test(self):
+        self.prepared()
         return EXIT_OK if self.step("self-test") == 0 else EXIT_FAIL
 
     def run_release_smoke(self):
@@ -349,17 +498,11 @@ class Runner:
         unknown = [v for v in (self.args.versions or []) if v not in listed]
         if unknown:
             raise Refused(f"not in tests/herdr-releases.tsv: {', '.join(unknown)} (listed: {', '.join(listed)})")
-        self.source()
-        arch = self.platform()
-        self.start(self.build_image(arch), arch)
-        self.export_source()
+        self.prepared()
         return EXIT_OK if self.step("release-smoke", *(self.args.versions or [])) == 0 else EXIT_FAIL
 
     def run_doctor(self):
-        self.source()
-        arch = self.platform()
-        self.start(self.build_image(arch), arch)
-        self.export_source()
+        self.prepared()
         for name in ("herdr-up", "build-release", "install-release", "daemon-wait", "doctor-outside"):
             if self.step(name) != 0:
                 return EXIT_FAIL
@@ -385,10 +528,7 @@ class Runner:
     def wake_credentials(self):
         """Host preflight. Returns (env-file lines, codex auth bytes, missing harness credentials)."""
         a = self.args
-        harnesses = wake_harnesses(a.driver_args)
-        unknown = [h for h in harnesses if h not in ("claude", "codex")]
-        if unknown:
-            raise Refused(f"unknown harness: {', '.join(unknown)}")
+        harnesses = a.harnesses
         env_lines, codex_auth, missing = [], None, []
         given = a.codex_auth_file or a.claude_oauth_token_file or a.anthropic_api_key_file
         if given and not a.live:
@@ -396,7 +536,8 @@ class Runner:
         if "claude" in harnesses:
             if a.claude_oauth_token_file:
                 p = credential_file(a.claude_oauth_token_file, "--claude-oauth-token-file")
-                env_lines.append(f"CLAUDE_CODE_OAUTH_TOKEN={token_from(p, '--claude-oauth-token-file')}")
+                token = token_from(p, "--claude-oauth-token-file", prefix=OAUTH_TOKEN_PREFIX)
+                env_lines.append(f"CLAUDE_CODE_OAUTH_TOKEN={token}")
             elif a.anthropic_api_key_file:
                 p = credential_file(a.anthropic_api_key_file, "--anthropic-api-key-file")
                 env_lines.append(f"ANTHROPIC_API_KEY={token_from(p, '--anthropic-api-key-file')}")
@@ -417,6 +558,16 @@ class Runner:
                                      "harnesses": harnesses}
         return env_lines, codex_auth, missing
 
+    def env_file(self, lines):
+        """A mode-0600 env-file in a private 0700 dir named after this pid (so `clean` can tell a stale one)."""
+        self.private = Path(tempfile.mkdtemp(prefix=f"{CRED_PREFIX}{os.getpid()}."))
+        os.chmod(self.private, 0o700)
+        path = self.private / "claude.env"
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        return path
+
     def run_wake_e2e(self):
         env_lines, codex_auth, missing = self.wake_credentials()
         if missing:
@@ -425,25 +576,20 @@ class Runner:
                   flush=True)
         elif not self.args.live:
             print("linux-e2e wake-e2e: --live not given: the in-pane preflight will refuse", flush=True)
-        env_file = None
-        if env_lines:
-            self.private = Path(tempfile.mkdtemp(prefix="ht-linux-e2e-cred."))
-            os.chmod(self.private, 0o700)
-            env_file = self.private / "claude.env"
-            fd = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "w") as f:
-                f.write("\n".join(env_lines) + "\n")
-        self.source()
-        arch = self.platform()
-        self.start(self.build_image(arch), arch)
-        self.export_source()
-        # The Claude credential reaches only the headless Herdr server's environment (`docker exec --env-file` from
-        # the host's 0600 file: not in the container config, not in the image, never in the evidence); its panes,
-        # and so the driver and the agents in them, inherit it.
-        if self.step("herdr-up", env_file=env_file) != 0 or self.step("build-bin") != 0:
+        self.prepared()
+        if self.step("build-bin") != 0:
             return EXIT_FAIL
-        self.stage(b"".join(a.encode() + b"\0" for a in self.args.driver_args), f"{HOME}/run/driver-args",
-                   "stage-driver-args")
+        # The Claude credential reaches only the headless Herdr server's environment (`docker exec --env-file` from
+        # a host 0600 file created just now and removed at exit: not in the container config, the image or the
+        # evidence); its panes, and so the driver and the agents in them, inherit it.
+        env_file = self.env_file(env_lines) if env_lines else None
+        if self.step("herdr-up", env_file=env_file) != 0:
+            return EXIT_FAIL
+        if self.private:
+            shutil.rmtree(self.private, ignore_errors=True)
+            self.private = None
+        driver = [*self.args.driver_args, "--harness", ",".join(self.args.harnesses)]
+        self.stage(b"".join(a.encode() + b"\0" for a in driver), f"{HOME}/run/driver-args", "stage-driver-args")
         if codex_auth is not None:
             self.stage(codex_auth, f"{HOME}/.ht-creds/codex/auth.json", "stage-codex-auth")
         if self.args.live:
@@ -459,19 +605,23 @@ class Runner:
         return EXIT_OK if rc == 0 else EXIT_FAIL
 
     def run(self):
+        self.warn_leftovers()
         return getattr(self, "run_" + self.args.command.replace("-", "_"))()
 
 
 def clean(args):
     docker = docker_cmd()
-    removed = {}
-    ls = {"containers": ["ps", "-a", "-q", "--filter", f"label={LABEL}"],
-          "volumes": ["volume", "ls", "-q", "--filter", f"label={LABEL}"],
-          "images": ["images", "-q", "--filter", f"label={LABEL}", "--filter", f"reference={IMAGE}"]}
+    wt = worktree_id(repo_root())
+    scope = [f"label={LABEL}"] if args.all else [f"label={WORKTREE_LABEL}={wt}"]
+    filters = [x for f in scope for x in ("--filter", f)]
+    ls = {"containers": ["ps", "-a", "-q", *filters],
+          "volumes": ["volume", "ls", "-q", *filters],
+          "images": ["images", "-q", "--filter", f"label={LABEL}", "--filter", f"reference={IMAGE}"]
+          if args.all else ["images", "-q", "--filter", f"label={LABEL}", "--filter", "dangling=true"]}
     rm = {"containers": ["rm", "-f", "-v"], "volumes": ["volume", "rm", "-f"], "images": ["rmi", "-f"]}
     rc = EXIT_OK
     for kind in ("containers", "volumes", "images"):
-        if kind == "images" and args.keep_image:
+        if kind == "images" and args.all and args.keep_image:
             continue
         ids = sorted(set(subprocess.run([docker, *ls[kind]], check=True, capture_output=True,
                                         text=True).stdout.split()))
@@ -480,8 +630,11 @@ def clean(args):
             if r.returncode != 0:
                 print(f"linux-e2e clean: {kind}: {r.stderr.strip()}", file=sys.stderr)
                 rc = EXIT_FAIL
-        removed[kind] = ids
         print(f"linux-e2e clean: {kind}: {' '.join(ids) if ids else 'none'}")
+    stale = stale_cred_dirs()
+    for d in stale:
+        shutil.rmtree(d, ignore_errors=True)
+    print(f"linux-e2e clean: stale credential dirs: {' '.join(map(str, stale)) if stale else 'none'}")
     return rc
 
 
@@ -492,8 +645,13 @@ def main(argv=None):
     if args.command == "clean":
         return clean(args)
     runner = Runner(args)
+    stopping = []
 
     def interrupt(signum, _frame):
+        if stopping:  # a second signal while stopping: cleanup runs to the end regardless
+            print(f"linux-e2e: signal {signum} ignored: already stopping", file=sys.stderr)
+            return
+        stopping.append(signum)
         raise Interrupted(signum)
 
     saved = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
@@ -513,8 +671,7 @@ def main(argv=None):
         print(f"linux-e2e: failed: {e}", file=sys.stderr)
         rc = EXIT_FAIL
     finally:
-        for s in saved:  # cleanup runs to the end: a second Ctrl-C must not cut it off
-            signal.signal(s, signal.SIG_IGN)
+        stopping.append(0)  # from here every signal is only reported
         problems = runner.cleanup()
         if problems:
             print("linux-e2e: cleanup incomplete: " + "; ".join(problems), file=sys.stderr)

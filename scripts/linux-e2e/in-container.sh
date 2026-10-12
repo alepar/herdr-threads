@@ -11,14 +11,16 @@
 #        build-bin | wake-e2e-pane | harness-snapshot NAME
 set -euo pipefail
 
-SRC=/home/tester/src
-EV=/home/tester/evidence
-RUN=/home/tester/run
-CREDS=/home/tester/.ht-creds
+# HT_LE2E_HOME exists for scripts/tests/test_linux_e2e_run.py (the launcher's preflight on a host).
+H=${HT_LE2E_HOME:-/home/tester}
+SRC=$H/src
+EV=$H/evidence
+RUN=$H/run
+CREDS=$H/.ht-creds
 mkdir -p "$EV" "$RUN"
 if [ "${HT_HIDE_HARNESSES:-}" = 1 ]; then
-    # A Linux user without Claude Code or Codex: drop Node's bin dir (claude, codex) from PATH.
-    PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -vx /opt/node/bin | paste -sd: -)
+    # A Linux user without Claude Code or Codex: drop their bin dir from PATH.
+    PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -vx /opt/harnesses/bin | paste -sd: -)
     export PATH
 fi
 
@@ -62,10 +64,13 @@ step_release_smoke() { # [VERSION...]
     export TMPDIR=$tmp
     HT_LEAK_RUN_ID=${HT_LEAK_RUN_ID:-linux-e2e-$(cat /proc/sys/kernel/random/uuid)}
     export HT_LEAK_RUN_ID
-    local args=(--cache /home/tester/.cache/herdr-releases --report "$EV/release-smoke.md")
+    local cache=$H/.cache/herdr-releases
+    local args=(--cache "$cache" --report "$EV/release-smoke.md")
     [ $# -gt 0 ] && args+=(--versions "$@")
     local rc=0
-    scripts/herdr-release-smoke "${args[@]}" || rc=$?
+    # The cache may be a volume shared by concurrent runs: one smoke at a time per cache, so no two
+    # downloads race on the same .part file (cargo locks target/ itself).
+    flock "$cache/.lock" scripts/herdr-release-smoke "${args[@]}" || rc=$?
     scripts/check-no-leaked-processes --run-id "$HT_LEAK_RUN_ID" --grace 15 > "$EV/leak-check.txt" 2>&1 \
         || { rc=1; cat "$EV/leak-check.txt"; }
     return "$rc"
@@ -205,18 +210,19 @@ driver_harnesses() { # the --harness value among the driver args (default claude
 
 step_wake_e2e_pane() { # the launcher typed into the pane: credential preflight, then the driver
     local args=()
-    if [ -s "$RUN/driver-args" ]; then mapfile -d '' args < "$RUN/driver-args"; fi
+    local a  # bash 3.2-compatible reads and empty-array expansions: the self-test runs this on macOS too
+    if [ -s "$RUN/driver-args" ]; then while IFS= read -r -d '' a; do args+=("$a"); done < "$RUN/driver-args"; fi
     local problems=() h
     [ "${HERDR_ENV:-}" = 1 ] && [ -n "${HERDR_PANE_ID:-}" ] || problems+=("not inside a Herdr pane (HERDR_ENV/HERDR_PANE_ID unset)")
     echo "server environment reaches panes: $([ "${HT_LINUX_E2E_ENV_PROBE:-}" = 1 ] && echo yes || echo NO)"
-    for h in $(driver_harnesses "${args[@]}"); do
+    for h in $(driver_harnesses ${args[@]+"${args[@]}"}); do
         case "$h" in
             claude)
                 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then echo "claude credential: CLAUDE_CODE_OAUTH_TOKEN (set, not shown)"
                 elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then echo "claude credential: ANTHROPIC_API_KEY (set, not shown)"
                 else problems+=("claude: no credential (run --claude-oauth-token-file FILE or --anthropic-api-key-file FILE)"); fi ;;
             codex)
-                if [ -s "$CREDS/codex/auth.json" ]; then echo "codex credential: staged auth.json (mode $(stat -c %a "$CREDS/codex/auth.json"))"
+                if [ -s "$CREDS/codex/auth.json" ]; then echo "codex credential: staged auth.json (mode $(stat -c %a "$CREDS/codex/auth.json" 2>/dev/null || stat -f %Lp "$CREDS/codex/auth.json"))"
                 else problems+=("codex: no credential (run --codex-auth-file FILE)"); fi ;;
             *) problems+=("unknown harness: $h") ;;
         esac
@@ -229,11 +235,10 @@ step_wake_e2e_pane() { # the launcher typed into the pane: credential preflight,
         echo "harness processes: $(tail -n +2 "$EV/harnesses-at-refusal.txt" | tr '\n' ' ')"
         return 2
     fi
-    local extra=(--bin "$SRC/bin/herdr-threads")
-    case " ${args[*]} " in *" --evidence-dir"*) ;; *) extra+=(--evidence-dir "$EV/wake-e2e") ;; esac
+    local extra=(--bin "$SRC/bin/herdr-threads" --evidence-dir "$EV/wake-e2e")  # the runner owns both
     if [ -s "$CREDS/codex/auth.json" ]; then extra+=(--codex-auth-home "$CREDS/codex"); fi
     cd "$SRC"
-    exec python3 scripts/wake-e2e.py "${extra[@]}" "${args[@]}"
+    exec python3 scripts/wake-e2e.py "${extra[@]}" ${args[@]+"${args[@]}"}
 }
 
 [ $# -ge 1 ] || die "usage: in-container.sh STEP [ARGS...]"

@@ -6,15 +6,16 @@
 #     plus the <arch>-unknown-linux-musl target and musl-tools for the static release build;
 #   - Herdr from tests/herdr-releases.tsv (HERDR_VERSION, default the newest listed release);
 #   - Node 22 from the official tarball (NODE_VERSION + per-arch SHA-256);
-#   - Claude Code and the Codex CLI from npm at exact versions, the top-level package tarball checked
-#     against its pinned npm integrity (their per-platform binaries are exact-version optional
-#     dependencies, verified by npm against the registry's integrity). Installed, never logged in:
-#     the image holds no credentials, and live runs provision them per container (README.md).
+#   - Claude Code and the Codex CLI with `npm ci` from npm/package-lock.json, which pins the integrity
+#     (sha512) of every tarball, the per-platform native packages included (they run with the
+#     credentials). Installed, never logged in: the image holds no credentials, and live runs provision
+#     them per container (README.md). Bump them with `npm install --package-lock-only` in npm/.
+#   - the base image by its multi-arch index digest (ubuntu:24.04 at the time of pinning).
 # python3, git, procps and lsof serve the e2e scripts (scripts/check-no-leaked-processes needs lsof).
 # Runs as the non-root user `tester` (no sudo). Containers must run with `docker run --init`.
 #
-# Build context: `git archive HEAD scripts/linux-e2e tests/herdr-releases.tsv` (the run script pipes it).
-FROM ubuntu:24.04
+# Build context: `git archive <sha> scripts/linux-e2e tests/herdr-releases.tsv` (the run script extracts it).
+FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 
 ARG TARGETARCH
 ARG RUST_TOOLCHAIN=1.94.0
@@ -24,10 +25,6 @@ ARG RUSTUP_SHA256_AMD64=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b3
 ARG NODE_VERSION=22.23.3
 ARG NODE_SHA256_ARM64=a44aeb94849a299b22df10b9e622ec2f605c2183501bc40590705131de7c740f
 ARG NODE_SHA256_AMD64=df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de
-ARG CLAUDE_CODE_VERSION=2.1.296
-ARG CLAUDE_CODE_INTEGRITY=sha512-OX/k/rpcthMqnFKOWcpNcbiLsMKtAjLOpQNJHlYiDCFUznWCIwdRTyl/p9SdHVrsrzZuPMCNqZjnpakIni6upw==
-ARG CODEX_VERSION=0.162.1
-ARG CODEX_INTEGRITY=sha512-NWZdi/kxyjv/8EUGFupziGU38YyleugZRM4JXgY5XFH7FUmaFA33NZS2Bmq0HPazf7S3jJQQWsZ/jAK9jsrV3Q==
 ARG HERDR_VERSION=
 
 LABEL dev.herdr-threads.linux-e2e=1
@@ -67,25 +64,19 @@ RUN read -r _ node_arch _ node_sha < /etc/ht-arch; \
     mkdir -p /opt/node && tar -xJf "/tmp/$tarball" -C /opt/node --strip-components=1 && rm "/tmp/$tarball"; \
     /opt/node/bin/node --version
 
-# Claude Code and Codex: exact versions, top-level tarball integrity pinned. No login.
+# Claude Code and Codex: `npm ci` verifies every tarball against the lockfile's integrity. No login.
 ENV PATH=/opt/node/bin:$PATH
-RUN cd /tmp && for spec in "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION $CLAUDE_CODE_INTEGRITY" \
-                         "@openai/codex@$CODEX_VERSION $CODEX_INTEGRITY"; do \
-      read -r pkg integrity <<< "$spec"; \
-      tgz=$(npm pack --silent "$pkg"); \
-      actual="sha512-$(openssl dgst -sha512 -binary "$tgz" | base64 -w0)"; \
-      test "$actual" = "$integrity" || { echo "integrity mismatch for $pkg: $actual" >&2; exit 1; }; \
-      npm install -g --no-fund --no-audit "./$tgz" && rm "$tgz"; \
-    done; \
-    npm cache clean --force; \
-    claude --version && codex --version
+COPY scripts/linux-e2e/npm/package.json scripts/linux-e2e/npm/package-lock.json /opt/harnesses/
+RUN cd /opt/harnesses && npm ci --no-audit --no-fund && npm cache clean --force \
+    && mkdir bin && ln -s ../node_modules/.bin/claude bin/claude && ln -s ../node_modules/.bin/codex bin/codex \
+    && bin/claude --version && bin/codex --version
 
 # The non-root user and its cached build directories (named volumes mount here when the run script
 # is given --cache; their first mount copies this ownership).
 RUN useradd -m -s /bin/bash tester
 USER tester
 ENV HOME=/home/tester LANG=en_US.UTF-8 \
-    PATH=/home/tester/.cargo/bin:/home/tester/.local/bin:/opt/node/bin:/usr/local/bin:/usr/bin:/bin \
+    PATH=/home/tester/.cargo/bin:/home/tester/.local/bin:/opt/harnesses/bin:/opt/node/bin:/usr/local/bin:/usr/bin:/bin \
     DISABLE_AUTOUPDATER=1
 RUN read -r arch _ rustup_sha _ < /etc/ht-arch; \
     curl -fsSL --retry 3 -o /tmp/rustup-init \
