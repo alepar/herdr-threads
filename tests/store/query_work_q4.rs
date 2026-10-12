@@ -673,7 +673,7 @@ fn q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers() {
 // Connection-local statement observer; no process-global failpoint or hook.
 struct ScopeTrace<'a> {
     db: &'a Connection,
-    counts: Box<[std::cell::Cell<usize>; 2]>,
+    counts: Box<[std::cell::Cell<usize>; 3]>,
 }
 impl<'a> ScopeTrace<'a> {
     fn install(db: &'a Connection) -> Self {
@@ -685,10 +685,13 @@ impl<'a> ScopeTrace<'a> {
         ) -> i32 {
             // SAFETY: the guard retains its boxed cells until after unregister;
             // this connection and its callback execute synchronously here.
-            let cells = unsafe { &*data.cast::<[std::cell::Cell<usize>; 2]>() };
+            let cells = unsafe { &*data.cast::<[std::cell::Cell<usize>; 3]>() };
             let raw = unsafe { rusqlite::ffi::sqlite3_sql(statement.cast()) };
             if !raw.is_null() {
                 let sql = unsafe { std::ffi::CStr::from_ptr(raw) }.to_bytes();
+                if sql.starts_with(b"SELECT EXISTS(SELECT 1 FROM membership_intervals mi JOIN seats s ON s.id=mi.seat_id") {
+                    cells[2].set(cells[2].get() + 1);
+                }
                 for (i, wanted) in [
                     queries::PRIVATE_LAZY_ELIGIBILITY_SQL,
                     queries::LAZY_CONTINUATION_SCOPE_SQL,
@@ -705,7 +708,7 @@ impl<'a> ScopeTrace<'a> {
         }
         let observer = Self {
             db,
-            counts: Box::new([std::cell::Cell::new(0), std::cell::Cell::new(0)]),
+            counts: Box::new(std::array::from_fn(|_| std::cell::Cell::new(0))),
         };
         // SAFETY: boxed callback state has a stable address; Drop unregisters
         // before the box is freed and the borrowed connection must outlive us.
@@ -725,6 +728,201 @@ impl<'a> ScopeTrace<'a> {
     fn counts(&self) -> [usize; 2] {
         [self.counts[0].get(), self.counts[1].get()]
     }
+    fn warning_audience_probes(&self) -> usize {
+        self.counts[2].get()
+    }
+}
+
+fn seeded_warning_history(retained: i64) -> (crate::store::connection::StoreContext, Connection) {
+    let (store, mut db, _) = seeded_body(0, false, 2, false);
+    let tx = db.transaction().unwrap();
+    for episode in 1..=retained {
+        tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq,left_seq) VALUES ('t','s',?1,1,2)", [episode]).unwrap();
+    }
+    // Every retained episode ended before the warning. No recipient projection
+    // hides the negative frozen-audience lookup behind a positive point result.
+    tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,decision_at) VALUES ('q4-negative-warning','i','t',1,'warn','{}',10,0)", []).unwrap();
+    tx.execute("INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('q4-negative-warning',10,'t',?1,'a-q4-0','invitation','negative-invitation')", [retained]).unwrap();
+    tx.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,decision_at) VALUES ('q4-origin-warning','i','q4-t0',100001,'warn','{}',2000002,0);
+        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('q4-origin-warning',2000002,'q4-t0',0,'s','invitation','q4-inv0');
+        INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,episode,open_warning_id,opened_seq,invitation_originator_instance_id,invitation_originator_seat_id) VALUES ('invitation','q4-t0','q4-inv0','s',10000,'q4-origin-warning',2000002,'i','a-q4-0');").unwrap();
+    let intervals: i64 = tx.query_row("SELECT count(*) FROM membership_intervals WHERE thread_id='t' AND seat_id='s' AND left_seq=2", [], |r| r.get(0)).unwrap();
+    assert_eq!(
+        intervals, retained,
+        "retained negative-audience history grows"
+    );
+    let projected: i64 = tx
+        .query_row("SELECT count(*) FROM warning_recipients", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(projected, 0, "warning audience remains unprojected");
+    tx.commit().unwrap();
+    (store, db)
+}
+
+fn public_warning_page(
+    db: &Connection,
+    store: &crate::store::connection::StoreContext,
+    cursor: Option<String>,
+    limit: u16,
+) -> crate::protocol::pagination::Page<crate::protocol::results::InboxBatchV2Item> {
+    let result = queries::inbox_v2::query(
+        db,
+        store,
+        "i",
+        &crate::protocol::commands::InboxQuery {
+            seat: Some(SeatId::new("s")),
+            claim: Some(claim()),
+            page: crate::protocol::pagination::PageRequest {
+                cursor,
+                limit,
+                max_bytes: 65536,
+            },
+        },
+        &crate::protocol::output::OutputSpec::default(),
+        &budget(),
+    )
+    .unwrap();
+    let crate::protocol::results::CommandResult::InboxBatchV2(page) = result else {
+        panic!("public V2 result");
+    };
+    page
+}
+
+/// Kills private fresh warning traversal, including uncharged negative-audience
+/// probes that grow with retained membership history. Ordinary work stays charged.
+#[test]
+fn q4_private_fresh_excludes_warning_history() {
+    use crate::test_support::isolation::{CostCounter, count_vm_units};
+    let mut measured = Vec::new();
+    for retained in [128, 8192] {
+        let (store, mut db) = seeded_warning_history(retained);
+        let tx = db.transaction().unwrap();
+        let trace = ScopeTrace::install(&tx);
+        let counter = CostCounter::default();
+        let page = count_vm_units(&tx, &counter, || {
+            queries::ordinary_presentation_page(&tx, &store, "i", &claim(), None, &budget())
+                .unwrap()
+        });
+        assert_eq!(
+            trace.warning_audience_probes(),
+            0,
+            "private fresh read skips warning audience SQL"
+        );
+        assert_eq!(trace.counts(), [2, 0]);
+        drop(trace);
+        assert_eq!((page.visited, page.lazy_scope_probes), (2, 6));
+        assert_eq!(page.continuation_probes, 0);
+        assert_eq!(page.retired_body, None);
+        assert!(
+            page.page.next_cursor.is_none(),
+            "private capture exhausts ordinary sources"
+        );
+        assert!(matches!(page.page.items.as_slice(), [
+            crate::protocol::results::InboxBatchV2Item::LazyMessage {message: first,..},
+            crate::protocol::results::InboxBatchV2Item::LazyMessage {message: second,..}
+        ] if first.as_str()=="msg-q4-0" && second.as_str()=="msg-q4-1"));
+        measured.push(counter.units());
+        eprintln!(
+            "Q4 warning_history={retained} private_fresh_VM_units={}",
+            counter.units()
+        );
+        tx.rollback().unwrap();
+    }
+    assert_eq!(
+        measured[0], measured[1],
+        "private fresh work is flat in warning audience history"
+    );
+}
+
+/// Kills normalization only at fresh capture: a real public continuation still
+/// carries an unfinished warning phase when private discovery resumes it.
+#[test]
+fn q4_private_resumed_excludes_warning_history() {
+    use crate::test_support::isolation::{CostCounter, count_vm_units};
+    let mut measured = Vec::new();
+    for retained in [128, 8192] {
+        let (store, mut db) = seeded_warning_history(retained);
+        let tx = db.transaction().unwrap();
+        let first = public_warning_page(&tx, &store, None, 1);
+        assert!(
+            matches!(first.items.as_slice(), [crate::protocol::results::InboxBatchV2Item::LazyMessage {message,..}] if message.as_str()=="msg-q4-0")
+        );
+        let cursor = first.next_cursor.expect("actual public continuation");
+        let captured =
+            crate::protocol::pagination::InboxBatchV2CursorState::decode(&cursor).unwrap();
+        assert!(
+            !captured.attention.next_manifest_warning,
+            "public cursor retains warning discovery"
+        );
+        let trace = ScopeTrace::install(&tx);
+        let counter = CostCounter::default();
+        let page = count_vm_units(&tx, &counter, || {
+            queries::ordinary_presentation_page(&tx, &store, "i", &claim(), Some(cursor), &budget())
+                .unwrap()
+        });
+        assert_eq!(
+            trace.warning_audience_probes(),
+            0,
+            "private resumed read skips warning audience SQL"
+        );
+        assert_eq!(trace.counts(), [1, 0]);
+        drop(trace);
+        assert_eq!((page.visited, page.lazy_scope_probes), (1, 3));
+        assert!(
+            page.page.next_cursor.is_none(),
+            "resumed private capture exhausts ordinary sources"
+        );
+        assert!(
+            matches!(page.page.items.as_slice(), [crate::protocol::results::InboxBatchV2Item::LazyMessage {message,..}] if message.as_str()=="msg-q4-1")
+        );
+        measured.push(counter.units());
+        eprintln!(
+            "Q4 warning_history={retained} private_resumed_VM_units={}",
+            counter.units()
+        );
+        tx.rollback().unwrap();
+    }
+    assert_eq!(
+        measured[0], measured[1],
+        "private resumed work is flat in warning audience history"
+    );
+}
+
+/// Kills applying private warning exclusion to public inbox or the independent
+/// origin-warning source; the same fixture retains a real negative audience.
+#[test]
+fn q4_public_and_origin_warning_sources_remain_enabled() {
+    let (store, mut db) = seeded_warning_history(128);
+    let tx = db.transaction().unwrap();
+    let trace = ScopeTrace::install(&tx);
+    let page = public_warning_page(&tx, &store, None, 32);
+    assert_eq!(
+        trace.warning_audience_probes(),
+        1,
+        "public V2 checks the negative frozen audience"
+    );
+    drop(trace);
+    let warnings = page
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            crate::protocol::results::InboxBatchV2Item::Warning { warning, .. } => {
+                Some(warning.as_str())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(warnings, ["q4-origin-warning"]);
+    let origins = crate::store::attention::open_origin_warnings(&tx, "a-q4-0").unwrap();
+    assert_eq!(
+        origins
+            .items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        ["q4-origin-warning"]
+    );
+    tx.rollback().unwrap();
 }
 impl Drop for ScopeTrace<'_> {
     fn drop(&mut self) {

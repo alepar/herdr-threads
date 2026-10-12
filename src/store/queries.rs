@@ -6537,7 +6537,7 @@ mod inbox_v2 {
                 manifest_warning_high_water: high.publication_decision,
                 // The global logical scan needs one phase-complete bit and the
                 // frozen informational offer cutoff, not v1 wake token state.
-                next_manifest_warning: false,
+                next_manifest_warning: ordinary_only,
                 latest_warning_seq: None,
                 latest_warning_offset: Some(offered),
             },
@@ -7160,6 +7160,9 @@ mod inbox_v2 {
         if ordinary_only {
             state.attention.invitations_done = true;
             state.attention.invitation_frontier = Some((0, 0));
+            // Warnings have their own presentation source. Normalize older or
+            // public cursors as well as fresh captures before source rotation.
+            state.attention.next_manifest_warning = true;
         }
         let fence = match reading {
             Some(_) => {
@@ -7290,7 +7293,9 @@ mod inbox_v2 {
                 break;
             }
             if visited >= CANDIDATE_LIMIT
-                || (state.source == Source::Warnings && CANDIDATE_LIMIT - visited < 2)
+                || (!ordinary_only
+                    && state.source == Source::Warnings
+                    && CANDIDATE_LIMIT - visited < 2)
             {
                 stop = StopReason::Work;
                 break;
@@ -7426,7 +7431,7 @@ mod inbox_v2 {
 }
 
 /// Internal canonical presentation source. Unlike public V1/V2 inbox reads,
-/// it neither captures nor traverses invitations. Exactly one bounded query
+/// it traverses neither invitations nor warnings. Exactly one bounded query
 /// is permitted per fresh presentation quantum; the caller persists its cursor.
 pub(super) struct OrdinaryPresentationPage {
     pub page: Page<crate::protocol::results::InboxBatchV2Item>,
