@@ -822,6 +822,81 @@ fn legacy_per_boot_descriptor_is_read_and_cleaned_up() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// Upgrade (ht-3yi): a running daemon published a socket in a runtime
+/// directory another rule chose (an older build under `/private/tmp` or
+/// `/tmp` on Linux, or a different `XDG_RUNTIME_DIR`). Its descriptor is
+/// still read, so it stays reachable and stoppable, and after it crashes the
+/// next owner removes that verified stale socket and binds its own pathname.
+/// Kills: "endpoint descriptor mismatch" for a live daemon, and a new daemon
+/// that can never start over the old one's descriptor.
+#[test]
+fn relocated_runtime_descriptor_is_read_and_cleaned_up() {
+    let root = fixture();
+    let mut instance = paths(&root, root.sock("relocated.sock"));
+    let name = "0123456789abcdef.sock";
+    let new_dir = root.sock("rt-new");
+    let old_dir = root.sock("rt-old");
+    for dir in [&new_dir, &old_dir] {
+        fs::create_dir(dir).unwrap();
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    instance.socket_path = new_dir.join(name);
+    let owner = OwnerLock::acquire(&instance).unwrap();
+    let old_path = old_dir.join(name);
+    let old = std::os::unix::net::UnixListener::bind(&old_path).unwrap();
+    fs::set_permissions(&old_path, fs::Permissions::from_mode(0o600)).unwrap();
+    let meta = fs::metadata(&old_path).unwrap();
+    use std::os::unix::fs::MetadataExt;
+    let descriptor = EndpointDescriptor {
+        software_version: "0.9.0".into(),
+        protocol_version: 1,
+        instance_uuid: owner.instance_uuid(),
+        boot_id: uuid::Uuid::new_v4(),
+        endpoint: old_path.clone(),
+        pid: 1,
+        socket_device: meta.dev(),
+        socket_inode: meta.ino(),
+    };
+    fs::write(
+        &instance.descriptor_path,
+        serde_json::to_vec(&descriptor).unwrap(),
+    )
+    .unwrap();
+    fs::set_permissions(&instance.descriptor_path, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        read_descriptor(&instance, owner.instance_uuid()).unwrap(),
+        descriptor
+    );
+    // Another instance's socket name is still a mismatch.
+    let mut other = descriptor.clone();
+    other.endpoint = old_dir.join("fedcba9876543210.sock");
+    fs::write(
+        &instance.descriptor_path,
+        serde_json::to_vec(&other).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        read_descriptor(&instance, owner.instance_uuid())
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+    fs::write(
+        &instance.descriptor_path,
+        serde_json::to_vec(&descriptor).unwrap(),
+    )
+    .unwrap();
+    drop(old); // the old daemon crashed
+    owner.remove_stale_endpoint().unwrap();
+    assert!(!old_path.exists());
+    assert!(!instance.descriptor_path.exists());
+    let bound = owner.bind_socket().unwrap();
+    assert_eq!(bound.path(), instance.socket_path);
+    drop(bound);
+    fs::remove_file(&instance.socket_path).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
 /// Releasing the lease releases the lock even while another copy of its
 /// descriptor exists, as when a process spawned concurrently by another
 /// thread still holds the transient copy it inherited until its exec

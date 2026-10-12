@@ -196,6 +196,16 @@ impl InstancePaths {
         (path.as_os_str().as_bytes().len() < SOCKET_PATH_LIMIT).then_some(path)
     }
 
+    /// Whether a published descriptor's endpoint belongs to this instance:
+    /// the stable pathname, the pre-ht-910 per-boot pathname for `boot_id`,
+    /// or the runtime socket relocated to another runtime directory (see
+    /// [`relocated_endpoint_matches`]).
+    pub fn accepts_descriptor_endpoint(&self, endpoint: &Path, boot_id: uuid::Uuid) -> bool {
+        endpoint == self.socket_path
+            || Some(endpoint) == self.legacy_boot_socket_path(boot_id).as_deref()
+            || relocated_endpoint_matches(&self.instance_dir, &self.socket_path, endpoint, boot_id)
+    }
+
     /// The state root may be supplied by Herdr (0755 under the plugin state
     /// tree); it must be ours and not writable by others. Everything this
     /// plugin creates below it is a 0700 private directory.
@@ -221,15 +231,130 @@ fn verify_runtime_dir(path: &Path, create: bool) -> io::Result<()> {
 }
 
 /// The private per-user socket directory used when an instance path is too
-/// long: `/private/tmp/herdr-threads-<uid>` (or `/tmp/...` without `/private/tmp`).
+/// long; see [`select_runtime_socket_dir`] for the per-platform rule.
 fn runtime_socket_dir() -> PathBuf {
-    let runtime = Path::new("/private/tmp");
-    let runtime = if runtime.is_dir() {
-        runtime
-    } else {
-        Path::new("/tmp")
+    select_runtime_socket_dir(
+        RuntimePlatform::current(),
+        std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
+        effective_uid(),
+        &probe_dir,
+    )
+}
+
+/// The platform family the runtime directory rule distinguishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimePlatform {
+    MacOs,
+    Other,
+}
+
+impl RuntimePlatform {
+    fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::MacOs
+        } else {
+            Self::Other
+        }
+    }
+}
+
+/// What the runtime directory rule needs to know about one existing path.
+#[derive(Debug, Clone, Copy)]
+struct DirFacts {
+    /// A directory, following symlinks (macOS's `/private/tmp` test).
+    is_dir: bool,
+    is_symlink: bool,
+    uid: u32,
+    mode: u32,
+}
+
+fn probe_dir(path: &Path) -> Option<DirFacts> {
+    let meta = fs::symlink_metadata(path).ok()?;
+    Some(DirFacts {
+        is_dir: path.is_dir(),
+        is_symlink: meta.file_type().is_symlink(),
+        uid: meta.uid(),
+        mode: meta.permissions().mode(),
+    })
+}
+
+/// Bytes a runtime socket name adds to its directory: `/<16 hex>.sock`.
+const RUNTIME_SOCKET_NAME_BYTES: usize = 1 + 16 + ".sock".len();
+
+/// The runtime socket directory, a pure function of its inputs so it is
+/// stable for the life of a daemon on one platform (ht-3yi):
+///
+/// - macOS: `/private/tmp/herdr-threads-<uid>` when `/private/tmp` is a
+///   directory (always, in practice), else `/tmp/herdr-threads-<uid>`;
+///   unchanged from earlier releases.
+/// - elsewhere `/private/tmp` is never consulted, so creating it later cannot
+///   move the endpoint: `$XDG_RUNTIME_DIR/herdr-threads` when that variable
+///   names an absolute, real directory owned by the user with mode 0700 (the
+///   [`check_private_dir`] rule) and the socket pathname inside it fits
+///   [`SOCKET_PATH_LIMIT`]; else `/tmp/herdr-threads-<uid>`.
+fn select_runtime_socket_dir(
+    platform: RuntimePlatform,
+    xdg_runtime_dir: Option<&std::ffi::OsStr>,
+    uid: u32,
+    probe: &dyn Fn(&Path) -> Option<DirFacts>,
+) -> PathBuf {
+    let per_user = format!("herdr-threads-{uid}");
+    match platform {
+        RuntimePlatform::MacOs => {
+            let private = Path::new("/private/tmp");
+            if probe(private).is_some_and(|facts| facts.is_dir) {
+                private.join(per_user)
+            } else {
+                Path::new("/tmp").join(per_user)
+            }
+        }
+        RuntimePlatform::Other => xdg_runtime_dir
+            .map(Path::new)
+            .filter(|xdg| xdg.is_absolute())
+            .filter(|xdg| {
+                probe(xdg).is_some_and(|facts| {
+                    facts.is_dir
+                        && !facts.is_symlink
+                        && facts.uid == uid
+                        && facts.mode & 0o777 == 0o700
+                })
+            })
+            .map(|xdg| xdg.join("herdr-threads"))
+            .filter(|dir| {
+                dir.as_os_str().as_bytes().len() + RUNTIME_SOCKET_NAME_BYTES < SOCKET_PATH_LIMIT
+            })
+            .unwrap_or_else(|| Path::new("/tmp").join(per_user)),
+    }
+}
+
+/// Whether a descriptor's `endpoint` names this instance's runtime socket in
+/// a directory another rule or environment chose: an older build's
+/// `/private/tmp` or `/tmp` directory on Linux, or a daemon started with a
+/// different `XDG_RUNTIME_DIR` than this client sees. The runtime socket's
+/// file name (a digest of the instance directory, or its pre-ht-910 per-boot
+/// form for `boot_id`) identifies the instance wherever the socket lives;
+/// the descriptor is the owner's private record and the socket is still
+/// verified (owner, mode, recorded inode) before use. A natural socket inside
+/// the instance directory has no relocated form.
+fn relocated_endpoint_matches(
+    instance_dir: &Path,
+    socket_path: &Path,
+    endpoint: &Path,
+    boot_id: uuid::Uuid,
+) -> bool {
+    if socket_path.starts_with(instance_dir)
+        || !endpoint.is_absolute()
+        || endpoint.as_os_str().as_bytes().len() >= SOCKET_PATH_LIMIT
+        || endpoint.parent().is_none_or(|dir| dir.parent().is_none())
+    {
+        return false;
+    }
+    let (Some(name), Some(stem)) = (endpoint.file_name(), socket_path.file_stem()) else {
+        return false;
     };
-    runtime.join(format!("herdr-threads-{}", effective_uid()))
+    let mut per_boot = stem.to_os_string();
+    per_boot.push(format!("-{boot_id}.sock"));
+    Some(name) == socket_path.file_name() || name == per_boot
 }
 
 /// The instance directory for a runtime context: `<state>/instances/<sha256(host endpoint)>`.
@@ -249,8 +374,8 @@ pub fn instance_dir(context: &RuntimeContext) -> PathBuf {
 /// correlated boot ID of every response, never by the filename.
 ///
 /// `<instance dir>/daemon.sock` when that fits the Unix limit; otherwise
-/// `<runtime>/herdr-threads-<uid>/<sha256(instance dir)[..16]>.sock` in a
-/// private per-user directory (`/private/tmp` when present, else `/tmp`).
+/// `<runtime dir>/<sha256(instance dir)[..16]>.sock` in a private per-user
+/// runtime directory (see [`select_runtime_socket_dir`]).
 pub fn stable_socket_path(instance_dir: &Path) -> io::Result<PathBuf> {
     let natural = instance_dir.join("daemon.sock");
     let socket_path = if natural.as_os_str().as_bytes().len() < SOCKET_PATH_LIMIT {
@@ -362,6 +487,220 @@ pub(crate) fn effective_uid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Directory facts for the injected probe: a real 0700 directory owned by `uid`.
+    fn private_dir(uid: u32) -> DirFacts {
+        DirFacts {
+            is_dir: true,
+            is_symlink: false,
+            uid,
+            mode: 0o700,
+        }
+    }
+
+    /// Run the selection with a fixed table of existing directories and record
+    /// every path the selection probed.
+    fn select(
+        platform: RuntimePlatform,
+        xdg: Option<&str>,
+        uid: u32,
+        dirs: &[(&str, DirFacts)],
+    ) -> (PathBuf, Vec<PathBuf>) {
+        let probed = std::cell::RefCell::new(Vec::new());
+        let chosen = select_runtime_socket_dir(
+            platform,
+            xdg.map(std::ffi::OsStr::new),
+            uid,
+            &|path: &Path| {
+                probed.borrow_mut().push(path.to_path_buf());
+                dirs.iter()
+                    .find(|(name, _)| Path::new(name) == path)
+                    .map(|(_, facts)| *facts)
+            },
+        );
+        (chosen, probed.into_inner())
+    }
+
+    /// macOS keeps today's rule exactly: `/private/tmp` when it is a
+    /// directory, `/tmp` otherwise, and `XDG_RUNTIME_DIR` is never consulted.
+    #[test]
+    fn macos_runtime_dir_is_unchanged() {
+        let (dir, _) = select(
+            RuntimePlatform::MacOs,
+            Some("/run/user/501"),
+            501,
+            &[
+                ("/private/tmp", private_dir(0)),
+                ("/run/user/501", private_dir(501)),
+            ],
+        );
+        assert_eq!(dir, PathBuf::from("/private/tmp/herdr-threads-501"));
+        let (dir, _) = select(RuntimePlatform::MacOs, None, 501, &[]);
+        assert_eq!(dir, PathBuf::from("/tmp/herdr-threads-501"));
+    }
+
+    /// Regression (ht-3yi): off macOS the presence of `/private/tmp` never
+    /// changes the chosen directory, and it is not even probed. Kills: a
+    /// daemon stranded when `/private/tmp` is created after it started.
+    #[test]
+    fn non_macos_ignores_private_tmp() {
+        let without = select(RuntimePlatform::Other, None, 1000, &[]);
+        let with = select(
+            RuntimePlatform::Other,
+            None,
+            1000,
+            &[("/private/tmp", private_dir(0))],
+        );
+        assert_eq!(without.0, PathBuf::from("/tmp/herdr-threads-1000"));
+        assert_eq!(with.0, without.0);
+        assert!(
+            !with.1.iter().any(|path| path.starts_with("/private/tmp")),
+            "probed {:?}",
+            with.1
+        );
+        let xdg = [("/run/user/1000", private_dir(1000))];
+        let mut dirs = xdg.to_vec();
+        dirs.push(("/private/tmp", private_dir(0)));
+        assert_eq!(
+            select(RuntimePlatform::Other, Some("/run/user/1000"), 1000, &dirs).0,
+            select(RuntimePlatform::Other, Some("/run/user/1000"), 1000, &xdg).0,
+        );
+    }
+
+    /// Off macOS a valid `XDG_RUNTIME_DIR` (absolute, a real directory owned
+    /// by the user, mode 0700, short enough) hosts `herdr-threads/`.
+    #[test]
+    fn non_macos_prefers_a_valid_xdg_runtime_dir() {
+        let (dir, _) = select(
+            RuntimePlatform::Other,
+            Some("/run/user/1000"),
+            1000,
+            &[("/run/user/1000", private_dir(1000))],
+        );
+        assert_eq!(dir, PathBuf::from("/run/user/1000/herdr-threads"));
+    }
+
+    /// Every invalid `XDG_RUNTIME_DIR` falls back to `/tmp`.
+    #[test]
+    fn non_macos_rejects_an_unsafe_or_unusable_xdg_runtime_dir() {
+        let fallback = PathBuf::from("/tmp/herdr-threads-1000");
+        let good = private_dir(1000);
+        let cases: Vec<(&str, Option<&str>, Option<DirFacts>)> = vec![
+            ("empty", Some(""), None),
+            ("relative", Some("run/user/1000"), Some(good)),
+            ("missing", Some("/run/user/1000"), None),
+            (
+                "not a directory",
+                Some("/run/user/1000"),
+                Some(DirFacts {
+                    is_dir: false,
+                    ..good
+                }),
+            ),
+            (
+                "symlink",
+                Some("/run/user/1000"),
+                Some(DirFacts {
+                    is_symlink: true,
+                    ..good
+                }),
+            ),
+            (
+                "foreign owner",
+                Some("/run/user/1000"),
+                Some(private_dir(0)),
+            ),
+            (
+                "group readable",
+                Some("/run/user/1000"),
+                Some(DirFacts {
+                    mode: 0o750,
+                    ..good
+                }),
+            ),
+            (
+                "world writable",
+                Some("/run/user/1000"),
+                Some(DirFacts {
+                    mode: 0o1777,
+                    ..good
+                }),
+            ),
+        ];
+        for (name, xdg, facts) in cases {
+            let dirs: Vec<(&str, DirFacts)> = match (xdg, facts) {
+                (Some(path), Some(facts)) => vec![(path, facts)],
+                _ => Vec::new(),
+            };
+            let (dir, _) = select(RuntimePlatform::Other, xdg, 1000, &dirs);
+            assert_eq!(dir, fallback, "{name}");
+        }
+    }
+
+    /// The XDG directory is used only while the socket pathname inside it
+    /// (`<xdg>/herdr-threads/<16 hex>.sock`) stays under the Unix limit.
+    #[test]
+    fn non_macos_xdg_runtime_dir_must_leave_room_for_the_socket() {
+        let socket_suffix = "/herdr-threads/0123456789abcdef.sock".len();
+        let fits = format!("/{}", "x".repeat(SOCKET_PATH_LIMIT - 1 - socket_suffix - 1));
+        let too_long = format!("/{}", "x".repeat(SOCKET_PATH_LIMIT - 1 - socket_suffix));
+        assert_eq!(fits.len() + socket_suffix, SOCKET_PATH_LIMIT - 1);
+        let (dir, _) = select(
+            RuntimePlatform::Other,
+            Some(&fits),
+            1000,
+            &[(fits.as_str(), private_dir(1000))],
+        );
+        assert_eq!(dir, Path::new(&fits).join("herdr-threads"));
+        let (dir, _) = select(
+            RuntimePlatform::Other,
+            Some(&too_long),
+            1000,
+            &[(too_long.as_str(), private_dir(1000))],
+        );
+        assert_eq!(dir, PathBuf::from("/tmp/herdr-threads-1000"));
+    }
+
+    /// A descriptor names a socket in a runtime directory chosen by another
+    /// rule or environment (an older daemon under `/private/tmp` or `/tmp`, a
+    /// daemon started with a different `XDG_RUNTIME_DIR`): the same instance
+    /// file name is accepted wherever it lives; nothing else is.
+    #[test]
+    fn relocated_runtime_endpoint_is_accepted_by_instance_file_name_only() {
+        let instance = Path::new("/state/instances/abc");
+        let boot = uuid::Uuid::new_v4();
+        let runtime = Path::new("/run/user/1000/herdr-threads/0123456789abcdef.sock");
+        let accepts = |socket: &Path, endpoint: &str, boot_id| {
+            relocated_endpoint_matches(instance, socket, Path::new(endpoint), boot_id)
+        };
+        for endpoint in [
+            "/tmp/herdr-threads-1000/0123456789abcdef.sock",
+            "/private/tmp/herdr-threads-1000/0123456789abcdef.sock",
+            "/run/user/1000/herdr-threads/0123456789abcdef.sock",
+        ] {
+            assert!(accepts(runtime, endpoint, boot), "{endpoint}");
+        }
+        let per_boot = format!("/private/tmp/herdr-threads-1000/0123456789abcdef-{boot}.sock");
+        assert!(accepts(runtime, &per_boot, boot));
+        assert!(!accepts(runtime, &per_boot, uuid::Uuid::new_v4()));
+        for endpoint in [
+            "/tmp/herdr-threads-1000/fedcba9876543210.sock",
+            "tmp/herdr-threads-1000/0123456789abcdef.sock",
+            "/0123456789abcdef.sock",
+        ] {
+            assert!(!accepts(runtime, endpoint, boot), "{endpoint}");
+        }
+        let too_long = format!("/{}/0123456789abcdef.sock", "x".repeat(SOCKET_PATH_LIMIT));
+        assert!(!accepts(runtime, &too_long, boot));
+        // A natural socket inside the instance directory is matched exactly
+        // by the caller; no relocated form is accepted for it.
+        let natural = instance.join("daemon.sock");
+        assert!(!accepts(
+            &natural,
+            "/tmp/herdr-threads-1000/daemon.sock",
+            boot
+        ));
+    }
 
     #[test]
     fn read_only_runtime_directory_check_creates_nothing_and_keeps_unsafe_errors() {
