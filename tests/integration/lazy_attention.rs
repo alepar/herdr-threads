@@ -1189,3 +1189,230 @@ fn a_sibling_lifecycle_check_in_resets_only_its_own_in_turn_service() {
     assert_eq!(binding("session-agent"), a, "a stays open");
     assert!(wake_owed(), "the reset sibling is owed its wake again");
 }
+
+// v0.9.1 composition: kills either wake coverage check using all discoverable invitations,
+// filtering a bounded all-invitation window after LIMIT, or sharing one binding's in-turn
+// evidence with a sibling. Invitations and display claims use real canonical mutations.
+#[test]
+fn in_turn_timed_invitation_service_ignores_unseen_lazy_backlog_per_binding() {
+    let mut f = Fixture::new();
+    f.store = SqliteStore::new(
+        StoreContext::new(f._iso.path("store.db"), f.clock.clone()),
+        "i",
+        StoreSettings {
+            daemon_boot: Some(uuid::Uuid::new_v4()),
+            ..StoreSettings::default()
+        },
+    )
+    .unwrap();
+    f.member("outsider", "resolved", "left", Harness::Codex);
+    f.check("outsider", "mixed-current-a", false);
+    let a = f.claim("outsider");
+    let b = CallerClaim {
+        native_session: NativeSessionId::new("session-outsider-b"),
+        execution: ExecutionId::new("00000000-0000-4000-8000-0000000000b2"),
+        liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint {
+            pid: 2,
+            start: 1,
+        }),
+        ..a.clone()
+    };
+    let check = CheckIn {
+        lineage_parent: None,
+        mode: CheckInMode::Lifecycle {
+            expected_binding_generation: b.binding_generation,
+        },
+        operation: OperationId::new("mixed-enroll-b"),
+        claim: b.clone(),
+    };
+    let permit = f
+        .store
+        .issue_cooperative_permit(
+            store::cooperative_permit_request(&PermitMutation::CheckIn(check.clone())).unwrap(),
+            &budget(),
+        )
+        .unwrap();
+    f.store
+        .register_available(
+            RegisterAvailableRequest {
+                command: check,
+                read: read_context(),
+                operator: None,
+            },
+            permit,
+            &budget(),
+        )
+        .unwrap();
+    let binding = |claim: &CallerClaim| -> BindingId {
+        BindingId::new(f.db.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='outsider' AND native_session=?1 AND ended_at IS NULL",
+            [claim.native_session.as_str()], |r| r.get::<_, String>(0),
+        ).unwrap())
+    };
+    let (binding_a, binding_b) = (binding(&a), binding(&b));
+    assert_ne!(binding_a, binding_b);
+    let invite = |key: &str, confirmation: Option<InvitationConfirmation>| -> InvitationId {
+        let CommandResult::ThreadCreated(thread) = f
+            .mutate(PermitMutation::CreateThread(CreateThread {
+                name: None,
+                topic: format!("mixed {key}"),
+                goal: "in-turn invitation control".into(),
+                operation: OperationId::new(format!("create-{key}")),
+                claim: f.claim("author"),
+            }))
+            .unwrap()
+        else {
+            panic!("thread creation");
+        };
+        let CommandResult::Invitation(id) = f
+            .mutate(PermitMutation::Invite(Invite {
+                confirmation,
+                thread,
+                seat: SeatId::new("outsider"),
+                deadline_millis: (confirmation != Some(InvitationConfirmation::Lazy))
+                    .then_some(10_000),
+                operation: OperationId::new(format!("invite-{key}")),
+                claim: f.claim("author"),
+            }))
+            .unwrap()
+        else {
+            panic!("invitation");
+        };
+        id
+    };
+    let candidate = || {
+        f.store
+            .wake_candidates(PageRequest::default(), &budget())
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|c| c.seat.as_str() == "outsider")
+    };
+    let wake_owed = || candidate().is_some_and(|c| c.has_actionable_work());
+    let show = |claim: &CallerClaim, id: &InvitationId, key: &str| {
+        f.store
+            .advance_cursors(
+                &AdvanceCursors {
+                    claim: claim.clone(),
+                    operation: OperationId::new(key),
+                    displayed: Vec::new(),
+                    in_turn: true,
+                    invitations: vec![id.clone()],
+                },
+                &budget(),
+            )
+            .unwrap();
+    };
+    let policy = |id: &InvitationId| -> (String, Option<String>, i64, i64, i64) {
+        f.db.query_row(
+            "SELECT state,confirmation,created_at,deadline_at,frozen_duration_ms FROM invitations WHERE id=?1",
+            [id.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
+        ).unwrap()
+    };
+    let timed = invite("timed", Some(InvitationConfirmation::RequireAck));
+    let original_policy = policy(&timed);
+    assert_eq!(
+        original_policy,
+        (
+            "pending".into(),
+            Some("require_ack".into()),
+            1000,
+            11_000,
+            10_000
+        )
+    );
+    let initial = candidate().expect("unshown timed invitation has a candidate");
+    assert!(initial.has_actionable_work());
+    assert_eq!(initial.targets.len(), 2);
+    let reservation = f
+        .store
+        .reserve_wake(&initial, &budget())
+        .unwrap()
+        .expect("reserved");
+    assert_eq!(reservation.reasons, ["pending_invitation"]);
+    let owed_to = |binding: &BindingId| {
+        f.store
+            .wake_owed_to_binding(&reservation, Some(binding), &budget())
+            .unwrap()
+    };
+    show(&a, &timed, "mixed-show-a");
+    assert!(wake_owed(), "unserved sibling retains the seat's wake");
+    assert!(!owed_to(&binding_a), "served composer target owes no wake");
+    assert!(owed_to(&binding_b), "sibling has its own unserved target");
+    show(&b, &timed, "mixed-show-b");
+    assert!(!wake_owed());
+    assert!(!owed_to(&binding_a) && !owed_to(&binding_b));
+
+    // More than the actual 1001-row invitation window, not merely 100 output rows.
+    // The older timed invitation must still be selected before LIMIT, while every
+    // newer Lazy invitation remains unseen and canonically pending.
+    let lazy_count = attention::WINDOW + 1;
+    for index in 0..lazy_count {
+        invite(&format!("lazy-{index}"), Some(InvitationConfirmation::Lazy));
+        if index == 0 || index + 1 == lazy_count {
+            assert!(
+                !wake_owed(),
+                "unseen Lazy invitations are not owed wake work"
+            );
+            assert!(!owed_to(&binding_a) && !owed_to(&binding_b));
+        }
+    }
+    let through =
+        f.db.query_row(
+            "SELECT decision_seq FROM host_instances WHERE id='i'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap();
+    let visible = attention::pending_invitations(&f.db, "outsider", None, through).unwrap();
+    assert!(
+        visible.saturated,
+        "real Lazy population exceeds the source window"
+    );
+    let timed_window =
+        attention::pending_confirming_invitations(&f.db, "outsider", None, through).unwrap();
+    assert_eq!(timed_window.items.len(), 1);
+    assert_eq!(timed_window.items[0].id, timed.as_str());
+    assert!(!timed_window.saturated);
+    assert!(
+        attention::wake_seat_attention(&f.db, "outsider")
+            .unwrap()
+            .attention
+            .has_pending_invitation,
+        "in-turn display suppresses wake, not the timed obligation"
+    );
+
+    // Historical absent policy remains timed and independently restores owed work.
+    let second = invite("historical-timed", None);
+    assert!(wake_owed());
+    assert!(owed_to(&binding_a) && owed_to(&binding_b));
+    show(&a, &second, "mixed-second-a");
+    assert!(wake_owed());
+    assert!(!owed_to(&binding_a) && owed_to(&binding_b));
+    show(&b, &second, "mixed-second-b");
+    assert!(!wake_owed());
+    assert!(!owed_to(&binding_a) && !owed_to(&binding_b));
+    assert_eq!(
+        policy(&timed),
+        original_policy,
+        "display never rewrites the deadline or policy"
+    );
+    assert_eq!(
+        policy(&second),
+        ("pending".into(), None, 1000, 11_000, 10_000)
+    );
+    assert_eq!(
+        f.count("invitations WHERE state='pending'"),
+        (lazy_count + 2) as i64
+    );
+    assert_eq!(f.count("invitations WHERE state='accepted'"), 0);
+    assert_eq!(
+        f.count("in_turn_offer"),
+        4,
+        "only the two timed IDs shown to both bindings"
+    );
+    assert_eq!(f.count("receipts"), 0);
+    assert_eq!(f.count("receipt_state"), 0);
+    assert_eq!(f.count("binding_cursors c JOIN occupant_bindings b ON b.binding_id=c.binding_id WHERE b.seat_id='outsider'"), 0,
+        "showing invitations is not reading their threads");
+}

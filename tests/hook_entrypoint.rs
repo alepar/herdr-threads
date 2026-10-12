@@ -1687,11 +1687,12 @@ fn cooperative_seat_on_own_target_startup_clear_resume_register_session_bindings
     );
 }
 
-// ht-8y9: a first-contact pair whose opening mail interleaves lazy and ordinary messages.
-// Before the accept only the invitation and the ordinary (receipt) messages are offered. The
-// accept delivers each lazy opening message once and never re-offers an ordinary one the seat
-// ACKed; a still-pending one stays on the page only as the pending receipt every new page carries.
+// Q4: current direct-invitation Lazy work is visible before acceptance. Ordinary
+// pending bodies are also shown, but their unjoined display does not move a cursor.
+// The explicit ACK below is not display evidence: acceptance preserves that gap,
+// so settled ordinary and later Lazy bodies remain in this binding's own stream.
 #[test]
+// Keep the upstream registration key; direct acceptance preserves the actual reader gap.
 fn pair_accept_delivers_mixed_opening_mail_once() {
     let fx = Fixture::start();
     let started = fx.hook("w9:p1", &start("sess-1"));
@@ -1735,19 +1736,37 @@ fn pair_accept_delivers_mixed_opening_mail_once() {
     for (body, n) in [
         ("ordinary-acked", 1),
         ("ordinary-pending", 1),
-        ("lazy-open", 0),
-        ("lazy-middle", 0),
-        ("lazy-last", 0),
+        ("lazy-open", 1),
+        ("lazy-middle", 1),
+        ("lazy-last", 1),
     ] {
         assert_eq!(times(&before, body), n, "before accept, {body}: {before}");
     }
+    let read_position = || {
+        fx.count(&format!(
+        "SELECT c.seq FROM binding_cursors c JOIN occupant_bindings b ON b.binding_id=c.binding_id WHERE b.seat_id='seat' AND b.native_session='sess-1' AND c.thread_id='{thread}'"
+    ))
+    };
+    let lazy_open = fx.count(&format!(
+        "SELECT sequence FROM messages WHERE thread_id='{thread}' AND body='lazy-open'"
+    ));
+    assert_eq!(
+        read_position(),
+        lazy_open,
+        "unjoined ordinary display does not pass its cursor gap"
+    );
     fx.cooperative("seat", "w9:p1", &["ack", &acked]);
     fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+    assert_eq!(
+        read_position(),
+        lazy_open,
+        "acceptance preserves the existing reader cursor"
+    );
     let after = hook("after accept");
     for (body, n) in [
-        ("ordinary-acked", 0),
+        ("ordinary-acked", 1),
         ("ordinary-pending", 1),
-        ("lazy-open", 1),
+        ("lazy-open", 0),
         ("lazy-middle", 1),
         ("lazy-last", 1),
     ] {
@@ -1757,15 +1776,13 @@ fn pair_accept_delivers_mixed_opening_mail_once() {
     assert_eq!(
         fx.count("SELECT count(*) FROM lazy_recipients WHERE legacy_pending=1"),
         0,
-        "the displaying hook settles the pre-join lazy rows"
+        "direct acceptance never replaces this binding stream with seat-wide legacy rows"
     );
 }
 
 // ht-8y9: leave, reinvite and rejoin with two bindings of the seat at distinct read positions.
-// Mail addressed while the seat was joined keeps per-binding cursors; a rejoin raises a cursor
-// to the head (as before ht-8y9), so binding B skips joined-era mail binding A already read.
-// Lazy mail addressed while the seat was not joined is pending at seat level: the first
-// top-level binding that displays it settles it for the seat, like a receipt.
+// Q4 direct invitation acceptance preserves each established cursor, including across rejoin.
+// Both readers retain their own opening mail; one binding's display does not consume its sibling's stream.
 #[test]
 fn pair_rejoin_with_two_bindings_pins_read_positions() {
     let fx = Fixture::start();
@@ -1796,11 +1813,11 @@ fn pair_rejoin_with_two_bindings_pins_read_positions() {
     direct("first-contact");
     let thread = fx.count_text("SELECT thread_id FROM direct_threads");
     fx.cooperative("seat", "w9:p1", &["accept", &thread]);
-    // Pre-join lazy mail: A displays it first and settles it for the seat.
+    // Direct acceptance preserves both readers; A's display leaves B's copy unread.
     let a = pull("sess-1");
     assert!(shows(&a, "first-contact"), "{a}");
     let b = pull("sess-b");
-    assert!(!shows(&b, "first-contact"), "{b}");
+    assert!(shows(&b, "first-contact"), "{b}");
     // Joined-era mail: A reads it, B does not.
     direct("joined-era");
     let a = pull("sess-1");
@@ -1818,15 +1835,17 @@ fn pair_rejoin_with_two_bindings_pins_read_positions() {
     fx.cooperative("seat", "w9:p1", &["leave", &thread]);
     fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
     direct("rejoin-open");
+    let before_reaccept = (cursor("sess-1"), cursor("sess-b"));
     fx.cooperative("seat", "w9:p1", &["accept", &thread]);
-    // B now pulls first: the rejoin raised its cursor past joined-era (read by A), and it
-    // takes the pre-join rejoin-open for the seat.
+    assert_eq!((cursor("sess-1"), cursor("sess-b")), before_reaccept);
+    // B now pulls first: its retained cursor still owns joined-era and rejoin-open.
+    // A independently receives rejoin-open, without repeating joined-era.
     let b = pull("sess-b");
-    assert!(!shows(&b, "joined-era"), "{b}");
+    assert!(shows(&b, "joined-era"), "{b}");
     assert!(shows(&b, "rejoin-open"), "{b}");
     let a = pull("sess-1");
     assert!(!shows(&a, "joined-era"), "{a}");
-    assert!(!shows(&a, "rejoin-open"), "{a}");
+    assert!(shows(&a, "rejoin-open"), "{a}");
     // Mail after the rejoin reaches both bindings through their cursors.
     direct("after-rejoin");
     for session in ["sess-1", "sess-b"] {
@@ -6675,7 +6694,7 @@ fn native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_be
         fx.digests.load(Ordering::SeqCst),
         fx.parse_failures.load(Ordering::SeqCst),
     );
-    for (harness, event) in [("claude", "SubagentStart"), ("codex", "Bogus")] {
+    for (harness, event) in [("claude", "Bogus"), ("codex", "Bogus")] {
         let argv = [
             BIN,
             "--state-dir",

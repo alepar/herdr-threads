@@ -235,9 +235,8 @@ fn send_direct(store: &SqliteStore, thread: &ThreadId, mode: DeliveryMode, key: 
         .unwrap();
 }
 
-/// ht-8y9: the opening lazy messages of a first-contact direct send stay pending for the invited
-/// target through its accept (seat-level `legacy_pending`), while its cursor joins at the head:
-/// ordinary ones already reached it as pending receipts and are not offered again.
+/// Q4: active pair acceptance seeds a missing reader at the invitation event floor.
+/// Both ordinary and Lazy opening bodies remain unread, with no seat-wide legacy marker.
 #[test]
 fn accepting_a_pair_invitation_keeps_the_opening_messages_unread() {
     for mode in [DeliveryMode::Lazy, DeliveryMode::Ordinary] {
@@ -262,7 +261,7 @@ fn accepting_a_pair_invitation_keeps_the_opening_messages_unread() {
                 permit(
                     "s2",
                     "accept",
-                    ObligationRef::Invitation(InvitationId::new(invitation)),
+                    ObligationRef::Invitation(InvitationId::new(invitation.clone())),
                     hash,
                     100,
                 ),
@@ -277,27 +276,25 @@ fn accepting_a_pair_invitation_keeps_the_opening_messages_unread() {
             )
             .unwrap();
         let binding = BindingId::parse(binding).unwrap();
-        let last: i64 = db
+        let event_floor: i64 = db
             .query_row(
-                "SELECT MAX(sequence) FROM messages WHERE thread_id=?1 AND kind='ordinary'",
-                [pair.as_str()],
+                "SELECT sequence FROM messages WHERE event_key=?1",
+                [format!("invite:{invitation}")],
                 |r| r.get(0),
             )
             .unwrap();
-        let lazy = mode == DeliveryMode::Lazy;
         assert_eq!(
             crate::store::read_cursors::cursor_for(&db, &binding, &pair).unwrap(),
-            Some(u64::try_from(last).unwrap()),
+            Some(u64::try_from(event_floor).unwrap()),
             "{mode:?}"
         );
-        assert_eq!(
+        assert!(
             crate::store::read_cursors::has_unread(&db, &binding).unwrap(),
-            lazy,
             "{mode:?}"
         );
         assert_eq!(
             count(&db, "lazy_recipients WHERE legacy_pending=1"),
-            if lazy { 2 } else { 0 },
+            0,
             "{mode:?}"
         );
         drop(store);
@@ -1115,6 +1112,7 @@ mod writer_floor_controls;
 /// covered, as a truncated delivery leaves it), so `shown` is past the seat's furthest cursor at
 /// the rejoin; only `held` becomes seat-pending.
 #[test]
+// This retained upstream key exercises plain generic Join, which owns the head policy.
 fn rejoin_never_reshows_a_lazy_row_displayed_out_of_order() {
     let (store, db, path) = store_fixture();
     let pair = thread(ensure(&store, "s1", "s2", "ensure").unwrap());
@@ -1174,21 +1172,20 @@ fn rejoin_never_reshows_a_lazy_row_displayed_out_of_order() {
             &budget(),
         )
         .unwrap();
-    let invite = Invite {
-        confirmation: None,
+    // A plain Join deliberately retains main's generic head/seat-pending policy.
+    // No active invitation exists, so this is not Q4 direct acceptance.
+    let join = crate::protocol::commands::Join {
         thread: pair.clone(),
-        seat: SeatId::new("s2"),
-        deadline_millis: None,
-        operation: OperationId::new("reinvite"),
-        claim: claim("s1"),
+        operation: OperationId::new("generic-rejoin"),
+        claim: claim("s2"),
     };
-    let hash = cooperative_payload_hash("invite", &invite).unwrap();
+    let hash = cooperative_payload_hash("join", &join).unwrap();
     store
         .mutate(
-            PermitMutation::Invite(invite),
+            PermitMutation::Join(join),
             permit(
-                "s1",
-                "reinvite",
+                "s2",
+                "generic-rejoin",
                 ObligationRef::Control(pair.clone()),
                 hash,
                 100,
@@ -1196,7 +1193,6 @@ fn rejoin_never_reshows_a_lazy_row_displayed_out_of_order() {
             &budget(),
         )
         .unwrap();
-    accept_pair(&store, &db, &pair, "s2", "reaccept");
     let pending = |id: &MessageId| -> i64 {
         db.query_row(
             "SELECT legacy_pending FROM lazy_recipients WHERE message_id=?1 AND seat_id='s2'",
