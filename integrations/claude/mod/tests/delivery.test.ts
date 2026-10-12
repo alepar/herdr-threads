@@ -1146,6 +1146,66 @@ test('an in-flight append across a channel loss: success is delivered, a late de
   expect(c.submits).toEqual([WAKE])
 })
 
+for (const scenario of [
+  { name: 'passive command context', wakes: false, revision: '7', epoch: '9007199254740993', version: '["7","9007199254740993"]' },
+  { name: 'timed topic context', wakes: true, revision: '8', epoch: '9007199254740992', version: '["8","9007199254740992"]' },
+]) {
+  test(`late stale invitation denial retains replacement ${scenario.name}`, async () => {
+    const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
+    const invitation = { schema: 1, id: 'invitation:replacement', kind: 'invitation', thread: 'T1',
+      topic_revision: '7', command_context_epoch: '9007199254740992', wakes: scenario.wakes, truncated: false }
+    h.line({ ...invitation, body: 'obsolete context A' })
+    await flush()
+    expect(h.appends.length).toBe(1)
+    h.exit(0)
+    await h.advance(1000)
+    await h.connect()
+    h.line({ ...invitation, topic_revision: scenario.revision, command_context_epoch: scenario.epoch, body: 'replacement context B' })
+    await flush()
+    expect(h.core.snapshot().queue).toEqual(['invitation:replacement', 'invitation:replacement'])
+    h.pendingAppends[0].res({ deny: 'late' })
+    await flush()
+    expect(h.core.snapshot().queue).toEqual(['invitation:replacement'])
+    expect(h.core.snapshot().rec.invitationVersions['invitation:replacement']).toBeUndefined()
+    await h.advance(30_000)
+    expect(h.appends.length).toBe(2)
+    expect(h.appends[1]).toContain('replacement context B')
+    expect(h.appends[1]).not.toContain('obsolete context A')
+    h.pendingAppends[1].res({})
+    await flush()
+    expect(h.core.snapshot().queue).toEqual([])
+    expect(h.core.snapshot().rec.invitationVersions['invitation:replacement']).toBe(scenario.version)
+    expect(h.submits).toEqual(scenario.wakes ? [WAKE] : [])
+    expect(h.ackRuns()).toEqual([])
+  })
+}
+
+test('an in-flight invitation re-streamed unchanged after restart survives a late denial', async () => {
+  const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
+  const invitation = { schema: 1, id: 'invitation:restreamed', kind: 'invitation', thread: 'T1',
+    topic_revision: '7', command_context_epoch: '9007199254740992', wakes: false, truncated: false, body: 'current context' }
+  h.line(invitation)
+  await flush()
+  h.exit(0)
+  await h.advance(1000)
+  await h.connect()
+  h.line(invitation)
+  h.pendingAppends[0].res({ deny: 'late' })
+  await flush()
+  expect(h.core.snapshot().queue).toEqual(['invitation:restreamed'])
+  await h.advance(30_000)
+  expect(h.appends.length).toBe(2)
+  expect(h.appends[1]).toContain('current context')
+  h.pendingAppends[1].res({})
+  await flush()
+  expect(h.core.snapshot().queue).toEqual([])
+  h.line(invitation)
+  await flush()
+  expect(h.appends.length).toBe(2)
+  expect(h.submits).toEqual([])
+  expect(h.ackRuns()).toEqual([])
+})
+
 test('nothing is delivered before the run reports connected', async () => {
   const h = await harness({ state: IDLE, connect: false }).boot()
   h.line(msg('m1'))
