@@ -730,13 +730,25 @@ fn reversed_concurrent_ensures_converge_then_explicit_accept_reuses() {
     let query:String=db.query_row("EXPLAIN QUERY PLAN SELECT thread_id FROM direct_threads WHERE instance_id='i' AND seat_a='s1' AND seat_b='s2'",[],|r|r.get(3)).unwrap();
     assert!(query.contains("SEARCH"), "{query}");
     let plan:Vec<String>=db.prepare("EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM membership_intervals WHERE thread_id=?1 AND seat_id<?2) OR EXISTS(SELECT 1 FROM membership_intervals WHERE thread_id=?1 AND seat_id>?2 AND seat_id<?3) OR EXISTS(SELECT 1 FROM membership_intervals WHERE thread_id=?1 AND seat_id>?3)").unwrap().query_map(rusqlite::params![t.as_str(),"s1","s2"],|r|r.get(3)).unwrap().collect::<Result<_,_>>().unwrap();
+    // Each range is a covering index search bounded by (thread_id, seat_id),
+    // never a scan of the thread's intervals. Both membership_intervals_snapshot
+    // (thread_id,seat_id,joined_seq) and migration 46's
+    // presentation_membership_history (thread_id,seat_id,ordinal) serve it.
     assert_eq!(
         plan.iter()
-            .filter(|s| s.contains(
-                "SEARCH membership_intervals USING COVERING INDEX membership_intervals_snapshot"
-            ))
+            .filter(|s| {
+                (s.starts_with(
+                    "SEARCH membership_intervals USING COVERING INDEX membership_intervals_snapshot (thread_id=? AND seat_id",
+                ) || s.starts_with(
+                    "SEARCH membership_intervals USING COVERING INDEX presentation_membership_history (thread_id=? AND seat_id",
+                ))
+            })
             .count(),
         3,
+        "{plan:?}"
+    );
+    assert!(
+        !plan.iter().any(|s| s.starts_with("SCAN membership_intervals")),
         "{plan:?}"
     );
 
