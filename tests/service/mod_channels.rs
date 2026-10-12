@@ -1386,11 +1386,11 @@ mod domain {
 
     fn q3_request_for(rig: &Rig, session: &str, presentation: bool) -> WatchRequest {
         let mut req = request_for(session);
-        let (generation, execution, target): (u64, String, String) = db(rig).query_row(
+        let (generation, execution, target): (i64, String, String) = db(rig).query_row(
             "SELECT generation,execution_id,target_id FROM occupant_bindings WHERE seat_id='s' AND native_session=?1 AND agent_id='' AND ended_at IS NULL",
             [session], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         ).unwrap();
-        req.claim.binding_generation = generation;
+        req.claim.binding_generation = u64::try_from(generation).expect("nonnegative generation");
         req.claim.execution = ExecutionId::new(execution);
         req.claim.target = HostTargetId::new(target);
         let mut value = serde_json::to_value(req).unwrap();
@@ -1539,7 +1539,7 @@ mod domain {
         let rig = rig();
         let sibling_binding = rig.add_binding("native2");
         assert_ne!(rig.binding(), sibling_binding);
-        let connected: u64 = db(&rig).query_row(
+        let connected: i64 = db(&rig).query_row(
             "SELECT COUNT(*) FROM occupant_bindings WHERE seat_id='s' AND liveness='connected' AND ended_at IS NULL", [], |row| row.get(0),
         ).unwrap();
         assert_eq!(connected, 2);
