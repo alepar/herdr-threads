@@ -28,8 +28,9 @@ user config:
   inside the run is recorded (no contents) because it can rotate the source profile's refresh token. The agent
   working directory is pre-trusted in that scratch config.toml only.
 Agents work in the repository checkout (already trusted by Claude, so no folder-trust dialog is answered).
-The senders are two owned coordinator panes acting through cooperative claims, not models; the second one is a fresh
-first contact for every recipient (busy-invite/1:1).
+The senders are two owned coordinator shell panes recorded as person seats of the local account (`human me init
+--operator`, operator provenance), not models and never an agent identity, so the run works under any agent or a
+plain shell; the second one is a fresh first contact for every recipient (busy-invite/1:1).
 
 Exit codes: 0 every expected case passed and every owned resource was cleaned up; 1 a case failed or was missing, or
 cleanup left an owned workspace or daemon alive; 2 environment refusal. `--self-test` checks the driver's own
@@ -73,8 +74,10 @@ WAKE_WINDOW_S = 6.0     # a woken agent leaves idle well inside this (observed 0
 SPACING_S = 35.0        # the per-seat wake retry guard is 30 s after each reservation (src/notification/policy.rs)
 TURN_TIMEOUT_MS = 240_000
 IDLE = ("idle", "done")
+# Session variables and agent markers of whatever runs this script: never inherited by the commands it runs.
 CALLER_SESSION_ENV = ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SESSION_ID",
-                      "CODEX_THREAD_ID", "HERMES_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID")
+                      "CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "HERMES_SESSION_ID",
+                      "ANTIGRAVITY_CONVERSATION_ID")
 DIALOG = re.compile(r"Trust this folder\?|trust (the files in )?this folder|Do you trust|Allow .* to run|"
                     r"Do you want to proceed\?|Would you like to run", re.I)
 
@@ -168,7 +171,7 @@ class Run:
             raise Stopped(f"cleanup interrupted {argv[:3]}")
         return rc, out, err
 
-    def ht(self, *argv, pane=None, coop=None, human=False, env=None, tag=None, timeout=60, check=True):
+    def ht(self, *argv, pane=None, human=False, env=None, tag=None, timeout=60, check=True):
         e = dict(os.environ)
         e.update(env or {})
         e.pop("HERDR_PANE_ID", None)  # never derive a seat from the controller's own pane
@@ -179,11 +182,6 @@ class Run:
         if pane:
             e["HERDR_PANE_ID"] = pane
         prefix = ["--state-dir", str(self.state), "--host-endpoint", self.endpoint, "--json"]
-        if coop:
-            c = self.coords[coop]
-            e["CLAUDE_CODE_SESSION_ID"] = c["session"]  # the coordinator's own claimed session
-            prefix += ["--cooperative-seat", c["seat"], "--cooperative-target", c["pane"],
-                       "--cooperative-harness", "claude", "--cooperative-role", "top-level"]
         argv = list(argv)
         # A self-granting command takes its words first, every option after.
         # Person/operator actions take the immediate `human` namespace before the global options.
@@ -287,12 +285,16 @@ class Run:
         data = self.herdr("workspace", "create", "--label", self.workspace_label(), "--cwd", self.cwd, "--no-focus")
         self.workspace = data["result"]["workspace"]["workspace_id"]
         self.herdr("tab", "rename", data["result"]["tab"]["tab_id"], "coordinator")
+        # The senders are person seats of the local account (`human me init --operator`, operator provenance) in
+        # owned shell panes: test traffic is never attributed to an agent, whatever process runs this script.
         # "fresh" never contacts a recipient before busy-invite/1:1, so that case is a real first contact.
         for role, pane in (("main", data["result"]["root_pane"]["pane_id"]), ("fresh", None)):
             pane = pane or self.tab("coordinator-fresh")
-            self.coords[role] = {"pane": pane, "seat": self.seat(pane), "session": str(uuid.uuid4())}
-            self.ht("check-in", "--lifecycle-event", f"wake-e2e-coordinator-{uuid.uuid4()}",
-                    pane=pane, coop=role, tag=f"coordinator:{role}:check-in")
+            out = self.ht("me", "init", "--operator", pane=pane, human=True, tag=f"coordinator:{role}:me-init")
+            seat = first_id(out, "s")
+            if not seat:
+                raise RuntimeError(f"me init {pane}: no seat id in {out[:200]}")
+            self.coords[role] = {"pane": pane, "seat": seat}
         self.recipients = []
         for h in self.args.harness:
             for wake_on in ("nudge", "all"):
@@ -637,7 +639,7 @@ class Recipient:
 
     # ---------- actions ----------
     def coord(self, *argv, role="main"):
-        return json.loads(self.run.ht(*argv, pane=self.run.coords[role]["pane"], coop=role))
+        return json.loads(self.run.ht(*argv, pane=self.run.coords[role]["pane"], human=True))
 
     def send(self, mode, body, direct, role="main"):
         argv = ["send"] + (["--seat", self.seat] if direct else [self.group]) + ["--body", body]

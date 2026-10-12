@@ -478,6 +478,38 @@ class PartialStartAndDrainErrors(TempDir):
         self.assertTrue(any("drain raised" in p for p in doc["cleanup"]["problems"]))
 
 
+class CoordinatorCalls(TempDir):
+    """Coordinator traffic is a person seat of the local account: the `human` namespace, the coordinator's own
+    pane, no cooperative claim and none of the calling agent's session variables or markers."""
+
+    def test_coordinator_call_is_a_human_call_without_agent_identity(self):
+        captured = []
+        r = object.__new__(W.Run)
+        r.state, r.endpoint, r.bin = self.tmp / "state", "/fake/sock", "/fake/herdr-threads"
+        r.coords = {"main": {"pane": "w1:p1", "seat": "sAAAAAAAA"}}
+        r.run = lambda argv, env=None, timeout=60, tag=None, cleanup=False: (
+            captured.append((argv, env)) or (0, '{"result":{"data":"mAAAAAAAA"}}', ""))
+        recipient = W.Recipient(r, "co-nudge", "codex", "nudge", "w1:p2", "sBBBBBBBB")
+        markers = {var: "agent-value" for var in W.CALLER_SESSION_ENV}
+        saved = {k: os.environ.get(k) for k in markers}
+        os.environ.update(markers)
+        try:
+            recipient.coord("send", "tAAAAAAAA", "--body", "x")
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        argv, env = captured[0]
+        self.assertEqual(argv[1], "human")
+        self.assertFalse(any(a.startswith("--cooperative") for a in argv))
+        self.assertEqual(env["HERDR_PANE_ID"], "w1:p1")
+        self.assertFalse(set(W.CALLER_SESSION_ENV) & set(env), "agent identity leaked into a coordinator call")
+        for marker in ("CLAUDECODE", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_THREAD_ID"):
+            self.assertIn(marker, W.CALLER_SESSION_ENV)
+
+
 def row(recipient, case, result="PASS"):
     return {"recipient": recipient, "case": case, "result": result, "wake_on": "nudge", "harness": "claude"}
 
