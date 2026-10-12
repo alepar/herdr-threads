@@ -492,31 +492,37 @@ fn installer_and_setup_upgrade_an_older_copied_hook_file_in_place() {
         assert_eq!(report["trust"]["status"], "review_required", "{report}");
     }
 
-    // A copy whose SubagentStart group runs the hook with another event's argument is an edit,
-    // not a missing event: refused with the hand-edit remedy, the file left alone, and the
-    // installer refuses it too.
-    let w = Fixture::new();
-    success(&w.install());
-    let copy = w.older_copy(&OLDER_CODEX_EVENTS);
-    let wrong = String::from_utf8(fs::read(copy.join("hooks.json")).unwrap())
-        .unwrap()
-        .replace("'--event' 'SubagentStart'", "'--event' 'SessionStart'");
-    fs::write(copy.join("hooks.json"), &wrong).unwrap();
-    let out = w.run_codex_home(&copy, &["setup", "codex"]);
-    assert!(!out.status.success());
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("remove those groups from the file by hand"),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let out = w.run_codex_home(&copy, &["internal", "installer-integrations"]);
-    assert!(!out.status.success());
-    assert!(
-        String::from_utf8_lossy(&out.stdout).contains("codex hooks: failed"),
-        "{}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    assert_eq!(fs::read(copy.join("hooks.json")).unwrap(), wrong.as_bytes());
+    // A copy whose SubagentStart group runs the hook with another event's argument, or with an
+    // extra argument, is an edit, not a missing event: refused with the hand-edit remedy, the
+    // file left alone, and the installer refuses it too.
+    for edit in [
+        "'--event' 'SessionStart'",
+        "'--event' 'SubagentStart' '--verbose'",
+    ] {
+        let w = Fixture::new();
+        success(&w.install());
+        let copy = w.older_copy(&OLDER_CODEX_EVENTS);
+        let wrong = String::from_utf8(fs::read(copy.join("hooks.json")).unwrap())
+            .unwrap()
+            .replace("'--event' 'SubagentStart'", edit);
+        fs::write(copy.join("hooks.json"), &wrong).unwrap();
+        let out = w.run_codex_home(&copy, &["setup", "codex"]);
+        assert!(!out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stderr)
+                .contains("remove those groups from the file by hand"),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let out = w.run_codex_home(&copy, &["internal", "installer-integrations"]);
+        assert!(!out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("codex hooks: failed"),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert_eq!(fs::read(copy.join("hooks.json")).unwrap(), wrong.as_bytes());
+    }
 
     // A copy registered without `--event` is refused with the hand-edit remedy (unsetup does not
     // own it), and the file is left alone.

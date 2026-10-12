@@ -2012,7 +2012,8 @@ pub fn find_adoptable(
         // Every marked registration of this command must be an authentic per-event group under
         // its own declared event: one without `--event`, with another event's argument, or under
         // an event this adapter does not declare would be left beside a second set.
-        if marked.argument.as_deref() != Some(marked.event.as_str())
+        if !marked.canonical
+            || marked.argument.as_deref() != Some(marked.event.as_str())
             || !declared.contains(&marked.event)
             || events.contains(&marked.event)
             || !uuid::Uuid::parse_str(&marked.marker)
@@ -2055,14 +2056,18 @@ fn hook_commands<'a>(value: &'a Value, event: &str) -> impl Iterator<Item = &'a 
 struct MarkedCommand {
     /// The event array it is registered under.
     event: String,
-    /// Its `--event` argument; `None` for the pre-per-event spelling.
+    /// Its `--event` argument, when the command is exactly `<base> '--event' '<X>'` before the
+    /// marker; `None` for the pre-per-event spelling or any other (edited) form.
     argument: Option<String>,
+    /// Exactly one of the two spellings setup writes, nothing else between `base` and the marker.
+    canonical: bool,
     marker: String,
 }
 
 /// Every registration of the hook command `base` with an owner marker, under any event array,
-/// whatever its `--event` argument: `<base>[ '--event' '<X>'] # herdr-threads-owner:<marker>`.
-/// Another executable, state directory or instance has another `base` and is not listed.
+/// whatever else it carries: canonical `<base>[ '--event' '<X>'] # herdr-threads-owner:<marker>`
+/// or edited (extra words or spacing before the marker). Another executable, state directory or
+/// instance has another `base` (which ends at a closing quote) and is not listed.
 fn marked_commands(value: &Value, base: &str) -> Vec<MarkedCommand> {
     let Some(hooks) = value["hooks"].as_object() else {
         return Vec::new();
@@ -2073,20 +2078,21 @@ fn marked_commands(value: &Value, base: &str) -> Vec<MarkedCommand> {
             let Some(rest) = command.strip_prefix(base) else {
                 continue;
             };
-            let (argument, rest) = match rest.strip_prefix(" '--event' '") {
-                Some(tail) => match tail.split_once('\'') {
-                    Some((argument, rest)) => (Some(argument.to_owned()), rest),
-                    None => continue,
-                },
-                None => (None, rest),
+            let Some(at) = rest.find(OWNER_MARKER) else {
+                continue;
             };
-            if let Some(marker) = rest.strip_prefix(OWNER_MARKER) {
-                found.push(MarkedCommand {
-                    event: event.clone(),
-                    argument,
-                    marker: marker.to_owned(),
-                });
-            }
+            let (between, marker) = (&rest[..at], &rest[at + OWNER_MARKER.len()..]);
+            let argument = between
+                .strip_prefix(" '--event' '")
+                .and_then(|tail| tail.strip_suffix('\''))
+                .filter(|argument| !argument.contains('\''))
+                .map(str::to_owned);
+            found.push(MarkedCommand {
+                event: event.clone(),
+                canonical: between.is_empty() || argument.is_some(),
+                argument,
+                marker: marker.to_owned(),
+            });
         }
     }
     found
@@ -2370,9 +2376,26 @@ mod adoption_tests {
         assert_eq!(older.owned.len() + 1, found.owned.len());
         assert!(adoptable(&json!({"hooks": {}})).is_none());
 
-        // An older copy whose group runs the hook with another event's argument is an edit, not a
-        // missing event; so is a marked group under an event this adapter does not declare.
+        // An older copy whose group runs the hook with another event's argument, or with any
+        // other edit before its marker, is an edit, not a missing event; so is a marked group
+        // under an event this adapter does not declare.
         let kind = codex::settings_kind();
+        for edit in [
+            "'--event' 'PreToolUse' '--verbose'",
+            "'--verbose' '--event' 'PreToolUse'",
+            "'--event' 'PreToolUse' ",
+        ] {
+            let mut edited = missing.clone();
+            let text = serde_json::to_string(&edited["hooks"]["PreToolUse"]).unwrap();
+            edited["hooks"]["PreToolUse"] =
+                serde_json::from_str(&text.replace("'--event' 'PreToolUse'", edit)).unwrap();
+            assert!(adoptable(&edited).is_none(), "{edit}");
+            let bytes = serde_json::to_vec(&edited).unwrap();
+            assert!(
+                holds_marked_groups(kind, &bytes, &argv()).unwrap(),
+                "{edit}"
+            );
+        }
         let mut wrong = missing.clone();
         let text = serde_json::to_string(&wrong["hooks"]["PreToolUse"]).unwrap();
         wrong["hooks"]["PreToolUse"] = serde_json::from_str(
