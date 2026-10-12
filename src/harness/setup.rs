@@ -2051,9 +2051,53 @@ pub fn find_adoptable(
     }))
 }
 
+/// The declared events under which `bytes` register this hook command more than once with an
+/// owner marker (for example a second owned set written beside a copied older one): every such
+/// group runs on each event.
+pub(crate) fn doubled_events(
+    kind: SettingsKind,
+    bytes: &[u8],
+    hook_argv: &[String],
+) -> Result<Vec<String>, SetupError> {
+    let base = shell_command(hook_argv)?;
+    let value = root(bytes)?;
+    let mut doubled = Vec::new();
+    for template in kind.entries(&base)? {
+        let prefixes = [
+            format!("{}{OWNER_MARKER}", event_command(&base, &template.event)),
+            format!("{base}{OWNER_MARKER}"),
+        ];
+        let count = value["hooks"][&template.event]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|group| group.get("hooks").and_then(Value::as_array))
+            .flatten()
+            .filter_map(|hook| hook.get("command").and_then(Value::as_str))
+            .filter(|command| prefixes.iter().any(|prefix| command.starts_with(prefix)))
+            .count();
+        if count > 1 {
+            doubled.push(template.event);
+        }
+    }
+    Ok(doubled)
+}
+
+/// The warning for [`doubled_events`].
+pub(crate) fn doubled_warning(file: &Path, events: &[String]) -> String {
+    format!(
+        "{} registers the herdr-threads hook more than once for {} (another setup's marked \
+         groups beside the recorded ones, e.g. left by an earlier release's setup over a copied \
+         file): each runs on every event. Remove the groups whose owner marker differs from the \
+         recorded command by hand",
+        file.display(),
+        events.join(", ")
+    )
+}
+
 /// Whether `bytes` register this hook command under any declared event with some setup's owner
 /// marker (the per-event or the pre-per-event spelling), adoptable or not.
-fn holds_marked_groups(
+pub(crate) fn holds_marked_groups(
     kind: SettingsKind,
     bytes: &[u8],
     hook_argv: &[String],
@@ -2969,6 +3013,37 @@ pub(crate) mod legacy {
         )
     }
 
+    /// The owned events `base` (the file before this run) did not register.
+    fn added_events(base: &[u8], owned: &[lib::OwnedEntry]) -> Vec<String> {
+        let value: Value = serde_json::from_slice(base).unwrap_or(Value::Null);
+        owned
+            .iter()
+            .filter(|entry| {
+                !value["hooks"][&entry.event]
+                    .as_array()
+                    .is_some_and(|groups| groups.contains(&entry.group))
+            })
+            .map(|entry| entry.event.clone())
+            .collect()
+    }
+
+    pub(crate) fn adopted_upgraded_warning(
+        kind: SettingsKind,
+        file: &Path,
+        owner: &str,
+        added: &[String],
+    ) -> String {
+        format!(
+            "{} held an older copy of another setup's herdr-threads hook groups (owner marker \
+         {owner}); they were adopted in place and the events declared since were added ({}), so \
+         any per-group trust the harness records is needed for the added groups. \
+         `herdr-threads unsetup {}` here removes only these groups from this file",
+            file.display(),
+            added.join(", "),
+            kind.harness()
+        )
+    }
+
     pub(crate) fn adoption_json(adoption: Option<&lib::Adoption>) -> Value {
         match adoption {
             None => Value::Null,
@@ -3051,6 +3126,25 @@ pub(crate) mod legacy {
                 failed(format!("could not read {}: {error}", file.path.display()))
             })?,
         };
+        // Another setup's groups for this command that cannot be adopted: unsetup cannot remove
+        // them either, so name the hand edit instead of the generic conflict advice.
+        if recorded.is_none()
+            && lib::holds_marked_groups(kind, &base, &argv).unwrap_or(false)
+            && !matches!(lib::find_adoptable(kind, &base, &argv), Ok(Some(_)))
+        {
+            file.undo();
+            return Err(api(
+                ErrorCode::Conflict,
+                format!(
+                    "{} holds herdr-threads hook groups of another setup (an owner marker) that \
+                     cannot be adopted: edited, duplicated, or registered without `--event`. \
+                     Setup does not add a second set beside them, and unsetup does not own them: \
+                     remove those groups from the file by hand, then set up again; nothing was \
+                     changed",
+                    file.path.display()
+                ),
+            ));
+        }
         match install_user_settings(kind, &file.path, &file.manifest, &argv, &base) {
             Ok(installed) => {
                 file.record(warnings);
@@ -3061,16 +3155,32 @@ pub(crate) mod legacy {
                         warnings.push(kind.spec().legacy_upgrade_warning.to_owned());
                     }
                 }
-                // Adopted now: this run recorded another setup's groups in place, writing no hook.
-                let adopted = recorded.is_none() && installed.adopted;
-                if adopted {
+                // Adopted now: this run recorded another setup's groups in place. A copy made by an
+                // older release was also upgraded in the same call, which wrote the hook file: that
+                // is an installation (with the added events named), not a write-free adoption.
+                let adopted_now = recorded.is_none() && installed.adopted;
+                let upgraded = adopted_now && fs::read(&file.path).ok().as_ref() != Some(&base);
+                if upgraded {
+                    warnings.push(adopted_upgraded_warning(
+                        kind,
+                        &file.path,
+                        &installed.installation_id,
+                        &added_events(&base, &installed.owned),
+                    ));
+                } else if adopted_now {
                     warnings.push(adopted_warning(
                         kind,
                         &file.path,
                         &installed.installation_id,
                     ));
                 }
-                Ok((installed, already, adopted))
+                if let Ok(bytes) = fs::read(&file.path)
+                    && let Ok(doubled) = lib::doubled_events(kind, &bytes, &argv)
+                    && !doubled.is_empty()
+                {
+                    warnings.push(lib::doubled_warning(&file.path, &doubled));
+                }
+                Ok((installed, already, adopted_now && !upgraded))
             }
             Err(error) => {
                 file.undo();

@@ -661,9 +661,18 @@ pub fn inspect(config: &Path, manifest_path: &Path) -> Result<AllowanceInspectio
             Ok(bytes) => {
                 let doc = parse(&bytes)?;
                 let present = owned_present(&doc, &manifest.keys);
-                (present, !present && owned_absent(&doc, &manifest.keys))
+                // Only a completed installation can have been removed by hand; an interrupted
+                // one that never wrote its keys is not.
+                (
+                    present,
+                    manifest.phase == InstallPhase::Installed
+                        && !present
+                        && owned_absent(&doc, &manifest.keys),
+                )
             }
-            Err(SetupError::Io) if !config.exists() => (false, true),
+            Err(SetupError::Io) if !config.exists() => {
+                (false, manifest.phase == InstallPhase::Installed)
+            }
             Err(_) => (false, false),
         },
         Some(_) => return Err(SetupError::Conflict),
@@ -743,6 +752,39 @@ mod tests {
         std::fs::remove_file(&config).unwrap();
         let gone = inspect(&config, &manifest).unwrap();
         assert!(!gone.present && gone.removed);
+        // An interrupted installation never wrote its keys: not removed by hand.
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        record["phase"] = serde_json::json!("prepared");
+        std::fs::write(&manifest, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(!inspect(&config, &manifest).unwrap().removed);
+        std::fs::write(&config, user).unwrap();
+        assert!(!inspect(&config, &manifest).unwrap().removed);
+        std::fs::remove_dir_all(dir).unwrap();
+
+        // Version 2 with writable roots: the roots are members of an array the user may keep.
+        let dir = tmp();
+        let config = dir.join("config.toml");
+        let manifest = dir.join("m.json");
+        std::fs::write(&config, user).unwrap();
+        install(&config, &manifest, SOCK, &roots()).unwrap();
+        let installed = std::fs::read_to_string(&config).unwrap();
+        let state = |text: &str| {
+            std::fs::write(&config, text).unwrap();
+            let inspection = inspect(&config, &manifest).unwrap();
+            (inspection.present, inspection.removed)
+        };
+        assert_eq!(state(&installed), (true, false));
+        // Every owned key gone, the user's own roots array kept (without our members).
+        assert_eq!(
+            state("model = \"x\"\n[sandbox_workspace_write]\nwritable_roots = [\"/mine\"]\n"),
+            (false, true)
+        );
+        // Only our members removed by hand, the other owned keys still there: partial.
+        let mut doc: DocumentMut = installed.parse().unwrap();
+        doc["sandbox_workspace_write"]["writable_roots"] =
+            toml_edit::value(toml_edit::Array::new());
+        assert_eq!(state(&doc.to_string()), (false, false));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

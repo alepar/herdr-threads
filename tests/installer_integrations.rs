@@ -418,6 +418,11 @@ fn owners(hooks: &std::path::Path) -> std::collections::BTreeMap<String, Vec<Str
         .collect()
 }
 
+/// The owner marker the copy's SessionStart group carries.
+fn owner_of(copy: &std::path::Path) -> String {
+    owners(&copy.join("hooks.json"))["SessionStart"][0].clone()
+}
+
 const OLDER_CODEX_EVENTS: [&str; 3] = ["SessionStart", "SubagentStart", "PreToolUse"];
 
 // Kills: the installer refusing, and setup writing a second owned set beside, a hook file
@@ -457,6 +462,47 @@ fn installer_and_setup_upgrade_an_older_copied_hook_file_in_place() {
     assert_eq!(owners(&copy.join("hooks.json")), after);
     success(&f.run_codex_home(&copy, &["unsetup", "codex"]));
     assert!(owners(&copy.join("hooks.json")).values().all(Vec::is_empty));
+
+    // Setup itself on a fresh older copy: an installation naming the added events, never
+    // "adopted ... the file was not changed".
+    let h = Fixture::new();
+    success(&h.install());
+    let copy = h.older_copy(&OLDER_CODEX_EVENTS);
+    let out = h.run_codex_home(&copy, &["setup", "codex", "--json"]);
+    success(&out);
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let report = &report["setup"];
+    assert_eq!(report["action"], "installed", "{report}");
+    assert_eq!(report["adopted"], owner_of(&copy), "{report}");
+    let warnings = report["warnings"].to_string();
+    assert!(
+        warnings.contains("(SubagentStop, SessionEnd)"),
+        "{warnings}"
+    );
+    assert!(!warnings.contains("not changed"), "{warnings}");
+    assert_eq!(report["trust"]["status"], "review_required", "{report}");
+
+    // A copy registered without `--event` is refused with the hand-edit remedy (unsetup does not
+    // own it), and the file is left alone.
+    let n = Fixture::new();
+    success(&n.install());
+    let copy = n.older_copy(&OLDER_CODEX_EVENTS);
+    let unevented = String::from_utf8(fs::read(copy.join("hooks.json")).unwrap()).unwrap();
+    let unevented = OLDER_CODEX_EVENTS.iter().fold(unevented, |text, event| {
+        text.replace(&format!(" '--event' '{event}'"), "")
+    });
+    fs::write(copy.join("hooks.json"), &unevented).unwrap();
+    let out = n.run_codex_home(&copy, &["setup", "codex"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("remove those groups from the file by hand"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        fs::read(copy.join("hooks.json")).unwrap(),
+        unevented.as_bytes()
+    );
 
     // A copy whose group was edited is not adopted: setup refuses rather than add a second set.
     let g = Fixture::new();
@@ -532,4 +578,42 @@ fn installer_refreshes_hooks_beside_a_hand_removed_codex_allowance() {
     success(&f.run(&["unsetup", "codex"]));
     assert!(!manifest.exists());
     assert_eq!(fs::read(&config_path).unwrap(), user);
+}
+
+// Kills: a hook file an earlier release's setup already doubled (a second owned set beside a
+// copied older one) reported as a healthy installation with no warning.
+#[test]
+fn setup_and_status_flag_a_hook_file_with_doubled_owned_groups() {
+    let f = Fixture::new();
+    success(&f.install());
+    let hooks = f.0.join("codex/hooks.json");
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&hooks).unwrap()).unwrap();
+    let stray = uuid::Uuid::new_v4().to_string();
+    let group = value["hooks"]["SessionStart"][0].clone();
+    let text = group.to_string();
+    let owner = text.split("herdr-threads-owner:").nth(1).unwrap()[..36].to_owned();
+    let second: serde_json::Value = serde_json::from_str(&text.replace(&owner, &stray)).unwrap();
+    value["hooks"]["SessionStart"]
+        .as_array_mut()
+        .unwrap()
+        .insert(0, second);
+    fs::write(&hooks, serde_json::to_vec(&value).unwrap()).unwrap();
+    let status: serde_json::Value =
+        serde_json::from_slice(&f.run(&["setup-status", "codex", "--json"]).stdout).unwrap();
+    let status = &status["setup"];
+    assert_eq!(status["duplicate_hook"], true, "{status}");
+    assert!(
+        status["warnings"]
+            .to_string()
+            .contains("more than once for SessionStart"),
+        "{status}"
+    );
+    let out = f.run(&["setup", "codex", "--json"]);
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        report["setup"]["warnings"]
+            .to_string()
+            .contains("more than once for SessionStart"),
+        "{report}"
+    );
 }

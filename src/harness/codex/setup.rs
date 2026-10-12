@@ -1000,9 +1000,18 @@ fn codex_status(
     let unmeasured = codex_unmeasured_allowance_warning(env, None);
     report["config_file"] = json!(paths.config.display().to_string());
     report["sandbox"] = with_unmeasured(allowance_json(inspection.as_ref()), unmeasured.clone());
+    let doubled = env
+        .hook_argv(Harness::Codex)
+        .ok()
+        .and_then(|argv| {
+            let bytes = fs::read(&paths.hooks).ok()?;
+            lib::doubled_events(crate::harness::codex::settings_kind(), &bytes, &argv).ok()
+        })
+        .unwrap_or_default();
     let warnings: Vec<String> = unmeasured
         .into_iter()
         .chain(codex_foreign_proxy_warnings(env))
+        .chain((!doubled.is_empty()).then(|| lib::doubled_warning(&paths.hooks, &doubled)))
         .collect();
     if !warnings.is_empty() {
         report["warnings"] = json!(warnings);
@@ -1017,9 +1026,10 @@ fn codex_status(
     if let Ok(owned_command) = codex_owned_command(env) {
         let layers = observe_codex_config(env, &owned_command);
         report["duplicate_hook"] = json!(
-            layers
-                .iter()
-                .any(|layer| layer.has_owned_command && layer.path != paths.hooks)
+            !doubled.is_empty()
+                || layers
+                    .iter()
+                    .any(|layer| layer.has_owned_command && layer.path != paths.hooks)
         );
         report["codex_config"] = codex_config_json(env, &layers);
     }
