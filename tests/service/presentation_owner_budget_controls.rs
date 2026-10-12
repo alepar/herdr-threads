@@ -3,12 +3,14 @@ use herdr_threads::{
     ports::{LocalService, ModChannelSink, ModChannels, StorePort, WatchReplaySnapshot},
     protocol::{
         authority::{CallerClaim, CallerRole, Harness, LivenessFingerprint, PeerIdentity},
-        commands::{CheckIn, CheckInMode, Command},
+        commands::{CheckIn, CheckInMode, Command, InvitationConfirmation, Invite},
         delivery::{
             DeliveryPresentationConfirmV2, DeliveryPresentationConfirmationV2, DeliveryPullReplyV2,
             DeliveryPullV2, PresentationConsumer, PresentationRenderRequest,
         },
-        ids::{BindingId, ExecutionId, HostTargetId, NativeSessionId, OperationId, SeatId},
+        ids::{
+            BindingId, ExecutionId, HostTargetId, NativeSessionId, OperationId, SeatId, ThreadId,
+        },
         results::{ApiError, CommandResult, ErrorCode},
         time::{CallBudget, Clock, MonoInstant, UtcMillis},
         watch::{ModDeliverySetting, WatchFrame, WatchRequest},
@@ -145,8 +147,10 @@ impl Fixture {
             INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','p',1,0,0);
             INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p','b',1,0,1,'fresh','unknown','unknown',0,0,'term-p','inc','coherent_enumeration',1);
             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,1);
-            INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','joined');
-            INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s',1,1);").unwrap();
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('x','i','resolved','native','px',1,0,0);
+            INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','px','b',1,0,1,'fresh','unknown','unknown',0,0,'term-px','inc','coherent_enumeration',1);
+            INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','x','joined');
+            INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','x',1,1);").unwrap();
         let store: Arc<dyn StorePort> =
             Arc::new(SqliteStore::new(context, "i", StoreSettings::default()).unwrap());
         let registry = Arc::new(ModChannelRegistry::new(
@@ -197,6 +201,46 @@ impl Fixture {
             panic!("canonical check-in")
         };
         let claim = checked.context;
+        let mut sender = claim.clone();
+        sender.seat = SeatId::new("x");
+        sender.target = HostTargetId::new("px");
+        sender.native_session = NativeSessionId::new("owner-sender");
+        sender.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
+        sender.liveness = Some(LivenessFingerprint { pid: 2, start: 1 });
+        let CommandResult::CheckedIn(sender) = service
+            .handle(
+                Command::CheckIn(CheckIn {
+                    mode: CheckInMode::Lifecycle {
+                        expected_binding_generation: 1,
+                    },
+                    claim: sender,
+                    operation: OperationId::new("owner-sender-ci"),
+                    lineage_parent: None,
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("canonical sender check-in")
+        };
+        assert!(matches!(
+            service
+                .handle(
+                    Command::Invite(Invite {
+                        claim: sender.context,
+                        thread: ThreadId::new("t"),
+                        seat: claim.seat.clone(),
+                        confirmation: Some(InvitationConfirmation::Lazy),
+                        deadline_millis: None,
+                        operation: OperationId::new("owner-invite"),
+                    }),
+                    peer(),
+                    &budget()
+                )
+                .unwrap(),
+            CommandResult::Invitation(_)
+        ));
         let lease = if consumer == PresentationConsumer::Watch {
             let (channel, _) = service
                 .watch_register(
