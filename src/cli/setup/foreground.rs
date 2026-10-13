@@ -3,7 +3,8 @@ use super::{Harness, SetupEnv, Value, json};
 use std::{fs, io::Read, path::Path};
 
 const LIMIT: u64 = 1 << 20;
-const EXPLANATION: &str = "herdr-threads requires each managed agent to remain in its pane: a shared harness server may run hooks/tools with its own pane environment instead of the TUI environment used for seat attribution. Setup inspects user settings only and never changes foreground settings. User settings and launch arguments are not proof of execution; project/managed settings, environment, and wrapper behavior may override them.";
+const FOREGROUND_WARNING_PREFIX: &str = "Foreground user settings ";
+const EXPLANATION: &str = "herdr-threads requires each managed agent to remain in its pane: a shared harness server may run hooks/tools with its own pane environment instead of the TUI environment used for seat attribution. Setup inspects user settings and changes a foreground setting only through an owned component the user explicitly consents to, where the advice names one. User settings, environment and launch arguments are not proof of execution; project/managed settings, other shells, and wrapper behavior may override them.";
 
 /// Bound reads and reject symlinks/special files before reading; O_NONBLOCK also covers a
 /// file replaced with a FIFO between metadata inspection and open.
@@ -94,13 +95,16 @@ pub(crate) fn inspect_in(
         report["status"] = json!("unknown");
         report["inspection_error"] = json!(error);
     }
+    if let Some(inspect) = spec.inspect_environment {
+        inspect(&env.snapshot(), &mut report);
+    }
     report
 }
 
 pub(crate) fn attach(report: &mut Value, harness: Harness, env: &SetupEnv) {
     let foreground = inspect(harness, env);
     let warning = format!(
-        "Foreground user settings {}. {} {}",
+        "{FOREGROUND_WARNING_PREFIX}{}. {} {}",
         foreground["status"].as_str().unwrap_or("unknown"),
         EXPLANATION,
         foreground["advice"].as_str().unwrap_or_default()
@@ -109,9 +113,12 @@ pub(crate) fn attach(report: &mut Value, harness: Harness, env: &SetupEnv) {
         report["warnings"] = json!([]);
     }
     let warnings = report["warnings"].as_array_mut().unwrap();
-    if foreground["status"] != "configured"
-        && !warnings.iter().any(|v| v.as_str() == Some(&warning))
-    {
+    // Attaching again (after a consent answer) replaces the earlier reading.
+    warnings.retain(|v| {
+        !v.as_str()
+            .is_some_and(|w| w.starts_with(FOREGROUND_WARNING_PREFIX))
+    });
+    if foreground["status"] != "configured" {
         warnings.push(json!(warning));
     }
     report["foreground"] = foreground;

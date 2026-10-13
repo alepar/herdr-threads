@@ -143,7 +143,10 @@ fn execute_for_registry_with<F: FnMut(&str) -> io::Result<bool>>(
                     let mut options = SetupOptions::new();
                     for option in registration.setup_options() {
                         // --without-permissions also undoes the takeover of an earlier grant.
+                        // The installer never writes a pane environment: it only reports
+                        // and advises (`setup <harness> --with-pane-env` writes it).
                         if option.name == "keep-prompt-suggestions"
+                            || option.name == crate::cli::setup::ADVISE_PANE_ENV
                             || (without_permissions
                                 && option.name == crate::cli::setup::WITHOUT_PERMISSIONS)
                         {
@@ -161,6 +164,9 @@ fn execute_for_registry_with<F: FnMut(&str) -> io::Result<bool>>(
                     )?;
                     entry["warnings"] = report["warnings"].clone();
                     entry["trust"] = report["trust"]["note"].clone();
+                    if let Some(note) = report["pane_env"]["note"].as_str() {
+                        entry["pane_env_advice"] = json!(note);
+                    }
                 } else {
                     skill_file.take().expect("inspected skill").install(env)?;
                 }
@@ -229,6 +235,7 @@ fn execute_for_registry_with<F: FnMut(&str) -> io::Result<bool>>(
             let mut options = SetupOptions::new();
             for option in registration.setup_options() {
                 if option.name == "keep-prompt-suggestions"
+                    || option.name == crate::cli::setup::ADVISE_PANE_ENV
                     || option.name == crate::cli::setup::WITH_PERMISSIONS
                 {
                     options.insert(option.name.into(), true);
@@ -388,6 +395,9 @@ pub fn run<W: Write>(
             }
             if let Some(trust) = entry["trust"].as_str() {
                 writeln!(writer, "  {}", printable(trust))?;
+            }
+            if let Some(advice) = entry["pane_env_advice"].as_str() {
+                writeln!(writer, "  pane environment: {}", printable(advice))?;
             }
         }
     }

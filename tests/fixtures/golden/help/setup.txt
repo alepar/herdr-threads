@@ -36,8 +36,12 @@ Options:
           setup (claude): install or keep the hooks but not the delivery mod; removes the mod's `CLAUDE_CODE_PLUGIN_DIRS` path and files if setup wrote them (for example under managed policy that forbids the key)
       --cooperative-harness <COOPERATIVE_HARNESS>
           Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, synthetic_fourth]
+      --with-pane-env
+          setup: write the pane environment block of a harness that declares one (an owned, guarded block in your shell startup files), without asking. Default: keep a block setup owns, else ask on a terminal, else advise
       --cooperative-role <COOPERATIVE_ROLE>
           Agent role for the cooperative call [possible values: top-level, subagent]
+      --without-pane-env
+          setup: remove the pane environment block setup owns, keeping the hooks
       --agent-id <ID>
           Subagent agent id, inserted by herdr-threads' Claude PreToolUse hook (spec §1). Carried into the cooperative claim; no behaviour change until session bindings land
   -h, --help
@@ -75,6 +79,15 @@ Scope (user level, like Herdr's own agent hooks):
           owned values and refuses edited ownership records. Codex runs user hooks only once
           you trust them: the next interactive `codex` start lists them for review (or use
           /hooks); Codex records their hashes in config.toml [hooks.state]. setup never writes trust.
+          With consent, the pane environment: a guarded block exporting CODEX_EXEC_SERVER_URL=
+          (empty) inside Herdr panes, so Codex never attaches to its shared app-server daemon
+          (which runs tools and hooks with another pane's environment). It goes in
+          ${ZDOTDIR:-~}/.zshenv (zsh), ~/.bashrc (bash) and
+          ${XDG_CONFIG_HOME:-~/.config}/fish/conf.d/herdr-threads.fish (fish): $SHELL's file plus
+          each one that already exists; symlinks are skipped with the line to add by hand.
+          --with-pane-env writes it, --without-pane-env removes it and keeps the hooks; otherwise
+          setup keeps a block it owns, asks `[y/N]` on a terminal, and only advises without
+          one. Unsetup removes the block while it is unchanged. New panes pick it up.
   hermes  Experimental; natively measured on 0.21.5 with a private Herdr build. Select
           `setup hermes --profile NAME` (or explicit default when omitted). --profile
           requires a named harness and is refused for bare multi-harness commands.
@@ -92,13 +105,17 @@ Scope (user level, like Herdr's own agent hooks):
   agy: ~/.gemini (plugin config/plugins/herdr-threads; allow entry in antigravity-cli/settings.json)
 
 
-Foreground agents (user-managed, read-only inspection): setup and setup-status report user
-settings and manual advice for every harness. Claude: merge `disableAgentView: true` into
-user settings.json, or set its env.CLAUDE_CODE_DISABLE_AGENT_VIEW to `1`. The inspected Codex has
-no persistent config/environment daemon opt-out; features.daemon_auto_start=false still attaches
-to an existing daemon. Use native --no-daemon, or HERDR_THREADS_CODEX_OPTS='--no-daemon'
-when the selected binary/wrapper supports and forwards it. Setup never sets these choices;
-configured settings/arguments do not prove foreground execution and overrides may change them.
+Foreground agents (inspection; a change only with the explicit consent noted): setup and
+setup-status report user settings and manual advice for every
+harness. Claude: merge `disableAgentView: true` into
+user settings.json, or set its env.CLAUDE_CODE_DISABLE_AGENT_VIEW to `1`. Codex:
+features.daemon_auto_start=false still attaches to an existing daemon. Codex skips its shared
+daemon while CODEX_EXEC_SERVER_URL is set (empty keeps local execution), so the persistent
+opt-out is the pane environment above, written only with consent; alternatively native
+--no-daemon, or HERDR_THREADS_CODEX_OPTS='--no-daemon' when the selected binary/wrapper
+supports and forwards it. Otherwise setup never sets these choices;
+configured settings, environment and arguments do not prove foreground execution and overrides
+may change them.
 
 Claude prompt suggestions: Claude shows a dim prompt suggestion in its input box after every
 turn, which herdr-threads cannot tell from typed text, so it never pokes a Claude pane that shows

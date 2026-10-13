@@ -3071,6 +3071,7 @@ pub(crate) mod legacy {
             prompt_suggestions,
             hooks_only: false,
             permissions: Default::default(),
+            pane_env: Default::default(),
         })
     }
     fn installer_failure(detail: impl Into<String>) -> crate::cli::RunError {
@@ -3272,6 +3273,7 @@ pub(crate) mod legacy {
         )?;
         legacy.hooks_only = hooks_only;
         legacy.permissions = crate::cli::setup::PermissionPolicy::from_options(&request.options);
+        legacy.pane_env = crate::cli::setup::PaneEnvPolicy::from_options(&request.options);
         harness_binary(&legacy, &env).map_err(adapter_failure)?;
         if let Some(leftover) = env.instance_source["state_dir_leftover"].as_str() {
             return Err(adapter_failure(invalid(format!(

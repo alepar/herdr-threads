@@ -76,6 +76,9 @@ pub struct SetupRequest {
     pub hooks_only: bool,
     /// `setup`: what to do about the harness's herdr-threads permission rules.
     pub permissions: PermissionPolicy,
+    /// `setup`: what to do about a pane-environment component, for an adapter that
+    /// declares one ([`WITH_PANE_ENV`]).
+    pub pane_env: PaneEnvPolicy,
 }
 
 /// `setup`: whether agents may run herdr-threads commands without prompting
@@ -110,6 +113,51 @@ impl PermissionPolicy {
             Self::Grant
         } else if options.get(WITHOUT_PERMISSIONS) == Some(&true) {
             Self::Decline
+        } else {
+            Self::Ask
+        }
+    }
+}
+
+/// `setup`: whether an adapter that declares a pane-environment component (an owned,
+/// consented block in the user's shell startup files that the harness reads inside Herdr
+/// panes) may write it. The adapter declaring [`WITH_PANE_ENV`] owns its meaning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PaneEnvPolicy {
+    /// Keep (refresh) a block setup owns; otherwise ask on an interactive terminal, else
+    /// advise.
+    #[default]
+    Ask,
+    /// `--with-pane-env`: write it without asking.
+    Grant,
+    /// `--without-pane-env`: remove an owned block, keeping the hooks.
+    Decline,
+    /// Report and advise only, never write (the installer's reconciliation).
+    Advise,
+}
+
+/// Setup options carrying a [`PaneEnvPolicy`] to the adapters that declare them.
+pub const WITH_PANE_ENV: &str = "with-pane-env";
+pub const WITHOUT_PANE_ENV: &str = "without-pane-env";
+/// No CLI flag: the installer passes it so reconciliation never writes shell startup files.
+pub const ADVISE_PANE_ENV: &str = "advise-pane-env";
+
+impl PaneEnvPolicy {
+    pub fn option(self) -> Option<&'static str> {
+        match self {
+            Self::Ask => None,
+            Self::Grant => Some(WITH_PANE_ENV),
+            Self::Decline => Some(WITHOUT_PANE_ENV),
+            Self::Advise => Some(ADVISE_PANE_ENV),
+        }
+    }
+    pub fn from_options(options: &crate::harness::adapter::SetupOptions) -> Self {
+        if options.get(WITH_PANE_ENV) == Some(&true) {
+            Self::Grant
+        } else if options.get(WITHOUT_PANE_ENV) == Some(&true) {
+            Self::Decline
+        } else if options.get(ADVISE_PANE_ENV) == Some(&true) {
+            Self::Advise
         } else {
             Self::Ask
         }
@@ -478,7 +526,8 @@ pub fn run<W: Write>(
     let mut report = execute(request, &env)?;
     if request.verb == SetupVerb::Install
         && (request.prompt_suggestions == PromptSuggestionPolicy::Ask
-            || request.permissions == PermissionPolicy::Ask)
+            || request.permissions == PermissionPolicy::Ask
+            || request.pane_env == PaneEnvPolicy::Ask)
         && interactive()
     {
         let registry = crate::harness::registry::builtins();
@@ -576,13 +625,17 @@ pub fn execute(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError
     if request.hooks_only {
         options.insert(HOOKS_ONLY_OPTION.into(), true);
     }
-    if let Some(option) = request.permissions.option()
-        && registration
+    for option in [request.permissions.option(), request.pane_env.option()]
+        .into_iter()
+        .flatten()
+    {
+        if registration
             .setup_options()
             .iter()
             .any(|declared| declared.name == option)
-    {
-        options.insert(option.into(), true);
+        {
+            options.insert(option.into(), true);
+        }
     }
     execute_registered(
         registration,
@@ -736,15 +789,17 @@ pub fn run_all<W: Write>(
     verb: SetupVerb,
     prompt_suggestions: PromptSuggestionPolicy,
     permissions: PermissionPolicy,
+    pane_env: PaneEnvPolicy,
     output: &OutputSpec,
     writer: &mut W,
 ) -> Result<(), RunError> {
     let _backups = crate::harness::setup::BackupSession::start();
     let env = SetupEnv::from_process(output)?;
-    let mut report = execute_all(verb, prompt_suggestions, permissions, &env)?;
+    let mut report = execute_all(verb, prompt_suggestions, permissions, pane_env, &env)?;
     if verb == SetupVerb::Install
         && (prompt_suggestions == PromptSuggestionPolicy::Ask
-            || permissions == PermissionPolicy::Ask)
+            || permissions == PermissionPolicy::Ask
+            || pane_env == PaneEnvPolicy::Ask)
         && interactive()
         && let Some(entries) = report["harnesses"].as_array_mut()
     {
@@ -819,6 +874,7 @@ pub fn execute_all(
     verb: SetupVerb,
     prompt_suggestions: PromptSuggestionPolicy,
     permissions: PermissionPolicy,
+    pane_env: PaneEnvPolicy,
     env: &SetupEnv,
 ) -> Result<Value, RunError> {
     execute_all_registered_with(
@@ -826,6 +882,7 @@ pub fn execute_all(
         verb,
         prompt_suggestions,
         permissions,
+        pane_env,
         &env.snapshot(),
     )
 }
@@ -841,6 +898,7 @@ pub fn execute_all_registered(
         verb,
         prompt_suggestions,
         PermissionPolicy::Ask,
+        PaneEnvPolicy::Ask,
         snapshot,
     )
 }
@@ -850,6 +908,7 @@ pub fn execute_all_registered_with(
     verb: SetupVerb,
     prompt_suggestions: PromptSuggestionPolicy,
     permissions: PermissionPolicy,
+    pane_env: PaneEnvPolicy,
     snapshot: &crate::harness::adapter::SetupEnvironment,
 ) -> Result<Value, RunError> {
     let env = &SetupEnv::from_snapshot(snapshot);
@@ -921,7 +980,7 @@ pub fn execute_all_registered_with(
                     prompt_suggestions == PromptSuggestionPolicy::Disable
                 }
                 "keep-prompt-suggestions" => prompt_suggestions == PromptSuggestionPolicy::Keep,
-                name => permissions.option() == Some(name),
+                name => permissions.option() == Some(name) || pane_env.option() == Some(name),
             };
             if enabled {
                 options.insert(option.name.into(), true);

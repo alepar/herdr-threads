@@ -92,6 +92,7 @@ pub enum CliAction {
         super::setup::SetupVerb,
         super::setup::PromptSuggestionPolicy,
         super::setup::PermissionPolicy,
+        super::setup::PaneEnvPolicy,
     ),
     /// Managed native launch into one explicit existing empty shell pane.
     Launch(super::launch::LaunchRequest),
@@ -1335,6 +1336,14 @@ struct SetupArgs {
     /// wrote them (for example under managed policy that forbids the key).
     #[arg(long)]
     hooks_only: bool,
+    /// setup: write the pane environment block of a harness that declares one (an owned,
+    /// guarded block in your shell startup files), without asking. Default: keep a
+    /// block setup owns, else ask on a terminal, else advise.
+    #[arg(long, conflicts_with = "without_pane_env")]
+    with_pane_env: bool,
+    /// setup: remove the pane environment block setup owns, keeping the hooks.
+    #[arg(long)]
+    without_pane_env: bool,
 }
 
 #[derive(Args)]
@@ -1444,7 +1453,7 @@ fn setup_action(
     args: SetupArgs,
     registry: &crate::harness::registry::Registry,
 ) -> Result<CliAction, ApiError> {
-    use super::setup::{PermissionPolicy, PromptSuggestionPolicy};
+    use super::setup::{PaneEnvPolicy, PermissionPolicy, PromptSuggestionPolicy};
     if verb != super::setup::SetupVerb::Install
         && (args.with_permissions || args.without_permissions)
     {
@@ -1452,6 +1461,40 @@ fn setup_action(
             "--with-permissions and --without-permissions apply to setup only (unsetup removes \
              the permission rules with the hooks)",
         ));
+    }
+    let pane_env = if args.with_pane_env {
+        PaneEnvPolicy::Grant
+    } else if args.without_pane_env {
+        PaneEnvPolicy::Decline
+    } else {
+        PaneEnvPolicy::Ask
+    };
+    if let Some(option) = pane_env.option() {
+        if verb != super::setup::SetupVerb::Install {
+            return Err(invalid(
+                "--with-pane-env and --without-pane-env apply to setup only (unsetup removes \
+                 the pane environment block with the hooks)",
+            ));
+        }
+        let declares = |registration: &crate::harness::registry::Registration| {
+            registration
+                .setup_options()
+                .iter()
+                .any(|declared| declared.name == option)
+        };
+        let declared = match args.harness.as_deref() {
+            Some(name) => registry
+                .agent(name)
+                .and_then(|id| registry.by_id(id))
+                .is_ok_and(declares),
+            None => registry.registrations().iter().any(declares),
+        };
+        if !declared {
+            return Err(invalid(
+                "--with-pane-env and --without-pane-env apply to `setup` and `setup <harness>` \
+                 only, for a harness that declares a pane environment",
+            ));
+        }
     }
     let permissions = if args.with_permissions {
         PermissionPolicy::Grant
@@ -1528,7 +1571,12 @@ fn setup_action(
                 "--harness-binary needs a harness: `setup <harness> --harness-binary PATH`",
             ));
         }
-        return Ok(CliAction::SetupAll(verb, prompt_suggestions, permissions));
+        return Ok(CliAction::SetupAll(
+            verb,
+            prompt_suggestions,
+            permissions,
+            pane_env,
+        ));
     };
     let harness = crate::harness::registry::OccupantHarness::Agent(
         registry
@@ -1549,6 +1597,7 @@ fn setup_action(
         prompt_suggestions,
         hooks_only: args.hooks_only,
         permissions,
+        pane_env,
     }))
 }
 

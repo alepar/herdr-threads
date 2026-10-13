@@ -2874,6 +2874,7 @@ mod extension_proof {
         advice: "turn the ext flag on",
         fixed_fields: &[("fixed_field", "always")],
         inspect: inspect_ext,
+        inspect_environment: None,
     };
     static METADATA: AdapterMetadata = AdapterMetadata {
         id: ID,

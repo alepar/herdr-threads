@@ -282,7 +282,7 @@ control command-specific outside-sandbox execution.
 
 ### Codex sandbox socket allowance
 
-This section records a legacy transport, not a current installation instruction. Current `setup codex` installs hooks only: it adds no socket, network or writable-root allowance. Use approved CLI-only outside-sandbox execution described [above](#codex-command-approvals); restarting the daemon does not fix a sandbox policy denial.
+This section records a legacy transport, not a current installation instruction. Current `setup codex` installs hooks (and, only with consent, the [pane environment](#managed-launch) block): it adds no socket, network or writable-root allowance. Use approved CLI-only outside-sandbox execution described [above](#codex-command-approvals); restarting the daemon does not fix a sandbox policy denial.
 
 Earlier setup versions wrote instance-specific network-proxy socket and journal-root settings. Their default-deny behavior was measured only on Codex 0.159.2/0.159.3; it must not be inferred for an unknown wrapper or build. Historical measurements remain in the [socket probe](evidence/codex-1593-sandbox-probe/README.md) and [write probe](evidence/codex-sandbox-writes-probe/README.md). Do not enable broad networking or copy those settings as a workaround.
 
@@ -315,8 +315,10 @@ missing and re-running `setup agy` restores it. The allow member is installed on
 Seat attribution requires hooks and tool commands to inherit the pane running the TUI.
 A shared harness server started in another pane can supply that server's pane instead.
 `setup` and `setup-status` inspect the user configuration and explain the foreground
-requirement; they do not change these settings. The user configuration is an advisory
-check, because wrappers and higher-precedence settings can change the effective mode.
+requirement. They never change harness settings; the one foreground change setup can make
+is Codex's pane environment below, and only with your consent. The configuration is an
+advisory check, because wrappers, higher-precedence settings and other shells can change the
+effective mode.
 
 For Claude, set `"disableAgentView": true` in
 `$CLAUDE_CONFIG_DIR/settings.json` (default `~/.claude/settings.json`). The equivalent
@@ -324,19 +326,61 @@ user-settings entry is `"env": {"CLAUDE_CODE_DISABLE_AGENT_VIEW": "1"}`. This di
 background agents and their on-demand supervisor. `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`
 controls tool backgrounding and is not the supervisor opt-out.
 
-Codex 0.160.1 has no verified persistent setting equivalent to native `--no-daemon`.
+Codex attaches its TUI to a shared app-server daemon by default, and
 `[features] daemon_auto_start = false` prevents automatic startup but still permits
-attachment to an existing server. Configure your existing native launcher or wrapper
-to keep execution in the TUI process. For a Codex entrypoint that accepts the native flag,
-herdr-threads can add it explicitly:
+attachment to an existing server. Codex skips the implicit daemon whenever
+`CODEX_EXEC_SERVER_URL` is set, and an empty value keeps ordinary local execution
+(`none` would disable local execution). The persistent opt-out is therefore the **pane
+environment**: `CODEX_EXEC_SERVER_URL=` exported in every Herdr pane, which works
+whatever wrapper starts Codex. (Evidence: Codex rust-v0.162.1 source,
+`codex-rs/tui/src/daemon_startup.rs` `exclusion()`, `codex-rs/tui/src/startup_orchestration.rs`,
+`codex-rs/tui/src/lib.rs` `app_server_target_for_launch` and
+`codex-rs/exec-server/src/environment_provider.rs`; recorded as history, not a version
+requirement.) Herdr has no per-pane environment setting, so `setup codex` offers to add a
+guarded block to your shell startup files:
+
+```sh
+# >>> herdr-threads managed block (codex pane environment; `herdr-threads unsetup codex` removes it) >>>
+if [ "${HERDR_ENV-}" = 1 ]; then export CODEX_EXEC_SERVER_URL=; fi
+# <<< herdr-threads managed block <<<
+```
+
+It goes at the end of `${ZDOTDIR:-~}/.zshenv` (zsh) and `~/.bashrc` (bash); fish gets
+its own drop-in, `${XDG_CONFIG_HOME:-~/.config}/fish/conf.d/herdr-threads.fish`
+(`if test "$HERDR_ENV" = 1; set -gx CODEX_EXEC_SERVER_URL ""; end`). Setup chooses the
+shell named by `$SHELL` plus each of the three whose startup files already exist.
+
+- `--with-pane-env` (on `setup` and `setup codex`) writes it; `--without-pane-env` removes
+  the block setup owns and keeps the hooks.
+- Without a flag, setup keeps a block it owns (refreshing an older version it recorded
+  writing), asks `[y/N]` on a terminal naming the files (default no), and without a terminal
+  only advises (`pane_env.action` `advised`, with the line to add in `pane_env.note`). A block
+  you edited is reported `edited` and left alone unless you pass `--with-pane-env`.
+- `herdr-threads internal installer-integrations` (`install.sh --setup`) never writes these
+  files; it prints the same advice.
+- A symlinked, special or over-1 MiB file is never followed or written: it is reported
+  `skipped` with the line to add yourself.
+- Each changed existing file first gets a timestamped pre-image beside it
+  (`<name>.<UTC timestamp>-<uuid>.herdr-threads`, see [Harness hooks](#harness-hooks)); a
+  file setup creates gets none. The exact block is recorded under `<state>/setup/`.
+- `unsetup codex` removes the block only while it is unchanged (`left_changed` otherwise) and
+  deletes a file setup created once nothing else is left in it.
+
+The block applies only inside Herdr panes and takes effect in newly opened panes. The report's
+`pane_env` object lists each file's `state` (`setup-status` too); when one holds the block,
+the Codex `foreground` status reads `configured` and `foreground.pane_env` reads `installed`
+(execution stays `unknown`: a wrapper that resets the environment, another shell, or a start
+outside a Herdr pane is not covered).
+
+Alternatively, for a Codex entrypoint that accepts the native flag, herdr-threads can add
+`--no-daemon` explicitly:
 
 ```sh
 export HERDR_THREADS_CODEX_OPTS='--no-daemon'
 ```
 
-Leave this unset when your wrapper rejects the flag; configure that wrapper's supported
-foreground mode instead. The measured tool and hook behavior and setting sources are
-documented in [wrapper compatibility](compatibility/wrapper-seat-detection.md).
+Leave this unset when your wrapper rejects the flag. The measured tool and hook behavior and
+setting sources are documented in [wrapper compatibility](compatibility/wrapper-seat-detection.md).
 
 `herdr-threads launch --pane PANE --kind claude|codex [--name NAME] [-- AGENT_ARG...]` starts Claude or Codex in one explicit existing Herdr pane that is at its interactive shell prompt. It never creates, splits or picks a pane, and never types into an occupied one.
 
@@ -351,6 +395,11 @@ Before anything starts, launch:
 The Herdr agent gets a readable name: `--name NAME` when given, else the pane's Herdr label (or its tab's label when the tab holds only that pane), else `seat-<short seat id>` (for example `seat-k3fq9a2b`). The name is fitted to Herdr's rule `[a-z][a-z0-9_-]{0,31}`: lowercased, other characters become `-`, anything before the first letter is dropped, and it is cut to 32 bytes (a `--name` with no letter is refused; a `--name` that had to change is reported in `warnings`). Launch correlates Herdr's start and readiness answers with that exact name. When Herdr refuses it as `agent_name_taken`, launch retries once with `-<short seat id>` appended, never more. The report and `launches.jsonl` record `agent_name` and `agent_name_source` (`name`, `pane_label` or `seat`); after exit 5 they list both `agent_name_candidates`.
 
 The caller's arguments after `--` remain unchanged and in order: the owned configuration is on disk, so launch adds no hook or sandbox arguments. By default launch adds no daemon-mode argument and does not inspect shell functions or aliases to deduplicate one. This lets the pane's `codex` wrapper select its own supported mode: a wrapper script may reject `--no-daemon` even when native Codex accepts it. Explicit caller arguments remain unchanged, including a top-level `--no-daemon` for a native CLI that supports it. A Codex setup plan adds only its owned session `-c` overrides, inserted at the level that loads hooks (interactive, `exec`, or `exec resume`). Other subcommands (including top-level `resume`, `exec fork` and `exec review`), an explicit `--daemon`, duplicate or misplaced caller `--no-daemon`, and a caller `-c hooks.*` or whole-table `-c hooks=...` override that would replace the owned hook are refused. A separated `-i FILE` / `--image FILE` is refused too, because the option takes several values and would swallow a following subcommand or prompt: write `--image=FILE`, or put it after `--`. No auto-approve flag is added.
+
+Launch cannot set `CODEX_EXEC_SERVER_URL` for the agent: Herdr's `agent start` carries
+argv only, and the agent inherits the pane shell's environment. A launched Codex stays in
+its pane through the pane environment block above (or an explicit `--no-daemon`); the launch
+report's `codex.pane_env_installed` says whether a startup file holds the block.
 
 Optional `HERDR_THREADS_CODEX_OPTS` and `HERDR_THREADS_CLAUDE_OPTS` add arguments for the
 selected harness only. They are read from the environment of the herdr-threads command,

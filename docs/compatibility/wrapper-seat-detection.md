@@ -127,7 +127,8 @@ For an existing manual wrapper launch with no explicit registration, this resear
 After the live Bash-tool test, the user chose to configure foreground execution at user
 level and have the installer inspect and explain it, rather than introduce another wrapper
 or heuristic seat correlation. `setup` and `setup-status` report this as advisory settings
-information, not execution proof; they do not write foreground settings.
+information, not execution proof. They write no harness setting; since 2026-10-12 the one
+foreground change is the consented Codex pane environment block described below.
 
 Claude 2.1.290 supports `disableAgentView: true`, or a user `env` entry setting
 `CLAUDE_CODE_DISABLE_AGENT_VIEW` to `"1"`. Its embedded schema describes disabling
@@ -137,19 +138,38 @@ equivalent environment control. Tool backgrounding via `CLAUDE_CODE_DISABLE_BACK
 is separate and does not disable the supervisor. User settings can be overridden by other
 configuration layers; no live Claude daemon-tool capture is claimed here.
 
-Codex 0.160.1 has no verified persistent equivalent to the `no_daemon` CLI field.
+Codex 0.160.1 has no persistent config-file equivalent to the `no_daemon` CLI field.
 `[features] daemon_auto_start = false` alone is insufficient: its
 [startup orchestration first selects an existing daemon](https://github.com/openai/codex/blob/rust-v0.160.1/codex-rs/tui/src/startup_orchestration.rs#L293-L306)
 and [only later gates automatic startup](https://github.com/openai/codex/blob/rust-v0.160.1/codex-rs/tui/src/startup_orchestration.rs#L475-L478).
-The installer explains that limit and recommends a supported foreground option in the
-existing launcher. For entrypoints that accept native Codex arguments,
-`HERDR_THREADS_CODEX_OPTS='--no-daemon'` supplies the explicit opt-out. Wrappers that reject
-it must use their own supported configuration.
+
+An environment opt-out does exist (source read at rust-v0.162.1, 2026-10-12; historical
+evidence, never a version gate):
+
+- `codex-rs/tui/src/daemon_startup.rs` `exclusion()` returns
+  `executor selection (CODEX_EXEC_SERVER_URL)` whenever the variable is present
+  (`std::env::var_os`, so an empty value counts);
+- `codex-rs/tui/src/startup_orchestration.rs` reuses the implicit local daemon only when
+  there is no exclusion, skips probing the default daemon socket, and gates auto-start on
+  the same condition;
+- `codex-rs/tui/src/lib.rs` `app_server_target_for_launch` reuses a local daemon only while
+  the variable is unset, else runs the app server embedded in the TUI process;
+- `codex-rs/exec-server/src/environment_provider.rs` treats an empty (trimmed) value as the
+  local environment (its test `default_provider_requests_local_environment_when_url_is_empty`);
+  only `none` disables local execution.
+
+So `CODEX_EXEC_SERVER_URL=` exported in a Herdr pane keeps any Codex started there, by any
+wrapper, out of the shared daemon. With consent (`setup codex --with-pane-env` or a terminal
+yes) setup adds an owned, `HERDR_ENV`-guarded block exporting it to the shell startup files
+([install guide](../install.md#managed-launch)); otherwise setup and the installer advise.
+For entrypoints that accept native Codex arguments, `HERDR_THREADS_CODEX_OPTS='--no-daemon'`
+remains an explicit alternative. Neither is execution proof: a wrapper that resets the
+environment, another shell, or a start outside a Herdr pane is not covered.
 
 `HERDR_THREADS_CODEX_OPTS` and `HERDR_THREADS_CLAUDE_OPTS` are optional user-selected launch
 arguments, defaulting to none. Quoted argv splitting preserves values without shell
 expansion; arguments precede caller arguments and retain existing validation. Handoff
 persists them once and retry does not reread the environment. This changes no canonical
 seat, continuity or receipt checks. TRUST-POLICY records the accepted user-managed
-foreground assumption; automatic shared-server TUI-pane attribution remains outside the
-implemented contract.
+foreground assumption and the consented pane environment block; automatic shared-server
+TUI-pane attribution remains outside the implemented contract.

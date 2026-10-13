@@ -299,6 +299,7 @@ impl Scratch {
                 prompt_suggestions: Default::default(),
                 hooks_only: false,
                 permissions: Default::default(),
+                pane_env: Default::default(),
             },
             &self.env,
         )
@@ -1274,6 +1275,8 @@ fn launch_reports_the_effective_codex_profile_and_config() {
             .clone()
     };
     let codex = run(&[]);
+    // Launch cannot set the pane environment; it reports whether the startup files hold it.
+    assert_eq!(codex["pane_env_installed"], false, "{codex}");
     assert_eq!(codex["codex_home"], home.display().to_string());
     assert_eq!(codex["config_path"], config.display().to_string());
     assert_eq!(codex["config_present"], true);

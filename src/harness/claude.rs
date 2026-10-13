@@ -869,6 +869,7 @@ static FOREGROUND: ForegroundAdvice = ForegroundAdvice {
     advice: "Set disableAgentView to true in Claude's user settings.json (merge {\"disableAgentView\":true} into the existing object), or set env.CLAUDE_CODE_DISABLE_AGENT_VIEW to \"1\" there. This disables agent view, --bg/background and on-demand daemon mode. CLAUDE_CODE_DISABLE_BACKGROUND_TASKS is a different setting and does not replace this choice.",
     fixed_fields: &[],
     inspect: inspect_foreground,
+    inspect_environment: None,
 };
 
 fn foreground_truthy(value: &str) -> bool {

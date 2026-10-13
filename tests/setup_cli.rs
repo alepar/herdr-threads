@@ -135,6 +135,9 @@ impl Scratch {
             )
             .env_remove("XDG_STATE_HOME")
             .env_remove("XDG_CONFIG_HOME")
+            // Startup files resolve under the scratch HOME unless a test sets these.
+            .env_remove("ZDOTDIR")
+            .env("SHELL", "/bin/zsh")
             .env_remove("HERDR_SESSION")
             .env_remove("HERDR_PLUGIN_STATE_DIR")
             .env_remove("HERDR_SOCKET_PATH")
@@ -5503,4 +5506,381 @@ fn current_installs_report_no_finding() {
     );
     let status = json(&s.run(&["--json", "setup-status", "claude"]));
     assert!(status.get("stale_install").is_none(), "{status}");
+}
+
+// ------------------------------------------------------------ pane environment
+
+/// The exact managed block `setup codex --with-pane-env` appends (independent oracle).
+const PANE_ENV_BLOCK: &str = "# >>> herdr-threads managed block (codex pane environment; \
+     `herdr-threads unsetup codex` removes it) >>>\n\
+     if [ \"${HERDR_ENV-}\" = 1 ]; then export CODEX_EXEC_SERVER_URL=; fi\n\
+     # <<< herdr-threads managed block <<<\n";
+const PANE_ENV_FISH: &str = "if test \"$HERDR_ENV\" = 1; set -gx CODEX_EXEC_SERVER_URL \"\"; end\n";
+
+/// A scratch with a fake codex, and SHELL / ZDOTDIR / XDG_CONFIG_HOME inside
+/// the scratch root (HOME already is), so no real startup file is ever read
+/// or written.
+struct PaneEnvScratch {
+    s: Scratch,
+    zdot: PathBuf,
+    xdg: PathBuf,
+}
+impl PaneEnvScratch {
+    fn new() -> Self {
+        let s = Scratch::new();
+        s.harness("codex", "codex-cli 0.162.1");
+        fs::create_dir(&s.codex_home).unwrap();
+        let zdot = s.root.join("zdot");
+        let xdg = s.root.join("xdg config");
+        fs::create_dir(&zdot).unwrap();
+        fs::create_dir(&xdg).unwrap();
+        Self { s, zdot, xdg }
+    }
+    fn run(&self, shell: &str, args: &[&str]) -> Output {
+        self.s.run_with(
+            &[
+                ("SHELL", std::ffi::OsStr::new(shell)),
+                ("ZDOTDIR", self.zdot.as_os_str()),
+                ("XDG_CONFIG_HOME", self.xdg.as_os_str()),
+            ],
+            args,
+        )
+    }
+    fn zshenv(&self) -> PathBuf {
+        self.zdot.join(".zshenv")
+    }
+    fn bashrc(&self) -> PathBuf {
+        self.s.home.join(".bashrc")
+    }
+    fn drop_in(&self) -> PathBuf {
+        self.xdg.join("fish/conf.d/herdr-threads.fish")
+    }
+}
+
+/// The retained pre-images of `config`, as sorted byte contents.
+fn pre_images(config: &Path) -> Vec<Vec<u8>> {
+    let prefix = format!("{}.", config.file_name().unwrap().to_string_lossy());
+    let mut found: Vec<Vec<u8>> = fs::read_dir(config.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.starts_with(&prefix) && name.ends_with(".herdr-threads")
+        })
+        .map(|entry| fs::read(entry.path()).unwrap())
+        .collect();
+    found.sort();
+    found
+}
+
+/// `setup codex --with-pane-env` creates `$ZDOTDIR/.zshenv` with exactly the
+/// block; setup-status reports it and foreground reads configured; a re-run
+/// is idempotent; `unsetup codex` removes it and deletes the file it created.
+/// Kills: writing outside ZDOTDIR, a different block, a backup of a file setup
+/// created, a second write on re-run, and unsetup leaving the block or the file.
+#[test]
+fn with_pane_env_writes_zshenv_and_unsetup_removes_it() {
+    let p = PaneEnvScratch::new();
+    let out = p.run("/bin/zsh", &["setup", "codex", "--with-pane-env", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = json(&out);
+    assert_eq!(report["pane_env"]["action"], "installed", "{report}");
+    assert_eq!(report["pane_env"]["variable"], "CODEX_EXEC_SERVER_URL");
+    assert_eq!(
+        report["pane_env"]["files"],
+        serde_json::json!([{"shell": "zsh", "path": p.zshenv().display().to_string(), "state": "installed"}])
+    );
+    assert_eq!(fs::read_to_string(p.zshenv()).unwrap(), PANE_ENV_BLOCK);
+    assert!(pre_images(&p.zshenv()).is_empty(), "created: no pre-image");
+    assert!(!p.s.home.join(".zshenv").exists());
+    assert_eq!(report["foreground"]["status"], "configured", "{report}");
+    assert_eq!(report["foreground"]["pane_env"], "installed");
+    assert_eq!(report["foreground"]["execution"], "unknown");
+    assert!(
+        !report["warnings"]
+            .to_string()
+            .contains("Foreground user settings"),
+        "{report}"
+    );
+
+    let status = json(&p.run("/bin/zsh", &["setup-status", "codex", "--json"]));
+    assert_eq!(
+        status["pane_env"],
+        serde_json::json!({
+            "state": "installed",
+            "variable": "CODEX_EXEC_SERVER_URL",
+            "files": [{"shell": "zsh", "path": p.zshenv().display().to_string(), "state": "installed"}],
+        }),
+        "{status}"
+    );
+    assert_eq!(status["foreground"]["status"], "configured");
+    assert_eq!(status["foreground"]["execution"], "unknown");
+
+    let again = p.run("/bin/zsh", &["setup", "codex", "--with-pane-env"]);
+    assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
+    assert!(
+        text(&again.stdout).contains("pane_env.action: already_installed"),
+        "{}",
+        text(&again.stdout)
+    );
+    let again = json(&p.run("/bin/zsh", &["setup", "codex", "--json"]));
+    assert_eq!(again["pane_env"]["action"], "kept", "{again}");
+    assert_eq!(again["pane_env"]["files"][0]["state"], "already_installed");
+    assert_eq!(fs::read_to_string(p.zshenv()).unwrap(), PANE_ENV_BLOCK);
+    assert!(pre_images(&p.zshenv()).is_empty());
+
+    let removed = p.run("/bin/zsh", &["unsetup", "codex", "--json"]);
+    assert_eq!(removed.status.code(), Some(0), "{}", text(&removed.stderr));
+    assert_eq!(json(&removed)["pane_env"]["action"], "removed");
+    assert!(!p.zshenv().exists(), "the file setup created is deleted");
+    assert!(
+        pre_images(&p.zshenv()).is_empty(),
+        "nothing of the user's to keep"
+    );
+}
+
+/// Each existing startup file setup changes keeps exactly one pre-image with its original
+/// bytes (one per file per run), a fish drop-in it creates keeps none, and unsetup restores
+/// the original bytes. Kills: a missing or duplicated pre-image, a pre-image of the wrong
+/// bytes, a fish file in the wrong place, or unsetup losing user lines.
+#[test]
+fn pane_env_backs_up_each_changed_file_once_and_unsetup_restores_it() {
+    let p = PaneEnvScratch::new();
+    const ZSH: &[u8] = b"export A=1";
+    const BASH: &[u8] = b"alias ll='ls -l'\n";
+    fs::write(p.zshenv(), ZSH).unwrap();
+    fs::write(p.bashrc(), BASH).unwrap();
+    fs::create_dir(p.xdg.join("fish")).unwrap();
+    let out = p.run(
+        "/usr/bin/tcsh",
+        &["setup", "codex", "--with-pane-env", "--json"],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = json(&out);
+    let shells: Vec<_> = report["pane_env"]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| {
+            (
+                file["shell"].as_str().unwrap(),
+                file["state"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shells,
+        [
+            ("zsh", "installed"),
+            ("bash", "installed"),
+            ("fish", "installed")
+        ],
+        "{report}"
+    );
+    assert_eq!(
+        fs::read_to_string(p.zshenv()).unwrap(),
+        format!("export A=1\n{PANE_ENV_BLOCK}")
+    );
+    assert_eq!(
+        fs::read_to_string(p.bashrc()).unwrap(),
+        format!("alias ll='ls -l'\n{PANE_ENV_BLOCK}")
+    );
+    assert!(
+        fs::read_to_string(p.drop_in())
+            .unwrap()
+            .ends_with(PANE_ENV_FISH)
+    );
+    assert_eq!(pre_images(&p.zshenv()), [ZSH.to_vec()]);
+    assert_eq!(pre_images(&p.bashrc()), [BASH.to_vec()]);
+    assert!(pre_images(&p.drop_in()).is_empty());
+
+    let removed = p.run("/usr/bin/tcsh", &["unsetup", "codex", "--json"]);
+    assert_eq!(removed.status.code(), Some(0), "{}", text(&removed.stderr));
+    assert_eq!(json(&removed)["pane_env"]["action"], "removed");
+    assert_eq!(fs::read(p.zshenv()).unwrap(), b"export A=1\n");
+    assert_eq!(fs::read(p.bashrc()).unwrap(), BASH);
+    assert!(!p.drop_in().exists());
+}
+
+/// Bare `setup --with-pane-env` passes the option to codex and prints its line;
+/// bare `unsetup` removes the block and keeps the rest of the existing file.
+#[test]
+fn bare_setup_with_pane_env_and_bare_unsetup() {
+    let p = PaneEnvScratch::new();
+    fs::write(p.bashrc(), "alias ll='ls -l'").unwrap();
+    let out = p.run("/bin/bash", &["setup", "--with-pane-env"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let stdout = text(&out.stdout);
+    assert!(
+        stdout.contains(
+            "codex: pane environment: installed (`CODEX_EXEC_SERVER_URL=` in Herdr panes): "
+        ),
+        "{stdout}"
+    );
+    assert_eq!(
+        fs::read_to_string(p.bashrc()).unwrap(),
+        format!("alias ll='ls -l'\n{PANE_ENV_BLOCK}")
+    );
+    let removed = p.run("/bin/bash", &["unsetup"]);
+    assert_eq!(removed.status.code(), Some(0), "{}", text(&removed.stderr));
+    assert!(
+        text(&removed.stdout).contains("codex: pane environment: removed: "),
+        "{}",
+        text(&removed.stdout)
+    );
+    assert_eq!(
+        fs::read_to_string(p.bashrc()).unwrap(),
+        "alias ll='ls -l'\n"
+    );
+}
+
+/// `--without-pane-env` removes the owned block and keeps the hooks; the fish
+/// drop-in goes with it. Kills: removing the hooks too, or leaving the drop-in.
+#[test]
+fn without_pane_env_removes_the_block_and_keeps_hooks() {
+    let p = PaneEnvScratch::new();
+    fs::write(p.zshenv(), "export A=1\n").unwrap();
+    fs::create_dir(p.xdg.join("fish")).unwrap();
+    let out = p.run("/bin/zsh", &["setup", "codex", "--with-pane-env", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(p.drop_in().exists());
+    let removed = p.run(
+        "/bin/zsh",
+        &["setup", "codex", "--without-pane-env", "--json"],
+    );
+    assert_eq!(removed.status.code(), Some(0), "{}", text(&removed.stderr));
+    let report = json(&removed);
+    assert_eq!(report["pane_env"]["action"], "removed", "{report}");
+    assert_eq!(fs::read_to_string(p.zshenv()).unwrap(), "export A=1\n");
+    assert!(!p.drop_in().exists());
+    let status = json(&p.run("/bin/zsh", &["setup-status", "codex", "--json"]));
+    assert_eq!(status["installed"], true, "hooks stay: {status}");
+    assert_eq!(status["pane_env"]["state"], "not_installed");
+    assert_eq!(status["foreground"]["status"], "required");
+}
+
+/// Without a terminal the default only advises: no write, the advice (with the manual line)
+/// in the report, no question, and a block edited since setup wrote it is neither refreshed
+/// nor removed. Kills: a silent write, dropped advice, a prompt without a terminal,
+/// overwriting the user's edit, or unsetup removing it.
+#[test]
+fn non_interactive_default_advises_pane_env_and_respects_edits() {
+    let p = PaneEnvScratch::new();
+    fs::write(p.bashrc(), "x\n").unwrap();
+    let out = p.run("/bin/bash", &["setup", "codex", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = json(&out);
+    assert_eq!(report["pane_env"]["action"], "advised", "{report}");
+    assert_eq!(report["pane_env"]["files"][0]["state"], "not_installed");
+    let note = report["pane_env"]["note"].as_str().unwrap();
+    assert!(
+        note.contains("if [ \"${HERDR_ENV-}\" = 1 ]; then export CODEX_EXEC_SERVER_URL=; fi"),
+        "{note}"
+    );
+    assert!(note.contains("--with-pane-env"), "{note}");
+    assert!(!text(&out.stderr).contains("[y/N]"));
+    assert_eq!(fs::read_to_string(p.bashrc()).unwrap(), "x\n");
+    assert!(pre_images(&p.bashrc()).is_empty());
+    assert!(!p.zshenv().exists());
+    assert_eq!(report["foreground"]["status"], "required");
+    assert_eq!(report["foreground"]["pane_env"], "not_installed");
+    let text_out = text(&p.run("/bin/bash", &["setup", "codex"]).stdout);
+    assert!(text_out.contains("pane_env.action: advised"), "{text_out}");
+
+    // An edited block: kept as the user left it by a plain setup and by unsetup.
+    let installed = p.run("/bin/bash", &["setup", "codex", "--with-pane-env"]);
+    assert_eq!(
+        installed.status.code(),
+        Some(0),
+        "{}",
+        text(&installed.stderr)
+    );
+    let edited = fs::read_to_string(p.bashrc())
+        .unwrap()
+        .replace("URL=;", "URL=; export X=1;");
+    fs::write(p.bashrc(), &edited).unwrap();
+    let report = json(&p.run("/bin/bash", &["setup", "codex", "--json"]));
+    assert_eq!(
+        report["pane_env"]["files"][0]["state"], "edited",
+        "{report}"
+    );
+    assert_eq!(fs::read_to_string(p.bashrc()).unwrap(), edited);
+    let removed = json(&p.run("/bin/bash", &["unsetup", "codex", "--json"]));
+    assert_eq!(removed["pane_env"]["action"], "left_changed", "{removed}");
+    assert_eq!(fs::read_to_string(p.bashrc()).unwrap(), edited);
+
+    // An unknown shell with no startup files: nothing to write, still advised.
+    let other = PaneEnvScratch::new();
+    let report = json(&other.run("/bin/tcsh", &["setup", "codex", "--json"]));
+    assert_eq!(report["pane_env"]["action"], "advised");
+    assert_eq!(report["pane_env"]["files"], serde_json::json!([]));
+}
+
+/// A symlinked startup file is never followed: setup reports it skipped with the line to add
+/// by hand and leaves the link target alone. Kills: writing through the link.
+#[test]
+fn pane_env_skips_a_symlinked_startup_file() {
+    let p = PaneEnvScratch::new();
+    let real = p.s.root.join("dotfiles-zshenv");
+    fs::write(&real, "export B=2\n").unwrap();
+    std::os::unix::fs::symlink(&real, p.zshenv()).unwrap();
+    let out = p.run("/bin/zsh", &["setup", "codex", "--with-pane-env", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = json(&out);
+    assert_eq!(
+        report["pane_env"]["files"][0]["state"], "skipped",
+        "{report}"
+    );
+    assert!(
+        report["pane_env"]["files"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("symlink"),
+        "{report}"
+    );
+    assert!(
+        report["warnings"]
+            .to_string()
+            .contains("add this line to it yourself"),
+        "{report}"
+    );
+    assert_eq!(fs::read_to_string(&real).unwrap(), "export B=2\n");
+    assert!(
+        fs::symlink_metadata(p.zshenv())
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+/// The flags belong to `setup` / `setup codex`, and exclude each other.
+#[test]
+fn pane_env_flags_are_refused_elsewhere() {
+    let p = PaneEnvScratch::new();
+    for args in [
+        &["unsetup", "codex", "--with-pane-env"][..],
+        &["unsetup", "--without-pane-env"],
+        &["setup-status", "codex", "--with-pane-env"],
+    ] {
+        let out = p.run("/bin/zsh", args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(
+            text(&out.stderr).contains("apply to setup only"),
+            "{args:?}: {}",
+            text(&out.stderr)
+        );
+    }
+    let claude = p.run("/bin/zsh", &["setup", "claude", "--with-pane-env"]);
+    assert_eq!(claude.status.code(), Some(2));
+    assert!(
+        text(&claude.stderr).contains("for a harness that declares a pane environment"),
+        "{}",
+        text(&claude.stderr)
+    );
+    let both = p.run(
+        "/bin/zsh",
+        &["setup", "--with-pane-env", "--without-pane-env"],
+    );
+    assert_eq!(both.status.code(), Some(2), "{}", text(&both.stderr));
+    assert!(!p.zshenv().exists());
 }
