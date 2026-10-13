@@ -1711,8 +1711,15 @@ impl SendScenario {
     /// between staging and the decision, and decide. The published send must
     /// match the canonical state after `change`: an available recipient is
     /// eligible and unwarned, an unavailable one ineligible and warned; and a
-    /// change that flips availability must refuse the stale preparation once.
+    /// change that flips the staged (availability, provenance) pair must
+    /// refuse the stale preparation once, and one that leaves it unchanged
+    /// must refuse nothing (a decision in one attempt).
     fn stage_change_decide(&self, label: &str, change: impl FnOnce(&Self)) {
+        let pair = |s: &Self| {
+            crate::store::schema::effective_registered_availability(&s.db, "recipient", Some("i"))
+                .unwrap()
+        };
+        let staged_pair = pair(self);
         let before = self.available();
         let send = self.request(label);
         self.prepare(&send);
@@ -1738,12 +1745,13 @@ impl SendScenario {
             "{label}: the published send matches the canonical post-change state (fences at staging {fences:?}, after the change {:?})",
             self.fences()
         );
-        if before != after {
-            assert_eq!(
-                attempts, 2,
-                "{label}: the stale preparation is refused once"
-            );
-        }
+        let changed = staged_pair != pair(self);
+        assert_eq!(
+            attempts,
+            if changed { 2 } else { 1 },
+            "{label}: refused once exactly when the staged pair changed ({staged_pair:?} -> {:?})",
+            pair(self)
+        );
     }
 }
 
@@ -1916,6 +1924,118 @@ fn plain_call_enrollment_between_stage_and_decide_drops_the_stale_warning() {
             .unwrap();
         assert!(s.available(), "the plain call enrolled a connected binding");
     });
+}
+
+// Kills: a liveness fence that bumps on every binding row change rather than
+// on a change of the seat's staged (availability, provenance) pair. A Claude
+// subagent starting and stopping under a connected parent changes neither, so
+// an in-flight send is decided in one attempt (each refusal makes the CLI drop
+// the intent).
+#[test]
+fn subagent_start_and_stop_under_a_connected_parent_refuse_no_send() {
+    use crate::protocol::commands::BindingEventKind::{SubagentStart, SubagentStop};
+    let scenario = SendScenario::new();
+    let sub = subagent_of(&scenario.main);
+    scenario.stage_change_decide("quiet-sub-start", |s| {
+        assert_eq!(
+            recorded(
+                &s.service,
+                binding_event(sub.clone(), SubagentStart, None, "quiet-sub-start")
+            ),
+            1
+        );
+    });
+    scenario.stage_change_decide("quiet-sub-stop", |s| {
+        assert_eq!(
+            recorded(
+                &s.service,
+                binding_event(sub.clone(), SubagentStop, None, "quiet-sub-stop")
+            ),
+            1
+        );
+    });
+    assert!(scenario.available());
+}
+
+// Kills the same over-broad fence for one-shot sessions: a one-shot in the
+// recipient's pane enrolls by plain call and exits while the main session
+// stays connected; neither refuses an in-flight send. An idle liveness pass
+// (everything alive) writes nothing.
+#[test]
+fn a_one_shot_under_a_live_main_session_refuses_no_send() {
+    use crate::protocol::commands::AdvanceCursors;
+    let scenario = SendScenario::new();
+    scenario.stage_change_decide("one-shot-enroll", |s| {
+        let one_shot = CallerClaim {
+            native_session: NativeSessionId::new("recipient-one-shot"),
+            execution: ExecutionId::new("00000000-0000-4000-8000-000000000003"),
+            liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 3, start: 1 }),
+            ..s.main.clone()
+        };
+        s.service
+            .handle(
+                Command::AdvanceCursors(AdvanceCursors {
+                    in_turn: false,
+                    invitations: Vec::new(),
+                    claim: one_shot,
+                    operation: OperationId::new("one-shot-plain-call"),
+                    displayed: vec![],
+                }),
+                PeerIdentity::from_kernel(501),
+                &budget(),
+            )
+            .unwrap();
+        assert_eq!(
+            s.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='recipient' AND native_session='recipient-one-shot' AND liveness='connected'"),
+            1,
+            "the one-shot enrolled"
+        );
+    });
+    scenario.stage_change_decide("one-shot-exit", |s| {
+        assert_eq!(s.liveness_pass(SENDER_AND_MAIN_ALIVE), 1);
+    });
+    let idle = scenario.fences();
+    assert_eq!(scenario.liveness_pass(SENDER_AND_MAIN_ALIVE), 0);
+    assert_eq!(scenario.fences(), idle, "an idle liveness pass stays quiet");
+    assert!(scenario.available());
+}
+
+// Kills a publication recheck that compares the live send fence after the
+// author's own claim resolution: an author whose only session exited sends
+// from a new session by plain call; its enrollment makes the author's seat
+// available (a real fence bump), yet it is never a staged recipient, so the
+// send is decided in one attempt.
+#[test]
+fn an_authors_first_plain_call_enrollment_sends_in_one_attempt() {
+    let scenario = SendScenario::new();
+    // Only the recipient's main session is alive: the sender's session exits.
+    assert_eq!(scenario.liveness_pass(AlivePids(&[2])), 1);
+    let author_seat_available = |s: &SendScenario| {
+        crate::store::schema::effective_registered_availability(&s.db, "s", Some("i"))
+            .unwrap()
+            .is_some()
+    };
+    assert!(!author_seat_available(&scenario));
+    let mut send = scenario.request("first-plain-send");
+    send.claim = CallerClaim {
+        native_session: NativeSessionId::new("sender-fresh"),
+        execution: ExecutionId::new("00000000-0000-4000-8000-000000000006"),
+        liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 6, start: 1 }),
+        ..scenario.sender.clone()
+    };
+    scenario.prepare(&send);
+    let staged = scenario.fences();
+    let (message, attempts) = scenario.decide_with_retry(send);
+    assert!(
+        author_seat_available(&scenario),
+        "the send enrolled the author's new session"
+    );
+    assert!(
+        scenario.fences().1 > staged.1,
+        "the author's enrollment bumped the fence"
+    );
+    assert_eq!(attempts, 1, "the author's own bump refuses nothing");
+    assert_eq!(scenario.published(&message), (true, vec![]));
 }
 
 /// When the send's recipients are staged relative to the reconciliation pass

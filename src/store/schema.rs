@@ -3366,25 +3366,30 @@ fn bump_send_eligibility(db: &Connection, instance: &str) -> Result<(), ApiError
     Ok(())
 }
 
-/// The binding-liveness transition (`bindings::connect` / `disconnect`, the
-/// sole writers of `occupant_bindings.liveness`) changed a row of the
-/// binding's seat. `effective_registered_availability` requires a connected
-/// binding, so the seat's instance fence moves once (one row update, no
-/// recipient scan; shared contract amendment §8). Liveness changes only on
-/// evidence (check-in, plain-call reconnect, end event, process exit,
-/// supersede, retirement, unresolve), never on a steady-state cadence.
-pub fn bump_send_eligibility_for_binding(
+/// Runs one binding-liveness write (`bindings::connect`, `disconnect`, a
+/// registered enrollment: the writers of a connected registered row) for
+/// `seat` and bumps the seat's instance send fence once exactly when the
+/// seat's staged pair, `effective_registered_availability` (available and
+/// its provenance), differs before and after (shared contract amendment §8;
+/// one row update, no recipient scan). A binding joining or leaving beside
+/// an unchanged available binding (a subagent, a one-shot) refuses no
+/// in-flight send. `write` returns its result and whether it changed a row.
+pub fn fence_seat_availability<T>(
     db: &Connection,
-    binding: &crate::protocol::ids::BindingId,
-) -> Result<(), ApiError> {
-    let instance: String = db
-        .query_row(
-            "SELECT s.instance_id FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.binding_id=?1",
-            [binding.as_str()],
-            |r| r.get(0),
-        )
-        .map_err(store_error)?;
-    bump_send_eligibility(db, &instance)
+    seat: &str,
+    write: impl FnOnce() -> Result<(T, bool), ApiError>,
+) -> Result<T, ApiError> {
+    let before = effective_registered_availability(db, seat, None)?;
+    let (result, changed) = write()?;
+    if changed && effective_registered_availability(db, seat, None)? != before {
+        let instance: String = db
+            .query_row("SELECT instance_id FROM seats WHERE id=?1", [seat], |r| {
+                r.get(0)
+            })
+            .map_err(store_error)?;
+        bump_send_eligibility(db, &instance)?;
+    }
+    Ok(result)
 }
 
 pub fn bump_membership_revision(tx: &Transaction<'_>, thread: &ThreadId) -> Result<(), ApiError> {
@@ -3431,7 +3436,9 @@ pub fn bump_lifecycle_revision(tx: &Transaction<'_>, instance: &str) -> Result<(
 /// published reconfirmation snapshot advances the epoch while such rows keep
 /// the old one. A binding counts only while connected (liveness; ht-54r.23): a seat is
 /// available while any open, connected, registered binding is confirmed. Returns the binding's
-/// observation provenance when available.
+/// observation provenance when available: deterministically the oldest
+/// qualifying top-level binding's (else the oldest subagent's), so a newer
+/// binding joining or leaving beside it changes neither half of the result.
 /// Recipient staging and unavailability-episode opening must both use this.
 pub fn effective_registered_availability(
     db: &Connection,
@@ -3447,7 +3454,8 @@ pub fn effective_registered_availability(
                AND b.ended_at IS NULL AND b.liveness='connected' AND b.registered_at IS NOT NULL AND b.target_id=s.target_id \
                AND b.generation=s.generation AND b.target_generation=s.target_generation \
                AND b.host_boot=h.host_boot AND b.host_epoch=h.host_epoch \
-               AND (?2 IS NULL OR h.id=?2) LIMIT 1",
+               AND (?2 IS NULL OR h.id=?2) \
+             ORDER BY (b.role='top_level') DESC, b.ordinal LIMIT 1",
             params![seat, instance],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
         )

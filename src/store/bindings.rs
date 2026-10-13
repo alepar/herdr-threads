@@ -318,7 +318,10 @@ pub(crate) fn enroll_with_hooks(
         ),
         None => (None, None),
     };
-    tx.execute(
+    // A registered row is inserted connected: like `connect`, it can change its seat's staged
+    // availability pair (on any path, a plain call's enrollment included).
+    super::schema::fence_seat_availability(tx, key.seat.as_str(), || {
+        tx.execute(
         "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,terminal_id,incarnation,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,role,parent_binding,agent_id,lineage_from,liveness_pid,liveness_start) \
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
         params![
@@ -344,7 +347,9 @@ pub(crate) fn enroll_with_hooks(
             start,
         ],
     )
-    .map_err(store_error)?;
+    .map_err(store_error)
+    .map(|_| ((), place.registered_at.is_some()))
+    })?;
     let ordinal = tx.last_insert_rowid();
     let binding = query_rows(
         tx,
@@ -354,11 +359,6 @@ pub(crate) fn enroll_with_hooks(
     .into_iter()
     .next()
     .ok_or_else(|| corrupt("enrolled binding vanished"))?;
-    // A registered row is inserted connected: like `connect`, it can make its seat available
-    // (on any path, a plain call's enrollment included), so it bumps the send fence.
-    if place.registered_at.is_some() {
-        super::schema::bump_send_eligibility_for_binding(tx, &binding.binding_id)?;
-    }
     let mode = match request.lineage {
         Some(p) => SeedMode::Lineage(p.clone()),
         None => SeedMode::Fresh,
@@ -485,18 +485,23 @@ pub(crate) fn disconnect_with_hooks(
     now: UtcMillis,
     hooks: &[(&str, DisconnectHook)],
 ) -> Result<bool, ApiError> {
-    let changed = tx
-        .execute(
-            "UPDATE occupant_bindings SET liveness='disconnected', disconnected_at=?2, disconnect_reason=?3 \
-             WHERE binding_id=?1 AND liveness='connected'",
-            params![binding.as_str(), now.0, reason.as_str()],
-        )
-        .map_err(store_error)?;
-    if changed == 0 {
+    let Some(seat) = binding_seat(tx, binding)? else {
+        return Ok(false);
+    };
+    // Shared contract amendment §8: a transition to unavailable bumps the send fence.
+    let changed = super::schema::fence_seat_availability(tx, &seat, || {
+        let rows = tx
+            .execute(
+                "UPDATE occupant_bindings SET liveness='disconnected', disconnected_at=?2, disconnect_reason=?3 \
+                 WHERE binding_id=?1 AND liveness='connected'",
+                params![binding.as_str(), now.0, reason.as_str()],
+            )
+            .map_err(store_error)?;
+        Ok((rows != 0, rows != 0))
+    })?;
+    if !changed {
         return Ok(false);
     }
-    // Shared contract amendment §8: a transition to unavailable bumps the send fence.
-    super::schema::bump_send_eligibility_for_binding(tx, binding)?;
     if !hooks.is_empty() {
         let row = get(tx, binding)?.ok_or_else(|| corrupt("disconnected binding vanished"))?;
         let event = DisconnectEvent {
@@ -541,19 +546,31 @@ pub fn connect(
         ),
         None => (None, None),
     };
-    let changed = tx
-        .execute(
-            "UPDATE occupant_bindings SET liveness='connected', disconnected_at=NULL, disconnect_reason=NULL, liveness_pid=?2, liveness_start=?3 \
-             WHERE binding_id=?1 AND ended_at IS NULL AND liveness='disconnected'",
-            params![binding.as_str(), pid, start],
-        )
-        .map_err(store_error)?;
-    if changed == 0 {
+    let Some(seat) = binding_seat(tx, binding)? else {
         return Ok(false);
-    }
-    // Every reconnect (check-in or plain call) can restore availability: bump the send fence.
-    super::schema::bump_send_eligibility_for_binding(tx, binding)?;
-    Ok(true)
+    };
+    // Every reconnect (check-in or plain call) can restore availability: fence it.
+    super::schema::fence_seat_availability(tx, &seat, || {
+        let rows = tx
+            .execute(
+                "UPDATE occupant_bindings SET liveness='connected', disconnected_at=NULL, disconnect_reason=NULL, liveness_pid=?2, liveness_start=?3 \
+                 WHERE binding_id=?1 AND ended_at IS NULL AND liveness='disconnected'",
+                params![binding.as_str(), pid, start],
+            )
+            .map_err(store_error)?;
+        Ok((rows != 0, rows != 0))
+    })
+}
+
+/// The seat a binding belongs to (None for an unknown binding).
+fn binding_seat(tx: &Connection, binding: &BindingId) -> Result<Option<String>, ApiError> {
+    tx.query_row(
+        "SELECT seat_id FROM occupant_bindings WHERE binding_id=?1",
+        [binding.as_str()],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(store_error)
 }
 
 /// Spec §3 Presence: a seat is active iff it has an open connected binding, or its open binding is
