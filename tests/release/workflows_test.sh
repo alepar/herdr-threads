@@ -89,12 +89,33 @@ check "ci.yml: actionlint job exists" test "$(yq '.jobs | has("actionlint")' "$c
 full=.github/workflows/full-suite.yml
 check "full-suite.yml: manual dispatch only, contents read" bash -c \
   'test "$(yq -o=json -I=0 ".on | keys" "$1")" = "[\"workflow_dispatch\"]" && test "$(yq ".permissions.contents" "$1")" = read' _ "$full"
-check "full-suite.yml: the exact unsharded command, timed under 300 s" bash -c '
-  run=$(yq ".jobs.full-suite.steps[] | select(.name == \"Full suite*\") | .run" "$1")
-  printf "%s\n" "$run" | grep -qxF "cargo nextest run --locked --all-targets --all-features 2>&1 | tee full-suite.log || rc=\$?" &&
-  printf "%s\n" "$run" | grep -qxF "exit \"\$rc\"" &&
-  printf "%s\n" "$run" | grep -qF "if [ \"\$elapsed\" -ge 300 ]; then" &&
-  ! printf "%s\n" "$run" | grep -qE -- "--partition|--profile|--retries|--test-threads"' _ "$full"
+# The timed step is pinned whole: its script and its env, nothing else.
+expected_timed_run=$(cat <<'TIMED'
+set -euo pipefail
+echo "runner: $(nproc) CPUs"
+start=$(date +%s)
+rc=0
+cargo nextest run --locked --all-targets --all-features 2>&1 | tee full-suite.log || rc=$?
+elapsed=$(( $(date +%s) - start ))
+echo "Full suite wall time: ${elapsed}s (budget: under 300s), exit ${rc}"
+echo "FULL_SUITE_WALL_SECONDS=$elapsed" >> "$GITHUB_ENV"
+if [ "$elapsed" -ge 300 ]; then
+  echo "::error::The full suite exceeded the five-minute budget (${elapsed}s on $(nproc) CPUs)"
+  exit 1
+fi
+exit "$rc"
+TIMED
+)
+timed_step() { yq ".jobs.full-suite.steps[] | select(.name == \"Full suite*\") | $1" "$full"; }
+check "full-suite.yml: the exact unsharded command, timed under 300 s (whole step pinned)" bash -c \
+  'test "$1" = "$2"' _ "$(timed_step .run)" "$expected_timed_run"
+check "full-suite.yml: timed step env is only CARGO_TERM_COLOR=never" \
+  test "$(timed_step '.env' | yq -o=json -I=0)" = '{"CARGO_TERM_COLOR":"never"}'
+check "full-suite.yml: no step script sets NEXTEST_* or HT_SKIP_HERDR_TESTS" bash -c \
+  '! yq ".jobs.full-suite.steps[].run" "$1" | grep -qE "NEXTEST_|HT_SKIP_HERDR_TESTS="' _ "$full"
+check "full-suite.yml: neither the job nor the timed step is conditional" bash -c \
+  'test "$(yq ".jobs.full-suite | has(\"if\")" "$1")" = false &&
+   test "$(yq ".jobs.full-suite.steps[] | select(.name == \"Full suite*\") | has(\"if\")" "$1")" = false' _ "$full"
 check "full-suite.yml: prewarm builds precede the timed step" bash -c '
   steps=$(yq ".jobs.full-suite.steps[].name" "$1")
   warm=$(printf "%s\n" "$steps" | grep -n "^Prewarm" | cut -d: -f1)

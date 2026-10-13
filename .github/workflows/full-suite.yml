@@ -121,7 +121,7 @@ jobs:
           {
             echo "### Full suite gate"
             echo "Commit: $GITHUB_SHA; runner CPUs: $(nproc); wall: ${FULL_SUITE_WALL_SECONDS:-not measured}s (budget under 300s)"
-            echo "Pinned Herdr $HERDR_VERSION provisioned; HT_SKIP_HERDR_TESTS=${HT_SKIP_HERDR_TESTS:-unset}."
+            echo "Pinned Herdr $HERDR_VERSION provisioned; HT_SKIP_HERDR_TESTS: ${HT_SKIP_HERDR_TESTS:-unset}."
             echo '```'
             grep -E '^ +Summary|^ +(FAIL|SIGKILL|TIMEOUT|LEAK)' full-suite.log 2>/dev/null | sort -u || true
             echo '```'
