@@ -61,6 +61,8 @@ struct Target {
     occupancy: StructuralOccupancy,
     ui: HostUiState,
     observed_at: i64,
+    terminal: Option<&'static str>,
+    top_level: bool,
 }
 
 fn target(id: &str) -> Target {
@@ -70,6 +72,8 @@ fn target(id: &str) -> Target {
         occupancy: StructuralOccupancy::Occupied,
         ui: HostUiState::Idle,
         observed_at: 100,
+        terminal: None,
+        top_level: false,
     }
 }
 
@@ -105,9 +109,14 @@ fn host_snapshot(capture: &Capture, sequence: u64) -> HostSnapshot {
                 observed_at_utc: UtcMillis(target.observed_at),
                 observed_at_mono: MonoInstant(100),
                 provenance: ObservationProvenance::CoherentEnumeration,
-                occupant: None,
+                occupant: target.top_level.then(|| crate::ports::NativeOccupant {
+                    harness: Harness::Codex,
+                    session: NativeSessionId::new("n"),
+                    execution: ExecutionId::new("00000000-0000-4000-8000-0000000000cc"),
+                    is_top_level: true,
+                }),
                 ui: target.ui,
-                terminal: None,
+                terminal: target.terminal.map(TerminalId::new),
                 occupancy: target.occupancy,
                 incarnation: IncarnationEvidence::Unknown,
                 execution: ExecutionEvidence::Unknown,
@@ -438,6 +447,128 @@ fn publication_without_staging_evidence_bumps() {
     assert_eq!(revision(&conn), 2, "unproven content bumps");
     publish(&context, &mut conn, &base, 4);
     assert_eq!(revision(&conn), 2);
+}
+
+/// A fresh current-target read of `id` (structural generation 7) at host
+/// sequence `sequence`.
+fn fresh_read(context: &StoreContext, conn: &mut Connection, id: &str, sequence: u64) {
+    let budget = budget();
+    let admission = seats::begin_host_observation(context, conn, "i", &budget).unwrap();
+    let mut observation = host_snapshot(&capture(&[id]), sequence).targets.remove(0);
+    observation.provenance = ObservationProvenance::FreshCurrentTarget;
+    observation.generation = 7;
+    assert!(
+        seats::publish_current_target_observation(context, conn, &admission, &observation, &budget)
+            .unwrap()
+    );
+}
+
+fn effective_generation(conn: &Connection, id: &str) -> Option<i64> {
+    crate::store::effective::effective_observation(conn, "i", id)
+        .unwrap()
+        .map(|observation| observation.structural_generation)
+}
+
+/// A fresh read newer than an identical intermediate publication: P0 (seq
+/// 1), read at seq 10, P1 (seq 5, bumps for the read's lifecycle
+/// transition) still leaves the read effective; P2 (seq 11) repeats P1 and
+/// supersedes the read. It must bump although the lifecycle is unchanged
+/// since P1 and every staged target matches.
+fn assert_superseded_read_bumps(label: &str, read: &str) {
+    let iso = TestIsolation::new(&format!("snapshot-eligibility-superseded-{label}"));
+    let (context, mut conn) = host_store(&iso);
+    let base = capture(&["p1", "p2"]);
+    publish(&context, &mut conn, &base, 1);
+    fresh_read(&context, &mut conn, read, 10);
+    publish(&context, &mut conn, &base, 5);
+    assert_eq!(
+        effective_generation(&conn, read),
+        Some(7),
+        "{label}: read wins"
+    );
+    let before = revision(&conn);
+    publish(&context, &mut conn, &base, 11);
+    assert_ne!(
+        effective_generation(&conn, read),
+        Some(7),
+        "{label}: the publication supersedes the read"
+    );
+    assert_eq!(revision(&conn), before + 1, "{label}: bumps exactly once");
+}
+
+// Kills: skipping the bump when an identical publication supersedes a fresh
+// read of a target outside both publications (its effective observation
+// goes from the read to none).
+#[test]
+fn superseding_a_fresh_read_outside_the_snapshot_bumps_once() {
+    assert_superseded_read_bumps("outside", "p7");
+}
+
+// Kills: skipping the bump when an identical publication supersedes a fresh
+// read of a target it contains (effective generation 7 -> 1).
+#[test]
+fn superseding_a_fresh_read_inside_the_snapshot_bumps_once() {
+    assert_superseded_read_bumps("inside", "p2");
+}
+
+// Kills: match evidence that survives a differing slice (a non-contiguous
+// or reset prefix). Only a target in the second 16-target slice differs.
+#[test]
+fn a_difference_in_a_later_slice_bumps_once() {
+    let iso = TestIsolation::new("snapshot-eligibility-late-slice");
+    let (context, mut conn) = host_store(&iso);
+    let ids: Vec<String> = (0..40).map(|n| format!("p{n}")).collect();
+    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let base = capture(&ids);
+    publish(&context, &mut conn, &base, 1);
+    publish(&context, &mut conn, &base, 2);
+    let before = revision(&conn);
+    let mut next = base.clone();
+    next.targets[20].generation = 2;
+    publish(&context, &mut conn, &next, 3);
+    assert_eq!(revision(&conn), before + 1);
+    publish(&context, &mut conn, &next, 4);
+    assert_eq!(revision(&conn), before + 1);
+}
+
+fn with_terminals(base: &Capture) -> Capture {
+    let mut next = base.clone();
+    for target in &mut next.targets {
+        target.terminal = Some(match target.id.as_str() {
+            "p1" => "term-p1",
+            "p2" => "term-p2",
+            _ => "term-p3",
+        });
+    }
+    next
+}
+
+#[test]
+fn terminal_change_bumps_once() {
+    let iso = TestIsolation::new("snapshot-eligibility-terminal");
+    let (context, mut conn) = host_store(&iso);
+    let base = with_terminals(&capture(&["p1", "p2", "p3"]));
+    publish(&context, &mut conn, &base, 1);
+    publish(&context, &mut conn, &base, 2);
+    let before = revision(&conn);
+    assert_eq!(before, 1, "terminals keep a republication stable");
+    let mut next = base.clone();
+    next.targets[1].terminal = Some("term-p2-moved");
+    publish(&context, &mut conn, &next, 3);
+    assert_eq!(revision(&conn), before + 1);
+}
+
+#[test]
+fn top_level_occupant_change_bumps_once() {
+    assert_change_bumps_once(
+        "top-level",
+        |_, _| {},
+        |base| {
+            let mut next = base.clone();
+            next.targets[0].top_level = true;
+            next
+        },
+    );
 }
 
 // --- send preparation across an unchanged publication ---------------------

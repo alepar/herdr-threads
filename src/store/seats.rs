@@ -457,7 +457,7 @@ pub fn stage_snapshot_targets(
     // The quantum bounds how long this turn holds the writer, so it starts
     // once the write lock is held: waiting for the lock is not holding it.
     let started = context.clock().monotonic_now();
-    let (instance, boot, epoch, sequence, incarnation, expected, staged, status) =
+    let (_, boot, epoch, sequence, incarnation, expected, staged, status) =
         load_snapshot_stage(&tx, stage)?;
     if status != "building" || staged != offset || staged + targets.len() as i64 > expected {
         return Err(api_error(
@@ -465,14 +465,16 @@ pub fn stage_snapshot_targets(
             "snapshot slice is not contiguous",
         ));
     }
-    // The publication fence keeps the captured active publication and the
-    // host's publication sequence fixed until this stage publishes, so a
-    // comparison made here still holds at publication.
-    let (captured_active, published_sequence): (Option<String>, i64) = tx
+    // Compared against the stage's captured active publication. Publication
+    // uses the comparison only if that publication is still active (its
+    // fence refuses otherwise), and published snapshot rows never change, so
+    // the result still holds then. Fresh current-target reads are checked at
+    // publication, not here.
+    let captured_active: Option<String> = tx
         .query_row(
-            "SELECT g.captured_active_id,h.observation_sequence FROM snapshot_generations g JOIN host_instances h ON h.id=g.instance_id WHERE g.id=?1",
+            "SELECT captured_active_id FROM snapshot_generations WHERE id=?1",
             [stage.as_str()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| r.get(0),
         )
         .map_err(store_error)?;
     let mut slice_matched = captured_active.is_some();
@@ -564,14 +566,12 @@ pub fn stage_snapshot_targets(
         }
         // Equal to the active publication's row in every column the effective
         // view reads except the volatile UI state, observation time and
-        // sequence, and not shadowed there by a newer fresh current-target
-        // read (this publication's higher sequence could supersede it).
+        // sequence.
         if let Some(active) = captured_active.as_deref().filter(|_| slice_matched) {
             slice_matched = tx
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM snapshot_targets o WHERE o.generation_id=?1 AND o.target_id=?2 AND o.terminal_id IS ?3 AND o.generation=?4 AND o.connection_epoch IS ?5 AND o.incarnation_source_kind IS ?6 AND o.occupancy=?7 AND o.verified_execution IS ?8 AND o.top_level_occupant=?9) \
-                     AND NOT EXISTS(SELECT 1 FROM observed_targets f WHERE f.instance_id=?10 AND f.target_id=?2 AND f.provenance='fresh' AND f.host_boot=?11 AND f.epoch=?12 AND f.observation_sequence>?13)",
-                    params![active, target.target.as_str(), target.terminal.as_ref().map(|id| id.as_str()), generation, connection_epoch, incarnation_source, occupancy, execution, top_level, instance, boot, epoch, published_sequence],
+                    "SELECT EXISTS(SELECT 1 FROM snapshot_targets o WHERE o.generation_id=?1 AND o.target_id=?2 AND o.terminal_id IS ?3 AND o.generation=?4 AND o.connection_epoch IS ?5 AND o.incarnation_source_kind IS ?6 AND o.occupancy=?7 AND o.verified_execution IS ?8 AND o.top_level_occupant=?9)",
+                    params![active, target.target.as_str(), target.terminal.as_ref().map(|id| id.as_str()), generation, connection_epoch, incarnation_source, occupancy, execution, top_level],
                     |r| r.get(0),
                 )
                 .map_err(store_error)?;
@@ -725,9 +725,12 @@ pub fn publish_snapshot_stage(
             // them and needs no bump (shared contract amendment §8). Anything
             // not proven unchanged bumps: no or an invalidated prior
             // publication; a new boot, epoch, incarnation, recovery, baseline
-            // or hold; a lifecycle transition since the prior publication (a
-            // fresh read this one may supersede); another target count; or a
-            // target set not proven equal while staging.
+            // or hold; a lifecycle transition since the prior publication;
+            // another target count; a target set not proven equal while
+            // staging; or a fresh current-target read in this boot/epoch newer
+            // than the prior publication (`effective_observation` prefers it
+            // over that publication and this one may supersede it, for any
+            // target, in the snapshot or not).
             let unchanged = prior.as_ref().is_some_and(
                 |(_, prior_expected, prior_lifecycle, prior_invalidation)| {
                     old_boot.as_deref() == Some(boot.as_str())
@@ -745,7 +748,13 @@ pub fn publish_snapshot_stage(
                                     && stage_match.matched == expected
                             }))
                 },
-            );
+            ) && !tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM observed_targets WHERE instance_id=?1 AND provenance='fresh' AND host_boot=?2 AND epoch=?3 AND observation_sequence>?4)",
+                    params![instance, boot, epoch, old_sequence],
+                    |r| r.get::<_, bool>(0),
+                )
+                .map_err(store_error)?;
             Ok((instance, boot, epoch, sequence, incarnation, expected, admission_sequence, invalidation, new_recovery, baseline, hold, !unchanged))
         },
         |tx, _, (instance, boot, epoch, sequence, incarnation, expected, admission_sequence, invalidation, _new_recovery, baseline, hold, eligibility_may_change)| {
