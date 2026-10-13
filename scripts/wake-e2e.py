@@ -185,6 +185,20 @@ def redact(text, secrets=()):
     return SECRET_PATTERN.sub("<redacted>", text)
 
 
+LONG_RUN = re.compile(r"[A-Za-z0-9_-]{8,}")
+
+
+def capture_evidence(text, lines, secrets=()):
+    """A pane capture for evidence. Herdr bounds a capture by whole lines, so when it is full its first line may be
+    the cut-off end of a wrapped credential that redact() can no longer recognize: long token-like runs on that line
+    only are masked."""
+    text = redact(text, secrets)
+    rows = text.split("\n")
+    if len(rows) >= lines:
+        rows[0] = LONG_RUN.sub("<masked>", rows[0])
+    return "\n".join(rows)
+
+
 def clip(text, n, secrets=None, tail=False):
     """Bounded diagnostic text: redacted whole first (a credential cut by the crop would leave an unrecognizable
     fragment), then its first (or, with tail, last) n characters. secrets None: this process's environment."""
@@ -337,13 +351,13 @@ class Run:
         full = [self.bin] + (argv + prefix if argv[:1] == ["setup"] else (["human"] if human else []) + prefix + argv)
         rc, out, err = self.run(full, env=e, timeout=timeout, tag=tag or "ht:" + " ".join(argv[:2]))
         if check and rc != 0:
-            raise RuntimeError(f"herdr-threads {' '.join(argv[:3])}: rc={rc} {clip((err or out).strip(), 300, getattr(self, "secrets", None))}")
+            raise RuntimeError(f"herdr-threads {' '.join(argv[:3])}: rc={rc} {clip((err or out).strip(), 300, getattr(self, 'secrets', None))}")
         return out
 
     def herdr(self, *argv, tag=None, timeout=30, check=True):
         rc, out, err = self.run(["herdr", *argv], tag=tag or "herdr:" + " ".join(argv[:2]), timeout=timeout)
         if check and rc != 0:
-            raise RuntimeError(f"herdr {' '.join(argv[:3])}: rc={rc} {clip((err or out).strip(), 300, getattr(self, "secrets", None))}")
+            raise RuntimeError(f"herdr {' '.join(argv[:3])}: rc={rc} {clip((err or out).strip(), 300, getattr(self, 'secrets', None))}")
         try:
             return json.loads(out) if out.strip() else {}
         except ValueError:
@@ -374,7 +388,7 @@ class Run:
         versions = {}
         for name, argv in (("herdr", ["herdr", "--version"]), ("herdr-threads", [self.bin, "--version"]),
                            *((h, [h, "--version"]) for h in self.args.harness)):
-            versions[name] = clip(self.run(argv, tag="version")[1].strip(), 120, getattr(self, "secrets", None))
+            versions[name] = clip(self.run(argv, tag="version")[1].strip(), 120, getattr(self, 'secrets', None))
         sha = self.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], tag="git")[1].strip()
         dirty = bool(self.run(["git", "-C", str(REPO), "status", "--porcelain"], tag="git")[1].strip())
         self.facts = {"run_id": self.run_id, "sha": sha, "dirty": dirty, "versions": versions,
@@ -434,7 +448,7 @@ class Run:
                       tag="seat:resolve", timeout=30)
         seat = first_id(out, "s")
         if not seat:
-            raise RuntimeError(f"seat resolve {pane}: no seat id in {clip(out, 200, getattr(self, "secrets", None))}")
+            raise RuntimeError(f"seat resolve {pane}: no seat id in {clip(out, 200, getattr(self, 'secrets', None))}")
         return seat
 
     def layout(self):
@@ -450,7 +464,7 @@ class Run:
             out = self.ht("me", "init", pane=pane, human=True, tag=f"coordinator:{role}:me-init")
             seat = first_id(out, "s")
             if not seat:
-                raise RuntimeError(f"me init {pane}: no seat id in {clip(out, 200, getattr(self, "secrets", None))}")
+                raise RuntimeError(f"me init {pane}: no seat id in {clip(out, 200, getattr(self, 'secrets', None))}")
             self.coords[role] = {"pane": pane, "seat": seat}
         self.recipients = []
         for h in self.args.harness:
@@ -507,25 +521,25 @@ class Run:
                 self.workspace = self.workspace_by_label()
                 steps.append({"workspace_found_by_label": self.workspace})
             except Exception as e:
-                problems.append(f"workspace {self.workspace_label()}: create outcome not verified: {clip(e, 200, getattr(self, "secrets", None))}")
+                problems.append(f"workspace {self.workspace_label()}: create outcome not verified: {clip(e, 200, getattr(self, 'secrets', None))}")
         if self.workspace:
             try:
                 rc = self.run(["herdr", "workspace", "close", self.workspace], tag="cleanup:workspace", timeout=30,
                               cleanup=True)[0]
                 steps.append({"workspace_close_rc": rc})
             except Exception as e:  # keep going: the daemon is ours too
-                steps.append({"workspace_close_error": clip(e, 200, getattr(self, "secrets", None))})
+                steps.append({"workspace_close_error": clip(e, 200, getattr(self, 'secrets', None))})
             try:
                 if self.workspace_alive():
                     problems.append(f"workspace {self.workspace} still open after close")
             except Exception as e:
-                problems.append(f"workspace {self.workspace}: closure not verified: {clip(e, 200, getattr(self, "secrets", None))}")
+                problems.append(f"workspace {self.workspace}: closure not verified: {clip(e, 200, getattr(self, 'secrets', None))}")
         if self.daemon_attempted:
             try:
                 rc = self.run_rc("daemon", "stop", timeout=30)
                 steps.append({"daemon_stop_rc": rc})
             except Exception as e:
-                steps.append({"daemon_stop_error": clip(e, 200, getattr(self, "secrets", None))})
+                steps.append({"daemon_stop_error": clip(e, 200, getattr(self, 'secrets', None))})
             end = time.time() + self.stop_deadline_s
             healthy = True
             while True:
@@ -547,7 +561,7 @@ class Run:
                 leftover = self.owned_processes()
             except Exception as e:  # a failed scan is unknown, never "nothing left"
                 leftover = None
-                scan_error = clip(e, 200, getattr(self, "secrets", None))
+                scan_error = clip(e, 200, getattr(self, 'secrets', None))
             if leftover == [] or time.time() >= end:
                 break
             time.sleep(0.5)
@@ -1095,7 +1109,7 @@ class Recipient:
         finally:
             try:
                 (self.run.ev / f"pane-{self.name}.txt").write_text(
-                    redact(self.screen(1000), getattr(self.run, "secrets", ())))
+                    capture_evidence(self.screen(1000), 1000, getattr(self.run, "secrets", ())))
             except Stopped:
                 pass  # interrupted: no pane capture, the summary marks unfinished cases missing
 

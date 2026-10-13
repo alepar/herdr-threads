@@ -1450,6 +1450,39 @@ class ReviewMinors(TempDir):
         self.assertIn("<redacted>", text)
 
 
+class PythonFloorAndCaptureEdge(TempDir):
+    def test_scripts_parse_on_the_oldest_python_available(self):
+        """The driver supports Python 3.9+ (stock macOS /usr/bin/python3 is 3.9); f-string syntax newer than the
+        interpreter (PEP 701, 3.12) must not slip in. Compiled with any older interpreter found; skipped if none."""
+        scripts = Path(W.__file__).resolve().parent
+        candidates = ["/usr/bin/python3", "python3.9", "python3.10", "python3.11"]
+        older = []
+        for exe in candidates:
+            path = shutil.which(exe) if "/" not in exe else (exe if os.path.exists(exe) else None)
+            if not path:
+                continue
+            out = subprocess.run([path, "-c", "import sys; print(sys.version_info[:2] < (3, 12))"],
+                                 capture_output=True, text=True)
+            if out.stdout.strip() == "True":
+                older.append(path)
+        if not older:
+            self.skipTest("no Python older than 3.12 on this host")
+        for path in older:
+            for f in ("wake-e2e.py", "wake_e2e_selftest.py"):
+                src = (scripts / f).read_text()
+                r = subprocess.run([path, "-c", "import ast,sys; ast.parse(sys.stdin.read())"], input=src,
+                                   capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, f"{f} does not parse on {path}: {r.stderr[-300:]}")
+
+    def test_a_full_capture_masks_its_possibly_cut_first_line_only(self):
+        rows = ["oat01-AbCdEfGhIjKlMnOp tail"] + [f"line {i} RECEIVED mABCDEFGHIJ" for i in range(999)]
+        out = W.capture_evidence("\n".join(rows), 1000).split("\n")
+        self.assertNotIn("AbCdEfGhIjKlMnOp", out[0])
+        self.assertIn("mABCDEFGHIJ", out[1])  # ids elsewhere stay as evidence
+        short = W.capture_evidence("oat01-AbCdEfGhIjKlMnOp\nnext", 1000)
+        self.assertIn("AbCdEfGhIjKlMnOp", short)  # not full: the first line is the real start
+
+
 def row(recipient, case, result="PASS"):
     return {"recipient": recipient, "case": case, "result": result, "wake_on": "nudge", "harness": "claude"}
 
