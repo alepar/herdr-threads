@@ -42,6 +42,8 @@ pub enum Command {
     MessageDeliveryModes(MessageDeliveryModesQuery),
     /// Read a seat's `wake_on` preference; gated by `seat.wake_on_v1`.
     WakeOn(WakeOnQuery),
+    /// Read a seat's nudge threshold; gated by `seat.nudge_threshold_v1`.
+    NudgeThreshold(NudgeThresholdQuery),
     Warnings(WarningsQuery),
     /// Bounded read-only active warning conditions for one thread.
     ActiveWarnings(ActiveWarningsQuery),
@@ -119,6 +121,9 @@ pub enum Command {
     /// Set the caller seat's `wake_on` preference (TRUST-POLICY A5); gated by
     /// `seat.wake_on_v1`.
     SetWakeOn(SetWakeOn),
+    /// Set the caller seat's nudge threshold (TRUST-POLICY A5 cooperative mutation); gated by
+    /// `seat.nudge_threshold_v1`.
+    SetNudgeThreshold(SetNudgeThreshold),
     Leave(Leave),
     SetTopic(SetTopic),
     SetThreadName(SetThreadName),
@@ -895,10 +900,28 @@ pub struct WakeOnQuery {
     pub seat: SeatId,
 }
 
+/// Set the caller seat's nudge threshold (TRUST-POLICY A5 cooperative mutation).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetNudgeThreshold {
+    pub value: crate::protocol::priority::NudgeThreshold,
+    pub operation: OperationId,
+    pub claim: CallerClaim,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NudgeThresholdQuery {
+    pub seat: SeatId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MessageDeliveryModesQuery {
     pub messages: Vec<MessageId>,
+    /// Set only by a client that saw `send.priority_v1`; the reply carries `priority` only when set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub with_priority: bool,
 }
 
 /// Which presentation the completing caller claims. Absent: its default text
@@ -968,6 +991,10 @@ pub struct BindingEvent {
 pub struct SendMessage {
     #[serde(default, skip_serializing_if = "DeliveryMode::is_ordinary")]
     pub delivery_mode: DeliveryMode,
+    /// Delivery priority (0..=9) chosen by the sender; absent from older clients, whose priority the daemon
+    /// derives from `delivery_mode`. Not the person-authored summary/catch-up priority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<crate::protocol::priority::DeliveryPriority>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_intent: Option<crate::protocol::summary::UserIntent>,
     pub thread: ThreadId,
@@ -1129,6 +1156,7 @@ impl Command {
             Self::AckModDelivered(v) => Some(&v.claim),
             Self::CompleteInboxDelivery(v) => Some(&v.claim),
             Self::SetWakeOn(v) => Some(&v.claim),
+            Self::SetNudgeThreshold(v) => Some(&v.claim),
             Self::Leave(v) => Some(&v.claim),
             Self::SetTopic(v) => Some(&v.claim),
             Self::SetThreadName(v) => Some(&v.claim),

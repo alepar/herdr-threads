@@ -1208,6 +1208,7 @@ mod activation {
                 .unwrap();
             self.fx
                 .call(Command::SendMessage(SendMessage {
+                    priority: None,
                     delivery_mode: DeliveryMode::Ordinary,
                     user_intent: None,
                     thread,

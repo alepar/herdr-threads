@@ -54,7 +54,10 @@ fn read(
     budget: &CallBudget,
 ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
     store.query(
-        &Command::MessageDeliveryModes(MessageDeliveryModesQuery { messages: ids }),
+        &Command::MessageDeliveryModes(MessageDeliveryModesQuery {
+            with_priority: false,
+            messages: ids,
+        }),
         &ReadContext {
             instance: "i".into(),
             output: OutputSpec::default(),

@@ -532,6 +532,12 @@ pub struct WatchMessage {
     /// watch child omits it and older mods ignore unknown keys. Never model-visible.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub wakes: bool,
+    /// The item's delivery priority; absent from an older daemon. Never model-visible by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<crate::protocol::priority::DeliveryPriority>,
+    /// The item's own deadline (explicit-ACK receipt); absent otherwise and from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_at: Option<crate::protocol::time::UtcMillis>,
 }
 
 /// `text` is the existing fixed attention marker.

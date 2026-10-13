@@ -635,6 +635,7 @@ fn actual_main_linked_phase_preserves_ordinary_and_rejects_lazy_mode() {
     .unwrap();
     let before_child = serde_json::to_vec(&handoff::current(&db, &child).unwrap()).unwrap();
     let mut send = SendMessage {
+        priority: None,
         delivery_mode: DeliveryMode::Ordinary,
         thread,
         body: id.payload.handoff.body.clone(),
@@ -800,6 +801,7 @@ fn handoff_policy_linked_frozen_children_match_both_modes_and_reject_tampering()
             claim: id.claim.clone(),
         };
         let send = SendMessage {
+            priority: None,
             direct_recipient: None,
             delivery_mode: DeliveryMode::Ordinary,
             thread,

@@ -1414,11 +1414,12 @@ mod lazy_marker_follow_tests {
         fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
             self.calls.lock().unwrap().push(command.clone());
             Ok(match command {
-                Command::MessageDeliveryModes(MessageDeliveryModesQuery { messages }) => {
+                Command::MessageDeliveryModes(MessageDeliveryModesQuery { messages, .. }) => {
                     CommandResult::MessageDeliveryModes(
                         messages
                             .into_iter()
                             .map(|message| MessageDeliveryMode {
+                                priority: None,
                                 message,
                                 delivery_mode: DeliveryMode::Lazy,
                             })

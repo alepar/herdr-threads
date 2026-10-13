@@ -8575,6 +8575,7 @@ mod registered_resume {
         let f = Fixture::new(true);
         let lazy = |id: &str, body: &str, end: usize| {
             crate::protocol::results::InboxBatchV2Item::LazyMessage {
+                priority: None,
                 thread: crate::protocol::ids::ThreadId::new("t-hermes"),
                 topic_data: "hermes topic".into(),
                 message: crate::protocol::ids::MessageId::new(id),

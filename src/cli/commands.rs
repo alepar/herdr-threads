@@ -497,6 +497,7 @@ impl MutationSpec {
                 relays_user,
                 user_intent,
             } => WireCommand::SendMessage(SendMessage {
+                priority: None,
                 delivery_mode,
                 thread,
                 body,

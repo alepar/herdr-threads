@@ -1649,6 +1649,7 @@ fn public_facade_creates_invites_sends_accepts_acks_and_archives_with_stable_ids
         panic!()
     };
     let send = SendMessage {
+        priority: None,
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: thread.clone(),
         body: "hello".into(),
@@ -2401,6 +2402,7 @@ fn public_join_send(
     operation: &str,
 ) -> crate::protocol::ids::MessageId {
     let send = SendMessage {
+        priority: None,
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: accept.thread.clone(),
         body: operation.into(),
@@ -2706,6 +2708,7 @@ fn public_join_human_claim_records_operator_human_without_changing_binding() {
 fn public_join_invalidates_prepared_send_and_new_send_includes_new_member() {
     let (store, path, accept, _) = join_hint_fixture_inner(0, false);
     let send = SendMessage {
+        priority: None,
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: accept.thread.clone(),
         body: "prepared".into(),

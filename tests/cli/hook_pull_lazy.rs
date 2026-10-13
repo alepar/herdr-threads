@@ -198,6 +198,7 @@ impl crate::ports::LocalService for Service {
                 let mut page = empty();
                 page.items
                     .push(crate::protocol::results::InboxBatchV2Item::LazyMessage {
+                        priority: None,
                         thread: ThreadId::new("t-lazy"),
                         topic_data: "lazy topic".into(),
                         message: MessageId::new("m-lazy"),

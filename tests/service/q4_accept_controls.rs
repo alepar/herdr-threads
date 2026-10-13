@@ -40,6 +40,7 @@ fn send_direct(
         .service
         .handle(
             Command::SendMessage(SendMessage {
+                priority: None,
                 claim: q.window.sender.clone(),
                 thread: thread.clone(),
                 body: body.into(),

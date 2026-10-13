@@ -176,6 +176,7 @@ fn send_in(
 ) -> MessageId {
     fx.sends += 1;
     let request = SendMessage {
+        priority: None,
         delivery_mode,
         user_intent: None,
         thread: ThreadId::new(thread),

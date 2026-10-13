@@ -578,7 +578,7 @@ fn user_intent_service_send_stays_unclassified() {
         assert!(provenance.decided_at.0 > 0);
 
         // 5. The native seat replies; History After{seq} sees it.
-        let CommandResult::MessageSent(reply) = native(Command::SendMessage(SendMessage {
+        let CommandResult::MessageSent(reply) = native(Command::SendMessage(SendMessage { priority: None,
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: "DONE".into(),
