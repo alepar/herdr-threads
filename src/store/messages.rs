@@ -991,6 +991,18 @@ pub fn publish_send(
                     "message body byte limit",
                 ));
             }
+            // The send-eligibility fence as the deciding writer found it, before the author's
+            // own claim resolves below. That resolution (a plain call: enroll, reconnect, touch;
+            // the supersede and placeholder hooks are lifecycle-only, the human end is the same
+            // seat) changes only the author's seat bindings, and the author is never a staged
+            // recipient, so a bump it causes cannot stale the staged recipient set.
+            let eligibility_before_author: i64 = tx
+                .query_row(
+                    "SELECT h.send_eligibility_revision FROM threads t JOIN host_instances h ON h.id=t.instance_id WHERE t.id=?1",
+                    [request.thread.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
             let actor = super::control::decide_accountable(
                 tx,
                 decision,
@@ -1002,8 +1014,8 @@ pub fn publish_send(
                 &digest,
             )?;
             let revisions_match:bool=tx.query_row(
-                "SELECT p.captured_membership_revision=t.membership_revision AND p.captured_lifecycle_revision=h.lifecycle_revision AND p.captured_eligibility_revision=h.send_eligibility_revision AND p.captured_timeline_revision=t.timeline_revision AND p.captured_config_revision=h.duration_config_revision AND t.archived=0 FROM send_preparations p JOIN threads t ON t.id=p.thread_id JOIN host_instances h ON h.id=t.instance_id WHERE p.operation_scope=?1 AND p.operation_key=?2 AND p.digest=?3",
-                params![scope,request.operation.as_str(),digest.as_slice()],|r|r.get(0),
+                "SELECT p.captured_membership_revision=t.membership_revision AND p.captured_lifecycle_revision=h.lifecycle_revision AND p.captured_eligibility_revision=?4 AND p.captured_timeline_revision=t.timeline_revision AND p.captured_config_revision=h.duration_config_revision AND t.archived=0 FROM send_preparations p JOIN threads t ON t.id=p.thread_id JOIN host_instances h ON h.id=t.instance_id WHERE p.operation_scope=?1 AND p.operation_key=?2 AND p.digest=?3",
+                params![scope,request.operation.as_str(),digest.as_slice(),eligibility_before_author],|r|r.get(0),
             ).map_err(store_error)?;
             if !revisions_match {
                 return Err(api_error(

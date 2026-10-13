@@ -1411,19 +1411,511 @@ fn send_before_first_pass_to_structurally_continuous_seat_has_no_warning() {
     );
 }
 
-/// Live processes for the marker-race scenario: the sender (`TEST`) and the
-/// recipient's main session (pid 2); the one-shot session's pid 3 has exited.
-struct MainAliveOneShotGone;
-impl crate::ports::ProcessInfo for MainAliveOneShotGone {
+/// A process table: only the listed pids are alive (start stamp 1).
+struct AlivePids(&'static [u32]);
+impl crate::ports::ProcessInfo for AlivePids {
     fn process(&self, pid: u32) -> Option<crate::ports::ProcessRecord> {
-        let test = crate::protocol::authority::LivenessFingerprint::TEST;
-        (pid == test.pid || pid == 2).then(|| crate::ports::ProcessRecord {
+        self.0.contains(&pid).then(|| crate::ports::ProcessRecord {
             pid,
             parent: None,
             start: 1,
             argv: Vec::new(),
         })
     }
+}
+
+/// The sender (`LivenessFingerprint::TEST`, pid 1) and the recipient's main
+/// session (pid 2) are alive.
+const SENDER_AND_MAIN_ALIVE: AlivePids = AlivePids(&[1, 2]);
+/// Only the sender is alive.
+const SENDER_ALIVE: AlivePids = AlivePids(&[1]);
+
+/// A sender `s` on `p` and a recipient seat `recipient` on `q`, both joined to
+/// one thread, built through the production check-in and thread commands
+/// after a fully reconciled epoch-1 publication (no baseline hold left). The
+/// recipient's main session is a lifecycle check-in with pid 2.
+struct SendScenario {
+    service: OwnedFixture<DomainService>,
+    db: OwnedFixture<Connection>,
+    context: StoreContext,
+    store: Arc<dyn StorePort>,
+    sender: CallerClaim,
+    main: CallerClaim,
+    thread: ThreadId,
+}
+
+impl SendScenario {
+    fn new() -> Self {
+        use crate::protocol::commands::{Accept, Invite};
+        let (service, db) = fixture();
+        let path = db.directory.0.join("store.db");
+        let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
+        let store: Arc<dyn StorePort> = Arc::new(
+            SqliteStore::new(
+                StoreContext::new(path, Arc::new(FixedClock)),
+                "i",
+                StoreSettings::default(),
+            )
+            .unwrap(),
+        );
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient','i','resolved','native','q',0,0,0)", []).unwrap();
+        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'q','inc','coherent_enumeration',1)", []).unwrap();
+        // Allocation records the seats' structural proof (terminal and
+        // incarnation); the raw fixture rows carry none, so record it here.
+        db.execute("UPDATE seats SET structural_terminal_id='term-'||target_id,structural_incarnation='inc',structural_incarnation_kind='coherent_enumeration',structural_host_boot='b',structural_host_epoch=1,structural_connection_epoch=1,structural_observation_sequence=1,target_generation=1 WHERE id IN ('s','recipient')", []).unwrap();
+        db.execute("UPDATE observed_targets SET generation=1", [])
+            .unwrap();
+        let mut scenario = Self {
+            service,
+            db,
+            context,
+            store,
+            sender: claim(),
+            main: claim(),
+            thread: ThreadId::new("unset"),
+        };
+        // Epoch 1 is published and fully reconciled first, so no baseline
+        // hold is left for a later marker to lift (a lift bumps both fences).
+        let first = publish_snapshot_at(&scenario.context, 1, 2, &["p", "q"], true);
+        scenario.reconcile_pages(&first);
+        assert!(
+            scenario
+                .store
+                .record_reconciliation_pass(&first, &budget())
+                .unwrap()
+        );
+        assert_eq!(
+            scenario.count("SELECT baseline_hold_unclaimed FROM host_instances WHERE id='i'"),
+            0
+        );
+        let service = &scenario.service;
+        let peer = PeerIdentity::from_kernel(501);
+        let sender = checked(service, lifecycle(claim(), "sender")).context;
+        let mut main = claim();
+        main.seat = SeatId::new("recipient");
+        main.target = HostTargetId::new("q");
+        main.native_session = NativeSessionId::new("recipient-main");
+        main.liveness = Some(crate::protocol::authority::LivenessFingerprint { pid: 2, start: 1 });
+        main.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
+        let main = checked(service, lifecycle(main, "recipient-main")).context;
+        let CommandResult::ThreadCreated(thread) = service
+            .handle(
+                Command::CreateThread(CreateThread {
+                    name: None,
+                    topic: "topic".into(),
+                    goal: "goal".into(),
+                    operation: OperationId::new("thread"),
+                    claim: sender.clone(),
+                }),
+                peer,
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("wrong result")
+        };
+        service
+            .handle(
+                Command::Invite(Invite {
+                    confirmation: None,
+                    thread: thread.clone(),
+                    seat: SeatId::new("recipient"),
+                    deadline_millis: None,
+                    operation: OperationId::new("invite"),
+                    claim: sender.clone(),
+                }),
+                peer,
+                &budget(),
+            )
+            .unwrap();
+        service
+            .handle(
+                Command::Accept(Accept {
+                    thread: thread.clone(),
+                    operation: OperationId::new("accept"),
+                    claim: main.clone(),
+                }),
+                peer,
+                &budget(),
+            )
+            .unwrap();
+        scenario.sender = sender;
+        scenario.main = main;
+        scenario.thread = thread;
+        scenario
+    }
+
+    fn count(&self, sql: &str) -> i64 {
+        self.db.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    fn fences(&self) -> (i64, i64) {
+        self.db
+            .query_row(
+                "SELECT lifecycle_revision,send_eligibility_revision FROM host_instances WHERE id='i'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    }
+
+    fn available(&self) -> bool {
+        crate::store::schema::effective_registered_availability(&self.db, "recipient", Some("i"))
+            .unwrap()
+            .is_some()
+    }
+
+    fn carry_pending(&self) -> bool {
+        crate::store::schema::carry_pending(&self.db, "recipient", "i").unwrap()
+    }
+
+    /// The production pass: plan each saved-seat page, apply its
+    /// transitions. Returns the planned `seat:action` list.
+    fn reconcile_pages(&self, publication: &crate::ports::PublishedSnapshot) -> Vec<String> {
+        let mut planned = Vec::new();
+        let mut after = 0;
+        let mut high = None;
+        loop {
+            let page = self
+                .store
+                .saved_seats_page(&publication.id, after, high, 16, &budget())
+                .unwrap();
+            for transition in crate::identity::reconcile::plan_page(&page).unwrap() {
+                planned.push(format!(
+                    "{}:{:?}",
+                    transition.seat.as_str(),
+                    transition.action
+                ));
+                self.store
+                    .apply_reconciliation_transition(transition, &budget())
+                    .unwrap();
+            }
+            if !page.has_more {
+                return planned;
+            }
+            after = page.after_ordinal;
+            high = Some(page.high_water_ordinal);
+        }
+    }
+
+    /// The liveness worker's pass over `processes`; returns how many bindings
+    /// it disconnected.
+    fn liveness_pass(&self, processes: AlivePids) -> usize {
+        crate::service::liveness::LivenessWorker::new(
+            self.store.clone(),
+            Arc::new(crate::service::fair_writer::FairWriter::new(32)),
+            Arc::new(processes),
+        )
+        .pass(&budget())
+        .unwrap()
+        .disconnected
+    }
+
+    fn request(&self, operation: &str) -> crate::protocol::commands::SendMessage {
+        crate::protocol::commands::SendMessage {
+            delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+            thread: self.thread.clone(),
+            body: "staged before, decided after".into(),
+            direct_recipient: None,
+            invited_recipients: vec![],
+            deadline_millis: None,
+            operation: OperationId::new(operation),
+            claim: self.sender.clone(),
+            relays_user: false,
+            user_intent: None,
+        }
+    }
+
+    /// Bounded preparation to Ready through the store port.
+    fn prepare(&self, send: &crate::protocol::commands::SendMessage) {
+        use crate::ports::SendPreparationProgress;
+        loop {
+            match self
+                .store
+                .prepare_send_step(
+                    send,
+                    crate::ports::DurableWorkAdmission::new(16).unwrap(),
+                    &budget(),
+                )
+                .unwrap()
+            {
+                SendPreparationProgress::Ready { .. } => break,
+                SendPreparationProgress::More { .. } => {}
+                other => panic!("unexpected preparation progress {other:?}"),
+            }
+        }
+    }
+
+    /// Recipient warnings staged by a live (not discarded) preparation.
+    fn staged_warnings(&self) -> i64 {
+        self.count("SELECT count(*) FROM prepared_unavailable_warnings w JOIN send_preparations p ON p.id=w.preparation_id WHERE p.status!='discarded' AND w.affected_seat_id='recipient'")
+    }
+
+    /// Decides the prepared `send` with a fresh permit, as the service does;
+    /// a refused stale preparation is retried once under a fresh operation,
+    /// as a client would. Returns the message and how many decisions ran.
+    fn decide_with_retry(&self, send: crate::protocol::commands::SendMessage) -> (MessageId, u32) {
+        use crate::protocol::commands::PermitMutation;
+        let mut send = send;
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            assert!(attempts <= 2, "the send does not converge");
+            let mutation = PermitMutation::SendMessage(send.clone());
+            let permit = self
+                .store
+                .issue_cooperative_permit(
+                    crate::store::cooperative_permit_request(&mutation).unwrap(),
+                    &budget(),
+                )
+                .unwrap();
+            match self.store.mutate(mutation, permit, &budget()) {
+                Ok(CommandResult::MessageSent(message)) => return (message, attempts),
+                Err(error)
+                    if error.code == ErrorCode::Conflict
+                        && error
+                            .detail
+                            .starts_with("send preparation snapshot changed") =>
+                {
+                    send = self.request(&format!("{}-retry", send.operation.as_str()));
+                    self.prepare(&send);
+                }
+                other => panic!("unexpected decision {other:?}"),
+            }
+        }
+    }
+
+    /// What the published send recorded for the recipient: its staged
+    /// eligibility and the published unavailable warnings.
+    fn published(&self, message: &MessageId) -> (bool, Vec<String>) {
+        let eligible: bool = self
+            .db
+            .query_row(
+                "SELECT r.eligible_at_snapshot FROM prepared_recipients r JOIN send_manifests m ON m.preparation_id=r.preparation_id WHERE m.message_id=?1 AND r.seat_id='recipient'",
+                [message.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let warnings = self
+            .db
+            .prepare("SELECT w.affected_seat_id FROM prepared_unavailable_warnings w JOIN send_manifests m ON m.preparation_id=w.preparation_id WHERE m.message_id=?1 ORDER BY w.warning_offset")
+            .unwrap()
+            .query_map([message.as_str()], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        (eligible, warnings)
+    }
+
+    /// Stage a send with the recipient in its current state, run `change`
+    /// between staging and the decision, and decide. The published send must
+    /// match the canonical state after `change`: an available recipient is
+    /// eligible and unwarned, an unavailable one ineligible and warned; and a
+    /// change that flips availability must refuse the stale preparation once.
+    fn stage_change_decide(&self, label: &str, change: impl FnOnce(&Self)) {
+        let before = self.available();
+        let send = self.request(label);
+        self.prepare(&send);
+        assert_eq!(
+            self.staged_warnings(),
+            i64::from(!before),
+            "{label}: staged with the pre-change availability"
+        );
+        let fences = self.fences();
+        change(self);
+        let after = self.available();
+        let (message, attempts) = self.decide_with_retry(send);
+        assert_eq!(
+            self.published(&message),
+            (
+                after,
+                if after {
+                    vec![]
+                } else {
+                    vec!["recipient".to_owned()]
+                }
+            ),
+            "{label}: the published send matches the canonical post-change state (fences at staging {fences:?}, after the change {:?})",
+            self.fences()
+        );
+        if before != after {
+            assert_eq!(
+                attempts, 2,
+                "{label}: the stale preparation is refused once"
+            );
+        }
+    }
+}
+
+// Kills: a liveness-worker disconnect (process exit) that ends a recipient's
+// availability without bumping the send-eligibility fence, so a send staged
+// while it was available publishes it eligible and unwarned (shared contract
+// amendment §8: "process exit ... or transition to unavailable" bumps).
+#[test]
+fn liveness_disconnect_between_stage_and_decide_publishes_the_warning() {
+    let scenario = SendScenario::new();
+    assert!(scenario.available());
+    scenario.stage_change_decide("liveness-exit", |s| {
+        assert_eq!(s.liveness_pass(SENDER_ALIVE), 1);
+        assert!(!s.available());
+    });
+}
+
+// Kills: a SessionEnd binding event that disconnects the recipient's only
+// connected session without a fence bump.
+#[test]
+fn session_end_between_stage_and_decide_publishes_the_warning() {
+    use crate::protocol::commands::BindingEventKind::SessionEnd;
+    let scenario = SendScenario::new();
+    assert!(scenario.available());
+    scenario.stage_change_decide("session-end", |s| {
+        assert_eq!(
+            recorded(
+                &s.service,
+                binding_event(s.main.clone(), SessionEnd, None, "main-end")
+            ),
+            1
+        );
+        assert!(!s.available());
+    });
+}
+
+// Kills: a SubagentStop that disconnects a registered binding without a fence
+// bump. The top-level session ends first (disconnecting its children), then a
+// fresh subagent of it starts: it is the seat's only connected registered
+// binding, so its stop is a real transition to unavailable.
+#[test]
+fn subagent_stop_between_stage_and_decide_publishes_the_warning() {
+    use crate::protocol::commands::BindingEventKind::{SessionEnd, SubagentStart, SubagentStop};
+    let scenario = SendScenario::new();
+    let sub = subagent_of(&scenario.main);
+    assert_eq!(
+        recorded(
+            &scenario.service,
+            binding_event(sub.clone(), SubagentStart, None, "sub-start")
+        ),
+        1
+    );
+    let connected = |s: &SendScenario| {
+        s.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='recipient' AND ended_at IS NULL AND liveness='connected' AND registered_at IS NOT NULL")
+    };
+    assert_eq!(connected(&scenario), 2);
+    // A stop of a subagent the seat still has a connected parent for is a
+    // conservative refusal at most; the published send stays canonical.
+    scenario.stage_change_decide("sub-stop-with-parent", |s| {
+        assert_eq!(
+            recorded(
+                &s.service,
+                binding_event(sub.clone(), SubagentStop, None, "sub-stop-1")
+            ),
+            1
+        );
+        assert!(s.available());
+    });
+    assert_eq!(
+        recorded(
+            &scenario.service,
+            binding_event(scenario.main.clone(), SessionEnd, None, "main-end")
+        ),
+        1
+    );
+    let sub = CallerClaim {
+        agent_id: Some(AgentId::new("agent-2")),
+        ..sub
+    };
+    // The subagent start re-checks the parent's mapping, not its liveness.
+    let restarted = scenario.service.handle(
+        binding_event(sub.clone(), SubagentStart, None, "sub-start-2"),
+        PeerIdentity::from_kernel(501),
+        &budget(),
+    );
+    match restarted {
+        Ok(CommandResult::BindingEventRecorded { changed: 1 }) if connected(&scenario) == 1 => {
+            assert!(
+                scenario.available(),
+                "the subagent alone keeps the seat available"
+            );
+            scenario.stage_change_decide("sub-stop-alone", |s| {
+                assert_eq!(
+                    recorded(
+                        &s.service,
+                        binding_event(sub.clone(), SubagentStop, None, "sub-stop-2")
+                    ),
+                    1
+                );
+                assert!(!s.available());
+            });
+        }
+        other => panic!(
+            "a subagent of an ended session must be able to start for this shape: {other:?}, connected {}",
+            connected(&scenario)
+        ),
+    }
+}
+
+// Proves connect() is fenced on every path, not only the check-in: a plain
+// call that reconnects a process-exited binding (no check-in) makes the
+// recipient available again; a send staged while it was unavailable (warned)
+// must not publish that stale warning.
+#[test]
+fn plain_call_reconnect_between_stage_and_decide_drops_the_stale_warning() {
+    use crate::protocol::commands::AdvanceCursors;
+    let scenario = SendScenario::new();
+    assert_eq!(scenario.liveness_pass(SENDER_ALIVE), 1);
+    assert!(!scenario.available());
+    scenario.stage_change_decide("plain-reconnect", |s| {
+        let resumed = CallerClaim {
+            liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 4, start: 1 }),
+            ..s.main.clone()
+        };
+        s.service
+            .handle(
+                Command::AdvanceCursors(AdvanceCursors {
+                    in_turn: false,
+                    invitations: Vec::new(),
+                    claim: resumed,
+                    operation: OperationId::new("main-plain-call"),
+                    displayed: vec![],
+                }),
+                PeerIdentity::from_kernel(501),
+                &budget(),
+            )
+            .unwrap();
+        assert!(s.available(), "the plain call reconnected the binding");
+    });
+}
+
+// Enrollment inserts a registered row already connected (not through
+// `connect`): a plain call from a new session of the recipient's pane makes
+// the seat available again; the stale warning staged before must not publish.
+#[test]
+fn plain_call_enrollment_between_stage_and_decide_drops_the_stale_warning() {
+    use crate::protocol::commands::AdvanceCursors;
+    let scenario = SendScenario::new();
+    assert_eq!(scenario.liveness_pass(SENDER_ALIVE), 1);
+    assert!(!scenario.available());
+    scenario.stage_change_decide("plain-enroll", |s| {
+        let fresh = CallerClaim {
+            native_session: NativeSessionId::new("recipient-fresh"),
+            execution: ExecutionId::new("00000000-0000-4000-8000-000000000005"),
+            liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 5, start: 1 }),
+            ..s.main.clone()
+        };
+        s.service
+            .handle(
+                Command::AdvanceCursors(AdvanceCursors {
+                    in_turn: false,
+                    invitations: Vec::new(),
+                    claim: fresh,
+                    operation: OperationId::new("fresh-plain-call"),
+                    displayed: vec![],
+                }),
+                PeerIdentity::from_kernel(501),
+                &budget(),
+            )
+            .unwrap();
+        assert!(s.available(), "the plain call enrolled a connected binding");
+    });
 }
 
 /// When the send's recipients are staged relative to the reconciliation pass
@@ -1450,142 +1942,26 @@ enum MarkerRace {
 /// Kills: a marker that flips `carry_pending` without moving the send
 /// eligibility fence, so the decision keeps a stale staged warning set.
 fn send_staged_across_the_reconciliation_marker(race: MarkerRace) {
-    use crate::ports::SendPreparationProgress;
-    use crate::protocol::commands::{Accept, Invite, PermitMutation, SendMessage};
-    let (service, db) = fixture();
-    let path = db.directory.0.join("store.db");
-    let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
-    let store: Arc<dyn StorePort> = Arc::new(
-        SqliteStore::new(
-            StoreContext::new(path, Arc::new(FixedClock)),
-            "i",
-            StoreSettings::default(),
-        )
-        .unwrap(),
-    );
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient','i','resolved','native','q',0,0,0)", []).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'q','inc','coherent_enumeration',1)", []).unwrap();
-    // Allocation records the seats' structural proof (terminal and
-    // incarnation); the raw fixture rows carry none, so record it here.
-    db.execute("UPDATE seats SET structural_terminal_id='term-'||target_id,structural_incarnation='inc',structural_incarnation_kind='coherent_enumeration',structural_host_boot='b',structural_host_epoch=1,structural_connection_epoch=1,structural_observation_sequence=1,target_generation=1 WHERE id IN ('s','recipient')", []).unwrap();
-    db.execute("UPDATE observed_targets SET generation=1", [])
-        .unwrap();
-    let count = |sql: &str| -> i64 { db.query_row(sql, [], |r| r.get(0)).unwrap() };
-    let fences = || -> (i64, i64) {
-        db.query_row(
-            "SELECT lifecycle_revision,send_eligibility_revision FROM host_instances WHERE id='i'",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap()
-    };
-    // The production pass: plan each saved-seat page, apply its transitions.
-    let reconcile_pages = |publication: &crate::ports::PublishedSnapshot| -> Vec<String> {
-        let mut planned = Vec::new();
-        let mut after = 0;
-        let mut high = None;
-        loop {
-            let page = store
-                .saved_seats_page(&publication.id, after, high, 16, &budget())
-                .unwrap();
-            for transition in crate::identity::reconcile::plan_page(&page).unwrap() {
-                planned.push(format!(
-                    "{}:{:?}",
-                    transition.seat.as_str(),
-                    transition.action
-                ));
-                store
-                    .apply_reconciliation_transition(transition, &budget())
-                    .unwrap();
-            }
-            if !page.has_more {
-                return planned;
-            }
-            after = page.after_ordinal;
-            high = Some(page.high_water_ordinal);
-        }
-    };
-    // Epoch 1 is published and fully reconciled first, so no baseline hold is
-    // left for the epoch-2 marker to lift (a lift bumps both fences anyway).
-    let first = publish_snapshot_at(&context, 1, 2, &["p", "q"], true);
-    reconcile_pages(&first);
-    assert!(store.record_reconciliation_pass(&first, &budget()).unwrap());
-    assert_eq!(
-        count("SELECT baseline_hold_unclaimed FROM host_instances WHERE id='i'"),
-        0
-    );
-
-    let peer = PeerIdentity::from_kernel(501);
-    let sender = checked(&service, lifecycle(claim(), "sender")).context;
-    let mut main = claim();
-    main.seat = SeatId::new("recipient");
-    main.target = HostTargetId::new("q");
-    main.native_session = NativeSessionId::new("recipient-main");
-    main.liveness = Some(crate::protocol::authority::LivenessFingerprint { pid: 2, start: 1 });
-    main.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
-    let main = checked(&service, lifecycle(main, "recipient-main")).context;
-    let CommandResult::ThreadCreated(thread) = service
-        .handle(
-            Command::CreateThread(CreateThread {
-                name: None,
-                topic: "topic".into(),
-                goal: "goal".into(),
-                operation: OperationId::new("thread"),
-                claim: sender.clone(),
-            }),
-            peer,
-            &budget(),
-        )
-        .unwrap()
-    else {
-        panic!("wrong result")
-    };
-    service
-        .handle(
-            Command::Invite(Invite {
-                confirmation: None,
-                thread: thread.clone(),
-                seat: SeatId::new("recipient"),
-                deadline_millis: None,
-                operation: OperationId::new("invite"),
-                claim: sender.clone(),
-            }),
-            peer,
-            &budget(),
-        )
-        .unwrap();
-    service
-        .handle(
-            Command::Accept(Accept {
-                thread: thread.clone(),
-                operation: OperationId::new("accept"),
-                claim: main.clone(),
-            }),
-            peer,
-            &budget(),
-        )
-        .unwrap();
-
+    let scenario = SendScenario::new();
     // Herdr restart: epoch 2 of the same boot and incarnation; the pass has
     // not run, so the marker lags.
-    let second = publish_snapshot_at(&context, 2, 7, &["p", "q"], true);
+    let second = publish_snapshot_at(&scenario.context, 2, 7, &["p", "q"], true);
     // The sender checks in again (its binding moves to epoch 2), so the pass
     // has nothing of the sender's to carry.
-    checked(&service, lifecycle(sender.clone(), "sender-again"));
+    checked(
+        &scenario.service,
+        lifecycle(scenario.sender.clone(), "sender-again"),
+    );
     // A one-shot agent in the recipient's pane registers a second session at
     // epoch 2, then exits; the liveness worker disconnects it.
-    let mut one_shot = main.clone();
+    let mut one_shot = scenario.main.clone();
     one_shot.native_session = NativeSessionId::new("recipient-one-shot");
     one_shot.liveness = Some(crate::protocol::authority::LivenessFingerprint { pid: 3, start: 1 });
     one_shot.execution = ExecutionId::new("00000000-0000-4000-8000-000000000003");
-    checked(&service, lifecycle(one_shot, "recipient-one-shot"));
-    let worker = crate::service::liveness::LivenessWorker::new(
-        store.clone(),
-        Arc::new(crate::service::fair_writer::FairWriter::new(32)),
-        Arc::new(MainAliveOneShotGone),
-    );
-    assert_eq!(worker.pass(&budget()).unwrap().disconnected, 1);
-    let bindings: Vec<(String, i64, String)> = db
+    checked(&scenario.service, lifecycle(one_shot, "recipient-one-shot"));
+    assert_eq!(scenario.liveness_pass(SENDER_AND_MAIN_ALIVE), 1);
+    let bindings: Vec<(String, i64, String)> = scenario
+        .db
         .prepare("SELECT native_session,host_epoch,liveness FROM occupant_bindings WHERE seat_id='recipient' AND ended_at IS NULL AND registered_at IS NOT NULL ORDER BY ordinal")
         .unwrap()
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -1604,119 +1980,55 @@ fn send_staged_across_the_reconciliation_marker(race: MarkerRace) {
         ],
         "older connected carried binding, latest registered binding disconnected"
     );
-    let carry_pending = || crate::store::schema::carry_pending(&db, "recipient", "i").unwrap();
-    let available = || {
-        crate::store::schema::effective_registered_availability(&db, "recipient", Some("i"))
-            .unwrap()
-            .is_some()
-    };
-    assert!(carry_pending(), "the lagging marker leaves a carry pending");
-    assert!(!available());
+    assert!(
+        scenario.carry_pending(),
+        "the lagging marker leaves a carry pending"
+    );
+    assert!(!scenario.available());
 
-    let request = |operation: &str| SendMessage {
-        delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
-        thread: thread.clone(),
-        body: "across the marker".into(),
-        direct_recipient: None,
-        invited_recipients: vec![],
-        deadline_millis: None,
-        operation: OperationId::new(operation),
-        claim: sender.clone(),
-        relays_user: false,
-        user_intent: None,
-    };
-    let prepare = |send: &SendMessage| loop {
-        match store
-            .prepare_send_step(
-                send,
-                crate::ports::DurableWorkAdmission::new(16).unwrap(),
-                &budget(),
-            )
-            .unwrap()
-        {
-            SendPreparationProgress::Ready { .. } => break,
-            SendPreparationProgress::More { .. } => {}
-            other => panic!("unexpected preparation progress {other:?}"),
-        }
-    };
-    let decide = |send: &SendMessage| {
-        let mutation = PermitMutation::SendMessage(send.clone());
-        let permit = store
-            .issue_cooperative_permit(
-                crate::store::cooperative_permit_request(&mutation).unwrap(),
-                &budget(),
-            )
-            .unwrap();
-        store.mutate(mutation, permit, &budget())
-    };
-    let staged_warnings = || {
-        count(
-            "SELECT count(*) FROM prepared_unavailable_warnings w JOIN send_preparations p ON p.id=w.preparation_id WHERE p.status!='discarded' AND w.affected_seat_id='recipient'",
-        )
-    };
     let pass_pages = || {
-        let planned = reconcile_pages(&second);
+        let planned = scenario.reconcile_pages(&second);
         assert!(
             planned.iter().all(|p| !p.contains("CarryForward")),
             "the planner sees the epoch-2 latest binding and plans no carry: {planned:?}"
         );
     };
-
-    let first_send = request("across-marker");
+    let send = scenario.request("across-marker");
     if matches!(race, MarkerRace::StagedAfterPage) {
         pass_pages();
     }
-    prepare(&first_send);
+    scenario.prepare(&send);
     assert_eq!(
-        staged_warnings(),
+        scenario.staged_warnings(),
         0,
         "staged before the marker: the pending carry suppresses the warning"
     );
     if matches!(race, MarkerRace::StagedBeforePage) {
         pass_pages();
     }
-    let before_marker = fences();
+    let before_marker = scenario.fences();
     assert!(
-        store
+        scenario
+            .store
             .record_reconciliation_pass(&second, &budget())
             .unwrap()
     );
     // The post-marker canonical state: unavailable, no carry pending, joined.
-    assert!(!carry_pending(), "the marker ends the pending carry");
-    assert!(!available());
-    let after_marker = fences();
-
-    // The client retries a refused decision under a fresh operation.
-    let mut send = first_send;
-    let mut attempts = 0;
-    let message = loop {
-        attempts += 1;
-        assert!(attempts <= 2, "{race:?}: the send does not converge");
-        match decide(&send) {
-            Ok(CommandResult::MessageSent(message)) => break message,
-            Err(error)
-                if error.code == ErrorCode::Conflict
-                    && error
-                        .detail
-                        .starts_with("send preparation snapshot changed") =>
-            {
-                send = request("across-marker-retry");
-                prepare(&send);
-            }
-            other => panic!("{race:?}: unexpected decision {other:?}"),
-        }
-    };
-    let published: Vec<String> = db
-        .prepare("SELECT w.affected_seat_id FROM prepared_unavailable_warnings w JOIN send_manifests m ON m.preparation_id=w.preparation_id WHERE m.message_id=?1 ORDER BY w.warning_offset")
-        .unwrap()
-        .query_map([message.as_str()], |r| r.get(0))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect();
+    assert!(
+        !scenario.carry_pending(),
+        "the marker ends the pending carry"
+    );
+    assert!(!scenario.available());
+    let after_marker = scenario.fences();
+    let (message, attempts) = scenario.decide_with_retry(send);
     assert_eq!(
-        published,
-        vec!["recipient".to_owned()],
+        scenario.published(&message),
+        (false, vec!["recipient".to_owned()]),
         "{race:?}: the published warning set is the post-marker canonical one (fences before/after the marker {before_marker:?} -> {after_marker:?})"
+    );
+    assert_eq!(
+        attempts, 2,
+        "{race:?}: the stale preparation is refused once"
     );
 }
 

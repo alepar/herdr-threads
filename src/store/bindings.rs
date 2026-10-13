@@ -354,6 +354,11 @@ pub(crate) fn enroll_with_hooks(
     .into_iter()
     .next()
     .ok_or_else(|| corrupt("enrolled binding vanished"))?;
+    // A registered row is inserted connected: like `connect`, it can make its seat available
+    // (on any path, a plain call's enrollment included), so it bumps the send fence.
+    if place.registered_at.is_some() {
+        super::schema::bump_send_eligibility_for_binding(tx, &binding.binding_id)?;
+    }
     let mode = match request.lineage {
         Some(p) => SeedMode::Lineage(p.clone()),
         None => SeedMode::Fresh,
@@ -490,6 +495,8 @@ pub(crate) fn disconnect_with_hooks(
     if changed == 0 {
         return Ok(false);
     }
+    // Shared contract amendment §8: a transition to unavailable bumps the send fence.
+    super::schema::bump_send_eligibility_for_binding(tx, binding)?;
     if !hooks.is_empty() {
         let row = get(tx, binding)?.ok_or_else(|| corrupt("disconnected binding vanished"))?;
         let event = DisconnectEvent {
@@ -541,7 +548,12 @@ pub fn connect(
             params![binding.as_str(), pid, start],
         )
         .map_err(store_error)?;
-    Ok(changed > 0)
+    if changed == 0 {
+        return Ok(false);
+    }
+    // Every reconnect (check-in or plain call) can restore availability: bump the send fence.
+    super::schema::bump_send_eligibility_for_binding(tx, binding)?;
+    Ok(true)
 }
 
 /// Spec §3 Presence: a seat is active iff it has an open connected binding, or its open binding is

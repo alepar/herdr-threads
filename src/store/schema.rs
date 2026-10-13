@@ -3347,18 +3347,44 @@ pub fn apply_eligibility_transition(
 ) -> Result<bool, ApiError> {
     let changed = transition(tx)?;
     if changed {
-        let rows = tx.execute(
-            "UPDATE host_instances SET send_eligibility_revision=send_eligibility_revision+1 WHERE id=?1 AND send_eligibility_revision<?2",
-            params![instance, i64::MAX],
-        ).map_err(store_error)?;
-        if rows != 1 {
-            return Err(api_error(
-                ErrorCode::SequenceExhausted,
-                "send eligibility revision exhausted",
-            ));
-        }
+        bump_send_eligibility(tx, instance)?;
     }
     Ok(changed)
+}
+
+fn bump_send_eligibility(db: &Connection, instance: &str) -> Result<(), ApiError> {
+    let rows = db.execute(
+        "UPDATE host_instances SET send_eligibility_revision=send_eligibility_revision+1 WHERE id=?1 AND send_eligibility_revision<?2",
+        params![instance, i64::MAX],
+    ).map_err(store_error)?;
+    if rows != 1 {
+        return Err(api_error(
+            ErrorCode::SequenceExhausted,
+            "send eligibility revision exhausted",
+        ));
+    }
+    Ok(())
+}
+
+/// The binding-liveness transition (`bindings::connect` / `disconnect`, the
+/// sole writers of `occupant_bindings.liveness`) changed a row of the
+/// binding's seat. `effective_registered_availability` requires a connected
+/// binding, so the seat's instance fence moves once (one row update, no
+/// recipient scan; shared contract amendment §8). Liveness changes only on
+/// evidence (check-in, plain-call reconnect, end event, process exit,
+/// supersede, retirement, unresolve), never on a steady-state cadence.
+pub fn bump_send_eligibility_for_binding(
+    db: &Connection,
+    binding: &crate::protocol::ids::BindingId,
+) -> Result<(), ApiError> {
+    let instance: String = db
+        .query_row(
+            "SELECT s.instance_id FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.binding_id=?1",
+            [binding.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    bump_send_eligibility(db, &instance)
 }
 
 pub fn bump_membership_revision(tx: &Transaction<'_>, thread: &ThreadId) -> Result<(), ApiError> {
