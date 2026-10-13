@@ -2,6 +2,7 @@
 """Pre-release wake e2e: does `invite` / `send` wake a real idle Claude Code and Codex agent exactly when it should?
 
   scripts/wake-e2e.py [--bin PATH] [--harness claude,codex] [--cases CASE,...] [--evidence-dir DIR] [--keep]
+                      [--harness-mode macos|linux]
 
 The matrix is every combination of
   action      invite | send lazy | send --nudge | send --require-ack
@@ -18,8 +19,9 @@ so no wake prompt may be typed during or after that turn, and the item must arri
 Isolation: an isolated daemon and state dir (driven by --bin, default the repo's bin/herdr-threads), owned hooks
 installed by the public `setup` CLI into scratch HOME / CLAUDE_CONFIG_DIR / CODEX_HOME copies, one owned Herdr
 workspace on the current Herdr server (closed at the end unless --keep). The script itself never writes the real
-user config:
-- Claude keeps its real config directory (on macOS its keychain credentials are keyed by it) and loads the scratch
+user config. The harness mode (--harness-mode, default `macos` on macOS and `linux` elsewhere) decides how the
+harnesses get their credentials:
+- macos: Claude keeps its real config directory (on macOS its keychain credentials are keyed by it) and loads the scratch
   installation as a flag layer (`--setting-sources project,local --settings <scratch>/settings.json`), which also
   carries the delivery mod (`env.CLAUDE_CODE_PLUGIN_DIRS`). Limit: Claude Code itself still records its session
   state (transcripts, project history) in that real directory, as any Claude session does.
@@ -27,7 +29,18 @@ user config:
   of the source profile's auth.json (--codex-auth-home, else $CODEX_HOME or ~/.codex). Codex writes refreshed
   tokens only into that copy; the source file is never written, and credentials never enter the evidence. A refresh
   inside the run is recorded (no contents) because it can rotate the source profile's refresh token. The agent
-  working directory is pre-trusted in that scratch config.toml only.
+  working directory is pre-trusted in that scratch config.toml only. Codex runs with --approve-for-me.
+- linux (no keychain): Claude gets a fully scratch CLAUDE_CONFIG_DIR, the one setup installed into, with
+  `.claude.json` pre-seeded so no first-run screen appears (see claude_scratch_state), and its credential only from
+  CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY: a logged-in Claude config cannot be reused, it is never read, and
+  --claude-config-dir is refused. Preflight checks the driver's own environment; the agents get the Herdr server's
+  (panes inherit it), so both must carry the credential (inside scripts/linux-e2e both are the server's). Codex is
+  set up as on macOS and keeps --approve-for-me, except inside the scripts/linux-e2e runner container
+  (HT_LINUX_E2E_CONTAINER=1 from the runner and /.dockerenv), where it runs with
+  --dangerously-bypass-approvals-and-sandbox: its bubblewrap sandbox cannot create a user namespace under Docker's
+  default seccomp profile, so the container is the sandbox. Evidence files are redacted of `sk-ant-` tokens and of
+  the Claude credential values and their tails; with --keep the scratch `.claude.json` (mode 0600) keeps an
+  ANTHROPIC_API_KEY's 20-character approval suffix.
 Agents work in the repository checkout (already trusted by Claude, so no folder-trust dialog is answered).
 The senders are two owned coordinator shell panes recorded as person seats (`human me init`, which keeps its agent
 guard: the driver strips every registered agent marker from their commands and the panes run only a shell), not
@@ -44,6 +57,7 @@ never in CI. Python 3.9+, standard library only.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import hashlib
 import json
@@ -90,6 +104,23 @@ CALLER_SESSION_ENV = ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRY
                       "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_AGENT")
 DIALOG = re.compile(r"Trust this folder\?|trust (the files in )?this folder|Do you trust|Allow .* to run|"
                     r"Do you want to proceed\?|Would you like to run", re.I)
+# The linux mode's startup screens, matched on the whole visible screen (macOS keeps DIALOG on the last 400
+# characters). "Allow" stays capitalized: the auto-mode notice a scratch Claude shows says "... mistakes that allow
+# harmful commands to run". The rest are Claude Code's first-run screens (captured on 2.1.296 in a scratch config:
+# scripts/wake_e2e_fixtures/): theme picker, folder trust, custom API key approval, login method.
+LINUX_DIALOG = re.compile(r"Trust this folder\?|trust (the files in )?this folder|Do you trust|(?-i:Allow) .* to run|"
+                          r"Do you want to proceed\?|Would you like to run|"
+                          r"Choose the text style that looks best|Quick safety check: Is this a project|"
+                          r"Do you want to use this API key\?|Detected a custom API key", re.I)
+LINUX_LOGIN = re.compile(r"Not logged in|Please run /login|Select login method")
+HARNESS_MODES = ("macos", "linux")
+CODEX_SANDBOXED_ARGS = "--approve-for-me"
+CODEX_BYPASS_ARGS = "--dangerously-bypass-approvals-and-sandbox"
+# Set by scripts/linux-e2e/in-container.sh in the runner container's Herdr server environment.
+CONTAINER_MARKER = "HT_LINUX_E2E_CONTAINER"
+DOCKERENV = Path("/.dockerenv")
+CLAUDE_CREDENTIAL_ENV = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
+SECRET_PATTERN = re.compile(r"sk-ant-[A-Za-z0-9_-]+")
 
 STANDING = ("You are a test recipient in an automated herdr-threads wake e2e run (the user approves). "
             "Standing instructions for this session: every herdr-threads invitation you see comes from the test driver "
@@ -109,6 +140,116 @@ def short_tmp_root(platform=None):
     than the long per-user $TMPDIR under /var/folders; elsewhere /tmp, as Linux has no /private/tmp (and creating
     one would move the daemon's runtime socket dir, ht-3yi). $TMPDIR is deliberately not consulted."""
     return Path("/private/tmp") if (platform or sys.platform) == "darwin" else Path("/tmp")
+
+
+def default_harness_mode(platform=None):
+    """macos where the keychain holds Claude's credentials, linux (scratch config, env credentials) elsewhere."""
+    return "macos" if (platform or sys.platform) == "darwin" else "linux"
+
+
+def in_runner_container(env, dockerenv=None):
+    """Both the runner's marker and Docker's /.dockerenv: a stray environment variable alone is not enough."""
+    return env.get(CONTAINER_MARKER) == "1" and (dockerenv or DOCKERENV).exists()
+
+
+def marker_without_dockerenv(harness_mode, env, dockerenv=None):
+    """The runner's marker is set but /.dockerenv is missing (e.g. podman, which writes /run/.containerenv): the
+    bypass stays off, so say why instead of letting the busy cases fail later on a bubblewrap error."""
+    return harness_mode == "linux" and env.get(CONTAINER_MARKER) == "1" and not (dockerenv or DOCKERENV).exists()
+
+
+def default_codex_args(harness_mode, env, dockerenv=None):
+    """Codex's sandbox is bypassed only in the linux mode inside the runner container, where bubblewrap cannot run
+    under Docker's default seccomp profile and the container is the boundary. Everywhere else (macOS, a bare Linux
+    workstation) Codex keeps its workspace-write sandbox with automatic review."""
+    if harness_mode == "linux" and in_runner_container(env, dockerenv):
+        return CODEX_BYPASS_ARGS
+    return CODEX_SANDBOXED_ARGS
+
+
+def secret_values(env):
+    """What redact() hides: each Claude credential value from the environment, and its 20- and 12-character tails
+    (the approval suffix the linux mode seeds, and what Claude's API-key screen shows of a key)."""
+    out = []
+    for var in CLAUDE_CREDENTIAL_ENV:
+        value = (env.get(var) or "").strip()
+        if value:
+            out += [value] + [value[-n:] for n in (20, 12) if len(value) > n]
+    return tuple(sorted(set(out), key=len, reverse=True))
+
+
+def redact(text, secrets=()):
+    """Evidence text without credentials: every `sk-ant-` token and every value of secret_values()."""
+    for value in secrets:
+        text = text.replace(value, "<redacted>")
+    return SECRET_PATTERN.sub("<redacted>", text)
+
+
+LONG_RUN = re.compile(r"[A-Za-z0-9_-]{8,}")
+
+
+def capture_evidence(text, lines, secrets=()):
+    """A pane capture for evidence. Herdr bounds a capture by whole lines, so when it is full its first line may be
+    the cut-off end of a wrapped credential that redact() can no longer recognize: long token-like runs on that line
+    only are masked."""
+    text = redact(text, secrets)
+    rows = text.split("\n")
+    if len(rows) >= lines:
+        rows[0] = LONG_RUN.sub("<masked>", rows[0])
+    return "\n".join(rows)
+
+
+def clip(text, n, secrets=None, tail=False):
+    """Bounded diagnostic text: redacted whole first (a credential cut by the crop would leave an unrecognizable
+    fragment), then its first (or, with tail, last) n characters. secrets None: this process's environment."""
+    text = redact(str(text), secret_values(os.environ) if secrets is None else secrets)
+    return text[-n:] if tail else text[:n]
+
+
+def claude_scratch_state(cwd, env):
+    """The `.claude.json` keys a scratch CLAUDE_CONFIG_DIR needs so Claude Code opens straight at its composer
+    (measured on 2.1.296, scripts/wake_e2e_fixtures/): onboarding done (it holds the theme picker and the login
+    screen), the agents' working directory trusted (folder-trust screen), and, only with ANTHROPIC_API_KEY, that key
+    approved the way Claude records an approval: its last 20 characters (custom-API-key screen). An OAuth token from
+    CLAUDE_CODE_OAUTH_TOKEN needs no approval."""
+    state = {"hasCompletedOnboarding": True, "projects": {cwd: {"hasTrustDialogAccepted": True}}}
+    key = (env.get("ANTHROPIC_API_KEY") or "").strip()
+    if key:
+        state["customApiKeyResponses"] = {"approved": [key[-20:]], "rejected": []}
+    return state
+
+
+def seed_claude_config(cfg_dir, cwd, env):
+    """Merge claude_scratch_state into <cfg_dir>/.claude.json (a private 0600 regular file, never through a link)."""
+    path = Path(cfg_dir) / ".claude.json"
+    doc = {}
+    if path.is_file() and not path.is_symlink():
+        try:
+            doc = json.loads(path.read_text())
+        except ValueError as e:
+            raise RuntimeError(f"{path} is not valid JSON ({e}); remove or fix it") from None
+        if not isinstance(doc, dict):
+            raise RuntimeError(f"{path} does not hold a JSON object; remove or fix it")
+    state = claude_scratch_state(cwd, env)
+    projects = dict(doc.get("projects") or {})
+    projects[cwd] = dict(projects.get(cwd) or {}, **state.pop("projects")[cwd])
+    doc.update(state, projects=projects)
+    if path.is_symlink() or path.exists():
+        path.unlink()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(doc, f, indent=2)
+    return path
+
+
+def linux_startup_refusal(screen, status):
+    """The linux mode: why a freshly started agent must not be prompted, or None. Checked on the whole visible
+    screen: the theme picker reports `idle` and its prompt sits far above the screen's last 400 characters."""
+    if LINUX_LOGIN.search(screen):
+        return "is not logged in (set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY)"
+    if status == "blocked" or LINUX_DIALOG.search(screen):
+        return "startup dialog (nothing typed)"
+    return None
 
 
 class Refused(Exception):
@@ -153,6 +294,8 @@ class Run:
         self.start_attempted = set()  # recorded just before Thread.start: a mid-start interrupt is still joined
         self.drain_timeout_s = 30.0
         self.child_term_grace_s = 3.0
+        self.codex_start = threading.Lock()  # linux mode: one Codex start at a time (Recipient.start)
+        self.secrets = secret_values(os.environ)  # redacted from every evidence file
 
     # ---------- process helpers ----------
     def run(self, argv, env=None, timeout=60, tag=None, cleanup=False):
@@ -181,9 +324,11 @@ class Run:
                 self.children.discard(p)
         out, err = out or "", err or ""
         with self.lock:
-            self.cmdlog.write(json.dumps({"utc": utc(), "tag": tag, "argv": argv, "rc": rc,
-                                          "elapsed_s": round(time.monotonic() - started, 3),
-                                          "stdout": out[:4096], "stderr": err[:4096]}) + "\n")
+            secrets = getattr(self, "secrets", ())
+            self.cmdlog.write(redact(json.dumps({"utc": utc(), "tag": tag, "argv": argv, "rc": rc,
+                                                 "elapsed_s": round(time.monotonic() - started, 3),
+                                                 "stdout": clip(out, 4096, secrets),
+                                                 "stderr": clip(err, 4096, secrets)}), secrets) + "\n")
             self.cmdlog.flush()
         if self.stopping.is_set() and not cleanup:  # cut off by the drain: the case is interrupted, not failed
             raise Stopped(f"cleanup interrupted {argv[:3]}")
@@ -206,13 +351,13 @@ class Run:
         full = [self.bin] + (argv + prefix if argv[:1] == ["setup"] else (["human"] if human else []) + prefix + argv)
         rc, out, err = self.run(full, env=e, timeout=timeout, tag=tag or "ht:" + " ".join(argv[:2]))
         if check and rc != 0:
-            raise RuntimeError(f"herdr-threads {' '.join(argv[:3])}: rc={rc} {(err or out).strip()[:300]}")
+            raise RuntimeError(f"herdr-threads {' '.join(argv[:3])}: rc={rc} {clip((err or out).strip(), 300, getattr(self, 'secrets', None))}")
         return out
 
     def herdr(self, *argv, tag=None, timeout=30, check=True):
         rc, out, err = self.run(["herdr", *argv], tag=tag or "herdr:" + " ".join(argv[:2]), timeout=timeout)
         if check and rc != 0:
-            raise RuntimeError(f"herdr {' '.join(argv[:3])}: rc={rc} {(err or out).strip()[:300]}")
+            raise RuntimeError(f"herdr {' '.join(argv[:3])}: rc={rc} {clip((err or out).strip(), 300, getattr(self, 'secrets', None))}")
         try:
             return json.loads(out) if out.strip() else {}
         except ValueError:
@@ -233,15 +378,21 @@ class Run:
         auth = self.codex_auth_home() / "auth.json"
         if "codex" in self.args.harness and not auth.exists():
             problems.append(f"no Codex credentials at {auth} (--codex-auth-home)")
+        if self.linux and "claude" in self.args.harness and not any((os.environ.get(v) or "").strip()
+                                                                    for v in CLAUDE_CREDENTIAL_ENV):
+            problems.append("no Claude credential in the environment: the linux harness mode needs "
+                            "CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY (no keychain; the real Claude config is "
+                            "never read)")
         if problems:
             raise Refused("; ".join(problems))
         versions = {}
         for name, argv in (("herdr", ["herdr", "--version"]), ("herdr-threads", [self.bin, "--version"]),
                            *((h, [h, "--version"]) for h in self.args.harness)):
-            versions[name] = self.run(argv, tag="version")[1].strip()[:120]
+            versions[name] = clip(self.run(argv, tag="version")[1].strip(), 120, getattr(self, 'secrets', None))
         sha = self.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], tag="git")[1].strip()
         dirty = bool(self.run(["git", "-C", str(REPO), "status", "--porcelain"], tag="git")[1].strip())
         self.facts = {"run_id": self.run_id, "sha": sha, "dirty": dirty, "versions": versions,
+                      "harness_mode": self.args.harness_mode, "codex_args": self.args.codex_args,
                       "bin": self.bin, "bin_sha256": file_sha256(self.bin), "root": str(self.root),
                       "started_utc": utc()}
         print(f"wake-e2e {self.run_id}: sha {sha[:12]}{' (dirty)' if dirty else ''}, root {self.root}", flush=True)
@@ -271,6 +422,8 @@ class Run:
                      "CLAUDE_CODE_PLUGIN_DIRS": ""}  # never copy a real installed mod into the scratch layer
         for h in self.args.harness:
             self.ht("setup", h, "--with-permissions", env=setup_env, tag=f"setup:{h}", timeout=120)
+        if self.linux and "claude" in self.args.harness:
+            seed_claude_config(self.claude_cfg, self.cwd, os.environ)
         if "codex" in self.args.harness:
             self.auth_digest = provision_codex_auth(self.codex_auth_home() / "auth.json", self.codex_home / "auth.json")
             cfg = self.codex_home / "config.toml"
@@ -295,7 +448,7 @@ class Run:
                       tag="seat:resolve", timeout=30)
         seat = first_id(out, "s")
         if not seat:
-            raise RuntimeError(f"seat resolve {pane}: no seat id in {out[:200]}")
+            raise RuntimeError(f"seat resolve {pane}: no seat id in {clip(out, 200, getattr(self, 'secrets', None))}")
         return seat
 
     def layout(self):
@@ -311,7 +464,7 @@ class Run:
             out = self.ht("me", "init", pane=pane, human=True, tag=f"coordinator:{role}:me-init")
             seat = first_id(out, "s")
             if not seat:
-                raise RuntimeError(f"me init {pane}: no seat id in {out[:200]}")
+                raise RuntimeError(f"me init {pane}: no seat id in {clip(out, 200, getattr(self, 'secrets', None))}")
             self.coords[role] = {"pane": pane, "seat": seat}
         self.recipients = []
         for h in self.args.harness:
@@ -330,7 +483,10 @@ class Run:
                     str(self.claude_cfg / "settings.json"), "--permission-mode", self.args.claude_permission_mode]
             if self.args.claude_model:
                 argv += ["--model", self.args.claude_model]
-            cfg = f"CLAUDE_CONFIG_DIR={q(self.args.claude_config_dir)} " if self.args.claude_config_dir else ""
+            if self.linux:  # the scratch config setup installed into; the credential comes from the environment
+                cfg = f"CLAUDE_CONFIG_DIR={q(str(self.claude_cfg))} "
+            else:
+                cfg = f"CLAUDE_CONFIG_DIR={q(self.args.claude_config_dir)} " if self.args.claude_config_dir else ""
             cfg += f"CLAUDE_CODE_PLUGIN_DIRS={q(str(self.state / 'claude-mod' / 'herdr-threads'))} "
             return f"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; {path} {cfg}HERDR_AGENT=claude {shlex.join(argv)}"
         argv = ["command", "codex", "--no-daemon", "-C", self.cwd, "--dangerously-bypass-hook-trust",
@@ -338,6 +494,10 @@ class Run:
         if self.args.codex_model:
             argv += ["-m", self.args.codex_model]
         return f"{path} HERDR_AGENT=codex CODEX_HOME={q(str(self.codex_home))} {shlex.join(argv)}"
+
+    @property
+    def linux(self):
+        return getattr(self.args, "harness_mode", "macos") == "linux"
 
     def coord_seats(self):
         return " and ".join(c["seat"] for c in self.coords.values()) or "none"
@@ -361,25 +521,25 @@ class Run:
                 self.workspace = self.workspace_by_label()
                 steps.append({"workspace_found_by_label": self.workspace})
             except Exception as e:
-                problems.append(f"workspace {self.workspace_label()}: create outcome not verified: {str(e)[:200]}")
+                problems.append(f"workspace {self.workspace_label()}: create outcome not verified: {clip(e, 200, getattr(self, 'secrets', None))}")
         if self.workspace:
             try:
                 rc = self.run(["herdr", "workspace", "close", self.workspace], tag="cleanup:workspace", timeout=30,
                               cleanup=True)[0]
                 steps.append({"workspace_close_rc": rc})
             except Exception as e:  # keep going: the daemon is ours too
-                steps.append({"workspace_close_error": str(e)[:200]})
+                steps.append({"workspace_close_error": clip(e, 200, getattr(self, 'secrets', None))})
             try:
                 if self.workspace_alive():
                     problems.append(f"workspace {self.workspace} still open after close")
             except Exception as e:
-                problems.append(f"workspace {self.workspace}: closure not verified: {str(e)[:200]}")
+                problems.append(f"workspace {self.workspace}: closure not verified: {clip(e, 200, getattr(self, 'secrets', None))}")
         if self.daemon_attempted:
             try:
                 rc = self.run_rc("daemon", "stop", timeout=30)
                 steps.append({"daemon_stop_rc": rc})
             except Exception as e:
-                steps.append({"daemon_stop_error": str(e)[:200]})
+                steps.append({"daemon_stop_error": clip(e, 200, getattr(self, 'secrets', None))})
             end = time.time() + self.stop_deadline_s
             healthy = True
             while True:
@@ -401,7 +561,7 @@ class Run:
                 leftover = self.owned_processes()
             except Exception as e:  # a failed scan is unknown, never "nothing left"
                 leftover = None
-                scan_error = str(e)[:200]
+                scan_error = clip(e, 200, getattr(self, 'secrets', None))
             if leftover == [] or time.time() >= end:
                 break
             time.sleep(0.5)
@@ -495,7 +655,7 @@ class Run:
         if rc == 1:  # pgrep: no process matched
             return []
         if rc != 0:
-            raise RuntimeError(f"pgrep rc={rc} {err.strip()[:100]}")
+            raise RuntimeError(f"pgrep rc={rc} {clip(err.strip(), 100, getattr(self, 'secrets', None))}")
         return [int(p) for p in out.split() if p.isdigit() and int(p) != os.getpid()]
 
     def run_rc(self, *argv, timeout=10):
@@ -609,9 +769,18 @@ class Recipient:
             time.sleep(0.5)
         raise RuntimeError(f"{self.name} did not become idle within {timeout}s: {self.tail()}")
 
-    def tail(self):
+    def observed_tail(self):
+        """The macOS startup observation: the raw last 400 characters of the visible screen, exactly as before the
+        linux mode (matching only, never written to evidence). Redacting first would shrink a credential on screen
+        and pull older text, e.g. a stale "Not logged in" banner, into the window."""
         text = self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
         return " | ".join(l.strip() for l in text.splitlines() if l.strip())[-400:]
+
+    def tail(self):
+        """The same screen as diagnostic text for errors and evidence: redacted whole, then the last 400 characters."""
+        text = self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
+        return clip(" | ".join(l.strip() for l in text.splitlines() if l.strip()), 400,
+                    getattr(self.run, "secrets", None), tail=True)
 
     def watch_for_wake(self, window):
         t0 = time.time()
@@ -635,20 +804,35 @@ class Recipient:
         while time.time() < end and not re.search(r"[%$#>] ?$", self.run.herdr(
                 "pane", "read", self.pane, "--source", "visible", check=False).get("raw", "").rstrip("\n ") + " "):
             time.sleep(0.5)
-        self.run.herdr("pane", "run", self.pane, self.run.launch_line(self.harness))
-        end = time.time() + 180
-        while time.time() < end:
-            data = self.run.herdr("agent", "get", self.pane, check=False)
-            agent = (data.get("result") or {}).get("agent") or {}
-            if agent.get("agent") == self.harness and agent.get("agent_status") in IDLE + ("blocked",):
-                break
-            time.sleep(1)
+        # The Codex recipients share one scratch CODEX_HOME: two first starts at once race on its state DB migration
+        # (seen in the linux runner: "migration 3: duplicate column name: thread_id", one Codex exits). In the linux
+        # mode the second start waits until the first Codex is up: the lock is released once this Codex is detected
+        # (its TUI is drawn, so its state DB is migrated) or the detection failed (the error releases it too).
+        # macOS keeps concurrent starts by design: its behaviour stays as it was; the race was not seen there.
+        serial = self.harness == "codex" and getattr(self.run.args, "harness_mode", "macos") == "linux"
+        with (self.run.codex_start if serial else contextlib.nullcontext()):
+            self.run.herdr("pane", "run", self.pane, self.run.launch_line(self.harness))
+            end = time.time() + 180
+            while time.time() < end:
+                data = self.run.herdr("agent", "get", self.pane, check=False)
+                agent = (data.get("result") or {}).get("agent") or {}
+                if agent.get("agent") == self.harness and agent.get("agent_status") in IDLE + ("blocked",):
+                    break
+                time.sleep(1)
+            else:
+                raise RuntimeError(f"{self.name}: {self.harness} not detected in {self.pane}: {self.tail()}")
+        if getattr(self.run.args, "harness_mode", "macos") == "linux":
+            screen = self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
+            why = linux_startup_refusal(screen, self.status())
+            if why and why.startswith("is not logged in"):
+                raise RuntimeError(f"{self.name}: {self.harness} {why}")
+            if why:
+                raise RuntimeError(f"{self.name}: {why}: {self.tail()}")
         else:
-            raise RuntimeError(f"{self.name}: {self.harness} not detected in {self.pane}: {self.tail()}")
-        if re.search(r"Not logged in|Please run /login", self.tail()):
-            raise RuntimeError(f"{self.name}: {self.harness} is not logged in (check --claude-config-dir)")
-        if self.status() == "blocked" or DIALOG.search(self.tail()):
-            raise RuntimeError(f"{self.name}: startup dialog (nothing typed): {self.tail()}")
+            if re.search(r"Not logged in|Please run /login", self.observed_tail()):
+                raise RuntimeError(f"{self.name}: {self.harness} is not logged in (check --claude-config-dir)")
+            if self.status() == "blocked" or DIALOG.search(self.observed_tail()):
+                raise RuntimeError(f"{self.name}: startup dialog (nothing typed): {self.tail()}")
         for _attempt in range(2):  # one retry: a transient model/capacity error ends the first turn early
             reported = re.compile(r"SETUP-DONE wake_on=%s\b" % self.wake_on)
             self.prompt(STANDING.format(coord=self.run.coord_seats(), wake_on=self.wake_on), expect=reported)
@@ -923,21 +1107,23 @@ class Recipient:
                     break
                 except Exception as e:  # a driver or agent error fails the case, never passes it
                     self.run.record({"case": case, "harness": self.harness, "wake_on": self.wake_on,
-                                     "recipient": self.name, "result": "FAIL", "checks": {"error": str(e)[:400]}})
+                                     "recipient": self.name, "result": "FAIL", "checks": {"error": clip(e, 400, getattr(self.run, "secrets", None))}})
         except Stopped:
             pass
         except Exception as e:
             for case in cases:
                 self.run.record({"case": case, "harness": self.harness, "wake_on": self.wake_on,
-                                 "recipient": self.name, "result": "FAIL", "checks": {"error": f"startup: {str(e)[:400]}"}})
+                                 "recipient": self.name, "result": "FAIL", "checks": {"error": "startup: " + clip(e, 400, getattr(self.run, "secrets", None))}})
         finally:
             try:
-                (self.run.ev / f"pane-{self.name}.txt").write_text(self.screen(1000))
+                (self.run.ev / f"pane-{self.name}.txt").write_text(
+                    capture_evidence(self.screen(1000), 1000, getattr(self.run, "secrets", ())))
             except Stopped:
                 pass  # interrupted: no pane capture, the summary marks unfinished cases missing
 
 
 def record(self, row):
+    row = json.loads(redact(json.dumps(row), getattr(self, "secrets", ())))  # error tails may quote a screen
     with self.lock:
         self.results.append(row)
         print(f"[{row['result']:7}] {row['recipient']:9} {row['case']:17} wake_on={row['wake_on']:5} "
@@ -991,10 +1177,13 @@ def write_evidence(run, rc):
         results = list(run.results)
     doc = {"facts": facts, "completeness": getattr(run, "completeness", None), "cleanup": run.cleanup_report,
            "results": results}
-    (run.ev / "results.json").write_text(json.dumps(doc, indent=2))
-    (run.ev / "report.md").write_text(
+    # One redaction pass over each whole document: facts (versions, flags) and cleanup diagnostics carry helper text.
+    secrets = getattr(run, "secrets", None)
+    secrets = secret_values(os.environ) if secrets is None else secrets
+    (run.ev / "results.json").write_text(redact(json.dumps(doc, indent=2), secrets))
+    (run.ev / "report.md").write_text(redact(
         f"# wake e2e {run.run_id}\n\n```json\n{json.dumps(facts, indent=2)}\n```\n\n{getattr(run, 'table', '')}\n\n"
-        f"cleanup: `{json.dumps(run.cleanup_report)}`\n\nexit code: {rc}\n")
+        f"cleanup: `{json.dumps(run.cleanup_report)}`\n\nexit code: {rc}\n", secrets))
 
 
 def main(argv=None):
@@ -1006,12 +1195,16 @@ def main(argv=None):
     ap.add_argument("--keep", action="store_true", help="leave the workspace and daemon running for inspection")
     ap.add_argument("--claude-model", help="passed as --model (default: the account default)")
     ap.add_argument("--claude-permission-mode", default="auto")
-    ap.add_argument("--claude-config-dir", default=os.environ.get("CLAUDE_CONFIG_DIR"),
-                    help="the real, logged-in Claude config dir the agents use (default $CLAUDE_CONFIG_DIR; new Herdr "
-                         "panes do not inherit it)")
+    ap.add_argument("--harness-mode", choices=HARNESS_MODES, default=default_harness_mode(),
+                    help="macos: Claude keeps its real (keychain) config dir; linux: scratch Claude config, credential "
+                         "from CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY, Codex sandbox bypassed (default: %(default)s)")
+    ap.add_argument("--claude-config-dir",
+                    help="macos mode: the real, logged-in Claude config dir the agents use (default $CLAUDE_CONFIG_DIR; "
+                         "new Herdr panes do not inherit it); refused in linux mode")
     ap.add_argument("--codex-model", help="passed as -m (default: the profile default)")
-    ap.add_argument("--codex-args", default="--approve-for-me",
-                    help="extra Codex TUI flags (sandbox/approval), default %(default)r")
+    ap.add_argument("--codex-args",
+                    help="extra Codex TUI flags (sandbox/approval), default %r; %r only in the linux mode "
+                         "inside the scripts/linux-e2e runner container" % (CODEX_SANDBOXED_ARGS, CODEX_BYPASS_ARGS))
     ap.add_argument("--codex-auth-home", help="Codex home whose auth.json is copied (private, mode 0600) into "
                                               "the scratch CODEX_HOME "
                                               "(default $CODEX_HOME or ~/.codex)")
@@ -1020,6 +1213,15 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.self_test:
         return self_test()
+    if args.harness_mode == "linux" and args.claude_config_dir:
+        ap.error("--claude-config-dir: the linux harness mode never uses a real Claude config")
+    if args.harness_mode == "macos" and args.claude_config_dir is None:
+        args.claude_config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    if args.codex_args is None:
+        args.codex_args = default_codex_args(args.harness_mode, os.environ)
+        if marker_without_dockerenv(args.harness_mode, os.environ):
+            print(f"wake-e2e: {CONTAINER_MARKER}=1 but {DOCKERENV} is missing (not Docker?): Codex keeps its sandbox "
+                  "(--approve-for-me); pass --codex-args to choose explicitly", file=sys.stderr)
     args.harness = [h for h in args.harness.split(",") if h]
     cases = [c for c in args.cases.split(",") if c]
     unknown = [c for c in cases if c not in CASES] + [h for h in args.harness if h not in ("claude", "codex")]
@@ -1047,10 +1249,10 @@ def main(argv=None):
                     w.join(timeout=0.5)
         rc = EXIT_OK if summary(run, cases) else EXIT_FAIL
     except Refused as e:
-        print(f"wake-e2e: refused: {e}", file=sys.stderr)
+        print(redact(f"wake-e2e: refused: {e}", secret_values(os.environ)), file=sys.stderr)
         rc = EXIT_REFUSED
     except BaseException as e:  # including KeyboardInterrupt: cleanup still runs and the run fails
-        print(f"wake-e2e: aborted: {e!r}", file=sys.stderr)
+        print(redact(f"wake-e2e: aborted: {e!r}", secret_values(os.environ)), file=sys.stderr)
         rc = EXIT_FAIL
     finally:
         # Cleanup runs to the end: a second Ctrl-C or SIGTERM must not cut off the remaining steps.
@@ -1062,7 +1264,8 @@ def main(argv=None):
             problems = [f"cleanup raised: {e!r}"]
             run.cleanup_report = {"problems": problems}
         if problems:
-            print("wake-e2e: cleanup incomplete: " + "; ".join(problems), file=sys.stderr)
+            print(redact("wake-e2e: cleanup incomplete: " + "; ".join(problems), secret_values(os.environ)),
+                  file=sys.stderr)
             rc = EXIT_FAIL
         write_evidence(run, rc)
         print(f"evidence: {run.ev} (exit {rc})", flush=True)

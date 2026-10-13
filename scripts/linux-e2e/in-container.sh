@@ -84,7 +84,9 @@ step_herdr_up() { # a headless Herdr server for this container (its own; the hos
     fi
     # Panes inherit this server's environment: HT_LINUX_E2E_ENV_PROBE lets the pane launcher record
     # that a value given to the server reaches the agents (how a Claude token is meant to travel).
-    HT_LINUX_E2E_ENV_PROBE=1 setsid nohup herdr server </dev/null > "$EV/herdr-server.log" 2>&1 &
+    # HT_LINUX_E2E_CONTAINER tells scripts/wake-e2e.py it runs in this disposable container (with
+    # /.dockerenv), the only place its linux mode bypasses the Codex sandbox.
+    HT_LINUX_E2E_ENV_PROBE=1 HT_LINUX_E2E_CONTAINER=1 setsid nohup herdr server </dev/null > "$EV/herdr-server.log" 2>&1 &
     echo $! > "$RUN/herdr-server.pid"
     local i=0 sock
     while [ $i -lt 150 ]; do
