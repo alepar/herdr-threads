@@ -82,9 +82,13 @@ the row limit, byte limit and work bound are unchanged, and a work-limited page 
 false `empty`. How each source yields its items in key order (exact index-backed delivery rows, a bounded sorted window for the
 deadline-bearing p0 sources, warnings already in order), the v47 index shapes and the cursor format are specified
 in the inbox-merge subspec ([2026-10-13-message-priority-delivery--inbox-merge-design.md](2026-10-13-message-priority-delivery--inbox-merge-design.md)). The continuation records the last emitted full key and the captured high waters; an item published after capture
-belongs to the next traversal, as today. Out-of-order display within a thread is safe because each delivery row
-records its own displayed state; the binding read cursor only advances over the contiguous displayed prefix, as
-`advance_through_displayed` already does. The watch stream and mod carry `priority` and `deadline_at` on each
+belongs to the next traversal, as today. Out-of-order display within a thread is made safe by one rule (roast r1, cluster C2): a delivery row is pending for a reader
+unless it was displayed for that reader. The binding read cursor still advances only over the contiguous displayed
+prefix, but it is never the sole test: v47 adds a sparse per-binding mark table `binding_row_displays(binding_id,
+message_id)` written when a binding completes display of a delivery row above its cursor, read by every binding-level
+unread/pending predicate (inbox Unread and delivery-row filters, hook, accept), and pruned when the cursor passes the
+row. Seat-level predicates (wake frontier, attention digest) test `lazy_recipients.state`. Test: p0 seq 10 displayed
+before p1 seq 5 in one thread is not re-offered; seq 5 still is. The watch stream and mod carry `priority` and `deadline_at` on each
 item and sort every batch they frame by the same key (arrival order breaks the final tie); separate batches stay
 in arrival order.
 
@@ -144,6 +148,58 @@ in arrival order.
   axis; it is not a delivery priority and does not enter `DeliveryOrderKey`.
 - `PROTOCOL_VERSION` does not change.
 
+## Legacy readers, wire validators and receipt-side effects (design roast round 1)
+
+**Every legacy reader is converted to the question it actually asks** (cluster C1): "does this (message, seat) have a
+delivery row" → `lazy_recipients` presence; "does it have a receipt" → `prepared_recipients`/receipt presence; "is
+it a message at all" → the predicate is dropped; "does this seat wake" → `NudgeThreshold`. For set-based SQL,
+`NudgeThreshold` has a store-side SQL fragment (owned with the seat threshold store API) that joins
+`seats.nudge_threshold` and compares row priority, so no statement writes `p <= T` by hand. Any scan bounded by a
+newest-N window that was correct only because every row was eligible (`wake_frontier`, `has_wake_rows`,
+`PENDING_SUMMARY_CAP`) becomes a seek on the v47 index per admitted priority. Inventory and owners:
+
+| Reader | Owner |
+|---|---|
+| `migrations/0026` triggers `lazy_recipient_source`, `lazy_recipient_display_published`, `lazy_manifest_source` (mode checks) — v47 drops and recreates them on row presence / priority | schema (`ht-yha.2`) |
+| `store/messages.rs` digest payload, validation, duration, `stage_recipient`, replay lookup | send (`ht-yha.3`) |
+| `lazy_delivery` completion (`recorded_mode`, `lazy_completion_state`) | send (`ht-yha.3`) |
+| `lazy_delivery` inbox (`publication_eligible`, binding unread SQL, `seat_lazy_pending`, pending pages) and the per-binding displayed marks | DeliveryRowSeek (`ht-yha.5.2`) |
+| `lazy_delivery` wake (`wake_frontier`, `oldest_pending_at`, `has_wake_rows`), `note_published`'s `wake_work` insert (`wake_on='all'`), `store/attention.rs`, `store/wake.rs`, `seats.rs` wake_on readers, per-item `wakes` | wake (`ht-yha.4`; `note_published` is edited by `ht-yha.5.2` using the wake child's SQL fragment) |
+| `lazy_delivery` direct (`direct_lazy_display_admitted`, episode floors), `store/control.rs`, `delivery/invitation.rs`, handoff `automatic.rs` / `topology_handoff/attachment.rs` ordinary checks | pairs/invitations (`ht-yha.6`) |
+| `queries.rs` `MessageDeliveryModes` (`recorded_mode` at the query), `invitation_content.rs` presentation SQL | framing (`ht-yha.8`) |
+| `queries.rs` inbox_v2 region (private eligibility SQL, unread/receipt arms, thread scope, presentation reconcile), `read_cursors.rs` `RECEIVABLE` | merge (`ht-yha.5.4`) |
+| `delivery/assemble.rs`, `service/mod_channels.rs`, the mod JS | watch/mod (`ht-yha.9`) |
+| CLI (`commands.rs`, `mod.rs`, `journal.rs`, `direct_send.rs`, `wake_on.rs`, `handoff.rs`) | CLI (`ht-yha.7`) |
+
+The integration sweep greps `src`, `integrations` and `migrations`. Tests: a mixed-ACK send (receipt for the explicit
+recipient, delivery rows for the rest; display, completion and wake all work); one p0 row behind more than 1000
+pending p1 rows wakes a T=0 seat (candidate and query plan asserted).
+
+**Wire validators, both mixed-version directions** (cluster C3):
+
+- `MessageDeliveryModes`: the reply struct is `deny_unknown_fields`, so `priority` is returned only when the request
+  sets a new `with_priority` flag (omitted when false); only a client that sees `send.priority_v1` sets it. Old
+  CLIs get the old shape.
+- Send digest: the payload digest covers the request as sent — `priority` is included iff the request carries it.
+  A journaled pre-v47 intent is retried in its original shape (no priority) and the daemon derives priority from its
+  `delivery_mode`. The new client sends `priority` and omits `delivery_mode`; an explicit `delivery_mode: lazy`
+  together with `priority: 0` is refused (`InvalidRequest`). Test: v46-prepared, v47-retried send for both shapes.
+- `--deadline`: the daemon refuses a deadline without explicit ACK recipients from any client (`InvalidRequest`,
+  detail naming `--require-ack`), including an old client's `--nudge --deadline`; the new CLI refuses it before
+  reading the body; help text updated.
+- `DirectThreadEnsured`: an auto-joined pair reports `(AlreadyJoined, no invitation)`, the one no-invitation shape
+  the existing validator accepts, for both new and existing pairs. A journaled pre-upgrade selection that carried an
+  invitation meets a pair created before the upgrade and still reports `ExistingPending` as before.
+- Invitations from human and operator callers: the human-`RequireAck` refusal is dropped for thread invitations;
+  human and operator invitations are recorded confirming with the deadline (they already had deadline and wake as
+  legacy timed invitations). New client, old daemon: `human invite` and `--operator` keep sending today's
+  `confirmation: None`.
+
+**Receipt-path side effects** (cluster C4), assigned explicitly: a human seat named as an explicit ACK recipient gets a
+priority-0 delivery row, not a receipt (humans owe no ACK); the unavailable-recipient warning is kept for priority-0
+sends on the delivery-row path (the sender asked for urgency) and is not produced for priority >= 1; `carry_pending`
+stays receipt-side.
+
 ## Docs and model-visible text
 
 - **AGENTS.md** Delivery contract: 1. Messages default to priority 1 and seats default to T = 0, so a default send
@@ -191,7 +247,7 @@ person-authored "priority"; any version gating.
 
 **NudgeThreshold** — new value type (-1..=9, default 0), the per-seat T (D1)
 - Owns: the single wake predicate "this priority wakes this seat" (`p <= T`; -1 admits all), clamping negative input to -1, and the `wake-on` alias mapping (`all` ↔ -1, `nudge` ↔ 0; other values are not expressible to an old daemon).
-- Hides: the threshold rule; the three sites that branch on `WakeOn` today (`store/attention.rs` wake attention, `store/wake.rs` reservation re-check, `store/queries.rs` per-item `wakes`) all call this predicate or the threshold-aware frontier.
+- Hides: the threshold rule; every wake decision calls this predicate, the threshold-aware frontier, or (for set-based SQL such as `note_published`'s `wake_work` insert, `has_wake_rows`, `oldest_pending_at`) the store-side SQL fragment owned with the seat threshold store API — the full reader list is in §Legacy readers.
 - Must not: be cached or frozen at send (D2); every wake/`wakes` decision reads the seat's current value.
 - Relationships: `src/protocol` leaf; `store::seats` reads/writes it; `lazy_delivery::wake_frontier` takes it as input.
 - Errors: an old-daemon-inexpressible value → client error with an upgrade hint; out of range → `InvalidRequest`.
@@ -206,7 +262,7 @@ person-authored "priority"; any version gating.
 **Inbox v2 merge** — new module-level mechanism in `store/queries.rs mod inbox_v2`, replacing `rotate`: a k-way min-head merge over the existing closed `Source` enum
 - Owns: each step, peeking the head of every unfinished source (one `LIMIT 1` seek each, counted against `CANDIDATE_LIMIT`) and emitting the smallest `DeliveryOrderKey`, within the existing row/byte/work bounds; a work-limited page ends with a continuation, never a false `empty`.
 - Hides: head peeking and resume-after-key; callers (inbox text/JSON/machine, `delivery_pull`, `hook_inbox`, accept's thread-scoped display) still see one ordered page.
-- Must not: apply the publication filter before the seek (2026-10-07 bounded-walk rule), or decide settlement (the settle path keeps display/ACK).
+- Must not: walk an unbounded unpublished backlog (2026-10-07 bounded-walk rule): delivery rows carry the publication bound inside their partial-index seek, the other sources filter after their seek; or decide settlement (the settle path keeps display/ACK).
 - Relationships: `Source` stays a closed enum with `match` (fixed kinds, growing operations: peek-head, resume-after-key, done); each arm delegates to its source's seek (delivery rows, unread, receipts, invitations, warnings).
 - Lifecycle: per request; state round-trips through `InboxBatchV2CursorState`.
 

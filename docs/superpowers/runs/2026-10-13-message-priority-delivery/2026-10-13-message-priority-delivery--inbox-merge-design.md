@@ -46,8 +46,9 @@ priority, decision_seq, ordinal) WHERE state='pending' AND decision_seq IS NOT N
 row at publication (`note_published`) and backfilled by the migration, so "published and not past the captured
 high water" is `decision_seq IS NOT NULL AND decision_seq <= dh` inside the seek — no unpublished row is ever
 visited, which strictly improves the 2026-10-07 bounded-walk rule. The seek resumes with `(priority,
-decision_seq, ordinal) > last` and `LIMIT 1`. Binding-scoped readers keep their post-seek unread/display filter
-(each rejected candidate costs one visit, as today). Considered and discarded: keeping the ordinal walk and
+decision_seq, ordinal) > last` and `LIMIT 1`. Binding-scoped readers keep their post-seek unread/display filter, which also excludes rows marked
+displayed for that binding in `binding_row_displays` (root spec §Delivery model, Ordering; each rejected candidate costs one
+visit, as today). Considered and discarded: keeping the ordinal walk and
 sorting a window (a p0 row behind a large p1 backlog would be invisible until the backlog drains — the exact
 case priority exists for).
 
