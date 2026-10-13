@@ -5164,6 +5164,130 @@ fn no_foreground_match_means_no_composer_wake() {
     }
 }
 
+/// [`composer_wake_among`] for a wake reserved for `reasons`, decided by `check`.
+fn composer_wake_for(
+    targets: Vec<crate::ports::WakeTarget>,
+    foreground: &[u32],
+    reasons: &[&str],
+    check: &dyn ReservationCheck,
+) -> (WakeOutcome, Vec<SafeWakeTarget>) {
+    let clock = FakeClock(AtomicU64::new(0));
+    let context = HostCallContext {
+        budget: CallBudget {
+            deadline: MonoInstant(5_000),
+            cancellation: Cancellation::default(),
+        },
+        expected_boot: Some(HostBootId::new("boot")),
+        expected_epoch: Some(1),
+    };
+    let mut reservation = test_reservation();
+    reservation.reasons = reasons.iter().map(|reason| (*reason).into()).collect();
+    reservation.authority = ReservedWakeAuthority::Cooperative {
+        targets,
+        terminal: TerminalId::new("terminal"),
+        incarnation: "incarnation".into(),
+        binding_generation: None,
+        harness: Some("codex".into()),
+    };
+    let mut observation = fresh_observation();
+    observation.occupant = None;
+    observation.ui = HostUiState::Idle;
+    observation.occupancy = StructuralOccupancy::Unknown;
+    observation.execution = ExecutionEvidence::Unknown;
+    let host = CooperativeRecordingHost {
+        observation,
+        prompted: std::sync::Mutex::new(vec![]),
+        foreground: foreground.to_vec(),
+    };
+    let outcome = NativeWakeDispatcher::new(&host, check, &clock)
+        .attempt_wake(reservation, &context)
+        .unwrap();
+    let prompted = host.prompted.lock().unwrap().clone();
+    (outcome, prompted)
+}
+
+/// Every binding is owed the wake except `served` (shown the items inside its own turn).
+struct ServedReservationCheck {
+    served: &'static [&'static str],
+}
+impl ReservationCheck for ServedReservationCheck {
+    fn is_current(&self, _: &WakeReservation, _: &CallBudget) -> Result<bool, ApiError> {
+        Ok(true)
+    }
+    fn owes_wake(
+        &self,
+        _: &WakeReservation,
+        binding: Option<&crate::protocol::ids::BindingId>,
+        _: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(binding.is_none_or(|binding| !self.served.contains(&binding.as_str())))
+    }
+}
+
+/// The three plain-call bindings Main's Codex held on 2026-10-13 (ht-327): its TUI session and
+/// two `/side` conversations the same process forked, all fingerprinting the one foreground pid.
+fn one_process_bindings() -> Vec<crate::ports::WakeTarget> {
+    vec![
+        binding_target("main", "codex", Some(10)),
+        binding_target("side1", "codex", Some(10)),
+        binding_target("side2", "codex", Some(10)),
+    ]
+}
+
+/// Kills: the ht-327 dead end. An idle Codex whose process holds several connected top-level
+/// bindings (a session and its `/side` forks) was refused `unsafe` on every retry, so a nudge's
+/// receipt went overdue with the recipient never prompted. Seat-level attention is shown to
+/// whichever binding of that one process takes the next turn: type once into its composer.
+#[test]
+fn composer_wake_types_once_into_one_process_holding_several_bindings() {
+    let owed = ServedReservationCheck { served: &[] };
+    for reasons in [
+        &["pending_receipt"][..],
+        &["pending_invitation"],
+        &["actionable_warning"],
+        &["pending_receipt", "lazy"],
+    ] {
+        let (outcome, prompted) = composer_wake_for(one_process_bindings(), &[10], reasons, &owed);
+        assert_eq!(outcome, WakeOutcome::Submitted, "{reasons:?}");
+        assert_eq!(prompted.len(), 1, "{reasons:?}: one composer, one wake");
+        assert_eq!(prompted[0].bound_harness.as_deref(), Some("codex"));
+    }
+}
+
+/// Kills: widening the one-process rule past what it is sound for. Mail a binding has not read
+/// is that binding's own (a stale `/side` fork never reads again), so a wake for unread mail
+/// alone still needs a unique binding; two harnesses on one pid are not one composer; a process
+/// that is not in the foreground is no match.
+#[test]
+fn one_process_composer_wake_stays_refused_outside_seat_attention() {
+    let owed = ServedReservationCheck { served: &[] };
+    let (outcome, prompted) = composer_wake_for(one_process_bindings(), &[10], &["lazy"], &owed);
+    assert_eq!(outcome, WakeOutcome::Refused(RefusalCause::Unsafe));
+    assert!(prompted.is_empty());
+    let mixed = vec![
+        binding_target("a", "codex", Some(10)),
+        binding_target("b", "claude", Some(10)),
+    ];
+    let (outcome, prompted) = composer_wake_for(mixed, &[10], &["pending_receipt"], &owed);
+    assert_eq!(outcome, WakeOutcome::Refused(RefusalCause::Unsafe));
+    assert!(prompted.is_empty());
+    let (outcome, prompted) =
+        composer_wake_for(one_process_bindings(), &[99], &["pending_receipt"], &owed);
+    assert_eq!(outcome, WakeOutcome::Refused(RefusalCause::Unsafe));
+    assert!(prompted.is_empty());
+}
+
+/// Kills: a stale fork binding forcing an after-turn nudge (delivery contract rule 4). One
+/// binding of the process served in its turn means the process was shown the items.
+#[test]
+fn one_process_served_in_turn_by_any_binding_owes_no_wake() {
+    let served = ServedReservationCheck { served: &["main"] };
+    let (outcome, prompted) =
+        composer_wake_for(one_process_bindings(), &[10], &["pending_receipt"], &served);
+    assert_eq!(outcome, WakeOutcome::Refused(RefusalCause::Unavailable));
+    assert!(prompted.is_empty());
+}
+
 /// Kills: a composer wake lost because the pane's foreground is a set: `codex` installed with
 /// npm runs a `node` launcher (20) and the native `codex` child (21, the harness process the
 /// binding fingerprints) in one foreground process group (ht-54r.89, evidence/ht-54r.89).

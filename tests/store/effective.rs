@@ -450,6 +450,56 @@ fn overdue_manifest_receipt_gets_sparse_marker_and_one_warning_atomically() {
     );
 }
 
+/// Kills: an overdue receipt warning that hides whether the recipient was ever prompted
+/// (ht-327: Main's idle Codex was refused `unsafe` on every wake and its sender saw only
+/// "overdue"). The warning carries the seat's latest native wake outcome since the send, and
+/// `none` when no wake completed after it (an earlier attempt is not this message's).
+#[test]
+fn overdue_receipt_warning_carries_the_recipients_wake_disposition() {
+    use crate::ports::TimeBasis;
+    use crate::protocol::{
+        authority::ObligationRef,
+        ids::{MessageId, SeatId},
+        time::UtcMillis,
+    };
+    for (completed_at, outcome, wake, detail) in [
+        (1100, Some("unsafe"), "unsafe", "last wake unsafe"),
+        (1100, Some("submitted"), "submitted", "last wake submitted"),
+        (900, Some("unsafe"), "none", "no native wake recorded"),
+        (1100, None, "none", "no native wake recorded"),
+    ] {
+        let mut db = fixture();
+        db.execute_batch("INSERT INTO messages(instance_id,id, thread_id, sequence, kind, body, decision_at, decision_seq) VALUES ('i','m', 't', 1, 'ordinary', 'body', 1000, 10); UPDATE threads SET next_sequence=2 WHERE id='t'; INSERT INTO send_manifests(instance_id,preparation_id, message_id, thread_id, decision_seq, decision_at, base_sequence, interval_high_water, recipient_count, warning_count) VALUES ('i','p', 'm', 't', 10, 1000, 1, 0, 1, 0); INSERT INTO seat_availability(seat_id, decision_seq, decision_at, binding_generation, observation_provenance) VALUES ('s', 11, 1200, 1, 'verified'); UPDATE host_instances SET decision_seq=11 WHERE id='i';").unwrap();
+        db.execute(
+            "INSERT INTO wake_work(seat_id,reason_bits,completed_at_utc,last_outcome) VALUES ('s',1,?1,?2)",
+            rusqlite::params![completed_at, outcome],
+        )
+        .unwrap();
+        let tx = db.transaction().unwrap();
+        let warning = schema::record_overdue_if_pending(
+            &tx,
+            &ObligationRef::Receipt {
+                message: MessageId::new("m"),
+                seat: SeatId::new("s"),
+            },
+            &TimeBasis::Decision,
+            UtcMillis(1500),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let payload: String = db
+            .query_row(
+                "SELECT event_json FROM messages WHERE id=?1",
+                [warning.warning.unwrap().as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(payload["wake"], wake, "{completed_at} {outcome:?}");
+        assert_eq!(payload["detail"], detail, "{completed_at} {outcome:?}");
+    }
+}
+
 #[test]
 fn persisted_overdue_transition_stays_actionable_until_offered_after_human_check_in() {
     use crate::ports::TimeBasis;

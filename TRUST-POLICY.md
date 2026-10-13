@@ -11,6 +11,8 @@ Amended 2026-10-12 for the text accept's thread-scoped opening-mail display (ht-
 ordinary stop and, with a live mod channel, by a bounded channel grace.
 Amended 2026-10-12 for the consented Codex pane environment block (foreground configuration only; no seat,
 binding, receipt or attribution rule changes).
+Amended 2026-10-13 for the one-process composer wake (ht-327): several bindings of one process share its
+composer for seat-level attention; no binding is chosen, merged, moved or ended.
 
 ## Abstract
 
@@ -398,7 +400,13 @@ model open work, and summary closure never changes receipt state or installs glo
   reports the pane idle. Membership is exact pid equality: an ancestor or descendant of a foreground
   process is not a match. No match, several matches, no fingerprint or no foreground report means no composer wake, with
   no fallback to the latest claim or touch, even for a seat with one target (nothing is guessed, and the
-  refusal is pre-send so the reminder ladder does not climb). Only a reservation that names no targets
+  refusal is pre-send so the reminder ladder does not climb). One exception (ht-327): several matching targets
+  with the same fingerprint pid and harness are bindings of one process (a plain-call-only group the
+  same-process rule leaves connected, such as the in-process `/side` sessions of a Codex TUI), and a wake for
+  seat-level attention (an invitation, receipt or warning, or a receipt's soft-deadline poke) types once into
+  that process's composer: the item reaches whichever of its bindings takes the turn, so no binding is
+  chosen. It is owed only while every binding of the process is owed (one served in its turn served the
+  process), and a wake for unread mail alone, which is each binding's own, still needs a unique match. Only a reservation that names no targets
   (a legacy source) keeps the single-harness rule. A soft poke follows the same targets and rule.
   *Served in-turn* (ht-705, A8): a target that was shown every pending receipt (or invitation) the wake is
   reserved for inside its own turn is owed no wake for it; the seat-level candidate drops those items only

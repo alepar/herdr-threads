@@ -257,7 +257,8 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         // process is the pane's foreground process; with several targets also only when Herdr
         // reports the pane idle. No unique match, no composer wake; never a guess.
         let mut composer_harness: Option<String> = None;
-        let mut composer_binding: Option<crate::protocol::ids::BindingId> = None;
+        // The bindings the composer wake reaches: one, or every binding of one process.
+        let mut composer_bindings: Vec<crate::protocol::ids::BindingId> = Vec::new();
         if cooperative && !reservation.authority.targets().is_empty() {
             if reservation.authority.targets().len() > 1
                 && !poke_only
@@ -275,9 +276,18 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             match reservation.authority.composer_choice(&foreground) {
                 ComposerChoice::Binding(chosen) => {
                     composer_harness = Some(chosen.harness.clone());
-                    composer_binding = Some(chosen.binding.clone());
+                    composer_bindings.push(chosen.binding.clone());
                 }
-                ComposerChoice::NoMatch | ComposerChoice::Unspecified => {
+                // One process holding several bindings (ht-327): seat-level attention reaches
+                // whichever of them takes the turn; unread mail is a binding's own, so it still
+                // needs a unique binding.
+                ComposerChoice::Process(group) if reservation.for_seat_attention() => {
+                    composer_harness = Some(group[0].harness.clone());
+                    composer_bindings.extend(group.iter().map(|t| t.binding.clone()));
+                }
+                ComposerChoice::Process(_)
+                | ComposerChoice::NoMatch
+                | ComposerChoice::Unspecified => {
                     return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
                 }
             }
@@ -370,17 +380,25 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             Ok(false) => return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe),
             Err(err) => return refuse_error(err),
         }
-        // A wake (not a scheduled poke) reaches one binding; one served in its turn owes no idle
-        // wake (delivery contract rule 4). Nothing is sent; an unserved sibling keeps the seat's
-        // wake reserved for the next attempt.
+        // A wake (not a scheduled poke) reaches one binding, or one process; one served in its
+        // turn owes no idle wake (delivery contract rule 4), and any binding of the process
+        // served means the process was shown the items. Nothing is sent; an unserved sibling
+        // keeps the seat's wake reserved for the next attempt.
         if !poke_only {
-            match self
-                .check
-                .owes_wake(&reservation, composer_binding.as_ref(), &context.budget)
-            {
-                Ok(true) => {}
-                Ok(false) => return refuse(RefusalCause::Unavailable, WakeOutcome::Unavailable),
-                Err(err) => return refuse_error(err),
+            let reached: Vec<Option<&crate::protocol::ids::BindingId>> =
+                if composer_bindings.is_empty() {
+                    vec![None]
+                } else {
+                    composer_bindings.iter().map(Some).collect()
+                };
+            for binding in reached {
+                match self.check.owes_wake(&reservation, binding, &context.budget) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        return refuse(RefusalCause::Unavailable, WakeOutcome::Unavailable);
+                    }
+                    Err(err) => return refuse_error(err),
+                }
             }
         }
         if context.budget.is_exhausted(self.clock) {
@@ -421,15 +439,17 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                     } => *binding_generation,
                     ReservedWakeAuthority::RecoveryHint { .. } => None,
                 };
-                // Only the binding being woken counts: the composer's chosen binding, else the reservation's targets.
-                let targets: Vec<crate::protocol::ids::BindingId> = match &composer_binding {
-                    Some(chosen) => vec![chosen.clone()],
-                    None => reservation
+                // Only the bindings being woken count: the composer's chosen ones, else the reservation's targets.
+                let targets: Vec<crate::protocol::ids::BindingId> = if composer_bindings.is_empty()
+                {
+                    reservation
                         .authority
                         .targets()
                         .iter()
                         .map(|target| target.binding.clone())
-                        .collect(),
+                        .collect()
+                } else {
+                    composer_bindings.clone()
                 };
                 if generation
                     .is_some_and(|g| self.hook_pull.holds_parked(&reservation.seat, &targets, g))

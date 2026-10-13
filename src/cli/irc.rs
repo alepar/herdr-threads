@@ -645,8 +645,11 @@ fn system_text(summary: &MessageSummary, lookup: &mut dyn Lookup) -> String {
         } else {
             "ACK"
         };
+        let wake = field(&event, "detail")
+            .map(|detail| format!(" ({detail})"))
+            .unwrap_or_default();
         return format!(
-            "warning: {} is overdue on an {what}",
+            "warning: {} is overdue on an {what}{wake}",
             seat_nick(&event, "seat", lookup)
         );
     }
