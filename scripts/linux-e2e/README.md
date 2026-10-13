@@ -59,7 +59,10 @@ writing to it, so pid reuse cannot hide a stale one). `clean` (no flag) touches 
 volumes, its stale env-file dirs and the unused dangling runner images it built (builds carry the worktree
 label); `clean --all` removes every object with the
 shared label, including containers someone started by hand from the image (they inherit its label). Images built
-before a5fb8d75 carry no worktree label, so only `clean --all` removes them (or `docker rmi <id>`). This is fail-safe, not resumable: a host that sleeps, or a runner suspended with Ctrl-Z, for longer than the
+before a5fb8d75 carry no worktree label, so only `clean --all` removes them (or `docker rmi <id>`). A freshly built image
+that a concurrent build has since untagged is dangling but carries this worktree's label, so a concurrent default
+`clean` in this worktree (or any `clean --all`) can remove it between the build and `docker run <id>`; that run then
+fails loudly (no other image ever runs in its place): rerun it. This is fail-safe, not resumable: a host that sleeps, or a runner suspended with Ctrl-Z, for longer than the
 lease (60 s) stops a live run too. Lease renewal failures are counted in `runner.json` (`lease`) and logged in
 `host/lease.log`.
 
@@ -73,7 +76,8 @@ stopped container is kept, and its name and a `docker cp` recovery command print
 `evidence_copy`, `kept_container`, `container_removed: false`), when the watchdog's exit code (0 from its stop trap,
 3 from a lapsed lease) proves it stopped everything else and verified the scrub first; otherwise the container is removed and the
 evidence is reported lost. A container that vanished after it started (removed or killed outside the run) is
-also exit 3: its evidence is gone. A later run of the worktree saves a kept container's evidence under `leftovers/`.
+also exit 3: its evidence is gone. A kept container stays stopped until this worktree's next run (which moves its
+evidence to `leftovers/` and removes it) or `clean`; recover its evidence with the printed `docker cp` first. A later run of the worktree saves a kept container's evidence under `leftovers/`.
 
 ## Subcommands
 
