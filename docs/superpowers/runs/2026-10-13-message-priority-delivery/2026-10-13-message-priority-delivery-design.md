@@ -73,7 +73,8 @@ tiebreak **(source rank, per-source ordinal)** so the order is total and stable 
 - *created*: the publication `decision_seq` (messages, invitations, warning publications). It is the
   instance-wide, monotonic counterpart of `created_at`; wall-clock `created_at` is not used for ordering because
   it can step backwards.
-- *source rank*: invitations, warnings, receipts, delivery rows (0..3); *per-source ordinal*: the row's ordinal.
+- *source rank*: invitations 0, warnings 1, receipts and pre-upgrade binding-unread ordinary rows 2 (those
+  legacy rows are p0, deadline from their receipt if any), delivery rows 3; *per-source ordinal*: the row's ordinal.
 
 Inbox v2 stops round-robin rotation between sources and instead, each step, peeks the head of every unfinished
 source (one indexed `LIMIT 1` seek per source, each counted against `CANDIDATE_LIMIT`) and emits the smallest key;
@@ -106,8 +107,8 @@ in arrival order.
   metadata query (`MessageDeliveryModesQuery` gains `priority`).
 - **Hook pages** (`delivery_pull`, `hook_inbox`, agy, Hermes): order as above; framing per D8.
 - **Watch stream and Claude mod**: `WatchMessage` gains `priority` and `deadline_at`; `wakes` is computed by the daemon against the
-  seat's T. The mod sorts each batch it frames (wake and passive) by (priority, arrival) before framing, so one
-  injection is in priority order; arrival across separate batches stays arrival order.
+  seat's T. The mod sorts each batch it frames (wake and passive) by the ordering key (arrival breaks the final tie)
+  before framing, so one injection is in order; separate batches stay in arrival order.
 - **Attention digest**: the lazy class becomes the delivery-row class; the token keeps its `v2` spelling (the lazy
   key is now the newest pending delivery row).
 - **Direct pairs** (D7): `resolve_direct_pair` writes the peer's joined membership, membership interval, read
@@ -168,6 +169,60 @@ in arrival order.
 
 Per-thread thresholds; priority on invitations or warnings other than 0; changing the summary/catch-up notion of
 person-authored "priority"; any version gating.
+
+## Key abstractions
+
+**DeliveryPriority** — new value type (newtype over u8, 0..=9), a message's immutable notification priority
+- Owns: the range check, the default (1), the fixed p0 for invitations, ACK requests and actionable warnings, the legacy mapping both ways (`ordinary` ↔ 0, `lazy` ↔ 1; p >= 1 → `lazy` with the lossy-downgrade flag for an old daemon), and the `[p<N>]` marker (only when N != 1).
+- Hides: the numeric encoding and the D10 legacy derivation; old-wire derivation, client fallback and the v47 backfill all use this one mapping, so `DeliveryMode` is never matched to decide anything.
+- Must not: decide wake (NudgeThreshold does), or create receipts/deadlines (D9: send preparation does, for explicit ACK recipients only).
+- Relationships: leaf in `src/protocol`; store, CLI, delivery and watch depend on it; the digest and frozen intent serialize it.
+- Lifecycle: plain `Copy` value, parsed at the CLI/wire boundary, read from `messages.priority`.
+- Errors: out of range → `InvalidRequest` before any body is read; an out-of-range stored value → `StoreCorrupt`.
+
+**NudgeThreshold** — new value type (-1..=9, default 0), the per-seat T (D1)
+- Owns: the single wake predicate "this priority wakes this seat" (`p <= T`; -1 admits all), clamping negative input to -1, and the `wake-on` alias mapping (`all` ↔ -1, `nudge` ↔ 0; other values are not expressible to an old daemon).
+- Hides: the threshold rule; the three sites that branch on `WakeOn` today (`store/attention.rs` wake attention, `store/wake.rs` reservation re-check, `store/queries.rs` per-item `wakes`) all call this predicate or the threshold-aware frontier.
+- Must not: be cached or frozen at send (D2); every wake/`wakes` decision reads the seat's current value.
+- Relationships: `src/protocol` leaf; `store::seats` reads/writes it; `lazy_delivery::wake_frontier` takes it as input.
+- Errors: an old-daemon-inexpressible value → client error with an upgrade hint; out of range → `InvalidRequest`.
+
+**DeliveryOrderKey** — new value type with a total `Ord`, the presentation order of one pending item
+- Owns: the tuple (priority asc, deadline asc with none last, publication `decision_seq` asc, source rank, per-source ordinal), the source-rank table (invitations 0, warnings 1, receipts and pre-upgrade binding-unread ordinary rows 2, delivery rows 3), and its continuation encoding.
+- Hides: the "no deadline last" rule and the stable tiebreak; no caller compares these fields by hand.
+- Must not: run queries; each source's indexed seek yields rows in key order, the key only compares heads.
+- Relationships: shared by the inbox v2 merge (store), the watch batch sort (delivery assemble/page) and the cursor (`protocol/pagination`); the mod's JS sort mirrors it, checked against shared golden fixtures as `frame()` is today.
+- Lifecycle: built per candidate row; the last emitted key persists only in the cursor token.
+
+**Inbox v2 merge** — new module-level mechanism in `store/queries.rs mod inbox_v2`, replacing `rotate`: a k-way min-head merge over the existing closed `Source` enum
+- Owns: each step, peeking the head of every unfinished source (one `LIMIT 1` seek each, counted against `CANDIDATE_LIMIT`) and emitting the smallest `DeliveryOrderKey`, within the existing row/byte/work bounds; a work-limited page ends with a continuation, never a false `empty`.
+- Hides: head peeking and resume-after-key; callers (inbox text/JSON/machine, `delivery_pull`, `hook_inbox`, accept's thread-scoped display) still see one ordered page.
+- Must not: apply the publication filter before the seek (2026-10-07 bounded-walk rule), or decide settlement (the settle path keeps display/ACK).
+- Relationships: `Source` stays a closed enum with `match` (fixed kinds, growing operations: peek-head, resume-after-key, done); each arm delegates to its source's seek (delivery rows, unread, receipts, invitations, warnings).
+- Lifecycle: per request; state round-trips through `InboxBatchV2CursorState`.
+
+**InboxBatchV2CursorState** — extended: the last emitted key plus captured high waters replace the rotation pointer.
+**lazy_delivery (delivery rows)** — extended: rows for every audience member except explicit ACK recipients, humans included, each with `priority` and a copied publication `decision_seq`; `wake_frontier` becomes "newest pending row admitted by T", the one function both `wake_seat_attention` and the `store/wake.rs` re-check call.
+**settle::ModeFact** — extended: chosen by which row the (message, seat) actually has (receipt or delivery row), not by `delivery_mode`.
+**FrameItem / frame() (Rust and JS)** — extended: carries priority; kind word always `message`; `[p<N>]` from `DeliveryPriority` (D8).
+**WatchMessage** — extended: gains `priority` and `deadline_at`; the daemon computes `wakes` via `NudgeThreshold`.
+**resolve_direct_pair** — extended: writes the peer's join (membership, interval, cursor init, event) through one join-recording helper shared with the caller's join (the same inserts are duplicated at 5 sites in `store/control.rs` today); `EnsureCreationPolicy` is ignored (D7).
+**Send-priority resolution (CLI)** — extended into one function shared by `send`, `send --seat`, `human send` and handoff: `-p`/`--nudge` conflict, `--require-ack` forces p0 and refuses explicit p > 0 (D3), `--deadline` needs ACK recipients, old-daemon downgrade.
+
+Variation: fixed source kinds with growing operations → closed `Source` enum in `mod inbox_v2`; legacy wire/storage spellings → mapping functions on `DeliveryPriority` and `NudgeThreshold` (the one place D10 lives); who performs the wake stays `HarnessAdapter`/`DeliveryPolicy` (contract rule 6), nothing per-harness added.
+Walk-through: `send -p 3` → `DeliveryPriority(3)` frozen in the intent → audience delivery rows with priority 3 and copied `decision_seq` → `wake_seat_attention` → `wake_frontier` filtered by `NudgeThreshold` (T=0: no wake; T=3: one reserved wake) → hook page via the merge in `DeliveryOrderKey` order, framed `[p3]` → mod sorts the batch by the same key. Per-thread thresholds (out of scope) would touch one effective-threshold lookup and the two call sites that read it; predicate, merge and framing unchanged.
+Per spec §Compatibility: `delivery_mode`, `wake_on` and `confirmation` stay written but never read for decisions — except stored `confirmation='lazy'` on pre-upgrade invitations, which keeps them non-waking and deadline-free.
+Per spec §Delivery model (Wake): invitations, explicit ACK receipts and actionable warnings stay unconditional wake sources rather than calling `NudgeThreshold`; equivalent because they are p0.
+
+Digest:
+- DeliveryPriority: owns range, default, fixed-p0 classes, legacy mode mapping and the `[pN]` marker;
+  new legacy spellings are added only here; callers never match on `DeliveryMode` to decide anything.
+- NudgeThreshold: owns the `p <= T` wake predicate and the `wake-on` alias mapping;
+  per-thread overrides go into the code that looks it up; callers never compare priority against T inline.
+- DeliveryOrderKey: owns the total presentation order and source ranks;
+  a new pending-item source gets a rank here; callers never sort pending items by individual fields.
+- Inbox v2 merge: owns the min-head merge across sources under the work bound;
+  a new source is one `Source` arm with peek and resume; callers never interleave sources themselves.
 
 ## Post-Implementation Notes
 
