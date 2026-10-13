@@ -1,0 +1,135 @@
+   Compiling libc v0.2.189
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling version_check v0.9.5
+   Compiling find-msvc-tools v0.1.9
+   Compiling typenum v1.20.1
+   Compiling serde_core v1.0.229
+   Compiling shlex v2.0.1
+   Compiling vcpkg v0.2.15
+   Compiling utf8parse v0.2.2
+   Compiling pkg-config v0.3.33
+   Compiling anstyle-parse v1.0.0
+   Compiling anstyle v1.0.14
+   Compiling cc v1.3.0
+   Compiling getrandom v0.4.3
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling generic-array v0.14.7
+   Compiling cfg-if v1.0.4
+   Compiling anstyle-query v1.1.5
+   Compiling foldhash v0.2.0
+   Compiling colorchoice v1.0.5
+   Compiling zmij v1.0.23
+   Compiling anstream v1.0.0
+   Compiling hashbrown v0.16.1
+   Compiling clap_lex v1.1.0
+   Compiling serde v1.0.229
+   Compiling strsim v0.11.1
+   Compiling hashbrown v0.17.1
+   Compiling errno v0.3.14
+   Compiling equivalent v1.0.2
+   Compiling syn v3.0.2
+   Compiling syn v2.0.119
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling winnow v1.0.4
+   Compiling serde_json v1.0.151
+   Compiling heck v0.5.0
+   Compiling digest v0.10.7
+   Compiling indexmap v2.14.0
+   Compiling hashlink v0.11.1
+   Compiling signal-hook-registry v1.4.8
+   Compiling clap_builder v4.6.2
+   Compiling cpufeatures v0.2.17
+   Compiling mio v1.2.2
+   Compiling socket2 v0.6.5
+   Compiling libsqlite3-sys v0.37.0
+   Compiling bytes v1.12.1
+   Compiling fallible-iterator v0.3.0
+   Compiling pin-project-lite v0.2.17
+   Compiling itoa v1.0.18
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling toml_parser v1.1.2+spec-1.1.0
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling bitflags v2.13.1
+   Compiling smallvec v1.15.2
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling memchr v2.8.3
+   Compiling uuid v1.24.0
+   Compiling sha2 v0.10.9
+   Compiling unicode-width v0.2.2
+   Compiling toml_edit v0.25.13+spec-1.1.0
+   Compiling tokio-macros v2.7.1
+   Compiling serde_derive v1.0.229
+   Compiling clap_derive v4.6.4
+   Compiling tokio v1.53.1
+   Compiling clap v4.6.4
+   Compiling rusqlite v0.39.0
+   Compiling herdr-threads v0.10.0 (/home/tester/work/ht)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 58s
+  Executable tests/integration.rs (target/debug/deps/integration-1a257e150629b3bd)
+=== herdr 0.9.1 (herdr-linux-aarch64) ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
+     Running tests/integration.rs (target/debug/deps/integration-1a257e150629b3bd)
+
+running 1 test
+herdr 0.9.1: release smoke passed
+test herdr_release_smoke::herdr_release_smoke ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 236 filtered out; finished in 26.03s
+
+=== herdr 0.9.2 (herdr-linux-aarch64) ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running tests/integration.rs (target/debug/deps/integration-1a257e150629b3bd)
+
+running 1 test
+herdr 0.9.2: release smoke passed
+test herdr_release_smoke::herdr_release_smoke ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 236 filtered out; finished in 26.14s
+
+=== herdr 0.9.3 (herdr-linux-aarch64) ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running tests/integration.rs (target/debug/deps/integration-1a257e150629b3bd)
+Traceback (most recent call last):
+  File "/home/tester/work/ht/scripts/check-no-leaked-processes", line 231, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/tester/work/ht/scripts/check-no-leaked-processes", line 204, in main
+    leaks = scan(root, args.run_id, args.exclude)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tester/work/ht/scripts/check-no-leaked-processes", line 183, in scan
+    procs = collect()
+            ^^^^^^^^^
+  File "/home/tester/work/ht/scripts/check-no-leaked-processes", line 142, in collect
+    for line in _run(["lsof", "-a", "-d", "cwd", "-u", str(os.getuid()), "-Fpn"]).splitlines():
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tester/work/ht/scripts/check-no-leaked-processes", line 112, in _run
+    return subprocess.run(argv, capture_output=True, text=True, check=False).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 548, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 1026, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+  File "/usr/lib/python3.12/subprocess.py", line 1955, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'lsof'
+
+running 1 test
+herdr 0.9.3: release smoke passed
+test herdr_release_smoke::herdr_release_smoke ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 236 filtered out; finished in 25.81s
+
+Herdr release smoke at 057d94f on herdr-linux-aarch64
+
+| Herdr | Result | Time | Detail |
+| --- | --- | --- | --- |
+| 0.9.1 | PASS | 27.7s |  |
+| 0.9.2 | PASS | 27.5s |  |
+| 0.9.3 | PASS | 26.9s |  |
+
+Leak check: LEAKS (see above)
+smoke rc=1

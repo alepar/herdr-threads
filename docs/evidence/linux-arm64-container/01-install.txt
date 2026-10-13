@@ -1,0 +1,26 @@
+herdr-threads: warning: Linux support is EXPERIMENTAL and unvalidated: the plugin manifest declares macOS only,
+herdr-threads: warning: and the host incarnation witness is macOS-only, so Linux runs degraded (Unknown incarnation).
+herdr-threads: downloading herdr-threads-linux-aarch64.tar.gz (v0.10.0) from file:///home/tester/rel/download/v0.10.0
+herdr-threads: checksum verified (a667042805f7dab95a02f9be0a54eba9a049c5cceb5e120000645c0a6b8eb405)
+herdr-threads: installed 0.10.0 into /home/tester/.local/share/herdr-threads
+herdr-threads: linked /home/tester/.local/bin/herdr-threads -> /home/tester/.local/share/herdr-threads/bin/herdr-threads
+herdr-threads: linked /home/tester/.local/bin/ht -> /home/tester/.local/share/herdr-threads/bin/herdr-threads
+herdr-threads: linked the plugin into Herdr (herdr plugin link /home/tester/.local/share/herdr-threads)
+herdr-threads: daemon is running (Herdr action ensure)
+integrations: skipped (no supported harness found on PATH)
+
+Next steps:
+  - ht is available on PATH: ht skill; ht follow. The agent skill is named $herdr-threads.
+  - Check it: herdr-threads doctor
+  - Try it: in a Herdr shell pane run herdr-threads human me init, then follow https://github.com/alepar/herdr-threads#try-it-yourself
+  - Linux is EXPERIMENTAL and unvalidated; please report problems.
+installed and linked: herdr-threads 0.10.0
+install rc=0
+total 8
+drwxr-xr-x 2 tester tester 4096 Oct 12 21:53 .
+drwxr-xr-x 5 tester tester 4096 Oct 12 21:53 ..
+lrwxrwxrwx 1 tester tester   57 Oct 12 21:53 herdr-threads -> /home/tester/.local/share/herdr-threads/bin/herdr-threads
+lrwxrwxrwx 1 tester tester   57 Oct 12 21:53 ht -> /home/tester/.local/share/herdr-threads/bin/herdr-threads
+1 plugin installed:
+- herdr-threads (Threads) enabled [local:/home/tester/.local/share/herdr-threads]
+  config: /home/tester/.config/herdr/plugins/config/herdr-threads

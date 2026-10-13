@@ -1,0 +1,32 @@
+npm WARN EBADENGINE Unsupported engine {
+npm WARN EBADENGINE   package: '@anthropic-ai/claude-code@2.1.296',
+npm WARN EBADENGINE   required: { node: '>=22.0.0' },
+npm WARN EBADENGINE   current: { node: 'v18.19.1', npm: '9.2.0' }
+npm WARN EBADENGINE }
+
+changed 3 packages in 3s
+### re-run installer setup now that harnesses are on PATH
+herdr-threads: warning: Linux support is EXPERIMENTAL and unvalidated: the plugin manifest declares macOS only,
+herdr-threads: warning: and the host incarnation witness is macOS-only, so Linux runs degraded (Unknown incarnation).
+herdr-threads: downloading herdr-threads-linux-aarch64.tar.gz (v0.10.0) from file:///home/tester/rel/download/v0.10.0
+herdr-threads: checksum verified (a667042805f7dab95a02f9be0a54eba9a049c5cceb5e120000645c0a6b8eb405)
+herdr-threads: 0.10.0 is already installed in /home/tester/.local/share/herdr-threads
+herdr-threads: Herdr already has the plugin linked from /home/tester/.local/share/herdr-threads
+herdr-threads: daemon is running (Herdr action ensure)
+claude hooks: installed
+  warning: Foreground user settings required. herdr-threads requires each managed agent to remain in its pane: a shared harness server may run hooks/tools with its own pane environment instead of the TUI environment used for seat attribution. Setup inspects user settings only and never changes foreground settings. User settings and launch arguments are not proof of execution; project/managed settings, environment, and wrapper behavior may override them. Set disableAgentView to true in Claude's user settings.json (merge {"disableAgentView":true} into the existing object), or set env.CLAUDE_CODE_DISABLE_AG
+claude skill: installed
+claude permissions: installed
+codex hooks: installed
+  warning: Foreground user settings required. herdr-threads requires each managed agent to remain in its pane: a shared harness server may run hooks/tools with its own pane environment instead of the TUI environment used for seat attribution. Setup inspects user settings only and never changes foreground settings. User settings and launch arguments are not proof of execution; project/managed settings, environment, and wrapper behavior may override them. Codex 0.160.1 has no persistent user config/environment opt-out for daemon attachment. features.daemon_auto_start = false prevents automatic startup only
+  Codex runs hooks from hooks.json only once you trust them. The next interactive `codex` start lists the new hooks as needing review (or open /hooks); trusting them makes Codex record each hook's hash in config.toml [hooks.state] under the key `<hooks.json>:<event>:<group>:<hook>`. That is how Herdr's own hooks.json entry is trusted: Herdr writes the hook, Codex's review records the trust. setup never writes trust. `codex exec` cannot review: trust once interactively, or (scratch only) pass --dangerously-bypass-hook-trust. Editing or moving a trusted group asks for review again
+codex skill: installed
+codex permissions: installed
+
+Next steps:
+  - ht is available on PATH: ht skill; ht follow. The agent skill is named $herdr-threads.
+  - Check it: herdr-threads doctor
+  - Try it: in a Herdr shell pane run herdr-threads human me init, then follow https://github.com/alepar/herdr-threads#try-it-yourself
+  - Linux is EXPERIMENTAL and unvalidated; please report problems.
+installed and linked: herdr-threads 0.10.0
+install rc=0

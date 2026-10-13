@@ -83,9 +83,19 @@ check 'follow-on dispatch: ubuntu-24.04 x86_64 install layout, tier 0' follow_ha
 check 'follow-on dispatch: since-verified --bisect on the real registry' follow_has 'since-verified --bisect'
 check 'follow-on dispatch: live gh issue filing step' follow_has 'file_issues\.py|issue filing'
 
-# README: the Linux link is unverified until the follow-on rehearsal.
-readme_linux() { grep -iE 'linux' README.md | grep -iE 'unverified' | grep -qiE 'rehearsal'; }
-check 'README: Linux link unverified until the follow-on rehearsal' readme_linux
+# README: Linux is experimental, and the line names what is still unverified there
+# (x86_64 and agent harness sessions); only the exercised arm64 link is claimed.
+readme_linux() { grep -iE 'linux' README.md | grep -iE 'experimental' | grep -iE 'unverified' | grep -iE 'x86_64' | grep -iE 'harness sessions' | grep -qiE 'rehearsal'; }
+check 'README: Linux experimental, x86_64 and harness sessions unverified, rehearsal linked' readme_linux
+# No claim that Linux x86_64 or harness sessions were verified or exercised. Checked per
+# clause: the README's Linux paragraph is one line that also says "unverified". (install.md
+# and release.md phrase their limits as "not verified"/"only", which this pattern cannot tell
+# from a claim.)
+readme_no_linux_overclaim() { ! grep -iE 'linux' README.md | awk '{gsub(/[;.] /,"\n")}1' | grep -iE 'x86_64|harness sessions' | grep -iE 'verified|exercised|passes' | grep -qviE 'unverified'; }
+check 'README: no Linux x86_64 or harness-session overclaim' readme_no_linux_overclaim
+# The installer never returns to the false macOS-only manifest/witness warning.
+install_no_stale_linux() { ! grep -qE 'declares macOS only|Unknown incarnation' scripts/install.sh; }
+check 'install.sh: no stale macOS-only Linux warning' install_no_stale_linux
 
 if [ "$fails" -ne 0 ]; then
   printf 'DOCS_TEST_FAIL %d check(s) failed\n' "$fails"

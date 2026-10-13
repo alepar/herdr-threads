@@ -677,6 +677,45 @@ case_partial_setup_failure() {
     mx_expect "uninstall afterwards exits 0" [ "$status" = 0 ]
 }
 
+# --- Linux platform messages -------------------------------------------------
+# A uname stand-in reports Linux, so the installer takes its Linux branch on any
+# host; the fake Linux archive carries this host's binary. No Herdr server.
+linux_case() { # ARCH [HERDR] -> output in $out, status in $status
+    local lr="$root/linux-$1${2:+-alt}" larch=$1
+    mkdir -p "$lr/tools" "$lr/home" "$lr/rel/download/v0.1.0"
+    if [ -n "${2:-}" ]; then ln -s "$2" "$lr/tools/herdr"; fi
+    # shellcheck disable=SC2016 # the stand-in's own "$1" and "$@"
+    printf '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo %s ;; *) for u in /usr/bin/uname /bin/uname; do [ -x "$u" ] && exec "$u" "$@"; done ;; esac\n' \
+        "$larch" > "$lr/tools/uname"
+    chmod 755 "$lr/tools/uname"
+    TMPDIR="$root" "$repo/scripts/package-release.sh" --binary "$binary" --os linux --arch "$larch" \
+        --version 0.1.0 --out "$lr/rel/download/v0.1.0" --third-party "$root/THIRD_PARTY_LICENSES.html" >/dev/null
+    (cd "$lr/rel/download/v0.1.0" && printf '%s  %s\n' "$(sha256 "herdr-threads-linux-$larch.tar.gz")" \
+        "herdr-threads-linux-$larch.tar.gz" > SHA256SUMS)
+    set +e
+    (cd "$root/cwd" && "${run_env[@]}" "HOME=$lr/home" "FAKE_HERDR_DIR=$lr" \
+        "PATH=$lr/tools:$tools:/usr/bin:/bin:/usr/sbin:/sbin" bash "$repo/scripts/install.sh" \
+        --release-url "file://$lr/rel" --version v0.1.0 --no-setup < /dev/null > "$out" 2>&1)
+    status=$?
+    set -e
+}
+for larch in aarch64 x86_64; do
+    linux_case "$larch"
+    expect "linux $larch: installs and links" [ "$status" = 0 ]
+    expect "linux $larch: final status line" [ "$(last_line)" = "installed and linked: herdr-threads 0.1.0" ]
+    expect "linux $larch: no stale macOS-only manifest or witness claim" \
+        bash -c "! grep -qE 'declares macOS only|Unknown incarnation|unvalidated' '$out'"
+    expect "linux $larch: names the exercised scope" has "exercised on Linux aarch64 only"
+    expect "linux $larch: names x86_64 and harness sessions unverified" \
+        has "Linux x86_64, upgrade, uninstall and agent harness sessions on Linux are unverified"
+    expect "linux $larch: next step keeps the experimental note" \
+        has "Linux is experimental (x86_64 and agent harness sessions unverified)"
+done
+linux_case aarch64 "$root/refusing-herdr"
+expect "linux refused link: exits 3" [ "$status" = 3 ]
+expect "linux refused link: says Herdr refused, without a stale unverified claim" \
+    has "the manifest declares Linux, but Herdr refused the link; Herdr's error is in the status below"
+
 for name in fresh_install_herdr_up fresh_install_herdr_down fresh_install_herdr_absent fresh_install_no_herdr \
     upgrade_herdr_up upgrade_with_herdr_down upgrade_herdr_absent upgrade_no_herdr \
     uninstall_herdr_up uninstall_herdr_down uninstall_herdr_absent uninstall_no_herdr partial_setup_failure; do
