@@ -9,6 +9,7 @@ import shutil
 import stat
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -1240,6 +1241,139 @@ class Redaction(TempDir):
             r.record({"case": "invite/group", "recipient": "cl-nudge", "wake_on": "nudge", "result": "FAIL",
                       "checks": {"error": "startup: ... ANTHROPIC_API_KEY: sk-ant-...0123456789abcdefghij"}})
         self.assertNotIn("0123456789abcdefghij", json.dumps(r.results))
+
+
+# Dummy credentials with distinctive tails: no 4-character window of a tail occurs in ordinary evidence text.
+BOUNDARY_KEY = "sk-ant-api03-dummyBoundaryKey-Qz7Xw9Vk2Lp4Rt8Ny6Mb3Hj5"
+BOUNDARY_TOKEN = "dummy-oauth-Jq4Wz8Pv1Ks6Tn3Yr0Ux5Hm7"
+
+
+def leaked_windows(text, secrets=(BOUNDARY_KEY, BOUNDARY_TOKEN)):
+    """Every 4-character window of a dummy credential's 20-character tail that survives in text."""
+    return sorted({s[-20:][i:i + 4] for s in secrets for i in range(17) if s[-20:][i:i + 4] in text})
+
+
+class RedactBeforeCrop(TempDir):
+    """A credential tail straddling a crop boundary (4096 in commands.jsonl, 400 in result rows and tails, the
+    shorter diagnostic crops) leaves no fragment: text is redacted whole before it is bounded."""
+
+    def setUp(self):
+        super().setUp()
+        self.env = Env(ANTHROPIC_API_KEY=BOUNDARY_KEY, CLAUDE_CODE_OAUTH_TOKEN=BOUNDARY_TOKEN)
+        self.env.__enter__()
+        self.addCleanup(self.env.__exit__)
+
+    def run_obj(self):
+        d = Path(tempfile.mkdtemp(dir=self.tmp))
+        r = real_run(d)
+        r.secrets = W.secret_values(os.environ)
+        r.results, r.ev = [], d
+        self.cmdlog_dir = d
+        return r
+
+    def test_command_log_crop_at_4096(self):
+        r = self.run_obj()
+        for secret in (BOUNDARY_KEY, BOUNDARY_TOKEN):
+            code = ("import sys; t=sys.argv[1]; sys.stdout.write('a'*4090 + t); sys.stderr.write('b'*4086 + t)")
+            r.run([sys.executable, "-I", "-c", code, secret[-20:]], tag="boundary")
+        r.cmdlog.close()
+        log = (self.cmdlog_dir / "commands.jsonl").read_text()
+        rows = [json.loads(line) for line in log.splitlines()]
+        self.assertTrue(all(len(x["stdout"]) <= 4096 and len(x["stderr"]) <= 4096 for x in rows))
+        self.assertTrue(all(x["stdout"].startswith("a" * 4000) for x in rows))  # diagnostics kept
+        self.assertEqual(leaked_windows(json.dumps([x["stdout"] + x["stderr"] for x in rows])), [])
+
+    def failing_recipient(self, r, where):
+        rec = W.Recipient(r, "cl-nudge", "claude", "nudge", "w1:p2", "sAAAAAAAA")
+        r.herdr = lambda *a, **k: {"raw": ""}
+
+        def boom(*a, **k):
+            raise RuntimeError("x" * 390 + BOUNDARY_KEY[-20:] + " " + "y" * 382 + BOUNDARY_TOKEN[-20:])
+        if where == "start":
+            rec.start = boom
+        else:
+            rec.start = lambda: None
+            rec.case = boom
+        return rec
+
+    def test_result_row_crop_at_400(self):
+        import contextlib
+        import io
+        for where in ("start", "case"):
+            r = self.run_obj()
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.failing_recipient(r, where).run_cases(["invite/group"])
+            self.assertEqual(len(r.results), 1)
+            error = r.results[0]["checks"]["error"]
+            self.assertTrue(len(error) <= 420 and "xxxxxxxxxx" in error, error)
+            self.assertEqual(leaked_windows(json.dumps(r.results) + out.getvalue()), [], where)
+
+    def test_screen_tail_crop_at_400(self):
+        r = self.run_obj()
+        screen = BOUNDARY_KEY[-20:] + "\n" + "y" * 385
+        r.herdr = lambda *a, **k: {"raw": screen}
+        tail = W.Recipient(r, "cl-nudge", "claude", "nudge", "w1:p2", "sAAAAAAAA").tail()
+        self.assertTrue(len(tail) <= 400 and tail.endswith("y" * 300))
+        self.assertEqual(leaked_windows(tail), [])
+
+    def test_helper_error_crops(self):
+        r = self.run_obj()
+        out = "o" * 290 + BOUNDARY_KEY[-20:]
+        r.run = lambda argv, **kw: (1, out, "")
+        r.bin, r.state, r.endpoint = "/fake/ht", self.tmp / "state", "/fake/sock"
+        for call in (lambda: r.ht("daemon", "health"), lambda: r.herdr("workspace", "list")):
+            with self.assertRaises(RuntimeError) as ctx:
+                call()
+            self.assertEqual(leaked_windows(str(ctx.exception)), [])
+
+    def test_cleanup_scan_error_crop(self):
+        f = FakeRun(self.tmp)
+        f.r.secrets = W.secret_values(os.environ)
+        f.script["pgrep"] = lambda: (3, "", "e" * 95 + BOUNDARY_TOKEN[-20:])
+        problems = f.r.cleanup()
+        self.assertTrue(problems)
+        self.assertEqual(leaked_windows(json.dumps([problems, f.r.cleanup_report])), [])
+
+
+class EvidenceSinks(TempDir):
+    """Every persisted or printed evidence sink is redacted: facts, cleanup report, rows, report.md, stderr."""
+
+    def setUp(self):
+        super().setUp()
+        self.saved = {k: getattr(W.Run, k) for k in ("preflight", "scratch", "layout", "cleanup")}
+        self.addCleanup(lambda: [setattr(W.Run, k, v) for k, v in self.saved.items()])
+        self.roots = []
+        self.addCleanup(lambda: [shutil.rmtree(p, True) for p in self.roots])
+
+    def test_cleanup_error_with_a_credential_never_reaches_a_sink(self):
+        import contextlib
+        import io
+
+        def preflight(run):
+            self.roots.append(run.root)
+            run.facts = {"run_id": run.run_id, "versions": {"claude": "2.1.296 " + BOUNDARY_KEY[-20:]}}
+
+        def layout(run):
+            recipient = SimpleNamespace(name="cl-nudge")
+            recipient.run_cases = lambda cases: [run.record(dict(row("cl-nudge", c), checks={})) for c in cases]
+            run.recipients = [recipient]
+
+        def cleanup(run):
+            problem = f"owned-process scan failed: pgrep rc=3 {BOUNDARY_KEY} / {BOUNDARY_TOKEN[-20:]}"
+            run.cleanup_report = {"steps": [{"daemon_stop_error": BOUNDARY_TOKEN}], "problems": [problem]}
+            return [problem]
+        W.Run.preflight, W.Run.scratch, W.Run.layout, W.Run.cleanup = preflight, lambda run: None, layout, cleanup
+        ev = self.tmp / "ev"
+        with Env(ANTHROPIC_API_KEY=BOUNDARY_KEY, CLAUDE_CODE_OAUTH_TOKEN=BOUNDARY_TOKEN), \
+                contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = W.main(["--harness", "claude", "--cases", "invite/group", "--evidence-dir", str(ev)])
+        self.assertEqual(rc, W.EXIT_FAIL)
+        self.assertIn("cleanup incomplete", err.getvalue())
+        for name, text in (("results.json", (ev / "results.json").read_text()),
+                           ("report.md", (ev / "report.md").read_text()),
+                           ("stdout", out.getvalue()), ("stderr", err.getvalue())):
+            self.assertEqual(leaked_windows(text), [], name)
+            self.assertNotIn(BOUNDARY_TOKEN, text, name)
 
 
 class CodexStartOrder(unittest.TestCase):

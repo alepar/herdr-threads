@@ -185,6 +185,13 @@ def redact(text, secrets=()):
     return SECRET_PATTERN.sub("<redacted>", text)
 
 
+def clip(text, n, secrets=None, tail=False):
+    """Bounded diagnostic text: redacted whole first (a credential cut by the crop would leave an unrecognizable
+    fragment), then its first (or, with tail, last) n characters. secrets None: this process's environment."""
+    text = redact(str(text), secret_values(os.environ) if secrets is None else secrets)
+    return text[-n:] if tail else text[:n]
+
+
 def claude_scratch_state(cwd, env):
     """The `.claude.json` keys a scratch CLAUDE_CONFIG_DIR needs so Claude Code opens straight at its composer
     (measured on 2.1.296, scripts/wake_e2e_fixtures/): onboarding done (it holds the theme picker and the login
@@ -303,10 +310,11 @@ class Run:
                 self.children.discard(p)
         out, err = out or "", err or ""
         with self.lock:
+            secrets = getattr(self, "secrets", ())
             self.cmdlog.write(redact(json.dumps({"utc": utc(), "tag": tag, "argv": argv, "rc": rc,
                                                  "elapsed_s": round(time.monotonic() - started, 3),
-                                                 "stdout": out[:4096], "stderr": err[:4096]}),
-                                     getattr(self, "secrets", ())) + "\n")
+                                                 "stdout": clip(out, 4096, secrets),
+                                                 "stderr": clip(err, 4096, secrets)}), secrets) + "\n")
             self.cmdlog.flush()
         if self.stopping.is_set() and not cleanup:  # cut off by the drain: the case is interrupted, not failed
             raise Stopped(f"cleanup interrupted {argv[:3]}")
@@ -329,13 +337,13 @@ class Run:
         full = [self.bin] + (argv + prefix if argv[:1] == ["setup"] else (["human"] if human else []) + prefix + argv)
         rc, out, err = self.run(full, env=e, timeout=timeout, tag=tag or "ht:" + " ".join(argv[:2]))
         if check and rc != 0:
-            raise RuntimeError(f"herdr-threads {' '.join(argv[:3])}: rc={rc} {(err or out).strip()[:300]}")
+            raise RuntimeError(f"herdr-threads {' '.join(argv[:3])}: rc={rc} {clip((err or out).strip(), 300, getattr(self, "secrets", None))}")
         return out
 
     def herdr(self, *argv, tag=None, timeout=30, check=True):
         rc, out, err = self.run(["herdr", *argv], tag=tag or "herdr:" + " ".join(argv[:2]), timeout=timeout)
         if check and rc != 0:
-            raise RuntimeError(f"herdr {' '.join(argv[:3])}: rc={rc} {(err or out).strip()[:300]}")
+            raise RuntimeError(f"herdr {' '.join(argv[:3])}: rc={rc} {clip((err or out).strip(), 300, getattr(self, "secrets", None))}")
         try:
             return json.loads(out) if out.strip() else {}
         except ValueError:
@@ -366,7 +374,7 @@ class Run:
         versions = {}
         for name, argv in (("herdr", ["herdr", "--version"]), ("herdr-threads", [self.bin, "--version"]),
                            *((h, [h, "--version"]) for h in self.args.harness)):
-            versions[name] = self.run(argv, tag="version")[1].strip()[:120]
+            versions[name] = clip(self.run(argv, tag="version")[1].strip(), 120, getattr(self, "secrets", None))
         sha = self.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], tag="git")[1].strip()
         dirty = bool(self.run(["git", "-C", str(REPO), "status", "--porcelain"], tag="git")[1].strip())
         self.facts = {"run_id": self.run_id, "sha": sha, "dirty": dirty, "versions": versions,
@@ -426,7 +434,7 @@ class Run:
                       tag="seat:resolve", timeout=30)
         seat = first_id(out, "s")
         if not seat:
-            raise RuntimeError(f"seat resolve {pane}: no seat id in {out[:200]}")
+            raise RuntimeError(f"seat resolve {pane}: no seat id in {clip(out, 200, getattr(self, "secrets", None))}")
         return seat
 
     def layout(self):
@@ -442,7 +450,7 @@ class Run:
             out = self.ht("me", "init", pane=pane, human=True, tag=f"coordinator:{role}:me-init")
             seat = first_id(out, "s")
             if not seat:
-                raise RuntimeError(f"me init {pane}: no seat id in {out[:200]}")
+                raise RuntimeError(f"me init {pane}: no seat id in {clip(out, 200, getattr(self, "secrets", None))}")
             self.coords[role] = {"pane": pane, "seat": seat}
         self.recipients = []
         for h in self.args.harness:
@@ -499,25 +507,25 @@ class Run:
                 self.workspace = self.workspace_by_label()
                 steps.append({"workspace_found_by_label": self.workspace})
             except Exception as e:
-                problems.append(f"workspace {self.workspace_label()}: create outcome not verified: {str(e)[:200]}")
+                problems.append(f"workspace {self.workspace_label()}: create outcome not verified: {clip(e, 200, getattr(self, "secrets", None))}")
         if self.workspace:
             try:
                 rc = self.run(["herdr", "workspace", "close", self.workspace], tag="cleanup:workspace", timeout=30,
                               cleanup=True)[0]
                 steps.append({"workspace_close_rc": rc})
             except Exception as e:  # keep going: the daemon is ours too
-                steps.append({"workspace_close_error": str(e)[:200]})
+                steps.append({"workspace_close_error": clip(e, 200, getattr(self, "secrets", None))})
             try:
                 if self.workspace_alive():
                     problems.append(f"workspace {self.workspace} still open after close")
             except Exception as e:
-                problems.append(f"workspace {self.workspace}: closure not verified: {str(e)[:200]}")
+                problems.append(f"workspace {self.workspace}: closure not verified: {clip(e, 200, getattr(self, "secrets", None))}")
         if self.daemon_attempted:
             try:
                 rc = self.run_rc("daemon", "stop", timeout=30)
                 steps.append({"daemon_stop_rc": rc})
             except Exception as e:
-                steps.append({"daemon_stop_error": str(e)[:200]})
+                steps.append({"daemon_stop_error": clip(e, 200, getattr(self, "secrets", None))})
             end = time.time() + self.stop_deadline_s
             healthy = True
             while True:
@@ -539,7 +547,7 @@ class Run:
                 leftover = self.owned_processes()
             except Exception as e:  # a failed scan is unknown, never "nothing left"
                 leftover = None
-                scan_error = str(e)[:200]
+                scan_error = clip(e, 200, getattr(self, "secrets", None))
             if leftover == [] or time.time() >= end:
                 break
             time.sleep(0.5)
@@ -633,7 +641,7 @@ class Run:
         if rc == 1:  # pgrep: no process matched
             return []
         if rc != 0:
-            raise RuntimeError(f"pgrep rc={rc} {err.strip()[:100]}")
+            raise RuntimeError(f"pgrep rc={rc} {clip(err.strip(), 100, getattr(self, 'secrets', None))}")
         return [int(p) for p in out.split() if p.isdigit() and int(p) != os.getpid()]
 
     def run_rc(self, *argv, timeout=10):
@@ -749,7 +757,8 @@ class Recipient:
 
     def tail(self):
         text = self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
-        return " | ".join(l.strip() for l in text.splitlines() if l.strip())[-400:]
+        return clip(" | ".join(l.strip() for l in text.splitlines() if l.strip()), 400,
+                    getattr(self.run, "secrets", None), tail=True)
 
     def watch_for_wake(self, window):
         t0 = time.time()
@@ -1076,13 +1085,13 @@ class Recipient:
                     break
                 except Exception as e:  # a driver or agent error fails the case, never passes it
                     self.run.record({"case": case, "harness": self.harness, "wake_on": self.wake_on,
-                                     "recipient": self.name, "result": "FAIL", "checks": {"error": str(e)[:400]}})
+                                     "recipient": self.name, "result": "FAIL", "checks": {"error": clip(e, 400, getattr(self.run, "secrets", None))}})
         except Stopped:
             pass
         except Exception as e:
             for case in cases:
                 self.run.record({"case": case, "harness": self.harness, "wake_on": self.wake_on,
-                                 "recipient": self.name, "result": "FAIL", "checks": {"error": f"startup: {str(e)[:400]}"}})
+                                 "recipient": self.name, "result": "FAIL", "checks": {"error": "startup: " + clip(e, 400, getattr(self.run, "secrets", None))}})
         finally:
             try:
                 (self.run.ev / f"pane-{self.name}.txt").write_text(
@@ -1146,10 +1155,13 @@ def write_evidence(run, rc):
         results = list(run.results)
     doc = {"facts": facts, "completeness": getattr(run, "completeness", None), "cleanup": run.cleanup_report,
            "results": results}
-    (run.ev / "results.json").write_text(json.dumps(doc, indent=2))
-    (run.ev / "report.md").write_text(
+    # One redaction pass over each whole document: facts (versions, flags) and cleanup diagnostics carry helper text.
+    secrets = getattr(run, "secrets", None)
+    secrets = secret_values(os.environ) if secrets is None else secrets
+    (run.ev / "results.json").write_text(redact(json.dumps(doc, indent=2), secrets))
+    (run.ev / "report.md").write_text(redact(
         f"# wake e2e {run.run_id}\n\n```json\n{json.dumps(facts, indent=2)}\n```\n\n{getattr(run, 'table', '')}\n\n"
-        f"cleanup: `{json.dumps(run.cleanup_report)}`\n\nexit code: {rc}\n")
+        f"cleanup: `{json.dumps(run.cleanup_report)}`\n\nexit code: {rc}\n", secrets))
 
 
 def main(argv=None):
@@ -1215,7 +1227,7 @@ def main(argv=None):
                     w.join(timeout=0.5)
         rc = EXIT_OK if summary(run, cases) else EXIT_FAIL
     except Refused as e:
-        print(f"wake-e2e: refused: {e}", file=sys.stderr)
+        print(redact(f"wake-e2e: refused: {e}", secret_values(os.environ)), file=sys.stderr)
         rc = EXIT_REFUSED
     except BaseException as e:  # including KeyboardInterrupt: cleanup still runs and the run fails
         print(redact(f"wake-e2e: aborted: {e!r}", secret_values(os.environ)), file=sys.stderr)
@@ -1230,7 +1242,8 @@ def main(argv=None):
             problems = [f"cleanup raised: {e!r}"]
             run.cleanup_report = {"problems": problems}
         if problems:
-            print("wake-e2e: cleanup incomplete: " + "; ".join(problems), file=sys.stderr)
+            print(redact("wake-e2e: cleanup incomplete: " + "; ".join(problems), secret_values(os.environ)),
+                  file=sys.stderr)
             rc = EXIT_FAIL
         write_evidence(run, rc)
         print(f"evidence: {run.ev} (exit {rc})", flush=True)
