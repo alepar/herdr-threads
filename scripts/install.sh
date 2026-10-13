@@ -249,7 +249,7 @@ aisw_profile_roots() {
     local home=${AISW_HOME:-$HOME/.aisw} tool dir name listed found
     [ "${aisw_profiles:-1}" = 1 ] || return 0
     # --config-root takes absolute directories: a relative AISW_HOME is resolved, or skipped.
-    home=$(cd "$home" 2>/dev/null && pwd) || return 0
+    home=$(CDPATH= cd -- "$home" 2>/dev/null && pwd) || return 0
     case $home in /*) ;; *) return 0 ;; esac
     [ -d "$home/profiles" ] || return 0
     case $("$installed_binary" internal installer-integrations --help 2>/dev/null || true) in
@@ -780,7 +780,7 @@ EOF_ROOTS
     # A user-level step: run from a neutral directory, so the directory the installer happens
     # to run from (for example $HOME, whose .codex Codex would read as a project layer) is not
     # mistaken for a project.
-    if (cd / && "$installed_binary" internal installer-integrations ${integration_arg:+"$integration_arg"} \
+    if (CDPATH= cd -- / && "$installed_binary" internal installer-integrations ${integration_arg:+"$integration_arg"} \
         ${permission_arg:+"$permission_arg"} ${root_args[@]+"${root_args[@]}"}); then
         OUT_SETUP=complete
     else

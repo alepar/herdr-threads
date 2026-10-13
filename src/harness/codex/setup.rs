@@ -768,15 +768,18 @@ fn shared_rules(
     permissions: &CodexPermissions,
 ) -> Result<Option<SharedRules>, RunError> {
     let home = codex_root(env).ok_or_else(|| invalid("neither CODEX_HOME nor HOME is set"))?;
-    let Some(canonical) = lib::shared_through_symlink(home, permissions.rules_file())? else {
-        return Ok(None);
-    };
+    let rules = permissions.rules_file();
     let canonical_of = |file: &Path| {
         Some(
             lib::canonical_path(file.parent()?)
                 .ok()?
                 .join(file.file_name()?),
         )
+    };
+    let Some(canonical) = lib::shared_through_symlink(home, rules)? else {
+        return Ok(
+            managed_elsewhere(env, rules, &canonical_of)?.map(|owner| SharedRules::Owned { owner })
+        );
     };
     let mut owners: Vec<(PathBuf, PathBuf)> =
         lib::manifests_of_kind(env.state_dir()?, "codex-permissions")
@@ -790,7 +793,10 @@ fn shared_rules(
     if let Some((file, manifest)) = owners.into_iter().next() {
         return Ok(Some(
             match CodexPermissions::at(file.clone(), manifest).status() {
-                Ok(CodexPermissionState::Installed) => SharedRules::Owned { owner: file },
+                // A record of this very link path names the real file instead.
+                Ok(CodexPermissionState::Installed) => SharedRules::Owned {
+                    owner: if file == rules { canonical } else { file },
+                },
                 Ok(CodexPermissionState::Missing) => SharedRules::Missing { canonical },
                 _ => SharedRules::Unowned { canonical },
             },
@@ -805,6 +811,38 @@ fn shared_rules(
             SharedRules::Unowned { canonical }
         },
     ))
+}
+
+/// A rules file reached without a symbolic link and with no record of its own, that a record
+/// made through another root's link (an earlier release recorded the link path) manages, installed
+/// and unedited: the recorded path. Never adopted or migrated; this root writes and removes nothing.
+fn managed_elsewhere(
+    env: &SetupEnv,
+    rules: &Path,
+    canonical_of: &dyn Fn(&Path) -> Option<PathBuf>,
+) -> Result<Option<PathBuf>, RunError> {
+    let state = env.state_dir()?;
+    if fs::symlink_metadata(manifest_path(state, "codex-permissions", rules)).is_ok()
+        || fs::symlink_metadata(rules).is_err()
+    {
+        return Ok(None);
+    }
+    let Some(canonical) = canonical_of(rules) else {
+        return Ok(None);
+    };
+    Ok(lib::manifests_of_kind(state, "codex-permissions")
+        .into_iter()
+        .filter_map(|manifest| {
+            let file = CodexPermissions::recorded_file(&manifest)?;
+            (file != rules && canonical_of(&file).as_ref() == Some(&canonical))
+                .then_some((file, manifest))
+        })
+        .find(|(file, manifest)| {
+            CodexPermissions::at(file.clone(), manifest.clone())
+                .status()
+                .is_ok_and(|state| state == CodexPermissionState::Installed)
+        })
+        .map(|(file, _)| file))
 }
 
 /// The permission component's report: a shared rules file's when it is one.

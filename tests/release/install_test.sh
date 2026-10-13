@@ -723,7 +723,7 @@ expect "linux refused link: says Herdr refused, without a stale unverified claim
 # the cases above are untouched; the stub server is down (no daemon).
 aisw_case() { # ARGS -> output in $out, status in $status; env from aisw_env
     set +e
-    (cd "${aisw_cwd:-$root/cwd}" && "${run_env[@]}" "HOME=$ah" "FAKE_HERDR_DIR=$root/aisw-herdr" \
+    (CDPATH= cd -- "${aisw_cwd:-$root/cwd}" && "${run_env[@]}" "HOME=$ah" "FAKE_HERDR_DIR=$root/aisw-herdr" \
         "PATH=$root/aisw-tools:$tools:/usr/bin:/bin:/usr/sbin:/sbin" ${aisw_env[@]+"${aisw_env[@]}"} \
         bash "$repo/scripts/install.sh" --release-url "file://$rel" --version v0.1.0 "$@" < /dev/null > "$out" 2>&1)
     status=$?

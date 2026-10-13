@@ -1513,4 +1513,49 @@ fn a_legacy_record_of_a_shared_rules_path_never_writes_through_the_link() {
     .expect("setup --without-permissions in the profile");
     assert_eq!(declined["permissions"]["state"], "shared", "{declined}");
     assert_eq!(fs::read(&real).unwrap(), bytes);
+    // The profile names the real file, not its own link path.
+    let real_canonical = crate::harness::setup::canonical_path(&real).unwrap();
+    assert_eq!(
+        status["managed_at"],
+        json!(real_canonical.display().to_string()),
+        "{status}"
+    );
+
+    // The default root holds the real file with no record of its own: managed by the profile's
+    // record, so it is reported, never adopted, written, removed or advised away.
+    let default_manifest = setup::manifest_path(&state, "codex-permissions", &real);
+    let status = crate::harness::codex::setup::permission_status_json(&f.env);
+    assert_eq!(status["state"], "shared", "{status}");
+    assert_eq!(
+        status["managed_at"],
+        json!(lexical.display().to_string()),
+        "{status}"
+    );
+    let granted = setup::execute(
+        &codex_request(SetupVerb::Install, PermissionPolicy::Grant),
+        &f.env,
+    )
+    .expect("setup codex --with-permissions in the default root");
+    assert_eq!(granted["permissions"]["state"], "shared", "{granted}");
+    let installer = execute(&f.env, true, false, |_| panic!("explicit consent"));
+    let permissions = installer["integrations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["harness"] == "codex" && e["component"] == "permissions")
+        .unwrap()
+        .clone();
+    assert_eq!(permissions["outcome"], "shared", "{installer}");
+    assert!(!installer.to_string().contains("remove it"), "{installer}");
+    let removed = setup::execute(
+        &codex_request(SetupVerb::Remove, PermissionPolicy::Ask),
+        &f.env,
+    )
+    .expect("unsetup in the default root");
+    assert_eq!(removed["permissions"]["state"], "shared", "{removed}");
+    assert_eq!(fs::read(&real).unwrap(), bytes);
+    assert!(
+        !default_manifest.exists(),
+        "no record adopted for the default root"
+    );
 }
