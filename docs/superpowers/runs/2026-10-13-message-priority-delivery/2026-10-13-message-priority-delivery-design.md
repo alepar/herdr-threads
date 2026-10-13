@@ -129,7 +129,19 @@ in arrival order.
 - **New client, old daemon**: p0 → `ordinary`, p >= 1 → `lazy` (the exact priority is lost; the client says so
   once on stderr when N > 1); `nudge-threshold -1|0` → `wake-on all|nudge`, other values refused with an upgrade
   hint; invitations fall back to `require_ack`.
-- **Old client, new daemon**: works through the derivations above.
+- **Old client, new daemon**: works through the derivations above. Reads stay old-readable: the daemon keeps the
+  existing inbox v2 / watch item variants (a delivery row is still the `LazyMessage`/`Lazy` variant with its
+  daemon-computed `wakes`, a receipt is still `Message`) and only adds `priority` (and `deadline_at`) as optional
+  fields, so an old CLI or an already-installed old Claude mod parses and frames them as before, and its
+  `wakes`-driven promotion follows the threshold. The new client frames from variant + priority (D8). An old
+  client's `WakeOnQuery` gets `all` when T < 0, else `nudge`. An old client's lazy `Invite` is recorded as a
+  confirming invitation; an old client's direct send creates an auto-joined pair (its creation policy is ignored).
+- **New client, old daemon, 1:1 pairs**: without `direct.auto_join_v1` the client keeps sending the legacy pair
+  creation policy, so the old daemon's invitation/accept path works unchanged.
+- **Overdue warnings** come only from receipts, which exist only for explicit ACK recipients (D9), so a non-ACK
+  message never produces one; pre-v47 receipts stay owed as recorded.
+- **Person-authored "priority"** (summaries/catch-up `is_priority`, the wake-e2e note) is a separate, unchanged
+  axis; it is not a delivery priority and does not enter `DeliveryOrderKey`.
 - `PROTOCOL_VERSION` does not change.
 
 ## Docs and model-visible text
