@@ -3366,22 +3366,45 @@ fn bump_send_eligibility(db: &Connection, instance: &str) -> Result<(), ApiError
     Ok(())
 }
 
-/// Runs one binding-liveness write (`bindings::connect`, `disconnect`, a
-/// registered enrollment: the writers of a connected registered row) for
-/// `seat` and bumps the seat's instance send fence once exactly when the
-/// seat's staged pair, `effective_registered_availability` (available and
-/// its provenance), differs before and after (shared contract amendment §8;
-/// one row update, no recipient scan). A binding joining or leaving beside
-/// an unchanged available binding (a subagent, a one-shot) refuses no
-/// in-flight send. `write` returns its result and whether it changed a row.
+/// What `messages::stage_recipient` stages for a seat from its bindings: the
+/// receipt's `eligible_at_snapshot` and `availability_provenance`
+/// (`effective_registered_availability`), whether a missing availability is
+/// warned about now or assumed carried (`carry_pending`), and whether an ACK
+/// is expected (`open_binding_role` is not human). Its other inputs are fenced
+/// elsewhere: joined membership and pending invitations (thread membership
+/// revision), the unavailability episode (opened and closed only with an
+/// availability change), duration configuration (its own revision).
+pub(crate) type StagedSeatState = (Option<String>, bool, bool);
+
+pub(crate) fn staged_seat_state(db: &Connection, seat: &str) -> Result<StagedSeatState, ApiError> {
+    let instance: String = db
+        .query_row("SELECT instance_id FROM seats WHERE id=?1", [seat], |r| {
+            r.get(0)
+        })
+        .map_err(store_error)?;
+    Ok((
+        effective_registered_availability(db, seat, None)?,
+        carry_pending(db, seat, &instance)?,
+        open_binding_role(db, &SeatId::new(seat))? == Some("human"),
+    ))
+}
+
+/// Runs one binding write that can change what a send stages for `seat` (a
+/// liveness transition, a registered enrollment, a reopen or placement
+/// refresh, an end) and bumps the seat's instance send fence once exactly
+/// when [`staged_seat_state`] differs before and after (shared contract
+/// amendment §8; constant reads of the seat, at most one row update, no
+/// recipient scan). A binding joining or leaving beside an unchanged
+/// available binding (a subagent, a one-shot) refuses no in-flight send.
+/// `write` returns its result and whether it changed a row.
 pub fn fence_seat_availability<T>(
     db: &Connection,
     seat: &str,
     write: impl FnOnce() -> Result<(T, bool), ApiError>,
 ) -> Result<T, ApiError> {
-    let before = effective_registered_availability(db, seat, None)?;
+    let before = staged_seat_state(db, seat)?;
     let (result, changed) = write()?;
-    if changed && effective_registered_availability(db, seat, None)? != before {
+    if changed && staged_seat_state(db, seat)? != before {
         let instance: String = db
             .query_row("SELECT instance_id FROM seats WHERE id=?1", [seat], |r| {
                 r.get(0)

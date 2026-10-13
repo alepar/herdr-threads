@@ -1707,51 +1707,68 @@ impl SendScenario {
         (eligible, warnings)
     }
 
+    /// The recipient's canonical warning requirement: unavailable and no
+    /// pending carry (it is joined, with no pending invitation).
+    fn warned(&self) -> bool {
+        !self.available() && !self.carry_pending()
+    }
+
+    /// Everything a send stages for the recipient from its bindings:
+    /// availability with its provenance, the pending carry deciding the
+    /// warning, and whether an ACK is expected (a person's binding).
+    fn staged_state(&self) -> (Option<String>, bool, bool) {
+        (
+            crate::store::schema::effective_registered_availability(
+                &self.db,
+                "recipient",
+                Some("i"),
+            )
+            .unwrap(),
+            self.carry_pending(),
+            crate::store::schema::open_binding_role(&self.db, &SeatId::new("recipient")).unwrap()
+                == Some("human"),
+        )
+    }
+
     /// Stage a send with the recipient in its current state, run `change`
     /// between staging and the decision, and decide. The published send must
-    /// match the canonical state after `change`: an available recipient is
-    /// eligible and unwarned, an unavailable one ineligible and warned; and a
-    /// change that flips the staged (availability, provenance) pair must
-    /// refuse the stale preparation once, and one that leaves it unchanged
-    /// must refuse nothing (a decision in one attempt).
-    fn stage_change_decide(&self, label: &str, change: impl FnOnce(&Self)) {
-        let pair = |s: &Self| {
-            crate::store::schema::effective_registered_availability(&s.db, "recipient", Some("i"))
-                .unwrap()
-        };
-        let staged_pair = pair(self);
-        let before = self.available();
+    /// match the canonical state after `change` (eligible when available,
+    /// warned when unavailable with no pending carry); a change of the staged
+    /// state refuses the stale preparation once, and one that leaves it
+    /// unchanged refuses nothing (one attempt). Returns the attempts.
+    fn stage_change_decide(&self, label: &str, change: impl FnOnce(&Self)) -> u32 {
+        let staged = self.staged_state();
         let send = self.request(label);
         self.prepare(&send);
         assert_eq!(
             self.staged_warnings(),
-            i64::from(!before),
-            "{label}: staged with the pre-change availability"
+            i64::from(self.warned()),
+            "{label}: staged with the pre-change state"
         );
         let fences = self.fences();
         change(self);
-        let after = self.available();
+        let (after, warned) = (self.available(), self.warned());
         let (message, attempts) = self.decide_with_retry(send);
         assert_eq!(
             self.published(&message),
             (
                 after,
-                if after {
-                    vec![]
-                } else {
+                if warned {
                     vec!["recipient".to_owned()]
+                } else {
+                    vec![]
                 }
             ),
             "{label}: the published send matches the canonical post-change state (fences at staging {fences:?}, after the change {:?})",
             self.fences()
         );
-        let changed = staged_pair != pair(self);
+        let now = self.staged_state();
         assert_eq!(
             attempts,
-            if changed { 2 } else { 1 },
-            "{label}: refused once exactly when the staged pair changed ({staged_pair:?} -> {:?})",
-            pair(self)
+            if staged != now { 2 } else { 1 },
+            "{label}: refused once exactly when the staged state changed ({staged:?} -> {now:?})"
         );
+        attempts
     }
 }
 
@@ -1936,7 +1953,7 @@ fn subagent_start_and_stop_under_a_connected_parent_refuse_no_send() {
     use crate::protocol::commands::BindingEventKind::{SubagentStart, SubagentStop};
     let scenario = SendScenario::new();
     let sub = subagent_of(&scenario.main);
-    scenario.stage_change_decide("quiet-sub-start", |s| {
+    let attempts = scenario.stage_change_decide("quiet-sub-start", |s| {
         assert_eq!(
             recorded(
                 &s.service,
@@ -1945,7 +1962,8 @@ fn subagent_start_and_stop_under_a_connected_parent_refuse_no_send() {
             1
         );
     });
-    scenario.stage_change_decide("quiet-sub-stop", |s| {
+    assert_eq!(attempts, 1, "quiet-sub-start refuses no in-flight send");
+    let attempts = scenario.stage_change_decide("quiet-sub-stop", |s| {
         assert_eq!(
             recorded(
                 &s.service,
@@ -1954,6 +1972,7 @@ fn subagent_start_and_stop_under_a_connected_parent_refuse_no_send() {
             1
         );
     });
+    assert_eq!(attempts, 1, "quiet-sub-stop refuses no in-flight send");
     assert!(scenario.available());
 }
 
@@ -1965,7 +1984,7 @@ fn subagent_start_and_stop_under_a_connected_parent_refuse_no_send() {
 fn a_one_shot_under_a_live_main_session_refuses_no_send() {
     use crate::protocol::commands::AdvanceCursors;
     let scenario = SendScenario::new();
-    scenario.stage_change_decide("one-shot-enroll", |s| {
+    let attempts = scenario.stage_change_decide("one-shot-enroll", |s| {
         let one_shot = CallerClaim {
             native_session: NativeSessionId::new("recipient-one-shot"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000003"),
@@ -1991,13 +2010,142 @@ fn a_one_shot_under_a_live_main_session_refuses_no_send() {
             "the one-shot enrolled"
         );
     });
-    scenario.stage_change_decide("one-shot-exit", |s| {
+    assert_eq!(attempts, 1, "one-shot-enroll refuses no in-flight send");
+    let attempts = scenario.stage_change_decide("one-shot-exit", |s| {
         assert_eq!(s.liveness_pass(SENDER_AND_MAIN_ALIVE), 1);
     });
+    assert_eq!(attempts, 1, "one-shot-exit refuses no in-flight send");
     let idle = scenario.fences();
     assert_eq!(scenario.liveness_pass(SENDER_AND_MAIN_ALIVE), 0);
     assert_eq!(scenario.fences(), idle, "an idle liveness pass stays quiet");
     assert!(scenario.available());
+}
+
+// Kills a fence that compares availability only: in the C4 window (epoch 2
+// published, pass not run) the recipient's lagging main session is connected,
+// so a send stages it unwarned (carry assumed). Its SessionEnd ends the pending
+// carry while availability stays None; the decision must refuse the stale
+// staging and publish the warning.
+#[test]
+fn a_pending_carry_ending_between_stage_and_decide_publishes_the_warning() {
+    use crate::protocol::commands::BindingEventKind::SessionEnd;
+    let scenario = SendScenario::new();
+    publish_snapshot_at(&scenario.context, 2, 7, &["p", "q"], true);
+    assert!(!scenario.available());
+    assert!(
+        scenario.carry_pending(),
+        "lagging connected main: carry pending"
+    );
+    let attempts = scenario.stage_change_decide("carry-pending-end", |s| {
+        assert_eq!(
+            recorded(
+                &s.service,
+                binding_event(s.main.clone(), SessionEnd, None, "main-end-window")
+            ),
+            1
+        );
+        assert!(!s.carry_pending(), "the ended session is no longer carried");
+    });
+    assert_eq!(attempts, 2);
+}
+
+// Kills a fence around the reconnect alone: a V32-migrated binding (migrated,
+// disconnected `migrated`, stale placement; the shape the migration leaves) is
+// re-adopted by a plain call, which reconnects it and then refreshes its
+// placement. Only the refresh makes the seat available; both must sit inside
+// one fence.
+#[test]
+fn a_readoption_refreshing_a_stale_placement_between_stage_and_decide_is_fenced() {
+    let scenario = SendScenario::new();
+    scenario.db.execute("UPDATE occupant_bindings SET migrated=1, migrated_session=native_session, liveness='disconnected', disconnected_at=1, disconnect_reason='migrated', liveness_pid=NULL, liveness_start=NULL, target_generation=0 WHERE seat_id='recipient'", []).unwrap();
+    assert!(!scenario.available());
+    let attempts = scenario.stage_change_decide("readopt", |s| {
+        let resumed = CallerClaim {
+            liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 4, start: 1 }),
+            ..s.main.clone()
+        };
+        s.service
+            .handle(
+                Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
+                    in_turn: false,
+                    invitations: Vec::new(),
+                    claim: resumed,
+                    operation: OperationId::new("main-readopt"),
+                    displayed: vec![],
+                }),
+                PeerIdentity::from_kernel(501),
+                &budget(),
+            )
+            .unwrap();
+        assert!(s.available(), "the plain call re-adopted the binding");
+    });
+    assert_eq!(attempts, 2);
+}
+
+// Kills the same gap on reopening: after an unresolve (bindings ended
+// `seat_unresolved`) and a rebind (seat generation + 1), the session's plain
+// call reopens its own row, reconnects it and refreshes its placement.
+#[test]
+fn a_plain_reopen_after_a_rebind_between_stage_and_decide_is_fenced() {
+    let scenario = SendScenario::new();
+    scenario.db.execute("UPDATE occupant_bindings SET liveness='disconnected', disconnected_at=1, disconnect_reason='seat_unresolved', ended_at=1 WHERE seat_id='recipient'", []).unwrap();
+    scenario
+        .db
+        .execute(
+            "UPDATE seats SET generation=generation+1 WHERE id='recipient'",
+            [],
+        )
+        .unwrap();
+    assert!(!scenario.available());
+    let attempts = scenario.stage_change_decide("reopen", |s| {
+        let resumed = CallerClaim {
+            liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 4, start: 1 }),
+            binding_generation: s.main.binding_generation + 1,
+            ..s.main.clone()
+        };
+        s.service
+            .handle(
+                Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
+                    in_turn: false,
+                    invitations: Vec::new(),
+                    claim: resumed,
+                    operation: OperationId::new("main-reopen"),
+                    displayed: vec![],
+                }),
+                PeerIdentity::from_kernel(501),
+                &budget(),
+            )
+            .unwrap();
+        assert!(s.available(), "the plain call reopened the binding");
+    });
+    assert_eq!(attempts, 2);
+}
+
+// Pins the Current-mode check-in placement write inside the fence: in the C4
+// window the lagging main session's Current check-in rewrites its placement
+// to the host epoch, making the seat available (and ending the pending
+// carry); a send staged before must be refused once and publish eligible.
+#[test]
+fn a_current_check_in_refreshing_the_placement_between_stage_and_decide_is_fenced() {
+    let scenario = SendScenario::new();
+    publish_snapshot_at(&scenario.context, 2, 7, &["p", "q"], true);
+    assert!(!scenario.available());
+    let attempts = scenario.stage_change_decide("current-check-in", |s| {
+        checked(
+            &s.service,
+            Command::CheckIn(CheckIn {
+                lineage_parent: None,
+                mode: CheckInMode::Current,
+                claim: s.main.clone(),
+                operation: OperationId::new("main-current"),
+            }),
+        );
+        assert!(
+            s.available(),
+            "the Current check-in refreshed the placement"
+        );
+    });
+    assert_eq!(attempts, 2);
 }
 
 // Kills a publication recheck that compares the live send fence after the

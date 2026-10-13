@@ -870,13 +870,21 @@ fn end_binding(
     reason: DisconnectReason,
     now: UtcMillis,
 ) -> Result<(), ApiError> {
-    disconnect(tx, binding, reason, now)?;
-    tx.execute(
-        "UPDATE occupant_bindings SET ended_at=?2 WHERE binding_id=?1 AND ended_at IS NULL",
-        params![binding.as_str(), now.0],
-    )
-    .map_err(store_error)?;
-    Ok(())
+    let Some(seat) = binding_seat(tx, binding)? else {
+        return Ok(());
+    };
+    // Ending changes the seat's open binding role (a person's binding replaced) as well as
+    // liveness: one fence over both.
+    super::schema::fence_seat_availability(tx, &seat, || {
+        disconnect(tx, binding, reason, now)?;
+        let ended = tx
+            .execute(
+                "UPDATE occupant_bindings SET ended_at=?2 WHERE binding_id=?1 AND ended_at IS NULL",
+                params![binding.as_str(), now.0],
+            )
+            .map_err(store_error)?;
+        Ok(((), ended != 0))
+    })
 }
 
 /// Human exclusivity (TRUST-POLICY A4, decision 14): an agent binding enrolled, reconnected or
@@ -1521,15 +1529,20 @@ fn resolve_claim_inner(
             // Re-adoption: the plain-call reconnect of a V32-migrated binding, which also
             // refreshes its placement and seeds `Readopt` cursors (TRUST-POLICY A4). Structural
             // match: the stored session is the claim's key.
-            connect(
-                tx,
-                &existing.binding_id,
-                claim.liveness,
-                ConnectTrigger::Lifecycle,
-                now,
-            )?;
-            let provenance = (existing.role == BindingRole::TopLevel).then_some(top_provenance);
-            refresh_placement(tx, &existing.binding_id, request.placement, provenance)?;
+            // One fence over the reconnect and the placement refresh: with a stale placement
+            // the reconnect alone changes nothing the fence compares; the refresh does.
+            super::schema::fence_seat_availability(tx, key.seat.as_str(), || {
+                connect(
+                    tx,
+                    &existing.binding_id,
+                    claim.liveness,
+                    ConnectTrigger::Lifecycle,
+                    now,
+                )?;
+                let provenance = (existing.role == BindingRole::TopLevel).then_some(top_provenance);
+                refresh_placement(tx, &existing.binding_id, request.placement, provenance)?;
+                Ok(((), true))
+            })?;
             read_cursors::seed(tx, &existing.binding_id, SeedMode::Readopt)?;
             let binding = get(tx, &existing.binding_id)?
                 .ok_or_else(|| corrupt("readopted binding vanished"))?;
@@ -1557,19 +1570,23 @@ fn resolve_claim_inner(
                 reconnected: false,
             });
         }
-        let reconnected = existing.liveness == Liveness::Disconnected
-            && connect(
-                tx,
-                &existing.binding_id,
-                claim.liveness,
-                ConnectTrigger::Lifecycle,
-                now,
-            )?;
-        if !reconnected {
-            touch(tx, &existing.binding_id, claim.liveness, now)?;
-        }
-        let provenance = (existing.role == BindingRole::TopLevel).then_some(top_provenance);
-        refresh_placement(tx, &existing.binding_id, request.placement, provenance)?;
+        // One fence over the reconnect and the placement refresh (see the re-adoption above).
+        let reconnected = super::schema::fence_seat_availability(tx, key.seat.as_str(), || {
+            let reconnected = existing.liveness == Liveness::Disconnected
+                && connect(
+                    tx,
+                    &existing.binding_id,
+                    claim.liveness,
+                    ConnectTrigger::Lifecycle,
+                    now,
+                )?;
+            if !reconnected {
+                touch(tx, &existing.binding_id, claim.liveness, now)?;
+            }
+            let provenance = (existing.role == BindingRole::TopLevel).then_some(top_provenance);
+            refresh_placement(tx, &existing.binding_id, request.placement, provenance)?;
+            Ok((reconnected, true))
+        })?;
         let binding = get(tx, &existing.binding_id)?
             .ok_or_else(|| corrupt("reconnected binding vanished"))?;
         run_enroll_hooks(
@@ -1607,20 +1624,24 @@ fn resolve_claim_inner(
         && ended.disconnect_reason.as_deref() == Some(DisconnectReason::SeatUnresolved.as_str())
         && seat_is_resolved(tx, &key.seat)?
     {
-        tx.execute(
-            "UPDATE occupant_bindings SET ended_at=NULL WHERE binding_id=?1",
-            [ended.binding_id.as_str()],
-        )
-        .map_err(store_error)?;
-        connect(
-            tx,
-            &ended.binding_id,
-            claim.liveness,
-            ConnectTrigger::Lifecycle,
-            now,
-        )?;
-        let provenance = if subagent { None } else { Some(top_provenance) };
-        refresh_placement(tx, &ended.binding_id, request.placement, provenance)?;
+        // One fence over reopening, reconnecting and refreshing the placement.
+        super::schema::fence_seat_availability(tx, key.seat.as_str(), || {
+            tx.execute(
+                "UPDATE occupant_bindings SET ended_at=NULL WHERE binding_id=?1",
+                [ended.binding_id.as_str()],
+            )
+            .map_err(store_error)?;
+            connect(
+                tx,
+                &ended.binding_id,
+                claim.liveness,
+                ConnectTrigger::Lifecycle,
+                now,
+            )?;
+            let provenance = if subagent { None } else { Some(top_provenance) };
+            refresh_placement(tx, &ended.binding_id, request.placement, provenance)?;
+            Ok(((), true))
+        })?;
         read_cursors::seed(tx, &ended.binding_id, SeedMode::Readopt)?;
         let binding =
             get(tx, &ended.binding_id)?.ok_or_else(|| corrupt("reopened binding vanished"))?;

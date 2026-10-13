@@ -4760,8 +4760,13 @@ pub fn register_available(
             } else {
                 // Restoring availability does not replace the occupant or its generation, and a plain
                 // call never rewrites the recorded observation provenance (ht-54r.79).
-                tx.execute("UPDATE occupant_bindings SET registered_at=?1,host_boot=?2,host_epoch=?3,target_generation=?4,terminal_id=?6,incarnation=?7 WHERE binding_id=?5",
-                    params![at.utc.0,mapping.boot,mapping.epoch as i64,mapping.revision as i64,binding_id.as_str(),terminal,incarnation]).map_err(store_error)?;
+                // The placement write can make the binding count (or re-rank the staged
+                // provenance) whatever `previously_available` said: fence it on its own effect.
+                schema::fence_seat_availability(tx, seat.as_str(), || {
+                    tx.execute("UPDATE occupant_bindings SET registered_at=?1,host_boot=?2,host_epoch=?3,target_generation=?4,terminal_id=?6,incarnation=?7 WHERE binding_id=?5",
+                        params![at.utc.0,mapping.boot,mapping.epoch as i64,mapping.revision as i64,binding_id.as_str(),terminal,incarnation]).map_err(store_error)
+                        .map(|rows| ((), rows != 0))
+                })?;
             }
             let seq = schema::next_decision_seq(tx, &claim.instance)?;
             if lifecycle && claim.harness == crate::protocol::authority::Harness::Human {
