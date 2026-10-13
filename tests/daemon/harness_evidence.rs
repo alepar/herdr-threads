@@ -545,21 +545,28 @@ fn record_with_the_fetch_held(label: &str) -> Duration {
     });
     let returned = done.recv_timeout(crate::cli::hook_evidence::CALL_CAP);
     let still_fetching = !manifest.wait_idle(Duration::ZERO);
+    // Settle every helper before any assertion can unwind: open the gate,
+    // join the recording thread and drain the manifest worker (and its curl
+    // child), so a failing sample never leaves them running against the
+    // fixture that TestIsolation removes on drop. Outcomes are asserted after.
     fetcher.open();
+    let recorded = recording.join();
+    let fetch_entered = entered.recv_timeout(Duration::from_secs(20));
+    let idle = manifest.wait_idle(Duration::from_secs(20));
     let elapsed = returned.expect("record returned within the call cap, the fetch held");
-    recording.join().unwrap().unwrap();
+    recorded
+        .expect("the recording thread did not panic")
+        .expect("record succeeded");
     assert!(
         still_fetching,
         "the fetch was still running when record returned"
     );
-    entered
-        .recv_timeout(Duration::from_secs(20))
-        .expect("the first-seen version started a fetch");
+    fetch_entered.expect("the first-seen version started a fetch");
+    assert!(idle, "the manifest worker settled");
     let row = store
         .harness_evidence("claude", "9.9.9", CONTRACT, &budget())
         .unwrap();
     assert!(row.is_some(), "the evidence row exists");
-    assert!(manifest.wait_idle(Duration::from_secs(20)));
     let log = log.lock().unwrap();
     assert!(
         log.iter()
