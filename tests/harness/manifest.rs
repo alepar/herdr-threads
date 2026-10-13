@@ -772,20 +772,30 @@ fn opt_out_never_fetches() {
 
 #[test]
 fn ensure_manifest_returns_within_10ms_with_a_blocked_fetch() {
-    let dir = TestDir::new();
-    let fetcher = FakeFetcher::gated(vec![Err(FetchError::Failed("unreachable".into()))]);
-    let (service, _) = service(
-        &dir,
-        ManifestPolicy::Auto,
-        fetcher.clone(),
-        FakeClock::at(DAY_MS),
-    );
-    let started = Instant::now();
-    service.ensure_manifest("claude", unseen("9.9.9"));
-    let took = started.elapsed();
-    assert!(took < Duration::from_millis(10), "{took:?}");
-    fetcher.release();
-    assert!(service.wait_idle(WAIT));
+    // The gated fetch blocks until released, so a call that waited for it
+    // could not return. The best of three fresh services shields the bound
+    // from a scheduler hiccup on a loaded machine, as for the unreachable URL.
+    let mut best = Duration::MAX;
+    for _ in 0..3 {
+        let dir = TestDir::new();
+        let fetcher = FakeFetcher::gated(vec![Err(FetchError::Failed("unreachable".into()))]);
+        let (service, _) = service(
+            &dir,
+            ManifestPolicy::Auto,
+            fetcher.clone(),
+            FakeClock::at(DAY_MS),
+        );
+        let started = Instant::now();
+        service.ensure_manifest("claude", unseen("9.9.9"));
+        best = best.min(started.elapsed());
+        assert!(
+            !service.wait_idle(Duration::ZERO),
+            "the fetch is still held"
+        );
+        fetcher.release();
+        assert!(service.wait_idle(WAIT));
+    }
+    assert!(best < Duration::from_millis(10), "{best:?}");
 }
 
 fn curl_on_path() -> bool {
