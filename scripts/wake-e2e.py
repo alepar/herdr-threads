@@ -769,7 +769,15 @@ class Recipient:
             time.sleep(0.5)
         raise RuntimeError(f"{self.name} did not become idle within {timeout}s: {self.tail()}")
 
+    def observed_tail(self):
+        """The macOS startup observation: the raw last 400 characters of the visible screen, exactly as before the
+        linux mode (matching only, never written to evidence). Redacting first would shrink a credential on screen
+        and pull older text, e.g. a stale "Not logged in" banner, into the window."""
+        text = self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
+        return " | ".join(l.strip() for l in text.splitlines() if l.strip())[-400:]
+
     def tail(self):
+        """The same screen as diagnostic text for errors and evidence: redacted whole, then the last 400 characters."""
         text = self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
         return clip(" | ".join(l.strip() for l in text.splitlines() if l.strip()), 400,
                     getattr(self.run, "secrets", None), tail=True)
@@ -821,9 +829,9 @@ class Recipient:
             if why:
                 raise RuntimeError(f"{self.name}: {why}: {self.tail()}")
         else:
-            if re.search(r"Not logged in|Please run /login", self.tail()):
+            if re.search(r"Not logged in|Please run /login", self.observed_tail()):
                 raise RuntimeError(f"{self.name}: {self.harness} is not logged in (check --claude-config-dir)")
-            if self.status() == "blocked" or DIALOG.search(self.tail()):
+            if self.status() == "blocked" or DIALOG.search(self.observed_tail()):
                 raise RuntimeError(f"{self.name}: startup dialog (nothing typed): {self.tail()}")
         for _attempt in range(2):  # one retry: a transient model/capacity error ends the first turn early
             reported = re.compile(r"SETUP-DONE wake_on=%s\b" % self.wake_on)

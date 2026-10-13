@@ -1183,6 +1183,38 @@ class StartupScreens(unittest.TestCase):
         self.assertEqual(W.DIALOG.pattern, r"Trust this folder\?|trust (the files in )?this folder|Do you trust|"
                          r"Allow .* to run|Do you want to proceed\?|Would you like to run")  # dc575a28's pattern
 
+    def test_macos_matches_the_raw_window_and_redacts_only_the_diagnostic(self):
+        """Main review I3: a credential on screen between a stale "Not logged in" banner and the composer. The raw
+        400-char window (dc575a28's) holds only the credential and the composer, so the composer gets its prompt;
+        redacting before choosing the window would shrink the credential and pull the banner in (false refusal).
+        The diagnostic tail stays redacted."""
+        secret = "sk-ant-oat01-" + "Q" * 420 + "ENDTAILENDTAILENDTAIL"
+        screen = "Not logged in · Please run /login\n" + secret + "\n❯\n  ⏵⏵ auto mode on\n"
+
+        class Prompted(Exception):
+            pass
+
+        def herdr(*argv, **kw):
+            words = " ".join(argv)
+            if words.startswith("pane read"):
+                return {"raw": "$ "}
+            if words.startswith("agent get"):
+                return {"result": {"agent": {"agent": "claude", "agent_status": "idle"}}}
+            if words.startswith("agent read"):
+                return {"raw": screen}
+            if words.startswith("agent prompt"):
+                raise Prompted()
+            return {}
+        run = SimpleNamespace(herdr=herdr, launch_line=lambda h: "launch", args=SimpleNamespace(harness_mode="macos"),
+                              coord_seats=lambda: "s", secrets=W.secret_values({"CLAUDE_CODE_OAUTH_TOKEN": secret}))
+        r = W.Recipient(run, "cl-nudge", "claude", "nudge", "w1:p2", "sAAAAAAAA")
+        with self.assertRaises(Prompted):
+            r.start()
+        self.assertNotIn("Not logged in", r.observed_tail())
+        diag = r.tail()
+        self.assertNotIn("ENDTAIL", diag)
+        self.assertNotIn("QQQQ", diag)
+
     def test_start_types_nothing_into_a_first_run_screen(self):
         typed = []
         screen = self.screen("claude-theme-picker.txt")
