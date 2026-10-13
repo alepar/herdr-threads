@@ -429,7 +429,7 @@ fn q4_episode_private_and_reconciliation_points_have_constant_sqlite_work() {
             "Q4 actual pointSQL SQLite={} noise={retained} same100 VM={work:?} lazy_source_SHA256={:x} query_source_SHA256={:x} recon_source_SHA256={:x}",
             tx.query_row("SELECT sqlite_version()", [], |r| r.get::<_, String>(0))
                 .unwrap(),
-            Sha256::digest(include_str!("../../src/store/lazy_delivery.rs").as_bytes()),
+            Sha256::digest(include_str!("../../src/store/lazy_delivery/mod.rs").as_bytes()),
             Sha256::digest(include_str!("../../src/store/queries.rs").as_bytes()),
             Sha256::digest(include_str!("../../src/store/invitation_content.rs").as_bytes())
         );
