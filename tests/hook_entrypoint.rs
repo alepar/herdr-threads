@@ -199,6 +199,18 @@ impl HookPhases {
         state.active = true;
         generation
     }
+    /// Waits until no service handler is in flight (each `HANG` handler
+    /// holds at most `HANG_FOR`); panics past `ceiling`.
+    fn wait_idle(&self, ceiling: Duration) {
+        let started = Instant::now();
+        while self.0.lock().unwrap().capture.inflight != 0 {
+            assert!(
+                started.elapsed() < ceiling,
+                "service handlers still in flight"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
     fn active_generation(&self) -> Option<u64> {
         let state = self.0.lock().unwrap();
         state.active.then_some(state.capture.generation)
@@ -336,8 +348,16 @@ impl Counting {
                 .lock()
                 .unwrap()
                 .get_or_insert_with(Instant::now);
-            // Bounded and joined by Fixture::drop; no helper outlives the test.
-            std::thread::sleep(Duration::from_millis(3000));
+            // Held until the test releases it (mode leaves
+            // WITHHOLD_CAPABILITIES, at the latest in Fixture::stop) or
+            // HANG_FOR passes; joined by Fixture::drop, so no helper outlives
+            // the test. The hook under test has exited before the release.
+            let held = Instant::now();
+            while self.mode.load(Ordering::SeqCst) == WITHHOLD_CAPABILITIES
+                && held.elapsed() < HANG_FOR
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
     }
     fn observe(&self, command: &Command) -> Result<(), herdr_threads::protocol::results::ApiError> {
@@ -1116,6 +1136,8 @@ impl Fixture {
         })
     }
     fn stop(&mut self) {
+        // Releases a withheld capability response before the join.
+        self.mode.store(PASS, Ordering::SeqCst);
         self.stop.cancel();
         if let Some(worker) = self.worker.take() {
             worker.join().unwrap();
@@ -1372,7 +1394,8 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
         "{}",
         hung.stderr
     );
-    std::thread::sleep(HANG_FOR + Duration::from_millis(200));
+    // The hung reads answer late; the next hook runs after they have.
+    fx.phases.wait_idle(2 * HANG_FOR);
     // A tool-boundary read leaves nothing pending: the next hook is clean.
     let recovered = run_hook(&command, "w9:p1", &host, &tool("sess-2"));
     assert_eq!(recovered.code, Some(0), "{}", recovered.stderr);
@@ -2856,13 +2879,14 @@ fn attention_beyond_the_check_in_page_is_emitted_and_then_coalesced() {
     let fx = Fixture::start();
     fx.register("w9:p1", "sess-1");
     fx.register("w9:p2", "peer-sess");
-    for n in 0..105 {
-        fx.cooperative(
-            "peer",
-            "w9:p2",
-            &["thread", "create", "--topic", &format!("filler-{n}")],
-        );
-    }
+    // The fillers go through the production thread writer on a setup
+    // connection, not 105 CLI round trips through the daemon.
+    let (context, mut conn) = fx.history_writer();
+    herdr_threads::test_support::history::write_threads(
+        &context, &mut conn, "peer", 105, "filler-", "filler",
+    )
+    .unwrap();
+    drop(conn);
     let call = || {
         let hook = fx.hook("w9:p1", &tool("sess-1"));
         assert_eq!(hook.code, Some(0), "{}", hook.stderr);
@@ -3714,16 +3738,27 @@ enum PendingAxis {
 const LONG_MILLIS: u64 = 864_000_000;
 
 impl Fixture {
-    fn pending_axis_history(&self, axis: PendingAxis, n: u64) -> Duration {
-        use herdr_threads::test_support::history;
-        let started = Instant::now();
+    /// A setup-only writer on the running daemon's store for history written
+    /// through `test_support::history`.
+    fn history_writer(&self) -> (StoreContext, rusqlite::Connection) {
         let context = StoreContext::new(self.db.clone(), Arc::new(SystemClock::new()));
         // History setup only: the production writers run unchanged, but this
         // setup connection commits with `synchronous=NORMAL` (WAL), so writing
         // the history is not fsync-bound on a disk shared with the suite.
         context.relax_commit_durability();
-        let mut conn = context.open_writer().unwrap();
+        let conn = context.open_writer().unwrap();
         conn.busy_timeout(Duration::from_secs(30)).unwrap();
+        // Its statement journals stay in memory: on the default file temp
+        // store a spilling writer statement creates, writes and unlinks a
+        // temporary file, which under disk load made most of the invitation
+        // history's time. The rows written are the same either way.
+        conn.pragma_update(None, "temp_store", "MEMORY").unwrap();
+        (context, conn)
+    }
+    fn pending_axis_history(&self, axis: PendingAxis, n: u64) -> Duration {
+        use herdr_threads::test_support::history;
+        let started = Instant::now();
+        let (context, mut conn) = self.history_writer();
         conn.execute_batch(
             "BEGIN; \
              INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) \
@@ -7417,4 +7452,6 @@ fn versionless_registered_event_mismatch_keeps_tool_deadline_with_withheld_capab
         rejected.elapsed,
         rejected.stderr
     );
+    // The withheld response outlasted the hook: release it only now.
+    fx.mode.store(PASS, Ordering::SeqCst);
 }
