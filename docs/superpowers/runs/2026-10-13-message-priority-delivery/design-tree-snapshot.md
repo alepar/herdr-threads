@@ -35,6 +35,8 @@ Acceptance: compiles; unit tests for ranges, clamping, admits(), legacy mapping 
 
 files: src/protocol/priority.rs (new), src/protocol/mod.rs, src/protocol/commands.rs, src/protocol/results.rs, src/protocol/watch.rs, src/protocol/capabilities.rs
 
+Design roast r1 (root spec §Legacy readers, wire validators and receipt-side effects): SendMessage request: no change beyond priority; MessageDeliveryModesQuery gains an optional with_priority flag (omitted when false) and the MessageDeliveryMode reply an optional priority (only filled when requested; struct stays deny_unknown_fields for old callers).
+
 ### ht-yha.2 [task] — Schema v47: priority, nudge threshold and ordered pending indexes
 Schema migration v47 for priority storage (spec §Compatibility and migration, §Ordering index list).
 
@@ -49,6 +51,8 @@ Deliver: migrations/0047_message_priority.sql wired into src/store/schema.rs (LA
 Acceptance: fresh DB and v46->v47 upgrade both produce the audited shape; backfill tests (ordinary/lazy messages, lazy rows, wake_on all/nudge seats); EXPLAIN QUERY PLAN shows the new delivery-row indexes used for a seat- and thread-scoped ordered pending seek; existing schema tests updated to 47.
 
 files: migrations/0047_message_priority.sql (new), src/store/schema.rs, tests/store/schema.rs, tests/store/lazy_schema.rs
+
+Design roast r1 (root spec §Legacy readers, wire validators and receipt-side effects): v47 also drops and recreates the 0026 triggers lazy_recipient_source, lazy_recipient_display_published and lazy_manifest_source on row presence / priority instead of delivery_mode='lazy' (a mixed ACK message is delivery_mode='ordinary' with lazy_recipients rows for its non-ACK members), and adds the sparse per-binding mark table binding_row_displays(binding_id, message_id, PRIMARY KEY(binding_id, message_id)). Tests: a mixed-ACK preparation stages and completes without trigger aborts.
 
 ### ht-yha.3 [task] — Send publication by priority (delivery rows for all, receipts only for explicit ACK)
 Send publication by priority (spec §Delivery model, D3, D9).
@@ -70,6 +74,8 @@ blocked-by ht-yha.1: consumes DeliveryPriority type and SendMessage.priority wir
 blocked-by ht-yha.2: consumes migration 0047 priority columns
 blocked-by ht-yha.13: consumes file split
 
+Design roast r1 (root spec §Legacy readers, wire validators and receipt-side effects): Digest: the payload digest covers the request as sent (priority included iff carried); a journaled pre-v47 intent retries in its original shape and priority is derived from delivery_mode; explicit delivery_mode lazy + priority 0 refused; v46-prepared/v47-retried replay test for both shapes. The daemon refuses deadline_millis without explicit ACK recipients from any client (InvalidRequest naming --require-ack). Receipt-side effects: a human explicit-ACK recipient gets a priority-0 delivery row, not a receipt; the unavailable-recipient warning is kept for priority-0 delivery-row sends and not produced for priority >= 1; carry_pending stays receipt-side. Mixed-ACK send test (receipt for the explicit recipient, rows for the rest; display, completion, wake work).
+
 ### ht-yha.4 [task] — Wake by per-seat nudge threshold
 Wake by per-seat nudge threshold (spec §Delivery model Wake, D1, D2, D5).
 
@@ -88,6 +94,8 @@ blocked-by ht-yha.1: consumes NudgeThreshold type and SetNudgeThreshold/NudgeThr
 blocked-by ht-yha.2: consumes migration 0047 seats.nudge_threshold and delivery-row priority
 blocked-by ht-yha.13: consumes file split
 blocked-by ht-yha.14: consumes file split
+
+Design roast r1 (root spec §Legacy readers, wire validators and receipt-side effects): Owns the store-side NudgeThreshold SQL fragment (joins seats.nudge_threshold, compares row priority) used by every set-based wake statement. wake_frontier, has_wake_rows and oldest_pending_at become seeks on the v47 delivery-row index per admitted priority (no newest-1000 window, no wake_on='all' SQL); seat-level pending uses lazy_recipients.state. Also converts the wake_on readers in queries.rs (WakeOnQuery) and seats.rs. Test: one p0 row behind >1000 pending p1 rows wakes a T=0 seat (candidate and query plan asserted).
 
 ### ht-yha.5 [epic] — Inbox v2 min-head merge in priority/deadline/created order
 Inbox v2 min-head merge in priority order (spec §Ordering, user amendment D11).
@@ -125,6 +133,9 @@ blocked-by ht-yha.13: consumes file split
 blocked-by ht-yha.5.1: consumes cursor v2 DeliveryRows position triple (canonical definition)
 blocked-by ht-yha.3: consumes staging.rs changes (priority on rows) landed first; same file
 
+Design roast r1 (root spec §Legacy readers, wire validators and receipt-side effects): Owns the per-binding displayed marks: writes binding_row_displays when a binding completes display of a delivery row above its cursor, excludes marked rows in every binding-level unread/pending predicate (binding unread SQL, seat_lazy_pending, publication_eligible, pending pages), prunes marks the cursor has passed. Edits note_published's wake_work insert to use the wake child's NudgeThreshold SQL fragment instead of wake_on='all'. Test: p0 seq 10 displayed before p1 seq 5 in one thread is not re-offered; seq 5 still is.
+blocked-by ht-yha.4: consumes store-side NudgeThreshold SQL fragment for note_published
+
 ### ht-yha.5.3 [task] — DeadlineWindow: bounded sorted deadline-class window
 DeadlineWindow: bounded sorted window over invitations, binding-unread and receipts (subspec docs/superpowers/runs/2026-10-13-message-priority-delivery/2026-10-13-message-priority-delivery--inbox-merge-design.md §Deadline class, §Key abstractions DeadlineWindow).
 
@@ -153,6 +164,8 @@ blocked-by ht-yha.5.3: consumes DeadlineWindow
 blocked-by ht-yha.14: consumes file split
 blocked-by ht-yha.3: consumes delivery rows for all recipients with priority (send publication)
 
+Design roast r1 (root spec §Legacy readers, wire validators and receipt-side effects): Converts the remaining delivery_mode readers in the queries.rs inbox_v2 region (private eligibility SQL, unread/receipt arms, thread scope, presentation reconcile) and read_cursors.rs RECEIVABLE to row presence. Wording correction: the publication bound lives inside the delivery-row partial-index seek; the deadline and warning classes filter after their seek.
+
 ### ht-yha.6 [task] — Invitations always p0 + confirming; 1:1 pairs auto-join
 Invitations always p0 + confirming; 1:1 pairs auto-join (spec D6, D7, §Surfaces Direct pairs).
 
@@ -172,6 +185,8 @@ blocked-by ht-yha.13: consumes file split
 blocked-by ht-yha.3: consumes send publication by priority (first direct message as a delivery row)
 blocked-by ht-yha.4: consumes wake by nudge threshold (p1 vs p0 pair wake acceptance)
 
+Design roast r1 (root spec §Legacy readers, wire validators and receipt-side effects): Drops the human-RequireAck refusal for thread invitations: human and operator invitations are recorded confirming with the deadline. An auto-joined pair reports DirectThreadEnsured (AlreadyJoined, no invitation) for new and existing pairs; a pre-upgrade pair with a pending invitation still reports ExistingPending. Converts the delivery_mode readers in lazy_delivery/direct.rs, control.rs, delivery/invitation.rs and the handoff ordinary checks (store/handoff/automatic.rs, topology_handoff/attachment.rs).
+
 ### ht-yha.7 [task] — CLI: --priority/-p, --nudge alias, nudge-threshold, flag removals, old-daemon fallback
 CLI surfaces for priority and threshold (spec D3, D4, D5, D6 flag consequences, §Surfaces CLI, §Compatibility new-client/old-daemon).
 
@@ -188,6 +203,8 @@ Acceptance: tests/cli flag matrix (defaults, -p bounds, --nudge alias + conflict
 files: src/cli/commands.rs, src/cli/mod.rs, src/cli/direct_send.rs, src/cli/handoff.rs, src/cli/journal.rs, src/cli/wake_on.rs (-> nudge threshold), tests/cli/lazy_send.rs, tests/cli/wake_on.rs, tests/fixtures/golden/help/*
 blocked-by ht-yha.1: consumes DeliveryPriority, NudgeThreshold and capability constants
 
+Design roast r1 (root spec §Legacy readers, wire validators and receipt-side effects): CLI sends priority and omits delivery_mode on send.priority_v1 daemons; journaled pre-upgrade intents retry in their recorded shape. --deadline without ACK recipients (incl. --nudge --deadline) is refused before the body is read; help text updated. On old daemons, human invite and --operator keep sending confirmation None. history/read/follow/search set MessageDeliveryModesQuery.with_priority only when send.priority_v1 is advertised.
+
 ### ht-yha.8 [task] — Framing and markers by priority ([pN], message kind)
 Model-visible framing and markers by priority (spec D8, §Surfaces inbox/history/hook pages).
 
@@ -202,6 +219,8 @@ blocked-by ht-yha.2: consumes migration 0047 messages.priority column
 blocked-by ht-yha.14: consumes file split (inbox_v2 hydrate.rs)
 blocked-by ht-yha.4: consumes hydrate.rs wakes change landed first; same file
 
+Design roast r1 (root spec §Legacy readers, wire validators and receipt-side effects): Implements MessageDeliveryModesQuery.with_priority (reply priority only when requested; old callers keep the old shape) and converts the delivery_mode readers in invitation_content.rs presentation SQL and the MessageDeliveryModes query.
+
 ### ht-yha.9 [task] — Watch stream and Claude mod in priority order
 Watch stream and Claude mod in priority order (spec §Surfaces Watch stream and Claude mod, D11).
 
@@ -215,6 +234,8 @@ blocked-by ht-yha.1: consumes WatchMessage priority/deadline_at and DeliveryOrde
 blocked-by ht-yha.8: consumes frame golden fixtures with [pN]
 blocked-by ht-yha.2: consumes migration 0047 delivery-row priority column
 blocked-by ht-yha.4: consumes daemon-computed per-item wakes by threshold
+
+Design roast r1 (root spec §Legacy readers, wire validators and receipt-side effects): Converts the delivery_mode/wake reader in service/mod_channels.rs.
 
 ### ht-yha.10 [task] — Docs and skill text for priority delivery
 Docs and skill text for priority delivery (spec §Docs and model-visible text).
@@ -313,4 +334,6 @@ blocked-by ht-yha.12: consumes all leaves (integration sweep)
 blocked-by ht-yha.13: consumes all leaves (integration sweep)
 blocked-by ht-yha.14: consumes all leaves (integration sweep)
 blocked-by ht-yha.15: consumes all leaves (integration sweep)
+
+Design roast r1 (root spec §Legacy readers, wire validators and receipt-side effects): The delivery_mode/wake_on grep covers migrations/ too (old triggers must be recreated, not just unused).
 

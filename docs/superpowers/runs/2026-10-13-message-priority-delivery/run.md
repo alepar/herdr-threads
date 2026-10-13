@@ -12,7 +12,7 @@ epic: ht-yha
 branch: super-auto/message-priority-delivery
 base: main
 
-roastDesignRound: 1
+roastDesignRound: 2
 
 approvals:
 - launch-mode · interactive design (questions relayed via seat seePN0MKW, thread tXPkAdb0O, --nudge), switch to autonomous after the user approves the design (requester instruction, 2026-10-13)
