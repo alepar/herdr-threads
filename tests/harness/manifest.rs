@@ -788,12 +788,13 @@ fn ensure_manifest_returns_within_10ms_with_a_blocked_fetch() {
         let started = Instant::now();
         service.ensure_manifest("claude", unseen("9.9.9"));
         best = best.min(started.elapsed());
-        assert!(
-            !service.wait_idle(Duration::ZERO),
-            "the fetch is still held"
-        );
+        // Release and drain before asserting, so a failure never leaves the
+        // gated fetch thread blocked.
+        let held = !service.wait_idle(Duration::ZERO);
         fetcher.release();
-        assert!(service.wait_idle(WAIT));
+        let idle = service.wait_idle(WAIT);
+        assert!(held, "the fetch is still held");
+        assert!(idle);
     }
     assert!(best < Duration::from_millis(10), "{best:?}");
 }
