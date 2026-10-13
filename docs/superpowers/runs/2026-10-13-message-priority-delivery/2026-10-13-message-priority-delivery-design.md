@@ -24,7 +24,7 @@ invitation and every ACK request is priority 0. Inbox, hook pages and the Claude
 | D6 | Every thread invitation is priority 0, always nudges and always requires acceptance by a deadline (no lazy invitations, no confirmation-policy variants). Recipients still answer explicitly (accept or reject on topic and goal). Actionable warnings are priority 0. |
 | D7 | 1:1 direct pairs **auto-join both seats** on creation: no invitation; the first direct message's own priority alone decides whether it wakes. This also fixes today's mismatch between the docs (which describe pairs as automatic) and the behaviour (the peer had to run `accept`). |
 | D8 | Model-visible framing: the header kind word is always `message` (the `lazy` kind word goes away); a `[p<N>]` marker is added only when N != 1. |
-| D9 | Priority governs **notification only**. Receipts, deadlines and overdue warnings exist only for explicit `--require-ack` recipients. A priority-0 message without `--require-ack` wakes but creates no receipt, deadline or warning. |
+| D9 | Priority governs **notification only**. Receipts, deadlines and overdue warnings exist only for explicit `--require-ack` recipients. A priority-0 message without `--require-ack` wakes but creates no receipt, deadline or overdue warning (user, `mXmhe1P2d`: "receipts/deadlines/overdue warnings exist only for explicit --require-ack recipients"); the send-time unavailable-recipient warning is a separate sender-feedback path (§Receipt-path side effects). |
 | D11 | Ordering key: (priority asc, deadline asc with no deadline last, created asc), approved with the design (`mpqluOeQD`). |
 | D10 | Compatibility: old clients and daemons map `ordinary` ↔ p0 and `lazy` ↔ p1, capability-gated in both directions; stored rows migrate the same way. |
 
@@ -41,7 +41,7 @@ Invitations and warnings have a fixed priority of 0 and store none.
 **Every recipient of a message gets one delivery row.** Today's `lazy_recipients` table (pending/displayed
 state, frozen audience at seal, monotonic per-seat ordinal, bounded pending indexes, atomic publication through
 the manifest) generalizes to all messages: it gains `priority`, and every audience member gets a row, human seats
-included, except explicit `--require-ack` recipients, who get today's receipt instead (`prepared_recipients` /
+included, except explicit `--require-ack` recipients that owe an ACK (non-human seats), who get today's receipt instead (a human seat named with `--require-ack` gets a priority-0 delivery row; a send whose only explicit recipient is human is still recorded `delivery_mode='ordinary'`, which is audit-only) (`prepared_recipients` /
 `receipt_state` with `ack_required=1`, deadline, overdue warning, display-ACK), so each (message, seat) has exactly
 one pending item. Non-explicit members no longer get receipts: the "every joined agent owes an ACK" behaviour of
 today's `--nudge` ends (D9).
@@ -82,13 +82,19 @@ the row limit, byte limit and work bound are unchanged, and a work-limited page 
 false `empty`. How each source yields its items in key order (exact index-backed delivery rows, a bounded sorted window for the
 deadline-bearing p0 sources, warnings already in order), the v47 index shapes and the cursor format are specified
 in the inbox-merge subspec ([2026-10-13-message-priority-delivery--inbox-merge-design.md](2026-10-13-message-priority-delivery--inbox-merge-design.md)). The continuation records the last emitted full key and the captured high waters; an item published after capture
-belongs to the next traversal, as today. Out-of-order display within a thread is made safe by one rule (roast r1, cluster C2): a delivery row is pending for a reader
-unless it was displayed for that reader. The binding read cursor still advances only over the contiguous displayed
-prefix, but it is never the sole test: v47 adds a sparse per-binding mark table `binding_row_displays(binding_id,
-message_id)` written when a binding completes display of a delivery row above its cursor, read by every binding-level
-unread/pending predicate (inbox Unread and delivery-row filters, hook, accept), and pruned when the cursor passes the
-row. Seat-level predicates (wake frontier, attention digest) test `lazy_recipients.state`. Test: p0 seq 10 displayed
-before p1 seq 5 in one thread is not re-offered; seq 5 still is. The watch stream and mod carry `priority` and `deadline_at` on each
+belongs to the next traversal, as today. Out-of-order display within a thread is made safe by one rule (design roast r1 C2, refined r2): a delivery row is pending
+for a binding unless it was displayed for that binding. The binding read cursor still advances only over the contiguous
+displayed prefix and is never the sole test: v47 adds a sparse per-binding mark table `binding_row_displays(binding_id,
+message_id)`. Marks are written for every display that advances a binding's cursor — top-level completion and the
+cursor-only paths (`AdvanceCursors` from subagent inbox streams and `body` reads) — for displayed rows left above the
+resulting cursor; they are copied with the cursor whenever a binding inherits one (`copy_lineage`, `init_for_new_binding`
+seeding from the seat's highest cursor: the marks of the binding whose cursor is inherited); they are pruned when the
+cursor passes the row. Every unread/pending predicate, binding level and seat level alike, uses this binding-based
+definition: seat-level wake frontier and digest keep today's `seat_unread_sql!` meaning ("legacy pending, or some
+connected top-level binding finds it unread") extended with the marks, and never read `lazy_recipients.state` (the V34
+rule stands). Tests: p0 seq 10 displayed before p1 seq 5 in one thread is not re-offered, through top-level completion
+and through a subagent stream and a body read; a resumed/restarted binding inherits the marks; a first-contact
+fast-forward leaves no row that wakes the seat. The watch stream and mod carry `priority` and `deadline_at` on each
 item and sort every batch they frame by the same key (arrival order breaks the final tie); separate batches stay
 in arrival order.
 
@@ -113,7 +119,9 @@ in arrival order.
 - **Attention digest**: the lazy class becomes the delivery-row class; the token keeps its `v2` spelling (the lazy
   key is now the newest pending delivery row).
 - **Direct pairs** (D7): `resolve_direct_pair` writes the peer's joined membership, membership interval, read
-  cursor init and a join event instead of an invitation; `direct_threads` keeps the two reserved seats. Accept is
+  cursor init and a join event instead of an invitation (for a peer seat with no open binding, the join records a
+  floor at the join event, so the peer's first session is offered everything sent after the join, as today's
+  invitation-episode floor does); `direct_threads` keeps the two reserved seats. Accept is
   no longer needed for new pairs; pending pair invitations created before the upgrade still accept as today.
 
 ## Compatibility and migration
@@ -156,15 +164,16 @@ it a message at all" → the predicate is dropped; "does this seat wake" → `Nu
 `NudgeThreshold` has a store-side SQL fragment (owned with the seat threshold store API) that joins
 `seats.nudge_threshold` and compares row priority, so no statement writes `p <= T` by hand. Any scan bounded by a
 newest-N window that was correct only because every row was eligible (`wake_frontier`, `has_wake_rows`,
-`PENDING_SUMMARY_CAP`) becomes a seek on the v47 index per admitted priority. Inventory and owners:
+`PENDING_SUMMARY_CAP`) becomes a seek on the v47 index per admitted priority; staged (unpublished) rows no longer
+count for wake probes, since publication decides visibility. Inventory and owners:
 
 | Reader | Owner |
 |---|---|
-| `migrations/0026` triggers `lazy_recipient_source`, `lazy_recipient_display_published`, `lazy_manifest_source` (mode checks) — v47 drops and recreates them on row presence / priority | schema (`ht-yha.2`) |
+| `migrations/0026` triggers `lazy_recipient_source`, `lazy_recipient_display_published` (recreated on row presence) and `lazy_manifest_source` (recreated priority-keyed: a manifest may carry warnings unless its message's priority >= 1 and it has no receipts); `messages_immutable` is dropped before the `messages`/`send_preparations` priority backfill and recreated after it, as 0002 and 0013 do, and the new priority immutability triggers are created after the backfill | schema (`ht-yha.2`) |
 | `store/messages.rs` digest payload, validation, duration, `stage_recipient`, replay lookup | send (`ht-yha.3`) |
 | `lazy_delivery` completion (`recorded_mode`, `lazy_completion_state`) | send (`ht-yha.3`) |
-| `lazy_delivery` inbox (`publication_eligible`, binding unread SQL, `seat_lazy_pending`, pending pages) and the per-binding displayed marks | DeliveryRowSeek (`ht-yha.5.2`) |
-| `lazy_delivery` wake (`wake_frontier`, `oldest_pending_at`, `has_wake_rows`), `note_published`'s `wake_work` insert (`wake_on='all'`), `store/attention.rs`, `store/wake.rs`, `seats.rs` wake_on readers, per-item `wakes` | wake (`ht-yha.4`; `note_published` is edited by `ht-yha.5.2` using the wake child's SQL fragment) |
+| `lazy_delivery` inbox (`publication_eligible`, binding unread SQL, `seat_lazy_pending`, pending pages), the per-binding displayed marks (write on completion and `AdvanceCursors`, copy on cursor inheritance, prune) | DeliveryRowSeek (`ht-yha.5.2`) |
+| `lazy_delivery` wake (`wake_frontier`, `oldest_pending_at`, `has_wake_rows`), `note_published`'s `wake_work` insert (`wake_on='all'`), `store/attention.rs`, `store/wake.rs`, `seats.rs` wake_on readers, per-item `wakes`, and `note_published` (its `wake_work` insert and the publication `decision_seq` copy onto delivery rows, which the wake seek and the inbox seek both consume) | wake (`ht-yha.4`) |
 | `lazy_delivery` direct (`direct_lazy_display_admitted`, episode floors), `store/control.rs`, `delivery/invitation.rs`, handoff `automatic.rs` / `topology_handoff/attachment.rs` ordinary checks | pairs/invitations (`ht-yha.6`) |
 | `queries.rs` `MessageDeliveryModes` (`recorded_mode` at the query), `invitation_content.rs` presentation SQL | framing (`ht-yha.8`) |
 | `queries.rs` inbox_v2 region (private eligibility SQL, unread/receipt arms, thread scope, presentation reconcile), `read_cursors.rs` `RECEIVABLE` | merge (`ht-yha.5.4`) |
@@ -267,7 +276,7 @@ person-authored "priority"; any version gating.
 - Lifecycle: per request; state round-trips through `InboxBatchV2CursorState`.
 
 **InboxBatchV2CursorState** — extended: the last emitted key plus captured high waters replace the rotation pointer.
-**lazy_delivery (delivery rows)** — extended: rows for every audience member except explicit ACK recipients, humans included, each with `priority` and a copied publication `decision_seq`; `wake_frontier` becomes "newest pending row admitted by T", the one function both `wake_seat_attention` and the `store/wake.rs` re-check call.
+**lazy_delivery (delivery rows)** — extended: rows for every audience member except explicit ACK recipients that owe an ACK (humans always get a row), each with `priority` and a copied publication `decision_seq`; `wake_frontier` becomes "newest pending row admitted by T", the one function both `wake_seat_attention` and the `store/wake.rs` re-check call.
 **settle::ModeFact** — extended: chosen by which row the (message, seat) actually has (receipt or delivery row), not by `delivery_mode`.
 **FrameItem / frame() (Rust and JS)** — extended: carries priority; kind word always `message`; `[p<N>]` from `DeliveryPriority` (D8).
 **WatchMessage** — extended: gains `priority` and `deadline_at`; the daemon computes `wakes` via `NudgeThreshold`.

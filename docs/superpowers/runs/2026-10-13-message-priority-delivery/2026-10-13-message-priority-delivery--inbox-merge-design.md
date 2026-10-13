@@ -43,7 +43,7 @@ existing `InvalidCursor` error.
 **Delivery-row class (exact).** Recommended: v47 adds `lazy_recipients_pending_order ON lazy_recipients(seat_id,
 priority, decision_seq, ordinal) WHERE state='pending' AND decision_seq IS NOT NULL` and the thread-scoped twin
 `(seat_id, thread_id, priority, decision_seq, ordinal)` with the same predicate. `decision_seq` is copied onto the
-row at publication (`note_published`) and backfilled by the migration, so "published and not past the captured
+row at publication (`note_published`, owned by the wake child `ht-yha.4`) and backfilled by the migration, so "published and not past the captured
 high water" is `decision_seq IS NOT NULL AND decision_seq <= dh` inside the seek — no unpublished row is ever
 visited, which strictly improves the 2026-10-07 bounded-walk rule. The seek resumes with `(priority,
 decision_seq, ordinal) > last` and `LIMIT 1`. Binding-scoped readers keep their post-seek unread/display filter, which also excludes rows marked
