@@ -9,7 +9,10 @@ use crate::harness::{
     },
     agy::{
         AgyAdapter,
-        witness::tests::{Temp, build_layout},
+        witness::{
+            BRAIN_ENTRY_CAP,
+            tests::{TEST_BRAIN_CAP, Temp, TestBrainCap, build_layout},
+        },
     },
 };
 use crate::protocol::time::MonoInstant;
@@ -255,18 +258,45 @@ fn the_scan_skips_listed_locked_and_old_conversations() {
 
 #[test]
 fn an_over_cap_brain_is_unbounded_and_limited() {
+    let _cap = TestBrainCap::new();
     let fixture = Fixture::new(Some("over-cap-brain"));
     fixture.setup();
     let projection = fixture.projection();
     assert_eq!(projection.hooks["witness"]["bounded"], json!(false));
     assert_eq!(
         projection.hooks["witness"]["brain_entries"],
-        json!(BRAIN_ENTRY_CAP + 1)
+        json!(TEST_BRAIN_CAP + 1)
     );
     assert_eq!(
         projection.limitations,
+        ["subagent check bounded: brain/ has 2049 entries"]
+    );
+    // One entry fewer is exactly the cap: every entry is counted and the scan stays bounded.
+    std::fs::remove_file(fixture.roots.data.join("brain/e0")).unwrap();
+    let seen = health(&fixture);
+    assert!(seen.bounded);
+    assert_eq!(seen.brain_entries, TEST_BRAIN_CAP);
+}
+
+#[test]
+fn the_over_cap_limitation_names_the_production_count() {
+    let fixture = Fixture::new(None);
+    fixture.setup();
+    let SetupStatus::Detailed(status) = setup::status(&fixture.request()) else {
+        panic!("agy reports a detailed status");
+    };
+    let health = WitnessHealth {
+        presence_dir: true,
+        brain_entries: BRAIN_ENTRY_CAP + 1,
+        bounded: false,
+        recent_top_level_without_lock: 0,
+        error: None,
+    };
+    assert_eq!(
+        limitations_of(&status, AllowEntryState::Owned, &health),
         ["subagent check bounded: brain/ has 65537 entries"]
     );
+    assert_eq!(health.json()["brain_entries"], json!(65_537));
 }
 
 #[test]

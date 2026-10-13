@@ -13,6 +13,25 @@ use std::time::Instant;
 
 /// The most `brain/` entries one glob examines before it reads as `Unreadable`.
 pub const BRAIN_ENTRY_CAP: usize = 65_536;
+// Pinned: the scans only compare an entry count against it (nothing is sized by it), and the unit
+// tests exercise the comparison at a smaller cap (`brain_entry_cap`).
+const _: () = assert!(BRAIN_ENTRY_CAP == 65_536);
+
+#[cfg(test)]
+thread_local! {
+    /// A smaller cap for this thread's scans, so a test needs a few thousand entries, not 65,537.
+    pub(super) static BRAIN_ENTRY_CAP_OVERRIDE: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The cap the `brain/` scans compare against: [`BRAIN_ENTRY_CAP`] outside unit tests.
+pub(super) fn brain_entry_cap() -> usize {
+    #[cfg(test)]
+    if let Some(cap) = BRAIN_ENTRY_CAP_OVERRIDE.with(std::cell::Cell::get) {
+        return cap;
+    }
+    BRAIN_ENTRY_CAP
+}
 
 #[cfg(test)]
 thread_local! {
@@ -68,8 +87,9 @@ fn glob_listing(data: &Path, child: &str, deadline: Instant) -> Witness {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Witness::Absent,
         Err(_) => return Witness::Unreadable,
     };
+    let cap = brain_entry_cap();
     for (seen, entry) in entries.enumerate() {
-        if seen >= BRAIN_ENTRY_CAP || (seen % 256 == 0 && Instant::now() >= deadline) {
+        if seen >= cap || (seen % 256 == 0 && Instant::now() >= deadline) {
             return Witness::Unreadable;
         }
         let Ok(entry) = entry else {
@@ -95,8 +115,9 @@ fn listing_parent(data: &Path, child: &str, deadline: Instant) -> Result<Option<
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(()),
     };
+    let cap = brain_entry_cap();
     for (seen, entry) in entries.enumerate() {
-        if seen >= BRAIN_ENTRY_CAP || (seen % 256 == 0 && Instant::now() >= deadline) {
+        if seen >= cap || (seen % 256 == 0 && Instant::now() >= deadline) {
             return Err(());
         }
         let entry = entry.map_err(|_| ())?;
