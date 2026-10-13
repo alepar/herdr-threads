@@ -199,6 +199,18 @@ impl HookPhases {
         state.active = true;
         generation
     }
+    /// Waits until no service handler is in flight (each `HANG` handler
+    /// holds at most `HANG_FOR`); panics past `ceiling`.
+    fn wait_idle(&self, ceiling: Duration) {
+        let started = Instant::now();
+        while self.0.lock().unwrap().capture.inflight != 0 {
+            assert!(
+                started.elapsed() < ceiling,
+                "service handlers still in flight"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
     fn active_generation(&self) -> Option<u64> {
         let state = self.0.lock().unwrap();
         state.active.then_some(state.capture.generation)
@@ -336,8 +348,16 @@ impl Counting {
                 .lock()
                 .unwrap()
                 .get_or_insert_with(Instant::now);
-            // Bounded and joined by Fixture::drop; no helper outlives the test.
-            std::thread::sleep(Duration::from_millis(3000));
+            // Held until the test releases it (mode leaves
+            // WITHHOLD_CAPABILITIES, at the latest in Fixture::stop) or
+            // HANG_FOR passes; joined by Fixture::drop, so no helper outlives
+            // the test. The hook under test has exited before the release.
+            let held = Instant::now();
+            while self.mode.load(Ordering::SeqCst) == WITHHOLD_CAPABILITIES
+                && held.elapsed() < HANG_FOR
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
     }
     fn observe(&self, command: &Command) -> Result<(), herdr_threads::protocol::results::ApiError> {
@@ -1089,6 +1109,8 @@ impl Fixture {
         })
     }
     fn stop(&mut self) {
+        // Releases a withheld capability response before the join.
+        self.mode.store(PASS, Ordering::SeqCst);
         self.stop.cancel();
         if let Some(worker) = self.worker.take() {
             worker.join().unwrap();
@@ -1344,7 +1366,8 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
         "{}",
         hung.stderr
     );
-    std::thread::sleep(HANG_FOR + Duration::from_millis(200));
+    // The hung reads answer late; the next hook runs after they have.
+    fx.phases.wait_idle(2 * HANG_FOR);
     // A tool-boundary read leaves nothing pending: the next hook is clean.
     let recovered = run_hook(&command, "w9:p1", &host, &tool("sess-2"));
     assert_eq!(recovered.code, Some(0), "{}", recovered.stderr);
@@ -7401,4 +7424,6 @@ fn versionless_registered_event_mismatch_keeps_tool_deadline_with_withheld_capab
         rejected.elapsed,
         rejected.stderr
     );
+    // The withheld response outlasted the hook: release it only now.
+    fx.mode.store(PASS, Ordering::SeqCst);
 }
