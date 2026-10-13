@@ -32,6 +32,24 @@ impl Drop for Temp {
     }
 }
 
+/// The `brain/` cap the over-cap layout is sized for (`#generate brain 2049`): a multiple of the
+/// 256-entry deadline stride, as the real cap is, and past one `readdir` buffer on macOS and glibc.
+pub(in crate::harness::agy) const TEST_BRAIN_CAP: usize = 2048;
+
+/// Holds this thread's `brain/` scans at [`TEST_BRAIN_CAP`] until dropped.
+pub(in crate::harness::agy) struct TestBrainCap;
+impl TestBrainCap {
+    pub(in crate::harness::agy) fn new() -> Self {
+        BRAIN_ENTRY_CAP_OVERRIDE.with(|cap| cap.set(Some(TEST_BRAIN_CAP)));
+        Self
+    }
+}
+impl Drop for TestBrainCap {
+    fn drop(&mut self) {
+        BRAIN_ENTRY_CAP_OVERRIDE.with(|cap| cap.set(None));
+    }
+}
+
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/agy")
 }
@@ -400,6 +418,7 @@ fn a_missing_home_is_unreadable_and_reads_as_a_child() {
 
 #[test]
 fn a_brain_directory_past_the_cap_reads_as_a_child_and_one_at_the_cap_is_examined() {
+    let _cap = TestBrainCap::new();
     let (_t, home) = home_with("over-cap-brain");
     let case = Case::new(&home, None);
     let input = input("session-start-top", "SessionStart");
@@ -413,7 +432,7 @@ fn a_brain_directory_past_the_cap_reads_as_a_child_and_one_at_the_cap_is_examine
     // One entry fewer is exactly the cap: every entry is examined and none lists the child.
     let brain = AgyRoots::from_home(&home).data.join("brain");
     std::fs::remove_file(brain.join("e0")).unwrap();
-    assert_eq!(std::fs::read_dir(&brain).unwrap().count(), BRAIN_ENTRY_CAP);
+    assert_eq!(std::fs::read_dir(&brain).unwrap().count(), TEST_BRAIN_CAP);
     assert_eq!(
         role(&case.evidence(&input).0),
         witnesses(Witness::Present, Witness::Absent)
@@ -463,4 +482,34 @@ fn stop_reads_the_role_but_never_a_lifecycle() {
     assert_eq!(evidence.lifecycle, None);
     assert_eq!(intent(&case.refined(&input)), "observer");
     assert_eq!(CHILD.len(), 36);
+}
+
+#[test]
+fn the_brain_cap_is_the_production_value_unless_a_test_holds_it() {
+    assert_eq!(brain_entry_cap(), 65_536);
+    let cap = TestBrainCap::new();
+    assert_eq!(brain_entry_cap(), TEST_BRAIN_CAP);
+    drop(cap);
+    assert_eq!(brain_entry_cap(), BRAIN_ENTRY_CAP);
+}
+
+#[test]
+fn caller_session_past_the_cap_is_unattributable_and_at_the_cap_finds_no_parent() {
+    use crate::harness::adapter::CallerSession;
+    let _cap = TestBrainCap::new();
+    let (_t, home) = home_with("over-cap-brain");
+    let env = |key: &str| (key == "HOME").then(|| home.display().to_string());
+    // CHILD has no presence lock, so its role comes from the bounded listing walk alone.
+    assert_eq!(
+        caller_session(CHILD, &env),
+        CallerSession::Unattributable("agy subagent listings unreadable".into())
+    );
+    let brain = AgyRoots::from_home(&home).data.join("brain");
+    std::fs::remove_file(brain.join("e0")).unwrap();
+    assert_eq!(
+        caller_session(CHILD, &env),
+        CallerSession::Unattributable(
+            "agy conversation has no presence lock and no parent listing".into()
+        )
+    );
 }
