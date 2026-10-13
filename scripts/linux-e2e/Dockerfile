@@ -35,7 +35,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       pkg-config less locales xz-utils \
     && rm -rf /var/lib/apt/lists/* && locale-gen en_US.UTF-8
 
-SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+# errexit + nounset + pipefail: every command in a RUN is fatal, so no later command can mask a failure.
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
 # Architecture names: Docker's TARGETARCH (arm64/amd64) -> Herdr/Rust (aarch64/x86_64), Node (arm64/x64).
 RUN case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
@@ -44,25 +45,18 @@ RUN case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
       *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac > /etc/ht-arch && cat /etc/ht-arch
 
+# Downloads go through image-fetch.sh: download -> SHA-256 -> version, each fatal, promoted only when all pass.
+COPY scripts/linux-e2e/image-fetch.sh /opt/ht/image-fetch.sh
+
 # Herdr: the official release binary for this architecture, checked against tests/herdr-releases.tsv.
 COPY tests/herdr-releases.tsv /opt/ht/herdr-releases.tsv
-RUN read -r arch _ _ _ < /etc/ht-arch; \
-    version=${HERDR_VERSION:-$(awk -F'\t' '!/^#/ && NF == 3 { print $1 }' /opt/ht/herdr-releases.tsv | sort -V | tail -n 1)}; \
-    digest=$(awk -F'\t' -v v="$version" -v a="herdr-linux-$arch" '$1 == v && $2 == a { print $3 }' /opt/ht/herdr-releases.tsv); \
-    test -n "$digest" || { echo "no herdr-linux-$arch $version in herdr-releases.tsv" >&2; exit 1; }; \
-    curl -fsSL --retry 3 -o /usr/local/bin/herdr "https://github.com/herdrdev/herdr/releases/download/v$version/herdr-linux-$arch"; \
-    echo "$digest  /usr/local/bin/herdr" | sha256sum -c -; \
-    chmod 755 /usr/local/bin/herdr; \
-    test "$(herdr --version)" = "herdr $version"; \
-    echo "$version" > /opt/ht/herdr-version
+RUN read -r arch _ _ _ < /etc/ht-arch \
+    && /opt/ht/image-fetch.sh herdr /opt/ht/herdr-releases.tsv "$arch" /usr/local/bin/herdr /opt/ht/herdr-version \
+         "$HERDR_VERSION"
 
 # Node 22: official tarball, checksum-pinned per architecture.
-RUN read -r _ node_arch _ node_sha < /etc/ht-arch; \
-    tarball="node-v${NODE_VERSION}-linux-${node_arch}.tar.xz"; \
-    curl -fsSL --retry 3 -o "/tmp/$tarball" "https://nodejs.org/dist/v${NODE_VERSION}/$tarball"; \
-    echo "$node_sha  /tmp/$tarball" | sha256sum -c -; \
-    mkdir -p /opt/node && tar -xJf "/tmp/$tarball" -C /opt/node --strip-components=1 && rm "/tmp/$tarball"; \
-    /opt/node/bin/node --version
+RUN read -r _ node_arch _ node_sha < /etc/ht-arch \
+    && /opt/ht/image-fetch.sh node "$NODE_VERSION" "$node_arch" "$node_sha" /opt/node
 
 # Claude Code and Codex: `npm ci` verifies every tarball against the lockfile's integrity. No login.
 # --ignore-scripts: no package lifecycle script runs. The only one in this tree is Claude Code's postinstall
@@ -88,13 +82,8 @@ USER tester
 ENV HOME=/home/tester LANG=en_US.UTF-8 \
     PATH=/home/tester/.cargo/bin:/home/tester/.local/bin:/opt/harnesses/bin:/opt/node/bin:/usr/local/bin:/usr/bin:/bin \
     DISABLE_AUTOUPDATER=1
-RUN read -r arch _ rustup_sha _ < /etc/ht-arch; \
-    curl -fsSL --retry 3 -o /tmp/rustup-init \
-      "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${arch}-unknown-linux-gnu/rustup-init"; \
-    echo "$rustup_sha  /tmp/rustup-init" | sha256sum -c -; \
-    chmod 755 /tmp/rustup-init && /tmp/rustup-init -y --no-modify-path --profile minimal \
-      --default-toolchain "$RUST_TOOLCHAIN" --target "${arch}-unknown-linux-musl" && rm /tmp/rustup-init; \
-    rustc --version; \
-    mkdir -p /home/tester/.cargo/registry /home/tester/src/target /home/tester/.cache/herdr-releases \
-             /home/tester/evidence
+RUN read -r arch _ rustup_sha _ < /etc/ht-arch \
+    && /opt/ht/image-fetch.sh rustup "$RUSTUP_VERSION" "$arch" "$rustup_sha" "$RUST_TOOLCHAIN" "$arch-unknown-linux-musl" \
+    && mkdir -p /home/tester/.cargo/registry /home/tester/src/target /home/tester/.cache/herdr-releases \
+                /home/tester/evidence
 WORKDIR /home/tester

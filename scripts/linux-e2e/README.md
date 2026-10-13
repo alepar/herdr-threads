@@ -18,8 +18,12 @@ Common options: `--evidence-dir DIR` (default: a new directory under the system 
 
 ## What a run does
 
-1. Builds the image `ht-linux-e2e-runner:<arch>` from [Dockerfile](Dockerfile), with `git archive <HEAD sha>
-   scripts/linux-e2e tests/herdr-releases.tsv` as the build context: ubuntu 24.04 (pinned by its multi-arch index
+1. Builds the image from [Dockerfile](Dockerfile) and starts the container from the immutable image id that build
+   wrote (`--iidfile`, recorded in `runner.json` with the container's own image); the tag `ht-linux-e2e-runner:<arch>`
+   is shared by every worktree and is never what `docker run` uses. The build uses `git archive <HEAD sha>
+   scripts/linux-e2e tests/herdr-releases.tsv` as its context. Every `RUN` is `bash -euo pipefail`, and each
+   download goes through [image-fetch.sh](image-fetch.sh) (download, SHA-256, version check, each fatal, then the
+   artifact is moved into place). Contents: ubuntu 24.04 (pinned by its multi-arch index
    digest), Rust `1.94.0` (CI's `RUST_TOOLCHAIN`) plus the musl target, Herdr from `tests/herdr-releases.tsv`
    (newest listed release, SHA-256 checked for the container's architecture), Node 22 (official tarball, SHA-256
    pinned), Claude Code and the Codex CLI via `npm ci` from [npm/package-lock.json](npm/package-lock.json), which
@@ -58,7 +62,12 @@ Evidence layout: `runner.json` (SHA, tree, image id, steps with exit codes and t
 container removal), `host/NN-step.log` (each step's output), `container/` (what the steps wrote: Herdr server log,
 release smoke report and leak check, doctor reports, pane screens, harness process snapshots).
 
-Exit codes: 0 passed, 1 failed, 2 refused (usage, preflight, missing credentials), 128+N interrupted by signal N.
+Exit codes: 0 passed, 1 failed, 2 refused (usage, preflight, missing credentials), 3 the evidence could not be
+copied out (overrides 0 and 1: an unreviewable run never passes), 128+N interrupted by signal N. On exit 3 the
+stopped container is kept, and its name and a `docker cp` recovery command printed (`runner.json`:
+`evidence_copy`, `kept_container`, `container_removed: false`), when the watchdog's exit code (0 from its stop trap,
+3 from a lapsed lease) proves it deleted the staged credentials first; otherwise the container is removed and the
+evidence is reported lost. A later run of the worktree saves a kept container's evidence under `leftovers/`.
 
 ## Subcommands
 

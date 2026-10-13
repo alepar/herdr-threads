@@ -23,7 +23,9 @@ SIGKILLed or the host died) or a maximum life passes. Nothing on the host is tou
 that label and the evidence dir. No credential ever enters an image or the evidence; wake-e2e copies the ones it is
 given into its container only (README.md, "Credentials").
 
-Exit codes: 0 passed; 1 failed; 2 refused (usage, preflight, missing credentials); 128+N interrupted by signal N.
+Exit codes: 0 passed; 1 failed; 2 refused (usage, preflight, missing credentials); 3 the evidence could not be
+copied out (whatever the steps did; the stopped container is kept for recovery when its credentials are known to
+be scrubbed, see README.md); 128+N interrupted by signal N.
 Python 3.9+, standard library only.
 """
 from __future__ import annotations
@@ -56,7 +58,7 @@ STEP = ["bash", f"{SRC}/scripts/linux-e2e/in-container.sh"]
 CRED_PREFIX = "ht-linux-e2e-cred."
 # name -> mount point; volume names carry the architecture and the worktree (no sharing across worktrees).
 VOLUMES = {"cargo": f"{HOME}/.cargo/registry", "target": f"{SRC}/target", "herdr": f"{HOME}/.cache/herdr-releases"}
-EXIT_OK, EXIT_FAIL, EXIT_REFUSED = 0, 1, 2
+EXIT_OK, EXIT_FAIL, EXIT_REFUSED, EXIT_EVIDENCE = 0, 1, 2, 3
 # scripts/wake-e2e.py's options (True: takes a value). The runner owns some, consumes --harness (passing a canonical
 # one itself) and refuses abbreviations of any of them, which the driver's argparse would otherwise expand.
 DRIVER_OPTIONS = {"--bin": True, "--harness": True, "--cases": True, "--evidence-dir": True, "--keep": False,
@@ -305,6 +307,7 @@ class Runner:
         self.private = None      # 0700 host dir for an env-file; removed at exit
         self.lock_fd = None      # flock held on <private>/lock while the dir exists
         self.container = False   # a `docker run` was attempted: cleanup must remove self.name
+        self.evidence_failed = False
         self.child = None
         self.step_no = 0
         self.beat_stop = threading.Event()
@@ -342,6 +345,7 @@ class Runner:
                 if self.child.poll() is None:
                     self.child.kill()
                     self.child.wait()
+                self.child.stdout.close()
                 self.child = None
         self.facts["steps"].append({"step": name, "rc": rc, "elapsed_s": round(time.monotonic() - started, 1),
                                     "log": str(path.relative_to(self.evidence))})
@@ -441,16 +445,22 @@ class Runner:
                 else:
                     tar.extractall(Path(ctx) / "c")
             print(f"  building image {tag} (log: evidence/host)", flush=True)
+            iidfile = Path(ctx) / "iid"
             rc = self.call([self.docker, "build", "--progress=plain", "--platform", f"linux/{arch}",
-                            "--label", f"{LABEL}=1", "-t", tag,
+                            "--label", f"{LABEL}=1", "-t", tag, "--iidfile", str(iidfile),
                             "-f", str(Path(ctx) / "c/scripts/linux-e2e/Dockerfile"), str(Path(ctx) / "c")],
                            "image-build", quiet=True)
+            image_id = iidfile.read_text().strip() if rc == 0 and iidfile.exists() else ""
         if rc != 0:
             raise RuntimeError(f"docker build failed (rc {rc})")
-        self.facts["image"] = {"tag": tag, "id": self.capture("image", "inspect", "--format", "{{.Id}}", tag)}
-        return tag
+        if not image_id.startswith("sha256:"):
+            raise RuntimeError(f"docker build wrote no image id ({image_id!r})")
+        # The tag is shared by every run of this architecture (any worktree or ref): a convenience only. This run
+        # starts the immutable id its own build produced, so a concurrent build that retags cannot swap images.
+        self.facts["image"] = {"tag": tag, "id": image_id}
+        return image_id
 
-    def start(self, tag, arch):
+    def start(self, image_id, arch):
         labels = [f"{LABEL}=1", f"{WORKTREE_LABEL}={self.worktree}", f"{RUN_LABEL}={self.run_id}"]
         argv = [self.docker, "run", "-d", "--init", "--name", self.name, "--platform", f"linux/{arch}",
                 "--hostname", "ht-linux-e2e", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
@@ -462,10 +472,13 @@ class Runner:
                 volume = f"{IMAGE}-{key}-{arch}-{self.worktree}"
                 self.capture("volume", "create", "--label", labels[0], "--label", labels[1], volume)
                 argv += ["-v", f"{volume}:{mount}"]
-        argv += [tag, "bash", "-c", WATCHDOG]
+        argv += [image_id, "bash", "-c", WATCHDOG]
         self.container = True
         if self.call(argv, "container-start", quiet=True) != 0:
             raise RuntimeError("docker run failed")
+        self.facts["image"]["container_image"] = self.capture("inspect", "-f", "{{.Image}}", self.name)
+        if self.facts["image"]["container_image"] != image_id:
+            raise RuntimeError(f"container runs {self.facts['image']['container_image']}, not the built {image_id}")
         self.beat = threading.Thread(target=self.heartbeat, name="lease", daemon=True)
         self.beat.start()
         print(f"  container {self.name} (lease {LEASE_S}s, max life {self.max_life}s)", flush=True)
@@ -534,11 +547,16 @@ class Runner:
             raise RuntimeError(f"staging {name} failed")
 
     def copy_evidence(self):
+        """Copy the container's evidence dir out; returns None on success, else the error."""
         out = self.evidence / "container"
-        out.mkdir(parents=True, exist_ok=True)
-        r = detached([self.docker, "cp", f"{self.name}:{HOME}/evidence/.", str(out)], timeout=300)
+        try:
+            out.mkdir(parents=True, exist_ok=True)
+            r = detached([self.docker, "cp", f"{self.name}:{HOME}/evidence/.", str(out)], timeout=300)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return repr(e)
         if r.returncode != 0:
-            print(f"linux-e2e: evidence copy failed: {r.stderr.strip()}", file=sys.stderr)
+            return f"rc {r.returncode}: {r.stderr.strip()[:300]}"
+        return None
 
     def cleanup(self):
         """Stop (agents die, the watchdog scrubs credentials), copy the evidence from the stopped container, remove."""
@@ -548,12 +566,29 @@ class Runner:
             self.child.terminate()
         if self.container:
             stop = detached([self.docker, "stop", "-t", "5", self.name])
-            if stop.returncode != 0 and "No such container" not in stop.stderr:
+            exists = "No such container" not in stop.stderr
+            if stop.returncode != 0 and exists:
                 problems.append(f"docker stop {self.name}: {stop.stderr.strip()}")
-            try:
-                self.copy_evidence()
-            except Exception as e:  # noqa: BLE001 - cleanup continues
-                problems.append(f"evidence copy: {e!r}")
+            error = self.copy_evidence() if exists else None
+            self.facts["evidence_copy"] = "failed: " + error if error else ("ok" if exists else "no container")
+            if error:
+                self.evidence_failed = True
+                problems.append(f"evidence copy failed ({error})")
+                # The watchdog exits 0 from its SIGTERM trap (or 3 from a lapsed lease) only after deleting the
+                # staged and driver-copied credentials; the Claude token lived only in process memory. Then the
+                # stopped container holds no credential and is kept as the only copy of the evidence.
+                code = detached([self.docker, "inspect", "-f", "{{.State.ExitCode}}", self.name]).stdout.strip()
+                self.facts["watchdog_exit"] = code
+                if code in ("0", "3"):
+                    self.facts["container_removed"] = False
+                    self.facts["kept_container"] = self.name
+                    print(f"linux-e2e: evidence copy failed; kept the stopped container {self.name} (credentials "
+                          f"scrubbed, watchdog exit {code}). Recover with: docker cp {self.name}:{HOME}/evidence/. "
+                          f"DIR && docker rm -v {self.name}", file=sys.stderr)
+                    self.drop_private()
+                    return problems
+                print(f"linux-e2e: evidence copy failed and the credential scrub is unconfirmed (watchdog exit "
+                      f"{code or 'unknown'}): removing {self.name}; its evidence is lost", file=sys.stderr)
             r = detached([self.docker, "rm", "-f", "-v", self.name])
             gone = detached([self.docker, "ps", "-a", "-q", "--filter", f"name=^{self.name}$"])
             if r.returncode != 0 and "No such container" not in r.stderr:
@@ -782,7 +817,8 @@ def main(argv=None):
         problems = runner.cleanup()
         if problems:
             print("linux-e2e: cleanup incomplete: " + "; ".join(problems), file=sys.stderr)
-            rc = EXIT_FAIL
+            if rc < 128:
+                rc = EXIT_EVIDENCE if runner.evidence_failed else EXIT_FAIL
         runner.facts["exit"] = rc
         try:
             runner.evidence.mkdir(parents=True, exist_ok=True)

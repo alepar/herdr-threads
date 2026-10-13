@@ -9,21 +9,30 @@ Run: python3 -m unittest discover -s scripts/tests -p test_linux_e2e_run.py  (or
 """
 from __future__ import annotations
 
-import fcntl
 import datetime
+import fcntl
+import hashlib
+import importlib.machinery
+import importlib.util
+import io
 import json
 import os
 import signal
 import subprocess
 import sys
+import tarfile
 import tempfile
 import textwrap
 import time
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 RUN = Path(__file__).resolve().parent.parent / "linux-e2e" / "run"
 IN_CONTAINER = RUN.parent / "in-container.sh"
+IMAGE_FETCH = RUN.parent / "image-fetch.sh"
+DOCKERFILE = RUN.parent / "Dockerfile"
 STEP_SCRIPT = "/home/tester/src/scripts/linux-e2e/in-container.sh"
 SECRET = "sk-ant-oat01-fake-token-for-the-runner-self-test"
 
@@ -55,11 +64,21 @@ FAKE_DOCKER = textwrap.dedent(r'''
             open(path, "w").write("1")
     if cmd == "info":
         print("aarch64")
-    elif cmd == "image":
-        print("sha256:fake")
+    elif cmd == "build":
+        # Every build is a new immutable image; the shared tag moves to the newest one.
+        state = os.environ["FAKE_DOCKER_STATE"]
+        image = "sha256:" + os.urandom(8).hex()
+        open(argv[argv.index("--iidfile") + 1], "w").write(image + "\n")
+        open(os.path.join(state, "tag-" + argv[argv.index("-t") + 1].replace(":", "_")), "w").write(image)
     elif cmd == "inspect":
-        finished = json.loads(os.environ.get("FAKE_DOCKER_FINISHED", "{}"))
-        print(finished.get(argv[-1], "2020-01-01T00:00:00.000000000Z"))
+        fmt = argv[argv.index("-f") + 1]
+        if fmt == "{{.Image}}":
+            print(open(os.path.join(os.environ["FAKE_DOCKER_STATE"], "image-of-" + argv[-1])).read())
+        elif fmt == "{{.State.ExitCode}}":
+            print(os.environ.get("FAKE_DOCKER_EXIT_CODE", "0"))
+        else:
+            finished = json.loads(os.environ.get("FAKE_DOCKER_FINISHED", "{}"))
+            print(finished.get(argv[-1], "2020-01-01T00:00:00.000000000Z"))
     elif cmd == "volume" and argv[1] == "create":
         print(argv[-1])
     elif cmd == "volume" and argv[1] == "ls":
@@ -75,11 +94,21 @@ FAKE_DOCKER = textwrap.dedent(r'''
         print("lease renewal refused", file=sys.stderr)
         sys.exit(int(os.environ.get("FAKE_DOCKER_TOUCH_RC", "0")))
     elif cmd == "run":
+        # The image is the word before the container command (`bash -c WATCHDOG`); a tag resolves to its image now.
+        image = argv[argv.index("bash") - 1]
+        tagged = os.path.join(os.environ["FAKE_DOCKER_STATE"], "tag-" + image.replace(":", "_"))
+        if os.path.exists(tagged):
+            image = open(tagged).read()
+        name = argv[argv.index("--name") + 1]
+        open(os.path.join(os.environ["FAKE_DOCKER_STATE"], "image-of-" + name), "w").write(image)
         print("fakecontainerid")
     elif cmd == "stop":
         mark("STOP")
         time.sleep(float(os.environ.get("FAKE_DOCKER_STOP_S", "0")))
     elif cmd == "cp":
+        if os.environ.get("FAKE_DOCKER_CP_RC"):
+            print("simulated copy failure: no space left on device", file=sys.stderr)
+            sys.exit(int(os.environ["FAKE_DOCKER_CP_RC"]))
         dest = argv[-1]
         os.makedirs(dest, exist_ok=True)
         open(os.path.join(dest, "copied.txt"), "w").write("from the container\n")
@@ -129,9 +158,11 @@ class Fake(unittest.TestCase):
         git(self.repo, "add", "-A")
         git(self.repo, "-c", "user.name=t", "-c", "user.email=t@invalid", "commit", "-q", "-m", "fixture")
         self.log = self.tmp / "docker.log"
+        (self.tmp / "state").mkdir()
         self.evidence = self.tmp / "evidence"
         self.env = dict(os.environ, PATH=f"{bindir}{os.pathsep}{os.environ['PATH']}",
-                        FAKE_DOCKER_LOG=str(self.log), HT_LINUX_E2E_REPO=str(self.repo), TMPDIR=str(self.tmp))
+                        FAKE_DOCKER_LOG=str(self.log), HT_LINUX_E2E_REPO=str(self.repo), TMPDIR=str(self.tmp),
+                        FAKE_DOCKER_STATE=str(self.tmp / "state"))
         self.env.pop("HT_LINUX_E2E_DOCKER", None)
 
     def cli(self, *argv, evidence=True):
@@ -584,3 +615,220 @@ class InPanePreflight(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def load_runner():
+    loader = importlib.machinery.SourceFileLoader("linux_e2e_run", str(RUN))
+    spec = importlib.util.spec_from_loader("linux_e2e_run", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+class ImageSelection(Fake):
+    def test_interleaved_builds_never_swap_the_started_image(self):
+        """A builds, B builds (retagging the shared tag), A starts: A's container runs A's own image."""
+        mod = load_runner()
+        with mock.patch.dict(os.environ, self.env, clear=True), redirect_stdout(io.StringIO()):
+            runners = []
+            for name in ("a", "b"):
+                args = mod.parse(["self-test", "--no-cache", "--evidence-dir", str(self.tmp / f"ev-{name}")])
+                runner = mod.Runner(args)
+                runner.source()
+                runners.append(runner)
+            a, b = runners
+            image_a = a.build_image("arm64")
+            image_b = b.build_image("arm64")
+            self.assertNotEqual(image_a, image_b)
+            tag = (self.tmp / "state" / "tag-ht-linux-e2e-runner_arm64").read_text()
+            self.assertEqual(tag, image_b)  # the shared tag now names B's image
+            try:
+                a.start(image_a, "arm64")
+            finally:
+                a.beat_stop.set()
+        run = next(x for x in self.argvs() if x[:1] == ["run"])
+        self.assertIn(image_a, run)
+        self.assertNotIn("ht-linux-e2e-runner:arm64", run)
+        self.assertEqual(a.facts["image"], {"tag": "ht-linux-e2e-runner:arm64", "id": image_a,
+                                            "container_image": image_a})
+
+    def test_the_cli_starts_the_built_id(self):
+        self.assertEqual(self.run_cli("self-test").returncode, 0)
+        image = self.facts()["image"]
+        self.assertTrue(image["id"].startswith("sha256:"))
+        self.assertEqual(image["container_image"], image["id"])
+        self.assertIn(image["id"], next(x for x in self.argvs() if x[:1] == ["run"]))
+
+
+class EvidenceCopyFailure(Fake):
+    def test_copy_failure_keeps_the_scrubbed_container_and_fails_the_run(self):
+        r = self.run_cli("self-test", env={"FAKE_DOCKER_CP_RC": "1"})
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertFalse(any(a[:1] == ["rm"] for a in self.argvs()))  # the stopped container is the only copy
+        facts = self.facts()
+        self.assertEqual(facts["exit"], 3)
+        self.assertFalse(facts["container_removed"])
+        self.assertEqual(facts["kept_container"], facts["container"])
+        self.assertTrue(facts["evidence_copy"].startswith("failed:"))
+        self.assertEqual(facts["watchdog_exit"], "0")
+        self.assertIn(f"docker cp {facts['container']}:", r.stderr)  # recovery command printed
+        order = [a[0] for a in self.argvs() if a[:1] in (["stop"], ["cp"])]
+        self.assertEqual(order, ["stop", "cp"])
+
+    def test_copy_failure_with_an_unconfirmed_scrub_removes_the_container(self):
+        r = self.run_cli("self-test", env={"FAKE_DOCKER_CP_RC": "1", "FAKE_DOCKER_EXIT_CODE": "137"})
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertEqual(len(self.removed()), 1)
+        self.assertIn("its evidence is lost", r.stderr)
+        facts = self.facts()
+        self.assertTrue(facts["evidence_copy"].startswith("failed:"))
+        self.assertNotIn("kept_container", facts)
+
+    def test_a_failing_run_with_a_copy_failure_still_reports_3(self):
+        r = self.run_cli("self-test", env={"FAKE_DOCKER_CP_RC": "1",
+                                           "FAKE_DOCKER_RC": json.dumps({"self-test": 1})})
+        self.assertEqual(r.returncode, 3)
+
+
+FAKE_CURL = """#!/bin/sh
+[ -z "$FAKE_CURL_RC" ] || exit "$FAKE_CURL_RC"
+out=''
+while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift 2 ;; *) shift ;; esac; done
+cp "$FAKE_CURL_FILE" "$out"
+"""
+FAKE_SHA256SUM = """#!PYTHON
+import hashlib, sys
+ok = True
+for line in sys.stdin:
+    digest, path = line.rstrip("\\n").split("  ", 1)
+    actual = hashlib.sha256(open(path, "rb").read()).hexdigest()
+    print(path + (": OK" if actual == digest else ": FAILED"))
+    ok = ok and actual == digest
+sys.exit(0 if ok else 1)
+"""
+
+
+class ImageFetch(unittest.TestCase):
+    """Negative controls for scripts/linux-e2e/image-fetch.sh (the Dockerfile's downloads) with fake curl and
+    sha256sum: a failed download, a checksum mismatch or a wrong version exits non-zero and promotes nothing."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="ht-image-fetch."))
+        self.addCleanup(subprocess.run, ["rm", "-rf", str(self.tmp)])
+        bindir = self.tmp / "bin"
+        bindir.mkdir()
+        (bindir / "curl").write_text(FAKE_CURL)
+        (bindir / "sha256sum").write_text(FAKE_SHA256SUM.replace("PYTHON", sys.executable))
+        for f in bindir.iterdir():
+            f.chmod(0o755)
+        self.dest = self.tmp / "dest"
+        self.dest.mkdir()
+        self.env = dict(os.environ, PATH=f"{bindir}{os.pathsep}{os.environ['PATH']}", HOME=str(self.tmp / "home"))
+
+    def artifact(self, name, content, mode=0o755):
+        path = self.tmp / name
+        path.write_bytes(content)
+        path.chmod(mode)
+        return path, hashlib.sha256(content).hexdigest()
+
+    def fetch(self, *argv, served, curl_rc=None):
+        env = dict(self.env, FAKE_CURL_FILE=str(served))
+        if curl_rc:
+            env["FAKE_CURL_RC"] = str(curl_rc)
+        return subprocess.run(["bash", str(IMAGE_FETCH), *argv], env=env, capture_output=True, text=True, timeout=60)
+
+    def leftovers(self):
+        return sorted(p.name for p in self.dest.iterdir())
+
+    def herdr(self, prints, digest_of=None, curl_rc=None):
+        binary, digest = self.artifact("herdr-bin", f"#!/bin/sh\necho '{prints}'\n".encode())
+        if digest_of is not None:
+            digest = hashlib.sha256(digest_of).hexdigest()
+        tsv = self.tmp / "releases.tsv"
+        tsv.write_text(f"# header\n0.9.2\therdr-linux-aarch64\t{'0' * 64}\n0.9.3\therdr-linux-aarch64\t{digest}\n")
+        return self.fetch("herdr", str(tsv), "aarch64", str(self.dest / "herdr"), str(self.dest / "herdr-version"),
+                          served=binary, curl_rc=curl_rc)
+
+    def test_herdr_good(self):
+        r = self.herdr("herdr 0.9.3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.leftovers(), ["herdr", "herdr-version"])
+        self.assertEqual((self.dest / "herdr-version").read_text(), "0.9.3\n")
+
+    def test_herdr_checksum_mismatch(self):
+        r = self.herdr("herdr 0.9.3", digest_of=b"something else")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("checksum mismatch", r.stderr)
+        self.assertEqual(self.leftovers(), [])  # no binary, no stamp, no scratch dir
+
+    def test_herdr_download_failure(self):
+        r = self.herdr("herdr 0.9.3", curl_rc=22)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("download failed", r.stderr)
+        self.assertEqual(self.leftovers(), [])
+
+    def test_herdr_wrong_version(self):
+        r = self.herdr("herdr 0.9.2")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("expected 'herdr 0.9.3'", r.stderr)
+        self.assertEqual(self.leftovers(), [])
+
+    def node(self, prints, bad_digest=False):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:xz") as tar:
+            script = f"#!/bin/sh\necho {prints}\n".encode()
+            info = tarfile.TarInfo("node-v22.23.3-linux-arm64/bin/node")
+            info.size, info.mode = len(script), 0o755
+            tar.addfile(info, io.BytesIO(script))
+        tarball, digest = self.artifact("node.tar.xz", buf.getvalue(), mode=0o644)
+        if bad_digest:
+            digest = "0" * 64
+        return self.fetch("node", "22.23.3", "arm64", digest, str(self.dest / "node"), served=tarball)
+
+    def test_node_good(self):
+        r = self.node("v22.23.3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.dest / "node" / "bin" / "node").exists())
+
+    def test_node_checksum_mismatch(self):
+        r = self.node("v22.23.3", bad_digest=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(self.leftovers(), [])
+
+    def test_node_wrong_version(self):
+        r = self.node("v22.0.0")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(self.leftovers(), [])
+
+    def rustup(self, toolchain_prints, bad_digest=False):
+        marker = self.tmp / "rustup-ran"
+        rustc = f"#!/bin/sh\necho '{toolchain_prints}'\n"
+        init = (f"#!/bin/sh\ntouch '{marker}'\nmkdir -p \"$HOME/.cargo/bin\"\n"
+                f"cat > \"$HOME/.cargo/bin/rustc\" <<'EOF'\n{rustc}EOF\nchmod 755 \"$HOME/.cargo/bin/rustc\"\n").encode()
+        served, digest = self.artifact("rustup-init", init)
+        if bad_digest:
+            digest = "0" * 64
+        r = self.fetch("rustup", "1.29.1", "aarch64", digest, "1.94.0", "aarch64-unknown-linux-musl", served=served)
+        return r, marker
+
+    def test_rustup_good(self):
+        r, marker = self.rustup("rustc 1.94.0 (4a4ef493e 2026-03-02)")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(marker.exists())
+
+    def test_rustup_checksum_mismatch_never_executes(self):
+        r, marker = self.rustup("rustc 1.94.0 (x)", bad_digest=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(marker.exists())
+
+    def test_rustup_wrong_toolchain(self):
+        r, _ = self.rustup("rustc 1.93.0 (x)")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("expected 1.94.0", r.stderr)
+
+    def test_dockerfile_uses_errexit_and_the_checked_fetcher(self):
+        text = DOCKERFILE.read_text()
+        self.assertIn('SHELL ["/bin/bash", "-euo", "pipefail", "-c"]', text)
+        for what in ("herdr", "node", "rustup"):
+            self.assertIn(f"/opt/ht/image-fetch.sh {what} ", text)
+        self.assertNotIn("curl -", text)  # every download goes through image-fetch.sh
