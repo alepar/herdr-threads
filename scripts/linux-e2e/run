@@ -69,20 +69,48 @@ RUNNER_OWNED_DRIVER_ARGS = ("--bin", "--codex-auth-home", "--self-test", "--evid
 HARNESSES = ("claude", "codex")
 OAUTH_TOKEN_PREFIX = "sk-ant-oat"  # the prefix Claude Code's own binary checks for OAuth tokens (2.1.296 strings)
 LEASE_S = int(os.environ.get("HT_LINUX_E2E_LEASE_S", "60"))
-# The watchdog: the container's main process (under --init). It renews nothing itself; the runner touches the lease
-# file every LEASE_S/4 s. Without renewal for LEASE_S, or past MAX_LIFE_S, or on docker stop (SIGTERM), it removes
-# staged and driver-copied credentials and exits, which stops the container and kills everything in it.
+# The watchdog: the container's main process (under --init). The runner touches its lease file every LEASE_S/4 s.
+# Without renewal for LEASE_S, past MAX_LIFE_S, or on docker stop (SIGTERM), it stops every other process in the
+# container (kill -1, only when PID 1 is docker-init/tini, i.e. inside the container), deletes everything that may
+# hold a credential (staged copies, the driver's scratch Codex home and Claude config dirs, harness homes), checks
+# that none of it remains, and exits: 0 (stopped by the host) or 3 (lease lapsed / max life) only after a verified
+# scrub, 4 when something survived. Exiting stops the container. The host keeps a container (evidence recovery)
+# only on 0 or 3. HT_LE2E_TMP exists for scripts/tests/test_linux_e2e_run.py.
 WATCHDOG = r'''
-lease=$HOME/run/lease; mkdir -p "$HOME/run" "$HOME/evidence"; touch "$lease"; start=$(date +%s)
-scrub() { rm -rf "$HOME/.ht-creds"; find /tmp -path '/tmp/ht-wake-e2e.*' \( -name auth.json -o -name .credentials.json \) -delete 2>/dev/null; }
-trap 'scrub; exit 0' TERM INT HUP
+lease=$HOME/run/lease; tmp=${HT_LE2E_TMP:-/tmp}; ev=$HOME/evidence
+mkdir -p "$HOME/run" "$ev"; touch "$lease"; start=$(date +%s)
+secrets() {
+  for p in "$HOME/.ht-creds" "$tmp"/ht-wake-e2e.*/claude-config "$tmp"/ht-wake-e2e.*/codex-home \
+           "$HOME/.codex/auth.json" "$HOME/.claude/.credentials.json" "$HOME/.claude.json"; do
+    if [ -e "$p" ]; then printf '%s\n' "$p"; fi
+  done
+  find "$tmp" -path "$tmp/ht-wake-e2e.*" \( -name auth.json -o -name .credentials.json -o -name .claude.json \) \
+    2>/dev/null || true
+}
+stop_all() {
+  case "$(cat /proc/1/comm 2>/dev/null)" in
+    docker-init|tini) kill -TERM -1 2>/dev/null; sleep 1; kill -KILL -1 2>/dev/null ;;
+  esac
+}
+finish() {
+  trap '' TERM INT HUP
+  stop_all
+  secrets | while IFS= read -r p; do rm -rf "$p" 2>/dev/null; done
+  left=$(secrets | sort -u | tr '\n' ' ')
+  if [ -n "$left" ]; then
+    echo "watchdog: $1; scrub INCOMPLETE, still present: $left" | tee "$ev/watchdog.txt"; exit 4
+  fi
+  echo "watchdog: $1; other processes stopped, credentials scrubbed and verified" | tee "$ev/watchdog.txt"
+  exit "$2"
+}
+trap 'finish "stopped by the host" 0' TERM INT HUP
 while :; do
-  now=$(date +%s); age=$((now - $(stat -c %Y "$lease" 2>/dev/null || echo 0)))
-  if [ "$age" -gt "$HT_LE2E_LEASE_S" ]; then why="host lease expired (${age}s without a heartbeat)"
-  elif [ $((now - start)) -gt "$HT_LE2E_MAX_LIFE_S" ]; then why="maximum life ${HT_LE2E_MAX_LIFE_S}s reached"
-  else sleep 2 & wait $!; continue; fi
-  echo "watchdog: $why; scrubbed credentials, stopping the container" | tee "$HOME/evidence/watchdog.txt"
-  scrub; exit 3
+  now=$(date +%s); mtime=$(stat -c %Y "$lease" 2>/dev/null || stat -f %m "$lease" 2>/dev/null || echo 0)
+  age=$((now - mtime))
+  if [ "$age" -gt "$HT_LE2E_LEASE_S" ]; then finish "host lease expired (${age}s without a heartbeat)" 3
+  elif [ $((now - start)) -gt "$HT_LE2E_MAX_LIFE_S" ]; then finish "maximum life ${HT_LE2E_MAX_LIFE_S}s reached" 3
+  fi
+  sleep 2 & wait $!
 done
 '''
 
@@ -308,6 +336,7 @@ class Runner:
         self.lock_fd = None      # flock held on <private>/lock while the dir exists
         self.container = False   # a `docker run` was attempted: cleanup must remove self.name
         self.evidence_failed = False
+        self.started = False     # `docker run` succeeded
         self.child = None
         self.step_no = 0
         self.beat_stop = threading.Event()
@@ -477,6 +506,7 @@ class Runner:
         self.container = True
         if self.call(argv, "container-start", quiet=True) != 0:
             raise RuntimeError("docker run failed")
+        self.started = True
         self.facts["image"]["container_image"] = self.capture("inspect", "-f", "{{.Image}}", self.name)
         if self.facts["image"]["container_image"] != image_id:
             raise RuntimeError(f"container runs {self.facts['image']['container_image']}, not the built {image_id}")
@@ -566,18 +596,23 @@ class Runner:
         if self.child is not None and self.child.poll() is None:
             self.child.terminate()
         if self.container:
-            stop = detached([self.docker, "stop", "-t", "5", self.name])
+            stop = detached([self.docker, "stop", "-t", "15", self.name])  # the scrub takes ~1-2 s
             exists = "No such container" not in stop.stderr
             if stop.returncode != 0 and exists:
                 problems.append(f"docker stop {self.name}: {stop.stderr.strip()}")
-            error = self.copy_evidence() if exists else None
+            if exists:
+                error = self.copy_evidence()
+            elif self.started:  # it ran, then vanished (removed or died outside this run): its evidence is gone
+                error = "the container vanished after it started"
+            else:
+                error = None
             self.facts["evidence_copy"] = "failed: " + error if error else ("ok" if exists else "no container")
             if error:
                 self.evidence_failed = True
                 problems.append(f"evidence copy failed ({error})")
-                # The watchdog exits 0 from its SIGTERM trap (or 3 from a lapsed lease) only after deleting the
-                # staged and driver-copied credentials; the Claude token lived only in process memory. Then the
-                # stopped container holds no credential and is kept as the only copy of the evidence.
+                # The watchdog exits 0 (stop trap) or 3 (lapsed lease) only after stopping every other process and
+                # verifying that no staged or driver-copied credential remains (4 otherwise); the Claude token
+                # lived only in process memory. Then the stopped container is kept as the only evidence copy.
                 code = detached([self.docker, "inspect", "-f", "{{.State.ExitCode}}", self.name]).stdout.strip()
                 self.facts["watchdog_exit"] = code
                 if code in ("0", "3"):
@@ -592,11 +627,13 @@ class Runner:
                       f"{code or 'unknown'}): removing {self.name}; its evidence is lost", file=sys.stderr)
             r = detached([self.docker, "rm", "-f", "-v", self.name])
             gone = detached([self.docker, "ps", "-a", "-q", "--filter", f"name=^{self.name}$"])
+            removal = []
             if r.returncode != 0 and "No such container" not in r.stderr:
-                problems.append(f"docker rm -f {self.name}: {r.stderr.strip()}")
+                removal.append(f"docker rm -f {self.name}: {r.stderr.strip()}")
             elif gone.stdout.strip():
-                problems.append(f"container {self.name} still exists")
-            self.facts["container_removed"] = not problems
+                removal.append(f"container {self.name} still exists")
+            problems += removal
+            self.facts["container_removed"] = not removal
         self.drop_private()
         return problems
 

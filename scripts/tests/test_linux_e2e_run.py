@@ -93,6 +93,9 @@ FAKE_DOCKER = textwrap.dedent(r'''
     elif argv[:1] == ["exec"] and argv[-2:] == ["touch", "/home/tester/run/lease"]:
         print("lease renewal refused", file=sys.stderr)
         sys.exit(int(os.environ.get("FAKE_DOCKER_TOUCH_RC", "0")))
+    elif cmd == "run" and os.environ.get("FAKE_DOCKER_RUN_RC"):
+        print("simulated docker run failure", file=sys.stderr)
+        sys.exit(int(os.environ["FAKE_DOCKER_RUN_RC"]))
     elif cmd == "run":
         # The image is the word before the container command (`bash -c WATCHDOG`); a tag resolves to its image now.
         image = argv[argv.index("bash") - 1]
@@ -102,6 +105,9 @@ FAKE_DOCKER = textwrap.dedent(r'''
         name = argv[argv.index("--name") + 1]
         open(os.path.join(os.environ["FAKE_DOCKER_STATE"], "image-of-" + name), "w").write(image)
         print("fakecontainerid")
+    elif cmd == "stop" and os.environ.get("FAKE_DOCKER_VANISHED"):
+        print("Error response from daemon: No such container: " + argv[-1], file=sys.stderr)
+        sys.exit(1)
     elif cmd == "stop":
         mark("STOP")
         time.sleep(float(os.environ.get("FAKE_DOCKER_STOP_S", "0")))
@@ -836,3 +842,91 @@ class ImageFetch(unittest.TestCase):
         for what in ("herdr", "node", "rustup"):
             self.assertIn(f"/opt/ht/image-fetch.sh {what} ", text)
         self.assertNotIn("curl -", text)  # every download goes through image-fetch.sh
+
+
+class ContainerOutcomes(Fake):
+    def test_a_container_that_vanished_after_starting_is_an_evidence_failure(self):
+        r = self.run_cli("self-test", env={"FAKE_DOCKER_VANISHED": "1"})
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        facts = self.facts()
+        self.assertEqual(facts["evidence_copy"], "failed: the container vanished after it started")
+        self.assertFalse(any(a[:1] == ["cp"] for a in self.argvs()))
+
+    def test_a_container_that_never_started_is_a_plain_failure(self):
+        r = self.run_cli("self-test", env={"FAKE_DOCKER_RUN_RC": "125"})
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertNotEqual(self.facts().get("evidence_copy", ""), "failed: the container vanished after it started")
+
+
+def load_watchdog():
+    return load_runner().WATCHDOG
+
+
+class Watchdog(unittest.TestCase):
+    """The container watchdog under bash on the host: HOME and the driver's temp root redirected (HT_LE2E_TMP).
+    Its process sweep (kill -1) only runs when PID 1 is docker-init/tini, never here."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="ht-watchdog."))
+        self.addCleanup(self.unlock_and_remove)
+        self.home = self.tmp / "home"
+        self.root = self.tmp / "t"
+        self.home.mkdir()
+        self.root.mkdir()
+        self.env = dict(os.environ, HOME=str(self.home), HT_LE2E_TMP=str(self.root), HT_LE2E_LEASE_S="100000",
+                        HT_LE2E_MAX_LIFE_S="100000")
+
+    def unlock_and_remove(self):
+        for d in self.tmp.rglob("*"):
+            if d.is_dir():
+                d.chmod(0o755)
+        subprocess.run(["rm", "-rf", str(self.tmp)])
+
+    def plant(self):
+        run = self.root / "ht-wake-e2e.abc"
+        files = [self.home / ".ht-creds/codex/auth.json", run / "codex-home/auth.json",
+                 run / "claude-config/.claude.json", run / "elsewhere/.credentials.json",
+                 self.home / ".codex/auth.json"]
+        for f in files:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("secret")
+        return run, files
+
+    def stop(self, before=None):
+        p = subprocess.Popen(["bash", "-c", load_watchdog()], env=self.env, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
+        wait_for(self.home / "run" / "lease", "the watchdog start")
+        if before:
+            before()
+        time.sleep(0.2)
+        p.send_signal(signal.SIGTERM)
+        out, err = p.communicate(timeout=30)
+        return p.returncode, out + err
+
+    def test_verified_scrub_exits_0(self):
+        run, files = self.plant()
+        rc, out = self.stop()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("scrubbed and verified", out)
+        for f in files:
+            self.assertFalse(f.exists(), f)
+        self.assertFalse((run / "claude-config").exists())
+        self.assertIn("verified", (self.home / "evidence" / "watchdog.txt").read_text())
+
+    def test_a_surviving_secret_exits_4(self):
+        run, _ = self.plant()
+        stuck = run / "codex-home"
+        stuck.chmod(0o500)  # its auth.json cannot be deleted
+        rc, out = self.stop()
+        self.assertEqual(rc, 4, out)
+        self.assertIn("scrub INCOMPLETE", out)
+        self.assertIn("codex-home", (self.home / "evidence" / "watchdog.txt").read_text())
+
+    def test_a_lapsed_lease_scrubs_and_exits_3(self):
+        _, files = self.plant()
+        env = dict(self.env, HT_LE2E_LEASE_S="1")
+        r = subprocess.run(["bash", "-c", load_watchdog()], env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("host lease expired", r.stdout)
+        for f in files:
+            self.assertFalse(f.exists(), f)

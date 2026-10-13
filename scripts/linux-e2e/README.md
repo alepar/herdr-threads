@@ -45,8 +45,11 @@ Common options: `--evidence-dir DIR` (default: a new directory under the system 
 
 The container bounds its own life. Its main process is a watchdog; the runner renews a lease file in it every
 15 s (`docker exec touch`). If the runner is SIGKILLed or the host dies, the lease expires after 60 s; at that
-point, after `--timeout` + 30 min for `wake-e2e` (2 h for the others), or on `docker stop`, the watchdog deletes the
-staged and driver-copied credentials and exits, which stops the container and kills the agents. A killed runner
+point, after `--timeout` + 30 min for `wake-e2e` (2 h for the others), or on `docker stop`, the watchdog stops every
+other process in the container, deletes everything that may hold a credential (`~/.ht-creds`, the driver's scratch
+`codex-home` and `claude-config` dirs under `/tmp/ht-wake-e2e.*`, any `auth.json`, `.credentials.json` or
+`.claude.json` there, and the harness homes' credential files), checks that none of it remains, and exits: 0 or 3
+after a verified scrub, 4 if anything survived. Exiting stops the container. A killed runner
 still leaves a stopped container (and, if it held one, its env-file dir `$TMPDIR/ht-linux-e2e-cred.<pid>.*`): the
 next run removes this worktree's stopped containers itself (their evidence saved under `leftovers/`; the watchdog
 has already scrubbed their credentials), except one whose runner is still alive (it holds its run lock
@@ -55,7 +58,8 @@ has already scrubbed their credentials), except one whose runner is still alive 
 writing to it, so pid reuse cannot hide a stale one). `clean` (no flag) touches only this worktree's containers and
 volumes, its stale env-file dirs and the unused dangling runner images it built (builds carry the worktree
 label); `clean --all` removes every object with the
-shared label, including containers someone started by hand from the image (they inherit its label). This is fail-safe, not resumable: a host that sleeps, or a runner suspended with Ctrl-Z, for longer than the
+shared label, including containers someone started by hand from the image (they inherit its label). Images built
+before a5fb8d75 carry no worktree label, so only `clean --all` removes them (or `docker rmi <id>`). This is fail-safe, not resumable: a host that sleeps, or a runner suspended with Ctrl-Z, for longer than the
 lease (60 s) stops a live run too. Lease renewal failures are counted in `runner.json` (`lease`) and logged in
 `host/lease.log`.
 
@@ -67,8 +71,9 @@ Exit codes: 0 passed, 1 failed, 2 refused (usage, preflight, missing credentials
 copied out (overrides 0 and 1: an unreviewable run never passes), 128+N interrupted by signal N. On exit 3 the
 stopped container is kept, and its name and a `docker cp` recovery command printed (`runner.json`:
 `evidence_copy`, `kept_container`, `container_removed: false`), when the watchdog's exit code (0 from its stop trap,
-3 from a lapsed lease) proves it deleted the staged credentials first; otherwise the container is removed and the
-evidence is reported lost. A later run of the worktree saves a kept container's evidence under `leftovers/`.
+3 from a lapsed lease) proves it stopped everything else and verified the scrub first; otherwise the container is removed and the
+evidence is reported lost. A container that vanished after it started (removed or killed outside the run) is
+also exit 3: its evidence is gone. A later run of the worktree saves a kept container's evidence under `leftovers/`.
 
 ## Subcommands
 
