@@ -102,6 +102,20 @@ impl Matrix {
     }
 
     fn with_instance(instance: String) -> Self {
+        Self::with_instance_durability(instance, false)
+    }
+
+    /// Test processes relax commit durability by default; the witness below
+    /// runs every write, from the first, and its restart on the production
+    /// `FULL` setting.
+    fn with_production_durability() -> Self {
+        Self::with_instance_durability(
+            format!("crash-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]),
+            true,
+        )
+    }
+
+    fn with_instance_durability(instance: String, production_durability: bool) -> Self {
         let root = std::env::temp_dir().join(format!("ht-crash-matrix-{}", uuid::Uuid::new_v4()));
         std::fs::DirBuilder::new()
             .mode(0o700)
@@ -113,6 +127,9 @@ impl Matrix {
         });
         let db_path = root.join("store.db");
         let context = StoreContext::new(db_path.clone(), clock.clone());
+        if production_durability {
+            context.require_commit_durability();
+        }
         let db = context.open_writer().unwrap();
         db.execute(
             "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)",
@@ -121,7 +138,8 @@ impl Matrix {
         .unwrap();
         drop(db);
         let boot = uuid::Uuid::new_v4();
-        let (store, service) = Self::compose(&clock, &instance, &db_path, boot, false);
+        let (store, service) =
+            Self::compose(&clock, &instance, &db_path, boot, production_durability);
         Self {
             clock,
             instance,
@@ -131,7 +149,7 @@ impl Matrix {
             service,
             boot,
             executions: AtomicU64::new(1),
-            production_durability: false,
+            production_durability,
             _scratch: Scratch(root),
         }
     }
@@ -183,14 +201,6 @@ impl Matrix {
         self.service = service;
         self.ports = ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)));
         self.store = store;
-    }
-
-    /// Test processes relax commit durability by default; the witness below
-    /// runs its writes and its restart on the production `FULL` setting.
-    fn with_production_durability(mut self) -> Self {
-        self.production_durability = true;
-        self.restart();
-        self
     }
 
     fn scope(&self) -> String {
@@ -795,7 +805,7 @@ fn configured_batching_retains_first_attention_without_self_kicks() {
 /// holds it for a retained delay) instead of from durable rows.
 #[test]
 fn crash_after_send_before_any_wake_reservation_wakes_from_durable_rows() {
-    let mut m = Matrix::new().with_production_durability();
+    let mut m = Matrix::with_production_durability();
     let (s, r, thread) = m.pair();
     m.host_observes_idle(&r);
     let sent = m.send(&s, &thread, "hello", &[], "send-1").unwrap();

@@ -30,6 +30,7 @@ pub struct ServiceConfig {
 /// The test-support variable (milliseconds) that replaces the lanes' 5 s
 /// safety ticks and cadences in a daemon loaded by [`ServiceConfig::load`].
 /// Ordinary builds ignore it.
+#[cfg(feature = "test-support")]
 pub const TEST_LANE_TICK_ENV: &str = "HT_TEST_LANE_TICK_MS";
 
 impl Default for ServiceConfig {
@@ -98,10 +99,13 @@ impl ServiceConfig {
     pub fn load(paths: &InstancePaths) -> io::Result<Self> {
         let config = Self::load_file(paths)?;
         #[cfg(feature = "test-support")]
-        if let Some(millis) = std::env::var(TEST_LANE_TICK_ENV)
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-        {
+        if let Some(value) = std::env::var_os(TEST_LANE_TICK_ENV) {
+            let millis = value
+                .to_str()
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "invalid test lane tick")
+                })?;
             return config
                 .with_test_lane_tick(std::time::Duration::from_millis(millis))
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error));

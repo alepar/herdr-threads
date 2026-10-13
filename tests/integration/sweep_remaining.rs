@@ -2463,6 +2463,7 @@ fn retention_runs_alongside_the_wake_idle_bound() {
     let counts = s.probe.commit_counts();
     let kicks_from = s.probe.kick_log().len();
     let wake_from = s.probe.registered_idle_events(Lane::Wakes);
+    let deadline_from = s.probe.registered_idle_events(Lane::Deadlines);
     let observation_from = counts.get("observation").copied().unwrap_or(0);
     let elapsed = run_idle_window(&s, wake_from, observation_from);
     let after = s.probe.commit_counts();
@@ -2496,6 +2497,13 @@ fn retention_runs_alongside_the_wake_idle_bound() {
     assert!(
         (1..=ticks).contains(&wake_passes),
         "the wake lane made {wake_passes} passes in {elapsed:?} (at most {ticks})"
+    );
+    // The deadline lane's idle wait at the production cadence: the ticked
+    // idle test (lanes_latency) bounds it only relative to its test tick.
+    let deadline_passes = s.probe.registered_idle_events(Lane::Deadlines) - deadline_from;
+    assert!(
+        (1..=ticks).contains(&deadline_passes),
+        "the deadline lane made {deadline_passes} passes in {elapsed:?} (at most {ticks})"
     );
 }
 

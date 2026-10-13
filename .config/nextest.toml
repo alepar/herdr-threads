@@ -199,3 +199,8 @@ filter = "test(/^cli::topology_handoff::tests::live::automatic_live::modern_auto
 test-group = "automatic-envelope"
 threads-required = "num-test-threads"
 priority = 100
+
+# Runs its four (kind, target) plan cases side by side, one daemon each.
+[[profile.default.overrides]]
+filter = "binary(combined) & test(=golden_surfaces::handoff_bootstrap_plans)"
+threads-required = 4

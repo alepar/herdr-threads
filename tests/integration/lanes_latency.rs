@@ -715,13 +715,28 @@ fn idle_daemon_commits_nothing_from_deadline_wake_request_for_30s() {
         s.probe.idle_events(Lane::Wakes),
         s.probe.idle_events(Lane::Deadlines),
     );
+    // At least 12/5 of a tick, extended (up to six ticks) until each lane's
+    // pass and an observation commit were seen: capture time on a loaded host
+    // does not shrink with the test tick.
     let window = TEST_TICK * 12 / 5;
+    let window_limit = TEST_TICK * 6;
+    let observation_from = counts.get("observation").copied().unwrap_or(0);
     let started = Instant::now();
-    while started.elapsed() < window {
+    loop {
         s.probe.kick_registered(Lane::Retention);
-        std::thread::sleep(
-            Duration::from_millis(500).min(window.saturating_sub(started.elapsed())),
-        );
+        std::thread::sleep(Duration::from_millis(500).min(TEST_TICK / 2));
+        let elapsed = started.elapsed();
+        let passes_seen = s.probe.idle_events(Lane::Wakes) > wake_idle
+            && s.probe.idle_events(Lane::Deadlines) > deadline_idle
+            && s.probe
+                .commit_counts()
+                .get("observation")
+                .copied()
+                .unwrap_or(0)
+                > observation_from;
+        if (elapsed >= window && passes_seen) || elapsed >= window_limit {
+            break;
+        }
     }
     let elapsed = started.elapsed();
     let after = s.probe.commit_counts();
