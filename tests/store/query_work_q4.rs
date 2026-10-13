@@ -1,5 +1,5 @@
 //! Actual Q4 SQL/work witnesses; setup is outside every measured region.
-use super::{bind_query_agent, budget, fixture};
+use super::{bind_query_agent, budget, fixture_with_temp_store};
 use crate::protocol::{
     authority::{CallerClaim, CallerRole, Harness},
     ids::{
@@ -13,6 +13,27 @@ use sha2::{Digest, Sha256};
 
 fn text(value: impl Into<String>) -> Value {
     Value::Text(value.into())
+}
+
+/// Fixture-only statement reuse: each distinct INSERT/UPDATE is prepared once
+/// per fixture, not once per row (preparing compiles every trigger). The rows,
+/// their order and the transaction are unchanged.
+struct Rows<'c> {
+    tx: &'c Connection,
+    statements: std::collections::HashMap<&'static str, rusqlite::Statement<'c>>,
+}
+impl<'c> Rows<'c> {
+    fn execute(
+        &mut self,
+        sql: &'static str,
+        values: impl rusqlite::Params,
+    ) -> rusqlite::Result<usize> {
+        let statement = match self.statements.entry(sql) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(self.tx.prepare(sql)?),
+        };
+        statement.execute(values)
+    }
 }
 
 fn seeded(
@@ -35,7 +56,7 @@ fn seeded_body(
     Connection,
     BindingId,
 ) {
-    let (store, mut db) = fixture();
+    let (store, mut db) = fixture_with_temp_store(true);
     bind_query_agent(&db);
     let binding = BindingId::new(
         db.query_row(
@@ -48,21 +69,25 @@ fn seeded_body(
     let tx = db.transaction().unwrap();
     // Complete migrated schema, FK/trigger checks enabled. Canonical-shaped
     // raw rows isolate reader SQL; this does not test public invitation writers.
+    let mut rows = Rows {
+        tx: &tx,
+        statements: Default::default(),
+    };
     for n in 0..candidates {
         let thread = format!("q4-t{n}");
         let sender = format!("a-q4-{n}");
-        tx.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','resolved','native',1,0)", [&sender]).unwrap();
-        tx.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES (?1,'i','q4','q4',0,0,100001)", [&thread]).unwrap();
+        rows.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','resolved','native',1,0)", [&sender]).unwrap();
+        rows.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES (?1,'i','q4','q4',0,0,100001)", [&thread]).unwrap();
         if !(50..75).contains(&n) {
-            tx.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i',?1,'s',?2)", params![sender,thread]).unwrap();
+            rows.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i',?1,'s',?2)", params![sender,thread]).unwrap();
         }
         let voluntary = if n >= 75 { "left" } else { "invited" };
-        tx.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,'s',10000,'invited',?2)", params![thread,voluntary]).unwrap();
-        tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES (?1,?2,'s',10000,'pending',0,1000000,300,300,'lazy',?3)", params![format!("q4-inv{n}"),thread,sender]).unwrap();
+        rows.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,'s',10000,'invited',?2)", params![thread,voluntary]).unwrap();
+        rows.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES (?1,?2,'s',10000,'pending',0,1000000,300,300,'lazy',?3)", params![format!("q4-inv{n}"),thread,sender]).unwrap();
         let prep = format!("prep-q4-{n}");
         let message = format!("msg-q4-{n}");
-        tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'i','actor',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy')", params![prep,thread]).unwrap();
-        tx.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,?3,'s')", params![prep,message,thread]).unwrap();
+        rows.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'i','actor',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy')", params![prep,thread]).unwrap();
+        rows.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,?3,'s')", params![prep,message,thread]).unwrap();
         let decision = if (25..50).contains(&n) {
             100000 + n
         } else {
@@ -73,34 +98,34 @@ fn seeded_body(
         } else {
             "q4-body".into()
         };
-        tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode) VALUES (?1,'i',?2,100000,'ordinary',?3,?5,?4,0,'lazy')", params![message,thread,sender,decision,body]).unwrap();
-        tx.execute(
+        rows.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode) VALUES (?1,'i',?2,100000,'ordinary',?3,?5,?4,0,'lazy')", params![message,thread,sender,decision,body]).unwrap();
+        rows.execute(
             "UPDATE send_preparations SET status='sealed' WHERE id=?1",
             [&prep],
         )
         .unwrap();
-        tx.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,?3,?4,0,100000,0,1,0)", params![prep,message,thread,decision]).unwrap();
+        rows.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,?3,?4,0,100000,0,1,0)", params![prep,message,thread,decision]).unwrap();
     }
     for n in 0..retained {
         let sender = format!("a-noise-{n}");
         let thread = format!("noise-t{n}");
-        tx.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','resolved','native',1,0)", [&sender]).unwrap();
-        tx.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','noise','noise',0,0)", [&thread]).unwrap();
-        tx.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i',?1,'s',?2)", params![sender,thread]).unwrap();
-        tx.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,'s',1,'invited','invited')", [&thread]).unwrap();
-        tx.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,?2,1,'joined','joined')",params![thread,sender]).unwrap();
-        tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES (?1,?2,'s',1,'pending',0,?3,300,300)", params![format!("noise-inv{n}"),thread,n+1]).unwrap();
+        rows.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','resolved','native',1,0)", [&sender]).unwrap();
+        rows.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','noise','noise',0,0)", [&thread]).unwrap();
+        rows.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i',?1,'s',?2)", params![sender,thread]).unwrap();
+        rows.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,'s',1,'invited','invited')", [&thread]).unwrap();
+        rows.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,?2,1,'joined','joined')",params![thread,sender]).unwrap();
+        rows.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES (?1,?2,'s',1,'pending',0,?3,300,300)", params![format!("noise-inv{n}"),thread,n+1]).unwrap();
         // Same-seat historical identities defeat a seat-prefix binding search.
         // Both cursor-key directions have distractors: the selected binding on
         // unrelated threads, and unrelated bindings on the selected thread.
         let other_binding = format!("noise-binding-{n}");
-        tx.execute("INSERT INTO occupant_bindings(binding_id,seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at,liveness,disconnected_at,disconnect_reason,terminal_id,incarnation) VALUES (?1,'s',?2,1,'w:p1','host',1,'codex',?3,?4,'cooperative_top_level',0,0,1,'disconnected',1,'ended','term','inc')", params![other_binding,n+2,format!("noise-session-{n}"),format!("noise-exec-{n}")]).unwrap();
+        rows.execute("INSERT INTO occupant_bindings(binding_id,seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at,liveness,disconnected_at,disconnect_reason,terminal_id,incarnation) VALUES (?1,'s',?2,1,'w:p1','host',1,'codex',?3,?4,'cooperative_top_level',0,0,1,'disconnected',1,'ended','term','inc')", params![other_binding,n+2,format!("noise-session-{n}"),format!("noise-exec-{n}")]).unwrap();
         for (cursor_binding, cursor_thread) in [
             (binding.as_str(), thread.as_str()),
             (other_binding.as_str(), "q4-t0"),
             (other_binding.as_str(), thread.as_str()),
         ] {
-            tx.execute(
+            rows.execute(
                 "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES (?1,?2,1)",
                 params![cursor_binding, cursor_thread],
             )
@@ -112,23 +137,24 @@ fn seeded_body(
         // selected-seat high-water and exhaustion branch identical.
         let prep = format!("prep-noise-{n}");
         let message = format!("msg-noise-{n}");
-        tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'i','actor',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy')",params![prep,thread]).unwrap();
-        tx.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,?3,?4)",params![prep,message,thread,sender]).unwrap();
+        rows.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'i','actor',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy')",params![prep,thread]).unwrap();
+        rows.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,?3,?4)",params![prep,message,thread,sender]).unwrap();
         if same_seat_recipients {
-            tx.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,?3,'s')",params![prep,message,thread]).unwrap();
+            rows.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,?3,'s')",params![prep,message,thread]).unwrap();
         }
-        tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode) VALUES (?1,'i',?2,1,'ordinary',?3,'noise',?4,0,'lazy')",params![message,thread,sender,600000+n]).unwrap();
-        tx.execute(
+        rows.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode) VALUES (?1,'i',?2,1,'ordinary',?3,'noise',?4,0,'lazy')",params![message,thread,sender,600000+n]).unwrap();
+        rows.execute(
             "UPDATE send_preparations SET status='sealed' WHERE id=?1",
             [&prep],
         )
         .unwrap();
-        tx.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,?3,?4,0,1,0,?5,0)",params![prep,message,thread,600000+n,if same_seat_recipients {2} else {1}]).unwrap();
+        rows.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,?3,?4,0,1,0,?5,0)",params![prep,message,thread,600000+n,if same_seat_recipients {2} else {1}]).unwrap();
         // Exact current episode is fixed at10000 in both populations. Older
         // retained episodes and event history grow without moving that boundary.
-        tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,retired_at) VALUES (?1,'q4-t0','s',?2,'recipient_retired',0,?2,300,300,1)", params![format!("old-inv{n}"),n+1]).unwrap();
-        tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_seq,decision_at) VALUES (?1,'i','q4-t0',?2,'info',?1,'{}',?3,0)", params![format!("noise-event{n}"),n+1,500000+n]).unwrap();
+        rows.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,retired_at) VALUES (?1,'q4-t0','s',?2,'recipient_retired',0,?2,300,300,1)", params![format!("old-inv{n}"),n+1]).unwrap();
+        rows.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_seq,decision_at) VALUES (?1,'i','q4-t0',?2,'info',?1,'{}',?3,0)", params![format!("noise-event{n}"),n+1,500000+n]).unwrap();
     }
+    drop(rows);
     for (key, sequence, decision) in [
         ("invite:q4-inv0", 90000, 1000001),
         ("operator_invite:q4-inv0", 90001, 1000002),

@@ -27,9 +27,23 @@ impl Clock for FixedClock {
 }
 
 fn fixture() -> (super::super::connection::StoreContext, rusqlite::Connection) {
+    fixture_with_temp_store(false)
+}
+
+/// `memory_temp` keeps this test connection's statement journals in memory
+/// (`PRAGMA temp_store=MEMORY`, set before the TEMP triggers below because
+/// changing it drops TEMP objects). A large fixture transaction otherwise
+/// spills them to a temp file and pays a `pwrite` per journaled page of every
+/// trigger-bearing row. Plans, results and VM steps are unaffected.
+fn fixture_with_temp_store(
+    memory_temp: bool,
+) -> (super::super::connection::StoreContext, rusqlite::Connection) {
     let path = std::env::temp_dir().join(format!("herdr-query-{}.db", uuid::Uuid::new_v4()));
     let store = super::super::connection::StoreContext::new(path, Arc::new(FixedClock));
     let db = store.open_writer().unwrap();
+    if memory_temp {
+        db.pragma_update(None, "temp_store", "MEMORY").unwrap();
+    }
     db.execute(
         "INSERT INTO host_instances(id, created_at) VALUES ('i', 0)",
         [],
