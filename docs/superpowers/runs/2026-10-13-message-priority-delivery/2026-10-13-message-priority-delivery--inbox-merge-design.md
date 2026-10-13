@@ -64,9 +64,10 @@ limit is user-visible ordering only and is documented in `docs/agent-usage.md` b
 keeping deadline current across extensions — exact but a large new invariant for a small class; (b) dropping
 deadline from the key for receipts — contradicts the user's ordering amendment.
 
-If a work-limited page stops while the window is only partly collected, the cursor records the walk positions
-and the window restarts from the class start position on the next page (collection is idempotent over the
-captured high waters), so no item is skipped.
+A window also closes when it has spent `CANDIDATE_LIMIT / 2` visits, recording its end positions; it is then
+emitted in key order like a full one. A page that stops mid-emission records the window's start and end positions,
+and the next page re-collects exactly that window (strictly cheaper than a page's work budget) and skips items
+whose key is <= the last emitted key, so no item is skipped and every page advances.
 
 **Warnings class.** Recommended: unchanged walk (`scan_global_logical_candidates`), already in key order within
 p0/no-deadline; its head competes in the merge like any other. Its 2-visit reservation stays.
@@ -106,6 +107,55 @@ large unpublished backlogs visit zero unpublished delivery rows (EXPLAIN plan on
 `InvalidCursor`; body continuation resumes first; caller subsets (presentation page, accept). Rewrite the
 rotation-order tests (`lazy_inbox_v2_bounded_round_robin_opportunity`, the q4 visit-99 test, the CancelClock
 call-count test, binding page-order vectors, cursor codec round trip, presentation partial-body tests).
+
+## Key abstractions
+
+Builds within the root spec's frame (`DeliveryPriority`, `NudgeThreshold`, `DeliveryOrderKey`, Inbox v2 merge); refines the Inbox v2 merge, never redefines it.
+
+**OrderClass** — new closed enum in `mod inbox_v2` (`DeliveryRows | Deadline | Warnings`), what the merge compares heads across
+- Owns: the class membership of the five `Source`s (Lazy → DeliveryRows; Invitations, Unread, Receipts → Deadline; Warnings → Warnings) and the three per-class operations as `match`es: ensure head, advance past the emitted head, done.
+- Hides: that Deadline is fed by three walks; the merge sees three heads, not five sources.
+- Must not: compare keys (`DeliveryOrderKey` does) or hold rows across requests.
+- Relationships: the merge depends on it; arms delegate to `DeliveryRowSeek`, `DeadlineWindow` or the existing `scan_global_logical_candidates` path. `Source` stays the closed enum tagging an item's origin (and the body continuation's owner); it is no longer a rotation pointer.
+- Lifecycle: static; heads live in memory for one request.
+
+**DeadlineWindow** — new struct in `mod inbox_v2`, the windowed ordering strategy for the Deadline class
+- Owns: collecting pending items from the invitation, unread and receipt walks in their existing order until the window holds `DEADLINE_WINDOW` (64) items, the walks are exhausted, or the window's visit share (below) is spent, charging every visited candidate to `CANDIDATE_LIMIT`; building each item's `DeliveryOrderKey` (deadline from `effective_receipt`, or `invitations.deadline_at` for `require_ack` invitations only; `decision_seq` from the effective receipt or `created_decision_seq`); sorting and emitting in key order; the existing receipt/unread dedupe (listed once, by Unread); tracking the window's start positions and the walks' stop positions.
+- Hides: the exact-within-a-window limit, and the skip rule: re-collecting the same window from its start positions skips items whose key is <= the last emitted key, while a fresh window (started at the stop positions) skips nothing, since a later window may legitimately carry lower keys.
+- Must not: persist peeked items (only positions round-trip); read deadlines anywhere but `effective_receipt` and `invitations`; decide settlement; be resumed by a global "key > last" seek.
+- Relationships: uses the existing seeks unchanged (`scan_effective_receipts`, `unread_ordinal`, `receipt_pending`), `DeliveryOrderKey` from `ht-yha.1`; persists through `InboxBatchV2CursorState`.
+- Lifecycle: rebuilt per request from cursor positions; at most one window collected per page start.
+- Errors: none new; store errors propagate, exhausted work is the merge's `StopReason::Work`.
+
+**DeliveryRowSeek** — extended `lazy_delivery` (`pending_page_in`): the ordinal walk becomes the exact ordered seek on the v47 indexes
+- Owns: the seek `(priority, decision_seq, ordinal) > position` with `decision_seq IS NOT NULL AND decision_seq <= dh`, `LIMIT 1`; the binding post-seek unread/display filter (one visit per rejected row); the thread-scoped stop below the first unread receipt-bearing row; copying `decision_seq` onto rows in `note_published`.
+- Hides: the index shape and SQL; no unpublished row is visited.
+- Must not: be duplicated: the presentation path's own ordinal SQL in `scan` (`Source::Lazy`, `ordinary_only`) goes through this seek with `PRIVATE_LAZY_ELIGIBILITY_SQL` as its post-seek filter.
+
+**PageSubset** — new closed enum (`All | Presentation | ThreadScoped`), the caller subsets
+- Owns: one function that marks classes/walks done for a subset, applied at capture and after cursor decode: `Presentation` = delivery rows + the Unread walk; `ThreadScoped` = delivery rows only (an `Unknown` reader shows nothing).
+- Hides: the subset rules now scattered across `capture(ordinary_only)`, `query_mode`'s post-decode normalization and the `q.thread.is_some()` block.
+- Must not: add per-subset branches inside the merge or the classes. `ordinary_only` survives only as "private presentation eligibility" (body retirement, probe accounting).
+
+**InboxBatchV2CursorState** — extended to format v2: version byte 2; per-class position structs (DeliveryRows triple, Deadline walk + window-start positions, Warnings positions and offer cutoff) instead of embedding v1's `SeatAttentionCursorState`; the last emitted `DeliveryOrderKey`; captured high waters, done flags, body continuation tagged with its `Source`. The delivery-row position is elided when the last emitted item was a delivery row. v1 decodes to `InvalidCursor` with detail "cursor from an older daemon; run inbox again" (same code; the detail distinguishes it from a malformed cursor or "inbox binding changed").
+
+**Inbox v2 merge** — extended: `rotate` becomes a min-head loop over `OrderClass` heads; a partly shown body resumes first and its key becomes the last emitted key once complete; row/byte/work stops and the never-false-`empty` rule unchanged; the Warnings 2-visit reservation applies when its head needs a scan; each class's persisted position is authoritative, the last key serves only window re-collection skips and delivery-row position elision.
+
+Variation: fixed classes with growing operations → closed `OrderClass`; fixed walks in the Deadline class → closed `Source` arms; fixed caller subsets → closed `PageSubset`. No traits: every kind has one implementation and the spec names no open-ended kinds.
+Walk-through: a bound reader's hook page: capture (high waters, `PageSubset::All`) → each step ensures heads (DeliveryRows: one indexed seek, so a p0 row behind 500 p1 rows comes first; Deadline: collect and sort a window; Warnings: one candidate scan) → `DeliveryOrderKey` picks the minimum, emitted, its class advances → page stops on rows/bytes/work, cursor v2 stores positions, last key and body continuation. Replacing the window with an exact pending-receipt projection later touches `DeadlineWindow`'s internals and its cursor position struct only.
+Per spec §Deadline class (gap fill): a window also closes when its visit share — `CANDIDATE_LIMIT / 2` visits — is spent, recording its end positions, so re-collecting a persisted window always costs strictly less than one page's work and every page advances (the receipt walk visits settled history, so an uncapped window could exhaust a page and loop).
+
+Digest:
+- OrderClass: owns each Source's class and the per-class head/advance/done operations;
+  a new ordering strategy is a new arm here; callers never iterate sources or rotate.
+- DeadlineWindow: owns window collection, key building for invitations/unread/receipts, sorting and the
+  re-collected-vs-fresh skip rule (bounded so every page advances); a better deadline ordering changes only its
+  internals; callers never sort deadline items or resume them by the global last key.
+- DeliveryRowSeek: owns the one ordered (priority, decision_seq, ordinal) seek with the publication bound inside it
+  and the post-seek binding filter; index or eligibility changes go here; callers, the presentation path
+  included, never write their own lazy_recipients walk.
+- PageSubset: owns which classes and walks each caller sees, applied at capture and decode; a new caller is one
+  new variant; callers never set done flags or test ordinary_only/thread scope to hide classes.
 
 ## Post-Implementation Notes
 
