@@ -934,7 +934,7 @@ enum InternalSub {
     /// Read JSON on stdin and print the value at a dotted path (exit 1 when absent).
     JsonField {
         path: String,
-        /// Print the keys of the object at the path, one per line (exit 1 when not an object).
+        /// Print the keys of the object at the path, one per line (exit 3 when not an object).
         #[arg(long)]
         keys: bool,
     },

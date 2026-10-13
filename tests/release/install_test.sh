@@ -822,7 +822,43 @@ if [ "$modern_integrations" = 1 ] &&
         has "codex hooks (CODEX_HOME=$aw/profiles/codex/x1): updated"
     expect "aisw from \$HOME: no failure" bash -c "! grep -q ': failed' '$out'"
 
-    # No aisw directory: nothing is said about it.
+    # An unusable config.json never widens the scope: no profiles of the tool it cannot
+    # list, one warning naming it; a valid file without the tool keeps every directory.
+    aisw_unusable() { # NAME TOOL: expects the warning and no profile of TOOL
+        expect "aisw $1: exits 0" [ "$status" = 0 ]
+        expect "aisw $1: warning names config.json" \
+            has "aisw: cannot use $aw/config.json (unreadable, invalid, or profiles.$2 is not an object); no $2 profiles included"
+        expect "aisw $1: no $2 profile reconciled" bash -c "! grep -qF '=$aw/profiles/$2/' '$out'"
+    }
+    printf '%s' '{"version":2,"profiles":{"codex":{"x1":' > "$aw/config.json"
+    aisw_case
+    aisw_unusable "invalid JSON" codex
+    aisw_unusable "invalid JSON" claude
+    if [ "$(id -u)" != 0 ]; then
+        printf '%s\n' '{"profiles":{"claude":{"c1":{}},"codex":{"x1":{}}}}' > "$aw/config.json"
+        chmod 000 "$aw/config.json"
+        aisw_case
+        chmod 600 "$aw/config.json"
+        aisw_unusable "unreadable config.json" codex
+        aisw_unusable "unreadable config.json" claude
+    else
+        pass "aisw unreadable config.json: skipped as root"
+    fi
+    for value in '[]' null; do
+        printf '%s\n' "{\"profiles\":{\"claude\":{\"c1\":{}},\"codex\":$value}}" > "$aw/config.json"
+        aisw_case
+        aisw_unusable "profiles.codex $value" codex
+        expect "aisw profiles.codex $value: claude still listed" \
+            has "including aisw profiles: claude/c1"
+    done
+    printf '%s\n' '{"version":2,"profiles":{"claude":{"c1":{}}}}' > "$aw/config.json"
+    aisw_case
+    expect "aisw absent profiles.codex: exits 0" [ "$status" = 0 ]
+    expect "aisw absent profiles.codex: every codex directory" \
+        has "including aisw profiles: claude/c1 codex/unlisted codex/x1 codex/x2 codex/x3"
+    expect "aisw absent profiles.codex: no warning" bash -c "! grep -qF 'cannot use' '$out'"
+    rm -f "$aw/config.json"
+
     # A relative AISW_HOME is resolved against the installer's working directory.
     aisw_cwd=$ah
     aisw_env=("AISW_HOME=.aisw")
@@ -831,6 +867,7 @@ if [ "$modern_integrations" = 1 ] &&
     expect "aisw relative AISW_HOME: resolved and included" has "including aisw profiles: claude/c1 codex/unlisted"
     expect "aisw relative AISW_HOME: exits 0" [ "$status" = 0 ]
 
+    # No aisw directory: nothing is said about it.
     aisw_env=("AISW_HOME=$root/no-aisw")
     aisw_case
     expect "aisw absent: nothing about aisw" bash -c "! grep -qF 'aisw profiles' '$out'"

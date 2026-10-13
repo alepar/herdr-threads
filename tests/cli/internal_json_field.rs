@@ -72,8 +72,12 @@ fn keys_mode_prints_object_keys_exactly_one_per_line() {
         lines,
         ["-dash", "my profile", "retired@account", "team.one"]
     );
-    assert_eq!(keys(json, "profiles.list"), Err(1));
+    // Absent (1) is told apart from present but not an object (3) and from invalid JSON (2).
+    assert_eq!(keys(json, "profiles.list"), Err(3));
+    assert_eq!(keys(r#"{"p":{"codex":null}}"#, "p.codex"), Err(3));
+    assert_eq!(keys(r#"{"p":{"codex":"x"}}"#, "p.codex"), Err(3));
     assert_eq!(keys(json, "profiles.nope"), Err(1));
+    assert_eq!(keys(r#"{"v":2}"#, "profiles.codex"), Err(1));
     assert_eq!(keys(r#"{"a":{}}"#, "a").unwrap(), "");
     assert_eq!(keys("{", "a"), Err(2));
 }

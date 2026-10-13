@@ -5,8 +5,9 @@
 //! installer never splits JSON with shell tools. Exit 1: the path is absent;
 //! exit 2: stdin is not JSON. With `--keys` it prints the keys of the object
 //! at the path instead, one per line (keys holding a newline or another control
-//! character are omitted); a value that is not an object exits 1. Local only;
-//! never contacts the daemon.
+//! character are omitted); a value that is there but is not an object exits 3,
+//! so a caller can tell "absent" (1) from "unusable" (2, 3). Local only; never
+//! contacts the daemon.
 use super::RunError;
 use std::io::Write;
 
@@ -45,8 +46,9 @@ pub fn json_field_with<W: Write>(
         }
     }
     if keys {
+        // Exit 3: present but not an object (exit 1 stays "absent").
         let serde_json::Value::Object(map) = value else {
-            return Err(RunError::Exit(1));
+            return Err(RunError::Exit(3));
         };
         for key in map.keys().filter(|key| !key.chars().any(char::is_control)) {
             writeln!(writer, "{key}")?;

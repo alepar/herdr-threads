@@ -258,7 +258,7 @@ EOF_KEYS
 }
 
 aisw_profile_roots() {
-    local home=${AISW_HOME:-$HOME/.aisw} tool dir name listed found keys
+    local home=${AISW_HOME:-$HOME/.aisw} tool dir name listed found keys rc
     [ "${aisw_profiles:-1}" = 1 ] || return 0
     # --config-root takes absolute directories: a relative AISW_HOME is resolved, or skipped.
     home=$(CDPATH= cd -- "$home" 2>/dev/null && pwd) || return 0
@@ -273,10 +273,27 @@ aisw_profile_roots() {
         [ -d "$home/profiles/$tool" ] && [ ! -L "$home/profiles/$tool" ] || continue
         listed=0
         keys=''
-        if [ -r "$home/config.json" ] &&
-            keys=$("$installed_binary" internal json-field --keys "profiles.$tool" \
-                < "$home/config.json" 2>/dev/null); then
-            listed=1
+        # No config.json, or one that parses without listing this tool: every plain
+        # directory. One that exists but cannot be used (unreadable, invalid JSON, the
+        # tool's entry not an object): no profiles of this tool, and a warning.
+        if [ -e "$home/config.json" ] || [ -L "$home/config.json" ]; then
+            rc=0
+            if [ -f "$home/config.json" ] && [ -r "$home/config.json" ]; then
+                keys=$("$installed_binary" internal json-field --keys "profiles.$tool" \
+                    < "$home/config.json" 2>/dev/null) || rc=$?
+            else
+                rc=2
+            fi
+            case $rc in
+                0) listed=1 ;;
+                1) ;;   # json-field: the path is absent from a valid document
+                *)
+                    warn "aisw: cannot use $home/config.json (unreadable, invalid, or profiles.$tool is not an object); no $tool profiles included"
+                    if case $HOME in /*) true ;; *) false ;; esac && [ -d "$HOME/.$tool" ]; then
+                        printf '%s\n' "$tool=$HOME/.$tool"
+                    fi
+                    continue ;;
+            esac
         fi
         found=0
         for dir in "$home/profiles/$tool"/*; do
