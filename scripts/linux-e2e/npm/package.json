@@ -1,0 +1,9 @@
+{
+  "name": "ht-linux-e2e-harnesses",
+  "private": true,
+  "description": "Harness CLIs for the Linux e2e runner image; package-lock.json pins every tarball's integrity (npm ci).",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.296",
+    "@openai/codex": "0.162.1"
+  }
+}

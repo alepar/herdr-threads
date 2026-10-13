@@ -251,6 +251,7 @@ jobs:
           done
           python3 -m unittest discover -s scripts/tests -p 'test_check_no_leaked_processes.py'
           python3 -m unittest discover -s scripts/tests -p 'test_herdr_release_smoke.py'
+          python3 -m unittest discover -s scripts/tests -p 'test_linux_e2e_run.py'
           python3 -m unittest discover -s scripts/tests -p 'test_cell_ran_versions.py'
           python3 -m unittest discover -s scripts/tests -p 'test_demo_try_it_camera.py'
           python3 -m unittest discover -s scripts -p 'test_native_hermes_probe.py'
