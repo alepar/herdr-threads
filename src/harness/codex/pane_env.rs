@@ -811,28 +811,63 @@ const WHY: &str = "Codex's shared app-server daemon runs tools and hooks with th
      Exporting CODEX_EXEC_SERVER_URL= (empty) inside Herdr panes keeps Codex inside its own \
      pane; it applies only inside Herdr panes and takes effect in newly opened panes.";
 
-/// The advice when some file lacks the block: the lines to add by hand first (so a
-/// truncated rendering never cuts them), then the setup command naming `missing`. The why
-/// lives once in the foreground advice, not here.
-pub(crate) fn advice(missing: &[Target], zdotdir: Option<&Path>) -> String {
-    let how = if missing.is_empty() {
-        " No zsh, bash or fish startup file was found for this account.".to_owned()
-    } else {
-        format!(
-            " Or `herdr-threads setup codex --with-pane-env` adds a guarded block to {}.",
-            file_list(missing)
-        )
-    };
-    let zdot = zdotdir.map_or_else(String::new, |dir| {
-        format!(
+/// The files an advised report talks about, by what setup could not do for them.
+pub(crate) struct AdviceFiles<'a> {
+    /// No block yet: `--with-pane-env` (or a terminal yes) adds it.
+    pub missing: &'a [Target],
+    /// A block that differs from setup's record: only `--with-pane-env` replaces it.
+    pub edited: &'a [Target],
+    /// Never written by setup (symlink, special, oversize, foreign drop-in, ...).
+    pub skipped: &'a [Target],
+}
+
+/// The advice when setup did not configure every file: the lines to add by hand first (so a
+/// truncated rendering never cuts them), then what setup can do for each file it named. The
+/// why lives once in the foreground advice, not here.
+pub(crate) fn advice(files: &AdviceFiles<'_>, zdotdir: Option<&Path>) -> String {
+    let mut text =
+        format!("Add to your shell startup file: zsh/bash `{POSIX_LINE}`; fish `{FISH_LINE}`.");
+    if files.missing.is_empty() && files.edited.is_empty() && files.skipped.is_empty() {
+        text.push_str(" No zsh, bash or fish startup file was found for this account.");
+    }
+    if !files.missing.is_empty() {
+        text.push_str(&format!(
+            " `herdr-threads setup codex --with-pane-env` adds the block to {}",
+            file_list(files.missing)
+        ));
+        // Created only when no bash login file exists; bash then reads it instead of a
+        // ~/.profile that appears later.
+        if let Some(created) = files.missing.iter().find(|target| {
+            target.path.file_name() == Some(OsStr::new(".bash_profile"))
+                && target.path.symlink_metadata().is_err()
+        }) {
+            text.push_str(&format!(
+                " (creating {}, which a login bash then reads instead of a later ~/.profile)",
+                created.path.display()
+            ));
+        }
+        text.push('.');
+    }
+    if !files.edited.is_empty() {
+        text.push_str(&format!(
+            " Your edited block in {} is kept; `--with-pane-env` replaces it.",
+            file_list(files.edited)
+        ));
+    }
+    if !files.skipped.is_empty() {
+        text.push_str(&format!(
+            " Setup cannot change {}: add the line there yourself.",
+            file_list(files.skipped)
+        ));
+    }
+    if let Some(dir) = zdotdir {
+        text.push_str(&format!(
             " zsh files follow this shell's ZDOTDIR ({}); a Herdr server started without it \
              reads ~/.zshenv.",
             dir.display()
-        )
-    });
-    format!(
-        "Add to your shell startup file: zsh/bash `{POSIX_LINE}`; fish `{FISH_LINE}`.{how}{zdot}"
-    )
+        ));
+    }
+    text
 }
 
 /// `ZDOTDIR` when it is set and differs from HOME (the note then says so).
@@ -841,11 +876,20 @@ fn distinct_zdotdir(env: &SetupEnv) -> Option<PathBuf> {
     (dir_var(env.home.as_deref()).as_deref() != Some(zdot.as_path())).then_some(zdot)
 }
 
-/// The consent question, naming the files.
-pub(crate) fn question(targets: &[Target]) -> String {
+/// The consent question, naming the files a yes writes and those whose existing block it
+/// records as setup-owned.
+pub(crate) fn question(missing: &[Target], adopt: &[Target]) -> String {
+    let adopt = if adopt.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ", and record the existing block in {} as setup-owned",
+            file_list(adopt)
+        )
+    };
     format!(
-        "{WHY}\nAdd a guarded `{VARIABLE}=` block to {}? [y/N] ",
-        file_list(targets)
+        "{WHY}\nAdd a guarded `{VARIABLE}=` block to {}{adopt}? [y/N] ",
+        file_list(missing)
     )
 }
 
@@ -963,14 +1007,19 @@ fn report_with(env: &SetupEnv, mode: Option<Mode>) -> (Value, Vec<String>) {
     let any = |state: FileState| reports.iter().any(|report| report.state == state);
     let present =
         any(FileState::Installed) || any(FileState::AlreadyInstalled) || any(FileState::Unrecorded);
-    let missing: Vec<Target> = reports
-        .iter()
-        .filter(|report| report.state == FileState::NotInstalled)
-        .map(|report| Target {
-            shell: report.shell,
-            path: report.path.clone(),
-        })
-        .collect();
+    let of = |keep: &dyn Fn(&FileState) -> bool| -> Vec<Target> {
+        reports
+            .iter()
+            .filter(|report| keep(&report.state))
+            .map(|report| Target {
+                shell: report.shell,
+                path: report.path.clone(),
+            })
+            .collect()
+    };
+    let missing = of(&|state| *state == FileState::NotInstalled);
+    let edited = of(&|state| *state == FileState::Edited);
+    let skipped = of(&|state| matches!(state, FileState::Skipped(_) | FileState::Error(_)));
     let action = match mode {
         Some(Mode::Grant | Mode::Consent) if any(FileState::Installed) => "installed",
         Some(Mode::Grant | Mode::Consent) if present => "already_installed",
@@ -985,7 +1034,14 @@ fn report_with(env: &SetupEnv, mode: Option<Mode>) -> (Value, Vec<String>) {
         "files": files_json(&reports, false),
     });
     if action == "advised" {
-        report["note"] = json!(advice(&missing, distinct_zdotdir(env).as_deref()));
+        report["note"] = json!(advice(
+            &AdviceFiles {
+                missing: &missing,
+                edited: &edited,
+                skipped: &skipped,
+            },
+            distinct_zdotdir(env).as_deref()
+        ));
     }
     (report, warnings)
 }
@@ -1057,20 +1113,26 @@ pub fn settle<R: io::BufRead + ?Sized, W: io::Write + ?Sized>(
         return Ok(());
     }
     let component = component(env)?;
-    let missing: Vec<Target> = component
-        .targets
-        .iter()
-        .filter(|target| {
-            report["pane_env"]["files"].as_array().is_some_and(|files| {
-                files.iter().any(|file| {
-                    file["state"] == "not_installed"
-                        && file["path"].as_str() == target.path.to_str()
+    let in_state = |state: &str| -> Vec<Target> {
+        component
+            .targets
+            .iter()
+            .filter(|target| {
+                report["pane_env"]["files"].as_array().is_some_and(|files| {
+                    files.iter().any(|file| {
+                        file["state"] == state && file["path"].as_str() == target.path.to_str()
+                    })
                 })
             })
-        })
-        .cloned()
-        .collect();
-    write!(out, "{}", question(&missing))?;
+            .cloned()
+            .collect()
+    };
+    // A yes also adopts an unrecorded current block, so the question names those files too.
+    write!(
+        out,
+        "{}",
+        question(&in_state("not_installed"), &in_state("present_unrecorded"))
+    )?;
     out.flush()?;
     let mut answer = String::new();
     input.read_line(&mut answer)?;
@@ -1675,6 +1737,15 @@ mod tests {
         let asked = String::from_utf8(out).unwrap();
         assert!(asked.contains(&bashrc.display().to_string()), "{asked}");
         assert!(!asked.contains(&zshenv.display().to_string()), "{asked}");
+        // The unrecorded block a yes adopts is named too.
+        let profile = home.join(".bash_profile");
+        assert!(
+            asked.contains(&format!(
+                "and record the existing block in {} as setup-owned? [y/N] ",
+                profile.display()
+            )),
+            "{asked}"
+        );
         assert_eq!(report["pane_env"]["action"], "installed", "{report}");
         let states: Vec<_> = report["pane_env"]["files"]
             .as_array()
@@ -1735,7 +1806,12 @@ mod tests {
             shell: Shell::Zsh,
             path: PathBuf::from("/h/zdot/.zshenv"),
         }];
-        let note = advice(&missing, Some(Path::new("/h/zdot")));
+        let files = AdviceFiles {
+            missing: &missing,
+            edited: &[],
+            skipped: &[],
+        };
+        let note = advice(&files, Some(Path::new("/h/zdot")));
         let head: String = note.chars().take(600).collect();
         assert!(
             head.contains(POSIX_LINE) && head.contains(FISH_LINE),
@@ -1743,7 +1819,75 @@ mod tests {
         );
         assert!(note.contains("ZDOTDIR (/h/zdot)"), "{note}");
         assert!(!note.contains("wrong pane"), "{note}");
-        assert!(!advice(&missing, None).contains("ZDOTDIR"));
+        assert!(!advice(&files, None).contains("ZDOTDIR"));
+        assert!(!note.contains("No zsh, bash or fish"), "{note}");
+        // Nothing missing because every file is edited or skipped: name them, never claim
+        // that no startup file exists.
+        let edited = [Target {
+            shell: Shell::Zsh,
+            path: PathBuf::from("/h/.zshenv"),
+        }];
+        let skipped = [Target {
+            shell: Shell::Bash,
+            path: PathBuf::from("/h/.bashrc"),
+        }];
+        let note = advice(
+            &AdviceFiles {
+                missing: &[],
+                edited: &edited,
+                skipped: &skipped,
+            },
+            None,
+        );
+        assert!(!note.contains("No zsh, bash or fish"), "{note}");
+        assert!(
+            note.contains(
+                "Your edited block in /h/.zshenv is kept; `--with-pane-env` replaces it."
+            ),
+            "{note}"
+        );
+        assert!(
+            note.contains("Setup cannot change /h/.bashrc: add the line there yourself."),
+            "{note}"
+        );
+        assert!(!note.contains("adds the block"), "{note}");
+        let none = advice(
+            &AdviceFiles {
+                missing: &[],
+                edited: &[],
+                skipped: &[],
+            },
+            None,
+        );
+        assert!(
+            none.contains("No zsh, bash or fish startup file was found"),
+            "{none}"
+        );
+        // A ~/.bash_profile setup would create is named with its shadowing effect.
+        let d = dir();
+        let profile = [Target {
+            shell: Shell::Bash,
+            path: d.0.join(".bash_profile"),
+        }];
+        let note = advice(
+            &AdviceFiles {
+                missing: &profile,
+                edited: &[],
+                skipped: &[],
+            },
+            None,
+        );
+        assert!(note.contains("instead of a later ~/.profile"), "{note}");
+        fs::write(d.0.join(".bash_profile"), "").unwrap();
+        let note = advice(
+            &AdviceFiles {
+                missing: &profile,
+                edited: &[],
+                skipped: &[],
+            },
+            None,
+        );
+        assert!(!note.contains("~/.profile"), "{note}");
         let d = dir();
         let mut env = scratch_env(&d.0);
         env.declared_environment

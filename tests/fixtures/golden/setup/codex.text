@@ -39,7 +39,7 @@ note: installed is not observed: run `herdr-threads doctor` for native evidence.
 observed: unknown
 pane_env.action: advised
 pane_env.files: [{"path":"<root>/home/.zshenv","shell":"zsh","state":"not_installed"}]
-pane_env.note: Add to your shell startup file: zsh/bash `if [ "${HERDR_ENV-}" = 1 ]; then export CODEX_EXEC_SERVER_URL=; fi`; fish `if test "$HERDR_ENV" = 1; set -gx CODEX_EXEC_SERVER_URL ""; end`. Or `herdr-threads setup codex --with-pane-env` adds a guarded block to <root>/home/.zshenv.
+pane_env.note: Add to your shell startup file: zsh/bash `if [ "${HERDR_ENV-}" = 1 ]; then export CODEX_EXEC_SERVER_URL=; fi`; fish `if test "$HERDR_ENV" = 1; set -gx CODEX_EXEC_SERVER_URL ""; end`. `herdr-threads setup codex --with-pane-env` adds the block to <root>/home/.zshenv.
 pane_env.variable: CODEX_EXEC_SERVER_URL
 permissions.action: advised
 permissions.note: agents are asked before each herdr-threads command: re-run `herdr-threads setup codex --with-permissions` to let them run herdr-threads commands without prompting (the person and setup commands keep asking), or --without-permissions to keep it this way

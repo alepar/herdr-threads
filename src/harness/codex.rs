@@ -1257,7 +1257,8 @@ static TEXT: AdapterText = AdapterText {
           (empty) inside Herdr panes, so Codex never attaches to its shared app-server daemon
           (which runs tools and hooks with another pane's environment). It goes in
           ${ZDOTDIR:-~}/.zshenv (zsh), ~/.bashrc plus the login file Herdr's login bash reads
-          (~/.bash_profile, ~/.bash_login or ~/.profile) and
+          (~/.bash_profile, ~/.bash_login or ~/.profile; a created ~/.bash_profile shadows a
+          ~/.profile added later) and
           ${XDG_CONFIG_HOME:-~/.config}/fish/conf.d/herdr-threads.fish (fish): $SHELL's files plus
           those of each shell already set up; symlinks are skipped with the line to add by hand.
           --with-pane-env writes it, --without-pane-env removes it and keeps the hooks; otherwise

@@ -1277,13 +1277,15 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   `${ZDOTDIR:-~}/.zshenv`, to `~/.bashrc` and to bash's login file (the first existing of
   `~/.bash_profile`, `~/.bash_login`, `~/.profile`, else a created `~/.bash_profile`,
   because Herdr starts pane shells as login shells and a login bash does not read
-  `~/.bashrc` by itself), and writes a whole fish drop-in under `conf.d`, for `$SHELL`'s
+  `~/.bashrc` by itself; a created `~/.bash_profile` holds only the block, so it shadows a
+  `~/.profile` added later, which the advice states), and writes a whole fish drop-in under
+  `conf.d`, for `$SHELL`'s
   shell plus each shell whose startup file exists. zsh files follow setup's own `ZDOTDIR`; a
   Herdr server started without it reads `~/.zshenv` (the advice says so). Without a flag
   setup refreshes only a block byte-identical to what it recorded writing, never adds one,
   never adopts a block it did not write, and without a terminal only advises. A typed yes
-  adds missing blocks and adopts an unrecorded current one, but never replaces a block the
-  user edited; only `--with-pane-env` does, after a pre-image. The installer
+  adds missing blocks and adopts an unrecorded current one (the question names both sets of
+  files), but never replaces a block the user edited; only `--with-pane-env` does, after a pre-image. The installer
   (`internal installer-integrations`) never writes these files; it only reports and
   advises. Each write is recorded in a private manifest under `<state>/setup/`, preceded by
   a timestamped pre-image of the existing file, and published through the staged

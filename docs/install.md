@@ -356,7 +356,11 @@ bash reads the first existing of `~/.bash_profile`, `~/.bash_login` and `~/.prof
 own order) and reads `~/.bashrc` only if that file sources it. So bash gets the block in
 `~/.bashrc` (non-login interactive shells) and in that first existing login file; when none
 exists, setup creates `~/.bash_profile` (an existing `~/.profile` is always the first
-existing one, so it is never shadowed). Reading the block twice is harmless.
+existing one, so it is never shadowed). Reading the block twice is harmless. A created
+`~/.bash_profile` holds only the block, so a `~/.profile` that another tool creates later is
+no longer read by login bash; the advice names the file it would create, and you can add
+`. "$HOME/.profile"` to it yourself or run `herdr-threads unsetup codex` (it deletes the file
+while it still holds only the block).
 
 zsh files follow the `ZDOTDIR` of the shell running setup. A Herdr server started without
 that `ZDOTDIR` reads `~/.zshenv` instead; when `ZDOTDIR` is set and differs from `HOME`, the
@@ -369,7 +373,9 @@ advice says so. Setup does not write a second zsh file.
   no), and without a terminal only advises (`pane_env.action` `advised`; `pane_env.note`
   gives the lines to add first, then the setup command). A typed yes adds the missing blocks
   but, like a plain run, leaves a block you edited alone (reported `edited`): only
-  `--with-pane-env` replaces it. A current block setup did not write (for example pasted by
+  `--with-pane-env` replaces it. The question also names any file whose existing,
+  unrecorded block a yes records as setup's. When nothing is missing but files are edited
+  or skipped, the note names them instead. A current block setup did not write (for example pasted by
   hand) is reported `present_unrecorded`; a plain run never adopts it, so unsetup leaves it,
   while `--with-pane-env` or a yes records it as setup's.
 - `herdr-threads internal installer-integrations` (`install.sh --setup`) never writes these
