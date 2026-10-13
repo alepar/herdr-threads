@@ -78,8 +78,9 @@ pub struct DecisionInstant {
 pub const TEST_RELAXED_DURABILITY_ENV: &str = "HT_TEST_RELAXED_DURABILITY";
 
 /// Whether this process takes the test-process fast paths: stores commit
-/// with `synchronous=NORMAL` by default (see `require_commit_durability`) and
-/// [`durable_sync`] skips its flush. Hundreds of test stores and daemons each
+/// with `synchronous=NORMAL` by default (see `require_commit_durability`),
+/// [`durable_sync`] skips its flush and a new store file is copied from a
+/// fresh-schema template (`fresh_schema_template`). Hundreds of test stores and daemons each
 /// fsyncing every commit made the suite disk-bound on a loaded machine; a
 /// test cannot observe the difference, which only matters on power loss.
 ///
@@ -282,8 +283,10 @@ impl StoreContext {
     }
 
     pub fn open_writer(&self) -> Result<Connection, ApiError> {
-        #[cfg(test)]
-        fresh_schema_template::seed(&self.path);
+        #[cfg(any(test, feature = "test-support"))]
+        if test_fast_paths() {
+            fresh_schema_template::seed(&self.path);
+        }
         let conn = Connection::open(&self.path).map_err(store_error)?;
         conn.busy_timeout(Duration::from_secs(2))
             .map_err(store_error)?;
@@ -825,15 +828,18 @@ fn unclassified(error: &rusqlite::Error) -> ApiError {
 #[path = "../../tests/store/schema.rs"]
 pub(crate) mod tests;
 
-/// Unit tests run one process per test and open hundreds of fresh stores;
+/// Tests run one process per test and open hundreds of fresh stores;
 /// replaying every migration costs each ~60 ms of CPU (schema 27's table
-/// rebuilds alone ~17 ms). A writer whose store file does not exist yet is
-/// seeded with this test binary's fresh-schema template, built once by the
-/// production fresh-creation path; `schema::initialize` then verifies it as
-/// it verifies any existing store. Existing files, in-memory databases and
-/// direct `schema::initialize` calls are untouched, and any seeding failure
-/// falls back to ordinary creation.
-#[cfg(test)]
+/// rebuilds alone ~17 ms). In a test process ([`test_fast_paths`]: test
+/// binaries and the tagged `herdr-threads` children they spawn), a writer
+/// whose store file does not exist yet is seeded with this executable's
+/// fresh-schema template, built once by the production fresh-creation path;
+/// `schema::initialize` then verifies it as it verifies any existing store.
+/// Existing files, in-memory databases and direct `schema::initialize` calls
+/// are untouched, and any seeding failure falls back to ordinary creation.
+/// The shipped binary (and a test-support build of it without the test
+/// environment) always creates stores by replaying the migrations.
+#[cfg(any(test, feature = "test-support"))]
 mod fresh_schema_template {
     use super::schema;
     use crate::protocol::time::UtcMillis;
@@ -857,8 +863,9 @@ mod fresh_schema_template {
         let _ = std::fs::remove_file(&staging);
     }
 
-    /// Keyed by this binary's identity, so a rebuild never reuses a template
-    /// produced by different schema code.
+    /// Keyed by this executable's identity (name, size, modification time)
+    /// and the schema version, so a rebuild never reuses a template produced
+    /// by different schema code.
     fn template() -> Option<PathBuf> {
         let exe = std::env::current_exe().ok()?;
         let meta = std::fs::metadata(&exe).ok()?;
