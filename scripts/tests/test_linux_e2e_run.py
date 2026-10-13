@@ -72,7 +72,13 @@ FAKE_DOCKER = textwrap.dedent(r'''
         open(os.path.join(state, "tag-" + argv[argv.index("-t") + 1].replace(":", "_")), "w").write(image)
     elif cmd == "inspect":
         fmt = argv[argv.index("-f") + 1]
-        if fmt == "{{.Image}}":
+        if os.environ.get("FAKE_DOCKER_INSPECT_RC") and "State" in fmt:
+            print("Error: simulated inspect failure", file=sys.stderr)
+            sys.exit(int(os.environ["FAKE_DOCKER_INSPECT_RC"]))
+        if fmt == "{{.State.Running}} {{.State.Status}} {{.State.ExitCode}}":
+            print(os.environ.get("FAKE_DOCKER_STATE_LINE",
+                                 "false exited " + os.environ.get("FAKE_DOCKER_EXIT_CODE", "0")))
+        elif fmt == "{{.Image}}":
             print(open(os.path.join(os.environ["FAKE_DOCKER_STATE"], "image-of-" + argv[-1])).read())
         elif fmt == "{{.State.ExitCode}}":
             print(os.environ.get("FAKE_DOCKER_EXIT_CODE", "0"))
@@ -105,6 +111,9 @@ FAKE_DOCKER = textwrap.dedent(r'''
         name = argv[argv.index("--name") + 1]
         open(os.path.join(os.environ["FAKE_DOCKER_STATE"], "image-of-" + name), "w").write(image)
         print("fakecontainerid")
+    elif cmd == "stop" and os.environ.get("FAKE_DOCKER_STOP_RC"):
+        print("Error response from daemon: simulated stop failure", file=sys.stderr)
+        sys.exit(int(os.environ["FAKE_DOCKER_STOP_RC"]))
     elif cmd == "stop" and os.environ.get("FAKE_DOCKER_VANISHED"):
         print("Error response from daemon: No such container: " + argv[-1], file=sys.stderr)
         sys.exit(1)
@@ -930,3 +939,127 @@ class Watchdog(unittest.TestCase):
         self.assertIn("host lease expired", r.stdout)
         for f in files:
             self.assertFalse(f.exists(), f)
+
+
+class Retention(Fake):
+    """A container is kept after a failed evidence copy only in a confirmed stopped state with a verified scrub."""
+
+    def outcome(self, **env):
+        r = self.run_cli("self-test", env=dict({"FAKE_DOCKER_CP_RC": "1"}, **env))
+        return r, self.facts(), any(a[:3] == ["rm", "-f", "-v"] for a in self.argvs())
+
+    def test_exited_0_is_kept(self):
+        r, facts, removed = self.outcome(FAKE_DOCKER_STATE_LINE="false exited 0")
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertFalse(removed)
+        self.assertEqual(facts["kept_container"], facts["container"])
+
+    def test_exited_3_is_kept_when_no_credential_was_staged(self):
+        r, facts, removed = self.outcome(FAKE_DOCKER_STATE_LINE="false exited 3")
+        self.assertEqual(r.returncode, 3)
+        self.assertFalse(removed)
+
+    def test_exited_4_is_removed(self):
+        r, facts, removed = self.outcome(FAKE_DOCKER_STATE_LINE="false exited 4")
+        self.assertEqual(r.returncode, 3)
+        self.assertTrue(removed)
+        self.assertNotIn("kept_container", facts)
+
+    def test_a_failed_stop_with_a_running_container_is_removed(self):
+        r, facts, removed = self.outcome(FAKE_DOCKER_STOP_RC="1", FAKE_DOCKER_STATE_LINE="true running 0")
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertTrue(removed)
+        self.assertNotIn("kept_container", facts)
+        self.assertIn("running", facts["retention_refused"])
+
+    def test_a_failed_inspect_is_removed(self):
+        r, facts, removed = self.outcome(FAKE_DOCKER_INSPECT_RC="1")
+        self.assertEqual(r.returncode, 3)
+        self.assertTrue(removed)
+        self.assertIn("inspect", facts["retention_refused"])
+
+    def test_a_lapsed_lease_after_staging_credentials_is_removed(self):
+        codex = self.tmp / "auth.json"
+        codex.write_text(json.dumps({"tokens": "x"}))
+        codex.chmod(0o600)
+        r = self.run_cli("wake-e2e", "--live", "--codex-auth-file", str(codex), "--", "--harness", "codex",
+                         env={"FAKE_DOCKER_CP_RC": "1", "FAKE_DOCKER_STATE_LINE": "false exited 3"})
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertTrue(any(a[:3] == ["rm", "-f", "-v"] for a in self.argvs()))
+        self.assertIn("credentials were staged", self.facts()["retention_refused"])
+
+
+class StagingGate(unittest.TestCase):
+    """Credential staging against the real bash watchdog (paths redirected): staging attempted after the watchdog
+    began stopping is refused, and staging admitted before it completes and is then scrubbed."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="ht-gate."))
+        self.addCleanup(subprocess.run, ["rm", "-rf", str(self.tmp)])
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        (self.tmp / "t").mkdir()
+        self.env = dict(os.environ, HOME=str(self.home), HT_LE2E_TMP=str(self.tmp / "t"),
+                        HT_LE2E_LEASE_S="100000", HT_LE2E_MAX_LIFE_S="100000")
+        self.mod = load_runner()
+        self.dest = f"{self.home}/.ht-creds/codex/auth.json"
+
+    def watchdog(self):
+        p = subprocess.Popen(["bash", "-c", self.mod.WATCHDOG], env=self.env, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
+        wait_for(self.home / "run" / "lease", "the watchdog start")
+        return p
+
+    def stage(self, env=None, wait=True):
+        script = self.mod.stage_script(self.dest, home=str(self.home))
+        p = subprocess.Popen(["sh", "-c", script], stdin=subprocess.PIPE, env=dict(self.env, **(env or {})),
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if wait:
+            out, err = p.communicate("dummy-not-a-credential", timeout=30)
+            return p.returncode, err
+        return p
+
+    def test_staging_after_the_watchdog_stopped_is_refused(self):
+        w = self.watchdog()
+        w.send_signal(signal.SIGTERM)
+        w.communicate(timeout=30)
+        self.assertEqual(w.returncode, 0)
+        rc, err = self.stage()
+        self.assertEqual(rc, 75, err)
+        self.assertFalse(Path(self.dest).exists())
+
+    def test_admitted_staging_completes_then_is_scrubbed(self):
+        w = self.watchdog()
+        rc, err = self.stage()
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(Path(self.dest).exists())
+        w.send_signal(signal.SIGTERM)
+        out, _ = w.communicate(timeout=30)
+        self.assertEqual(w.returncode, 0, out)
+        self.assertFalse(Path(self.dest).exists())
+
+    def test_staging_that_writes_during_or_after_the_scrub_removes_its_write(self):
+        """Admitted before the watchdog stopped, but its write lands after the final re-check (a barrier in cat):
+        it must notice the stop and remove what it wrote (in a container, kill -1 would also end it)."""
+        bindir = self.tmp / "bin"
+        bindir.mkdir()
+        release = self.tmp / "release"
+        entered = self.tmp / "entered"
+        cat = bindir / "cat"
+        cat.write_text(f"#!/bin/sh\ntouch '{entered}'\nwhile [ ! -e '{release}' ]; do sleep 0.05; done\n"
+                       "exec /bin/cat \"$@\"\n")
+        cat.chmod(0o755)
+        w = self.watchdog()
+        stager = self.stage(env={"PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"}, wait=False)
+        stager.stdin.write("dummy-not-a-credential")
+        stager.stdin.close()
+        wait_for(entered, "the stager passing its admission check")
+        w.send_signal(signal.SIGTERM)
+        out, _ = w.communicate(timeout=30)
+        self.assertEqual(w.returncode, 0, out)  # scrub verified: nothing was there yet
+        release.write_text("go")
+        stager.wait(timeout=30)
+        self.assertEqual(stager.returncode, 75, stager.stderr.read())
+        self.assertFalse(Path(self.dest).exists())
+        stager.stdout.close()
+        stager.stderr.close()

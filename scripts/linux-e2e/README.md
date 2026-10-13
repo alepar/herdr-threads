@@ -49,7 +49,9 @@ point, after `--timeout` + 30 min for `wake-e2e` (2 h for the others), or on `do
 other process in the container, deletes everything that may hold a credential (`~/.ht-creds`, the driver's scratch
 `codex-home` and `claude-config` dirs under `/tmp/ht-wake-e2e.*`, any `auth.json`, `.credentials.json` or
 `.claude.json` there, and the harness homes' credential files), checks that none of it remains, and exits: 0 or 3
-after a verified scrub, 4 if anything survived. Exiting stops the container. A killed runner
+after a verified scrub, 4 if anything survived. Exiting stops the container. Before the sweep it writes `~/run/finished`: every staging
+step checks that marker before and after writing, so staging attempted once the watchdog is stopping is refused
+(and removes its own write), while staging admitted earlier lands before the scrub and is scrubbed. A killed runner
 still leaves a stopped container (and, if it held one, its env-file dir `$TMPDIR/ht-linux-e2e-cred.<pid>.*`): the
 next run removes this worktree's stopped containers itself (their evidence saved under `leftovers/`; the watchdog
 has already scrubbed their credentials), except one whose runner is still alive (it holds its run lock
@@ -74,7 +76,9 @@ Exit codes: 0 passed, 1 failed, 2 refused (usage, preflight, missing credentials
 copied out (overrides 0 and 1: an unreviewable run never passes), 128+N interrupted by signal N. On exit 3 the
 stopped container is kept, and its name and a `docker cp` recovery command printed (`runner.json`:
 `evidence_copy`, `kept_container`, `container_removed: false`), when the watchdog's exit code (0 from its stop trap,
-3 from a lapsed lease) proves it stopped everything else and verified the scrub first; otherwise the container is removed and the
+3 from a lapsed lease) proves it stopped everything else and verified the scrub first, and only in a confirmed
+stopped state (`docker inspect` read successfully: not running, status `exited`); a lapsed lease in a run that
+staged a credential, a failed inspect or a still-running container means removal (`retention_refused`); otherwise the container is removed and the
 evidence is reported lost. A container that vanished after it started (removed or killed outside the run) is
 also exit 3: its evidence is gone. A kept container stays stopped until this worktree's next run (which moves its
 evidence to `leftovers/` and removes it) or `clean`; recover its evidence with the printed `docker cp` first. A later run of the worktree saves a kept container's evidence under `leftovers/`.

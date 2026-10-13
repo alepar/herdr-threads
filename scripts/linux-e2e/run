@@ -94,6 +94,7 @@ stop_all() {
 }
 finish() {
   trap '' TERM INT HUP
+  : > "$HOME/run/finished"  # closes staging admission (stage_script) before anything is killed or scrubbed
   stop_all
   secrets | while IFS= read -r p; do rm -rf "$p" 2>/dev/null; done
   left=$(secrets | sort -u | tr '\n' ' ')
@@ -113,6 +114,22 @@ while :; do
   sleep 2 & wait $!
 done
 '''
+
+
+EXIT_STAGING_REFUSED = 75
+
+
+def stage_script(dest, home=HOME):
+    """The shell command that writes stdin to dest inside the container (mode 0600 under a 0700 dir), gated against
+    the watchdog: it refuses when the watchdog has begun stopping ($HOME/run/finished, written before the process
+    sweep and scrub), and re-checks after writing, removing its own write if the stop began meanwhile. So a write
+    either precedes the marker, hence the sweep and the scrub (and is scrubbed), or is removed by its writer; in a
+    container the sweep (kill -1) also ends a writer admitted before the marker. Exit 75 means refused."""
+    parent = dest.rsplit("/", 1)[0]
+    finished = f"{home}/run/finished"
+    refuse = f"echo 'linux-e2e: the container is stopping; staging refused' >&2; exit {EXIT_STAGING_REFUSED}"
+    return (f"umask 077 && if [ -e {finished} ]; then {refuse}; fi && mkdir -p {parent} && cat > {dest} && "
+            f"if [ -e {finished} ]; then rm -f {dest}; {refuse}; fi")
 
 
 class Refused(Exception):
@@ -337,6 +354,7 @@ class Runner:
         self.container = False   # a `docker run` was attempted: cleanup must remove self.name
         self.evidence_failed = False
         self.started = False     # `docker run` succeeded
+        self.staged_credentials = False
         self.child = None
         self.step_no = 0
         self.beat_stop = threading.Event()
@@ -566,14 +584,19 @@ class Runner:
             cmd += ["-e", "HT_HIDE_HARNESSES=1"]
         return self.call(cmd + [self.name, *STEP, name, *argv], label or name, quiet=quiet)
 
-    def stage(self, data, dest, name):
-        """Copy bytes into the container as tester, mode 0600 under a 0700 dir; never through the evidence."""
-        parent = dest.rsplit("/", 1)[0]
+    def stage(self, data, dest, name, credential=False):
+        """Copy bytes into the container as tester, mode 0600 under a 0700 dir; never through the evidence. Gated
+        against the watchdog's stop (stage_script)."""
+        if credential:
+            self.staged_credentials = True  # set before the attempt: a partial write counts
         with tempfile.TemporaryFile() as f:
             f.write(data)
             f.seek(0)
-            rc = self.call([self.docker, "exec", "-i", self.name, "sh", "-c",
-                            f"umask 077 && mkdir -p {parent} && cat > {dest}"], name, stdin=f, quiet=True)
+            rc = self.call([self.docker, "exec", "-i", self.name, "sh", "-c", stage_script(dest)], name, stdin=f,
+                           quiet=True)
+        if rc == EXIT_STAGING_REFUSED:
+            self.facts["staging_refused"] = name
+            raise RuntimeError(f"staging {name} refused: the container's watchdog is stopping it")
         if rc != 0:
             raise RuntimeError(f"staging {name} failed")
 
@@ -613,9 +636,11 @@ class Runner:
                 # The watchdog exits 0 (stop trap) or 3 (lapsed lease) only after stopping every other process and
                 # verifying that no staged or driver-copied credential remains (4 otherwise); the Claude token
                 # lived only in process memory. Then the stopped container is kept as the only evidence copy.
-                code = detached([self.docker, "inspect", "-f", "{{.State.ExitCode}}", self.name]).stdout.strip()
-                self.facts["watchdog_exit"] = code
-                if code in ("0", "3"):
+                refusal = self.retention_refusal()
+                if refusal:
+                    self.facts["retention_refused"] = refusal
+                else:
+                    code = self.facts["watchdog_exit"]
                     self.facts["container_removed"] = False
                     self.facts["kept_container"] = self.name
                     print(f"linux-e2e: evidence copy failed; kept the stopped container {self.name} (credentials "
@@ -623,8 +648,8 @@ class Runner:
                           f"DIR && docker rm -v {self.name}", file=sys.stderr)
                     self.drop_private()
                     return problems
-                print(f"linux-e2e: evidence copy failed and the credential scrub is unconfirmed (watchdog exit "
-                      f"{code or 'unknown'}): removing {self.name}; its evidence is lost", file=sys.stderr)
+                print(f"linux-e2e: evidence copy failed and the container cannot be kept safely ({refusal}): "
+                      f"removing {self.name}; its evidence is lost", file=sys.stderr)
             r = detached([self.docker, "rm", "-f", "-v", self.name])
             gone = detached([self.docker, "ps", "-a", "-q", "--filter", f"name=^{self.name}$"])
             removal = []
@@ -636,6 +661,27 @@ class Runner:
             self.facts["container_removed"] = not removal
         self.drop_private()
         return problems
+
+    def retention_refusal(self):
+        """Why the stopped container may not be kept for evidence recovery, or None. Kept only in a confirmed
+        canonical stopped state (inspect read successfully: not running, status exited) with the watchdog's verified
+        scrub (exit 0 from the stop trap, or 3 from a lapsed lease when no credential was staged into it)."""
+        r = detached([self.docker, "inspect", "-f", "{{.State.Running}} {{.State.Status}} {{.State.ExitCode}}",
+                      self.name])
+        if r.returncode != 0:
+            return f"inspect failed: {r.stderr.strip()[:200]}"
+        fields = r.stdout.split()
+        if len(fields) != 3:
+            return f"inspect returned {r.stdout.strip()!r}"
+        running, status, code = fields
+        self.facts["watchdog_exit"] = code
+        if running != "false" or status != "exited":
+            return f"not stopped (running={running}, status={status})"
+        if code not in ("0", "3"):
+            return f"watchdog exit {code}: scrub not verified"
+        if code == "3" and self.staged_credentials:
+            return "lease lapsed in a run whose credentials were staged into the container"
+        return None
 
     def drop_private(self):
         """Remove the env-file dir, then release its lock (in that order: a held lock means a live dir)."""
@@ -755,7 +801,7 @@ class Runner:
         driver = [*self.args.driver_args, "--harness", ",".join(self.args.harnesses)]
         self.stage(b"".join(a.encode() + b"\0" for a in driver), f"{HOME}/run/driver-args", "stage-driver-args")
         if codex_auth is not None:
-            self.stage(codex_auth, f"{HOME}/.ht-creds/codex/auth.json", "stage-codex-auth")
+            self.stage(codex_auth, f"{HOME}/.ht-creds/codex/auth.json", "stage-codex-auth", credential=True)
         if self.args.live:
             self.stage(b"live\n", f"{HOME}/run/live", "stage-live")
         self.step("harness-snapshot", "harnesses-before", quiet=True)
