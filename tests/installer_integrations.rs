@@ -911,13 +911,27 @@ fn installer_extra_config_roots_label_verdicts_and_report_shared_files() {
             .file_type()
             .is_symlink()
     );
-    for bad in ["codex=relative", "nope=/x", "codex"] {
-        let out = f.run(&["internal", "installer-integrations", "--config-root", bad]);
+    // An invalid root fails only its own entry: every other root is still reconciled.
+    for bad in ["codex=relative", "nope=/x", "codex", "codex=/a\nb"] {
+        let out = f.run(&[
+            "internal",
+            "installer-integrations",
+            "--config-root",
+            bad,
+            "--config-root",
+            &root_arg,
+        ]);
         assert!(!out.status.success(), "{bad}");
+        let text = String::from_utf8_lossy(&out.stdout);
         assert!(
-            String::from_utf8_lossy(&out.stderr).contains("--config-root"),
-            "{bad}: {}",
-            String::from_utf8_lossy(&out.stderr)
+            text.contains(" config-root: failed (--config-root"),
+            "{bad}: {text}"
         );
+        assert!(text.contains("claude skill: updated"), "{bad}: {text}");
+        assert!(
+            text.contains(&format!("codex hooks ({label}): updated")),
+            "{bad}: {text}"
+        );
+        assert!(!text.contains("a\nb"), "{bad}: {text}");
     }
 }

@@ -248,6 +248,9 @@ installer_integrations() {
 aisw_profile_roots() {
     local home=${AISW_HOME:-$HOME/.aisw} tool dir name listed found
     [ "${aisw_profiles:-1}" = 1 ] || return 0
+    # --config-root takes absolute directories: a relative AISW_HOME is resolved, or skipped.
+    home=$(cd "$home" 2>/dev/null && pwd) || return 0
+    case $home in /*) ;; *) return 0 ;; esac
     [ -d "$home/profiles" ] || return 0
     case $("$installed_binary" internal installer-integrations --help 2>/dev/null || true) in
         *--config-root*) ;;
@@ -265,6 +268,7 @@ aisw_profile_roots() {
         for dir in "$home/profiles/$tool"/*; do
             [ -d "$dir" ] && [ ! -L "$dir" ] || continue
             name=${dir##*/}
+            case $name in *[[:cntrl:]]*) continue ;; esac   # newline or control character
             case $name in
                 *[!A-Za-z0-9_-]*) ;;   # not addressable as a dotted path: kept
                 *) if [ "$listed" = 1 ] && ! "$installed_binary" internal json-field \
@@ -272,7 +276,8 @@ aisw_profile_roots() {
                        continue
                    fi ;;
             esac
-            if [ "$found" = 0 ] && [ -d "$HOME/.$tool" ]; then
+            if [ "$found" = 0 ] && case $HOME in /*) true ;; *) false ;; esac &&
+                [ -d "$HOME/.$tool" ]; then
                 printf '%s\n' "$tool=$HOME/.$tool"
             fi
             found=1
@@ -772,8 +777,11 @@ EOF_ROOTS
     if [ -n "$aisw_names" ]; then
         say "including aisw profiles:$aisw_names"
     fi
-    if "$installed_binary" internal installer-integrations ${integration_arg:+"$integration_arg"} \
-        ${permission_arg:+"$permission_arg"} ${root_args[@]+"${root_args[@]}"}; then
+    # A user-level step: run from a neutral directory, so the directory the installer happens
+    # to run from (for example $HOME, whose .codex Codex would read as a project layer) is not
+    # mistaken for a project.
+    if (cd / && "$installed_binary" internal installer-integrations ${integration_arg:+"$integration_arg"} \
+        ${permission_arg:+"$permission_arg"} ${root_args[@]+"${root_args[@]}"}); then
         OUT_SETUP=complete
     else
         OUT_SETUP=failed

@@ -127,7 +127,9 @@ pub enum CliAction {
     InstallerIntegrations {
         confirm_missing: bool,
         without_permissions: bool,
-        config_roots: Vec<super::installer::ExtraConfigRoot>,
+        /// Raw `--config-root` values; each is validated by the installer, an invalid one
+        /// failing only its own entry.
+        config_roots: Vec<String>,
     },
     InternalJsonField {
         path: String,
@@ -2933,11 +2935,7 @@ fn parse_cli_in_registry(
         } => CliAction::InstallerIntegrations {
             confirm_missing,
             without_permissions,
-            config_roots: config_root
-                .iter()
-                .map(|value| super::installer::parse_config_root(value, registry))
-                .collect::<Result<_, _>>()
-                .map_err(invalid)?,
+            config_roots: config_root,
         },
         Top::Internal {
             command: InternalSub::JsonField { path },

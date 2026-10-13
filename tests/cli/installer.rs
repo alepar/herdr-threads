@@ -1406,3 +1406,111 @@ fn codex_project_layer_scan_skips_the_home_being_set_up() {
         "{error}"
     );
 }
+
+fn codex_request(
+    verb: SetupVerb,
+    permissions: crate::cli::setup::PermissionPolicy,
+) -> crate::cli::setup::SetupRequest {
+    crate::cli::setup::SetupRequest {
+        scope: Default::default(),
+        verb,
+        harness: crate::harness::context::Harness::Codex,
+        harness_binary: None,
+        prompt_suggestions: Default::default(),
+        hooks_only: false,
+        permissions,
+        pane_env: Default::default(),
+    }
+}
+
+// Kills treating every file under a config root that is itself a symbolic link (a dotfile
+// manager's `~/.codex -> dotfiles/codex`) as shared: the root is the installation.
+#[test]
+fn a_symlinked_config_root_is_its_own_installation_not_shared() {
+    use crate::cli::setup::PermissionPolicy;
+    let mut f = Fixture::new();
+    for harness in ["claude", "codex"] {
+        let real = f.root.join("dotfiles").join(harness);
+        fs::create_dir_all(&real).unwrap();
+        let link = f.root.join(format!("linked-{harness}"));
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        f.env.config_roots.insert(harness.into(), link);
+    }
+    let report = setup::execute(
+        &codex_request(SetupVerb::Install, PermissionPolicy::Grant),
+        &f.env,
+    )
+    .expect("setup codex under a symlinked root");
+    assert_eq!(report["permissions"]["state"], "installed", "{report}");
+    let installer = execute(&f.env, true, false, |_| panic!("explicit consent"));
+    assert_eq!(installer["exit_status"], 0, "{installer}");
+    for e in installer["integrations"].as_array().unwrap() {
+        assert!(
+            matches!(
+                e["outcome"].as_str(),
+                Some("installed" | "updated" | "kept")
+            ),
+            "{installer}"
+        );
+    }
+    for harness in ["claude", "codex"] {
+        assert!(
+            f.root
+                .join("dotfiles")
+                .join(harness)
+                .join("skills/herdr-threads/SKILL.md")
+                .is_file()
+        );
+    }
+    assert!(
+        f.root
+            .join("dotfiles/codex/rules/herdr-threads.rules")
+            .is_file()
+    );
+    let again = execute(&f.env, false, false, |_| panic!("owned"));
+    assert_eq!(again["exit_status"], 0, "{again}");
+}
+
+// Kills writing or removing through a shared rules link on the strength of a record of the
+// profile's own path (an earlier release wrote through the link).
+#[test]
+fn a_legacy_record_of_a_shared_rules_path_never_writes_through_the_link() {
+    use crate::cli::setup::PermissionPolicy;
+    let f = Fixture::new();
+    let profile = f.root.join("profiles/codex/legacy");
+    fs::create_dir_all(f.root.join("codex/rules")).unwrap();
+    fs::create_dir_all(f.root.join("codex/skills")).unwrap();
+    linked_profile(&profile, &f.root.join("codex"), true);
+    // An older release granted in the profile, through the link: its record names the profile's
+    // lexical path. Simulated here by granting before the link was recognized.
+    let state = f.env.state_dir.clone().unwrap();
+    crate::daemon::paths::ensure_owned_state_root(&state).unwrap();
+    crate::daemon::paths::ensure_private_dir(&state.join("setup")).unwrap();
+    let lexical = profile.join("rules/herdr-threads.rules");
+    let legacy = crate::harness::codex::permissions::CodexPermissions::new(
+        &profile,
+        setup::manifest_path(&state, "codex-permissions", &lexical),
+    );
+    legacy
+        .apply(crate::harness::permissions::PermissionConsent::Granted)
+        .unwrap();
+    let real = f.root.join("codex/rules/herdr-threads.rules");
+    let bytes = fs::read(&real).unwrap();
+    let mut env = f.env.clone();
+    env.config_roots.insert("codex".into(), profile.clone());
+    let status = crate::harness::codex::setup::permission_status_json(&env);
+    assert_eq!(status["state"], "shared", "{status}");
+    let removed = setup::execute(
+        &codex_request(SetupVerb::Remove, PermissionPolicy::Ask),
+        &env,
+    )
+    .expect("unsetup in the profile");
+    assert_eq!(removed["permissions"]["state"], "shared", "{removed}");
+    let declined = setup::execute(
+        &codex_request(SetupVerb::Install, PermissionPolicy::Decline),
+        &env,
+    )
+    .expect("setup --without-permissions in the profile");
+    assert_eq!(declined["permissions"]["state"], "shared", "{declined}");
+    assert_eq!(fs::read(&real).unwrap(), bytes);
+}

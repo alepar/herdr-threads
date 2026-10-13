@@ -721,7 +721,7 @@ enum SharedRules {
 
 /// The default-root remedy for a shared rules file.
 const SHARED_REMEDY: &str = "set up the root that holds the real file first (default root: `env -u \
-     CODEX_HOME herdr-threads setup codex --with-permissions`). Nothing was changed";
+     CODEX_HOME herdr-threads setup codex --with-permissions`). The rules file was not changed";
 
 impl SharedRules {
     fn json(&self, rules: &Path) -> Value {
@@ -759,15 +759,14 @@ impl SharedRules {
     }
 }
 
-/// Whether `permissions` is a shared rules file (see [`SharedRules`]); `None` when it has an
-/// ownership record of its own or no directory on its path is a symbolic link.
+/// Whether `permissions` is a shared rules file (see [`SharedRules`]); `None` when no directory
+/// below the config root on its path is a symbolic link to elsewhere. A record of the lexical path
+/// itself (an earlier release wrote through the link) never makes it writable here: it is only
+/// the owner of last resort, after any record made at another root.
 fn shared_rules(
     env: &SetupEnv,
     permissions: &CodexPermissions,
 ) -> Result<Option<SharedRules>, RunError> {
-    if permissions.has_record() {
-        return Ok(None);
-    }
     let home = codex_root(env).ok_or_else(|| invalid("neither CODEX_HOME nor HOME is set"))?;
     let Some(canonical) = lib::shared_through_symlink(home, permissions.rules_file())? else {
         return Ok(None);
@@ -779,13 +778,16 @@ fn shared_rules(
                 .join(file.file_name()?),
         )
     };
-    for manifest in lib::manifests_of_kind(env.state_dir()?, "codex-permissions") {
-        let Some(file) = CodexPermissions::recorded_file(&manifest) else {
-            continue;
-        };
-        if canonical_of(&file).as_ref() != Some(&canonical) {
-            continue;
-        }
+    let mut owners: Vec<(PathBuf, PathBuf)> =
+        lib::manifests_of_kind(env.state_dir()?, "codex-permissions")
+            .into_iter()
+            .filter_map(|manifest| {
+                let file = CodexPermissions::recorded_file(&manifest)?;
+                (canonical_of(&file).as_ref() == Some(&canonical)).then_some((file, manifest))
+            })
+            .collect();
+    owners.sort_by_key(|(file, _)| file == permissions.rules_file());
+    if let Some((file, manifest)) = owners.into_iter().next() {
         return Ok(Some(
             match CodexPermissions::at(file.clone(), manifest).status() {
                 Ok(CodexPermissionState::Installed) => SharedRules::Owned { owner: file },
@@ -977,10 +979,16 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
     let permissions = permission_component(env)?;
     // After the hooks (which create CODEX_HOME). The rules file is independent of the hooks: a problem with it is reported, never a
     // reason to leave the hooks out.
-    let permission_report = match shared_rules(env, &permissions)? {
+    let permission_report = match shared_rules(env, &permissions) {
+        // Like the rules file's own errors, never a reason to fail after the hooks.
+        Err(error) if request.permissions != PermissionPolicy::Grant => json!({
+            "state": "error",
+            "error": error.to_string(),
+        }),
+        Err(error) => return Err(error),
         // A shared rules file is never written through its link: reported as it is, and an
         // explicit grant the real file does not hold cannot be honoured here.
-        Some(shared)
+        Ok(Some(shared))
             if request.permissions == PermissionPolicy::Grant
                 && !matches!(shared, SharedRules::Owned { .. }) =>
         {
@@ -989,8 +997,8 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
                 shared.advice(permissions.rules_file()),
             ));
         }
-        Some(shared) => shared.json(permissions.rules_file()),
-        None => {
+        Ok(Some(shared)) => shared.json(permissions.rules_file()),
+        Ok(None) => {
             let (result, action) = match request.permissions {
                 PermissionPolicy::Grant => {
                     (permissions.apply(PermissionConsent::Granted), "granted")
@@ -1111,10 +1119,11 @@ pub(crate) fn codex_remove(env: &SetupEnv) -> Result<Value, RunError> {
     };
     // Never let the permission component keep the hooks installed: its failure is reported.
     let permissions = permission_component(env)?;
-    report["permissions"] = match shared_rules(env, &permissions)? {
+    report["permissions"] = match shared_rules(env, &permissions) {
+        Err(error) => json!({"state": "error", "error": error.to_string()}),
         // Shared through a symlink: removed only at the root that holds the real file.
-        Some(shared) => shared.json(permissions.rules_file()),
-        None => match permissions.remove() {
+        Ok(Some(shared)) => shared.json(permissions.rules_file()),
+        Ok(None) => match permissions.remove() {
             Ok(state) => permissions_json(&permissions, state),
             Err(error) => json!({
                 "state": "error",

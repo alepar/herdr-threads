@@ -185,7 +185,12 @@ impl SkillFile {
         {
             return inspect_shared(env, name, &path, &canonical);
         }
-        for dir in folder.ancestors().take_while(|dir| dir.starts_with(root)) {
+        // The config root itself may be a symbolic link (a dotfile manager's); every directory
+        // below it must be a regular one.
+        for dir in folder
+            .ancestors()
+            .take_while(|dir| dir.starts_with(root) && dir != root)
+        {
             directory(dir)?;
         }
         let before = read_optional(&path)?;
@@ -241,7 +246,7 @@ impl SkillFile {
         let folder = self.path.parent().expect("skill path has parent");
         for dir in folder
             .ancestors()
-            .take_while(|dir| dir.starts_with(&self.root))
+            .take_while(|dir| dir.starts_with(&self.root) && *dir != self.root)
         {
             directory(dir)?;
         }

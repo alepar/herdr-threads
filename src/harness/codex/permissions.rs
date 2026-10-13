@@ -72,11 +72,6 @@ impl CodexPermissions {
         &self.rules
     }
 
-    /// Whether this rules file has an ownership record of its own (valid or not).
-    pub fn has_record(&self) -> bool {
-        self.manifest.symlink_metadata().is_ok()
-    }
-
     /// The rules file a Codex permission manifest records, if it is one.
     pub fn recorded_file(manifest: &Path) -> Option<PathBuf> {
         let bytes = fs::read(manifest).ok()?;

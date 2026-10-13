@@ -414,9 +414,10 @@ pub(crate) fn canonical_path(path: &Path) -> std::io::Result<std::path::PathBuf>
     }
 }
 
-/// The canonical location of `file` when a directory between `root` (included) and `file` is a
-/// symbolic link, so the file is shared with whatever root holds the real one. `None` when no
-/// such directory is a link. Read-only.
+/// The canonical location of `file` when it lies outside its config root once symbolic links
+/// are resolved: a directory below `root` is a link to elsewhere, so the file is shared with
+/// whatever root holds the real one. `None` when the resolved parent is still under the resolved
+/// root (no link, or only `root` itself is a link, as with a dotfile manager). Read-only.
 pub(crate) fn shared_through_symlink(
     root: &Path,
     file: &Path,
@@ -431,19 +432,21 @@ pub(crate) fn shared_through_symlink(
     if !linked {
         return Ok(None);
     }
-    let canonical = canonical_path(parent)?.join(name);
-    Ok((canonical != file).then_some(canonical))
+    let canonical_parent = canonical_path(parent)?;
+    if canonical_parent.starts_with(canonical_path(root)?) {
+        return Ok(None);
+    }
+    Ok(Some(canonical_parent.join(name)))
 }
 
-/// The ownership manifests of `kind` in the state directory's `setup/` (at most 512 are
-/// looked at), for finding which recorded path owns a shared file. Read-only.
+/// The ownership manifests of `kind` in the state directory's `setup/` (at most 512 of that
+/// kind), for finding which recorded path owns a shared file. Read-only.
 pub(crate) fn manifests_of_kind(state_dir: &Path, kind: &str) -> Vec<std::path::PathBuf> {
     let Ok(entries) = fs::read_dir(state_dir.join("setup")) else {
         return Vec::new();
     };
     let prefix = format!("{kind}-");
     entries
-        .take(512)
         .filter_map(Result::ok)
         .filter(|entry| {
             entry.file_name().to_str().is_some_and(|name| {
@@ -455,6 +458,7 @@ pub(crate) fn manifests_of_kind(state_dir: &Path, kind: &str) -> Vec<std::path::
             })
         })
         .map(|entry| entry.path())
+        .take(512)
         .collect()
 }
 fn permission_fingerprint(rule: &str) -> String {

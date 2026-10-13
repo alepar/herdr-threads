@@ -208,7 +208,10 @@ fn reconcile_root<F: FnMut(&str) -> io::Result<bool>>(
 ) -> bool {
     use crate::harness::adapter::*;
     let name = registration.metadata().id;
-    let target = label.map_or_else(|| name.to_owned(), |label| format!("{name} ({label})"));
+    let target = label.map_or_else(
+        || name.to_owned(),
+        |label| format!("{name} ({})", printable(label)),
+    );
     let new_entry = |component: &str| {
         let mut entry = json!({"harness":name,"component":component});
         if let Some(root) = root {
@@ -515,7 +518,7 @@ fn printable(text: &str) -> String {
 }
 
 pub fn run<W: Write>(
-    extra: &[ExtraConfigRoot],
+    config_roots: &[String],
     confirm_missing: bool,
     without_permissions: bool,
     output: &OutputSpec,
@@ -533,9 +536,24 @@ pub fn run<W: Write>(
                 .open("/dev/tty")
         })
         .and_then(Result::ok);
-    let report = execute_with(
+    // An invalid --config-root fails its own entry; every other root is still reconciled.
+    let registry = crate::harness::registry::builtins();
+    let mut extra = Vec::new();
+    let mut invalid = Vec::new();
+    for value in config_roots {
+        match parse_config_root(value, registry) {
+            Ok(root) => extra.push(root),
+            Err(detail) => invalid.push(json!({
+                "harness": value.split_once('=').map_or(value.as_str(), |(harness, _)| harness),
+                "component": "config-root",
+                "outcome": "failed",
+                "detail": detail,
+            })),
+        }
+    }
+    let mut report = execute_with(
         &env,
-        extra,
+        &extra,
         confirm_missing,
         without_permissions,
         tty.is_some(),
@@ -545,6 +563,13 @@ pub fn run<W: Write>(
             confirm(question, &mut input, tty)
         },
     );
+    if !invalid.is_empty() {
+        report["integrations"]
+            .as_array_mut()
+            .expect("integration entries")
+            .extend(invalid);
+        report["exit_status"] = json!(1);
+    }
     if output.format == OutputFormat::Json {
         serde_json::to_writer(&mut *writer, &report).map_err(io::Error::other)?;
         writeln!(writer)?;
@@ -564,7 +589,7 @@ pub fn run<W: Write>(
         for entry in entries {
             let verdict = format!(
                 "{} {}{}: {}",
-                entry["harness"].as_str().unwrap(),
+                printable(entry["harness"].as_str().unwrap()),
                 entry["component"].as_str().unwrap(),
                 entry["root_label"]
                     .as_str()

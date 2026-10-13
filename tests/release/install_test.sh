@@ -723,7 +723,7 @@ expect "linux refused link: says Herdr refused, without a stale unverified claim
 # the cases above are untouched; the stub server is down (no daemon).
 aisw_case() { # ARGS -> output in $out, status in $status; env from aisw_env
     set +e
-    (cd "$root/cwd" && "${run_env[@]}" "HOME=$ah" "FAKE_HERDR_DIR=$root/aisw-herdr" \
+    (cd "${aisw_cwd:-$root/cwd}" && "${run_env[@]}" "HOME=$ah" "FAKE_HERDR_DIR=$root/aisw-herdr" \
         "PATH=$root/aisw-tools:$tools:/usr/bin:/bin:/usr/sbin:/sbin" ${aisw_env[@]+"${aisw_env[@]}"} \
         bash "$repo/scripts/install.sh" --release-url "file://$rel" --version v0.1.0 "$@" < /dev/null > "$out" 2>&1)
     status=$?
@@ -793,7 +793,31 @@ if [ "$modern_integrations" = 1 ] &&
     expect "aisw without config.json: the new profile's shared skill needs no consent" \
         has "codex skill (CODEX_HOME=$aw/profiles/codex/unlisted): shared"
 
+    # Run from the scratch $HOME, whose .codex holds the default root's hook: the
+    # installer's user-level step runs from a neutral directory, so a new profile
+    # still installs and existing ones update.
+    mkdir -p "$aw/profiles/codex/x3"
+    ln -s "$ah/.codex/skills" "$aw/profiles/codex/x3/skills"
+    ln -s "$ah/.codex/rules" "$aw/profiles/codex/x3/rules"
+    aisw_cwd=$ah
+    aisw_case --setup
+    aisw_cwd=''
+    expect "aisw from \$HOME: install exits 0" [ "$status" = 0 ]
+    expect "aisw from \$HOME: new profile hooks installed" \
+        has "codex hooks (CODEX_HOME=$aw/profiles/codex/x3): installed"
+    expect "aisw from \$HOME: existing profile hooks updated" \
+        has "codex hooks (CODEX_HOME=$aw/profiles/codex/x1): updated"
+    expect "aisw from \$HOME: no failure" bash -c "! grep -q ': failed' '$out'"
+
     # No aisw directory: nothing is said about it.
+    # A relative AISW_HOME is resolved against the installer's working directory.
+    aisw_cwd=$ah
+    aisw_env=("AISW_HOME=.aisw")
+    aisw_case
+    aisw_cwd=''
+    expect "aisw relative AISW_HOME: resolved and included" has "including aisw profiles: claude/c1 codex/unlisted"
+    expect "aisw relative AISW_HOME: exits 0" [ "$status" = 0 ]
+
     aisw_env=("AISW_HOME=$root/no-aisw")
     aisw_case
     expect "aisw absent: nothing about aisw" bash -c "! grep -qF 'aisw profiles' '$out'"
