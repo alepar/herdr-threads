@@ -127,11 +127,28 @@ check "full-suite.yml: no env or step setting weakens the timed run" bash -c '
   test "$(yq ".jobs.full-suite | has(\"continue-on-error\")" "$1")" = false' _ "$full"
 check "full-suite.yml: prewarm builds the timed command (--no-run)" bash -c \
   'yq ".jobs.full-suite.steps[] | select(.name == \"Prewarm*\") | .run" "$1" | grep -qxF "cargo nextest run --locked --all-targets --all-features --no-run"' _ "$full"
-check "full-suite.yml: report states step outcomes, never an unconditional provisioning claim" bash -c '
-  env=$(yq -o=json -I=0 ".jobs.full-suite.steps[] | select(.name == \"Report*\") | .env" "$1")
-  test "$env" = "{\"HERDR_OUTCOME\":\"\${{ steps.herdr.outcome }}\",\"HERDR_CHECK_OUTCOME\":\"\${{ steps.herdr_check.outcome }}\",\"TIMED_OUTCOME\":\"\${{ steps.timed.outcome }}\"}" &&
-  test "$(yq ".jobs.full-suite.steps[] | select(.name == \"Provision pinned Herdr*\") | .id" "$1")" = herdr &&
-  ! yq ".jobs.full-suite.steps[] | select(.name == \"Report*\") | .run" "$1" | grep -qiE "provisioned;|herdr[^:]*: *provisioned\b"' _ "$full"
+# The report is pinned whole: it states the configured version and each step's actual outcome.
+expected_report_run=$(cat <<'REPORT'
+set -euo pipefail
+if [ -n "${FULL_SUITE_WALL_SECONDS:-}" ]; then wall="${FULL_SUITE_WALL_SECONDS}s"; else wall="not measured"; fi
+{
+  echo "### Full suite gate"
+  echo "Commit: $GITHUB_SHA; runner CPUs: $(nproc); wall: $wall (budget under 300s); timed run: ${TIMED_OUTCOME:-not run}"
+  echo "Herdr $HERDR_VERSION (configured): provisioning ${HERDR_OUTCOME:-not run}; provisioned-not-skipped check ${HERDR_CHECK_OUTCOME:-not run}; HT_SKIP_HERDR_TESTS: ${HT_SKIP_HERDR_TESTS:-unset}."
+  echo '```'
+  grep -E '^ +Summary|^ +(FAIL|SIGKILL|TIMEOUT|LEAK)' full-suite.log 2>/dev/null | sort -u || true
+  echo '```'
+} >> "$GITHUB_STEP_SUMMARY"
+REPORT
+)
+report_step() { yq ".jobs.full-suite.steps[] | select(.name == \"Report*\") | $1" "$full"; }
+check "full-suite.yml: report script pinned whole" bash -c 'test "$1" = "$2"' _ "$(report_step .run)" "$expected_report_run"
+check "full-suite.yml: report env is the three step outcomes" \
+  test "$(report_step '.env' | yq -o=json -I=0)" = '{"HERDR_OUTCOME":"${{ steps.herdr.outcome }}","HERDR_CHECK_OUTCOME":"${{ steps.herdr_check.outcome }}","TIMED_OUTCOME":"${{ steps.timed.outcome }}"}'
+step_id() { yq ".jobs.full-suite.steps[] | select(.name == \"$1*\") | .id" "$full"; }
+check "full-suite.yml: outcome ids sit on their own steps" bash -c \
+  'test "$1" = herdr && test "$2" = herdr_check && test "$3" = timed && test "$4" = null' _ \
+  "$(step_id 'Provision pinned Herdr')" "$(step_id 'Isolated Herdr tests')" "$(step_id 'Full suite')" "$(step_id 'Prewarm')"
 check "full-suite.yml: run-scoped always() leak check" bash -c \
   'test "$(yq ".jobs.full-suite.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "always()" &&
    yq ".jobs.full-suite.env.HT_LEAK_RUN_ID" "$1" | grep -qF "github.run_id"' _ "$full"
