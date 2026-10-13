@@ -744,8 +744,12 @@ if [ "$modern_integrations" = 1 ] &&
         ln -s "$ah/.codex/skills" "$aw/profiles/codex/$p/skills"
         ln -s "$ah/.codex/rules" "$aw/profiles/codex/$p/rules"
     done
-    printf '%s\n' '{"version":2,"profiles":{"claude":{"c1":{"x":1}},"codex":{"x1":{},"x2":{},"linked":{}}}}' \
+    printf '%s\n' '{"version":2,"profiles":{"claude":{"c1":{"x":1}},"codex":{"x1":{},"x2":{},"linked":{},"team.one":{},"my profile":{}}}}' \
         > "$aw/config.json"
+    # Names outside [A-Za-z0-9_-] are matched literally against config.json's keys too.
+    for p in team.one 'my profile' old.profile 'old profile' retired@account; do
+        mkdir -p "$aw/profiles/codex/$p"
+    done
     aisw_env=()
 
     aisw_case --setup --no-aisw-profiles
@@ -760,9 +764,16 @@ if [ "$modern_integrations" = 1 ] &&
     aisw_case --setup
     expect "aisw: install exits 0" [ "$status" = 0 ]
     expect "aisw: one line names the included profiles" \
-        bash -c "[ \"\$(grep -c 'including aisw profiles: claude/c1 codex/x1 codex/x2' '$out')\" = 1 ]"
+        bash -c "[ \"\$(grep -c 'including aisw profiles: claude/c1 codex/my profile codex/team.one codex/x1 codex/x2\$' '$out')\" = 1 ]"
     expect "aisw: unlisted and symlinked profile directories are not included" \
         bash -c "! grep -qE 'codex/(unlisted|linked)' '$out'"
+    for p in old.profile 'old profile' retired@account unlisted; do
+        expect "aisw: unlisted '$p' is not reconciled" \
+            bash -c "! grep -qF 'CODEX_HOME=$aw/profiles/codex/$p)' '$out'"
+    done
+    for p in team.one 'my profile'; do
+        expect "aisw: listed '$p' is reconciled" has "codex hooks (CODEX_HOME=$aw/profiles/codex/$p): installed"
+    done
     expect "aisw: default Codex root reconciled first" \
         bash -c "grep -n 'codex skill (CODEX_HOME=' '$out' | head -n 1 | grep -qF 'CODEX_HOME=$ah/.codex): '"
     for p in x1 x2; do
@@ -782,6 +793,8 @@ if [ "$modern_integrations" = 1 ] &&
     expect "aisw: unlisted profile untouched" [ ! -e "$aw/profiles/codex/unlisted/hooks.json" ]
     expect "aisw: symlinked profile untouched" [ ! -e "$root/aisw-elsewhere/hooks.json" ]
     expect "aisw: no shared failure" bash -c "! grep -q ': failed' '$out'"
+    rm -rf "$aw/profiles/codex/team.one" "$aw/profiles/codex/my profile" "$aw/profiles/codex/old.profile" \
+        "$aw/profiles/codex/old profile" "$aw/profiles/codex/retired@account"
 
     # Without config.json every plain profile directory is included.
     mv "$aw/config.json" "$aw/config.json.off"

@@ -291,8 +291,10 @@ impl SkillFile {
                 "skill changed concurrently after preparing update; preserved",
             ));
         }
-        let publication = if self.before.is_some() {
-            owned::write_replacement(&self.path, bytes, false)
+        // An existing file keeps a timestamped `.herdr-threads` pre-image before its staged
+        // replacement (once per run); a new one has none.
+        let publication = if let Some(before) = &self.before {
+            owned::write_user_config(&self.path, before, bytes)
         } else {
             owned::publish_manifest(&self.path, bytes, false)
         };

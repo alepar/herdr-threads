@@ -3,12 +3,26 @@
 //! `internal json-field <path>` reads one JSON document on stdin and prints
 //! the value at a dotted path (object keys; array indexes as numbers), so the
 //! installer never splits JSON with shell tools. Exit 1: the path is absent;
-//! exit 2: stdin is not JSON. Local only; never contacts the daemon.
+//! exit 2: stdin is not JSON. With `--keys` it prints the keys of the object
+//! at the path instead, one per line (keys holding a newline or another control
+//! character are omitted); a value that is not an object exits 1. Local only;
+//! never contacts the daemon.
 use super::RunError;
 use std::io::Write;
 
 /// Print the value at `path` of `input` (strings raw, other values as JSON).
 pub fn json_field<W: Write>(input: &str, path: &str, writer: &mut W) -> Result<(), RunError> {
+    json_field_with(input, path, false, writer)
+}
+
+/// [`json_field`], or with `keys` the object's keys one per line, exactly as written (a key
+/// holding a control character is omitted, so every printed line is one whole key).
+pub fn json_field_with<W: Write>(
+    input: &str,
+    path: &str,
+    keys: bool,
+    writer: &mut W,
+) -> Result<(), RunError> {
     let document: serde_json::Value = match serde_json::from_str(input) {
         Ok(value) => value,
         Err(error) => {
@@ -29,6 +43,16 @@ pub fn json_field<W: Write>(input: &str, path: &str, writer: &mut W) -> Result<(
             Some(found) => value = found,
             None => return Err(RunError::Exit(1)),
         }
+    }
+    if keys {
+        let serde_json::Value::Object(map) = value else {
+            return Err(RunError::Exit(1));
+        };
+        for key in map.keys().filter(|key| !key.chars().any(char::is_control)) {
+            writeln!(writer, "{key}")?;
+        }
+        writer.flush()?;
+        return Ok(());
     }
     match value {
         serde_json::Value::String(text) => writeln!(writer, "{text}")?,

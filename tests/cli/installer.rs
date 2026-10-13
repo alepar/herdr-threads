@@ -1559,3 +1559,45 @@ fn a_legacy_record_of_a_shared_rules_path_never_writes_through_the_link() {
         "no record adopted for the default root"
     );
 }
+
+// Kills refreshing an owned skill without a pre-image: an owned SKILL.md whose content changes
+// keeps exactly one timestamped `.herdr-threads` pre-image holding the old bytes; a fresh
+// install and an unchanged rerun keep none.
+#[test]
+fn an_owned_skill_refresh_keeps_one_timestamped_pre_image() {
+    let f = Fixture::new();
+    let installed = execute(&f.env, true, false, |_| panic!("explicit consent"));
+    assert_eq!(installed["exit_status"], 0, "{installed}");
+    let skill = f.root.join("codex/skills/herdr-threads/SKILL.md");
+    assert!(crate::harness::setup::user_config_backups(&skill).is_empty());
+    // An earlier release's owned revision: the file and its record agree on older bytes.
+    let old = b"---\nname: herdr-threads\n---\nan earlier revision\n".to_vec();
+    fs::write(&skill, &old).unwrap();
+    let manifest = setup::manifest_path(f.env.state_dir.as_ref().unwrap(), "codex-skill", &skill);
+    let mut record: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    record["fingerprint"] = json!(crate::harness::setup::fingerprint(&old));
+    fs::write(&manifest, serde_json::to_vec(&record).unwrap()).unwrap();
+    let updated = execute(&f.env, false, false, |_| panic!("owned"));
+    assert_eq!(updated["exit_status"], 0, "{updated}");
+    assert_eq!(
+        fs::read_to_string(&skill).unwrap(),
+        crate::cli::skill::SKILL_MD
+    );
+    assert_eq!(
+        crate::harness::setup::user_config_backups(&skill),
+        vec![old]
+    );
+    let names: Vec<String> = fs::read_dir(skill.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "SKILL.md")
+        .collect();
+    assert_eq!(names.len(), 1, "{names:?}");
+    assert!(
+        names[0].starts_with("SKILL.md.") && names[0].ends_with(".herdr-threads"),
+        "{names:?}"
+    );
+    let again = execute(&f.env, false, false, |_| panic!("owned"));
+    assert_eq!(again["exit_status"], 0, "{again}");
+    assert_eq!(crate::harness::setup::user_config_backups(&skill).len(), 1);
+}

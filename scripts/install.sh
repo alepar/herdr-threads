@@ -242,11 +242,23 @@ installer_integrations() {
 # harness is on PATH, the default root ($HOME/.<tool>) first when it is a
 # directory, since profiles share its skills (and Codex rules) through
 # symlinks. A profile is a plain directory (never a symlink) directly under
-# profiles/<tool>; when config.json lists the tool's profiles (read by the
-# installed executable, no jq), only the listed ones. Prints nothing without
-# aisw, with --no-aisw-profiles, or for a build without --config-root.
+# profiles/<tool>; when config.json lists the tool's profiles (its object keys,
+# read exactly by the installed executable, no jq), only the listed ones,
+# compared as literal names. Prints nothing without aisw, with
+# --no-aisw-profiles, or for a build without --config-root.
+# Whether NAME is one of the lines of KEYS, compared as literal strings.
+aisw_listed() {
+    local key
+    while IFS= read -r key; do
+        [ "$key" = "$1" ] && return 0
+    done <<EOF_KEYS
+$2
+EOF_KEYS
+    return 1
+}
+
 aisw_profile_roots() {
-    local home=${AISW_HOME:-$HOME/.aisw} tool dir name listed found
+    local home=${AISW_HOME:-$HOME/.aisw} tool dir name listed found keys
     [ "${aisw_profiles:-1}" = 1 ] || return 0
     # --config-root takes absolute directories: a relative AISW_HOME is resolved, or skipped.
     home=$(CDPATH= cd -- "$home" 2>/dev/null && pwd) || return 0
@@ -260,8 +272,10 @@ aisw_profile_roots() {
         command -v "$tool" >/dev/null 2>&1 || continue
         [ -d "$home/profiles/$tool" ] && [ ! -L "$home/profiles/$tool" ] || continue
         listed=0
+        keys=''
         if [ -r "$home/config.json" ] &&
-            "$installed_binary" internal json-field "profiles.$tool" < "$home/config.json" >/dev/null 2>&1; then
+            keys=$("$installed_binary" internal json-field --keys "profiles.$tool" \
+                < "$home/config.json" 2>/dev/null); then
             listed=1
         fi
         found=0
@@ -269,13 +283,9 @@ aisw_profile_roots() {
             [ -d "$dir" ] && [ ! -L "$dir" ] || continue
             name=${dir##*/}
             case $name in *[[:cntrl:]]*) continue ;; esac   # newline or control character
-            case $name in
-                *[!A-Za-z0-9_-]*) ;;   # not addressable as a dotted path: kept
-                *) if [ "$listed" = 1 ] && ! "$installed_binary" internal json-field \
-                        "profiles.$tool.$name" < "$home/config.json" >/dev/null 2>&1; then
-                       continue
-                   fi ;;
-            esac
+            if [ "$listed" = 1 ] && ! aisw_listed "$name" "$keys"; then
+                continue
+            fi
             if [ "$found" = 0 ] && case $HOME in /*) true ;; *) false ;; esac &&
                 [ -d "$HOME/.$tool" ]; then
                 printf '%s\n' "$tool=$HOME/.$tool"

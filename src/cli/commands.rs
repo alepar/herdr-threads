@@ -133,6 +133,7 @@ pub enum CliAction {
     },
     InternalJsonField {
         path: String,
+        keys: bool,
     },
     /// `read THREAD --follow`: recent messages, then each new one as it is
     /// committed. Read-only: never ACKs or accepts.
@@ -931,7 +932,12 @@ enum InternalSub {
         config_root: Vec<String>,
     },
     /// Read JSON on stdin and print the value at a dotted path (exit 1 when absent).
-    JsonField { path: String },
+    JsonField {
+        path: String,
+        /// Print the keys of the object at the path, one per line (exit 1 when not an object).
+        #[arg(long)]
+        keys: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2938,8 +2944,8 @@ fn parse_cli_in_registry(
             config_roots: config_root,
         },
         Top::Internal {
-            command: InternalSub::JsonField { path },
-        } => CliAction::InternalJsonField { path },
+            command: InternalSub::JsonField { path, keys },
+        } => CliAction::InternalJsonField { path, keys },
         Top::Retry { recovery_ref } => CliAction::Retry(id(recovery_ref, LocalRecoveryRef::parse)?),
         Top::View(args) => CliAction::View {
             once: args.once,

@@ -497,10 +497,10 @@ fn run_parsed_in_pane<W: Write>(
             writer,
         );
     }
-    if let CliAction::InternalJsonField { path } = &parsed.action {
+    if let CliAction::InternalJsonField { path, keys } = &parsed.action {
         let mut input = String::new();
         io::Read::read_to_string(&mut io::stdin().lock(), &mut input)?;
-        return internal::json_field(&input, path, writer);
+        return internal::json_field_with(&input, path, *keys, writer);
     }
     if let CliAction::Doctor { .. } = &parsed.action {
         return doctor::run(&parsed, writer);

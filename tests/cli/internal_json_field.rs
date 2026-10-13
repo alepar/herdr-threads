@@ -50,3 +50,30 @@ fn is_hidden_from_help() {
     assert!(!help.contains("internal"), "{help}");
     assert!(!help.contains("json-field"), "{help}");
 }
+
+fn keys(input: &str, path: &str) -> Result<String, i32> {
+    let mut out = Vec::new();
+    match json_field_with(input, path, true, &mut out) {
+        Ok(()) => Ok(String::from_utf8(out).unwrap()),
+        Err(RunError::Exit(code)) => Err(code),
+        Err(other) => panic!("unexpected error: {other:?}"),
+    }
+}
+
+// Kills: keys printed JSON-quoted, keys with punctuation/spaces mangled, a key holding a newline
+// splitting into two lines, or a non-object value printing anything.
+#[test]
+fn keys_mode_prints_object_keys_exactly_one_per_line() {
+    let json = r#"{"profiles":{"codex":{"team.one":{},"my profile":{},"retired@account":1,"-dash":{},"bad\nkey":{},"tab\tkey":{}},"list":[1]}}"#;
+    let printed = keys(json, "profiles.codex").unwrap();
+    let mut lines: Vec<&str> = printed.lines().collect();
+    lines.sort_unstable();
+    assert_eq!(
+        lines,
+        ["-dash", "my profile", "retired@account", "team.one"]
+    );
+    assert_eq!(keys(json, "profiles.list"), Err(1));
+    assert_eq!(keys(json, "profiles.nope"), Err(1));
+    assert_eq!(keys(r#"{"a":{}}"#, "a").unwrap(), "");
+    assert_eq!(keys("{", "a"), Err(2));
+}
