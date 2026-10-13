@@ -1,0 +1,112 @@
+# Message delivery priority — inbox merge
+
+Parent spec: [2026-10-13-message-priority-delivery-design.md](2026-10-13-message-priority-delivery-design.md) ·
+bead `ht-yha.5` (subepic of `ht-yha`) · design mode B (autonomous run).
+
+## Goal
+
+Every inbox v2 page (CLI inbox text/JSON/machine, hook pages, watch drains, accept's thread-scoped display,
+the presentation page) emits pending items in `DeliveryOrderKey` order — priority asc, deadline asc with none
+last, publication `decision_seq` asc, source rank, per-source ordinal — under the existing row, byte and
+candidate-work bounds, with a continuation that resumes the same order.
+
+## Problem description
+
+Inbox v2 today rotates round-robin through five sources (Lazy, Unread, Invitations, Receipts, Warnings), each
+walked by ascending per-source ordinal with pending/publication checks mostly applied after the seek. None of
+the walks yields rows in key order: deadlines and decision sequences live on joined rows (`receipt_state`,
+`send_manifests`, `invitations.deadline_at`), and the receipt walk visits settled history. A min-head merge is
+only correct if each source can produce its next item in key order, cheaply and within `CANDIDATE_LIMIT`.
+
+## Main challenges
+
+The sources differ in shape. Delivery rows are the bulk (every non-ACK message, all priorities, possibly large
+backlogs) and need an exact, index-backed order. Items with deadlines (explicit-ACK receipts, confirming
+invitations) are all priority 0 and few by construction (they always nudge and ACK/accept on handling), but
+their deadline is not on any indexable walked row and can be extended after send. Warnings are walked
+instance-globally in `(decision_seq, event_offset)` order. The cursor must encode a resumable position for all
+of these, and the partly-shown-body continuation must keep working.
+
+## Key decisions made
+
+Split the sources into three **classes** with different ordering strategies, merged by `DeliveryOrderKey`:
+(1) **delivery rows** — exact order via a new partial index on `lazy_recipients(seat, priority, decision_seq,
+ordinal)`; (2) **deadline class** — invitations plus the receipt-bearing sources (binding Unread and Receipts),
+collected in a bounded **window** of up to `DEADLINE_WINDOW = 64` pending items in their existing walk order and
+sorted in memory, exact whenever a seat's pending deadline-class backlog fits the window; (3) **warnings** —
+already in key order (p0, no deadline, `decision_seq`). The cursor becomes format version 2: last emitted key,
+per-class positions, captured high waters, and the body continuation. Version-1 tokens are rejected with the
+existing `InvalidCursor` error.
+
+## Decision points, by section
+
+**Delivery-row class (exact).** Recommended: v47 adds `lazy_recipients_pending_order ON lazy_recipients(seat_id,
+priority, decision_seq, ordinal) WHERE state='pending' AND decision_seq IS NOT NULL` and the thread-scoped twin
+`(seat_id, thread_id, priority, decision_seq, ordinal)` with the same predicate. `decision_seq` is copied onto the
+row at publication (`note_published`) and backfilled by the migration, so "published and not past the captured
+high water" is `decision_seq IS NOT NULL AND decision_seq <= dh` inside the seek — no unpublished row is ever
+visited, which strictly improves the 2026-10-07 bounded-walk rule. The seek resumes with `(priority,
+decision_seq, ordinal) > last` and `LIMIT 1`. Binding-scoped readers keep their post-seek unread/display filter
+(each rejected candidate costs one visit, as today). Considered and discarded: keeping the ordinal walk and
+sorting a window (a p0 row behind a large p1 backlog would be invisible until the backlog drains — the exact
+case priority exists for).
+
+**Deadline class (windowed).** Recommended: invitations, binding Unread and Receipts keep their current walks
+(ascending ordinal, existing indexes and pending/publication checks) but feed a window: the class collects
+pending items until it holds `DEADLINE_WINDOW` (64) items or all three walks are exhausted, charging every visited
+candidate to `CANDIDATE_LIMIT`. The window is sorted by `DeliveryOrderKey` (deadline from `effective_receipt` /
+`invitations.deadline_at` for `require_ack` invitations, None otherwise; `decision_seq` from the effective receipt
+or `invitations.created_decision_seq`). If the walks were exhausted, the class order is exact. If the window
+filled first, the class emits the window in key order, then the next window from where the walks stopped
+(accepted limit: with more than 64 pending deadline-class items, order is exact within each window and windows
+follow arrival order; these items always nudge and settle on display, so such a backlog is pathological; the
+limit is user-visible ordering only and is documented in `docs/agent-usage.md` by the docs child). Considered and discarded: (a) a new denormalized ordered projection of pending receipts with triggers
+keeping deadline current across extensions — exact but a large new invariant for a small class; (b) dropping
+deadline from the key for receipts — contradicts the user's ordering amendment.
+
+If a work-limited page stops while the window is only partly collected, the cursor records the walk positions
+and the window restarts from the class start position on the next page (collection is idempotent over the
+captured high waters), so no item is skipped.
+
+**Warnings class.** Recommended: unchanged walk (`scan_global_logical_candidates`), already in key order within
+p0/no-deadline; its head competes in the merge like any other. Its 2-visit reservation stays.
+
+**Merge loop.** Recommended: replace `rotate` with: each step, ensure each unfinished class has a head (delivery
+rows: one indexed seek; deadline class: the next item of the sorted window, collecting a window if empty;
+warnings: one candidate scan), compare heads with `DeliveryOrderKey`, emit the smallest, advance that class.
+Heads already peeked are carried in memory within one request; across pages only positions are persisted, and a
+peeked-but-not-emitted head is re-peeked (bounded: at most one seek per class per page start). Row/byte/work
+stops and the never-false-`empty` rule are unchanged. A partly shown body resumes first, exactly as today, and
+its key becomes the last emitted key once it completes.
+
+**Caller subsets.** Recommended: unchanged semantics expressed as class subsets — CLI inbox, delivery pull, hook
+inbox and watch use all classes; `ordinary_presentation_page` uses delivery rows plus binding Unread (deadline
+class without invitations); accept's thread-scoped display uses delivery rows only (all priorities, below the
+first unread receipt-bearing row, per the pair/invitation child `ht-yha.6`).
+
+**Cursor format v2.** Recommended: `ib2:` prefix and binding tag unchanged; payload version byte 2 carrying the
+last emitted `DeliveryOrderKey` (encoded by `DeliveryOrderKey`'s continuation encoding from `ht-yha.1`), the
+delivery-row position (implied by the last key when the last emitted item was a delivery row, else stored), the
+deadline-class walk positions (invitation, unread, physical/manifest receipt after/high, next-manifest flag), the
+window start positions, the warning positions and offer cutoff, the captured high waters, the done flags and the
+body continuation. Version 1 decodes to `InvalidCursor` ("cursor from an older daemon; run inbox again"); a client
+that holds a v1 `next:` line across an upgrade reruns `inbox`. Considered and discarded: decoding v1 into v2
+(no key information to recover; the traversal must restart anyway).
+
+**Index list for v47 (`ht-yha.2`).** Only the two delivery-row indexes above are required; the deadline class
+reuses existing indexes (`invitations_seat_decision`, `prepared_recipients` seat/ordinal, receipts seat/ordinal).
+`ht-yha.2`'s receipts/invitations index items are withdrawn.
+
+**Tests.** Merged order across classes (p0 deadline receipt before p0 deadline-less invitation/warning/row; p0
+before p1; equal priority none-last; equal deadlines by decision_seq; equal decision_seq by rank); a p0 delivery
+row behind 500 pending p1 rows comes first within one page and one seek; window overflow (70 pending
+receipts) keeps exact order within windows and loses nothing across pages; continuation stability for read-only
+JSON paging split inside an equal-priority run; work-limited pages with a partial window resume without skips;
+large unpublished backlogs visit zero unpublished delivery rows (EXPLAIN plan on the new index); v1 cursor →
+`InvalidCursor`; body continuation resumes first; caller subsets (presentation page, accept). Rewrite the
+rotation-order tests (`lazy_inbox_v2_bounded_round_robin_opportunity`, the q4 visit-99 test, the CancelClock
+call-count test, binding page-order vectors, cursor codec round trip, presentation partial-body tests).
+
+## Post-Implementation Notes
+
+*As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*

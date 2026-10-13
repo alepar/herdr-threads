@@ -79,12 +79,9 @@ tiebreak **(source rank, per-source ordinal)** so the order is total and stable 
 Inbox v2 stops round-robin rotation between sources and instead, each step, peeks the head of every unfinished
 source (one indexed `LIMIT 1` seek per source, each counted against `CANDIDATE_LIMIT`) and emits the smallest key;
 the row limit, byte limit and work bound are unchanged, and a work-limited page ends with a continuation, never a
-false `empty`. Each source's walk must yield its items in key order, so each gets a pending index in that order:
-receipts (seat, deadline, decision_seq, ordinal), invitations (seat, deadline, decision_seq, ordinal), delivery
-rows (seat, priority, decision_seq, ordinal), warnings (seat, decision_seq, ordinal). The delivery-row
-`decision_seq` is copied onto the row at publication (staged rows have none and are not yet visible), so the seek
-stays an index range scan; the publication filter is applied after the seek (the 2026-10-07 bounded-walk rule).
-The continuation records the last emitted full key and the captured high waters; an item published after capture
+false `empty`. How each source yields its items in key order (exact index-backed delivery rows, a bounded sorted window for the
+deadline-bearing p0 sources, warnings already in order), the v47 index shapes and the cursor format are specified
+in the inbox-merge subspec ([2026-10-13-message-priority-delivery--inbox-merge-design.md](2026-10-13-message-priority-delivery--inbox-merge-design.md)). The continuation records the last emitted full key and the captured high waters; an item published after capture
 belongs to the next traversal, as today. Out-of-order display within a thread is safe because each delivery row
 records its own displayed state; the binding read cursor only advances over the contiguous displayed prefix, as
 `advance_through_displayed` already does. The watch stream and mod carry `priority` and `deadline_at` on each
