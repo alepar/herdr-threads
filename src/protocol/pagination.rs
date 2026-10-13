@@ -1,3 +1,4 @@
+use crate::protocol::priority::{DeliveryOrderKey, DeliveryPriority, SourceRank};
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_PAGE_LIMIT: u16 = 20;
@@ -484,6 +485,455 @@ impl InboxBatchV2CursorState {
             })
         {
             return Err("invalid v2 position");
+        }
+        Ok(())
+    }
+}
+
+/// Format-2 version byte; a format-1 token decodes to `CURSOR_FROM_OLDER_DAEMON`.
+pub const INBOX_V2_FORMAT: u8 = 2;
+/// Model-visible (44 bytes), shown only on a stale `next:` token.
+pub const CURSOR_FROM_OLDER_DAEMON: &str = "cursor from an older daemon; run inbox again";
+
+/// The delivery-row class position: the canonical (priority, decision_seq, ordinal) triple of the
+/// last row passed. This is the one definition; `DeliveryRowSeek` (store) resumes strictly after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeliveryRowsPosition {
+    pub priority: DeliveryPriority,
+    pub decision_seq: u64,
+    pub ordinal: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeliveryRowsCursor {
+    /// Elided from the token when the last emitted item is this very delivery row.
+    pub after: Option<DeliveryRowsPosition>,
+    pub done: bool,
+}
+
+/// Where the deadline-class walks stand (ascending per-walk ordinals).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeadlineWalks {
+    pub invitation_after: i64,
+    /// `Some` exactly on a bound read.
+    pub unread_after: Option<u64>,
+    pub physical_after: i64,
+    pub manifest_after: i64,
+    pub next_manifest: bool,
+}
+
+/// Deadline-walk high waters, captured once per traversal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeadlineHighWaters {
+    pub invitation: i64,
+    /// `Some` exactly on a bound read.
+    pub unread: Option<u64>,
+    pub physical: i64,
+    pub manifest: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeadlineCursor {
+    pub high: DeadlineHighWaters,
+    /// Where the current (or next) window starts collecting.
+    pub window_start: DeadlineWalks,
+    /// `Some` while a collected window is only partly emitted: re-collect exactly start..end and
+    /// skip keys <= the last emitted key. `None`: the next window is fresh.
+    pub window_end: Option<DeadlineWalks>,
+    pub done: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WarningsCursor {
+    pub physical_after: i64,
+    pub manifest_after: i64,
+    pub offered: i64,
+    pub done: bool,
+}
+
+/// Format-2 inbox continuation state.
+/// Owns: the format-2 layout and its codec (canonical re-encode, bounds, binding tag).
+/// Does not: decide traversal; the store's merge does. A new pending class adds one position
+/// struct here.
+/// Transitional: the store still uses the format-1 `InboxBatchV2CursorState` until ht-yha.5.4
+/// switches to this type, deletes format 1 and renames this to `InboxBatchV2CursorState`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboxBatchV2CursorStateV2 {
+    pub seat: crate::protocol::ids::SeatId,
+    pub binding_generation: Option<u64>,
+    pub execution: Option<crate::protocol::ids::ExecutionId>,
+    pub publication_decision_high_water: u64,
+    pub last: Option<DeliveryOrderKey>,
+    pub rows: DeliveryRowsCursor,
+    pub deadline: DeadlineCursor,
+    pub warnings: WarningsCursor,
+    /// A partly shown body, tagged with the source that owns it (Lazy, Unread or Receipts).
+    pub body: Option<(InboxBatchV2Source, InboxBatchV2BodyPosition)>,
+}
+
+const FV2_IDENTITY: u16 = 1 << 0;
+const FV2_LAST: u16 = 1 << 1;
+const FV2_ROWS_AFTER: u16 = 1 << 2;
+const FV2_ROWS_ELIDED: u16 = 1 << 3;
+const FV2_ROWS_DONE: u16 = 1 << 4;
+const FV2_DEADLINE_DONE: u16 = 1 << 5;
+const FV2_WARNINGS_DONE: u16 = 1 << 6;
+const FV2_WINDOW_END: u16 = 1 << 7;
+const FV2_START_NEXT_MANIFEST: u16 = 1 << 8;
+const FV2_END_NEXT_MANIFEST: u16 = 1 << 9;
+const FV2_BOUND: u16 = 1 << 10;
+const FV2_BODY: u16 = 1 << 11;
+const FV2_ALL: u16 = (1 << 12) - 1;
+const V2_BAD_POSITION: &str = "invalid v2 position";
+
+fn v2_source_byte(source: InboxBatchV2Source) -> u8 {
+    match source {
+        InboxBatchV2Source::Lazy => 0,
+        InboxBatchV2Source::Invitations => 1,
+        InboxBatchV2Source::Receipts => 2,
+        InboxBatchV2Source::Warnings => 3,
+        InboxBatchV2Source::Unread => 4,
+    }
+}
+
+impl InboxBatchV2CursorStateV2 {
+    pub fn encode(&self, instance: &str) -> Result<String, &'static str> {
+        self.validate()?;
+        let mut bytes = self.compact_payload()?;
+        bytes.extend_from_slice(&binding_tag(
+            instance,
+            self.seat.as_str(),
+            "inbox_batch_v2",
+            &bytes,
+        ));
+        let encoded = format!("{INBOX_V2_PREFIX}{}", base64url_encode(&bytes));
+        if encoded.len() > MAX_CURSOR_BYTES {
+            return Err("cursor exceeds byte bound");
+        }
+        Ok(encoded)
+    }
+    pub fn decode(encoded: &str) -> Result<Self, &'static str> {
+        let (state, _) = Self::decode_parts(encoded)?;
+        state.validate()?;
+        Ok(state)
+    }
+    pub fn decode_for(
+        encoded: &str,
+        instance: &str,
+        seat: &crate::protocol::ids::SeatId,
+    ) -> Result<Self, &'static str> {
+        let (state, bytes) = Self::decode_parts(encoded)?;
+        state.validate()?;
+        let (payload, tag) = bytes.split_at(bytes.len() - CURSOR_TAG_BYTES);
+        if &state.seat != seat
+            || tag != binding_tag(instance, seat.as_str(), "inbox_batch_v2", payload)
+        {
+            return Err("v2 cursor binding mismatch");
+        }
+        Ok(state)
+    }
+
+    /// The triple of the last emitted delivery row, when `last` is one.
+    fn last_row_triple(&self) -> Option<DeliveryRowsPosition> {
+        self.last
+            .filter(|k| k.rank == SourceRank::DeliveryRow)
+            .map(|k| DeliveryRowsPosition {
+                priority: k.priority,
+                decision_seq: k.decision_seq,
+                ordinal: k.ordinal,
+            })
+    }
+
+    fn decode_parts(encoded: &str) -> Result<(Self, Vec<u8>), &'static str> {
+        if encoded.len() > MAX_CURSOR_BYTES {
+            return Err("cursor exceeds byte bound");
+        }
+        let bytes = base64url_decode(
+            encoded
+                .strip_prefix(INBOX_V2_PREFIX)
+                .ok_or("not a v2 cursor")?,
+        )?;
+        if bytes.len() <= CURSOR_TAG_BYTES {
+            return Err("truncated v2 cursor");
+        }
+        let payload = &bytes[..bytes.len() - CURSOR_TAG_BYTES];
+        let mut input = Reader(payload);
+        match input.byte()? {
+            1 => return Err(CURSOR_FROM_OLDER_DAEMON),
+            INBOX_V2_FORMAT => {}
+            _ => return Err("unknown v2 cursor version"),
+        }
+        let flags = u16::from(input.byte()?) | (u16::from(input.byte()?) << 8);
+        if flags & !FV2_ALL != 0 {
+            return Err("invalid v2 flags");
+        }
+        let has = |flag: u16| flags & flag != 0;
+        let seat = crate::protocol::ids::SeatId::new(v2_string(&mut input)?);
+        let (binding_generation, execution) = if has(FV2_IDENTITY) {
+            (
+                Some(input.unsigned()?),
+                Some(crate::protocol::ids::ExecutionId::new(v2_string(
+                    &mut input,
+                )?)),
+            )
+        } else {
+            (None, None)
+        };
+        let publication_decision_high_water = input.unsigned()?;
+        let last = if has(FV2_LAST) {
+            Some(DeliveryOrderKey::read_compact(&mut input.0)?)
+        } else {
+            None
+        };
+        if has(FV2_ROWS_AFTER) && has(FV2_ROWS_ELIDED) {
+            return Err("invalid v2 flags");
+        }
+        let rows_after = if has(FV2_ROWS_AFTER) {
+            let priority = DeliveryPriority::new(input.byte()?).map_err(|_| V2_BAD_POSITION)?;
+            Some(DeliveryRowsPosition {
+                priority,
+                decision_seq: input.unsigned()?,
+                ordinal: input.unsigned()?,
+            })
+        } else if has(FV2_ROWS_ELIDED) {
+            let key = last
+                .filter(|k| k.rank == SourceRank::DeliveryRow)
+                .ok_or(V2_BAD_POSITION)?;
+            Some(DeliveryRowsPosition {
+                priority: key.priority,
+                decision_seq: key.decision_seq,
+                ordinal: key.ordinal,
+            })
+        } else {
+            None
+        };
+        let bound = has(FV2_BOUND);
+        let bad = "invalid v2 bound";
+        let invitation_after = input.signed()?;
+        let invitation = invitation_after.checked_add(input.signed()?).ok_or(bad)?;
+        let (unread_after, unread) = if bound {
+            let after = input.unsigned()?;
+            (
+                Some(after),
+                Some(after.checked_add(input.unsigned()?).ok_or(bad)?),
+            )
+        } else {
+            (None, None)
+        };
+        let physical_after = input.signed()?;
+        let physical = physical_after.checked_add(input.signed()?).ok_or(bad)?;
+        let manifest_after = input.signed()?;
+        let manifest = manifest_after.checked_add(input.signed()?).ok_or(bad)?;
+        let window_start = DeadlineWalks {
+            invitation_after,
+            unread_after,
+            physical_after,
+            manifest_after,
+            next_manifest: has(FV2_START_NEXT_MANIFEST),
+        };
+        let window_end = if has(FV2_WINDOW_END) {
+            let delta = |input: &mut Reader<'_>, base: i64| -> Result<i64, &'static str> {
+                base.checked_add(i64::try_from(input.unsigned()?).map_err(|_| bad)?)
+                    .ok_or(bad)
+            };
+            let invitation_after = delta(&mut input, invitation_after)?;
+            let unread_after = match unread_after {
+                Some(base) => Some(base.checked_add(input.unsigned()?).ok_or(bad)?),
+                None => None,
+            };
+            Some(DeadlineWalks {
+                invitation_after,
+                unread_after,
+                physical_after: delta(&mut input, physical_after)?,
+                manifest_after: delta(&mut input, manifest_after)?,
+                next_manifest: has(FV2_END_NEXT_MANIFEST),
+            })
+        } else if has(FV2_END_NEXT_MANIFEST) {
+            return Err("invalid v2 flags");
+        } else {
+            None
+        };
+        let warnings = WarningsCursor {
+            physical_after: input.signed()?,
+            manifest_after: input.signed()?,
+            offered: input.signed()?,
+            done: has(FV2_WARNINGS_DONE),
+        };
+        let body = if has(FV2_BODY) {
+            let source = match input.byte()? {
+                0 => InboxBatchV2Source::Lazy,
+                1 => InboxBatchV2Source::Invitations,
+                2 => InboxBatchV2Source::Receipts,
+                3 => InboxBatchV2Source::Warnings,
+                4 => InboxBatchV2Source::Unread,
+                _ => return Err("invalid v2 source"),
+            };
+            Some((
+                source,
+                InboxBatchV2BodyPosition {
+                    message: crate::protocol::ids::MessageId::new(v2_string(&mut input)?),
+                    offset: input.unsigned()?,
+                    body_len: input.unsigned()?,
+                },
+            ))
+        } else {
+            None
+        };
+        let state = Self {
+            seat,
+            binding_generation,
+            execution,
+            publication_decision_high_water,
+            last,
+            rows: DeliveryRowsCursor {
+                after: rows_after,
+                done: has(FV2_ROWS_DONE),
+            },
+            deadline: DeadlineCursor {
+                high: DeadlineHighWaters {
+                    invitation,
+                    unread,
+                    physical,
+                    manifest,
+                },
+                window_start,
+                window_end,
+                done: has(FV2_DEADLINE_DONE),
+            },
+            warnings,
+            body,
+        };
+        if !input.0.is_empty() || state.compact_payload()?.as_slice() != payload {
+            return Err("noncanonical v2 cursor");
+        }
+        Ok((state, bytes))
+    }
+
+    fn compact_payload(&self) -> Result<Vec<u8>, &'static str> {
+        self.validate()?;
+        let d = &self.deadline;
+        let elided = self.rows.after.is_some() && self.rows.after == self.last_row_triple();
+        let mut flags = 0u16;
+        for (on, flag) in [
+            (self.binding_generation.is_some(), FV2_IDENTITY),
+            (self.last.is_some(), FV2_LAST),
+            (self.rows.after.is_some() && !elided, FV2_ROWS_AFTER),
+            (elided, FV2_ROWS_ELIDED),
+            (self.rows.done, FV2_ROWS_DONE),
+            (d.done, FV2_DEADLINE_DONE),
+            (self.warnings.done, FV2_WARNINGS_DONE),
+            (d.window_end.is_some(), FV2_WINDOW_END),
+            (d.window_start.next_manifest, FV2_START_NEXT_MANIFEST),
+            (
+                d.window_end.is_some_and(|e| e.next_manifest),
+                FV2_END_NEXT_MANIFEST,
+            ),
+            (d.high.unread.is_some(), FV2_BOUND),
+            (self.body.is_some(), FV2_BODY),
+        ] {
+            if on {
+                flags |= flag;
+            }
+        }
+        let mut out = Compact(vec![INBOX_V2_FORMAT, flags as u8, (flags >> 8) as u8]);
+        v2_write_string(&mut out, self.seat.as_str())?;
+        if let Some(generation) = self.binding_generation {
+            out.unsigned(generation);
+            v2_write_string(
+                &mut out,
+                self.execution.as_ref().ok_or("missing execution")?.as_str(),
+            )?;
+        }
+        out.unsigned(self.publication_decision_high_water);
+        if let Some(last) = &self.last {
+            last.write_compact(&mut out.0);
+        }
+        if let (Some(after), false) = (self.rows.after, elided) {
+            out.0.push(after.priority.get());
+            out.unsigned(after.decision_seq);
+            out.unsigned(after.ordinal);
+        }
+        let s = &d.window_start;
+        out.signed(s.invitation_after);
+        out.signed(d.high.invitation - s.invitation_after);
+        if let (Some(after), Some(high)) = (s.unread_after, d.high.unread) {
+            out.unsigned(after);
+            out.unsigned(high - after);
+        }
+        out.signed(s.physical_after);
+        out.signed(d.high.physical - s.physical_after);
+        out.signed(s.manifest_after);
+        out.signed(d.high.manifest - s.manifest_after);
+        if let Some(e) = &d.window_end {
+            out.unsigned((e.invitation_after - s.invitation_after) as u64);
+            if let (Some(end), Some(start)) = (e.unread_after, s.unread_after) {
+                out.unsigned(end - start);
+            }
+            out.unsigned((e.physical_after - s.physical_after) as u64);
+            out.unsigned((e.manifest_after - s.manifest_after) as u64);
+        }
+        out.signed(self.warnings.physical_after);
+        out.signed(self.warnings.manifest_after);
+        out.signed(self.warnings.offered);
+        if let Some((source, body)) = &self.body {
+            out.0.push(v2_source_byte(*source));
+            v2_write_string(&mut out, body.message.as_str())?;
+            out.unsigned(body.offset);
+            out.unsigned(body.body_len);
+        }
+        Ok(out.0)
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let dh = self.publication_decision_high_water;
+        let d = &self.deadline;
+        let (s, h) = (&d.window_start, &d.high);
+        let walk_bad = |w: &DeadlineWalks| {
+            w.invitation_after < 0
+                || w.invitation_after > h.invitation
+                || w.physical_after < 0
+                || w.physical_after > h.physical
+                || w.manifest_after < 0
+                || w.manifest_after > h.manifest
+                || w.unread_after.is_some() != h.unread.is_some()
+                || w.unread_after
+                    .zip(h.unread)
+                    .is_some_and(|(after, high)| after > high)
+        };
+        let bad = self.seat.as_str().is_empty()
+            || self.binding_generation.is_some() != self.execution.is_some()
+            || self.binding_generation == Some(0)
+            || dh > i64::MAX as u64
+            || h.unread.is_some_and(|u| u > i64::MAX as u64)
+            || walk_bad(s)
+            || d.window_end.is_some_and(|e| {
+                walk_bad(&e)
+                    || e.invitation_after < s.invitation_after
+                    || e.physical_after < s.physical_after
+                    || e.manifest_after < s.manifest_after
+                    || e.unread_after
+                        .zip(s.unread_after)
+                        .is_some_and(|(end, start)| end < start)
+            })
+            || self.rows.after.is_some_and(|p| p.decision_seq > dh)
+            || self.last.is_some_and(|k| k.decision_seq > dh)
+            || self.warnings.physical_after < 0
+            || self.warnings.physical_after > dh as i64
+            || self.warnings.manifest_after < -1
+            || self.warnings.manifest_after > dh as i64
+            || self.warnings.offered < 0
+            || self.body.as_ref().is_some_and(|(source, b)| {
+                b.validate().is_err()
+                    || b.message.as_str().is_empty()
+                    || match source {
+                        InboxBatchV2Source::Lazy => self.rows.done,
+                        InboxBatchV2Source::Receipts => d.done,
+                        InboxBatchV2Source::Unread => d.done || h.unread.is_none(),
+                        InboxBatchV2Source::Invitations | InboxBatchV2Source::Warnings => true,
+                    }
+            });
+        if bad {
+            return Err(V2_BAD_POSITION);
         }
         Ok(())
     }
