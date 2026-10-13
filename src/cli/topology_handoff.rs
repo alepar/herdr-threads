@@ -1,5 +1,6 @@
 //! Frozen new-tab handoff preparation and linked automatic bootstrap execution.
 use super::{RunError, panes::PaneSelector};
+use crate::store::connection::DurableSync;
 mod automatic;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
@@ -1735,14 +1736,14 @@ fn save_terminal(
             .custom_flags(libc::O_NOFOLLOW)
             .open(&temp)?;
         file.write_all(&bytes)?;
-        file.sync_all()?;
+        file.durable_sync()?;
         std::fs::hard_link(&temp, terminal_path(journal, reference))?;
-        std::fs::File::open(journal.root())?.sync_all()
+        std::fs::File::open(journal.root())?.durable_sync()
     })();
     let cleanup = std::fs::remove_file(temp);
     result?;
     cleanup?;
-    std::fs::File::open(journal.root())?.sync_all()?;
+    std::fs::File::open(journal.root())?.durable_sync()?;
     Ok(())
 }
 #[allow(clippy::too_many_arguments)]
@@ -2338,9 +2339,9 @@ fn present_completed<W: std::io::Write>(
                 "unsafe bootstrap terminal durability record",
             ));
         }
-        file.sync_all()?;
+        file.durable_sync()?;
     }
-    std::fs::File::open(journal.root())?.sync_all()?;
+    std::fs::File::open(journal.root())?.durable_sync()?;
     let report = serde_json::json!({"outcome":"started","thread":done.retained.thread,"seat":done.retained.recipient,"pane":done.retained.pane,"launch":done.retained.report,"bootstrap_compound":identity.compound,"child_compound":done.attachment.handoff.compound,"tab":done.attachment.created.tab,"attempt":done.attachment.attempt,"recovery_ref":reference.recovery_ref()});
     let bytes = if output.format == crate::protocol::output::OutputFormat::Json {
         format!("{}\n", serde_json::json!({"handoff":report})).into_bytes()
@@ -2364,7 +2365,7 @@ fn present_completed<W: std::io::Write>(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
-    std::fs::File::open(journal.root())?.sync_all()?;
+    std::fs::File::open(journal.root())?.durable_sync()?;
     Ok(current)
 }
 

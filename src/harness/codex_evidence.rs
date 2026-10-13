@@ -14,6 +14,7 @@
 //! effort: a failure leaves the hook on its in-process cache and never blocks.
 use super::codex::InstalledAdmission;
 use super::recipe::{OPTIMISTIC_LABEL, SCHEMA_MATCHED_LABEL};
+use crate::store::connection::DurableSync;
 use std::{
     io::{self, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
@@ -116,7 +117,7 @@ pub fn record(path: &Path, admission: &InstalledAdmission, now_unix_ms: u64) -> 
         .create_new(true)
         .mode(0o600)
         .open(&temporary)
-        .and_then(|mut out| out.write_all(&bytes).and_then(|()| out.sync_all()))
+        .and_then(|mut out| out.write_all(&bytes).and_then(|()| out.durable_sync()))
         .and_then(|()| std::fs::rename(&temporary, path));
     if written.is_err() {
         let _ = std::fs::remove_file(&temporary);
