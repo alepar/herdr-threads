@@ -1300,3 +1300,109 @@ fn config_root_values_are_registered_installer_harnesses_and_absolute_dirs() {
         }
     }
 }
+
+// Kills the $HOME-cwd false positive: `<cwd>/.codex` that resolves to the CODEX_HOME being set up
+// is that home, not a project layer (as Codex treats it). The user-level home read as a project
+// layer for another root stays refused (Codex loads it there), without removal advice; a genuine
+// project `.codex` with the hook keeps its refusal and advice.
+#[test]
+fn codex_project_layer_scan_skips_the_home_being_set_up() {
+    use crate::cli::setup::{PermissionPolicy, SetupRequest};
+    let mut f = Fixture::new();
+    let home = f.root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let alias = f.root.join("home-alias");
+    std::os::unix::fs::symlink(&home, &alias).unwrap();
+    f.env.home = Some(home.clone().into_os_string());
+    // The working directory reaches HOME through a symlink, so `<cwd>/.codex` is lexically not
+    // CODEX_HOME but resolves to it.
+    f.env.cwd = alias.clone();
+    f.env
+        .config_roots
+        .insert("codex".into(), home.join(".codex"));
+    let request = SetupRequest {
+        scope: Default::default(),
+        verb: SetupVerb::Install,
+        harness: crate::harness::context::Harness::Codex,
+        harness_binary: None,
+        prompt_suggestions: Default::default(),
+        hooks_only: false,
+        permissions: PermissionPolicy::Grant,
+        pane_env: Default::default(),
+    };
+    setup::execute(&request, &f.env).expect("default root from HOME");
+    setup::execute(&request, &f.env).expect("default root rerun from HOME");
+    let installer = execute(&f.env, true, false, |_| panic!("explicit consent"));
+    let hooks = installer["integrations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["harness"] == "codex" && e["component"] == "hooks")
+        .unwrap();
+    assert_eq!(hooks["outcome"], "updated", "{installer}");
+
+    // A profile root set up from HOME: Codex would read ~/.codex as a project layer there.
+    let profile = f.root.join("profiles/codex/p1");
+    fs::create_dir_all(&profile).unwrap();
+    let mut profile_env = f.env.clone();
+    profile_env
+        .config_roots
+        .insert("codex".into(), profile.clone());
+    let error = setup::execute(&request, &profile_env)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("is the user-level Codex home"), "{error}");
+    assert!(
+        error.contains("run setup from another working directory"),
+        "{error}"
+    );
+    assert!(!error.contains("Remove it"), "{error}");
+    assert!(!profile.join("hooks.json").exists());
+    let report = execute_for_registry_with(
+        crate::harness::registry::builtins(),
+        &f.env,
+        &[extra("codex", &profile)],
+        true,
+        false,
+        false,
+        |_| panic!("explicit consent"),
+    );
+    let failed = entry(&report, "codex", "hooks", &profile);
+    assert_eq!(failed["outcome"], "failed", "{report}");
+    assert!(
+        failed["detail"]
+            .as_str()
+            .unwrap()
+            .contains("user-level Codex home"),
+        "{failed}"
+    );
+    assert_eq!(
+        entry(&report, "codex", "hooks", &home.join(".codex"))["outcome"],
+        "updated",
+        "{report}"
+    );
+    // From another working directory the profile root installs.
+    profile_env.cwd = f.root.clone();
+    setup::execute(&request, &profile_env).expect("profile root from elsewhere");
+
+    // A genuine project `.codex` holding the hook in a git repository is still refused.
+    let repo = f.root.join("repo");
+    fs::create_dir_all(repo.join(".git")).unwrap();
+    fs::create_dir_all(repo.join(".codex")).unwrap();
+    fs::copy(
+        home.join(".codex/hooks.json"),
+        repo.join(".codex/hooks.json"),
+    )
+    .unwrap();
+    let mut project_env = f.env.clone();
+    project_env.cwd = repo.join("sub");
+    fs::create_dir_all(&project_env.cwd).unwrap();
+    let error = setup::execute(&request, &project_env)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Remove it from that file"), "{error}");
+    assert!(
+        error.contains(&repo.join(".codex/hooks.json").display().to_string()),
+        "{error}"
+    );
+}

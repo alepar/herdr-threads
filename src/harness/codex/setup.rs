@@ -80,8 +80,11 @@ pub struct CodexLayerFile {
 /// Git root, or only `cwd`'s when no ancestor holds a `.git` (Codex has no project
 /// root then, so it loads no `.codex/` above the working directory; Codex loads
 /// project layers only for trusted projects; they are listed regardless, since
-/// trust is not ours to read).
+/// trust is not ours to read). Like Codex (`discover_project_layers` skips a `.codex/` equal to
+/// `CODEX_HOME`), a `.codex/` that resolves to `CODEX_HOME` itself is not a project layer.
 pub fn codex_layer_paths(codex_home: Option<&Path>, cwd: &Path) -> Vec<PathBuf> {
+    let identity = |dir: &Path| lib::canonical_path(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let home_identity = codex_home.map(identity);
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(home) = codex_home {
         dirs.push(home.to_path_buf());
@@ -92,7 +95,11 @@ pub fn codex_layer_paths(codex_home: Option<&Path>, cwd: &Path) -> Vec<PathBuf> 
         .position(|dir| dir.join(".git").exists())
         .unwrap_or(0);
     for dir in cwd.ancestors().take(project_depth + 1) {
-        dirs.push(dir.join(".codex"));
+        let project = dir.join(".codex");
+        if home_identity.as_ref() == Some(&identity(&project)) {
+            continue;
+        }
+        dirs.push(project);
     }
     let mut paths = Vec::new();
     for dir in dirs {
@@ -240,12 +247,37 @@ pub(crate) fn refuse_duplicate(
     layers: &[CodexLayerFile],
     owned_command: &str,
     managed: &Path,
+    user_codex_home: Option<&Path>,
 ) -> Result<(), RunError> {
+    let identity = |dir: &Path| lib::canonical_path(dir).unwrap_or_else(|_| dir.to_path_buf());
     match layers
         .iter()
         .find(|layer| layer.has_owned_command && layer.path != managed)
     {
         None => Ok(()),
+        // The user-level home (`~/.codex`) read as a project layer: another installation, not
+        // a stray copy. Codex loads it for sessions started under its parent once that project
+        // and these hooks are trusted, so the refusal stays, without removal advice.
+        Some(layer)
+            if user_codex_home
+                .is_some_and(|home| layer.path.parent().map(identity) == Some(identity(home))) =>
+        {
+            let dir = layer.path.parent().unwrap_or(&layer.path);
+            let project = dir.parent().unwrap_or(dir);
+            Err(api(
+                ErrorCode::Conflict,
+                format!(
+                    "{} is the user-level Codex home, which already has the herdr-threads hook; \
+                     Codex also reads it as a project layer for sessions started in {}, which \
+                     would run the hook twice once that project and its hooks are trusted. To \
+                     set up {} anyway, run setup from another working directory; nothing was \
+                     changed",
+                    dir.display(),
+                    project.display(),
+                    managed.parent().unwrap_or(managed).display()
+                ),
+            ))
+        }
         Some(layer) => Err(api(
             ErrorCode::Conflict,
             format!(
@@ -903,7 +935,13 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
     })?;
     let owned_command = codex_owned_command(env)?;
     let layers = observe_codex_config(env, &owned_command);
-    refuse_duplicate(&layers, &owned_command, &paths.hooks)?;
+    let user_codex_home = codex_home_from(None, env.home.clone());
+    refuse_duplicate(
+        &layers,
+        &owned_command,
+        &paths.hooks,
+        user_codex_home.as_deref(),
+    )?;
     // Legacy allowances are left for owned unsetup. Incomplete or edited
     // records still refuse before hooks change, preserving the installer seam;
     // one whose keys were all removed by hand does not.
