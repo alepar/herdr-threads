@@ -468,18 +468,39 @@ fn verified_reply_tracks_the_row_state() {
     assert!((a, b) == (false, true));
 }
 
-/// A real `curl` fetch of an unreachable loopback URL.
-struct UnreachableCurl(CurlFetcher);
-impl Fetcher for UnreachableCurl {
+/// A real `curl` fetch of an unreachable loopback URL that first holds
+/// until the test opens its gate, so the test sees the fetch still running
+/// when `record` returns.
+struct GatedUnreachableCurl {
+    curl: CurlFetcher,
+    entered: Mutex<std::sync::mpsc::Sender<()>>,
+    gate: (Mutex<bool>, std::sync::Condvar),
+}
+impl GatedUnreachableCurl {
+    fn open(&self) {
+        *self.gate.0.lock().unwrap() = true;
+        self.gate.1.notify_all();
+    }
+}
+impl Fetcher for GatedUnreachableCurl {
     fn fetch(&self, _url: &str, etag: Option<&str>) -> Result<FetchOutcome, FetchError> {
-        self.0
+        let _ = self.entered.lock().unwrap().send(());
+        let mut open = self.gate.0.lock().unwrap();
+        while !*open {
+            open = self.gate.1.wait(open).unwrap();
+        }
+        drop(open);
+        self.curl
             .fetch("http://127.0.0.1:9/harness-versions.json", etag)
     }
 }
 
-#[test]
-fn unreachable_manifest_url_does_not_delay_recording() {
-    let iso = TestIsolation::new("her-unreachable");
+/// One recording of a first-seen version with the real unreachable fetch held
+/// open: `record` must return while that fetch is still running (a `record`
+/// that waited for it could not return), within the hook's evidence call cap,
+/// with the evidence row written. Returns how long `record` took.
+fn record_with_the_fetch_held(label: &str) -> Duration {
+    let iso = TestIsolation::new(label);
     let clock = Arc::new(TestClock(AtomicI64::new(T0)));
     let store = Arc::new(
         SqliteStore::new(
@@ -490,12 +511,20 @@ fn unreachable_manifest_url_does_not_delay_recording() {
         .unwrap(),
     );
     let cache = iso.state_root().join("harness-manifest");
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let fetcher = Arc::new(GatedUnreachableCurl {
+        curl: CurlFetcher::new(cache.clone()),
+        entered: Mutex::new(entered_tx),
+        gate: (Mutex::new(false), std::sync::Condvar::new()),
+    });
+    let log: Arc<Mutex<Vec<String>>> = Arc::default();
+    let sink = Arc::clone(&log);
     let manifest = Arc::new(ManifestService::new(
-        cache.clone(),
+        cache,
         ManifestPolicy::Auto,
-        Arc::new(UnreachableCurl(CurlFetcher::new(cache))),
+        fetcher.clone(),
         clock.clone(),
-        Arc::new(|_: &str| {}),
+        Arc::new(move |line: &str| sink.lock().unwrap().push(line.to_owned())),
     ));
     let recorder = HarnessEvidenceRecorder::new(
         store.clone(),
@@ -504,20 +533,57 @@ fn unreachable_manifest_url_does_not_delay_recording() {
     );
     // Warm the store connections so the timing measures the recorder.
     store.last_unattributed("claude", &budget()).unwrap();
-    let started = Instant::now();
-    recorder
-        .record(
+    let (done_tx, done) = std::sync::mpsc::channel();
+    let recording = std::thread::spawn(move || {
+        let started = Instant::now();
+        let result = recorder.record(
             &note(Some("9.9.9"), "SessionStart", ok(), Some("s")),
             &budget(),
-        )
-        .unwrap();
-    let elapsed = started.elapsed();
-    assert!(elapsed < Duration::from_millis(50), "{elapsed:?}");
+        );
+        let _ = done_tx.send(started.elapsed());
+        result
+    });
+    let returned = done.recv_timeout(crate::cli::hook_evidence::CALL_CAP);
+    let still_fetching = !manifest.wait_idle(Duration::ZERO);
+    fetcher.open();
+    let elapsed = returned.expect("record returned within the call cap, the fetch held");
+    recording.join().unwrap().unwrap();
+    assert!(
+        still_fetching,
+        "the fetch was still running when record returned"
+    );
+    entered
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the first-seen version started a fetch");
     let row = store
         .harness_evidence("claude", "9.9.9", CONTRACT, &budget())
         .unwrap();
     assert!(row.is_some(), "the evidence row exists");
     assert!(manifest.wait_idle(Duration::from_secs(20)));
+    let log = log.lock().unwrap();
+    assert!(
+        log.iter()
+            .any(|line| line.contains("fetch failed") || line.contains("curl not found")),
+        "{log:?}"
+    );
+    elapsed
+}
+
+/// ht-xoc.4: "a recording-path call with an unreachable manifest URL
+/// completes within the hook budget and still records evidence". Each
+/// recording proves causally that `record` does not wait for the fetch; the
+/// best of three fresh recordings stays under 50 ms. A single wall-clock
+/// sample of this millisecond call also catches whatever scheduler stall
+/// lands in it on a loaded machine (a ~90 ms CFS throttle hits the store
+/// write, the manifest lookup or the thread spawn alike), which is not
+/// recording work; a real synchronous cost is in every sample.
+#[test]
+fn unreachable_manifest_url_does_not_delay_recording() {
+    let best = (0..3)
+        .map(|_| record_with_the_fetch_held("her-unreachable"))
+        .min()
+        .unwrap();
+    assert!(best < Duration::from_millis(50), "{best:?}");
 }
 
 /// The recorder's store, failing on cue: each `true` popped from a script
