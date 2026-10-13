@@ -49,7 +49,7 @@ priority = 95
 
 [[profile.default.overrides]]
 filter = """
-binary(integration) & test(/::(herdr_stopped_freezes_wake_lane|herdr_stopped_logs_once_then_capped_summaries|herdr_stopped_costs_one_commit_per_backoff_step|idle_daemon_commits_nothing_from_deadline_wake_request_for_30s|retention_runs_alongside_the_wake_idle_bound|idle_five_lanes_30s|lapsed_reservation_fetch_is_honoured_while_free)$/)
+binary(integration) & test(/::(herdr_stopped_freezes_wake_lane|herdr_stopped_logs_once_then_capped_summaries|herdr_stopped_costs_one_commit_per_backoff_step|idle_daemon_commits_nothing_from_deadline_wake_request_for_30s|retention_runs_alongside_the_wake_idle_bound|lapsed_reservation_fetch_is_honoured_while_free)$/)
 """
 priority = 90
 
@@ -140,7 +140,7 @@ test-group = "hook-budget"
 [[profile.default.overrides]]
 filter = """
 binary(integration) & test(/^(lanes_latency|lane_wiring|pane_close_retirement|sweep_remaining|topology_activation)::/)
-& !test(/::(herdr_stopped_freezes_wake_lane|idle_daemon_commits_nothing_from_deadline_wake_request_for_30s|retention_runs_alongside_the_wake_idle_bound|idle_five_lanes_30s|injected_lane_failure_logs_and_degrades_then_clears)$/)
+& !test(/::(herdr_stopped_freezes_wake_lane|idle_daemon_commits_nothing_from_deadline_wake_request_for_30s|retention_runs_alongside_the_wake_idle_bound|injected_lane_failure_logs_and_degrades_then_clears)$/)
 """
 priority = 70
 test-group = "integration-daemon"
