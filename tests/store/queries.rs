@@ -31,10 +31,12 @@ fn fixture() -> (super::super::connection::StoreContext, rusqlite::Connection) {
 }
 
 /// `memory_temp` keeps this test connection's statement journals in memory
-/// (`PRAGMA temp_store=MEMORY`, set before the TEMP triggers below because
-/// changing it drops TEMP objects). A large fixture transaction otherwise
-/// spills them to a temp file and pays a `pwrite` per journaled page of every
-/// trigger-bearing row. Plans, results and VM steps are unaffected.
+/// (`PRAGMA temp_store=MEMORY`, set before the fixture's TEMP triggers below
+/// because changing it drops TEMP objects; the production binding-evidence
+/// guards open_writer installed are restored right after it). A large fixture
+/// transaction otherwise spills them to a temp file and pays a `pwrite` per
+/// journaled page of every trigger-bearing row. Plans, results and VM steps
+/// are unaffected (identical Q4 output with and without it).
 fn fixture_with_temp_store(
     memory_temp: bool,
 ) -> (super::super::connection::StoreContext, rusqlite::Connection) {
@@ -43,6 +45,11 @@ fn fixture_with_temp_store(
     let db = store.open_writer().unwrap();
     if memory_temp {
         db.pragma_update(None, "temp_store", "MEMORY").unwrap();
+        // Changing temp_store drops every TEMP object, including the production
+        // binding-evidence guards open_writer just installed; restore them with
+        // the exact production SQL (no backfill write, as on a fresh store).
+        db.execute_batch(super::super::schema::BINDING_EVIDENCE_GUARD)
+            .unwrap();
     }
     db.execute(
         "INSERT INTO host_instances(id, created_at) VALUES ('i', 0)",
@@ -88,6 +95,45 @@ fn bind_query_agent(db: &rusqlite::Connection) {
     )
     .unwrap();
     db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'w:p1','host',1,'codex','session','exec','cooperative_top_level',0,0,'term','inc')", []).unwrap();
+}
+
+/// The in-memory journal fixture keeps every TEMP trigger the default fixture
+/// has, including the production binding-evidence guards, and those guards
+/// still refuse an active binding without reconfirmation evidence.
+#[test]
+fn memory_temp_fixture_keeps_production_temp_guards() {
+    // Every TEMP object (any type), compared by type, name and SQL body.
+    let temp_triggers = |db: &rusqlite::Connection| -> Vec<(String, String, Option<String>)> {
+        let mut stmt = db
+            .prepare("SELECT type, name, sql FROM sqlite_temp_master ORDER BY type, name")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let (_default_store, default_db) = fixture_with_temp_store(false);
+    let (_memory_store, memory_db) = fixture_with_temp_store(true);
+    let expected = temp_triggers(&default_db);
+    let names: Vec<&str> = expected.iter().map(|(_, name, _)| name.as_str()).collect();
+    assert!(
+        names.contains(&"occupant_binding_evidence_insert")
+            && names.contains(&"occupant_binding_evidence_register"),
+        "{names:?}"
+    );
+    assert_eq!(temp_triggers(&memory_db), expected);
+    let refused = memory_db
+        .execute(
+            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES ('s',1,1,'w1:p1','boot',1,'claude','session','exec','cooperative_top_level',0,0)",
+            [],
+        )
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("occupant binding lacks reconfirmation evidence"),
+        "{refused}"
+    );
 }
 
 /// Kills: an open binding that depends on the history page (it must come back
