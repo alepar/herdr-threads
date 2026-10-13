@@ -78,6 +78,38 @@ fn keys_mode_prints_object_keys_exactly_one_per_line() {
     assert_eq!(keys(r#"{"p":{"codex":"x"}}"#, "p.codex"), Err(3));
     assert_eq!(keys(json, "profiles.nope"), Err(1));
     assert_eq!(keys(r#"{"v":2}"#, "profiles.codex"), Err(1));
+    // A non-object anywhere on the path is unusable (3), at every depth; only a missing key in
+    // an object is absent (1).
+    for doc in [
+        "[]",
+        "\"x\"",
+        "null",
+        "7",
+        r#"{"profiles":[]}"#,
+        r#"{"profiles":"x"}"#,
+        r#"{"profiles":null}"#,
+        r#"{"profiles":[{"codex":{}}]}"#,
+    ] {
+        assert_eq!(keys(doc, "profiles.codex"), Err(3), "{doc}");
+    }
+    assert_eq!(keys(r#"{"profiles":{}}"#, "profiles.codex"), Err(1));
+    // The value mode is unchanged: array indexes still work and a non-object parent is absent.
+    assert_eq!(field(r#"{"profiles":[]}"#, "profiles.codex"), Err(1));
+    assert_eq!(field(r#"{"l":[{"a":"b"}]}"#, "l.0.a").unwrap(), "b\n");
     assert_eq!(keys(r#"{"a":{}}"#, "a").unwrap(), "");
     assert_eq!(keys("{", "a"), Err(2));
+}
+
+// Kills: input that is not UTF-8 reported as absent (or an I/O error) instead of invalid (2).
+#[test]
+fn non_utf8_input_exits_2_in_both_modes() {
+    let bytes = b"{\"profiles\":{\"codex\":{\"x\xff\":{}}}}";
+    for keys in [false, true] {
+        let mut out = Vec::new();
+        assert!(matches!(
+            json_field_bytes(bytes, "profiles.codex", keys, &mut out),
+            Err(RunError::Exit(2))
+        ));
+        assert!(out.is_empty());
+    }
 }

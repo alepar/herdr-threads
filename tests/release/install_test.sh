@@ -844,6 +844,14 @@ if [ "$modern_integrations" = 1 ] &&
     else
         pass "aisw unreadable config.json: skipped as root"
     fi
+    printf '%s\n' '{"profiles":[]}' > "$aw/config.json"
+    aisw_case
+    aisw_unusable "profiles []" codex
+    aisw_unusable "profiles []" claude
+    printf '{"profiles":{"claude":{"c1":{}},"codex":{"x\377":{}}}}\n' > "$aw/config.json"
+    aisw_case
+    aisw_unusable "invalid UTF-8" codex
+    aisw_unusable "invalid UTF-8" claude
     for value in '[]' null; do
         printf '%s\n' "{\"profiles\":{\"claude\":{\"c1\":{}},\"codex\":$value}}" > "$aw/config.json"
         aisw_case

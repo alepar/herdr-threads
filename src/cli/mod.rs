@@ -498,9 +498,10 @@ fn run_parsed_in_pane<W: Write>(
         );
     }
     if let CliAction::InternalJsonField { path, keys } = &parsed.action {
-        let mut input = String::new();
-        io::Read::read_to_string(&mut io::stdin().lock(), &mut input)?;
-        return internal::json_field_with(&input, path, *keys, writer);
+        // Bytes, so input that is not UTF-8 is "not JSON" (exit 2), never an I/O error.
+        let mut input = Vec::new();
+        io::Read::read_to_end(&mut io::stdin().lock(), &mut input)?;
+        return internal::json_field_bytes(&input, path, *keys, writer);
     }
     if let CliAction::Doctor { .. } = &parsed.action {
         return doctor::run(&parsed, writer);
