@@ -489,6 +489,10 @@ fn harness_path(host: &Path) -> String {
     format!("{}:/usr/bin:/bin", dir.display())
 }
 
+/// Set, under the `serialized()` gate, while a production-durability fixture
+/// is up: its hooks run with the production journal syncs.
+static PRODUCTION_DURABILITY_HOOKS: AtomicBool = AtomicBool::new(false);
+
 fn run_hook(command: &str, pane: &str, host: &Path, stdin: &[u8]) -> Hook {
     run_hook_with(command, pane, host, stdin, true)
 }
@@ -534,6 +538,9 @@ fn run_hook_traced(
     );
     if !scaled {
         command_line.env_remove(herdr_threads::protocol::time::TEST_TIMEOUT_SCALE_ENV);
+    }
+    if PRODUCTION_DURABILITY_HOOKS.load(Ordering::SeqCst) {
+        command_line.env_remove(herdr_threads::store::connection::TEST_RELAXED_DURABILITY_ENV);
     }
     command_line
         .env("HERDR_ENV", "1")
@@ -856,9 +863,25 @@ impl Fixture {
     fn start_at(state_rel: &str) -> Self {
         Self::launch(Some(serialized()), state_rel)
     }
+    /// A fixture on production durability: its in-process daemon commits
+    /// with `FULL` and its hooks run without the test relax switch, so their
+    /// journal syncs are real (`F_FULLFSYNC` on macOS). Test processes relax
+    /// both by default; these hook budgets include them.
+    fn start_production_durability() -> Self {
+        let gate = serialized();
+        PRODUCTION_DURABILITY_HOOKS.store(true, Ordering::SeqCst);
+        Self::launch_with(Some(gate), "state", true)
+    }
     /// `gate` is the caller's `serialized()` guard; a test that already holds
     /// it passes `None`.
     fn launch(gate: Option<std::sync::MutexGuard<'static, ()>>, state_rel: &str) -> Self {
+        Self::launch_with(gate, state_rel, false)
+    }
+    fn launch_with(
+        gate: Option<std::sync::MutexGuard<'static, ()>>,
+        state_rel: &str,
+        production_durability: bool,
+    ) -> Self {
         use herdr_threads::{
             daemon::{
                 control::{ControlService, StopController},
@@ -923,9 +946,13 @@ impl Fixture {
                     WriterSink(std::io::sink()),
                     BufferLimits::new(64 * 1024, 16 * 1024).unwrap(),
                     move |instance, boot, cancellation| {
+                        let context = StoreContext::new(database, Arc::clone(&service_clock));
+                        if production_durability {
+                            context.require_commit_durability();
+                        }
                         let store: Arc<dyn StorePort> = Arc::new(
                             SqliteStore::new(
-                                StoreContext::new(database, Arc::clone(&service_clock)),
+                                context,
                                 instance.to_string(),
                                 StoreSettings::default(),
                             )
@@ -1098,6 +1125,7 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.stop();
+        PRODUCTION_DURABILITY_HOOKS.store(false, Ordering::SeqCst);
         let _ = fs::remove_dir_all(&self.root);
     }
 }
@@ -1111,7 +1139,7 @@ fn context_of(hook: &Hook) -> String {
 
 #[test]
 fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
-    let mut fx = Fixture::start();
+    let mut fx = Fixture::start_production_durability();
     let (state, host, db) = (fx.state.clone(), fx.host.clone(), fx.db.clone());
     let command = fx.command.clone();
     let check_ins = Arc::clone(&fx.check_ins);
@@ -3102,7 +3130,7 @@ fn carried_notices(label: &str, data: &str) -> (Vec<String>, bool) {
 // tool budget or fail open), and a summary without the new item's ID.
 #[test]
 fn attention_beyond_any_inbox_page_is_emitted_once_then_quiet() {
-    let fx = Fixture::start();
+    let fx = Fixture::start_production_durability();
     fx.register("w9:p1", "sess-1");
     fx.register("w9:p2", "peer-sess");
     fx.filler_threads(7_000);

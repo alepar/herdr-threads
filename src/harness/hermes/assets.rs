@@ -1,6 +1,7 @@
 //! Profile-scoped owned assets. Installed/configured are never native activation.
 use super::runtime::ProfileObservation;
 use crate::harness::setup::{SetupError, fingerprint, write_replacement};
+use crate::store::connection::DurableSync;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -248,10 +249,10 @@ impl IndexLock {
                     .write_all(
                         &serde_json::to_vec(&identity(&meta)).map_err(|_| SetupError::Invalid)?,
                     )
-                    .and_then(|_| output.sync_all())
+                    .and_then(|_| output.durable_sync())
                     .map_err(|_| SetupError::Io)?;
                 File::open(&directory)
-                    .and_then(|file| file.sync_all())
+                    .and_then(|file| file.durable_sync())
                     .map_err(|_| SetupError::Io)?;
             }
             _ => return Err(SetupError::Conflict),
@@ -559,10 +560,10 @@ fn lock_identity_marker(
                 .open(&path)
                 .map_err(|_| SetupError::Conflict)?;
             file.write_all(&serde_json::to_vec(&expected).map_err(|_| SetupError::Invalid)?)
-                .and_then(|_| file.sync_all())
+                .and_then(|_| file.durable_sync())
                 .map_err(|_| SetupError::Io)?;
             File::open(plugins)
-                .and_then(|f| f.sync_all())
+                .and_then(|f| f.durable_sync())
                 .map_err(|_| SetupError::Io)?;
         }
         None => return Err(SetupError::Conflict),
@@ -701,7 +702,7 @@ fn publish(lock: &ProfileLock, manifest: &Path, m: &mut Manifest) -> Result<(), 
         }
         fs::rename(&source, &dir).map_err(|_| SetupError::Io)?;
         File::open(&lock.plugins)
-            .and_then(|f| f.sync_all())
+            .and_then(|f| f.durable_sync())
             .map_err(|_| SetupError::Io)?;
     }
     regular_dir(&dir, false)?;

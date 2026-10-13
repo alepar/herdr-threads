@@ -4,6 +4,7 @@
 //! The grant is executable-wide for the bare `herdr-threads` and `ht` spellings; only the
 //! immediate `human` namespace and the self-granting commands ask. The CLI grammar refuses
 //! `human` and those commands anywhere but first, so leading options cannot reach them.
+use crate::store::connection::DurableSync;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -265,7 +266,7 @@ impl OwnedConfigWriteGuard {
                 check_lock_metadata(&file, &private)?;
                 observer(ConfigLockInitialization::Created, &private)?;
                 file.write_all(&identity.marker())?;
-                file.sync_all()?;
+                file.durable_sync()?;
                 acquire_config_lock(&file, deadline)?;
                 observer(ConfigLockInitialization::ReadyToPublish, &private)?;
                 identity.revalidate()?;
@@ -273,7 +274,7 @@ impl OwnedConfigWriteGuard {
                 match publish_config_lock(&private, &path) {
                     Ok(()) => {
                         cleanup.path = None;
-                        File::open(&identity.root)?.sync_all()?;
+                        File::open(&identity.root)?.durable_sync()?;
                         file
                     }
                     Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {

@@ -1,6 +1,7 @@
 //! Scoped hook proposals and explicit user-settings installation (Claude `settings.json`, Codex
 //! `hooks.json`). No process launch or trust change.
 use crate::ports::ConfiguredHook;
+use crate::store::connection::DurableSync;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -1337,7 +1338,7 @@ pub(crate) fn remove_user_config(path: &Path, current: &[u8]) -> Result<(), Setu
     back_up_before_change(path, current)?;
     fs::remove_file(path).map_err(|_| SetupError::Io)?;
     fs::File::open(path.parent().ok_or(SetupError::Invalid)?)
-        .and_then(|dir| dir.sync_all())
+        .and_then(|dir| dir.durable_sync())
         .map_err(|_| SetupError::Io)
 }
 
@@ -1373,9 +1374,9 @@ pub(crate) fn backup_user_config(
         options.mode(0o600);
         let mut file = options.open(&backup).map_err(|_| SetupError::Io)?;
         file.write_all(current).map_err(|_| SetupError::Io)?;
-        file.sync_all().map_err(|_| SetupError::Io)?;
+        file.durable_sync().map_err(|_| SetupError::Io)?;
         fs::File::open(parent)
-            .and_then(|dir| dir.sync_all())
+            .and_then(|dir| dir.durable_sync())
             .map_err(|_| SetupError::Io)
     })();
     if result.is_err() {
@@ -1427,10 +1428,10 @@ pub(crate) fn write_replacement(
             .map_err(|_| SetupError::Io)?;
         }
         file.write_all(bytes).map_err(|_| SetupError::Io)?;
-        file.sync_all().map_err(|_| SetupError::Io)?;
+        file.durable_sync().map_err(|_| SetupError::Io)?;
         fs::rename(&temp, path).map_err(|_| SetupError::Io)?;
         fs::File::open(parent)
-            .and_then(|dir| dir.sync_all())
+            .and_then(|dir| dir.durable_sync())
             .map_err(|_| SetupError::Io)
     })();
     if result.is_err() {
@@ -1934,11 +1935,11 @@ pub(crate) fn publish_manifest(path: &Path, bytes: &[u8], partial: bool) -> Resu
             return Err(SetupError::Io);
         }
         file.write_all(bytes)
-            .and_then(|_| file.sync_all())
+            .and_then(|_| file.durable_sync())
             .map_err(|_| SetupError::Io)?;
         fs::hard_link(&temp, path).map_err(|_| SetupError::Conflict)?;
         fs::File::open(parent)
-            .and_then(|dir| dir.sync_all())
+            .and_then(|dir| dir.durable_sync())
             .map_err(|_| SetupError::Io)
     })();
     let _ = fs::remove_file(&temp);

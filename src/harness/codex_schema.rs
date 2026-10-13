@@ -18,6 +18,7 @@
 //! state directory may also pass a persistent cache file, so one-shot hook
 //! processes do not rescan an unchanged binary.
 use super::runtime::BinaryIdentity;
+use crate::store::connection::DurableSync;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -347,7 +348,7 @@ fn write_cache_file(path: &Path, entry: &CacheEntry) {
         .create_new(true)
         .mode(0o600)
         .open(&temporary)
-        .and_then(|mut out| out.write_all(&bytes).and_then(|()| out.sync_all()));
+        .and_then(|mut out| out.write_all(&bytes).and_then(|()| out.durable_sync()));
     if written.is_err() || std::fs::rename(&temporary, path).is_err() {
         let _ = std::fs::remove_file(&temporary);
     }

@@ -8,6 +8,7 @@ use super::{
     evidence::{AttributionHolding, EvidenceEvent, EvidenceOrigin},
 };
 use crate::protocol::{commands::BindingEventKind, time::CallBudget};
+use crate::store::connection::DurableSync;
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
@@ -1386,7 +1387,7 @@ fn inspection_helper(env: &SetupEnvironment) -> Result<PathBuf, SetupFailure> {
         .custom_flags(libc::O_NOFOLLOW);
     match options.open(&helper) {
         Ok(mut file) => {
-            if let Err(error) = file.write_all(expected).and_then(|_| file.sync_all()) {
+            if let Err(error) = file.write_all(expected).and_then(|_| file.durable_sync()) {
                 let _ = std::fs::remove_file(&helper);
                 return Err(SetupFailure::Io(error));
             }

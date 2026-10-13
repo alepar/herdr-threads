@@ -81,6 +81,8 @@ struct Matrix {
     service: DomainService,
     boot: uuid::Uuid,
     executions: AtomicU64,
+    /// Stores composed from now on commit with the production `FULL`.
+    production_durability: bool,
     // Declared last so the SQLite handles above drop before the directory.
     _scratch: Scratch,
 }
@@ -119,7 +121,7 @@ impl Matrix {
         .unwrap();
         drop(db);
         let boot = uuid::Uuid::new_v4();
-        let (store, service) = Self::compose(&clock, &instance, &db_path, boot);
+        let (store, service) = Self::compose(&clock, &instance, &db_path, boot, false);
         Self {
             clock,
             instance,
@@ -129,6 +131,7 @@ impl Matrix {
             service,
             boot,
             executions: AtomicU64::new(1),
+            production_durability: false,
             _scratch: Scratch(root),
         }
     }
@@ -138,11 +141,16 @@ impl Matrix {
         instance: &str,
         db_path: &Path,
         boot: uuid::Uuid,
+        production_durability: bool,
     ) -> (Arc<SqliteStore>, DomainService) {
         let clock: Arc<dyn Clock> = clock.clone();
+        let context = StoreContext::new(db_path.to_path_buf(), clock.clone());
+        if production_durability {
+            context.require_commit_durability();
+        }
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(db_path.to_path_buf(), clock.clone()),
+                context,
                 instance,
                 StoreSettings {
                     daemon_boot: Some(boot),
@@ -165,10 +173,24 @@ impl Matrix {
     /// new store, service and daemon boot are composed over the same file.
     fn restart(&mut self) {
         self.boot = uuid::Uuid::new_v4();
-        let (store, service) = Self::compose(&self.clock, &self.instance, &self.db_path, self.boot);
+        let (store, service) = Self::compose(
+            &self.clock,
+            &self.instance,
+            &self.db_path,
+            self.boot,
+            self.production_durability,
+        );
         self.service = service;
         self.ports = ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)));
         self.store = store;
+    }
+
+    /// Test processes relax commit durability by default; the witness below
+    /// runs its writes and its restart on the production `FULL` setting.
+    fn with_production_durability(mut self) -> Self {
+        self.production_durability = true;
+        self.restart();
+        self
     }
 
     fn scope(&self) -> String {
@@ -773,7 +795,7 @@ fn configured_batching_retains_first_attention_without_self_kicks() {
 /// holds it for a retained delay) instead of from durable rows.
 #[test]
 fn crash_after_send_before_any_wake_reservation_wakes_from_durable_rows() {
-    let mut m = Matrix::new();
+    let mut m = Matrix::new().with_production_durability();
     let (s, r, thread) = m.pair();
     m.host_observes_idle(&r);
     let sent = m.send(&s, &thread, "hello", &[], "send-1").unwrap();

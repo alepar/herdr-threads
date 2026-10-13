@@ -10,6 +10,7 @@ use crate::protocol::{
     results::{ApiError, CommandResult, ErrorCode, IntentKind, IntentStatus, LocalIntent},
     time::UtcMillis,
 };
+use crate::store::connection::durable_sync;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
@@ -2114,21 +2115,3 @@ fn private_open(path: &Path) -> io::Result<File> {
 #[cfg(test)]
 #[path = "../../tests/cli/journal.rs"]
 mod tests;
-
-/// `sync_all`, except in test-support builds started with
-/// `HT_TEST_RELAXED_DURABILITY=1` (children tagged by `test_support::spawn`):
-/// every CLI write synced the journal several times (`F_FULLFSYNC` on macOS),
-/// which queued on the disk under a loaded suite. Ordinary builds always sync.
-fn durable_sync(file: &File) -> std::io::Result<()> {
-    #[cfg(any(test, feature = "test-support"))]
-    {
-        static RELAXED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *RELAXED.get_or_init(|| {
-            std::env::var_os(crate::store::connection::TEST_RELAXED_DURABILITY_ENV)
-                .is_some_and(|v| v == "1")
-        }) {
-            return Ok(());
-        }
-    }
-    file.sync_all()
-}

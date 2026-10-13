@@ -70,15 +70,68 @@ pub struct DecisionInstant {
     pub monotonic: MonoInstant,
 }
 
-/// Test-support builds only: a process started with this set to `1` (every
-/// child tagged by `test_support::spawn`, so test-spawned CLIs and daemons)
-/// commits with `synchronous=NORMAL`, as do the library's own unit tests
-/// (see `require_commit_durability`). Hundreds of test daemons each fsyncing
-/// every WAL commit made the suite disk-bound on a loaded machine; a test
-/// cannot observe the difference, which only matters on power loss.
+/// Test-support builds only: the `herdr-threads` executable started with this
+/// set to `1` (every child tagged by `test_support::spawn`, so test-spawned
+/// CLIs and daemons) takes the test-process fast paths ([`test_fast_paths`]).
 /// Production builds never compile it and always commit with `FULL`.
 #[cfg(any(test, feature = "test-support"))]
 pub const TEST_RELAXED_DURABILITY_ENV: &str = "HT_TEST_RELAXED_DURABILITY";
+
+/// Whether this process takes the test-process fast paths: stores commit
+/// with `synchronous=NORMAL` by default (see `require_commit_durability`) and
+/// [`durable_sync`] skips its flush. Hundreds of test stores and daemons each
+/// fsyncing every commit made the suite disk-bound on a loaded machine; a
+/// test cannot observe the difference, which only matters on power loss.
+///
+/// On in a library linked into a test binary (unit or integration tests,
+/// in-process daemons included). The `herdr-threads` executable resets it
+/// first thing in `main` ([`fast_paths_from_env`]), so a test-support build
+/// of the shipped binary runs the production paths unless its environment
+/// sets [`TEST_RELAXED_DURABILITY_ENV`].
+#[cfg(any(test, feature = "test-support"))]
+static TEST_FAST_PATHS: AtomicBool = AtomicBool::new(true);
+
+/// The executable's entry: test fast paths only when the environment asks
+/// for them (see [`TEST_FAST_PATHS`]).
+#[cfg(any(test, feature = "test-support"))]
+pub fn fast_paths_from_env() {
+    let tagged = std::env::var_os(TEST_RELAXED_DURABILITY_ENV).is_some_and(|v| v == "1");
+    TEST_FAST_PATHS.store(tagged, Ordering::SeqCst);
+}
+
+/// See [`TEST_FAST_PATHS`]; always false in ordinary builds.
+pub fn test_fast_paths() -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        TEST_FAST_PATHS.load(Ordering::SeqCst)
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        false
+    }
+}
+
+/// `File::sync_all` for the crash-safe file writes outside the store, skipped
+/// in a test process ([`test_fast_paths`]): every CLI write synced files and
+/// directories several times (`F_FULLFSYNC` on macOS), which queued on the
+/// disk under a loaded suite. Ordinary builds always sync.
+pub fn durable_sync(file: &std::fs::File) -> std::io::Result<()> {
+    if test_fast_paths() {
+        return Ok(());
+    }
+    file.sync_all()
+}
+
+/// [`durable_sync`] as a method, the drop-in for `File::sync_all`.
+pub trait DurableSync {
+    fn durable_sync(&self) -> std::io::Result<()>;
+}
+
+impl DurableSync for std::fs::File {
+    fn durable_sync(&self) -> std::io::Result<()> {
+        durable_sync(self)
+    }
+}
 
 /// Process-local evidence that a hidden snapshot stage repeats its captured
 /// active publication so far: `matched` leading staged targets each equal the
@@ -151,10 +204,7 @@ impl StoreContext {
             #[cfg(any(test, feature = "test-support"))]
             lane_fault: std::sync::Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
-            relaxed_durability: AtomicBool::new(
-                cfg!(test)
-                    || std::env::var_os(TEST_RELAXED_DURABILITY_ENV).is_some_and(|v| v == "1"),
-            ),
+            relaxed_durability: AtomicBool::new(test_fast_paths()),
             #[cfg(test)]
             setup_busy_signal: std::sync::Mutex::new(None),
             #[cfg(test)]
@@ -177,11 +227,11 @@ impl StoreContext {
         self.relaxed_durability.store(true, Ordering::SeqCst);
     }
 
-    /// Unit-test builds relax every store by default (each in-process store
-    /// test's fsyncs made the library suite disk-bound under load); a test
-    /// that asserts the production `FULL` setting opts back in here.
-    #[cfg(test)]
-    pub(crate) fn require_commit_durability(&self) {
+    /// Test processes relax every store by default ([`test_fast_paths`]); a
+    /// test that asserts the production `FULL` setting, or a budget that
+    /// must include the production fsyncs, opts back in here.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn require_commit_durability(&self) {
         self.relaxed_durability.store(false, Ordering::SeqCst);
     }
 

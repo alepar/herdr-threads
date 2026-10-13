@@ -1,4 +1,5 @@
 //! Local cooperative context journal. No transport, ACK, or invitation acceptance lives here.
+use crate::store::connection::DurableSync;
 use crate::{
     harness::cache::{CacheReadError, CachedCheckIn, CachedCheckInKey},
     protocol::time::{CallBudget, Clock},
@@ -667,13 +668,13 @@ impl ContextJournal {
         let operation = (|| {
             let mut f = options.open(&temp)?;
             f.write_all(&bytes)?;
-            f.sync_all()?;
+            f.durable_sync()?;
             let path = self.directory.join("context.json");
             if fs::symlink_metadata(&path).is_ok() {
                 private_metadata(&path, false)?;
             }
             fs::rename(&temp, path)?;
-            File::open(&self.directory)?.sync_all()?;
+            File::open(&self.directory)?.durable_sync()?;
             Ok(())
         })();
         if operation.is_err() {
