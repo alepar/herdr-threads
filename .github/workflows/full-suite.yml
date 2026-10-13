@@ -63,6 +63,7 @@ jobs:
           cargo nextest --version
 
       - name: Provision pinned Herdr 0.9.1
+        id: herdr
         shell: bash
         run: |
           set -euo pipefail
@@ -86,6 +87,7 @@ jobs:
           cargo build --locked --release --features test-support
 
       - name: Isolated Herdr tests are provisioned, not skipped
+        id: herdr_check
         # With HT_SKIP_HERDR_TESTS unset a missing herdr fails those tests.
         shell: bash
         run: |
@@ -94,6 +96,7 @@ jobs:
           command -v herdr
 
       - name: Full suite (timed, budget under 300 s)
+        id: timed
         shell: bash
         env:
           # Plain lines, so the job summary can read the log.
@@ -116,12 +119,18 @@ jobs:
       - name: Report (job summary)
         if: always()
         shell: bash
+        env:
+          # Each step's actual outcome; empty when the job never reached it.
+          HERDR_OUTCOME: ${{ steps.herdr.outcome }}
+          HERDR_CHECK_OUTCOME: ${{ steps.herdr_check.outcome }}
+          TIMED_OUTCOME: ${{ steps.timed.outcome }}
         run: |
           set -euo pipefail
+          if [ -n "${FULL_SUITE_WALL_SECONDS:-}" ]; then wall="${FULL_SUITE_WALL_SECONDS}s"; else wall="not measured"; fi
           {
             echo "### Full suite gate"
-            echo "Commit: $GITHUB_SHA; runner CPUs: $(nproc); wall: ${FULL_SUITE_WALL_SECONDS:-not measured}s (budget under 300s)"
-            echo "Pinned Herdr $HERDR_VERSION provisioned; HT_SKIP_HERDR_TESTS: ${HT_SKIP_HERDR_TESTS:-unset}."
+            echo "Commit: $GITHUB_SHA; runner CPUs: $(nproc); wall: $wall (budget under 300s); timed run: ${TIMED_OUTCOME:-not run}"
+            echo "Herdr $HERDR_VERSION (configured): provisioning ${HERDR_OUTCOME:-not run}; provisioned-not-skipped check ${HERDR_CHECK_OUTCOME:-not run}; HT_SKIP_HERDR_TESTS: ${HT_SKIP_HERDR_TESTS:-unset}."
             echo '```'
             grep -E '^ +Summary|^ +(FAIL|SIGKILL|TIMEOUT|LEAK)' full-suite.log 2>/dev/null | sort -u || true
             echo '```'

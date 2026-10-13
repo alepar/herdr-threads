@@ -127,6 +127,11 @@ check "full-suite.yml: no env or step setting weakens the timed run" bash -c '
   test "$(yq ".jobs.full-suite | has(\"continue-on-error\")" "$1")" = false' _ "$full"
 check "full-suite.yml: prewarm builds the timed command (--no-run)" bash -c \
   'yq ".jobs.full-suite.steps[] | select(.name == \"Prewarm*\") | .run" "$1" | grep -qxF "cargo nextest run --locked --all-targets --all-features --no-run"' _ "$full"
+check "full-suite.yml: report states step outcomes, never an unconditional provisioning claim" bash -c '
+  env=$(yq -o=json -I=0 ".jobs.full-suite.steps[] | select(.name == \"Report*\") | .env" "$1")
+  test "$env" = "{\"HERDR_OUTCOME\":\"\${{ steps.herdr.outcome }}\",\"HERDR_CHECK_OUTCOME\":\"\${{ steps.herdr_check.outcome }}\",\"TIMED_OUTCOME\":\"\${{ steps.timed.outcome }}\"}" &&
+  test "$(yq ".jobs.full-suite.steps[] | select(.name == \"Provision pinned Herdr*\") | .id" "$1")" = herdr &&
+  ! yq ".jobs.full-suite.steps[] | select(.name == \"Report*\") | .run" "$1" | grep -qiE "provisioned;|herdr[^:]*: *provisioned\b"' _ "$full"
 check "full-suite.yml: run-scoped always() leak check" bash -c \
   'test "$(yq ".jobs.full-suite.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "always()" &&
    yq ".jobs.full-suite.env.HT_LEAK_RUN_ID" "$1" | grep -qF "github.run_id"' _ "$full"
