@@ -123,6 +123,7 @@ impl Fixture {
     /// deadline (the observed `t2ceBcgea` shape).
     fn send_with_deadline(&self) -> MessageId {
         let request = SendMessage {
+            priority: None,
             delivery_mode: DeliveryMode::Ordinary,
             thread: ThreadId::new("t"),
             body: "critical".into(),

@@ -460,6 +460,7 @@ impl World {
         let mut attempt = 0;
         loop {
             let sent = self.daemon_call(Command::SendMessage(SendMessage {
+                priority: None,
                 delivery_mode: if require_ack.is_some() {
                     DeliveryMode::Ordinary
                 } else {

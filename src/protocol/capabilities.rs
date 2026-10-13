@@ -84,6 +84,15 @@ pub const MOD_WATCH_PRESENTATION_V2: &str = "mod.watch_presentation_v2";
 /// ht-poh.3.1 seam; its handlers (`service::delivery_pull`) landed with L4.
 pub const DELIVERY_PULL: &str = "delivery.pull_v1";
 
+/// `SendMessage.priority` and the priority-aware inbox/watch fields. Defined by the ht-yha.1 seam;
+/// advertised by its handler's task.
+pub const SEND_PRIORITY_V1: &str = "send.priority_v1";
+/// `Command::NudgeThreshold` / `Command::SetNudgeThreshold`. Defined by the ht-yha.1 seam;
+/// advertised by its handler's task.
+pub const SEAT_NUDGE_THRESHOLD_V1: &str = "seat.nudge_threshold_v1";
+/// 1:1 pairs auto-join both seats. Defined by the ht-yha.1 seam; advertised by its handler's task.
+pub const DIRECT_AUTO_JOIN_V1: &str = "direct.auto_join_v1";
+
 /// Everything this daemon build serves. A capability is listed only once its
 /// handler has landed (ht-p03.105): `HISTORY_FULL_BODIES` landed with
 /// ht-p03.12.8; `HOOK_PARSE_FAILURE_REPORT` landed with ht-p03.23;

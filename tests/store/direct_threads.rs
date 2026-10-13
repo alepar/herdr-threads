@@ -156,6 +156,7 @@ fn direct_lazy_invited_target_is_frozen_without_receipt() {
     let (store, db, path) = store_fixture();
     raw_pair(&db);
     let v = SendMessage {
+        priority: None,
         delivery_mode: DeliveryMode::Lazy,
         thread: ThreadId::new("pair"),
         body: "quiet".into(),
@@ -206,6 +207,7 @@ fn direct_lazy_invited_target_is_frozen_without_receipt() {
 
 fn send_direct(store: &SqliteStore, thread: &ThreadId, mode: DeliveryMode, key: &str) {
     let v = SendMessage {
+        priority: None,
         delivery_mode: mode,
         thread: thread.clone(),
         body: key.into(),
@@ -392,6 +394,7 @@ fn pair_corrupt_membership_refuses_raw_send_preparation() {
     raw_pair(&db);
     db.execute("INSERT INTO memberships(thread_id,seat_id,state,voluntary_state) VALUES('pair','s3','joined','joined')",[]).unwrap();
     let v = SendMessage {
+        priority: None,
         delivery_mode: DeliveryMode::Lazy,
         thread: ThreadId::new("pair"),
         body: "quiet".into(),
@@ -426,6 +429,7 @@ fn send_request_to(
     mode: DeliveryMode,
 ) -> SendMessage {
     SendMessage {
+        priority: None,
         delivery_mode: mode,
         thread: t.clone(),
         body: "body".into(),

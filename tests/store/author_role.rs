@@ -68,6 +68,7 @@ fn send_with_intent(
     user_intent: Option<crate::protocol::summary::UserIntent>,
 ) -> MessageId {
     let send = SendMessage {
+        priority: None,
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         claim: context.clone(),
         thread: thread.clone(),
@@ -170,6 +171,7 @@ fn relays_user_flag_is_recorded_and_priority() {
         relays == 1
     ));
     let mut request = SendMessage {
+        priority: None,
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         claim: context,
         thread,

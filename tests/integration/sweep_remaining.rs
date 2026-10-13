@@ -1705,6 +1705,7 @@ fn producer_ordering_control(
     }));
     let target = WakeTarget::fresh(&db, "b", "t", "a", "ordering target");
     let request = SendMessage {
+        priority: None,
         delivery_mode: DeliveryMode::Ordinary,
         user_intent: None,
         thread: ThreadId::new("t"),

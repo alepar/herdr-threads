@@ -121,6 +121,7 @@ impl LocalClient for Client {
                     .map(|message| {
                         let lazy = message.as_str() != "msg-1";
                         MessageDeliveryMode {
+                            priority: None,
                             message,
                             delivery_mode: if lazy {
                                 DeliveryMode::Lazy
@@ -489,6 +490,7 @@ impl LocalClient for BoundedBody {
                 q.messages
                     .into_iter()
                     .map(|message| MessageDeliveryMode {
+                        priority: None,
                         message,
                         delivery_mode: DeliveryMode::Lazy,
                     })
@@ -735,6 +737,7 @@ fn lazy_markers_manifest_warning_history_and_body_render_readonly() {
         .call(
             Command::MessageDeliveryModes(
                 herdr_threads::protocol::commands::MessageDeliveryModesQuery {
+                    with_priority: false,
                     messages: vec![MessageId::new("missing")],
                 },
             ),

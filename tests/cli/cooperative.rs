@@ -4097,6 +4097,7 @@ fn inbox_drained_page_refit_retains_selected_cursor_and_body_offset() {
             };
             Ok(CommandResult::InboxBatchV2(Page {
                 items: vec![InboxBatchV2Item::LazyMessage {
+                    priority: None,
                     thread: ThreadId::new("thread"),
                     topic_data: "topic".into(),
                     message: MessageId::new("lazy"),
@@ -5722,6 +5723,7 @@ fn subagent_own_inbox_displays_advances_only_its_cursor_and_machine_read_carries
                 })),
                 Command::InboxBatchV2(_) => Ok(CommandResult::InboxBatchV2(Page {
                     items: vec![InboxBatchV2Item::Message {
+                        priority: None,
                         thread: ThreadId::new("thread"),
                         message: MessageId::new("message-1"),
                         sequence: 1,
@@ -5904,6 +5906,7 @@ fn subagent_text_inbox_without_binding_cursors_is_a_read_only_read() {
                 })),
                 Command::InboxBatchV2(_) => Ok(CommandResult::InboxBatchV2(Page {
                     items: vec![InboxBatchV2Item::Message {
+                        priority: None,
                         thread: ThreadId::new("thread"),
                         message: MessageId::new("message-1"),
                         sequence: 1,

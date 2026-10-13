@@ -63,6 +63,7 @@ fn seed_discovery_database(conn: &Connection) {
 }
 fn send_request(explicit: Vec<&str>) -> SendMessage {
     SendMessage {
+        priority: None,
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: ThreadId::new("t"),
         body: "hello".into(),

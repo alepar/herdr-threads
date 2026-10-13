@@ -324,6 +324,8 @@ impl Assembler {
                 .map_or_else(|| "service".to_owned(), |seat| seat.as_str().to_owned()),
         );
         let message = WatchMessage {
+            deadline_at: None,
+            priority: None,
             thread: chunk.thread,
             thread_name: label(&chunk.topic),
             sender: chunk.sender,

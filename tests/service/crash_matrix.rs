@@ -338,6 +338,7 @@ impl Matrix {
         op: &str,
     ) -> Result<MessageId, ApiError> {
         self.handle(Command::SendMessage(SendMessage {
+            priority: None,
             delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: body.into(),
@@ -2695,6 +2696,7 @@ fn failpoints_cannot_be_armed_through_requests_or_foreign_scopes() {
         expected_boot: None,
         output: None,
         command: Command::SendMessage(SendMessage {
+            priority: None,
             delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: "hello".into(),

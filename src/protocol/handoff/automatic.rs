@@ -301,6 +301,7 @@ impl AutomaticDeliveryMutation {
     pub fn send(&self, thread: ThreadId) -> Self {
         let mut request = self.clone();
         request.action = AutomaticDeliveryAction::Send(SendMessage {
+            priority: None,
             delivery_mode: DeliveryMode::Ordinary,
             thread,
             body: self.plan().payload.body.clone(),

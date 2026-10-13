@@ -133,6 +133,7 @@ impl Q4WriterReaders {
     }
     fn send(&self, thread: &ThreadId, body: &str, key: &str) -> MessageId {
         let CommandResult::MessageSent(id) = self.call(Command::SendMessage(SendMessage {
+            priority: None,
             delivery_mode: DeliveryMode::Lazy,
             thread: thread.clone(),
             body: body.into(),

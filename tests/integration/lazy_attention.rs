@@ -125,6 +125,7 @@ impl Fixture {
     }
     fn send_as(&self, seat: &str, op: &str, mode: DeliveryMode) -> MessageId {
         let request = SendMessage {
+            priority: None,
             delivery_mode: mode,
             thread: ThreadId::new("t"),
             body: format!("announcement {op}"),

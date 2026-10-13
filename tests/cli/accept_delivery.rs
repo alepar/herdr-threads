@@ -45,6 +45,7 @@ fn claim() -> CallerClaim {
 
 fn lazy(id: &str, body: &str) -> InboxBatchV2Item {
     InboxBatchV2Item::LazyMessage {
+        priority: None,
         thread: ThreadId::new("t"),
         topic_data: "topic".into(),
         message: MessageId::new(id),

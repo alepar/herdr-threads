@@ -813,6 +813,7 @@ fn q3_reader_fixture(consumers: usize) -> (Fixture, CallerClaim, CallerClaim, Me
         .service
         .handle(
             Command::SendMessage(crate::protocol::commands::SendMessage {
+                priority: None,
                 delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
                 user_intent: None,
                 thread: ThreadId::new("t"),
@@ -1002,6 +1003,7 @@ fn q3_many_thread_messages(
                 .service
                 .handle(
                     Command::SendMessage(SendMessage {
+                        priority: None,
                         delivery_mode: mode,
                         user_intent: None,
                         thread: thread.clone(),
@@ -1324,6 +1326,7 @@ fn presentation_q3_reader_change_preserves_nonempty_progress_outbox_and_offers()
             .service
             .handle(
                 Command::SendMessage(SendMessage {
+                    priority: None,
                     delivery_mode: DeliveryMode::Ordinary,
                     user_intent: None,
                     thread: ThreadId::new("t"),
@@ -6209,6 +6212,7 @@ fn presentation_raw_carry_serializer_accounting_witness() {
             let sender = Some(SeatId::parse("\"".repeat(128)).unwrap());
             let item = if lazy {
                 InboxBatchV2Item::LazyMessage {
+                    priority: None,
                     thread: ThreadId::parse("t").unwrap(),
                     topic_data: topic.clone(),
                     message: message.clone(),
@@ -6226,6 +6230,7 @@ fn presentation_raw_carry_serializer_accounting_witness() {
                 }
             } else {
                 InboxBatchV2Item::Message {
+                    priority: None,
                     thread: ThreadId::parse("t").unwrap(),
                     topic_data: topic.clone(),
                     message: message.clone(),
@@ -7100,6 +7105,7 @@ fn presentation_quiet_channel_observes_new_lazy_ordinary_without_wake() {
     f.service
         .handle(
             Command::SendMessage(SendMessage {
+                priority: None,
                 delivery_mode: DeliveryMode::Lazy,
                 user_intent: None,
                 thread: ThreadId::new("t"),
@@ -7513,6 +7519,7 @@ fn presentation_watch_fresh_confirmation_records_exact_owner_publication_cutoff_
             .service
             .handle(
                 Command::SendMessage(SendMessage {
+                    priority: None,
                     delivery_mode: DeliveryMode::Ordinary,
                     user_intent: None,
                     thread: ThreadId::new("t"),
@@ -7737,6 +7744,7 @@ fn presentation_publication_walk_counts_foreign_prefix_before_filter_and_progres
         f.service
             .handle(
                 Command::SendMessage(SendMessage {
+                    priority: None,
                     delivery_mode: DeliveryMode::Lazy,
                     user_intent: None,
                     thread,
@@ -7910,6 +7918,7 @@ fn presentation_publication_refresh_and_pull_rebind_preserve_each_others_progres
             f.service
                 .handle(
                     Command::SendMessage(SendMessage {
+                        priority: None,
                         delivery_mode: DeliveryMode::Lazy,
                         user_intent: None,
                         thread: ThreadId::new("t"),
@@ -8134,6 +8143,7 @@ fn presentation_publication_signal_preserves_active_capture_and_replays_across_r
         f.service
             .handle(
                 Command::SendMessage(SendMessage {
+                    priority: None,
                     delivery_mode: DeliveryMode::Lazy,
                     user_intent: None,
                     thread: ThreadId::new("t"),
@@ -8897,6 +8907,7 @@ impl OfferWindowFixture {
             .service
             .handle(
                 Command::SendMessage(SendMessage {
+                    priority: None,
                     delivery_mode: mode,
                     user_intent: None,
                     thread: ThreadId::new("t"),
@@ -10342,6 +10353,7 @@ fn presentation_handler_initial_ordinary_receipt_delivers_body_without_invented_
     f.service
         .handle(
             Command::SendMessage(SendMessage {
+                priority: None,
                 delivery_mode: DeliveryMode::Ordinary,
                 user_intent: None,
                 thread: ThreadId::new("t"),
@@ -10439,6 +10451,7 @@ fn presentation_publication_watch_reconnect_keeps_positive_frontier_without_nati
         f.service
             .handle(
                 Command::SendMessage(SendMessage {
+                    priority: None,
                     delivery_mode: DeliveryMode::Lazy,
                     user_intent: None,
                     thread: ThreadId::new("t"),
@@ -10520,6 +10533,7 @@ fn presentation_publication_generation_overflow_rolls_back_frontier_and_version(
         f.service
             .handle(
                 Command::SendMessage(SendMessage {
+                    priority: None,
                     delivery_mode: DeliveryMode::Lazy,
                     user_intent: None,
                     thread: ThreadId::new("t"),
@@ -10632,6 +10646,7 @@ fn presentation_quiet_channel_observes_new_ordinary_ack_message() {
         .service
         .handle(
             Command::SendMessage(SendMessage {
+                priority: None,
                 delivery_mode: DeliveryMode::Ordinary,
                 user_intent: None,
                 thread: ThreadId::new("t"),
@@ -11664,6 +11679,7 @@ fn presentation_capacity_snapshot_validation_scope_and_failed_calls() {
     f.service
         .handle(
             Command::SendMessage(crate::protocol::commands::SendMessage {
+                priority: None,
                 delivery_mode: crate::protocol::commands::DeliveryMode::Lazy,
                 user_intent: None,
                 thread: ThreadId::new("t"),

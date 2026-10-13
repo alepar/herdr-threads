@@ -1835,6 +1835,7 @@ fn probe_message_delivery_modes() {
     context.open_writer().unwrap().execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('m','i','t',1,'ordinary',1,'ordinary body',0,'lazy');").unwrap();
     let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let command = Command::MessageDeliveryModes(MessageDeliveryModesQuery {
+        with_priority: false,
         messages: vec![MessageId::new("m")],
     });
     assert_eq!(
@@ -1858,6 +1859,7 @@ fn probe_message_delivery_modes() {
     assert_eq!(
         modes,
         vec![crate::protocol::results::MessageDeliveryMode {
+            priority: None,
             message: MessageId::new("m"),
             delivery_mode: DeliveryMode::Lazy
         }]

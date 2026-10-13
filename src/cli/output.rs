@@ -373,6 +373,7 @@ impl ReadModes {
         for batch in ids.chunks(100) {
             let result = match client.call(
                 Command::MessageDeliveryModes(MessageDeliveryModesQuery {
+                    with_priority: false,
                     messages: batch.to_vec(),
                 }),
                 budget,

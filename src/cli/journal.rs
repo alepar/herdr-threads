@@ -708,6 +708,7 @@ impl SemanticMutation {
                 relays_user,
                 user_intent,
             } => Command::SendMessage(SendMessage {
+                priority: None,
                 delivery_mode: *delivery_mode,
                 thread: thread.clone(),
                 body: body.clone(),

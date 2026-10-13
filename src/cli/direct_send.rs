@@ -83,6 +83,7 @@ impl Plan {
     fn send(&self, claim: &CallerClaim, thread: ThreadId) -> SendMessage {
         let r = &self.request;
         SendMessage {
+            priority: None,
             delivery_mode: r.delivery_mode,
             user_intent: r.user_intent,
             thread,

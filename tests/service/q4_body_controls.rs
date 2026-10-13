@@ -152,6 +152,7 @@ impl BodyFixture {
             .service
             .handle(
                 Command::SendMessage(SendMessage {
+                    priority: None,
                     delivery_mode: DeliveryMode::Lazy,
                     user_intent: None,
                     thread: self.thread.clone(),

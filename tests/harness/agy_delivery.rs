@@ -2238,6 +2238,8 @@ fn modern_items() -> Vec<PresentationItemV2> {
             id: MessageId::new("msg-a1"),
             lazy: false,
             content: crate::protocol::watch::WatchMessage {
+                deadline_at: None,
+                priority: None,
                 thread: crate::protocol::ids::ThreadId::new("t1"),
                 thread_name: None,
                 sender: Some(SeatId::new("s2")),

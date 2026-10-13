@@ -706,6 +706,7 @@ fn rerunning_send_attention_producer_does_not_reenqueue() {
     )
     .unwrap();
     let send = SendMessage {
+        priority: None,
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread,
         body: "hello".into(),

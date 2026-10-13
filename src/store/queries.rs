@@ -293,6 +293,7 @@ fn query_inner(
                 let delivery_mode = super::lazy_delivery::recorded_mode(&db, instance, message)?
                     .ok_or_else(|| api_error(ErrorCode::NotFound, "message not found"))?;
                 modes.push(crate::protocol::results::MessageDeliveryMode {
+                    priority: None,
                     message: message.clone(),
                     delivery_mode,
                 });
@@ -6681,6 +6682,7 @@ mod inbox_v2 {
             && super::super::seats::wake_on(db, seat)? == crate::protocol::commands::WakeOn::All;
         Ok(Some(if lazy {
             Item::LazyMessage {
+                priority: None,
                 thread: thread_id,
                 topic_data,
                 message,
@@ -6698,6 +6700,7 @@ mod inbox_v2 {
             }
         } else {
             Item::Message {
+                priority: None,
                 thread: thread_id,
                 topic_data,
                 message: message.clone(),

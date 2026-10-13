@@ -682,6 +682,7 @@ fn send_store(iso: &TestIsolation) -> (StoreContext, Connection) {
 
 fn send_request() -> SendMessage {
     SendMessage {
+        priority: None,
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: ThreadId::new("t"),
         body: "hello".into(),

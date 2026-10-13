@@ -1194,6 +1194,11 @@ impl LocalService for DomainService {
             | Command::BootstrapStatus(_)
             | Command::ResolveBootstrapSeat(_)
             | Command::RecoverBootstrap(_)) => self.bootstrap_command(command, peer, budget),
+            // ht-yha.4 installs these handlers and advertises seat.nudge_threshold_v1.
+            Command::NudgeThreshold(_) | Command::SetNudgeThreshold(_) => Err(error(
+                ErrorCode::Unsupported,
+                "nudge threshold handler not installed",
+            )),
             Command::Directory(_)
             | Command::PickerDirectory(_)
             | Command::Seats(_)
