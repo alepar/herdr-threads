@@ -465,6 +465,19 @@ pub fn stage_snapshot_targets(
             "snapshot slice is not contiguous",
         ));
     }
+    // Compared against the stage's captured active publication. Publication
+    // uses the comparison only if that publication is still active (its
+    // fence refuses otherwise), and published snapshot rows never change, so
+    // the result still holds then. Fresh current-target reads are checked at
+    // publication, not here.
+    let captured_active: Option<String> = tx
+        .query_row(
+            "SELECT captured_active_id FROM snapshot_generations WHERE id=?1",
+            [stage.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let mut slice_matched = captured_active.is_some();
     // A spent quantum ends the slice with its committed prefix (at least one
     // target, so every turn progresses); the caller stages the rest in the
     // next turn. A scheduling stall is not a failed capture: failing here
@@ -551,6 +564,18 @@ pub fn stage_snapshot_targets(
             }
             return Err(store_error(error));
         }
+        // Equal to the active publication's row in every column the effective
+        // view reads except the volatile UI state, observation time and
+        // sequence.
+        if let Some(active) = captured_active.as_deref().filter(|_| slice_matched) {
+            slice_matched = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM snapshot_targets o WHERE o.generation_id=?1 AND o.target_id=?2 AND o.terminal_id IS ?3 AND o.generation=?4 AND o.connection_epoch IS ?5 AND o.incarnation_source_kind IS ?6 AND o.occupancy=?7 AND o.verified_execution IS ?8 AND o.top_level_occupant=?9)",
+                    params![active, target.target.as_str(), target.terminal.as_ref().map(|id| id.as_str()), generation, connection_epoch, incarnation_source, occupancy, execution, top_level],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+        }
         done += 1;
     }
     let staged = staged + done as i64;
@@ -560,6 +585,13 @@ pub fn stage_snapshot_targets(
     )
     .map_err(store_error)?;
     tx.commit().map_err(store_error)?;
+    context.note_snapshot_stage_slice(
+        stage.as_str(),
+        captured_active.as_deref(),
+        offset,
+        staged,
+        slice_matched,
+    );
     Ok(SnapshotStageProgress {
         stage: snapshot_stage(stage, expected, staged, "building"),
         visited: done as u8,
@@ -606,6 +638,9 @@ pub fn publish_snapshot_stage(
     budget: &CallBudget,
 ) -> Result<PublishedSnapshot, ApiError> {
     snapshot_budget(context, budget)?;
+    // Taken before the decision, whose closures may rerun: publication ends
+    // the stage's tracking, and a failed one discards the stage.
+    let stage_match = context.take_snapshot_stage_match(stage.as_str());
     context.execute_budgeted_decision(
         conn, budget,
         |tx| {
@@ -650,20 +685,21 @@ pub fn publish_snapshot_stage(
             {
                 return Err(api_error(ErrorCode::StaleHostObservation, "snapshot publication fence changed"));
             }
-            let prior_incarnation: Option<String> = match active.as_deref() {
+            type PriorColumns = Option<(String, i64, i64, Option<i64>)>;
+            let prior: PriorColumns = match active.as_deref() {
                 Some(id) => tx
                     .query_row(
-                        "SELECT incarnation FROM snapshot_generations WHERE id=?1 AND status='published'",
+                        "SELECT incarnation,expected_targets,captured_lifecycle_revision,published_invalidation_revision FROM snapshot_generations WHERE id=?1 AND status='published'",
                         [id],
-                        |r| r.get(0),
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                     )
                     .optional()
                     .map_err(store_error)?,
                 None => None,
             };
-            let changed_or_unknown_incarnation = prior_incarnation
-                .as_deref()
-                .is_none_or(|prior| prior != incarnation);
+            let changed_or_unknown_incarnation = prior
+                .as_ref()
+                .is_none_or(|(prior, _, _, _)| *prior != incarnation);
             let nonretired = has_nonretired_seat(tx, &instance)?;
             let unresolved: bool = tx
                 .query_row(
@@ -676,13 +712,52 @@ pub fn publish_snapshot_stage(
                 || recovery_epoch != Some(epoch);
             let hold = unresolved || changed_or_unknown_incarnation && nonretired
                 || !new_recovery && old_hold != 0;
+            let old_baseline = baseline.clone();
             let baseline = match baseline {
                 Some(baseline) if !new_recovery => baseline,
                 _ => stage.as_str().to_owned(),
             };
-            Ok((instance, boot, epoch, sequence, incarnation, expected, admission_sequence, invalidation, new_recovery, baseline, hold))
+            // Send eligibility (`effective_registered_availability`,
+            // `carry_pending`) reads the host boot/epoch, the recovery
+            // markers and each target's effective observation: the active
+            // publication unless invalidated, or a newer fresh current-target
+            // read. A publication that repeats the active one changes none of
+            // them and needs no bump (shared contract amendment §8). Anything
+            // not proven unchanged bumps: no or an invalidated prior
+            // publication; a new boot, epoch, incarnation, recovery, baseline
+            // or hold; a lifecycle transition since the prior publication;
+            // another target count; a target set not proven equal while
+            // staging; or a fresh current-target read in this boot/epoch newer
+            // than the prior publication (`effective_observation` prefers it
+            // over that publication and this one may supersede it, for any
+            // target, in the snapshot or not).
+            let unchanged = prior.as_ref().is_some_and(
+                |(_, prior_expected, prior_lifecycle, prior_invalidation)| {
+                    old_boot.as_deref() == Some(boot.as_str())
+                        && old_epoch == epoch
+                        && !changed_or_unknown_incarnation
+                        && !new_recovery
+                        && old_baseline.as_deref() == Some(baseline.as_str())
+                        && hold == (old_hold != 0)
+                        && prior_invalidation.is_some_and(|revision| revision >= invalidation)
+                        && *prior_lifecycle == lifecycle
+                        && *prior_expected == expected
+                        && (expected == 0
+                            || stage_match.as_ref().is_some_and(|stage_match| {
+                                active.as_deref() == Some(stage_match.captured_active.as_str())
+                                    && stage_match.matched == expected
+                            }))
+                },
+            ) && !tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM observed_targets WHERE instance_id=?1 AND provenance='fresh' AND host_boot=?2 AND epoch=?3 AND observation_sequence>?4)",
+                    params![instance, boot, epoch, old_sequence],
+                    |r| r.get::<_, bool>(0),
+                )
+                .map_err(store_error)?;
+            Ok((instance, boot, epoch, sequence, incarnation, expected, admission_sequence, invalidation, new_recovery, baseline, hold, !unchanged))
         },
-        |tx, _, (instance, boot, epoch, sequence, incarnation, expected, admission_sequence, invalidation, _new_recovery, baseline, hold)| {
+        |tx, _, (instance, boot, epoch, sequence, incarnation, expected, admission_sequence, invalidation, _new_recovery, baseline, hold, eligibility_may_change)| {
             let changed = tx
                 .execute(
                     "UPDATE snapshot_generations SET status='published',published_invalidation_revision=?1 WHERE id=?2 AND status='sealed' AND staged_targets=expected_targets",
@@ -697,7 +772,7 @@ pub fn publish_snapshot_stage(
                 params![boot,epoch,sequence,stage.as_str(),baseline,hold,admission_sequence,instance],
             )
             .map_err(store_error)?;
-            schema::apply_eligibility_transition(tx, &instance, |_| Ok(true))?;
+            schema::apply_eligibility_transition(tx, &instance, |_| Ok(eligibility_may_change))?;
             Ok(PublishedSnapshot {
                 id: stage.clone(),
                 instance,
@@ -1427,6 +1502,7 @@ pub fn discard_snapshot_stage(
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(store_error)?;
+    context.take_snapshot_stage_match(stage.as_str());
     let started = context.clock().monotonic_now();
     let (instance, _, _, _, _, _, _, status) = load_snapshot_stage(&tx, stage)?;
     if status == "published" {
@@ -5223,3 +5299,7 @@ mod wake_on_tests;
 #[cfg(test)]
 #[path = "../../tests/store/mod_seat_view.rs"]
 mod mod_seat_view_tests;
+
+#[cfg(test)]
+#[path = "../../tests/store/snapshot_eligibility.rs"]
+mod snapshot_eligibility_tests;

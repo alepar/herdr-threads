@@ -2022,9 +2022,12 @@ impl Drop for ActivationRelay {
 // Their local byte streams are helper tests, never an activation capture.
 #[test]
 fn activation_capacity_flow_oracle_unwind_restores_relay() {
+    // SHORT_TMP (/private/tmp on macOS, /tmp elsewhere) keeps the socket paths
+    // under the Unix limit; a hardcoded /private/tmp does not exist on Linux.
     let scratch = Scratch(PathBuf::from(format!(
-        "/private/tmp/ht-cf-{}",
-        uuid::Uuid::new_v4()
+        "{}/ht-cf-{}",
+        herdr_threads::test_support::SHORT_TMP,
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
     )));
     fs::create_dir(&scratch.0).unwrap();
     let endpoint = scratch.0.join("relay.sock");

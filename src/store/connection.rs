@@ -42,6 +42,13 @@ pub struct StoreContext {
     /// writer open. Only these are rechecked for Health; the set only
     /// shrinks, because every new live binding must carry evidence.
     binding_evidence_lacking: std::sync::Mutex<Vec<String>>,
+    /// Per hidden snapshot stage this process is staging: the captured active
+    /// publication and how many leading staged targets equal that
+    /// publication's rows (see `seats::stage_snapshot_targets`). It can only
+    /// spare a send-eligibility bump: publication bumps whenever the entry is
+    /// missing or does not cover every target (restart, eviction, another
+    /// process staging, a differing target).
+    snapshot_stage_matches: std::sync::Mutex<Vec<SnapshotStageMatch>>,
     /// Test hook: fails store access on lane-owned threads (see `set_lane_fault`).
     #[cfg(any(test, feature = "test-support"))]
     lane_fault: std::sync::Mutex<Option<LaneFault>>,
@@ -73,7 +80,66 @@ pub struct DecisionInstant {
 #[cfg(any(test, feature = "test-support"))]
 pub const TEST_RELAXED_DURABILITY_ENV: &str = "HT_TEST_RELAXED_DURABILITY";
 
+/// Process-local evidence that a hidden snapshot stage repeats its captured
+/// active publication so far: `matched` leading staged targets each equal the
+/// active publication's row for the same target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SnapshotStageMatch {
+    pub stage: String,
+    pub captured_active: String,
+    pub matched: i64,
+}
+
+/// Stages one process tracks at once. The observation lane stages one at a
+/// time; an overflow forgets every entry, which only costs bumps.
+const SNAPSHOT_STAGE_MATCHES: usize = 8;
+
 impl StoreContext {
+    /// Records the committed outcome of one staged slice. `slice_matched` is
+    /// whether every target of the slice equals the captured active
+    /// publication's row; `offset..staged` is the slice. An entry survives
+    /// only while it covers a contiguous all-matching prefix from offset 0.
+    pub(crate) fn note_snapshot_stage_slice(
+        &self,
+        stage: &str,
+        captured_active: Option<&str>,
+        offset: i64,
+        staged: i64,
+        slice_matched: bool,
+    ) {
+        let Ok(mut entries) = self.snapshot_stage_matches.lock() else {
+            return;
+        };
+        let prior = entries.iter().position(|entry| entry.stage == stage);
+        let prior = prior.map(|index| entries.swap_remove(index));
+        let Some(captured_active) = captured_active.filter(|_| slice_matched) else {
+            return;
+        };
+        let continues = offset == 0
+            || prior.is_some_and(|prior| {
+                prior.captured_active == captured_active && prior.matched == offset
+            });
+        if !continues {
+            return;
+        }
+        if entries.len() >= SNAPSHOT_STAGE_MATCHES {
+            entries.clear();
+        }
+        entries.push(SnapshotStageMatch {
+            stage: stage.to_owned(),
+            captured_active: captured_active.to_owned(),
+            matched: staged,
+        });
+    }
+
+    /// Removes and returns the stage's match evidence. Publication and
+    /// discard both end a stage's tracking.
+    pub(crate) fn take_snapshot_stage_match(&self, stage: &str) -> Option<SnapshotStageMatch> {
+        let mut entries = self.snapshot_stage_matches.lock().ok()?;
+        let index = entries.iter().position(|entry| entry.stage == stage)?;
+        Some(entries.swap_remove(index))
+    }
+
     pub fn new(path: PathBuf, clock: Arc<dyn Clock>) -> Self {
         Self {
             path,
@@ -81,6 +147,7 @@ impl StoreContext {
             idle_queries: Arc::default(),
             binding_evidence: std::sync::Mutex::new(None),
             binding_evidence_lacking: std::sync::Mutex::new(Vec::new()),
+            snapshot_stage_matches: std::sync::Mutex::new(Vec::new()),
             #[cfg(any(test, feature = "test-support"))]
             lane_fault: std::sync::Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
