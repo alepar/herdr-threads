@@ -705,12 +705,15 @@ fn idle_daemon_commits_nothing_from_deadline_wake_request_for_30s() {
 /// under 100 ms, with no tick wait for the wake lane. A kick is flushed only
 /// after its commit, and a latched kick wins over a tick, so the first
 /// `Kicked` pass start at or after the deadline-origin kick began after the
-/// publication and judged it. The inviter owes nothing and the guest is
-/// unbound, so that pass reserves nothing: the transition reaches the inviter
-/// as a check-in notice only. (A hard-deadline warning's affected seat was
-/// already reserved once for the obligation it owes, so its warning wake
-/// follows the configured minimum spacing, not this latency; store tests
-/// cover its eligibility.)
+/// publication and judged it. The guest is unbound, and a bystander member
+/// owes nothing, so neither is reserved: the transition reaches the bystander
+/// as a check-in notice only. The explicitly timed invitation's original
+/// inviter is the one designed wake (TRUST-POLICY: "An invitation
+/// deadline-missed open transition also wakes its originally recorded native
+/// inviter"; handoff-delivery-redesign invitations design). (A hard-deadline
+/// warning's affected seat was already reserved once for the obligation it
+/// owes, so its warning wake follows the configured minimum spacing, not this
+/// latency; store tests cover its eligibility.)
 /// Kills: a deadline-origin commit that does not kick the wake lane (the
 /// warning would wait up to 5 s), a wake lane that ignores the kick (only a
 /// tick would start the next pass), and a wake for a member who owes nothing.
@@ -722,7 +725,9 @@ fn deadline_commit_creating_a_warning_starts_a_kicked_wake_pass_within_100ms() {
     };
     let inviter_pane = session.first_pane();
     let guest_pane = session.split_pane(&inviter_pane);
+    let bystander_pane = session.split_pane(&guest_pane);
     let inviter = session.seat(&inviter_pane);
+    let bystander = session.seat(&bystander_pane);
     // A prelaunch guest: a seat for its pane that never checks in, so its
     // invitation stays pending past its 1 s deadline.
     let guest = session
@@ -735,11 +740,31 @@ fn deadline_commit_creating_a_warning_starts_a_kicked_wake_pass_within_100ms() {
         .as_str()
         .unwrap()
         .to_owned();
+    // A joined member who owes nothing for the overdue invitation.
+    session.ok(
+        Some(&inviter),
+        &["invite", &thread, "--seat", &bystander.seat],
+    );
+    session.ok(Some(&bystander), &["accept", &thread]);
     session.ok(
         Some(&inviter),
         &["invite", &thread, "--seat", &guest, "--deadline", "1"],
     );
     session.wait_commits_quiet("wake", Duration::from_millis(1500));
+    // Each seat's latest wake reservation: a new one is a wake attempt.
+    let reservations = || -> std::collections::BTreeMap<String, Option<i64>> {
+        let db = session.db();
+        let mut statement = db
+            .prepare("SELECT seat_id,reserved_at_utc FROM wake_work")
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let reserved_before = reservations();
+    let wake_commits = session.commits("wake");
     let starts = Arc::new(Mutex::new(Vec::<(Wake, Instant)>::new()));
     let recorded = Arc::clone(&starts);
     session.probe.set_registered_wake_hook(
@@ -753,16 +778,18 @@ fn deadline_commit_creating_a_warning_starts_a_kicked_wake_pass_within_100ms() {
         Box::new(move |_| ended.lock().unwrap().push(Instant::now())),
     );
     let kicks_before = session.probe.kick_log().len();
-    let wake_commits = session.commits("wake");
     // The 1 s deadline has passed (the quiet wait above lasted longer). The
     // deadline lane would notice at its next 5 s safety tick (documented as up
     // to 5 s late); detection latency is not what this test measures, so kick
     // it. The measured kick is still the deadline lane's own commit kicking
     // the wake lane.
     session.probe.kick_registered(Lane::Deadlines);
-    // Pin the kick to the publication: once the inviter's recipient row is
-    // committed, its commit's kick is logged; the latest deadline-origin Wakes
-    // kick from then on follows that commit.
+    // Pin the kick to the publication: the overdue commit creates the warning
+    // and the inviter's recipient row together, so the first deadline-origin
+    // Wakes kick after the baseline is that commit's. Later deadline commits
+    // (warning-job attribution) may kick while the pass it started is still
+    // dispatching the inviter's wake; such a latched kick waits for that pass,
+    // so it is not the latency this test measures.
     let attributed = || -> bool {
         session
             .db()
@@ -783,7 +810,6 @@ fn deadline_commit_creating_a_warning_starts_a_kicked_wake_pass_within_100ms() {
     let kicks = session.probe.kick_log().split_off(kicks_before);
     let (_, _, kicked_at) = *kicks
         .iter()
-        .rev()
         .find(|(lanes, origin, _)| lanes.contains(Lane::Wakes) && *origin == Some(Lane::Deadlines))
         .unwrap_or_else(|| panic!("no deadline-origin Wakes kick: {kicks:?}"));
     // Wait for the kicked wake pass to start and then finish (instead of a
@@ -837,10 +863,28 @@ fn deadline_commit_creating_a_warning_starts_a_kicked_wake_pass_within_100ms() {
             == 1,
         "the measured kick follows the overdue warning's publication"
     );
+    let reserved_after = reservations();
+    let woken: std::collections::BTreeSet<&str> = reserved_after
+        .iter()
+        .filter(|(seat, last)| {
+            last.is_some() && reserved_before.get(*seat).cloned().flatten() != **last
+        })
+        .map(|(seat, _)| seat.as_str())
+        .collect();
+    assert!(
+        !woken.contains(bystander.seat.as_str()) && !woken.contains(guest.as_str()),
+        "no wake is attempted for a member who owes nothing or an unbound guest: {woken:?}"
+    );
     assert_eq!(
-        session.commits("wake"),
-        wake_commits,
-        "no wake is attempted for an inviter who owes nothing"
+        woken,
+        std::collections::BTreeSet::from([inviter.seat.as_str()]),
+        "only the timed invitation's original inviter is woken: {reserved_before:?} -> {reserved_after:?}"
+    );
+    // That one wake is exactly its reservation and its completion.
+    assert_eq!(
+        session.commits("wake") - wake_commits,
+        2,
+        "the wake lane committed only the inviter's one attempt"
     );
     assert!(lanes_for_table("warning_recipients").contains(Lane::Wakes));
     assert!(lanes_for_table("warning_jobs").contains(Lane::Deadlines));

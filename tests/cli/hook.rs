@@ -35,32 +35,33 @@ fn installed_argv_and_hook_parser_are_one_contract() {
                 event: None,
             }))
         );
-        // Setup quotes exactly this argv into the native command string, for
+        // Setup quotes exactly this argv's route into the native command string, for
         // every hook group it owns (merge: owned setup installs each declared
-        // Claude and Codex hook, not only Bash PreToolUse).
-        let command = shell_command(&argv).unwrap();
-        let plan = plan_claude(b"{}", &argv).unwrap();
-        let settings: serde_json::Value = serde_json::from_slice(&plan.proposed_bytes).unwrap();
-        assert_eq!(
-            settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
-            crate::harness::setup::event_command(&command, "PreToolUse")
-        );
-        assert_eq!(plan.owned.len(), 4);
-        // Each owned group registers its own event on the command line, and that evented
-        // command parses back through the hook entrypoint.
-        for entry in &plan.owned {
-            let registered = crate::harness::setup::event_command(&command, &entry.event);
-            assert_eq!(entry.group["hooks"][0]["command"], registered, "{entry:?}");
-            let mut evented = argv.clone();
-            evented.extend(["--event".to_owned(), entry.event.clone()]);
-            assert_eq!(shell_command(&evented).unwrap(), registered);
-            let words: Vec<OsString> = evented.iter().map(OsString::from).collect();
+        // Claude and Codex hook, not only Bash PreToolUse). Each group registers the
+        // stable `hook-event HARNESS EVENT` command of that route (855d5de9), and the
+        // registered command parses back through the hook entrypoint to the same route.
+        let evented = |event: &str| {
+            installed_event_argv(
+                "/tmp/space dir/herdr-threads",
+                Some("/tmp/state dir"),
+                Some("/tmp/herdr dir/herdr.sock"),
+                harness,
+                event,
+            )
+            .unwrap()
+        };
+        let registered =
+            |event: &str| crate::harness::setup::native_event_command(&evented(event)).unwrap();
+        let owned = if harness == Harness::Claude {
+            let plan = plan_claude(b"{}", &argv).unwrap();
+            let settings: serde_json::Value = serde_json::from_slice(&plan.proposed_bytes).unwrap();
             assert_eq!(
-                parse_hook_argv(&words).unwrap().unwrap().event.as_deref(),
-                Some(entry.event.as_str())
+                settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+                registered("PreToolUse")
             );
-        }
-        if harness == Harness::Codex {
+            assert_eq!(plan.owned.len(), 4);
+            plan.owned
+        } else {
             let codex = crate::harness::codex::setup::plan_codex_for_version(
                 &[],
                 &argv,
@@ -71,18 +72,28 @@ fn installed_argv_and_hook_parser_are_one_contract() {
                 codex.owned.len(),
                 crate::harness::codex::DECLARATION.owned_hooks.len()
             );
-            for entry in &codex.owned {
-                let registered = crate::harness::setup::event_command(&command, &entry.event);
-                assert_eq!(entry.group["hooks"][0]["command"], registered, "{entry:?}");
-                let mut evented = argv.clone();
-                evented.extend(["--event".to_owned(), entry.event.clone()]);
-                assert_eq!(shell_command(&evented).unwrap(), registered);
-                let words: Vec<OsString> = evented.iter().map(OsString::from).collect();
-                assert_eq!(
-                    parse_hook_argv(&words).unwrap().unwrap().event.as_deref(),
-                    Some(entry.event.as_str())
-                );
-            }
+            codex.owned
+        };
+        for entry in &owned {
+            let evented = evented(&entry.event);
+            // The route words are exactly the installed argv's, before the event subcommand.
+            assert_eq!(evented[..argv.len() - 2], argv[..argv.len() - 2]);
+            assert_eq!(
+                entry.group["hooks"][0]["command"],
+                registered(&entry.event),
+                "{entry:?}"
+            );
+            assert_eq!(shell_command(&evented).unwrap(), registered(&entry.event));
+            let words: Vec<OsString> = evented.iter().map(OsString::from).collect();
+            assert_eq!(
+                parse_hook_argv(&words),
+                Some(Ok(HookArgs {
+                    state_dir: Some("/tmp/state dir".into()),
+                    host_endpoint: Some("/tmp/herdr dir/herdr.sock".into()),
+                    harness,
+                    event: Some(entry.event.clone()),
+                }))
+            );
         }
     }
     assert_eq!(
@@ -217,13 +228,15 @@ fn native_event_entrypoints_validate_registered_pairs_and_keep_legacy_syntax() {
         assert_eq!(dedicated, legacy);
         assert_eq!(dedicated.event.as_deref(), Some(event));
     }
+    // Cross-harness pairs: `UserPromptSubmit` is a declared Codex event Claude does not
+    // declare (Claude declares SubagentStart/SubagentStop since 86bb0385).
     for words in [
-        vec!["ht", "hook-event", "claude", "SubagentStart"],
+        vec!["ht", "hook-event", "claude", "UserPromptSubmit"],
         vec!["ht", "hook-event", "codex", "Bogus"],
         vec!["ht", "hook-event", "human", "SessionStart"],
         vec!["ht", "hook-event", "claude"],
         vec!["ht", "hook-event", "claude", "--event", "SessionStart"],
-        vec!["ht", "hook", "claude", "--event", "SubagentStart"],
+        vec!["ht", "hook", "claude", "--event", "UserPromptSubmit"],
     ] {
         assert!(
             matches!(parse_hook_argv(&os(&words)), Some(Err(_))),
@@ -303,7 +316,7 @@ fn native_event_commands_preserve_exact_route_and_executable_spelling() {
         shlex::split(&native_event_command(&quoted).unwrap()).unwrap(),
         quoted
     );
-    assert!(installed_event_argv("ht", None, None, Harness::Claude, "SubagentStart").is_err());
+    assert!(installed_event_argv("ht", None, None, Harness::Claude, "UserPromptSubmit").is_err());
     assert!(native_event_command(&installed_argv("ht", None, None, Harness::Claude)).is_err());
     assert!(
         native_event_command(&[
@@ -4903,7 +4916,9 @@ fn stored_commands_require_both_selectors_and_flag_free_recipient_proof() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-// Both real owned installations are allowed on one native config and host.
+// Both real owned installations are allowed on one host, each in its own native
+// config (one config holds one herdr-threads route per event: a second route in the
+// same file is a conflicting registration, 855d5de9/4d86974c).
 // The A group must identify A even though its ordinary commands are verified;
 // B's handoff can choose only B's exact group, which remains pinned here.
 #[test]
@@ -4914,13 +4929,12 @@ fn two_installed_state_targets_share_endpoint_but_have_distinct_command_routing_
     let state_b = dir.join("private-b");
     std::fs::create_dir(&state_b).unwrap();
     let host = dir.join("herdr.sock");
-    let config = dir.join("settings.json");
-    std::fs::write(&config, b"{}").unwrap();
     let instruction = render_context(Role::TopLevel, &[], true).unwrap();
     let mut groups = Vec::new();
-    for (state, id) in [
-        (&state_a, "00000000-0000-0000-0000-0000000000a1"),
-        (&state_b, "00000000-0000-0000-0000-0000000000b1"),
+    let mut configs: Vec<std::path::PathBuf> = Vec::new();
+    for (state, id, profile) in [
+        (&state_a, "00000000-0000-0000-0000-0000000000a1", "claude-a"),
+        (&state_b, "00000000-0000-0000-0000-0000000000b1", "claude-b"),
     ] {
         let target = ContinuationContext {
             state_dir: Some(state.display().to_string()),
@@ -4928,6 +4942,25 @@ fn two_installed_state_targets_share_endpoint_but_have_distinct_command_routing_
         };
         let mut hook_argv = cli_prefix(&target);
         hook_argv.extend(["hook".into(), "claude".into()]);
+        let config = dir.join(profile).join("settings.json");
+        std::fs::create_dir(config.parent().unwrap()).unwrap();
+        std::fs::write(&config, b"{}").unwrap();
+        if let Some(first) = configs.first() {
+            // The other installation's config is refused for this route, unchanged.
+            let before = std::fs::read(first).unwrap();
+            assert!(matches!(
+                install_user_settings(
+                    crate::harness::claude::settings_kind(),
+                    first,
+                    &state.join("manifest.json"),
+                    &hook_argv,
+                    &before,
+                ),
+                Err(crate::harness::setup::SetupError::Conflict)
+            ));
+            assert_eq!(std::fs::read(first).unwrap(), before);
+            assert!(!state.join("manifest.json").exists());
+        }
         install_user_settings(
             crate::harness::claude::settings_kind(),
             &config,
@@ -4936,6 +4969,7 @@ fn two_installed_state_targets_share_endpoint_but_have_distinct_command_routing_
             &std::fs::read(&config).unwrap(),
         )
         .unwrap();
+        configs.push(config);
         let prefix = cli_prefix(&pane_selectors(Some(state), Some(&host), &pane));
         let fallback = [
             prefix.clone(),
@@ -4966,9 +5000,11 @@ fn two_installed_state_targets_share_endpoint_but_have_distinct_command_routing_
         );
         groups.push(routing);
     }
-    let config: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
-    assert_eq!(config["hooks"]["SessionStart"].as_array().unwrap().len(), 2);
+    for config in &configs {
+        let config: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
+        assert_eq!(config["hooks"]["SessionStart"].as_array().unwrap().len(), 1);
+    }
     let expected_b = serde_json::json!({"instance":"00000000-0000-0000-0000-0000000000b1", "state_dir":state_b.display().to_string(), "host_endpoint":host.display().to_string()});
     assert_ne!(
         groups[0], expected_b,

@@ -2045,6 +2045,79 @@ fn open_warning_dedup_invitation_in(
     outcome.warning.unwrap()
 }
 
+/// One attributed overdue transition exactly as a genuine schema-24 store held
+/// it. Today's `record_overdue_if_pending` reads invitation confirmation (37)
+/// and warning origins (42), and today's attribution worker reads receipt
+/// warning origins (43), so neither can run against a v24 image. Every column
+/// written here exists at v24: the canonical event (through the unchanged
+/// event appender), source marker, open condition and attribution job the
+/// v24 decision wrote, then the completed attribution of the only recipient
+/// (the thread has no members; the affected invitee is attributed at the
+/// event's sequence), its wake-work bump, with both jobs complete.
+fn attributed_v24_warning_dedup_invitation(conn: &mut Connection) -> MessageId {
+    let tx = conn.transaction().unwrap();
+    let invitation = InvitationId::new("dedup-invitation-1");
+    tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES (?1,'dedup','s',1,'pending',0,1,50,50)", [invitation.as_str()]).unwrap();
+    let payload = serde_json::json!({
+        "obligation": "invitation", "seat": "s", "deadline_at": 50,
+        "classified_at": 100, "materialized_at": 100,
+        "current_status": "pending", "physical_status": "pending",
+    })
+    .to_string();
+    let (warning, inserted) = schema::append_event_once(
+        &tx,
+        schema::EventInput {
+            thread: &ThreadId::new("dedup"),
+            key: &format!("overdue:invitation:{}", invitation.as_str()),
+            kind: "warn",
+            payload_json: &payload,
+            decision_at: UtcMillis(100),
+            source_message: None,
+            source_invitation: Some(&invitation),
+        },
+    )
+    .unwrap();
+    assert!(inserted);
+    assert_eq!(
+        tx.execute(
+            "UPDATE invitations SET warning_message_id=?1 WHERE id=?2 AND warning_message_id IS NULL",
+            [warning.as_str(), invitation.as_str()],
+        )
+        .unwrap(),
+        1
+    );
+    let event_seq: i64 = tx
+        .query_row(
+            "SELECT decision_seq FROM messages WHERE id=?1",
+            [warning.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let interval_high_water: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(ordinal),0) FROM membership_intervals WHERE thread_id='dedup'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    tx.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('invitation','dedup',?1,'s',?2,?3)", rusqlite::params![invitation.as_str(), warning.as_str(), event_seq]).unwrap();
+    tx.execute("INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id,recipient_cutoff_seq) VALUES (?1,?2,'dedup',?3,'s','invitation',?4,NULL)", rusqlite::params![warning.as_str(), event_seq, interval_high_water, format!("transition:{}", warning.as_str())]).unwrap();
+    tx.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES (?1,'warning_attribution',?2,?3)", rusqlite::params![format!("work:{}", warning.as_str()), warning.as_str(), interval_high_water]).unwrap();
+    assert_eq!(interval_high_water, 0, "no member interval to attribute");
+    tx.execute(
+        "INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES (?1,'s',?2)",
+        rusqlite::params![warning.as_str(), event_seq],
+    )
+    .unwrap();
+    // v24 `attribute()` bumped the recipient's wake work for an actionable, unoffered warning.
+    tx.execute("INSERT INTO wake_work(seat_id,attention_version) VALUES('s',1) ON CONFLICT(seat_id) DO UPDATE SET attention_version=attention_version+1", []).unwrap();
+    // intervals -> affected -> finalize: three worker units.
+    tx.execute("UPDATE warning_jobs SET phase='complete',status='complete',cursor_ordinal=?2,processed_units=3,last_error=NULL WHERE warning_id=?1", rusqlite::params![warning.as_str(), interval_high_water]).unwrap();
+    tx.execute("UPDATE work_jobs SET position=high_water,completed_units=3,status='complete',last_error=NULL,completed_at=100 WHERE id=?1", [format!("work:{}", warning.as_str())]).unwrap();
+    tx.commit().unwrap();
+    warning
+}
+
 fn seed_warning_dedup_thread(conn: &Connection) {
     conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('dedup','i','warning dedup','g',0,0,1);").unwrap();
 }
@@ -2485,8 +2558,7 @@ fn builtin_warning_dedup_upgrade_backfills_existing_attributed_transitions() {
     let mut historical_context = claim();
     historical_context.binding_generation = 1;
     seed_warning_dedup_thread(&conn);
-    let warning = open_warning_dedup_invitation(&mut conn, 1);
-    drain_warning_dedup_attribution(&mut conn, clock.as_ref(), &warning);
+    let warning = attributed_v24_warning_dedup_invitation(&mut conn);
     // The old coarse offer watermark covers the event, but is not evidence
     // that this exact notice was delivered to this occupant.
     conn.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES ('s',1,?1,100)", [historical_context.execution.as_str()]).unwrap();

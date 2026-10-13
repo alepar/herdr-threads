@@ -4335,7 +4335,10 @@ fn watch_ack_already_settled_after_inbox_ack() {
 }
 
 /// Spec D4: invitations (anything without a body) reach the mod as one
-/// `attention` line carrying the fixed marker, never as an acked item.
+/// `attention` line carrying the fixed marker, never as an acked item. The
+/// invitation requests confirmation (`--require-ack`): an ordinary invitation
+/// is Lazy by default (handoff-delivery-redesign) and is presented as a
+/// passive `invitation` line that requests no attention.
 #[test]
 fn attention_marker_line_for_invitation() {
     let rig = Rig::new();
@@ -4349,7 +4352,7 @@ fn attention_marker_line_for_invitation() {
         .text("thread create");
     rig.cli(
         Some((&rig.a, PANE_A)),
-        &["invite", &other, "--seat", &rig.b],
+        &["invite", &other, "--seat", &rig.b, "--require-ack"],
     )
     .data("invite");
     let line = watch.wait_attention_marker();
@@ -5149,11 +5152,15 @@ fn watch_admission_over_cap_refuses_busy() {
         Instant::now() < deadline,
         "hook registration ran past the test deadline"
     );
+    // Each holder is its session's `watch` child, so it runs as the same
+    // harness process (execution identity) its SessionStart hook bound.
     let spawn_holder = |id: &str, session: &str| {
-        Watch::spawn(rig.command(
+        let mut command = rig.command(
             Some(id),
             &["watch", "--harness", "claude", "--session", session],
-        ))
+        );
+        herdr_threads::test_support::isolation::as_agent(&mut command, "claude", session);
+        Watch::spawn(command)
     };
     let mut spawned: Vec<Watch> = extra
         .iter()

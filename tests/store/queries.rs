@@ -4147,7 +4147,9 @@ fn hot_ids(hot: &crate::protocol::results::HotThreads) -> Vec<&str> {
 
 /// Kills: an ordering that ignores the class (a recent thread ahead of a
 /// receipt), orders receipts by recency or message order instead of the
-/// earliest effective deadline, or puts an undated receipt ahead of a dated one.
+/// earliest effective deadline, or ranks a legacy receipt stored without a
+/// deadline by anything but its send-time deadline (decision_at + frozen
+/// duration, ht-0lo.1.3: a pending ACK obligation is never undated).
 #[test]
 fn hot_threads_order_receipts_by_deadline_then_attention_then_recency() {
     use crate::protocol::results::HotReason;
@@ -4168,9 +4170,11 @@ fn hot_threads_order_receipts_by_deadline_then_attention_then_recency() {
         hot_message(&db, thread, message, at);
     }
     let hot = hot_query(&store, 8, 50);
+    // Deadlines: r-early 200, r-none 12+300=312 (send-time), r-late 500.
+    // Recency would give r-none first, message order r-late first.
     assert_eq!(
         hot_ids(&hot),
-        ["r-early", "r-late", "r-none", "inv", "new", "old"]
+        ["r-early", "r-none", "r-late", "inv", "new", "old"]
     );
     assert!(hot.overflow.is_empty());
     let reasons: Vec<_> = hot.hot.iter().map(|row| row.reason).collect();
@@ -4188,6 +4192,14 @@ fn hot_threads_order_receipts_by_deadline_then_attention_then_recency() {
     assert_eq!(
         hot.hot[0].effective_deadline,
         Some(crate::protocol::time::UtcMillis(200))
+    );
+    assert_eq!(
+        hot.hot[1].effective_deadline,
+        Some(crate::protocol::time::UtcMillis(312))
+    );
+    assert_eq!(
+        hot.hot[2].effective_deadline,
+        Some(crate::protocol::time::UtcMillis(500))
     );
     assert_eq!(hot.hot[3].effective_deadline, None);
     assert_eq!(hot.hot[4].last_activity.0, 90);

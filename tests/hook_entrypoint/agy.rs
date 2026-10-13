@@ -255,6 +255,23 @@ fn conversation_state_files(dir: &Path, name: &std::ffi::OsStr, found: &mut Vec<
     }
 }
 
+/// Every `adapter-state/agy` directory under `dir`.
+fn adapter_state_dirs(dir: &Path, found: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.ends_with("adapter-state/agy") {
+                found.push(path);
+            } else {
+                adapter_state_dirs(&path, found);
+            }
+        }
+    }
+}
+
 #[test]
 fn a_resume_of_an_earlier_conversation_with_a_state_file_rebinds_by_c1() {
     let fx = Fixture::start();
@@ -270,14 +287,32 @@ fn a_resume_of_an_earlier_conversation_with_a_state_file_rebinds_by_c1() {
     ));
     assert!(text.starts_with(LIFECYCLE_PREFIX), "{text}");
     assert_eq!(live_binding(&fx, RESUME), 1);
-    // A routine turn of RESUME: its pull writes the conversation's delivery-cache file.
+    // A routine turn of RESUME. Under the advertised presentation V2 (7c3edc2d) a quiet
+    // pull is `Unchanged` and writes no delivery cache, so the cache file a V1 pull or an
+    // injected page leaves for RESUME is put in place here, beside the instance's agy state.
     let routine = run(&fx, &home, "PreInvocation", "pre-invocation-inv0-resume");
     assert_eq!(routine.code, Some(0), "{}", routine.stderr);
     assert!(routine.stdout.is_empty(), "{:?}", routine.stdout);
-    let file_name = herdr_threads::harness::agy::paths::conversation_state(Path::new(""), RESUME)
-        .file_name()
-        .unwrap()
-        .to_owned();
+    let mut agy_state = Vec::new();
+    adapter_state_dirs(&fx.state, &mut agy_state);
+    assert_eq!(
+        agy_state.len(),
+        1,
+        "the instance's agy state: {agy_state:?}"
+    );
+    let cache = herdr_threads::harness::agy::paths::conversation_state(&agy_state[0], RESUME);
+    fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    fs::write(
+        &cache,
+        serde_json::to_vec(&herdr_threads::harness::agy::delivery::ConversationState {
+            turn: 1,
+            generation: Some(generation(&fx) as u64),
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let file_name = cache.file_name().unwrap().to_owned();
     let mut found = Vec::new();
     conversation_state_files(&fx.state, &file_name, &mut found);
     assert_eq!(found.len(), 1, "RESUME's state file: {found:?}");

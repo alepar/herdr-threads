@@ -480,6 +480,11 @@ impl crate::ports::LocalClient for HumanClient {
                     fast_forward: None,
                 }))
             }
+            // A non-lazy send probes messages.send_time_receipts_v1 before
+            // recording its intent (75b9cc05); the daemon supports it.
+            Command::Capabilities => Ok(CommandResult::Capabilities(CapabilityList {
+                capabilities: vec![crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.into()],
+            })),
             _ => Err(ApiError::unknown_outcome(
                 "private communication response lost",
             )),

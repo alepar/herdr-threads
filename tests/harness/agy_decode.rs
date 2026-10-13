@@ -526,7 +526,7 @@ fn hook_command_round_trips_through_the_registered_hook_parser() {
         assert_eq!(
             command,
             format!(
-                "'/opt/ht/herdr-threads' '--state-dir' '/var/st' '--host-endpoint' '/var/host.sock' 'hook' 'agy' '--event' '{}'",
+                "'/opt/ht/herdr-threads' '--state-dir' '/var/st' '--host-endpoint' '/var/host.sock' 'hook-event' 'agy' '{}'",
                 event.as_str()
             )
         );

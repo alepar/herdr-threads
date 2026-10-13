@@ -471,11 +471,15 @@ fn one_candidate_due_budget_retains_unvisited_admitted_phase() {
     let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
     let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
-        [],
-    )
-    .unwrap();
+    // One due invitation makes the invitation turn nonempty: since f93279dd
+    // only an empty probe lends its quantum to the peer phase, so an empty
+    // store would let both phases finish in one call.
+    db.execute_batch("\
+        INSERT INTO host_instances(id,created_at) VALUES ('i',0);\
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv','t','s',1,'pending',0,1,50,50);\
+    ").unwrap();
     drop(db);
     let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let first = StorePort::due_obligations(
@@ -489,7 +493,16 @@ fn one_candidate_due_budget_retains_unvisited_admitted_phase() {
         &budget(),
     )
     .unwrap();
-    assert!(matches!(first.invitations, DuePhaseProgress::Complete));
+    assert_eq!(first.examined_candidates, 1);
+    // The visited phase made progress (never Skipped or Failed); the unvisited one is retained.
+    assert!(
+        matches!(
+            first.invitations,
+            DuePhaseProgress::Complete | DuePhaseProgress::More
+        ),
+        "{:?}",
+        first.invitations
+    );
     assert!(matches!(first.receipts, DuePhaseProgress::Skipped));
     assert!(first.has_more);
     let second = StorePort::due_obligations(

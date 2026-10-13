@@ -2853,6 +2853,18 @@ fn unavailable_recovery_records_one_bounded_close_job_for_many_threads() {
     let before: i64 = db
         .query_row("SELECT total_changes()", [], |r| r.get(0))
         .unwrap();
+    // Migration 46's presentation_fence_* triggers bump the one-row
+    // presentation_warning_fence after each fenced write (seats, work_jobs,
+    // warning_close_sweeps); total_changes() counts those trigger updates.
+    let fence = |db: &rusqlite::Connection| -> i64 {
+        db.query_row(
+            "SELECT version FROM presentation_warning_fence WHERE singleton=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let fence_before = fence(&db);
     context
         .execute_decision(
             &mut db,
@@ -2871,10 +2883,14 @@ fn unavailable_recovery_records_one_bounded_close_job_for_many_threads() {
     let after: i64 = db
         .query_row("SELECT total_changes()", [], |r| r.get(0))
         .unwrap();
+    let fence_bumps = fence(&db) - fence_before;
+    let rows = after - before - fence_bumps;
+    assert!(rows <= 5, "foreground touched {rows} rows");
+    // At most one fence bump per fenced foreground write: still independent
+    // of the number of open conditions.
     assert!(
-        after - before <= 5,
-        "foreground touched {} rows",
-        after - before
+        (1..=rows).contains(&fence_bumps),
+        "foreground bumped the presentation fence {fence_bumps} times for {rows} rows"
     );
     assert_eq!(
         db.query_row(

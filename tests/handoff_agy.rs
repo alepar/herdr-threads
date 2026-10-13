@@ -1,6 +1,6 @@
 //! `handoff --kind agy` through the built binary and the owned fake host of `handoff_topology_cli`:
 //! the plugin installed by `setup agy` lets the V2 plan compose and start, and without it the
-//! handoff is refused with the setup hint before any host effect.
+//! handoff still starts (readiness is advisory) and carries the setup hint.
 use super::handoff_topology_cli::{BODY, Fixture, successful};
 
 fn agy_args<'a>(_f: &'a Fixture, binary: &'a str) -> Vec<&'a str> {
@@ -65,18 +65,29 @@ fn handoff_kind_agy_composes_through_bootstrap_v2_and_starts() {
     );
 }
 
+/// Plugin readiness is advisory for launch (TRUST-POLICY "Integration readiness is
+/// advisory for launch"; agy since 4c4988d9): without the plugin the handoff still
+/// starts the selected native agy once, and says how to install the integration.
 #[test]
-fn handoff_kind_agy_without_the_plugin_is_refused_with_the_setup_hint() {
+fn handoff_kind_agy_without_the_plugin_starts_with_the_setup_hint() {
     let f = Fixture::new();
     let binary = f.iso.path("agy");
     let binary = binary.to_str().unwrap();
     let out = f.run(&agy_args(&f, binary), "");
-    assert!(!out.status.success(), "handoff must refuse without setup");
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+    let out = successful(out);
+    assert_eq!(out["handoff"]["outcome"], "started");
     assert!(text.contains("herdr-threads setup agy"), "{text}");
-    assert_eq!(f.effect_counts(), (0, 0, 0, 0), "no host or store effect");
+    let starts = f.host.requests("agent.start");
+    assert_eq!(starts.len(), 1);
+    assert_eq!(starts[0]["params"]["kind"], "agy");
+    assert_eq!(
+        f.effect_counts(),
+        (0, 1, 1, 1),
+        "one start, one invitation, one message"
+    );
 }
