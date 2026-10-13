@@ -74,8 +74,10 @@ LEASE_S = int(os.environ.get("HT_LINUX_E2E_LEASE_S", "60"))
 # container (kill -1, only when PID 1 is docker-init/tini, i.e. inside the container), deletes everything that may
 # hold a credential (staged copies, the driver's scratch Codex home and Claude config dirs, harness homes), checks
 # that none of it remains, and exits: 0 (stopped by the host) or 3 (lease lapsed / max life) only after a verified
-# scrub, 4 when something survived. Exiting stops the container. The host keeps a container (evidence recovery)
-# only on 0 or 3. HT_LE2E_TMP exists for scripts/tests/test_linux_e2e_run.py.
+# scrub, 4 when something survived or the sweep could not run (another init than docker-init/tini, e.g. podman's
+# catatonit: without the sweep a writer admitted before the stop marker could write after the re-check). Exiting
+# stops the container. The host keeps a container (evidence recovery) only on 0 or 3. HT_LE2E_TMP,
+# HT_LE2E_INIT_COMM and HT_LE2E_KILL exist for scripts/tests/test_linux_e2e_run.py (never set by the runner).
 WATCHDOG = r'''
 lease=$HOME/run/lease; tmp=${HT_LE2E_TMP:-/tmp}; ev=$HOME/evidence
 mkdir -p "$HOME/run" "$ev"; touch "$lease"; start=$(date +%s)
@@ -87,9 +89,11 @@ secrets() {
   find "$tmp" -path "$tmp/ht-wake-e2e.*" \( -name auth.json -o -name .credentials.json -o -name .claude.json \) \
     2>/dev/null || true
 }
+swept=0
 stop_all() {
-  case "$(cat /proc/1/comm 2>/dev/null)" in
-    docker-init|tini) kill -TERM -1 2>/dev/null; sleep 1; kill -KILL -1 2>/dev/null ;;
+  case "$(cat "${HT_LE2E_INIT_COMM:-/proc/1/comm}" 2>/dev/null)" in
+    docker-init|tini) "${HT_LE2E_KILL:-kill}" -TERM -1 2>/dev/null; sleep 1
+                      "${HT_LE2E_KILL:-kill}" -KILL -1 2>/dev/null; swept=1 ;;
   esac
 }
 finish() {
@@ -98,6 +102,10 @@ finish() {
   stop_all
   secrets | while IFS= read -r p; do rm -rf "$p" 2>/dev/null; done
   left=$(secrets | sort -u | tr '\n' ' ')
+  if [ "$swept" != 1 ]; then
+    echo "watchdog: $1; scrub UNVERIFIED: PID 1 is not docker-init/tini, so no process sweep ran and a writer" \
+         "admitted before the stop could still write${left:+ (still present: $left)}" | tee "$ev/watchdog.txt"; exit 4
+  fi
   if [ -n "$left" ]; then
     echo "watchdog: $1; scrub INCOMPLETE, still present: $left" | tee "$ev/watchdog.txt"; exit 4
   fi
@@ -122,9 +130,11 @@ EXIT_STAGING_REFUSED = 75
 def stage_script(dest, home=HOME):
     """The shell command that writes stdin to dest inside the container (mode 0600 under a 0700 dir), gated against
     the watchdog: it refuses when the watchdog has begun stopping ($HOME/run/finished, written before the process
-    sweep and scrub), and re-checks after writing, removing its own write if the stop began meanwhile. So a write
-    either precedes the marker, hence the sweep and the scrub (and is scrubbed), or is removed by its writer; in a
-    container the sweep (kill -1) also ends a writer admitted before the marker. Exit 75 means refused."""
+    sweep and scrub), and re-checks after writing, removing its own write if the stop began meanwhile. A write
+    before the marker is scrubbed; a writer admitted before the marker is ended by the sweep (kill -1), and only
+    with the sweep is a late write guaranteed gone (its writer could otherwise die between writing and the
+    re-check): without the sweep the watchdog reports the scrub unverified (exit 4) and the host removes the
+    container. Exit 75 means refused."""
     parent = dest.rsplit("/", 1)[0]
     finished = f"{home}/run/finished"
     refuse = f"echo 'linux-e2e: the container is stopping; staging refused' >&2; exit {EXIT_STAGING_REFUSED}"

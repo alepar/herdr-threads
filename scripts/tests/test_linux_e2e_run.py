@@ -871,6 +871,17 @@ def load_watchdog():
     return load_runner().WATCHDOG
 
 
+def sweep_env(tmp, comm="docker-init"):
+    """A fake PID 1 name and a fake kill for the watchdog's sweep (the real kill -1 must never run on a host)."""
+    comm_file = Path(tmp) / "comm"
+    comm_file.write_text(comm + "\n")
+    kill = Path(tmp) / "fake-kill"
+    log = Path(tmp) / "kill.log"
+    kill.write_text(f"#!/bin/sh\necho \"$@\" >> '{log}'\n")
+    kill.chmod(0o755)
+    return {"HT_LE2E_INIT_COMM": str(comm_file), "HT_LE2E_KILL": str(kill)}, log
+
+
 class Watchdog(unittest.TestCase):
     """The container watchdog under bash on the host: HOME and the driver's temp root redirected (HT_LE2E_TMP).
     Its process sweep (kill -1) only runs when PID 1 is docker-init/tini, never here."""
@@ -884,6 +895,8 @@ class Watchdog(unittest.TestCase):
         self.root.mkdir()
         self.env = dict(os.environ, HOME=str(self.home), HT_LE2E_TMP=str(self.root), HT_LE2E_LEASE_S="100000",
                         HT_LE2E_MAX_LIFE_S="100000")
+        sweep, self.kill_log = sweep_env(self.tmp)
+        self.env.update(sweep)
 
     def unlock_and_remove(self):
         for d in self.tmp.rglob("*"):
@@ -921,6 +934,22 @@ class Watchdog(unittest.TestCase):
             self.assertFalse(f.exists(), f)
         self.assertFalse((run / "claude-config").exists())
         self.assertIn("verified", (self.home / "evidence" / "watchdog.txt").read_text())
+
+    def test_the_sweep_ran_through_the_fake_kill(self):
+        rc, out = self.stop()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.kill_log.read_text().split("\n")[:2], ["-TERM -1", "-KILL -1"])
+
+    def test_without_the_sweep_the_scrub_is_unverified(self):
+        """Another init (podman's catatonit): no sweep, so even an empty scrub is not trusted -> exit 4."""
+        _, files = self.plant()
+        self.env.update(sweep_env(self.tmp, comm="catatonit")[0])
+        rc, out = self.stop()
+        self.assertEqual(rc, 4, out)
+        self.assertIn("scrub UNVERIFIED", (self.home / "evidence" / "watchdog.txt").read_text())
+        self.assertFalse(self.kill_log.exists())
+        for f in files:
+            self.assertFalse(f.exists(), f)  # it still deletes what it can
 
     def test_a_surviving_secret_exits_4(self):
         run, _ = self.plant()
@@ -1001,6 +1030,7 @@ class StagingGate(unittest.TestCase):
         (self.tmp / "t").mkdir()
         self.env = dict(os.environ, HOME=str(self.home), HT_LE2E_TMP=str(self.tmp / "t"),
                         HT_LE2E_LEASE_S="100000", HT_LE2E_MAX_LIFE_S="100000")
+        self.env.update(sweep_env(self.tmp)[0])
         self.mod = load_runner()
         self.dest = f"{self.home}/.ht-creds/codex/auth.json"
 

@@ -49,7 +49,8 @@ point, after `--timeout` + 30 min for `wake-e2e` (2 h for the others), or on `do
 other process in the container, deletes everything that may hold a credential (`~/.ht-creds`, the driver's scratch
 `codex-home` and `claude-config` dirs under `/tmp/ht-wake-e2e.*`, any `auth.json`, `.credentials.json` or
 `.claude.json` there, and the harness homes' credential files), checks that none of it remains, and exits: 0 or 3
-after a verified scrub, 4 if anything survived. Exiting stops the container. Before the sweep it writes `~/run/finished`: every staging
+after a verified scrub, 4 if anything survived or the sweep could not run (PID 1 other than docker-init/tini, e.g.
+podman's catatonit). Exiting stops the container. Before the sweep it writes `~/run/finished`: every staging
 step checks that marker before and after writing, so staging attempted once the watchdog is stopping is refused
 (and removes its own write), while staging admitted earlier lands before the scrub and is scrubbed. A killed runner
 still leaves a stopped container (and, if it held one, its env-file dir `$TMPDIR/ht-linux-e2e-cred.<pid>.*`): the
