@@ -1,0 +1,142 @@
+name: Full suite gate
+
+# The AGENTS.md speed budget: the exact full-suite command,
+# `cargo nextest run --locked --all-targets --all-features`, unsharded and with
+# the default nextest profile, under 300 s wall clock. Push CI (ci.yml) runs
+# the same tests as two slice shards with their own 300 s guards; that proves
+# correctness, not this budget. Manual dispatch only, on the exact SHA a
+# release qualifies. Setup and prewarm are ci.yml's tests job; the timer covers
+# only the run. No retry, no native or authenticated harness runs.
+# Capacity: the default profile runs one test per CPU. A standard ubuntu-24.04
+# runner has 4 vCPUs, and .config/nextest.toml records ~1800 test-seconds
+# (>= 450 s at 4 slots even with perfect packing), so on that runner this gate
+# is expected to fail: a red run there measures the runner, and a pass needs a
+# larger runner. The summary records the CPU count beside the wall time.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.94.0
+  HERDR_VERSION: 0.9.1
+  HERDR_LINUX_SHA256: 2a02fed16beb651ef006e1d43f048f652ca4dc58ad053cd2d44450563d5c54b7
+
+jobs:
+  full-suite:
+    name: Full suite, unsharded, under 300 s (Linux x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      HT_LEAK_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-full-suite
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Python for TOML and fixture tests
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.11.9'
+
+      - name: zsh for shell round-trip tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zsh
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          cargo --version
+          rustc --version
+
+      - name: cargo-nextest (pinned)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -LsSf https://get.nexte.st/0.9.146/linux -o nextest.tar.gz
+          echo "682c21b777c333e96fd532e114d3a5a894e0729ab88d94c0a9f20f8419695428  nextest.tar.gz" | sha256sum -c -
+          tar zxf nextest.tar.gz -C "$HOME/.cargo/bin"
+          rm nextest.tar.gz
+          cargo nextest --version
+
+      - name: Provision pinned Herdr 0.9.1
+        id: herdr
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          tool_dir=$(mktemp -d "$RUNNER_TEMP/herdr-$HERDR_VERSION.XXXXXX")
+          curl -fsSL --retry 3 --max-time 120 \
+            "https://github.com/herdrdev/herdr/releases/download/v$HERDR_VERSION/herdr-linux-x86_64" \
+            -o "$tool_dir/herdr"
+          printf '%s  %s\n' "$HERDR_LINUX_SHA256" "$tool_dir/herdr" | sha256sum --check
+          file "$tool_dir/herdr" | grep -F 'ELF 64-bit LSB pie executable, x86-64'
+          chmod 755 "$tool_dir/herdr"
+          test "$("$tool_dir/herdr" --version)" = "herdr $HERDR_VERSION"
+          printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
+
+      - name: Prewarm (untimed)
+        # The measured command's own build, then the two release proof fixtures
+        # tests/service/check_failpoints_absent.sh compares, as ci.yml does.
+        run: |
+          cargo nextest run --locked --all-targets --all-features --no-run
+          cargo build --locked --release
+          cargo build --locked --release --features test-support
+
+      - name: Isolated Herdr tests are provisioned, not skipped
+        id: herdr_check
+        # With HT_SKIP_HERDR_TESTS unset a missing herdr fails those tests.
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${HT_SKIP_HERDR_TESTS:-}"
+          command -v herdr
+
+      - name: Full suite (timed, budget under 300 s)
+        id: timed
+        shell: bash
+        env:
+          # Plain lines, so the job summary can read the log.
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          echo "runner: $(nproc) CPUs"
+          start=$(date +%s)
+          rc=0
+          cargo nextest run --locked --all-targets --all-features 2>&1 | tee full-suite.log || rc=$?
+          elapsed=$(( $(date +%s) - start ))
+          echo "Full suite wall time: ${elapsed}s (budget: under 300s), exit ${rc}"
+          echo "FULL_SUITE_WALL_SECONDS=$elapsed" >> "$GITHUB_ENV"
+          if [ "$elapsed" -ge 300 ]; then
+            echo "::error::The full suite exceeded the five-minute budget (${elapsed}s on $(nproc) CPUs)"
+            exit 1
+          fi
+          exit "$rc"
+
+      - name: Report (job summary)
+        if: always()
+        shell: bash
+        env:
+          # Each step's actual outcome; empty when the job never reached it.
+          HERDR_OUTCOME: ${{ steps.herdr.outcome }}
+          HERDR_CHECK_OUTCOME: ${{ steps.herdr_check.outcome }}
+          TIMED_OUTCOME: ${{ steps.timed.outcome }}
+        run: |
+          set -euo pipefail
+          if [ -n "${FULL_SUITE_WALL_SECONDS:-}" ]; then wall="${FULL_SUITE_WALL_SECONDS}s"; else wall="not measured"; fi
+          {
+            echo "### Full suite gate"
+            echo "Commit: $GITHUB_SHA; runner CPUs: $(nproc); wall: $wall (budget under 300s); timed run: ${TIMED_OUTCOME:-not run}"
+            echo "Herdr $HERDR_VERSION (configured): provisioning ${HERDR_OUTCOME:-not run}; provisioned-not-skipped check ${HERDR_CHECK_OUTCOME:-not run}; HT_SKIP_HERDR_TESTS: ${HT_SKIP_HERDR_TESTS:-unset}."
+            echo '```'
+            grep -E '^ +Summary|^ +(FAIL|SIGKILL|TIMEOUT|LEAK)' full-suite.log 2>/dev/null | sort -u || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: No leaked test processes
+        if: always()
+        shell: bash
+        run: scripts/check-no-leaked-processes --run-id "$HT_LEAK_RUN_ID" --grace 15

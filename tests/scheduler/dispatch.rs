@@ -3574,6 +3574,37 @@ impl FakeHerdr {
     }
 }
 
+/// Real UTC and real monotonic time until `freeze`, then monotonic time held at that
+/// instant (on the real clock's own origin). The store reads it, and so does the
+/// scheduler's pre-send refusal backoff (pacer D5: 100 ms +-20 % first step): frozen
+/// just before the wake passes, "spacing admits one attempt" cannot depend on how fast
+/// the passes run on a loaded machine. Host calls keep the real clock; a lease reserved
+/// after the freeze is measured from the freeze instant (5 s, far above the passes).
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+struct FreezableMonotonic {
+    real: Arc<dyn Clock>,
+    frozen: AtomicU64,
+}
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl FreezableMonotonic {
+    fn freeze(&self) {
+        self.frozen
+            .store(self.real.monotonic_now().0.max(1), Ordering::SeqCst);
+    }
+}
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl Clock for FreezableMonotonic {
+    fn utc_now(&self) -> UtcMillis {
+        self.real.utc_now()
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        match self.frozen.load(Ordering::SeqCst) {
+            0 => self.real.monotonic_now(),
+            at => MonoInstant(at),
+        }
+    }
+}
+
 /// Scheduler -> SQLite store -> NativeWakeDispatcher -> production NativeCli
 /// -> Herdr API, under the cooperative native policy. A registered
 /// cooperative seat (self-reported execution, older host epoch, same
@@ -3611,7 +3642,11 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
         herdr.methods.lock().unwrap().clear();
         let path =
             std::env::temp_dir().join(format!("herdr-coop-wake-{}.db", uuid::Uuid::new_v4()));
-        let context = StoreContext::new(path.clone(), clock.clone());
+        let store_clock = Arc::new(FreezableMonotonic {
+            real: clock.clone(),
+            frozen: AtomicU64::new(0),
+        });
+        let context = StoreContext::new(path.clone(), store_clock.clone());
         let db = context.open_writer().unwrap();
         db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,?1,1,10)", [observed.host_boot.as_str()]).unwrap();
         db.execute_batch("\
@@ -3628,7 +3663,7 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
         drop(db);
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(path.clone(), clock.clone()),
+                StoreContext::new(path.clone(), store_clock.clone()),
                 "i",
                 StoreSettings {
                     daemon_boot: Some(daemon_boot()),
@@ -3663,6 +3698,7 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
             .unwrap();
         assert_eq!(warnings, 1, "{status}: one durable warning ({deadlines:?})");
         let mut attempted = 0;
+        store_clock.freeze();
         for _ in 0..3 {
             attempted += scheduler.drive_wakes(&budget()).unwrap().attempted;
         }
