@@ -2,7 +2,7 @@
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
 resumeChange: 2026-10-13 · "design APPROVED (A-E) ... Move to autonomous stage now (both roasts on). Nudge dev-herdr-threads when merge-ready." (relayed by seePN0MKW, mpqluOeQD) · autonomous=f→t after the interactive root design; nested brainstorms and later gates run Mode B
-phase: roast-design
+phase: code
 codeMechanism: Workflow
 
 idea: Feature: message PRIORITY replaces lazy/nudge delivery modes in herdr-threads. Interactive design stage first (user reachable only via seat seePN0MKW in 1:1 thread tXPkAdb0O with --nudge; batch questions), then autonomous after design approval; both roasts ON (design + code). When integration branch is merge-ready, nudge dev-herdr-threads (taQXwBH7X). Details: priority = non-negative integer chosen by sender; 0 highest, always nudges. Recipient nudge threshold T: priority <= T nudges; negative T means everything nudges. Lazy mode removed. Default T=0, default send priority=1. Inbox listing and hook/mod injection sort by priority ascending then timestamp oldest first. Needs design: CLI flags and migration of --lazy/--nudge/--require-ack (ACK requests implied nudge today), per-seat vs per-thread threshold, existing recipient wake-on mode, wire/storage compat, docs/skill text, mod/hook surfaces.
@@ -13,6 +13,15 @@ branch: super-auto/message-priority-delivery
 base: main
 
 roastDesignRound: 2
+
+graph-pass: depth 8→7 · width 2.4→2.7 · applied 2 · parked 5
+
+parked:
+- graph-pass · graph-change · "ht-yha.8 <- ht-yha.4 drop (same-file hydrate.rs, safe no)"
+- graph-pass · graph-change · "ht-yha.6 <- ht-yha.5.2 drop (same-file read_cursors.rs, safe no)"
+- graph-pass · graph-change · "ht-yha.4 <- ht-yha.3 drop (same-file staging.rs + real-send test, safe no; depth 7→6 with a staging.rs seam contract)"
+- graph-pass · graph-change · "proposal: staging.rs seam contract for ht-yha.3/4/5.2"
+- graph-pass · graph-change · "proposal: frame golden fixture seam for ht-yha.8/9"
 
 approvals:
 - launch-mode · interactive design (questions relayed via seat seePN0MKW, thread tXPkAdb0O, --nudge), switch to autonomous after the user approves the design (requester instruction, 2026-10-13)

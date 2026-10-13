@@ -30,3 +30,15 @@ L27 · r2 · GAP · legacy in-flight invitation behaviour · applied — ht-yha.
 L28 · r2 · UNOWNED-SEAM · hydrate.rs 4/8 · applied — edge ht-yha.8<-ht-yha.4
 L29 · r2 · UNOWNED-SEAM · AGENTS wake-e2e text 10/11 · applied — edges ht-yha.10<-ht-yha.11, ht-yha.9
 L30 · r2 · NEEDS-SPEC × 4 · not re-run — answered by the spec §Compatibility amendment in this round
+G1 · graph · GRAPH-EDGE · ht-yha.11 <- ht-yha.6 · applied — e2e self-test runs on fakes; no shared file
+G2 · graph · GRAPH-EDGE · ht-yha.11 <- ht-yha.9 · applied — same
+G3 · graph · GRAPH-EDGE · ht-yha.5.2 <- ht-yha.4 · kept — decision_seq copy in note_published
+G4 · graph · GRAPH-EDGE · ht-yha.10 <- ht-yha.11 · kept — wake-e2e case names cited by AGENTS.md
+G5 · graph · GRAPH-EDGE · ht-yha.9 <- ht-yha.8 · kept — frame golden fixtures
+G6 · graph · GRAPH-EDGE · ht-yha.8 <- ht-yha.4 · parked — same-file (hydrate.rs) serialization, safe no
+G7 · graph · GRAPH-EDGE · ht-yha.6 <- ht-yha.5.2 · parked — same-file (read_cursors.rs), safe no
+G8 · graph · GRAPH-EDGE · ht-yha.4 <- ht-yha.3 · parked — same-file (staging.rs) + real-send test, safe no
+G9 · graph · GRAPH-EDGE · ht-yha.3 <- ht-yha.1 · kept — DeliveryPriority, SendMessage.priority
+G10 · graph · GRAPH-EDGE · ht-yha.3 <- ht-yha.2 · kept — migration 0047 columns
+G11 · graph · PROPOSAL · ht-yha.3/4/5.2 staging.rs seam contract · parked — would allow dropping 4<-3 (depth 7→6)
+G12 · graph · PROPOSAL · ht-yha.8/9 frame golden fixture seam · parked — would allow dropping 9<-8, 8<-4
