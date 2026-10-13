@@ -786,3 +786,78 @@ fn setup_and_status_flag_a_hook_file_with_doubled_owned_groups() {
     );
     assert_eq!(fs::read(&hooks).unwrap(), bytes);
 }
+
+// Kills the installer writing a shell startup file (even with --confirm-missing), or dropping
+// the pane environment advice from its output.
+#[test]
+fn installer_never_writes_the_pane_environment_and_only_advises() {
+    let f = Fixture::new();
+    let home = f.0.join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join(".bashrc"), "alias ll='ls -l'\n").unwrap();
+    let run = |args: &[&str]| {
+        let mut command =
+            herdr_threads::test_support::spawn::command(env!("CARGO_BIN_EXE_herdr-threads"));
+        herdr_threads::test_support::isolation::scrub_env(&mut command);
+        command
+            .current_dir(&f.0)
+            .env("HOME", &home)
+            .env("SHELL", "/bin/zsh")
+            .env("XDG_CONFIG_HOME", f.0.join("xdg"))
+            .env("CODEX_HOME", f.0.join("codex"))
+            .env("CLAUDE_CONFIG_DIR", f.0.join("claude"))
+            .env("PATH", f.0.join("bin"))
+            .args(herdr_threads::test_support::isolation::routed_argv(
+                &[
+                    std::ffi::OsString::from("--state-dir"),
+                    f.0.join("state").into_os_string(),
+                    std::ffi::OsString::from("--host-endpoint"),
+                    f.0.join("herdr.sock").into_os_string(),
+                ],
+                args,
+            ))
+            .output()
+            .unwrap()
+    };
+    let out = run(&["internal", "installer-integrations", "--confirm-missing"]);
+    success(&out);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("codex hooks: installed"), "{text}");
+    // The hand-add lines come first, so the 600-character cap never cuts them.
+    for line in [
+        "  pane environment: Add to your shell startup file: zsh/bash `if [ \"${HERDR_ENV-}\" = 1 ]; then export CODEX_EXEC_SERVER_URL=; fi`;",
+        "fish `if test \"$HERDR_ENV\" = 1; set -gx CODEX_EXEC_SERVER_URL \"\"; end`.",
+    ] {
+        assert!(text.contains(line), "{line}: {text}");
+    }
+    assert!(text.contains("--with-pane-env"), "{text}");
+    assert_eq!(
+        fs::read_to_string(home.join(".bashrc")).unwrap(),
+        "alias ll='ls -l'\n"
+    );
+    assert!(!home.join(".zshenv").exists());
+    let names: Vec<String> = fs::read_dir(&home)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, [".bashrc"], "no pre-image or new startup file");
+    let json = run(&["--json", "internal", "installer-integrations"]);
+    success(&json);
+    let report: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let hooks = report["integrations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["harness"] == "codex" && entry["component"] == "hooks")
+        .unwrap();
+    assert!(
+        hooks["pane_env_advice"]
+            .as_str()
+            .is_some_and(|advice| advice.contains("CODEX_EXEC_SERVER_URL=")),
+        "{report}"
+    );
+    assert_eq!(
+        fs::read_to_string(home.join(".bashrc")).unwrap(),
+        "alias ll='ls -l'\n"
+    );
+}

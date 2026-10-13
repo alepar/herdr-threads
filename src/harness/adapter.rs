@@ -404,9 +404,13 @@ pub struct ForegroundAdvice {
     /// Relative to the adapter's config root.
     pub settings_file: &'static str,
     pub advice: &'static str,
-    /// For example `("persistent_opt_out", "unavailable (Codex 0.160.1)")`.
+    /// For example `("persistent_opt_out", "...")`.
     pub fixed_fields: &'static [(&'static str, &'static str)],
     pub inspect: fn(&[u8], &mut serde_json::Value) -> Result<(), String>,
+    /// Optional read-only inspection of a persistent foreground choice outside the settings
+    /// file (for example an owned shell-startup block), run after the settings read. It may set
+    /// `status` to `configured`; it never proves execution and grants no authority.
+    pub inspect_environment: Option<fn(&SetupEnvironment, &mut serde_json::Value)>,
 }
 
 /// How `--version` output of one harness is normalized to `X.Y.Z`.

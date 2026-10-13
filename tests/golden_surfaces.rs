@@ -351,6 +351,9 @@ impl Scratch {
                 herdr_threads::harness::claude_mod::TEST_MANAGED_SETTINGS_ENV,
                 self.root.join("no-managed-settings.json"),
             )
+            // The Codex pane environment's startup files follow $SHELL: pin it.
+            .env("SHELL", "/bin/zsh")
+            .env_remove("ZDOTDIR")
             .env_remove("XDG_STATE_HOME")
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("HERDR_SESSION")

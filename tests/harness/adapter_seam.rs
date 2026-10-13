@@ -544,6 +544,10 @@ fn adapter_seam_foreground_advice_reproduces_the_core_report() {
             report["status"] = json!("unknown");
             report["inspection_error"] = json!(error);
         }
+        // Then the adapter's optional persistent-environment reading (home None: no files).
+        if let Some(inspect) = advice.inspect_environment {
+            inspect(&Default::default(), &mut report);
+        }
         report
     };
     let cases: [(&str, Harness, &str, &[&str]); 2] = [

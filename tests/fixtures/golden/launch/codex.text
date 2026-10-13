@@ -10,6 +10,7 @@ codex.command_execution: approved_outside_sandbox
 codex.command_guidance: Run herdr-threads commands outside the sandbox through Codex approval; if denied, report the policy refusal without bypassing it
 codex.config_path: <root>/codex-home/config.toml
 codex.config_present: false
+codex.pane_env_installed: false
 codex.profile: default
 codex.profile_source: none
 config_dir.path: <root>/codex-home

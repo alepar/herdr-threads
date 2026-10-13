@@ -5,6 +5,9 @@ harness: codex
 hooks_file: <root>/codex home/hooks.json
 manifest: <root>/state/setup/codex-user-<hash32>.json
 note: no herdr-threads installation is recorded for this CODEX_HOME and this state directory; nothing changed
+pane_env.action: not_installed
+pane_env.files: []
+pane_env.variable: CODEX_EXEC_SERVER_URL
 permissions.rules_file: <root>/codex home/rules/herdr-threads.rules
 permissions.state: not_installed
 scope: user

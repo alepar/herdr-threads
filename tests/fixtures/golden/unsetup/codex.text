@@ -8,6 +8,9 @@ hooks_file: <root>/codex home/hooks.json
 hooks_removed: true
 manifest: <root>/state/setup/codex-user-<hash32>.json
 note: Codex's own [hooks.state] trust entries for the removed hooks are Codex state and are left in config.toml
+pane_env.action: not_installed
+pane_env.files: []
+pane_env.variable: CODEX_EXEC_SERVER_URL
 permissions.rules_file: <root>/codex home/rules/herdr-threads.rules
 permissions.state: not_installed
 scope: user

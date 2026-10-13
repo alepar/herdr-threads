@@ -18,10 +18,12 @@ Every changed configuration file is first backed up beside it as
 
 "#;
 const SETUP_SCOPE_HEAD: &str = r#"Scope (user level, like Herdr's own agent hooks):"#;
-const SETUP_FOREGROUND_HEAD: &str = r#"Foreground agents (user-managed, read-only inspection): setup and setup-status report user
-settings and manual advice for every harness."#;
-const SETUP_FOREGROUND_TAIL: &str = r#"Setup never sets these choices;
-configured settings/arguments do not prove foreground execution and overrides may change them."#;
+const SETUP_FOREGROUND_HEAD: &str = r#"Foreground agents (inspection; a change only with the explicit consent noted): setup and
+setup-status report user settings and manual advice for every
+harness."#;
+const SETUP_FOREGROUND_TAIL: &str = r#"Otherwise setup never sets these choices;
+configured settings, environment and arguments do not prove foreground execution and overrides
+may change them."#;
 const SETUP_TAIL: &str = r#"Herdr instance: --state-dir and --host-endpoint, else HERDR_PLUGIN_STATE_DIR and
 HERDR_SOCKET_PATH (set inside Herdr), else Herdr's defaults when they exist
 ($XDG_STATE_HOME or ~/.local/state, then herdr/plugins/herdr-threads; $XDG_CONFIG_HOME or

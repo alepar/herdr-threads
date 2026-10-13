@@ -859,6 +859,9 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
         }
     }
     warnings.extend(codex_foreign_proxy_warnings(env));
+    // Like the rules file, the shell startup files never keep the hooks out.
+    let (pane_env, pane_env_warnings) = super::pane_env::install_report(env, request.pane_env);
+    warnings.extend(pane_env_warnings);
     let unmeasured = codex_unmeasured_allowance_warning(env, None);
     let command = shared_command(&installed.owned);
     let inspection = codex_config::inspect(&paths.config, &paths.config_manifest).ok();
@@ -890,6 +893,7 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
         ),
         "trust": codex_trust_json(&paths, command.as_deref()),
         "permissions": permission_report,
+        "pane_env": pane_env,
         "harness_version": observation_json::<codex::CodexContract>(&Ok((observed, None))),
         "codex_config": codex_config_json(env, &layers),
         "observed": "unknown",
@@ -929,6 +933,8 @@ pub(crate) fn codex_remove(env: &SetupEnv) -> Result<Value, RunError> {
             "error": permission_error(error, permissions.rules_file()).to_string(),
         }),
     };
+    // Independent of the hooks too: removed even when no hook installation is recorded.
+    report["pane_env"] = super::pane_env::remove_report(env);
     let mut recorded = read_settings_manifest(&paths.hooks_manifest).map_err(map)?;
     if recorded.is_none() {
         recorded = adopt_for_removal(kind, env, &paths.hooks, &paths.hooks_manifest)?;
@@ -1050,6 +1056,7 @@ fn codex_status(
             Err(_) => json!({"state": "unreadable"}),
         };
     }
+    report["pane_env"] = super::pane_env::status_report(env);
     if let Ok(owned_command) = codex_owned_command(env) {
         let layers = observe_codex_config(env, &owned_command);
         report["duplicate_hook"] = json!(

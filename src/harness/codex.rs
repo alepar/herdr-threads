@@ -11,6 +11,7 @@
 //! a Bash `PreToolUse` group whose output is `additionalContext` and never a
 //! permission decision or `updatedInput`.
 pub mod doctor;
+pub mod pane_env;
 pub mod permission_rules;
 pub mod permissions;
 pub mod setup;
@@ -1251,11 +1252,25 @@ static TEXT: AdapterText = AdapterText {
           Historical owned allowances remain inspectable; unsetup removes only unchanged
           owned values and refuses edited ownership records. Codex runs user hooks only once
           you trust them: the next interactive `codex` start lists them for review (or use
-          /hooks); Codex records their hashes in config.toml [hooks.state]. setup never writes trust.",
-    setup_foreground: "The inspected Codex has
-no persistent config/environment daemon opt-out; features.daemon_auto_start=false still attaches
-to an existing daemon. Use native --no-daemon, or HERDR_THREADS_CODEX_OPTS='--no-daemon'
-when the selected binary/wrapper supports and forwards it.",
+          /hooks); Codex records their hashes in config.toml [hooks.state]. setup never writes trust.
+          With consent, the pane environment: a guarded block exporting CODEX_EXEC_SERVER_URL=
+          (empty) inside Herdr panes, so Codex never attaches to its shared app-server daemon
+          (which runs tools and hooks with another pane's environment). It goes in
+          ${ZDOTDIR:-~}/.zshenv (zsh), ~/.bashrc plus the login file Herdr's login bash reads
+          (~/.bash_profile, ~/.bash_login or ~/.profile; a created ~/.bash_profile shadows a
+          ~/.profile added later) and
+          ${XDG_CONFIG_HOME:-~/.config}/fish/conf.d/herdr-threads.fish (fish): $SHELL's files plus
+          those of each shell already set up; symlinks are skipped with the line to add by hand.
+          --with-pane-env writes it, --without-pane-env removes it and keeps the hooks; otherwise
+          setup refreshes a block it owns, asks `[y/N]` on a terminal (a yes never replaces a
+          block you edited), and only advises without one. Unsetup removes the block while it is
+          unchanged. New panes pick it up.",
+    setup_foreground: "Codex:
+features.daemon_auto_start=false still attaches to an existing daemon. Codex skips its shared
+daemon while CODEX_EXEC_SERVER_URL is set (empty keeps local execution), so the persistent
+opt-out is the pane environment above, written only with consent; alternatively native
+--no-daemon, or HERDR_THREADS_CODEX_OPTS='--no-daemon' when the selected binary/wrapper
+supports and forwards it.",
     launch_notes: "Codex launches report
 `codex`: the effective CODEX_HOME, its config.toml and the selected profile (-p/--profile,
 else `profile` in config.toml, else default). Codex CLI commands use approved
@@ -1270,9 +1285,13 @@ override are refused.",
 
 static FOREGROUND: ForegroundAdvice = ForegroundAdvice {
     settings_file: "config.toml",
-    advice: "Codex 0.160.1 has no persistent user config/environment opt-out for daemon attachment. features.daemon_auto_start = false prevents automatic startup only: Codex still attaches to an existing daemon. Use native codex --no-daemon, or set HERDR_THREADS_CODEX_OPTS='--no-daemon' for herdr-threads launch when the selected binary/wrapper supports and forwards that argument. These configured arguments do not prove that a wrapper runs in the foreground; verify its behavior.",
-    fixed_fields: &[("persistent_opt_out", "unavailable (Codex 0.160.1)")],
+    advice: "Codex attaches to a shared app-server daemon unless CODEX_EXEC_SERVER_URL is set (an empty value keeps ordinary local execution); features.daemon_auto_start = false still attaches to an existing daemon. The persistent opt-out is the pane environment: `herdr-threads setup codex --with-pane-env` exports CODEX_EXEC_SERVER_URL= inside Herdr panes through an owned block in your shell startup files (newly opened panes). Alternatively use native codex --no-daemon, or HERDR_THREADS_CODEX_OPTS='--no-daemon' for herdr-threads launch when the selected binary/wrapper forwards it. A configured environment or argument does not prove foreground execution; verify your wrapper's behavior.",
+    fixed_fields: &[(
+        "persistent_opt_out",
+        "pane environment (CODEX_EXEC_SERVER_URL= inside Herdr panes)",
+    )],
     inspect: inspect_foreground,
+    inspect_environment: Some(pane_env::inspect_foreground_environment),
 };
 
 /// Codex's foreground-agent choice in user `config.toml`: `features.daemon_auto_start`.
@@ -1467,8 +1486,10 @@ impl HarnessAdapter for CodexAdapter {
     fn text(&self) -> &'static AdapterText {
         &TEXT
     }
+    /// `CODEX_HOME`, plus the pane environment's startup-file inputs
+    /// ([`pane_env::ENVIRONMENT_INPUTS`]).
     fn setup_environment_inputs(&self) -> &'static [&'static str] {
-        &["CODEX_HOME"]
+        &["CODEX_HOME", "SHELL", "ZDOTDIR", "XDG_CONFIG_HOME"]
     }
     fn default_config_root(&self, environment: &SetupEnvironment) -> Option<std::path::PathBuf> {
         setup::codex_home_from(
@@ -1638,6 +1659,27 @@ impl HarnessAdapter for CodexAdapter {
                 name: crate::cli::setup::WITHOUT_PERMISSIONS,
                 conflicts: &[crate::cli::setup::WITH_PERMISSIONS],
             },
+            SetupOption {
+                name: crate::cli::setup::WITH_PANE_ENV,
+                conflicts: &[
+                    crate::cli::setup::WITHOUT_PANE_ENV,
+                    crate::cli::setup::ADVISE_PANE_ENV,
+                ],
+            },
+            SetupOption {
+                name: crate::cli::setup::WITHOUT_PANE_ENV,
+                conflicts: &[
+                    crate::cli::setup::WITH_PANE_ENV,
+                    crate::cli::setup::ADVISE_PANE_ENV,
+                ],
+            },
+            SetupOption {
+                name: crate::cli::setup::ADVISE_PANE_ENV,
+                conflicts: &[
+                    crate::cli::setup::WITH_PANE_ENV,
+                    crate::cli::setup::WITHOUT_PANE_ENV,
+                ],
+            },
         ]
     }
     fn settle_setup_consent(
@@ -1647,13 +1689,13 @@ impl HarnessAdapter for CodexAdapter {
         reader: &mut dyn std::io::BufRead,
         writer: &mut dyn std::io::Write,
     ) -> Result<(), SetupFailure> {
-        setup::settle_permissions(
-            &crate::cli::setup::SetupEnv::from_snapshot(environment),
-            projection,
-            reader,
-            writer,
-        )
-        .map_err(super::setup::legacy::adapter_failure)
+        let env = crate::cli::setup::SetupEnv::from_snapshot(environment);
+        setup::settle_permissions(&env, projection, reader, writer)
+            .and_then(|()| pane_env::settle(&env, projection, reader, writer))
+            .map_err(super::setup::legacy::adapter_failure)
+    }
+    fn setup_report_lines(&self, report: &Value) -> Vec<String> {
+        pane_env::line(&report["pane_env"]).into_iter().collect()
     }
     fn setup(&self, request: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
         setup::setup(request)
@@ -2082,6 +2124,9 @@ pub mod launch {
             "config_present": config.is_some(),
             "profile": profile,
             "profile_source": profile_source,
+            // Launch cannot set it (Herdr's agent start carries argv only): the agent
+            // inherits the pane shell's environment, which the owned block configures.
+            "pane_env_installed": super::pane_env::installed_in(env),
             "command_execution": "approved_outside_sandbox",
             "command_guidance": "Run herdr-threads commands outside the sandbox through Codex approval; if denied, report the policy refusal without bypassing it",
         })

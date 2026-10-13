@@ -10,7 +10,9 @@ use std::{
 
 /// Inherited variables removed from every spawned binary's environment, so
 /// the suite behaves the same inside a Herdr pane or a harness session.
-pub const SCRUBBED_PREFIXES: &[&str] = &["HERDR_", "CLAUDE", "CODEX"];
+/// `ZDOTDIR` too: shell startup files then resolve under the test's HOME, never
+/// the developer's own zsh directory.
+pub const SCRUBBED_PREFIXES: &[&str] = &["HERDR_", "CLAUDE", "CODEX", "ZDOTDIR"];
 /// `sockaddr_un.sun_path` capacity (macOS 104, Linux 108; the smaller wins).
 pub const SUN_PATH_MAX: usize = 104;
 

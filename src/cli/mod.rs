@@ -506,11 +506,12 @@ fn run_parsed_in_pane<W: Write>(
     if let CliAction::Setup(request) = &parsed.action {
         return setup::run(request, &parsed.output, writer);
     }
-    if let CliAction::SetupAll(verb, prompt_suggestions, permissions) = &parsed.action {
+    if let CliAction::SetupAll(verb, prompt_suggestions, permissions, pane_env) = &parsed.action {
         return setup::run_all(
             *verb,
             *prompt_suggestions,
             *permissions,
+            *pane_env,
             &parsed.output,
             writer,
         );

@@ -9,6 +9,8 @@ end to end, swept by ht-54r.25: every provenance value below has a production wr
 the agy adapter into it (agy's conversation id is a harness session variable under `cooperative_env_session`).
 Amended 2026-10-12 for the text accept's thread-scoped opening-mail display (ht-br0), bounded by the display walk's
 ordinary stop and, with a live mod channel, by a bounded channel grace.
+Amended 2026-10-12 for the consented Codex pane environment block (foreground configuration only; no seat,
+binding, receipt or attribution rule changes).
 
 ## Abstract
 
@@ -1256,14 +1258,47 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   pane's `HERDR_PANE_ID`. A shared harness server started in another pane can instead supply
   its own pane environment; herdr-threads does not recover the attaching TUI pane from
   process names, cached sessions or focus. Setup and setup-status inspect user settings and
-  explain the required foreground configuration without changing it. A configured setting
-  is advisory, not execution proof: wrappers and higher-precedence settings remain the
-  user's responsibility. Claude's `disableAgentView: true` disables its background agent
-  supervisor. For captured Codex 0.160.1, `daemon_auto_start = false` still permits attachment
-  to an existing server; native `--no-daemon` is the supported opt-out. Optional
-  `HERDR_THREADS_CODEX_OPTS` and `HERDR_THREADS_CLAUDE_OPTS` add user-selected launch
-  arguments, with no automatic daemon argument by default. No argument or settings check
-  grants receipt authority, moves a seat or relaxes the canonical binding checks in A2.
+  explain the required foreground configuration. Setup changes it in exactly one place, and
+  only with explicit consent: the Codex pane environment below. Claude's settings are never
+  written for this. A configured setting or environment is advisory, not execution proof:
+  wrappers, higher-precedence settings, other shells and starts outside a Herdr pane remain
+  the user's responsibility. Claude's `disableAgentView: true` disables its background agent
+  supervisor. For Codex, `daemon_auto_start = false` still permits attachment to an existing
+  server. Codex skips the implicit shared daemon whenever `CODEX_EXEC_SERVER_URL` is set
+  (presence, so an empty value counts) and treats an empty value as ordinary local execution,
+  so the persistent opt-out is that variable exported empty inside Herdr panes. Native
+  `--no-daemon` and optional `HERDR_THREADS_CODEX_OPTS` / `HERDR_THREADS_CLAUDE_OPTS` launch
+  arguments remain alternatives, with no automatic daemon argument by default. No argument,
+  settings check or environment block grants receipt authority, moves a seat or relaxes the
+  canonical binding checks in A2.
+- **The Codex pane environment is a consented, owned shell-startup block.** With
+  `setup [codex] --with-pane-env` or a typed yes to setup's terminal question (default no),
+  setup appends a `HERDR_ENV`-guarded block exporting `CODEX_EXEC_SERVER_URL=` to
+  `${ZDOTDIR:-~}/.zshenv`, to `~/.bashrc` and to bash's login file (the first existing of
+  `~/.bash_profile`, `~/.bash_login`, `~/.profile`, else a created `~/.bash_profile`,
+  because Herdr starts pane shells as login shells and a login bash does not read
+  `~/.bashrc` by itself; a created `~/.bash_profile` holds only the block, so it shadows a
+  `~/.profile` added later, which the advice states), and writes a whole fish drop-in under
+  `conf.d`, for `$SHELL`'s
+  shell plus each shell whose startup file exists. zsh files follow setup's own `ZDOTDIR`; a
+  Herdr server started without it reads `~/.zshenv` (the advice says so). Without a flag
+  setup refreshes only a block byte-identical to what it recorded writing, never adds one,
+  never adopts a block it did not write, and without a terminal only advises. A typed yes
+  adds missing blocks and adopts an unrecorded current one (the question names both sets of
+  files), but never replaces a block the user edited; only `--with-pane-env` does, after a pre-image. The installer
+  (`internal installer-integrations`) never writes these files; it only reports and
+  advises. Each write is recorded in a private manifest under `<state>/setup/`, preceded by
+  a timestamped pre-image of the existing file, and published through the staged
+  replacement; symlinked, special or over-1 MiB files are skipped with the line to add (or,
+  on removal, the block to remove) by hand. Unsetup and `--without-pane-env` remove a block
+  only while byte-identical to the record; they delete a file setup created once nothing
+  else is left, and a recorded fish drop-in that still holds exactly the recorded content
+  (with a pre-image when setup did not create it). Launch cannot set the variable (Herdr's
+  agent start carries argv only) and only reports whether a block is present. A present
+  block makes the Codex foreground status read `configured` (`modified_by_setup` only when
+  the ownership record names that file), which stays advisory: it is never execution
+  evidence, a provenance value or attribution authority, and no seat, binding or receipt
+  decision reads it.
 - **Native permission rules are cooperative matching limits.** Owned Claude rules allow
   the bare `herdr-threads` / `ht` command text and ask for `human`, `setup`, `unsetup`,
   `doctor fix` and `internal installer-integrations`; owned Codex rules use a literal
@@ -1273,7 +1308,9 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   Foreign broad allowances are preserved and can still cover Human commands. Bare names
   cannot attest later PATH, alias or function resolution. Generated matching and native
   checker evidence never prove a live classifier verdict or installed wrapper support.
-  Setup changes no general shell, network, sandbox or approval-mode setting. The owned
+  Apart from the consented Codex pane environment block (an environment export, not a shell,
+  network, sandbox or approval-mode policy), setup changes no general shell, network, sandbox
+  or approval-mode setting. The owned
   agy allow member `command(herdr-threads)` has no ask counterpart herdr-threads can
   write, so once granted it also covers person and setup commands; agy's consent
   question says so, and it is installed only with consent (`--with-permissions` or a
@@ -1482,6 +1519,24 @@ offer optional per-harness launch arguments through environment variables. No ad
 wrapper or heuristic TUI-to-seat association is introduced. Setup never writes these
 foreground settings. The retained measurements and source limits are in
 `docs/compatibility/wrapper-seat-detection.md`.
+
+### Codex pane environment (2026-10-12)
+
+Codex source at rust-v0.162.1 (historical evidence, never a version gate) shows the TUI does
+not select or auto-start the implicit shared app-server daemon while `CODEX_EXEC_SERVER_URL`
+is set: `codex-rs/tui/src/daemon_startup.rs` `exclusion()` reads it as presence (an empty value
+counts), `startup_orchestration.rs` then skips the default daemon socket and auto-start, and
+`lib.rs` `app_server_target_for_launch` reuses a local daemon only while it is unset. The exec
+server treats an empty value as the local environment (`exec-server/src/environment_provider.rs`;
+only `none` disables it). Exporting it empty in every Herdr pane keeps Codex in its pane
+whatever wrapper starts it, including wrappers that reject `--no-daemon`. User decision:
+`setup codex` may add a `HERDR_ENV`-guarded block to the shell startup files, with consent
+only, owned, recorded, backed up and reversible like other setup edits; the installer only
+advises. This supersedes "Setup never writes these foreground settings" above for this one
+variable; Claude's foreground settings are still never written. Seat attribution, binding
+checks, provenance and receipt authority are unchanged: a configured block is advisory, not
+execution proof (other shells, wrappers that reset the environment and non-Herdr starts are
+not covered).
 
 ### F6: restored-pane creation versus repair reservation (resolved 2026-10-01)
 

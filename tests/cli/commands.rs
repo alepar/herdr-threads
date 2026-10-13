@@ -1881,7 +1881,7 @@ fn local_profile_and_options_are_validated_before_dispatch() {
     let bare = parse_argv(["herdr-threads", "setup", "--disable-prompt-suggestions"]).unwrap();
     assert!(matches!(
         bare.action,
-        CliAction::SetupAll(_, crate::cli::setup::PromptSuggestionPolicy::Disable, _)
+        CliAction::SetupAll(_, crate::cli::setup::PromptSuggestionPolicy::Disable, _, _)
     ));
 }
 
@@ -2947,7 +2947,7 @@ fn permission_consent_flags_are_setup_scoped() {
         assert_eq!(request.permissions, policy);
         let bare: Vec<&str> = ["ht", "setup"].into_iter().chain(flag).collect();
         assert!(
-            matches!(parse_argv(bare).unwrap().action, CliAction::SetupAll(_, _, p) if p == policy)
+            matches!(parse_argv(bare).unwrap().action, CliAction::SetupAll(_, _, p, _) if p == policy)
         );
     }
     assert!(parse_argv(["ht", "setup", "--with-permissions", "--without-permissions"]).is_err());
@@ -2981,6 +2981,51 @@ fn permission_consent_flags_are_setup_scoped() {
     ] {
         assert!(parse_argv(["ht"].into_iter().chain(args)).is_err());
     }
+}
+
+/// Kills: a pane-env flag accepted by unsetup/setup-status or by a harness that declares no
+/// pane environment, both flags at once, or a bare `setup` that drops the policy.
+#[test]
+fn pane_env_flags_are_setup_scoped_to_declaring_harnesses() {
+    use crate::cli::setup::PaneEnvPolicy;
+    for (flag, policy) in [
+        (None, PaneEnvPolicy::Ask),
+        (Some("--with-pane-env"), PaneEnvPolicy::Grant),
+        (Some("--without-pane-env"), PaneEnvPolicy::Decline),
+    ] {
+        let named: Vec<&str> = ["ht", "setup", "codex"].into_iter().chain(flag).collect();
+        let CliAction::Setup(request) = parse_argv(named).unwrap().action else {
+            panic!("setup")
+        };
+        assert_eq!(request.pane_env, policy);
+        let bare: Vec<&str> = ["ht", "setup"].into_iter().chain(flag).collect();
+        assert!(
+            matches!(parse_argv(bare).unwrap().action, CliAction::SetupAll(_, _, _, p) if p == policy)
+        );
+    }
+    assert!(parse_argv(["ht", "setup", "--with-pane-env", "--without-pane-env"]).is_err());
+    for flag in ["--with-pane-env", "--without-pane-env"] {
+        for args in [
+            vec!["unsetup", "codex"],
+            vec!["unsetup"],
+            vec!["setup-status", "codex"],
+            vec!["setup", "claude"],
+        ] {
+            assert!(
+                parse_argv(["ht"].into_iter().chain(args.clone()).chain([flag])).is_err(),
+                "{args:?} {flag}"
+            );
+        }
+    }
+    // An unknown harness is reported as unknown, not as lacking the option.
+    let Err(error) = parse_argv(["ht", "setup", "nosuch", "--with-pane-env"]) else {
+        panic!("unknown harness accepted")
+    };
+    let detail = format!("{error:?}");
+    assert!(detail.contains("nosuch"), "{detail}");
+    assert!(!detail.contains("declares a pane environment"), "{detail}");
+    // The installer-only option has no CLI flag.
+    assert!(parse_argv(["ht", "setup", "codex", "--advise-pane-env"]).is_err());
 }
 
 #[test]
