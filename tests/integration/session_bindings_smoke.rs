@@ -1240,7 +1240,36 @@ fn config3_hermes_interactive_and_a_one_shot_in_a_claude_pane() {
         || attempted(mark),
     );
     smoke.hermes(&lone, "session_finalize", "finalize-lone");
+    // An attempt reserved before the teardown may still complete (as unsafe)
+    // after it; on a short lane tick a retry of the first send can be that
+    // attempt. Let it settle, then no new attempt may be reserved or completed.
+    let in_flight = || {
+        smoke
+            .db()
+            .query_row(
+                "SELECT reservation_id IS NOT NULL FROM wake_work WHERE seat_id=?1",
+                [&lone_seat],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap_or(false)
+    };
+    let last_reserved = || {
+        smoke
+            .db()
+            .query_row(
+                "SELECT COALESCE(last_reserved_at_utc,0) FROM wake_work WHERE seat_id=?1",
+                [&lone_seat],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+    };
+    wait_until(
+        "the lone seat's in-flight wake attempt to settle",
+        Duration::from_secs(20),
+        || !in_flight(),
+    );
     let mark = last_attempt();
+    let reserved_mark = last_reserved();
     smoke
         .cli(
             &peer,
@@ -1256,7 +1285,7 @@ fn config3_hermes_interactive_and_a_one_shot_in_a_claude_pane() {
         .data();
     std::thread::sleep(Duration::from_secs(3));
     assert!(
-        !attempted(mark),
+        !attempted(mark) && !in_flight() && last_reserved() == reserved_mark,
         "a disconnected binding is not a wake target"
     );
 }
