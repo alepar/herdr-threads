@@ -368,6 +368,39 @@ fn reconciliation_marker_bumps_once_when_it_moves_and_repeats_stay_quiet() {
     assert_eq!(revision(&conn), marked + 2, "and a repeat stays quiet");
 }
 
+// A moving marker that also lifts the baseline hold bumps the send fence
+// exactly once (the lift's own bump covers the move), and lifecycle once.
+#[test]
+fn reconciliation_marker_that_lifts_the_hold_bumps_once() {
+    let iso = TestIsolation::new("snapshot-eligibility-marker-lift");
+    let (context, mut conn) = host_store(&iso);
+    // A nonretired seat makes the first publication hold the baseline.
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('h','i','resolved','native','p0',1,1,0)", []).unwrap();
+    let published = publish(&context, &mut conn, &capture(&["p0", "p1"]), 1);
+    let flag = |conn: &Connection| -> i64 {
+        conn.query_row(
+            "SELECT baseline_hold_unclaimed FROM host_instances WHERE id='i'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let lifecycle = |conn: &Connection| -> i64 {
+        conn.query_row(
+            "SELECT lifecycle_revision FROM host_instances WHERE id='i'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(flag(&conn), 1, "the first publication holds the baseline");
+    let (eligibility, life) = (revision(&conn), lifecycle(&conn));
+    assert!(seats::record_reconciliation_pass(&context, &mut conn, &published, &budget()).unwrap());
+    assert_eq!(flag(&conn), 0, "the marker lifts the hold");
+    assert_eq!(revision(&conn), eligibility + 1, "one send-fence bump");
+    assert_eq!(lifecycle(&conn), life + 1, "one lifecycle bump");
+}
+
 #[test]
 fn new_host_boot_bumps_once() {
     assert_change_bumps_once(

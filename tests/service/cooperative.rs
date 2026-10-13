@@ -1921,55 +1921,35 @@ fn plain_call_enrollment_between_stage_and_decide_drops_the_stale_warning() {
 /// When the send's recipients are staged relative to the reconciliation pass
 /// of the new host epoch.
 #[derive(Clone, Copy, Debug)]
-enum MarkerRace {
+enum PassRace {
     /// Staged before the saved-seat page is planned and applied.
     StagedBeforePage,
     /// Staged after the saved-seat page, before the pass records its marker.
     StagedAfterPage,
 }
 
-/// C4 pre-reconciliation window vs the reconciliation marker (Main review I1).
-/// Production shape: the recipient's main cooperative session (pid 2) is
-/// registered at host epoch 1; Herdr restarts (epoch 2, same boot and
-/// incarnation); a one-shot agent in the same pane checks in as a second
-/// session at epoch 2 and exits (liveness `process_exit`). The seat's latest
-/// open registered binding is now epoch 2 and disconnected, so the planner
-/// schedules no carry, while `carry_pending` (any open carried binding older
-/// than the host epoch) suppresses the unavailable warning until the marker
-/// lands. A send staged before the marker and decided after it must publish
-/// the warning set the post-marker canonical state requires (the recipient is
-/// unavailable and no carry is pending: warned), not the stale suppression.
-/// Kills: a marker that flips `carry_pending` without moving the send
-/// eligibility fence, so the decision keeps a stale staged warning set.
-fn send_staged_across_the_reconciliation_marker(race: MarkerRace) {
-    let scenario = SendScenario::new();
-    // Herdr restart: epoch 2 of the same boot and incarnation; the pass has
-    // not run, so the marker lags.
+/// Production shape (Main review I1 / C4): the recipient's main cooperative
+/// session (pid 2) is registered at host epoch 1; Herdr restarts (epoch 2,
+/// same boot and incarnation; the pass has not run, so the marker lags); a
+/// one-shot agent in the same pane checks in as a second session at epoch 2
+/// and exits (liveness `process_exit`). The seat's newest open registered
+/// binding is epoch 2 and disconnected; the main session, still alive, lags at
+/// epoch 1. The sender checks in again first, so the pass has nothing of the
+/// sender's to carry. Returns the epoch-2 publication.
+fn one_shot_after_restart(scenario: &SendScenario) -> crate::ports::PublishedSnapshot {
     let second = publish_snapshot_at(&scenario.context, 2, 7, &["p", "q"], true);
-    // The sender checks in again (its binding moves to epoch 2), so the pass
-    // has nothing of the sender's to carry.
     checked(
         &scenario.service,
         lifecycle(scenario.sender.clone(), "sender-again"),
     );
-    // A one-shot agent in the recipient's pane registers a second session at
-    // epoch 2, then exits; the liveness worker disconnects it.
     let mut one_shot = scenario.main.clone();
     one_shot.native_session = NativeSessionId::new("recipient-one-shot");
     one_shot.liveness = Some(crate::protocol::authority::LivenessFingerprint { pid: 3, start: 1 });
     one_shot.execution = ExecutionId::new("00000000-0000-4000-8000-000000000003");
     checked(&scenario.service, lifecycle(one_shot, "recipient-one-shot"));
     assert_eq!(scenario.liveness_pass(SENDER_AND_MAIN_ALIVE), 1);
-    let bindings: Vec<(String, i64, String)> = scenario
-        .db
-        .prepare("SELECT native_session,host_epoch,liveness FROM occupant_bindings WHERE seat_id='recipient' AND ended_at IS NULL AND registered_at IS NOT NULL ORDER BY ordinal")
-        .unwrap()
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect();
     assert_eq!(
-        bindings,
+        recipient_bindings(scenario),
         vec![
             ("recipient-main".to_owned(), 1, "connected".to_owned()),
             (
@@ -1978,33 +1958,125 @@ fn send_staged_across_the_reconciliation_marker(race: MarkerRace) {
                 "disconnected".to_owned()
             ),
         ],
-        "older connected carried binding, latest registered binding disconnected"
+        "older connected carried binding, newest registered binding disconnected"
     );
     assert!(
         scenario.carry_pending(),
         "the lagging marker leaves a carry pending"
     );
     assert!(!scenario.available());
+    second
+}
 
-    let pass_pages = || {
-        let planned = scenario.reconcile_pages(&second);
-        assert!(
-            planned.iter().all(|p| !p.contains("CarryForward")),
-            "the planner sees the epoch-2 latest binding and plans no carry: {planned:?}"
-        );
-    };
-    let send = scenario.request("across-marker");
-    if matches!(race, MarkerRace::StagedAfterPage) {
-        pass_pages();
+/// `(native_session, host_epoch, liveness)` of the recipient's open registered
+/// bindings, in ordinal order.
+fn recipient_bindings(scenario: &SendScenario) -> Vec<(String, i64, String)> {
+    scenario
+        .db
+        .prepare("SELECT native_session,host_epoch,liveness FROM occupant_bindings WHERE seat_id='recipient' AND ended_at IS NULL AND registered_at IS NOT NULL ORDER BY ordinal")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// The pass plans exactly one carry, for the recipient.
+fn assert_recipient_carried(planned: &[String]) {
+    let carries: Vec<&String> = planned
+        .iter()
+        .filter(|p| p.contains("CarryForward"))
+        .collect();
+    assert_eq!(
+        carries.len(),
+        1,
+        "one carry is planned, for the recipient: {planned:?}"
+    );
+    assert!(carries[0].starts_with("recipient:"), "{planned:?}");
+}
+
+// Kills (C4): a planner that decides the carry from the newest open
+// registered binding only. The newer one-shot binding (epoch 2) must not hide
+// the older, still connected main binding (epoch 1): the pass carries it, so
+// the recipient is available after the pass, the wake lane's seat binding
+// (newest open top-level, connected first) is current in the host epoch, and
+// the episode the one-shot's exit opened is closed.
+#[test]
+fn an_older_connected_binding_is_carried_past_a_newer_session_of_the_new_epoch() {
+    let scenario = SendScenario::new();
+    let second = one_shot_after_restart(&scenario);
+    assert_recipient_carried(&scenario.reconcile_pages(&second));
+    assert!(
+        scenario
+            .store
+            .record_reconciliation_pass(&second, &budget())
+            .unwrap()
+    );
+    assert_eq!(
+        recipient_bindings(&scenario),
+        vec![
+            ("recipient-main".to_owned(), 2, "connected".to_owned()),
+            (
+                "recipient-one-shot".to_owned(),
+                2,
+                "disconnected".to_owned()
+            ),
+        ],
+        "the carry moves the lagging binding; liveness is untouched"
+    );
+    assert!(scenario.available(), "the live main session is available");
+    assert!(!scenario.carry_pending());
+    let wake_binding: (i64, String) = scenario
+        .db
+        .query_row(
+            &format!(
+                "SELECT host_epoch,native_session FROM occupant_bindings WHERE binding_id=({})",
+                crate::store::attention::SEAT_NOTICE_BINDING_SQL
+            ),
+            ["recipient"],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        wake_binding,
+        (2, "recipient-main".to_owned()),
+        "wake follows the connected main binding, current in the host epoch"
+    );
+    assert_eq!(
+        scenario.count("SELECT unavailability_open FROM seats WHERE id='recipient'"),
+        0
+    );
+    // A send after the pass: eligible, no warning.
+    let send = scenario.request("after-pass");
+    scenario.prepare(&send);
+    let (message, attempts) = scenario.decide_with_retry(send);
+    assert_eq!(attempts, 1);
+    assert_eq!(scenario.published(&message), (true, vec![]));
+}
+
+/// A send staged across the pass of the new epoch (before or after its
+/// saved-seat page, before its marker) and decided after the marker must
+/// publish what the post-pass canonical state requires: the carried main
+/// session makes the recipient available, eligible and unwarned. Every
+/// transition in between (the carry, the moving marker) refuses the stale
+/// preparation once. Kills: a carry or a moving marker that leaves the send
+/// fences unchanged, so the decision keeps the pre-pass staging.
+fn send_staged_across_the_reconciliation_pass(race: PassRace) {
+    let scenario = SendScenario::new();
+    let second = one_shot_after_restart(&scenario);
+    let send = scenario.request("across-pass");
+    if matches!(race, PassRace::StagedAfterPage) {
+        assert_recipient_carried(&scenario.reconcile_pages(&second));
+        assert!(scenario.available());
     }
     scenario.prepare(&send);
     assert_eq!(
         scenario.staged_warnings(),
         0,
-        "staged before the marker: the pending carry suppresses the warning"
+        "{race:?}: no warning staged (a pending carry, or carried)"
     );
-    if matches!(race, MarkerRace::StagedBeforePage) {
-        pass_pages();
+    if matches!(race, PassRace::StagedBeforePage) {
+        assert_recipient_carried(&scenario.reconcile_pages(&second));
     }
     let before_marker = scenario.fences();
     assert!(
@@ -2013,18 +2085,19 @@ fn send_staged_across_the_reconciliation_marker(race: MarkerRace) {
             .record_reconciliation_pass(&second, &budget())
             .unwrap()
     );
-    // The post-marker canonical state: unavailable, no carry pending, joined.
-    assert!(
-        !scenario.carry_pending(),
-        "the marker ends the pending carry"
-    );
-    assert!(!scenario.available());
     let after_marker = scenario.fences();
+    assert_eq!(
+        after_marker.1,
+        before_marker.1 + 1,
+        "{race:?}: the moving marker bumps the send fence once"
+    );
+    assert!(scenario.available());
+    assert!(!scenario.carry_pending());
     let (message, attempts) = scenario.decide_with_retry(send);
     assert_eq!(
         scenario.published(&message),
-        (false, vec!["recipient".to_owned()]),
-        "{race:?}: the published warning set is the post-marker canonical one (fences before/after the marker {before_marker:?} -> {after_marker:?})"
+        (true, vec![]),
+        "{race:?}: the published send is the post-pass canonical one"
     );
     assert_eq!(
         attempts, 2,
@@ -2033,13 +2106,13 @@ fn send_staged_across_the_reconciliation_marker(race: MarkerRace) {
 }
 
 #[test]
-fn send_staged_before_the_saved_seat_page_publishes_post_marker_warnings() {
-    send_staged_across_the_reconciliation_marker(MarkerRace::StagedBeforePage);
+fn send_staged_before_the_saved_seat_page_publishes_the_post_pass_state() {
+    send_staged_across_the_reconciliation_pass(PassRace::StagedBeforePage);
 }
 
 #[test]
-fn send_staged_after_the_saved_seat_page_publishes_post_marker_warnings() {
-    send_staged_across_the_reconciliation_marker(MarkerRace::StagedAfterPage);
+fn send_staged_after_the_saved_seat_page_publishes_the_post_pass_state() {
+    send_staged_across_the_reconciliation_pass(PassRace::StagedAfterPage);
 }
 
 #[test]

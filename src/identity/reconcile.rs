@@ -286,10 +286,12 @@ pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>, 
                 && observed.incarnation_source.is_some()
             {
                 // C4: same terminal, boot and incarnation in a newer host
-                // epoch; the open registered binding follows the seat.
-                // `bound_epoch` is Some only for a binding whose provenance is
-                // in `authority::CARRIED_BINDING_PROVENANCES`, the single
-                // definition shared with the applier.
+                // epoch; the open registered bindings follow the seat.
+                // `bound_epoch` is the oldest epoch among the open registered
+                // bindings whose provenance is in
+                // `authority::CARRIED_BINDING_PROVENANCES` (the single
+                // definition shared with the applier and `carry_pending`), so
+                // a newer binding never hides an older lagging one.
                 Some(ReconciliationAction::CarryForward {
                     target: observed.target.clone(),
                     terminal: terminal.clone(),

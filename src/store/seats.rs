@@ -1118,31 +1118,45 @@ fn saved_seat_scalar(
         "SELECT terminal_id,incarnation,execution_id,host_boot FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
         [&id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
     ).optional().map_err(store_error)?;
-    type ActiveBinding = (String, i64, String, Option<String>, String);
-    let active_binding: Option<ActiveBinding> = conn
+    let active_binding_execution: Option<String> = conn
         .query_row(
-            "SELECT execution_id,host_epoch,host_boot,incarnation,observation_provenance FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL ORDER BY ordinal DESC LIMIT 1",
+            "SELECT execution_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL ORDER BY ordinal DESC LIMIT 1",
             [&id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            |r| r.get(0),
         )
         .optional()
         .map_err(store_error)?;
-    let bound_epoch =
-        match (&active_binding, &structural_proof) {
-            // C4: only a binding whose provenance is in the carried set
-            // yields a bound epoch; a native binding re-registers instead.
-            (Some((_, epoch, boot, incarnation, provenance)), Some(proof))
-                if CARRIED_BINDING_PROVENANCES.contains(&provenance.as_str())
-                    && boot == proof.host_boot().as_str()
-                    && incarnation.as_deref() == Some(proof.incarnation()) =>
-            {
-                Some(u64::try_from(*epoch).map_err(|_| {
-                    api_error(ErrorCode::StoreCorrupt, "negative binding host epoch")
-                })?)
-            }
-            _ => None,
-        };
-    let active_binding_execution: Option<String> = active_binding.map(|(execution, ..)| execution);
+    // C4: the oldest host epoch among the seat's open registered bindings
+    // whose provenance is in the carried set (a native binding re-registers
+    // instead) and whose host boot and incarnation are the structural proof's.
+    // Every such binding is what `carry_binding_forward` moves (ht-54r.3) and
+    // what `carry_pending` assumes will be carried, so a newer binding (a
+    // one-shot session registered after the epoch change) never hides an
+    // older one that still lags.
+    let bound_epoch: Option<i64> = match &structural_proof {
+        Some(proof) => conn
+            .query_row(
+                "SELECT MIN(host_epoch) FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL AND observation_provenance IN (?2,?3,?4,?5) AND host_boot=?6 AND incarnation=?7",
+                params![
+                    &id,
+                    CARRIED_BINDING_PROVENANCES[0],
+                    CARRIED_BINDING_PROVENANCES[1],
+                    CARRIED_BINDING_PROVENANCES[2],
+                    CARRIED_BINDING_PROVENANCES[3],
+                    proof.host_boot().as_str(),
+                    proof.incarnation()
+                ],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?,
+        None => None,
+    };
+    let bound_epoch = bound_epoch
+        .map(|epoch| {
+            u64::try_from(epoch)
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative binding host epoch"))
+        })
+        .transpose()?;
     let prior_published_observation = if state == "unresolved"
         && unresolved_reason.as_deref() == Some("host_invalidation")
     {
@@ -1691,7 +1705,10 @@ pub(crate) fn lift_baseline_hold_if_clear(
 /// Persist that the saved-seat pass of `published` finished with no refused
 /// transition, then run the hold lift in the same transaction. Writes only
 /// while `published` is still the active publication of the instance's current
-/// recovery boot/epoch; returns whether the marker was written.
+/// recovery boot/epoch. Returns whether `published` was current, so that the
+/// marker now names its boot/epoch (false for a stale publication); the
+/// marker row is written, and the send-eligibility fence bumped, only when the
+/// marker actually moves.
 pub fn record_reconciliation_pass(
     context: &StoreContext,
     conn: &mut Connection,
