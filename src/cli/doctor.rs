@@ -723,6 +723,28 @@ fn collect_local_with_budget(
     }
     repairs
 }
+/// Doctor's word for the daemon's Health state. A daemon that reports itself
+/// starting ([`crate::protocol::results::Health::starting`]) is `starting`,
+/// not `degraded`, until its first reconciliation or the startup bound.
+pub(crate) fn daemon_state_label(health: &crate::protocol::results::Health) -> &'static str {
+    match health.state {
+        HealthState::Healthy => "healthy",
+        HealthState::Degraded if health.starting() => "starting",
+        HealthState::Degraded => "degraded",
+        HealthState::Unavailable => "unavailable",
+    }
+}
+
+/// Whether Health alone makes doctor's result `degraded`: a degraded daemon
+/// that is merely starting does not.
+pub(crate) fn health_degrades_result(health: &crate::protocol::results::Health) -> bool {
+    health.state == HealthState::Degraded && !health.starting()
+}
+
+/// Doctor's one text line for a starting daemon, in place of an `issue:`
+/// per not-yet-observed Health line (those print as `pending:`).
+pub(crate) const DAEMON_STARTING_TEXT: &str = "note: daemon starting; first reconciliation pending";
+
 fn writes_safe(report: &Value) -> bool {
     report["context"]["ok"] == true
         && report["state_dir"]["safe"] == true
@@ -730,7 +752,7 @@ fn writes_safe(report: &Value) -> bool {
         && report["daemon"]["version_matches"] != false
         && matches!(
             report["daemon"]["state"].as_str(),
-            Some("not_running" | "healthy" | "degraded")
+            Some("not_running" | "healthy" | "starting" | "degraded")
         )
 }
 fn repair_outcome(name: &str, outcome: Result<String, String>) -> Value {
@@ -909,11 +931,7 @@ fn report_captured(
                     daemon_limitations = health.limitations.clone();
                     let version_matches = health.software_version == env!("CARGO_PKG_VERSION");
                     report["daemon"] = json!({
-                        "state": match health.state {
-                            HealthState::Healthy => "healthy",
-                            HealthState::Degraded => "degraded",
-                            HealthState::Unavailable => "unavailable",
-                        },
+                        "state": daemon_state_label(&health),
                         "software_version": health.software_version,
                         "version_matches": version_matches,
                         "boot_id": health.boot_id,
@@ -931,7 +949,7 @@ fn report_captured(
                         } else if health.state == HealthState::Unavailable {
                             code = exit::EXIT_UNAVAILABLE;
                             result = "unavailable";
-                        } else if health.state == HealthState::Degraded {
+                        } else if health_degrades_result(&health) {
                             result = "degraded";
                         }
                     }
@@ -1383,9 +1401,25 @@ pub(crate) fn render_text_in(
             }
         }
     }
+    // While the daemon is starting, lines that only say something has not
+    // been observed yet are `pending:`, not `issue:`; real issues stay.
+    let starting = report["daemon"]["state"] == "starting";
+    if starting {
+        out.push_str(DAEMON_STARTING_TEXT);
+        out.push('\n');
+    }
     if let Some(items) = report["daemon"]["limitations"].as_array() {
         for item in items {
-            out.push_str(&format!("issue: {}\n", scalar(item)));
+            let label = if starting
+                && item
+                    .as_str()
+                    .is_some_and(crate::daemon::health::is_pending_observation_line)
+            {
+                "pending"
+            } else {
+                "issue"
+            };
+            out.push_str(&format!("{label}: {}\n", scalar(item)));
         }
     }
     if let Some(items) = report["limitations"].as_array() {
@@ -1427,7 +1461,7 @@ pub(crate) fn repairs_allowed(report: &Value) -> bool {
         && report["daemon"]["version_matches"] != json!(false)
         && matches!(
             report["daemon"]["state"].as_str(),
-            Some("not_running" | "healthy" | "degraded")
+            Some("not_running" | "healthy" | "starting" | "degraded")
         )
 }
 

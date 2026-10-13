@@ -471,9 +471,7 @@ fn parse_descriptor(paths: &InstancePaths, instance_uuid: Uuid) -> io::Result<En
     let bytes = read_private(&paths.descriptor_path)?;
     let descriptor: EndpointDescriptor = serde_json::from_slice(&bytes).map_err(invalid_data)?;
     if descriptor.instance_uuid != instance_uuid
-        || (descriptor.endpoint != paths.socket_path
-            && Some(&descriptor.endpoint)
-                != paths.legacy_boot_socket_path(descriptor.boot_id).as_ref())
+        || !paths.accepts_descriptor_endpoint(&descriptor.endpoint, descriptor.boot_id)
         || descriptor.software_version.is_empty()
         || descriptor.protocol_version == 0
         || descriptor.boot_id.is_nil()
