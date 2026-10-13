@@ -5670,13 +5670,18 @@ fn pane_env_backs_up_each_changed_file_once_and_unsetup_restores_it() {
         .collect();
     assert_eq!(
         shells,
+        // bash: ~/.bashrc and, for the login shells Herdr starts, ~/.bash_profile (created).
         [
             ("zsh", "installed"),
+            ("bash", "installed"),
             ("bash", "installed"),
             ("fish", "installed")
         ],
         "{report}"
     );
+    let bash_profile = p.s.home.join(".bash_profile");
+    assert_eq!(fs::read_to_string(&bash_profile).unwrap(), PANE_ENV_BLOCK);
+    assert!(pre_images(&bash_profile).is_empty());
     assert_eq!(
         fs::read_to_string(p.zshenv()).unwrap(),
         format!("export A=1\n{PANE_ENV_BLOCK}")
@@ -5700,6 +5705,7 @@ fn pane_env_backs_up_each_changed_file_once_and_unsetup_restores_it() {
     assert_eq!(fs::read(p.zshenv()).unwrap(), b"export A=1\n");
     assert_eq!(fs::read(p.bashrc()).unwrap(), BASH);
     assert!(!p.drop_in().exists());
+    assert!(!bash_profile.exists(), "created login file deleted");
 }
 
 /// Bare `setup --with-pane-env` passes the option to codex and prints its line;
@@ -5806,7 +5812,10 @@ fn non_interactive_default_advises_pane_env_and_respects_edits() {
     );
     assert_eq!(fs::read_to_string(p.bashrc()).unwrap(), edited);
     let removed = json(&p.run("/bin/bash", &["unsetup", "codex", "--json"]));
-    assert_eq!(removed["pane_env"]["action"], "left_changed", "{removed}");
+    assert_eq!(
+        removed["pane_env"]["files"][0]["state"], "left_changed",
+        "{removed}"
+    );
     assert_eq!(fs::read_to_string(p.bashrc()).unwrap(), edited);
 
     // An unknown shell with no startup files: nothing to write, still advised.
@@ -5883,4 +5892,51 @@ fn pane_env_flags_are_refused_elsewhere() {
     );
     assert_eq!(both.status.code(), Some(2), "{}", text(&both.stderr));
     assert!(!p.zshenv().exists());
+}
+
+/// Herdr starts login shells: a login bash reads the first existing of ~/.bash_profile,
+/// ~/.bash_login and ~/.profile, not ~/.bashrc. An existing ~/.profile gets the block (one
+/// pre-image) and is never shadowed by a new ~/.bash_profile. Kills: a bash pane that never
+/// reads the block, or a created ~/.bash_profile that hides the user's ~/.profile.
+#[test]
+fn login_bash_gets_the_block_in_its_existing_login_file() {
+    let p = PaneEnvScratch::new();
+    let profile = p.s.home.join(".profile");
+    fs::write(&profile, "export PATH=$HOME/bin:$PATH\n").unwrap();
+    let out = p.run(
+        "/bin/bash",
+        &["setup", "codex", "--with-pane-env", "--json"],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = json(&out);
+    let paths: Vec<_> = report["pane_env"]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["path"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            p.bashrc().display().to_string(),
+            profile.display().to_string()
+        ],
+        "{report}"
+    );
+    assert!(!p.s.home.join(".bash_profile").exists());
+    assert_eq!(
+        fs::read_to_string(&profile).unwrap(),
+        format!("export PATH=$HOME/bin:$PATH\n{PANE_ENV_BLOCK}")
+    );
+    assert_eq!(
+        pre_images(&profile),
+        [b"export PATH=$HOME/bin:$PATH\n".to_vec()]
+    );
+    let removed = p.run("/bin/bash", &["unsetup", "codex"]);
+    assert_eq!(removed.status.code(), Some(0), "{}", text(&removed.stderr));
+    assert_eq!(
+        fs::read_to_string(&profile).unwrap(),
+        "export PATH=$HOME/bin:$PATH\n"
+    );
+    assert!(!p.bashrc().exists(), "the created ~/.bashrc is deleted");
 }

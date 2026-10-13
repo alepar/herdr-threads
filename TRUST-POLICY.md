@@ -1274,21 +1274,29 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
 - **The Codex pane environment is a consented, owned shell-startup block.** With
   `setup [codex] --with-pane-env` or a typed yes to setup's terminal question (default no),
   setup appends a `HERDR_ENV`-guarded block exporting `CODEX_EXEC_SERVER_URL=` to
-  `${ZDOTDIR:-~}/.zshenv` and `~/.bashrc`, and writes a whole fish drop-in under
-  `conf.d`, for `$SHELL`'s shell plus each shell whose startup file exists. Without a flag
-  and without a terminal setup only advises; a plain setup re-run refreshes only a block
-  byte-identical to what it recorded writing, never adds one and never replaces a block the
-  user edited (`--with-pane-env` may, after a pre-image). The installer
+  `${ZDOTDIR:-~}/.zshenv`, to `~/.bashrc` and to bash's login file (the first existing of
+  `~/.bash_profile`, `~/.bash_login`, `~/.profile`, else a created `~/.bash_profile`,
+  because Herdr starts pane shells as login shells and a login bash does not read
+  `~/.bashrc` by itself), and writes a whole fish drop-in under `conf.d`, for `$SHELL`'s
+  shell plus each shell whose startup file exists. zsh files follow setup's own `ZDOTDIR`; a
+  Herdr server started without it reads `~/.zshenv` (the advice says so). Without a flag
+  setup refreshes only a block byte-identical to what it recorded writing, never adds one,
+  never adopts a block it did not write, and without a terminal only advises. A typed yes
+  adds missing blocks and adopts an unrecorded current one, but never replaces a block the
+  user edited; only `--with-pane-env` does, after a pre-image. The installer
   (`internal installer-integrations`) never writes these files; it only reports and
   advises. Each write is recorded in a private manifest under `<state>/setup/`, preceded by
   a timestamped pre-image of the existing file, and published through the staged
-  replacement; symlinked, special or over-1 MiB files are skipped with the line to add by
-  hand. Unsetup and `--without-pane-env` remove a block only while byte-identical to the
-  record and delete a file setup created only once nothing else is left. Launch cannot
-  set the variable (Herdr's agent start carries argv only) and only reports whether a block
-  is present. A present block makes the Codex foreground status read `configured`, which
-  stays advisory: it is never execution evidence, a provenance value or attribution
-  authority, and no seat, binding or receipt decision reads it.
+  replacement; symlinked, special or over-1 MiB files are skipped with the line to add (or,
+  on removal, the block to remove) by hand. Unsetup and `--without-pane-env` remove a block
+  only while byte-identical to the record; they delete a file setup created once nothing
+  else is left, and a recorded fish drop-in that still holds exactly the recorded content
+  (with a pre-image when setup did not create it). Launch cannot set the variable (Herdr's
+  agent start carries argv only) and only reports whether a block is present. A present
+  block makes the Codex foreground status read `configured` (`modified_by_setup` only when
+  the ownership record names that file), which stays advisory: it is never execution
+  evidence, a provenance value or attribution authority, and no seat, binding or receipt
+  decision reads it.
 - **Native permission rules are cooperative matching limits.** Owned Claude rules allow
   the bare `herdr-threads` / `ht` command text and ask for `human`, `setup`, `unsetup`,
   `doctor fix` and `internal installer-integrations`; owned Codex rules use a literal

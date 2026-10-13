@@ -82,12 +82,14 @@ Scope (user level, like Herdr's own agent hooks):
           With consent, the pane environment: a guarded block exporting CODEX_EXEC_SERVER_URL=
           (empty) inside Herdr panes, so Codex never attaches to its shared app-server daemon
           (which runs tools and hooks with another pane's environment). It goes in
-          ${ZDOTDIR:-~}/.zshenv (zsh), ~/.bashrc (bash) and
-          ${XDG_CONFIG_HOME:-~/.config}/fish/conf.d/herdr-threads.fish (fish): $SHELL's file plus
-          each one that already exists; symlinks are skipped with the line to add by hand.
+          ${ZDOTDIR:-~}/.zshenv (zsh), ~/.bashrc plus the login file Herdr's login bash reads
+          (~/.bash_profile, ~/.bash_login or ~/.profile) and
+          ${XDG_CONFIG_HOME:-~/.config}/fish/conf.d/herdr-threads.fish (fish): $SHELL's files plus
+          those of each shell already set up; symlinks are skipped with the line to add by hand.
           --with-pane-env writes it, --without-pane-env removes it and keeps the hooks; otherwise
-          setup keeps a block it owns, asks `[y/N]` on a terminal, and only advises without
-          one. Unsetup removes the block while it is unchanged. New panes pick it up.
+          setup refreshes a block it owns, asks `[y/N]` on a terminal (a yes never replaces a
+          block you edited), and only advises without one. Unsetup removes the block while it is
+          unchanged. New panes pick it up.
   hermes  Experimental; natively measured on 0.21.5 with a private Herdr build. Select
           `setup hermes --profile NAME` (or explicit default when omitted). --profile
           requires a named harness and is refused for bare multi-harness commands.

@@ -2,7 +2,7 @@ claude: installed: claude contract declared (claude-hooks-2.1.283); <root>/claud
 claude: mod: installed
 claude: foreground user settings: required; execution unknown
 codex: installed: codex contract declared (codex-hooks-v1); <root>/codex home/hooks.json
-codex: pane environment: not installed: Codex's shared app-server daemon runs tools and hooks with the environment of the pane that started it, so herdr-threads would attribute them to the wrong pane. Exporting CODEX_EXEC_SERVER_URL= (empty) inside Herdr panes keeps Codex inside its own pane; it applies only inside Herdr panes and takes effect in newly opened panes. `herdr-threads setup codex --with-pane-env` adds a guarded block to <root>/home/.zshenv; or add it to your shell startup file yourself (zsh/bash: `if [ "${HERDR_ENV-}" = 1 ]; then export CODEX_EXEC_SERVER_URL=; fi`; fish: `if test "$HERDR_ENV" = 1; set -gx CODEX_EXEC_SERVER_URL ""; end`).
+codex: pane environment: advised: Add to your shell startup file: zsh/bash `if [ "${HERDR_ENV-}" = 1 ]; then export CODEX_EXEC_SERVER_URL=; fi`; fish `if test "$HERDR_ENV" = 1; set -gx CODEX_EXEC_SERVER_URL ""; end`. Or `herdr-threads setup codex --with-pane-env` adds a guarded block to <root>/home/.zshenv.
 codex: foreground user settings: required; execution unknown
 hermes: skipped: requires explicit harness selection for a profile scope
 agy: skipped: no executable `agy` on PATH

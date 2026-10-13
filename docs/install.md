@@ -345,31 +345,49 @@ if [ "${HERDR_ENV-}" = 1 ]; then export CODEX_EXEC_SERVER_URL=; fi
 # <<< herdr-threads managed block <<<
 ```
 
-It goes at the end of `${ZDOTDIR:-~}/.zshenv` (zsh) and `~/.bashrc` (bash); fish gets
-its own drop-in, `${XDG_CONFIG_HOME:-~/.config}/fish/conf.d/herdr-threads.fish`
+It goes at the end of `${ZDOTDIR:-~}/.zshenv` (zsh), and of `~/.bashrc` plus bash's login
+file (bash); fish gets its own drop-in, `${XDG_CONFIG_HOME:-~/.config}/fish/conf.d/herdr-threads.fish`
 (`if test "$HERDR_ENV" = 1; set -gx CODEX_EXEC_SERVER_URL ""; end`). Setup chooses the
-shell named by `$SHELL` plus each of the three whose startup files already exist.
+shell named by `$SHELL` plus each of the three whose startup files already exist (bash:
+`~/.bashrc`, `~/.bash_profile` or `~/.bash_login`; `~/.profile` alone does not select bash).
+
+Herdr starts pane shells as login shells. zsh reads `.zshenv` in every shell, but a login
+bash reads the first existing of `~/.bash_profile`, `~/.bash_login` and `~/.profile` (its
+own order) and reads `~/.bashrc` only if that file sources it. So bash gets the block in
+`~/.bashrc` (non-login interactive shells) and in that first existing login file; when none
+exists, setup creates `~/.bash_profile` (an existing `~/.profile` is always the first
+existing one, so it is never shadowed). Reading the block twice is harmless.
+
+zsh files follow the `ZDOTDIR` of the shell running setup. A Herdr server started without
+that `ZDOTDIR` reads `~/.zshenv` instead; when `ZDOTDIR` is set and differs from `HOME`, the
+advice says so. Setup does not write a second zsh file.
 
 - `--with-pane-env` (on `setup` and `setup codex`) writes it; `--without-pane-env` removes
-  the block setup owns and keeps the hooks.
-- Without a flag, setup keeps a block it owns (refreshing an older version it recorded
-  writing), asks `[y/N]` on a terminal naming the files (default no), and without a terminal
-  only advises (`pane_env.action` `advised`, with the line to add in `pane_env.note`). A block
-  you edited is reported `edited` and left alone unless you pass `--with-pane-env`.
+  the blocks setup owns and keeps the hooks.
+- Without a flag, setup refreshes a block it recorded writing and changes nothing else. If
+  some file still lacks the block it asks `[y/N]` on a terminal naming those files (default
+  no), and without a terminal only advises (`pane_env.action` `advised`; `pane_env.note`
+  gives the lines to add first, then the setup command). A typed yes adds the missing blocks
+  but, like a plain run, leaves a block you edited alone (reported `edited`): only
+  `--with-pane-env` replaces it. A current block setup did not write (for example pasted by
+  hand) is reported `present_unrecorded`; a plain run never adopts it, so unsetup leaves it,
+  while `--with-pane-env` or a yes records it as setup's.
 - `herdr-threads internal installer-integrations` (`install.sh --setup`) never writes these
   files; it prints the same advice.
 - A symlinked, special or over-1 MiB file is never followed or written: it is reported
-  `skipped` with the line to add yourself.
+  `skipped` with the line to add yourself (on unsetup: the block to remove yourself).
 - Each changed existing file first gets a timestamped pre-image beside it
   (`<name>.<UTC timestamp>-<uuid>.herdr-threads`, see [Harness hooks](#harness-hooks)); a
   file setup creates gets none. The exact block is recorded under `<state>/setup/`.
-- `unsetup codex` removes the block only while it is unchanged (`left_changed` otherwise) and
-  deletes a file setup created once nothing else is left in it.
+- `unsetup codex` removes a block only while it is unchanged (`left_changed` otherwise). It
+  deletes a file setup created once nothing else is left in it, and the fish drop-in while it
+  holds exactly what setup recorded (keeping a pre-image when setup did not create it).
 
 The block applies only inside Herdr panes and takes effect in newly opened panes. The report's
 `pane_env` object lists each file's `state` (`setup-status` too); when one holds the block,
-the Codex `foreground` status reads `configured` and `foreground.pane_env` reads `installed`
-(execution stays `unknown`: a wrapper that resets the environment, another shell, or a start
+the Codex `foreground` status reads `configured` and `foreground.pane_env` reads `installed`;
+`foreground.modified_by_setup` is true only when setup's record names that file (execution
+stays `unknown`: a wrapper that resets the environment, another shell, or a start
 outside a Herdr pane is not covered).
 
 Alternatively, for a Codex entrypoint that accepts the native flag, herdr-threads can add

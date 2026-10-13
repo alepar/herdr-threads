@@ -118,8 +118,17 @@ fn dir_var(value: Option<&OsStr>) -> Option<PathBuf> {
 
 /// The startup files to manage: the login shell's (`basename $SHELL`, when
 /// zsh, bash or fish), plus every one of the three whose startup files already
-/// exist (zsh: `.zshenv` or `.zshrc`; bash: `.bashrc`; fish: its config
-/// directory). Empty or relative variables count as unset; no HOME, no targets.
+/// exist (zsh: `.zshenv` or `.zshrc`; bash: `.bashrc`, `.bash_profile` or
+/// `.bash_login`; fish: its config directory). Empty or relative variables count
+/// as unset; no HOME, no targets.
+///
+/// Herdr starts pane shells as login shells. A login bash reads the first existing of
+/// `~/.bash_profile`, `~/.bash_login` and `~/.profile` (bash's own order) and not
+/// `~/.bashrc` unless that file sources it, so bash gets two targets: `~/.bashrc` (non-login
+/// interactive shells) and that login file, `~/.bash_profile` when none exists (so an
+/// existing `~/.profile` is never shadowed). Reading the idempotent block twice is harmless.
+/// zsh reads `${ZDOTDIR:-$HOME}/.zshenv` in every shell, login or not; setup uses its own
+/// `ZDOTDIR`, which a Herdr server started without it does not share.
 pub fn targets(
     home: Option<&OsStr>,
     zdotdir: Option<&OsStr>,
@@ -143,10 +152,24 @@ pub fn targets(
         });
     }
     let bashrc = home.join(".bashrc");
-    if login == Some("bash") || exists(&bashrc) {
+    let login_files = [".bash_profile", ".bash_login", ".profile"].map(|name| home.join(name));
+    if login == Some("bash")
+        || exists(&bashrc)
+        || exists(&login_files[0])
+        || exists(&login_files[1])
+    {
         found.push(Target {
             shell: Shell::Bash,
             path: bashrc,
+        });
+        let login_file = login_files
+            .iter()
+            .find(|path| exists(path))
+            .unwrap_or(&login_files[0])
+            .clone();
+        found.push(Target {
+            shell: Shell::Bash,
+            path: login_file,
         });
     }
     let fish = dir_var(xdg_config_home)
@@ -390,6 +413,9 @@ pub enum FileState {
     /// Holds a block that differs from what setup recorded writing: left alone unless
     /// `--with-pane-env` replaces it.
     Edited,
+    /// Holds exactly the current block, but setup has no record of writing it (for example
+    /// pasted by hand): reported, never adopted without consent, and unsetup leaves it.
+    Unrecorded,
     NotInstalled,
     Removed,
     /// The block was edited since setup wrote it: unsetup leaves it.
@@ -405,6 +431,7 @@ impl FileState {
             Self::AlreadyInstalled => "already_installed",
             Self::Outdated => "outdated",
             Self::Edited => "edited",
+            Self::Unrecorded => "present_unrecorded",
             Self::NotInstalled => "not_installed",
             Self::Removed => "removed",
             Self::LeftChanged => "left_changed",
@@ -419,6 +446,18 @@ pub struct FileReport {
     pub shell: Shell,
     pub path: PathBuf,
     pub state: FileState,
+}
+
+/// How far [`PaneEnv::apply`] may go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// No consent: refresh only blocks setup recorded writing.
+    Ask,
+    /// A typed yes to the terminal question: also add missing blocks and adopt an unrecorded
+    /// current one, but never replace an edited block.
+    Consent,
+    /// `--with-pane-env`: everything, including replacing an edited block.
+    Grant,
 }
 
 /// The component over its startup files and its manifest.
@@ -448,7 +487,14 @@ impl PaneEnv {
                     Current::Skipped(reason) => FileState::Skipped(reason),
                     Current::Bytes(bytes) => {
                         match holds(target.shell, &bytes, manifest.get(&target.path)) {
-                            Holds::Current => FileState::Installed,
+                            Holds::Current
+                                if manifest
+                                    .get(&target.path)
+                                    .is_some_and(|r| r.block == target.shell.content()) =>
+                            {
+                                FileState::Installed
+                            }
+                            Holds::Current => FileState::Unrecorded,
                             Holds::Other { owned: true, .. } => FileState::Outdated,
                             Holds::Other { owned: false, .. } => FileState::Edited,
                             Holds::Absent => FileState::NotInstalled,
@@ -465,18 +511,21 @@ impl PaneEnv {
             .collect())
     }
 
-    /// Bring every target up to date. An older block setup recorded writing is refreshed in
-    /// place; a file without the block gets it, and a block that differs from setup's record
-    /// is replaced, only when `grant` (explicit consent). A file already current is recorded
-    /// (so removal owns it) but not written.
-    pub fn apply(&self, grant: bool) -> Result<Vec<FileReport>, SetupError> {
+    /// Bring every target up to date under `mode`. An older block setup recorded writing is
+    /// refreshed in place in every mode. A file without the block gets it, and an unrecorded
+    /// current block is adopted (recorded, so removal owns it), only with consent
+    /// ([`Mode::Consent`] or [`Mode::Grant`]). A block that differs from setup's record is
+    /// replaced only under [`Mode::Grant`] (`--with-pane-env`).
+    pub fn apply(&self, mode: Mode) -> Result<Vec<FileReport>, SetupError> {
+        let consent = mode != Mode::Ask;
+        let grant = mode == Mode::Grant;
         let mut manifest = read_manifest(&self.manifest)?;
         let mut reports = Vec::new();
         for target in &self.targets {
             let content = target.shell.content();
             let state = match read(&target.path) {
                 Current::Skipped(reason) => FileState::Skipped(reason),
-                Current::Missing if !grant => FileState::NotInstalled,
+                Current::Missing if !consent => FileState::NotInstalled,
                 Current::Missing => {
                     let parent = target.path.parent().ok_or(SetupError::Invalid)?;
                     if target.shell == Shell::Fish {
@@ -494,6 +543,14 @@ impl PaneEnv {
                 }
                 Current::Bytes(bytes) => {
                     match holds(target.shell, &bytes, manifest.get(&target.path)) {
+                        Holds::Current
+                            if !consent
+                                && manifest
+                                    .get(&target.path)
+                                    .is_none_or(|r| r.block != target.shell.content()) =>
+                        {
+                            FileState::Unrecorded
+                        }
                         Holds::Current => self.record_current(&mut manifest, target),
                         Holds::Other { owned: false, .. } if !grant => FileState::Edited,
                         Holds::Other { range, .. } => {
@@ -501,7 +558,7 @@ impl PaneEnv {
                             next.splice(range, content.bytes());
                             self.write(&mut manifest, target, Some(&bytes), &next)
                         }
-                        Holds::Absent if !grant => FileState::NotInstalled,
+                        Holds::Absent if !consent => FileState::NotInstalled,
                         Holds::Absent => {
                             let mut next = bytes.clone();
                             if !next.is_empty() && !next.ends_with(b"\n") {
@@ -574,7 +631,8 @@ impl PaneEnv {
     }
 
     /// Take out every recorded block that is still byte-identical; delete a file setup
-    /// created once nothing else is left in it. A record is dropped unless its file could
+    /// created once nothing else is left in it, and a recorded fish drop-in that still holds
+    /// exactly the recorded content (a pre-image kept when setup did not create it). A record is dropped unless its file could
     /// not be written (so a re-run can finish it).
     pub fn remove(&self) -> Result<Vec<FileReport>, SetupError> {
         let mut manifest = read_manifest(&self.manifest)?;
@@ -698,12 +756,13 @@ pub(crate) fn inspect_foreground_environment(
     report: &mut Value,
 ) {
     let var = |name| declared(&environment.declared, name);
-    let installed = installed(&targets(
+    let targets = targets(
         environment.home.as_deref(),
         var("ZDOTDIR"),
         var("XDG_CONFIG_HOME"),
         var("SHELL"),
-    ));
+    );
+    let installed = installed(&targets);
     report["pane_env"] = json!(if installed {
         "installed"
     } else {
@@ -711,8 +770,32 @@ pub(crate) fn inspect_foreground_environment(
     });
     if installed {
         report["status"] = json!("configured");
-        report["modified_by_setup"] = json!(true);
+        // Setup's own change only when its ownership record names a file holding the block.
+        let manifest = environment.state_dir.as_deref().map(|state| {
+            manifest_path(
+                state,
+                "codex-pane-env",
+                environment.home.as_deref().map_or(Path::new(""), Path::new),
+            )
+        });
+        if manifest.is_some_and(|manifest| owned_current(&targets, &manifest)) {
+            report["modified_by_setup"] = json!(true);
+        }
     }
+}
+
+/// Whether the ownership record names a target that holds exactly the current block.
+fn owned_current(targets: &[Target], manifest: &Path) -> bool {
+    let Ok(manifest) = read_manifest(manifest) else {
+        return false;
+    };
+    targets.iter().any(|target| {
+        manifest
+            .get(&target.path)
+            .is_some_and(|record| record.block == target.shell.content())
+            && matches!(read(&target.path), Current::Bytes(bytes)
+                if matches!(holds(target.shell, &bytes, None), Holds::Current))
+    })
 }
 
 fn file_list(targets: &[Target]) -> String {
@@ -728,20 +811,34 @@ const WHY: &str = "Codex's shared app-server daemon runs tools and hooks with th
      Exporting CODEX_EXEC_SERVER_URL= (empty) inside Herdr panes keeps Codex inside its own \
      pane; it applies only inside Herdr panes and takes effect in newly opened panes.";
 
-/// The advice when nothing is installed: why, and how.
-pub(crate) fn advice(targets: &[Target]) -> String {
-    let how = if targets.is_empty() {
-        "No zsh, bash or fish startup file was found for this account".to_owned()
+/// The advice when some file lacks the block: the lines to add by hand first (so a
+/// truncated rendering never cuts them), then the setup command naming `missing`. The why
+/// lives once in the foreground advice, not here.
+pub(crate) fn advice(missing: &[Target], zdotdir: Option<&Path>) -> String {
+    let how = if missing.is_empty() {
+        " No zsh, bash or fish startup file was found for this account.".to_owned()
     } else {
         format!(
-            "`herdr-threads setup codex --with-pane-env` adds a guarded block to {}",
-            file_list(targets)
+            " Or `herdr-threads setup codex --with-pane-env` adds a guarded block to {}.",
+            file_list(missing)
         )
     };
+    let zdot = zdotdir.map_or_else(String::new, |dir| {
+        format!(
+            " zsh files follow this shell's ZDOTDIR ({}); a Herdr server started without it \
+             reads ~/.zshenv.",
+            dir.display()
+        )
+    });
     format!(
-        "{WHY} {how}; or add it to your shell startup file yourself (zsh/bash: `{POSIX_LINE}`; \
-         fish: `{FISH_LINE}`)."
+        "Add to your shell startup file: zsh/bash `{POSIX_LINE}`; fish `{FISH_LINE}`.{how}{zdot}"
     )
+}
+
+/// `ZDOTDIR` when it is set and differs from HOME (the note then says so).
+fn distinct_zdotdir(env: &SetupEnv) -> Option<PathBuf> {
+    let zdot = dir_var(declared(&env.declared_environment, "ZDOTDIR"))?;
+    (dir_var(env.home.as_deref()).as_deref() != Some(zdot.as_path())).then_some(zdot)
 }
 
 /// The consent question, naming the files.
@@ -752,7 +849,7 @@ pub(crate) fn question(targets: &[Target]) -> String {
     )
 }
 
-fn files_json(reports: &[FileReport]) -> Value {
+fn files_json(reports: &[FileReport], removing: bool) -> Value {
     json!(
         reports
             .iter()
@@ -763,6 +860,11 @@ fn files_json(reports: &[FileReport]) -> Value {
                     "state": report.state.as_str(),
                 });
                 match &report.state {
+                    FileState::Skipped(reason) if removing => {
+                        file["reason"] = json!(format!(
+                            "{reason}; remove the herdr-threads managed block from it yourself"
+                        ));
+                    }
                     FileState::Skipped(reason) => {
                         file["reason"] = json!(format!(
                             "{reason}; add this line to it yourself: {}",
@@ -813,6 +915,27 @@ fn manifest_error(component: &PaneEnv, error: &SetupError) -> String {
 /// otherwise advises, advise only reports, decline removes. Never an error: a problem is
 /// reported in the object and as a warning.
 pub(crate) fn install_report(env: &SetupEnv, policy: PaneEnvPolicy) -> (Value, Vec<String>) {
+    match policy {
+        PaneEnvPolicy::Ask => report_with(env, Some(Mode::Ask)),
+        PaneEnvPolicy::Grant => report_with(env, Some(Mode::Grant)),
+        PaneEnvPolicy::Advise => report_with(env, None),
+        PaneEnvPolicy::Decline => {
+            let report = match component(env) {
+                Ok(component) => remove_json(&component),
+                Err(error) => error_json(&error.to_string()),
+            };
+            let warnings = report["error"]
+                .as_str()
+                .map(|e| format!("pane environment: {e}"))
+                .into_iter()
+                .collect();
+            (report, warnings)
+        }
+    }
+}
+
+/// Apply `mode`, or with `None` only report (the installer's advise policy).
+fn report_with(env: &SetupEnv, mode: Option<Mode>) -> (Value, Vec<String>) {
     let component = match component(env) {
         Ok(component) => component,
         Err(error) => {
@@ -823,18 +946,9 @@ pub(crate) fn install_report(env: &SetupEnv, policy: PaneEnvPolicy) -> (Value, V
             );
         }
     };
-    if policy == PaneEnvPolicy::Decline {
-        let report = remove_json(&component);
-        let warnings = report["error"]
-            .as_str()
-            .map(|e| format!("pane environment: {e}"))
-            .into_iter()
-            .collect();
-        return (report, warnings);
-    }
-    let reports = match policy {
-        PaneEnvPolicy::Advise => component.status(),
-        _ => component.apply(policy == PaneEnvPolicy::Grant),
+    let reports = match mode {
+        None => component.status(),
+        Some(mode) => component.apply(mode),
     };
     let reports = match reports {
         Ok(reports) => reports,
@@ -847,23 +961,31 @@ pub(crate) fn install_report(env: &SetupEnv, policy: PaneEnvPolicy) -> (Value, V
         }
     };
     let any = |state: FileState| reports.iter().any(|report| report.state == state);
-    let action = match policy {
-        PaneEnvPolicy::Grant if any(FileState::Installed) => "installed",
-        PaneEnvPolicy::Grant if any(FileState::AlreadyInstalled) => "already_installed",
-        PaneEnvPolicy::Ask if any(FileState::Installed) || any(FileState::AlreadyInstalled) => {
-            "kept"
-        }
-        PaneEnvPolicy::Advise if any(FileState::Installed) => "kept",
+    let present =
+        any(FileState::Installed) || any(FileState::AlreadyInstalled) || any(FileState::Unrecorded);
+    let missing: Vec<Target> = reports
+        .iter()
+        .filter(|report| report.state == FileState::NotInstalled)
+        .map(|report| Target {
+            shell: report.shell,
+            path: report.path.clone(),
+        })
+        .collect();
+    let action = match mode {
+        Some(Mode::Grant | Mode::Consent) if any(FileState::Installed) => "installed",
+        Some(Mode::Grant | Mode::Consent) if present => "already_installed",
+        // Without consent a file still lacking the block is offered, even beside a kept one.
+        Some(Mode::Ask) | None if present && missing.is_empty() => "kept",
         _ => "advised",
     };
     let warnings = file_warnings(&reports);
     let mut report = json!({
         "action": action,
         "variable": VARIABLE,
-        "files": files_json(&reports),
+        "files": files_json(&reports, false),
     });
     if action == "advised" {
-        report["note"] = json!(advice(&component.targets));
+        report["note"] = json!(advice(&missing, distinct_zdotdir(env).as_deref()));
     }
     (report, warnings)
 }
@@ -881,7 +1003,7 @@ fn remove_json(component: &PaneEnv) -> Value {
                     "not_installed"
                 },
                 "variable": VARIABLE,
-                "files": files_json(&reports),
+                "files": files_json(&reports, true),
             })
         }
         Err(error) => error_json(&manifest_error(component, &error)),
@@ -904,13 +1026,16 @@ pub(crate) fn status_report(env: &SetupEnv) -> Value {
     };
     match component.status() {
         Ok(reports) => json!({
-            "state": if reports.iter().any(|r| r.state == FileState::Installed) {
+            "state": if reports
+                .iter()
+                .any(|r| matches!(r.state, FileState::Installed | FileState::Unrecorded))
+            {
                 "installed"
             } else {
                 "not_installed"
             },
             "variable": VARIABLE,
-            "files": files_json(&reports),
+            "files": files_json(&reports, false),
         }),
         Err(error) => error_json(&manifest_error(&component, &error)),
     }
@@ -932,13 +1057,27 @@ pub fn settle<R: io::BufRead + ?Sized, W: io::Write + ?Sized>(
         return Ok(());
     }
     let component = component(env)?;
-    write!(out, "{}", question(&component.targets))?;
+    let missing: Vec<Target> = component
+        .targets
+        .iter()
+        .filter(|target| {
+            report["pane_env"]["files"].as_array().is_some_and(|files| {
+                files.iter().any(|file| {
+                    file["state"] == "not_installed"
+                        && file["path"].as_str() == target.path.to_str()
+                })
+            })
+        })
+        .cloned()
+        .collect();
+    write!(out, "{}", question(&missing))?;
     out.flush()?;
     let mut answer = String::new();
     input.read_line(&mut answer)?;
     let yes = matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes");
     if yes {
-        let (pane_env, warnings) = install_report(env, PaneEnvPolicy::Grant);
+        // A yes adds missing blocks and keeps an edited one: only --with-pane-env replaces it.
+        let (pane_env, warnings) = report_with(env, Some(Mode::Consent));
         report["pane_env"] = pane_env;
         if !report["warnings"].is_array() {
             report["warnings"] = json!([]);
@@ -977,10 +1116,9 @@ pub(crate) fn line(value: &Value) -> Option<String> {
         (_, Some("error")) => format!("error: {}", value["error"].as_str().unwrap_or_default()),
         (Some("installed"), _) => format!("installed (`{VARIABLE}=` in Herdr panes): {}", files()),
         (Some("already_installed" | "kept"), _) => format!("installed: {}", files()),
-        (Some("advised"), _) => format!(
-            "not installed: {}",
-            value["note"].as_str().unwrap_or_default()
-        ),
+        (Some("advised"), _) => {
+            format!("advised: {}", value["note"].as_str().unwrap_or_default())
+        }
         (Some("declined"), _) => "declined; no startup file changed".to_owned(),
         (Some("removed"), _) => format!("removed: {}", files()),
         (Some("left_changed"), _) => format!("left in place (edited since setup): {}", files()),
@@ -1066,14 +1204,33 @@ mod tests {
                 path: zdot.join(".zshenv")
             }]
         );
-        assert_eq!(
-            t("/usr/local/bin/bash"),
-            [Target {
-                shell: Shell::Bash,
-                path: home.join(".bashrc")
-            }]
-        );
+        // Login bash (Herdr panes) reads the first existing login file; with none,
+        // ~/.bash_profile, which would be created.
+        let bash = |login: &str| {
+            vec![
+                Target {
+                    shell: Shell::Bash,
+                    path: home.join(".bashrc"),
+                },
+                Target {
+                    shell: Shell::Bash,
+                    path: home.join(login),
+                },
+            ]
+        };
+        assert_eq!(t("/usr/local/bin/bash"), bash(".bash_profile"));
+        // ~/.profile alone does not select bash (sh and zsh users have one too) ...
+        fs::write(home.join(".profile"), "").unwrap();
         assert!(t("/usr/bin/tcsh").is_empty());
+        // ... but is never shadowed: it is the login file when it is the first existing.
+        assert_eq!(t("/bin/bash"), bash(".profile"));
+        fs::write(home.join(".bash_login"), "").unwrap();
+        assert_eq!(t("/usr/bin/tcsh"), bash(".bash_login"));
+        fs::write(home.join(".bash_profile"), "").unwrap();
+        assert_eq!(t("/bin/bash"), bash(".bash_profile"));
+        for name in [".profile", ".bash_login", ".bash_profile"] {
+            fs::remove_file(home.join(name)).unwrap();
+        }
         assert_eq!(
             t("/opt/fish"),
             [Target {
@@ -1085,10 +1242,10 @@ mod tests {
         fs::create_dir_all(&zdot).unwrap();
         fs::write(zdot.join(".zshrc"), "").unwrap();
         let found: Vec<Shell> = t("").iter().map(|t| t.shell).collect();
-        assert_eq!(found, [Shell::Zsh, Shell::Bash]);
+        assert_eq!(found, [Shell::Zsh, Shell::Bash, Shell::Bash]);
         fs::create_dir_all(xdg.join("fish")).unwrap();
         let found: Vec<Shell> = t("/bin/sh").iter().map(|t| t.shell).collect();
-        assert_eq!(found, [Shell::Zsh, Shell::Bash, Shell::Fish]);
+        assert_eq!(found, [Shell::Zsh, Shell::Bash, Shell::Bash, Shell::Fish]);
         // No (or a relative) HOME: nothing.
         assert!(targets(None, None, None, Some(OsStr::new("zsh"))).is_empty());
         assert!(targets(Some(OsStr::new("rel")), None, None, Some(OsStr::new("zsh"))).is_empty());
@@ -1121,7 +1278,7 @@ mod tests {
         let (component, path) = zsh(&d.0);
         let _session = crate::harness::setup::BackupSession::start();
         assert_eq!(
-            states(&component.apply(true).unwrap()),
+            states(&component.apply(Mode::Grant).unwrap()),
             [FileState::Installed]
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), POSIX_BLOCK);
@@ -1129,7 +1286,7 @@ mod tests {
         drop(_session);
         // Idempotent: no write, no backup.
         assert_eq!(
-            states(&component.apply(true).unwrap()),
+            states(&component.apply(Mode::Grant).unwrap()),
             [FileState::AlreadyInstalled]
         );
         assert!(user_config_backups(&path).is_empty());
@@ -1138,7 +1295,7 @@ mod tests {
 
         // No trailing newline: one is added before the block; the old bytes are backed up once.
         fs::write(&path, "export A=1").unwrap();
-        component.apply(true).unwrap();
+        component.apply(Mode::Grant).unwrap();
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             format!("export A=1\n{POSIX_BLOCK}")
@@ -1150,7 +1307,7 @@ mod tests {
         fs::create_dir(&other).unwrap();
         let (component, path) = zsh(&other);
         fs::write(&path, format!("{BEGIN} x\n")).unwrap();
-        let reports = component.apply(true).unwrap();
+        let reports = component.apply(Mode::Grant).unwrap();
         assert!(matches!(reports[0].state, FileState::Skipped(_)));
         assert_eq!(fs::read_to_string(&path).unwrap(), format!("{BEGIN} x\n"));
         assert!(user_config_backups(&path).is_empty());
@@ -1167,7 +1324,7 @@ mod tests {
         fs::write(&path, &old).unwrap();
         // Unrecorded and different: edited, left alone by the default policy.
         assert_eq!(
-            states(&component.apply(false).unwrap()),
+            states(&component.apply(Mode::Ask).unwrap()),
             [FileState::Edited]
         );
         assert_eq!(states(&component.status().unwrap()), [FileState::Edited]);
@@ -1183,7 +1340,7 @@ mod tests {
         save_manifest(&component.manifest, &manifest).unwrap();
         assert_eq!(states(&component.status().unwrap()), [FileState::Outdated]);
         assert_eq!(
-            states(&component.apply(false).unwrap()),
+            states(&component.apply(Mode::Ask).unwrap()),
             [FileState::Installed]
         );
         assert_eq!(
@@ -1197,12 +1354,12 @@ mod tests {
             .replace("URL=;", "URL=x;");
         fs::write(&path, &edited).unwrap();
         assert_eq!(
-            states(&component.apply(false).unwrap()),
+            states(&component.apply(Mode::Ask).unwrap()),
             [FileState::Edited]
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), edited);
         assert_eq!(
-            states(&component.apply(true).unwrap()),
+            states(&component.apply(Mode::Grant).unwrap()),
             [FileState::Installed]
         );
         assert_eq!(
@@ -1214,7 +1371,7 @@ mod tests {
         let (fresh, fresh_path) = zsh(&d.0.join("fresh"));
         fs::write(&fresh_path, "x\n").unwrap();
         assert_eq!(
-            states(&fresh.apply(false).unwrap()),
+            states(&fresh.apply(Mode::Ask).unwrap()),
             [FileState::NotInstalled]
         );
         assert_eq!(fs::read_to_string(&fresh_path).unwrap(), "x\n");
@@ -1229,7 +1386,7 @@ mod tests {
         let real = d.0.join("real");
         fs::write(&real, "x\n").unwrap();
         std::os::unix::fs::symlink(&real, &path).unwrap();
-        let reports = component.apply(true).unwrap();
+        let reports = component.apply(Mode::Grant).unwrap();
         assert!(
             matches!(&reports[0].state, FileState::Skipped(reason) if reason.contains("symlink"))
         );
@@ -1240,14 +1397,14 @@ mod tests {
         let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
         // SAFETY: the NUL-terminated pathname remains alive for this call.
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-        let reports = component.apply(true).unwrap();
+        let reports = component.apply(Mode::Grant).unwrap();
         assert!(
             matches!(&reports[0].state, FileState::Skipped(reason) if reason.contains("regular"))
         );
         fs::remove_file(&path).unwrap();
 
         fs::File::create(&path).unwrap().set_len(LIMIT + 1).unwrap();
-        let reports = component.apply(true).unwrap();
+        let reports = component.apply(Mode::Grant).unwrap();
         assert!(
             matches!(&reports[0].state, FileState::Skipped(reason) if reason.contains("1 MiB"))
         );
@@ -1264,7 +1421,7 @@ mod tests {
         let d = dir();
         let (component, path) = zsh(&d.0);
         fs::write(&path, "before\n").unwrap();
-        component.apply(true).unwrap();
+        component.apply(Mode::Grant).unwrap();
         fs::write(
             &path,
             format!("{}after\n", fs::read_to_string(&path).unwrap()),
@@ -1284,7 +1441,7 @@ mod tests {
             ]
         );
 
-        component.apply(true).unwrap();
+        component.apply(Mode::Grant).unwrap();
         let edited = fs::read_to_string(&path)
             .unwrap()
             .replace("CODEX_EXEC_SERVER_URL=;", "CODEX_EXEC_SERVER_URL=x;");
@@ -1303,11 +1460,11 @@ mod tests {
     fn a_created_file_is_deleted_when_only_whitespace_is_left() {
         let d = dir();
         let (component, path) = zsh(&d.0);
-        component.apply(true).unwrap();
+        component.apply(Mode::Grant).unwrap();
         assert_eq!(states(&component.remove().unwrap()), [FileState::Removed]);
         assert!(!path.exists());
         assert!(user_config_backups(&path).is_empty());
-        component.apply(true).unwrap();
+        component.apply(Mode::Grant).unwrap();
         fs::write(&path, format!("\n{POSIX_BLOCK}\n")).unwrap();
         assert_eq!(states(&component.remove().unwrap()), [FileState::Removed]);
         assert!(!path.exists());
@@ -1316,7 +1473,7 @@ mod tests {
             [format!("\n{POSIX_BLOCK}\n").into_bytes()]
         );
         // A created file with other content left keeps the content.
-        component.apply(true).unwrap();
+        component.apply(Mode::Grant).unwrap();
         fs::write(&path, format!("{POSIX_BLOCK}keep\n")).unwrap();
         component.remove().unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "keep\n");
@@ -1335,7 +1492,7 @@ mod tests {
             manifest: d.0.join("state/setup/m.json"),
         };
         assert_eq!(
-            states(&component.apply(true).unwrap()),
+            states(&component.apply(Mode::Grant).unwrap()),
             [FileState::Installed]
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), FISH_FILE);
@@ -1346,12 +1503,12 @@ mod tests {
         // A drop-in setup did not write is never replaced; an edited one is left.
         fs::write(&path, "set -gx X 1\n").unwrap();
         assert!(matches!(
-            component.apply(true).unwrap()[0].state,
+            component.apply(Mode::Grant).unwrap()[0].state,
             FileState::Skipped(_)
         ));
         assert_eq!(fs::read_to_string(&path).unwrap(), "set -gx X 1\n");
         fs::remove_file(&path).unwrap();
-        component.apply(true).unwrap();
+        component.apply(Mode::Grant).unwrap();
         fs::write(&path, "edited\n").unwrap();
         assert_eq!(states(&component.status().unwrap()), [FileState::Edited]);
         assert_eq!(
@@ -1494,6 +1651,128 @@ mod tests {
         }
     }
 
+    /// Kills: a terminal yes replacing a block the user edited (only --with-pane-env may),
+    /// or skipping the file that lacks the block beside it.
+    #[test]
+    fn a_terminal_yes_adds_missing_blocks_and_keeps_an_edited_one() {
+        let d = dir();
+        let home = d.0.join("home");
+        fs::create_dir(&home).unwrap();
+        let mut env = scratch_env(&d.0);
+        env.declared_environment
+            .insert("SHELL".to_owned(), "/bin/zsh".into());
+        let zshenv = home.join(".zshenv");
+        let bashrc = home.join(".bashrc");
+        let edited = format!("a\n{}", POSIX_BLOCK.replace("URL=;", "URL=; export X=1;"));
+        fs::write(&zshenv, &edited).unwrap();
+        fs::write(&bashrc, "b\n").unwrap();
+        fs::write(home.join(".bash_profile"), POSIX_BLOCK).unwrap();
+        let (pane_env, _) = install_report(&env, PaneEnvPolicy::Ask);
+        assert_eq!(pane_env["action"], "advised", "{pane_env}");
+        let mut report = json!({"pane_env": pane_env, "warnings": []});
+        let mut out = Vec::new();
+        settle(&env, &mut report, &mut "y\n".as_bytes(), &mut out).unwrap();
+        let asked = String::from_utf8(out).unwrap();
+        assert!(asked.contains(&bashrc.display().to_string()), "{asked}");
+        assert!(!asked.contains(&zshenv.display().to_string()), "{asked}");
+        assert_eq!(report["pane_env"]["action"], "installed", "{report}");
+        let states: Vec<_> = report["pane_env"]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| file["state"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(states, ["edited", "installed", "already_installed"]);
+        assert_eq!(fs::read_to_string(&zshenv).unwrap(), edited);
+        assert_eq!(
+            fs::read_to_string(&bashrc).unwrap(),
+            format!("b\n{POSIX_BLOCK}")
+        );
+        // --with-pane-env does replace it.
+        let (granted, _) = install_report(&env, PaneEnvPolicy::Grant);
+        assert_eq!(granted["files"][0]["state"], "installed");
+        assert_eq!(
+            fs::read_to_string(&zshenv).unwrap(),
+            format!("a\n{POSIX_BLOCK}")
+        );
+    }
+
+    /// Kills: a plain setup adopting a hand-pasted block as owned, so unsetup would remove it.
+    #[test]
+    fn plain_setup_never_adopts_a_hand_pasted_block() {
+        let d = dir();
+        let (component, path) = zsh(&d.0);
+        fs::write(&path, format!("mine\n{POSIX_BLOCK}")).unwrap();
+        assert_eq!(
+            states(&component.apply(Mode::Ask).unwrap()),
+            [FileState::Unrecorded]
+        );
+        assert_eq!(
+            states(&component.status().unwrap()),
+            [FileState::Unrecorded]
+        );
+        assert!(!component.manifest.exists());
+        assert_eq!(component.remove().unwrap(), []);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            format!("mine\n{POSIX_BLOCK}")
+        );
+        // A consented run adopts it; unsetup then owns it.
+        assert_eq!(
+            states(&component.apply(Mode::Consent).unwrap()),
+            [FileState::AlreadyInstalled]
+        );
+        assert_eq!(states(&component.status().unwrap()), [FileState::Installed]);
+        assert_eq!(states(&component.remove().unwrap()), [FileState::Removed]);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "mine\n");
+    }
+
+    /// Kills: the hand-add lines cut off by the installer's 600-character rendering cap, the
+    /// why repeated beside the foreground warning, or a silent ZDOTDIR mismatch.
+    #[test]
+    fn advice_leads_with_the_manual_lines_and_names_a_distinct_zdotdir() {
+        let missing = [Target {
+            shell: Shell::Zsh,
+            path: PathBuf::from("/h/zdot/.zshenv"),
+        }];
+        let note = advice(&missing, Some(Path::new("/h/zdot")));
+        let head: String = note.chars().take(600).collect();
+        assert!(
+            head.contains(POSIX_LINE) && head.contains(FISH_LINE),
+            "{note}"
+        );
+        assert!(note.contains("ZDOTDIR (/h/zdot)"), "{note}");
+        assert!(!note.contains("wrong pane"), "{note}");
+        assert!(!advice(&missing, None).contains("ZDOTDIR"));
+        let d = dir();
+        let mut env = scratch_env(&d.0);
+        env.declared_environment
+            .insert("ZDOTDIR".to_owned(), d.0.join("home").into_os_string());
+        assert_eq!(distinct_zdotdir(&env), None, "ZDOTDIR equal to HOME");
+        env.declared_environment
+            .insert("ZDOTDIR".to_owned(), d.0.join("z").into_os_string());
+        assert_eq!(distinct_zdotdir(&env), Some(d.0.join("z")));
+    }
+
+    /// Kills: unsetup advice that tells the user to add the line to a file it could not
+    /// remove the block from.
+    #[test]
+    fn unsetup_advice_for_a_skipped_file_says_remove() {
+        let d = dir();
+        let (component, path) = zsh(&d.0);
+        component.apply(Mode::Grant).unwrap();
+        let real = d.0.join("real");
+        fs::rename(&path, &real).unwrap();
+        std::os::unix::fs::symlink(&real, &path).unwrap();
+        let report = remove_json(&component);
+        let reason = report["files"][0]["reason"].as_str().unwrap();
+        assert!(
+            reason.contains("remove the herdr-threads managed block"),
+            "{reason}"
+        );
+        assert!(!reason.contains("add this line"), "{reason}");
+    }
+
     /// The installer's advise policy reports but never writes, even an owned outdated block.
     /// Kills: a write (or a recorded adoption) from the installer path.
     #[test]
@@ -1501,15 +1780,25 @@ mod tests {
         let d = dir();
         fs::create_dir(d.0.join("home")).unwrap();
         let bashrc = d.0.join("home/.bashrc");
+        let profile = d.0.join("home/.bash_profile");
         fs::write(&bashrc, "x\n").unwrap();
         let env = scratch_env(&d.0);
         let (report, _) = install_report(&env, PaneEnvPolicy::Advise);
         assert_eq!(report["action"], "advised");
         assert!(report["note"].as_str().unwrap().contains("--with-pane-env"));
         assert_eq!(fs::read_to_string(&bashrc).unwrap(), "x\n");
+        assert!(!profile.exists());
         fs::write(&bashrc, format!("x\n{POSIX_BLOCK}")).unwrap();
+        // One file still lacks it: still advised, naming only that file.
+        let (report, _) = install_report(&env, PaneEnvPolicy::Advise);
+        assert_eq!(report["action"], "advised");
+        let note = report["note"].as_str().unwrap();
+        assert!(note.contains(&profile.display().to_string()), "{note}");
+        assert!(!note.contains(&bashrc.display().to_string()), "{note}");
+        fs::write(&profile, POSIX_BLOCK).unwrap();
         let (report, _) = install_report(&env, PaneEnvPolicy::Advise);
         assert_eq!(report["action"], "kept");
+        assert_eq!(report["files"][0]["state"], "present_unrecorded");
         assert!(
             !component(&env).unwrap().manifest.exists(),
             "nothing recorded"
@@ -1525,7 +1814,8 @@ mod tests {
         fs::create_dir(&home).unwrap();
         let environment = crate::harness::adapter::SetupEnvironment {
             home: Some(home.clone().into_os_string()),
-            declared: [("SHELL".to_owned(), "/bin/bash".into())].into(),
+            state_dir: Some(d.0.join("state")),
+            declared: [("SHELL".to_owned(), "/bin/zsh".into())].into(),
             ..Default::default()
         };
         let read = || {
@@ -1537,16 +1827,26 @@ mod tests {
             read(),
             json!({"status": "required", "modified_by_setup": false, "pane_env": "not_installed"})
         );
-        fs::write(home.join(".bashrc"), format!("x\n{POSIX_BLOCK}")).unwrap();
+        // Pasted by hand: configured, but not setup's change.
+        fs::write(home.join(".zshenv"), format!("x\n{POSIX_BLOCK}")).unwrap();
+        assert_eq!(
+            read(),
+            json!({"status": "configured", "modified_by_setup": false, "pane_env": "installed"})
+        );
+        // Recorded by setup (a consented adoption): setup's change.
+        let env = SetupEnv::from_snapshot(&environment);
+        let component = component(&env).unwrap();
+        component.apply(Mode::Consent).unwrap();
         assert_eq!(
             read(),
             json!({"status": "configured", "modified_by_setup": true, "pane_env": "installed"})
         );
         fs::write(
-            home.join(".bashrc"),
+            home.join(".zshenv"),
             format!("x\n{}", POSIX_BLOCK.replace("URL=;", "URL=y;")),
         )
         .unwrap();
         assert_eq!(read()["status"], "required");
+        assert_eq!(read()["modified_by_setup"], false);
     }
 }

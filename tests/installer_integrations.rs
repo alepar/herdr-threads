@@ -823,10 +823,13 @@ fn installer_never_writes_the_pane_environment_and_only_advises() {
     success(&out);
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("codex hooks: installed"), "{text}");
-    assert!(
-        text.contains("  pane environment: Codex's shared app-server daemon"),
-        "{text}"
-    );
+    // The hand-add lines come first, so the 600-character cap never cuts them.
+    for line in [
+        "  pane environment: Add to your shell startup file: zsh/bash `if [ \"${HERDR_ENV-}\" = 1 ]; then export CODEX_EXEC_SERVER_URL=; fi`;",
+        "fish `if test \"$HERDR_ENV\" = 1; set -gx CODEX_EXEC_SERVER_URL \"\"; end`.",
+    ] {
+        assert!(text.contains(line), "{line}: {text}");
+    }
     assert!(text.contains("--with-pane-env"), "{text}");
     assert_eq!(
         fs::read_to_string(home.join(".bashrc")).unwrap(),

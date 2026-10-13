@@ -3017,6 +3017,13 @@ fn pane_env_flags_are_setup_scoped_to_declaring_harnesses() {
             );
         }
     }
+    // An unknown harness is reported as unknown, not as lacking the option.
+    let Err(error) = parse_argv(["ht", "setup", "nosuch", "--with-pane-env"]) else {
+        panic!("unknown harness accepted")
+    };
+    let detail = format!("{error:?}");
+    assert!(detail.contains("nosuch"), "{detail}");
+    assert!(!detail.contains("declares a pane environment"), "{detail}");
     // The installer-only option has no CLI flag.
     assert!(parse_argv(["ht", "setup", "codex", "--advise-pane-env"]).is_err());
 }

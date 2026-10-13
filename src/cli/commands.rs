@@ -1483,10 +1483,13 @@ fn setup_action(
                 .any(|declared| declared.name == option)
         };
         let declared = match args.harness.as_deref() {
-            Some(name) => registry
-                .agent(name)
-                .and_then(|id| registry.by_id(id))
-                .is_ok_and(declares),
+            // An unknown harness is reported as such, not as one lacking the option.
+            Some(name) => declares(
+                registry
+                    .agent(name)
+                    .and_then(|id| registry.by_id(id))
+                    .map_err(|error| invalid(error.to_string()))?,
+            ),
             None => registry.registrations().iter().any(declares),
         };
         if !declared {
