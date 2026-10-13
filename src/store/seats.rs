@@ -1136,7 +1136,7 @@ fn saved_seat_scalar(
     let bound_epoch: Option<i64> = match &structural_proof {
         Some(proof) => conn
             .query_row(
-                "SELECT MIN(host_epoch) FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL AND observation_provenance IN (?2,?3,?4,?5) AND host_boot=?6 AND incarnation=?7",
+                "SELECT MIN(host_epoch) FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL AND observation_provenance IN (?2,?3,?4,?5) AND host_boot=?6 AND incarnation=?7 AND target_id=?8",
                 params![
                     &id,
                     CARRIED_BINDING_PROVENANCES[0],
@@ -1144,7 +1144,8 @@ fn saved_seat_scalar(
                     CARRIED_BINDING_PROVENANCES[2],
                     CARRIED_BINDING_PROVENANCES[3],
                     proof.host_boot().as_str(),
-                    proof.incarnation()
+                    proof.incarnation(),
+                    target.as_deref()
                 ],
                 |r| r.get(0),
             )
@@ -1936,7 +1937,7 @@ pub(crate) fn carry_binding_forward(
         ],
     ).map_err(store_error)?;
     // A seat holds many bindings (ht-54r.3): every open registered carried binding moves, and
-    // the seat's availability anchor is written once, from the most recent of them. The seat
+    // the seat's availability anchor is written once (when available), from the most recent. The seat
     // generation is the fence (the caller's compare-and-set); a binding's own is informational.
     if changed == 0 {
         return Ok(false);
@@ -1958,17 +1959,30 @@ pub(crate) fn carry_binding_forward(
             |r| r.get(0),
         )
         .map_err(store_error)?;
+    tx.execute(
+        "UPDATE wake_work SET binding_generation=?1 WHERE seat_id=?2 AND reservation_id IS NULL",
+        params![binding_generation, seat.as_str()],
+    )
+    .map_err(store_error)?;
+    // C4: the carry moves rows regardless of liveness (a disconnected row resumes on its next
+    // reconnect), but availability follows liveness: only a carry that leaves the seat
+    // effectively available (a connected carried row) anchors availability, starting receipt
+    // timers, and closes the unavailability episode. The seat's target generation moves with
+    // the rows first (the caller's later write of the same value is idempotent).
+    tx.execute(
+        "UPDATE seats SET target_generation=?1 WHERE id=?2 AND generation=?3 AND state='resolved'",
+        params![target_generation, seat.as_str(), binding_generation],
+    )
+    .map_err(store_error)?;
+    if schema::effective_registered_availability(tx, seat.as_str(), Some(instance))?.is_none() {
+        return Ok(true);
+    }
     let seq = schema::next_decision_seq(tx, instance)?;
     anchor_seat_availability(tx, seat, seq, at, binding_generation, &provenance)?;
     schema::clear_open_unavailability_for_seat(tx, seat.as_str(), at)?;
     tx.execute(
         "UPDATE seats SET unavailability_open=0 WHERE id=?1",
         [seat.as_str()],
-    )
-    .map_err(store_error)?;
-    tx.execute(
-        "UPDATE wake_work SET binding_generation=?1 WHERE seat_id=?2 AND reservation_id IS NULL",
-        params![binding_generation, seat.as_str()],
     )
     .map_err(store_error)?;
     Ok(true)

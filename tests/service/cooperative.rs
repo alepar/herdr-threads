@@ -2174,6 +2174,97 @@ fn an_older_connected_binding_is_carried_past_a_newer_session_of_the_new_epoch()
     assert_eq!(scenario.published(&message), (true, vec![]));
 }
 
+// Kills (C4, availability follows liveness): a carry that anchors availability
+// (starting receipt timers) and closes the unavailability episode although no
+// carried row is connected, and a `carry_pending` that suppresses the warning
+// for a seat whose lagging bindings are all disconnected. Shape: the main
+// session exits before Herdr restarts; after the restart a one-shot registers
+// at epoch 2 and exits. The pass still carries the lagging main row (it
+// resumes on its next reconnect), but the seat stays unavailable.
+#[test]
+fn a_disconnected_carry_neither_anchors_availability_nor_suppresses_the_warning() {
+    let scenario = SendScenario::new();
+    assert_eq!(
+        scenario.liveness_pass(SENDER_ALIVE),
+        1,
+        "the main session exits"
+    );
+    let second = publish_snapshot_at(&scenario.context, 2, 7, &["p", "q"], true);
+    checked(
+        &scenario.service,
+        lifecycle(scenario.sender.clone(), "sender-again"),
+    );
+    let mut one_shot = scenario.main.clone();
+    one_shot.native_session = NativeSessionId::new("recipient-one-shot");
+    one_shot.liveness = Some(crate::protocol::authority::LivenessFingerprint { pid: 3, start: 1 });
+    one_shot.execution = ExecutionId::new("00000000-0000-4000-8000-000000000003");
+    checked(&scenario.service, lifecycle(one_shot, "recipient-one-shot"));
+    assert_eq!(
+        scenario.liveness_pass(SENDER_ALIVE),
+        1,
+        "the one-shot exits"
+    );
+    assert_eq!(
+        recipient_bindings(&scenario),
+        vec![
+            ("recipient-main".to_owned(), 1, "disconnected".to_owned()),
+            (
+                "recipient-one-shot".to_owned(),
+                2,
+                "disconnected".to_owned()
+            ),
+        ]
+    );
+    assert!(!scenario.available());
+    assert!(
+        !scenario.carry_pending(),
+        "no connected lagging binding: no carry restores availability"
+    );
+    // A send in the restart window warns about the recipient.
+    let send = scenario.request("in-window");
+    scenario.prepare(&send);
+    assert_eq!(scenario.staged_warnings(), 1, "the window send warns");
+    let anchors =
+        || scenario.count("SELECT count(*) FROM seat_availability WHERE seat_id='recipient'");
+    let anchored = anchors();
+    assert_recipient_carried(&scenario.reconcile_pages(&second));
+    assert!(
+        scenario
+            .store
+            .record_reconciliation_pass(&second, &budget())
+            .unwrap()
+    );
+    assert_eq!(
+        recipient_bindings(&scenario),
+        vec![
+            ("recipient-main".to_owned(), 2, "disconnected".to_owned()),
+            (
+                "recipient-one-shot".to_owned(),
+                2,
+                "disconnected".to_owned()
+            ),
+        ],
+        "the lagging row is carried, still disconnected"
+    );
+    assert!(!scenario.available());
+    assert_eq!(
+        anchors(),
+        anchored,
+        "no availability anchor without a connected row"
+    );
+    assert_eq!(
+        scenario.count("SELECT unavailability_open FROM seats WHERE id='recipient'"),
+        1,
+        "the unavailability episode stays open"
+    );
+    let (message, _) = scenario.decide_with_retry(send);
+    assert_eq!(
+        scenario.published(&message),
+        (false, vec!["recipient".to_owned()]),
+        "the window send publishes the warning"
+    );
+}
+
 /// A send staged across the pass of the new epoch (before or after its
 /// saved-seat page, before its marker) and decided after the marker must
 /// publish what the post-pass canonical state requires: the carried main

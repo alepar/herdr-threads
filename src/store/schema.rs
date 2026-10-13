@@ -3476,22 +3476,27 @@ pub fn effective_registered_availability(
 /// C4 pre-reconciliation window: true while the instance's reconciliation
 /// marker lags the recovery boot/epoch (`reconciled_*` IS NOT `recovery_*`;
 /// publishing a new host epoch always advances `recovery_*`) and the seat's
-/// open registered binding will be structurally carried: resolved seat, a
-/// provenance in `CARRIED_BINDING_PROVENANCES`, the current host boot, an older
-/// host epoch, and an incarnation equal to the seat's structural incarnation.
-/// A send optimistically assumes that carry: the recipient is staged as not yet
-/// available but is not warned about; the carry's availability anchor starts
-/// the receipt timer. If the pass does not carry it, the ordinary unavailable
-/// paths open the episode.
+/// open registered binding will be structurally carried and is connected, so
+/// the carry will make the seat available: resolved seat, a connected binding
+/// with a provenance in `CARRIED_BINDING_PROVENANCES`, the seat's target, the
+/// current host boot and the structural proof's boot, an older host epoch, and
+/// an incarnation equal to the seat's structural incarnation (the binding
+/// predicate the planner's `bound_epoch` and `carry_binding_forward` share,
+/// narrowed to connected rows). A send optimistically assumes that carry: the
+/// recipient is staged as not yet available but is not warned about; the
+/// carry's availability anchor starts the receipt timer. A seat whose lagging
+/// bindings are all disconnected is warned about now: their carry restores no
+/// availability. If the pass does not carry it, the ordinary unavailable paths
+/// open the episode.
 pub fn carry_pending(db: &Connection, seat: &str, instance: &str) -> Result<bool, ApiError> {
     db.query_row(
         "SELECT EXISTS(SELECT 1 FROM seats s JOIN host_instances h ON h.id=s.instance_id \
          JOIN occupant_bindings b ON b.seat_id=s.id \
          WHERE s.id=?1 AND h.id=?2 AND s.state='resolved' \
            AND (h.reconciled_boot IS NOT h.recovery_boot OR h.reconciled_epoch IS NOT h.recovery_epoch) \
-           AND b.ended_at IS NULL AND b.registered_at IS NOT NULL \
-           AND b.observation_provenance IN (?3,?4,?5,?6) \
-           AND b.host_boot=h.host_boot AND b.host_epoch<h.host_epoch \
+           AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.liveness='connected' \
+           AND b.observation_provenance IN (?3,?4,?5,?6) AND b.target_id=s.target_id \
+           AND b.host_boot=h.host_boot AND b.host_boot=s.structural_host_boot AND b.host_epoch<h.host_epoch \
            AND b.incarnation IS NOT NULL AND b.incarnation=s.structural_incarnation)",
         params![
             seat,
