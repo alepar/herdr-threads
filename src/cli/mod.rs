@@ -486,9 +486,11 @@ fn run_parsed_in_pane<W: Write>(
     if let CliAction::InstallerIntegrations {
         confirm_missing,
         without_permissions,
+        config_roots,
     } = &parsed.action
     {
         return installer::run(
+            config_roots,
             *confirm_missing,
             *without_permissions,
             &parsed.output,

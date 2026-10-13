@@ -148,7 +148,7 @@ fn permissions_are_a_separate_decision_after_the_hooks() {
     assert!(f.root.join("codex/rules/herdr-threads.rules").exists());
     let settings = fs::read_to_string(f.root.join("claude/settings.json")).unwrap();
     assert!(!settings.contains("Bash(herdr-threads *)"), "{settings}");
-    let again = super::execute_with(&f.env, false, true, true, |question| {
+    let again = super::execute_with(&f.env, &[], false, true, true, |question| {
         assert!(!question.contains("without prompting"), "{question}");
         Ok(true)
     });
@@ -817,6 +817,486 @@ fn declared_skill_ownership_refusals_preserve_bytes_and_hooks() {
                     .file_type()
                     .is_symlink()
             );
+        }
+    }
+}
+
+// ---------------------------------------------------------------- shared roots and extra roots
+
+fn extra(harness: &str, root: &Path) -> ExtraConfigRoot {
+    ExtraConfigRoot {
+        harness: harness.into(),
+        root: root.to_path_buf(),
+    }
+}
+
+fn entry<'a>(report: &'a Value, harness: &str, component: &str, root: &Path) -> &'a Value {
+    report["integrations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| {
+            e["harness"] == harness
+                && e["component"] == component
+                && e["config_root"] == json!(root.display().to_string())
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "no {harness} {component} entry for {}: {report}",
+                root.display()
+            )
+        })
+}
+
+/// A profile root whose `skills` (and, for Codex, `rules`) directories are symbolic links to
+/// `target`'s, like an aisw profile.
+fn linked_profile(root: &Path, target: &Path, rules: bool) {
+    fs::create_dir_all(root).unwrap();
+    std::os::unix::fs::symlink(target.join("skills"), root.join("skills")).unwrap();
+    if rules {
+        std::os::unix::fs::symlink(target.join("rules"), root.join("rules")).unwrap();
+    }
+}
+
+fn no_removal_advice(detail: &str) {
+    assert!(detail.contains("shared through a symlink to"), "{detail}");
+    assert!(
+        detail.contains("set up the root that holds the real file first"),
+        "{detail}"
+    );
+    assert!(
+        !detail.contains("remove it") && !detail.contains("move it aside"),
+        "{detail}"
+    );
+}
+
+// Kills writing through a shared symlink, asking for it, failing on it, or recording the lexical
+// path: an owned, unedited real file is `shared`, and the profile's own hooks still install.
+#[test]
+fn shared_skill_and_rules_owned_at_the_real_root_are_reported_not_written() {
+    let f = Fixture::new();
+    let installed = execute(&f.env, true, false, |_| panic!("explicit consent"));
+    assert_eq!(installed["exit_status"], 0, "{installed}");
+    let codex_profile = f.root.join("profiles/codex/p1");
+    let claude_profile = f.root.join("profiles/claude/c1");
+    linked_profile(&codex_profile, &f.root.join("codex"), true);
+    linked_profile(&claude_profile, &f.root.join("claude"), false);
+    let skill = fs::read(f.root.join("codex/skills/herdr-threads/SKILL.md")).unwrap();
+    let rules = fs::read(f.root.join("codex/rules/herdr-threads.rules")).unwrap();
+    let mut prompts = Vec::new();
+    let report = execute_for_registry_with(
+        crate::harness::registry::builtins(),
+        &f.env,
+        &[
+            extra("codex", &codex_profile),
+            extra("claude", &claude_profile),
+        ],
+        false,
+        false,
+        true,
+        |question| {
+            prompts.push(question.to_owned());
+            Ok(true)
+        },
+    );
+    assert_eq!(report["exit_status"], 0, "{report}");
+    assert_eq!(
+        prompts,
+        [
+            format!(
+                "Install herdr-threads hooks for claude (CLAUDE_CONFIG_DIR={})?",
+                claude_profile.display()
+            ),
+            permission_question(&format!(
+                "claude (CLAUDE_CONFIG_DIR={})",
+                claude_profile.display()
+            )),
+            format!(
+                "Install herdr-threads hooks for codex (CODEX_HOME={})?",
+                codex_profile.display()
+            ),
+        ]
+    );
+    for (harness, profile) in [("codex", &codex_profile), ("claude", &claude_profile)] {
+        let shared = entry(&report, harness, "skill", profile);
+        assert_eq!(shared["outcome"], "shared", "{report}");
+        let detail = shared["detail"].as_str().unwrap();
+        assert!(
+            detail.starts_with("shared via symlink; managed at ")
+                && detail.ends_with(&format!("{harness}/skills/herdr-threads/SKILL.md")),
+            "{detail}"
+        );
+        assert_eq!(
+            entry(&report, harness, "hooks", profile)["outcome"],
+            "installed"
+        );
+        let state = f.env.state_dir.as_ref().unwrap();
+        let lexical = profile.join("skills/herdr-threads/SKILL.md");
+        assert!(!setup::manifest_path(state, &format!("{harness}-skill"), &lexical).exists());
+        assert!(
+            fs::symlink_metadata(profile.join("skills"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        // The effective roots are labelled too once a harness has more than one root.
+        let default = f.root.join(harness);
+        assert_eq!(
+            entry(&report, harness, "skill", &default)["outcome"],
+            "updated"
+        );
+        assert_eq!(
+            entry(&report, harness, "skill", &default)["root_label"],
+            json!(format!(
+                "{}={}",
+                if harness == "codex" {
+                    "CODEX_HOME"
+                } else {
+                    "CLAUDE_CONFIG_DIR"
+                },
+                default.display()
+            ))
+        );
+    }
+    let permissions = entry(&report, "codex", "permissions", &codex_profile);
+    assert_eq!(permissions["outcome"], "shared", "{report}");
+    assert!(
+        permissions["detail"]
+            .as_str()
+            .unwrap()
+            .ends_with("codex/rules/herdr-threads.rules"),
+        "{permissions}"
+    );
+    assert_eq!(
+        entry(&report, "claude", "permissions", &claude_profile)["outcome"],
+        "installed"
+    );
+    assert_eq!(
+        fs::read(f.root.join("codex/skills/herdr-threads/SKILL.md")).unwrap(),
+        skill
+    );
+    assert_eq!(
+        fs::read(f.root.join("codex/rules/herdr-threads.rules")).unwrap(),
+        rules
+    );
+    assert!(codex_profile.join("hooks.json").is_file());
+    // Status and doctor report the same shared state for the profile's rules.
+    let mut profile_env = f.env.clone();
+    profile_env
+        .config_roots
+        .insert("codex".into(), codex_profile.clone());
+    let status = crate::harness::codex::setup::permission_status_json(&profile_env);
+    assert_eq!(status["state"], "shared", "{status}");
+    // A rerun converges without questions.
+    let again = execute_for_registry_with(
+        crate::harness::registry::builtins(),
+        &f.env,
+        &[
+            extra("codex", &codex_profile),
+            extra("claude", &claude_profile),
+        ],
+        false,
+        false,
+        true,
+        |question| panic!("owned or shared: {question}"),
+    );
+    assert_eq!(again["exit_status"], 0, "{again}");
+}
+
+// Kills adopting, overwriting or advising removal of a shared file herdr-threads does not own at
+// its real location (foreign or edited); an absent real file is skipped with the same advice.
+#[test]
+fn shared_files_not_owned_at_the_real_root_fail_without_removal_advice() {
+    let f = Fixture::new();
+    let foreign = f.root.join("foreign");
+    fs::create_dir_all(foreign.join("skills/herdr-threads")).unwrap();
+    fs::create_dir_all(foreign.join("rules")).unwrap();
+    fs::write(
+        foreign.join("skills/herdr-threads/SKILL.md"),
+        "foreign skill",
+    )
+    .unwrap();
+    fs::write(foreign.join("rules/herdr-threads.rules"), "foreign rules").unwrap();
+    let empty = f.root.join("empty");
+    fs::create_dir_all(empty.join("skills")).unwrap();
+    fs::create_dir_all(empty.join("rules")).unwrap();
+    let foreign_profile = f.root.join("profiles/codex/foreign");
+    let empty_profile = f.root.join("profiles/codex/empty");
+    linked_profile(&foreign_profile, &foreign, true);
+    linked_profile(&empty_profile, &empty, true);
+    let report = execute_for_registry_with(
+        crate::harness::registry::builtins(),
+        &f.env,
+        &[
+            extra("codex", &foreign_profile),
+            extra("codex", &empty_profile),
+        ],
+        true,
+        false,
+        false,
+        |_| panic!("explicit consent"),
+    );
+    assert_eq!(report["exit_status"], 1, "{report}");
+    for component in ["skill", "permissions"] {
+        let failed = entry(&report, "codex", component, &foreign_profile);
+        assert_eq!(failed["outcome"], "failed", "{report}");
+        no_removal_advice(failed["detail"].as_str().unwrap());
+        let skipped = entry(&report, "codex", component, &empty_profile);
+        assert_eq!(skipped["outcome"], "skipped", "{report}");
+        let detail = skipped["detail"].as_str().unwrap();
+        assert!(detail.contains("which is not installed"), "{detail}");
+        no_removal_advice(detail);
+    }
+    // Failure isolation: the effective root and the profiles' own hooks still converge.
+    assert_eq!(
+        entry(&report, "codex", "skill", &f.root.join("codex"))["outcome"],
+        "installed"
+    );
+    assert_eq!(
+        entry(&report, "codex", "hooks", &foreign_profile)["outcome"],
+        "installed"
+    );
+    assert_eq!(
+        fs::read_to_string(foreign.join("skills/herdr-threads/SKILL.md")).unwrap(),
+        "foreign skill"
+    );
+    assert_eq!(
+        fs::read_to_string(foreign.join("rules/herdr-threads.rules")).unwrap(),
+        "foreign rules"
+    );
+    assert!(!empty.join("skills/herdr-threads").exists());
+    assert!(!empty.join("rules/herdr-threads.rules").exists());
+
+    // Edited at the real root: the owner's record no longer matches, so the profile fails too.
+    let owned_profile = f.root.join("profiles/codex/owned");
+    linked_profile(&owned_profile, &f.root.join("codex"), true);
+    fs::write(f.root.join("codex/skills/herdr-threads/SKILL.md"), "edited").unwrap();
+    fs::write(f.root.join("codex/rules/herdr-threads.rules"), "edited").unwrap();
+    let edited = execute_for_registry_with(
+        crate::harness::registry::builtins(),
+        &f.env,
+        &[extra("codex", &owned_profile)],
+        true,
+        false,
+        false,
+        |_| panic!("explicit consent"),
+    );
+    assert_eq!(edited["exit_status"], 1, "{edited}");
+    for component in ["skill", "permissions"] {
+        let failed = entry(&edited, "codex", component, &owned_profile);
+        assert_eq!(failed["outcome"], "failed", "{edited}");
+        no_removal_advice(failed["detail"].as_str().unwrap());
+    }
+    assert_eq!(
+        fs::read_to_string(f.root.join("codex/rules/herdr-threads.rules")).unwrap(),
+        "edited"
+    );
+}
+
+// Kills a changed default: with no symlink on the path, a foreign skill keeps today's refusal.
+#[test]
+fn unshared_foreign_skill_keeps_the_existing_refusal() {
+    let f = Fixture::new();
+    let profile = f.root.join("profiles/codex/plain");
+    fs::create_dir_all(profile.join("skills/herdr-threads")).unwrap();
+    fs::write(profile.join("skills/herdr-threads/SKILL.md"), "foreign").unwrap();
+    let report = execute_for_registry_with(
+        crate::harness::registry::builtins(),
+        &f.env,
+        &[extra("codex", &profile)],
+        true,
+        false,
+        false,
+        |_| panic!("explicit consent"),
+    );
+    let failed = entry(&report, "codex", "skill", &profile);
+    assert_eq!(failed["outcome"], "failed");
+    assert!(
+        failed["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("unowned skill at "),
+        "{failed}"
+    );
+}
+
+// Kills reconciling a root twice, ignoring consent per root, letting one root's failure stop
+// another, or reconciling a profile before the default root that holds its shared files.
+#[test]
+fn extra_roots_are_ordered_deduplicated_and_consented_per_root() {
+    let mut f = Fixture::new();
+    // The adapters' default roots (their variables unset) are under HOME. HOME is not the
+    // working directory here: Codex reads `<cwd>/.codex` as a project layer, and a hook there
+    // is refused as a duplicate.
+    fs::create_dir_all(f.root.join("home")).unwrap();
+    f.env.home = Some(f.root.join("home").into_os_string());
+    let home_codex = f.root.join("home/.codex");
+    let second = f.root.join("codex-2");
+    let broken = f.root.join("codex-broken");
+    fs::create_dir_all(broken.join("skills/herdr-threads")).unwrap();
+    fs::write(broken.join("skills/herdr-threads/SKILL.md"), "foreign").unwrap();
+    fs::create_dir_all(f.root.join("codex")).unwrap();
+    let alias = f.root.join("codex-alias");
+    std::os::unix::fs::symlink(f.root.join("codex"), &alias).unwrap();
+    let claude_second = f.root.join("claude-2");
+    let mut prompts = Vec::new();
+    let report = execute_for_registry_with(
+        crate::harness::registry::builtins(),
+        &f.env,
+        &[
+            extra("codex", &second),
+            extra("codex", &broken),
+            extra("codex", &alias),
+            extra("codex", &second),
+            extra("codex", &home_codex),
+            extra("claude", &claude_second),
+        ],
+        false,
+        false,
+        true,
+        |question| {
+            prompts.push(question.to_owned());
+            // Declines only the second Codex root's hooks.
+            Ok(!(question.contains("hooks") && question.contains("codex-2")))
+        },
+    );
+    assert_eq!(report["exit_status"], 1, "{report}");
+    let codex_roots: Vec<String> = report["integrations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["harness"] == "codex" && e["component"] == "hooks")
+        .map(|e| e["config_root"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        codex_roots,
+        [&home_codex, &f.root.join("codex"), &second, &broken]
+            .map(|root| root.display().to_string()),
+        "{report}"
+    );
+    assert_eq!(
+        entry(&report, "codex", "hooks", &second)["outcome"],
+        "declined"
+    );
+    assert_eq!(
+        entry(&report, "codex", "skill", &second)["outcome"],
+        "installed"
+    );
+    assert_eq!(
+        entry(&report, "codex", "permissions", &second)["outcome"],
+        "skipped"
+    );
+    assert_eq!(
+        entry(&report, "codex", "skill", &broken)["outcome"],
+        "failed"
+    );
+    assert_eq!(
+        entry(&report, "codex", "hooks", &broken)["outcome"],
+        "installed",
+        "{report}"
+    );
+    for root in [&home_codex, &f.root.join("codex")] {
+        assert_eq!(
+            entry(&report, "codex", "hooks", root)["outcome"],
+            "installed",
+            "{report}"
+        );
+        assert_eq!(
+            entry(&report, "codex", "permissions", root)["outcome"],
+            "installed",
+            "{report}"
+        );
+    }
+    assert_eq!(
+        entry(&report, "claude", "hooks", &claude_second)["outcome"],
+        "installed"
+    );
+    assert!(
+        prompts.contains(&format!(
+            "Install herdr-threads skill for codex (CODEX_HOME={})?",
+            second.display()
+        )),
+        "{prompts:?}"
+    );
+    assert!(home_codex.join("hooks.json").is_file());
+    assert!(!second.join("hooks.json").exists());
+    assert!(
+        !report.to_string().contains(&alias.display().to_string()),
+        "a symlinked alias of a reconciled root is the same root: {report}"
+    );
+}
+
+// Kills a `setup codex` that writes through, removes through, or advises removing a shared
+// rules file: the canonical setup reports it like the installer does.
+#[test]
+fn setup_codex_reports_shared_rules_and_never_writes_through_the_link() {
+    use crate::cli::setup::{PermissionPolicy, SetupRequest};
+    let f = Fixture::new();
+    let installed = execute(&f.env, true, false, |_| panic!("explicit consent"));
+    assert_eq!(installed["exit_status"], 0, "{installed}");
+    let profile = f.root.join("profiles/codex/p1");
+    linked_profile(&profile, &f.root.join("codex"), true);
+    let mut env = f.env.clone();
+    env.config_roots.insert("codex".into(), profile.clone());
+    let request = |verb, permissions| SetupRequest {
+        scope: Default::default(),
+        verb,
+        harness: crate::harness::context::Harness::Codex,
+        harness_binary: None,
+        prompt_suggestions: Default::default(),
+        hooks_only: false,
+        permissions,
+        pane_env: Default::default(),
+    };
+    let rules = f.root.join("codex/rules/herdr-threads.rules");
+    let bytes = fs::read(&rules).unwrap();
+    let report = setup::execute(&request(SetupVerb::Install, PermissionPolicy::Grant), &env)
+        .expect("shared grant is satisfied");
+    assert_eq!(report["permissions"]["state"], "shared", "{report}");
+    let removed =
+        setup::execute(&request(SetupVerb::Remove, PermissionPolicy::Ask), &env).expect("unsetup");
+    assert_eq!(removed["permissions"]["state"], "shared", "{removed}");
+    assert_eq!(fs::read(&rules).unwrap(), bytes);
+    fs::write(&rules, "edited").unwrap();
+    let error = setup::execute(&request(SetupVerb::Install, PermissionPolicy::Grant), &env)
+        .unwrap_err()
+        .to_string();
+    no_removal_advice(&error);
+    let advised = setup::execute(&request(SetupVerb::Install, PermissionPolicy::Ask), &env)
+        .expect("advice only");
+    assert_eq!(
+        advised["permissions"]["state"], "shared_unmanaged",
+        "{advised}"
+    );
+    no_removal_advice(advised["permissions"]["note"].as_str().unwrap());
+    assert_eq!(fs::read_to_string(&rules).unwrap(), "edited");
+}
+
+#[test]
+fn config_root_values_are_registered_installer_harnesses_and_absolute_dirs() {
+    let registry = crate::harness::registry::builtins();
+    assert_eq!(
+        parse_config_root("codex=/a/b/", registry).unwrap(),
+        extra("codex", Path::new("/a/b"))
+    );
+    for (value, wanted) in [
+        ("codex", "expected HARNESS=DIR"),
+        ("codex=relative/dir", "absolute path"),
+        ("codex=/a/../b", "absolute path"),
+        ("codex=/a\nb", "absolute path"),
+        ("nope=/a", "nope"),
+        ("human=/a", "human"),
+        ("=/a", "\"\""),
+    ] {
+        let error = parse_config_root(value, registry).unwrap_err();
+        assert!(error.contains(wanted), "{value:?}: {error}");
+    }
+    // A registered agent without an installer policy is refused by name, never by a branch.
+    for registration in registry.registrations() {
+        if registration.installer_policy().is_none() {
+            let id = registration.metadata().id;
+            let error = parse_config_root(&format!("{id}=/a"), registry).unwrap_err();
+            assert!(error.contains("does not reconcile"), "{id}: {error}");
         }
     }
 }

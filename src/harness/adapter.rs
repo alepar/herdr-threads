@@ -2089,6 +2089,18 @@ pub enum InstallerHookState {
     Missing,
     Owned,
 }
+/// The installer's view of a permission component in one config root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallerPermissionState {
+    Missing,
+    Granted,
+    /// Reached through a symbolic link to a grant herdr-threads owns, unedited, at another
+    /// root; the detail names it. Nothing is written through the link.
+    Shared(String),
+    /// Reached through a symbolic link to a file not installed at its real location; the
+    /// detail says to set up the root that holds it first. Nothing is written through the link.
+    SharedMissing(String),
+}
 #[derive(Debug, Clone)]
 pub struct InstallerSkillDestination {
     pub root: std::path::PathBuf,
@@ -2101,9 +2113,12 @@ pub trait InstallerPolicy: Send + Sync {
         budget: &CallBudget,
     ) -> Result<InstallerHookState, SetupFailure>;
     fn skill_destination(&self, scope: &ResolvedSetupScope) -> Option<InstallerSkillDestination>;
-    /// Whether the harness's herdr-threads permission grant is in place; `None` when the
-    /// adapter has no permission component (its integration needs no grant).
-    fn permissions_granted(&self, _request: &StatusRequest) -> Result<Option<bool>, SetupFailure> {
+    /// The state of the harness's herdr-threads permission grant; `None` when the adapter has
+    /// no permission component (its integration needs no grant).
+    fn permission_state(
+        &self,
+        _request: &StatusRequest,
+    ) -> Result<Option<InstallerPermissionState>, SetupFailure> {
         Ok(None)
     }
     /// The backend of the adapter's permission component, if it has one: its manifest tag and lock name.

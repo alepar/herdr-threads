@@ -676,6 +676,115 @@ fn permission_error(error: SetupError, rules: &Path) -> RunError {
     }
 }
 
+/// A rules file reached through a symbolic link to a directory, with no ownership record of its
+/// own. Nothing is ever written through the link: the root that holds the real file manages it.
+enum SharedRules {
+    /// The real file is owned and unedited, recorded at `owner`.
+    Owned { owner: PathBuf },
+    /// The real file is not installed.
+    Missing { canonical: PathBuf },
+    /// The real file is foreign, edited or mid-update.
+    Unowned { canonical: PathBuf },
+}
+
+/// The default-root remedy for a shared rules file.
+const SHARED_REMEDY: &str = "set up the root that holds the real file first (default root: `env -u \
+     CODEX_HOME herdr-threads setup codex --with-permissions`). Nothing was changed";
+
+impl SharedRules {
+    fn json(&self, rules: &Path) -> Value {
+        match self {
+            Self::Owned { owner } => json!({
+                "state": "shared",
+                "rules_file": rules.display().to_string(),
+                "managed_at": owner.display().to_string(),
+                "note": format!("shared via symlink; managed at {}", owner.display()),
+            }),
+            Self::Missing { canonical } | Self::Unowned { canonical } => json!({
+                "state": "shared_unmanaged",
+                "rules_file": rules.display().to_string(),
+                "managed_at": canonical.display().to_string(),
+                "note": self.advice(rules),
+            }),
+        }
+    }
+
+    fn advice(&self, rules: &Path) -> String {
+        match self {
+            Self::Owned { owner } => format!("shared via symlink; managed at {}", owner.display()),
+            Self::Missing { canonical } => format!(
+                "{} is shared through a symlink to {}, which is not installed; {SHARED_REMEDY}",
+                rules.display(),
+                canonical.display()
+            ),
+            Self::Unowned { canonical } => format!(
+                "{} is shared through a symlink to {}, which herdr-threads does not own \
+                 unedited; {SHARED_REMEDY}",
+                rules.display(),
+                canonical.display()
+            ),
+        }
+    }
+}
+
+/// Whether `permissions` is a shared rules file (see [`SharedRules`]); `None` when it has an
+/// ownership record of its own or no directory on its path is a symbolic link.
+fn shared_rules(
+    env: &SetupEnv,
+    permissions: &CodexPermissions,
+) -> Result<Option<SharedRules>, RunError> {
+    if permissions.has_record() {
+        return Ok(None);
+    }
+    let home = codex_root(env).ok_or_else(|| invalid("neither CODEX_HOME nor HOME is set"))?;
+    let Some(canonical) = lib::shared_through_symlink(home, permissions.rules_file())? else {
+        return Ok(None);
+    };
+    let canonical_of = |file: &Path| {
+        Some(
+            lib::canonical_path(file.parent()?)
+                .ok()?
+                .join(file.file_name()?),
+        )
+    };
+    for manifest in lib::manifests_of_kind(env.state_dir()?, "codex-permissions") {
+        let Some(file) = CodexPermissions::recorded_file(&manifest) else {
+            continue;
+        };
+        if canonical_of(&file).as_ref() != Some(&canonical) {
+            continue;
+        }
+        return Ok(Some(
+            match CodexPermissions::at(file.clone(), manifest).status() {
+                Ok(CodexPermissionState::Installed) => SharedRules::Owned { owner: file },
+                Ok(CodexPermissionState::Missing) => SharedRules::Missing { canonical },
+                _ => SharedRules::Unowned { canonical },
+            },
+        ));
+    }
+    Ok(Some(
+        if fs::symlink_metadata(&canonical)
+            .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+        {
+            SharedRules::Missing { canonical }
+        } else {
+            SharedRules::Unowned { canonical }
+        },
+    ))
+}
+
+/// The permission component's report: a shared rules file's when it is one.
+fn permission_report(env: &SetupEnv, permissions: &CodexPermissions) -> Value {
+    match shared_rules(env, permissions) {
+        Ok(Some(shared)) => shared.json(permissions.rules_file()),
+        Ok(None) => match permissions.status() {
+            Ok(state) => permissions_json(permissions, state),
+            Err(_) => json!({"state": "unreadable"}),
+        },
+        Err(_) => json!({"state": "unreadable"}),
+    }
+}
+
 fn permissions_json(component: &CodexPermissions, state: CodexPermissionState) -> Value {
     let mut report = json!({
         "state": match state {
@@ -708,21 +817,40 @@ fn permissions_json(component: &CodexPermissions, state: CodexPermissionState) -
 /// The permission component as doctor reports it; best effort.
 pub(crate) fn permission_status_json(env: &SetupEnv) -> Value {
     match permission_component(env) {
-        Ok(permissions) => match permissions.status() {
-            Ok(state) => permissions_json(&permissions, state),
-            Err(_) => json!({"state": "unreadable"}),
-        },
+        Ok(permissions) => permission_report(env, &permissions),
         Err(_) => json!({"state": "unreadable"}),
     }
 }
 
-/// Whether the permission grant is installed (the installer's permissions component).
-pub(crate) fn permissions_granted(env: &SetupEnv) -> Result<bool, RunError> {
+/// The permission grant as the installer's permissions component sees it. A rules file shared
+/// through a symlink is reported, never written: owned at its real location it is `Shared`,
+/// absent there `SharedMissing`, anything else a failure that never advises removing it.
+pub(crate) fn installer_permission_state(
+    env: &SetupEnv,
+) -> Result<crate::harness::adapter::InstallerPermissionState, RunError> {
+    use crate::harness::adapter::InstallerPermissionState as State;
     let permissions = permission_component(env)?;
+    let rules = permissions.rules_file();
+    match shared_rules(env, &permissions)? {
+        Some(shared @ SharedRules::Owned { .. }) => return Ok(State::Shared(shared.advice(rules))),
+        Some(shared @ SharedRules::Missing { .. }) => {
+            return Ok(State::SharedMissing(shared.advice(rules)));
+        }
+        Some(shared @ SharedRules::Unowned { .. }) => {
+            return Err(api(ErrorCode::Conflict, shared.advice(rules)));
+        }
+        None => {}
+    }
     permissions
         .status()
-        .map(|state| state == CodexPermissionState::Installed)
-        .map_err(|error| permission_error(error, permissions.rules_file()))
+        .map(|state| {
+            if state == CodexPermissionState::Installed {
+                State::Granted
+            } else {
+                State::Missing
+            }
+        })
+        .map_err(|error| permission_error(error, rules))
 }
 
 /// Ask on a terminal when setup only advised; a yes (the default) grants.
@@ -811,37 +939,56 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
     let permissions = permission_component(env)?;
     // After the hooks (which create CODEX_HOME). The rules file is independent of the hooks: a problem with it is reported, never a
     // reason to leave the hooks out.
-    let (result, action) = match request.permissions {
-        PermissionPolicy::Grant => (permissions.apply(PermissionConsent::Granted), "granted"),
-        PermissionPolicy::Decline => (permissions.remove(), "removed"),
-        PermissionPolicy::Ask => (permissions.apply(PermissionConsent::Undecided), "kept"),
-    };
-    let permission_report = match result {
-        // An explicit grant that cannot be honoured fails the command; otherwise the rules
-        // file never keeps the hooks out.
-        Err(error) if request.permissions == PermissionPolicy::Grant => {
-            return Err(permission_error(error, permissions.rules_file()));
+    let permission_report = match shared_rules(env, &permissions)? {
+        // A shared rules file is never written through its link: reported as it is, and an
+        // explicit grant the real file does not hold cannot be honoured here.
+        Some(shared)
+            if request.permissions == PermissionPolicy::Grant
+                && !matches!(shared, SharedRules::Owned { .. }) =>
+        {
+            return Err(api(
+                ErrorCode::Conflict,
+                shared.advice(permissions.rules_file()),
+            ));
         }
-        Ok(state) => {
-            let mut report = permissions_json(&permissions, state);
-            report["action"] = json!(
-                if action == "kept" && state == CodexPermissionState::Missing {
-                    "advised"
-                } else {
-                    action
+        Some(shared) => shared.json(permissions.rules_file()),
+        None => {
+            let (result, action) = match request.permissions {
+                PermissionPolicy::Grant => {
+                    (permissions.apply(PermissionConsent::Granted), "granted")
                 }
-            );
-            if report["action"] == "advised" {
-                report["note"] = json!(
-                    crate::harness::claude::setup::PERMISSION_ADVICE.replace("<harness>", "codex")
-                );
+                PermissionPolicy::Decline => (permissions.remove(), "removed"),
+                PermissionPolicy::Ask => (permissions.apply(PermissionConsent::Undecided), "kept"),
+            };
+            match result {
+                // An explicit grant that cannot be honoured fails the command; otherwise the
+                // rules file never keeps the hooks out.
+                Err(error) if request.permissions == PermissionPolicy::Grant => {
+                    return Err(permission_error(error, permissions.rules_file()));
+                }
+                Ok(state) => {
+                    let mut report = permissions_json(&permissions, state);
+                    report["action"] = json!(if action == "kept"
+                        && state == CodexPermissionState::Missing
+                    {
+                        "advised"
+                    } else {
+                        action
+                    });
+                    if report["action"] == "advised" {
+                        report["note"] = json!(
+                            crate::harness::claude::setup::PERMISSION_ADVICE
+                                .replace("<harness>", "codex")
+                        );
+                    }
+                    report
+                }
+                Err(error) => json!({
+                    "state": "error",
+                    "error": permission_error(error, permissions.rules_file()).to_string(),
+                }),
             }
-            report
         }
-        Err(error) => json!({
-            "state": "error",
-            "error": permission_error(error, permissions.rules_file()).to_string(),
-        }),
     };
     for layer in &layers {
         if layer.has_other_herdr_threads_hook && layer.path != paths.hooks {
@@ -926,12 +1073,16 @@ pub(crate) fn codex_remove(env: &SetupEnv) -> Result<Value, RunError> {
     };
     // Never let the permission component keep the hooks installed: its failure is reported.
     let permissions = permission_component(env)?;
-    report["permissions"] = match permissions.remove() {
-        Ok(state) => permissions_json(&permissions, state),
-        Err(error) => json!({
-            "state": "error",
-            "error": permission_error(error, permissions.rules_file()).to_string(),
-        }),
+    report["permissions"] = match shared_rules(env, &permissions)? {
+        // Shared through a symlink: removed only at the root that holds the real file.
+        Some(shared) => shared.json(permissions.rules_file()),
+        None => match permissions.remove() {
+            Ok(state) => permissions_json(&permissions, state),
+            Err(error) => json!({
+                "state": "error",
+                "error": permission_error(error, permissions.rules_file()).to_string(),
+            }),
+        },
     };
     // Independent of the hooks too: removed even when no hook installation is recorded.
     report["pane_env"] = super::pane_env::remove_report(env);
@@ -1051,10 +1202,7 @@ fn codex_status(
     }
     report["trust"] = codex_trust_json(&paths, report["command"].as_str());
     if let Ok(permissions) = permission_component(env) {
-        report["permissions"] = match permissions.status() {
-            Ok(state) => permissions_json(&permissions, state),
-            Err(_) => json!({"state": "unreadable"}),
-        };
+        report["permissions"] = permission_report(env, &permissions);
     }
     report["pane_env"] = super::pane_env::status_report(env);
     if let Ok(owned_command) = codex_owned_command(env) {

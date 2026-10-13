@@ -20,6 +20,17 @@ struct Manifest {
     complete: bool,
 }
 
+/// What the installer found at one skill destination.
+pub(super) enum SkillInspection {
+    File(SkillFile),
+    /// Reached through a symbolic link to a skill herdr-threads owns, unedited, at the
+    /// recorded path. Nothing is written through the link.
+    Shared(PathBuf),
+    /// Reached through a symbolic link to a skill not installed at its real location; the
+    /// detail advises. Nothing is written through the link.
+    SharedMissing(String),
+}
+
 pub(super) struct SkillFile {
     path: PathBuf,
     root: PathBuf,
@@ -75,21 +86,108 @@ fn directory(path: &Path) -> Result<(), RunError> {
     }
 }
 
+/// The default-root remedy for a shared skill: the adapter's config-root variable (registry
+/// text) unset, so the installer reconciles the root that usually holds the real file.
+fn shared_remedy(name: &str) -> String {
+    let registry = crate::harness::registry::builtins();
+    let hint = registry
+        .agent(name)
+        .ok()
+        .and_then(|agent| registry.by_id(agent).ok())
+        .map_or("", |registration| registration.text().config_root_hint);
+    if hint.is_empty() {
+        "set up the root that holds the real file first. Nothing was changed".into()
+    } else {
+        format!(
+            "set up the root that holds the real file first (default root: `env -u {hint} \
+             herdr-threads internal installer-integrations`). Nothing was changed"
+        )
+    }
+}
+
+/// A skill reached through a symbolic link with no ownership record of its own: shared with the
+/// root that holds the real file, whose own record decides. Read-only.
+fn inspect_shared(
+    env: &setup::SetupEnv,
+    name: &str,
+    path: &Path,
+    canonical: &Path,
+) -> Result<SkillInspection, RunError> {
+    let canonical_of = |file: &Path| {
+        Some(
+            owned::canonical_path(file.parent()?)
+                .ok()?
+                .join(file.file_name()?),
+        )
+    };
+    for manifest in owned::manifests_of_kind(env.state_dir()?, &format!("{name}-skill")) {
+        let Some(recorded) = read_optional(&manifest)
+            .ok()
+            .flatten()
+            .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).ok())
+        else {
+            continue;
+        };
+        if canonical_of(&recorded.path).as_deref() != Some(canonical) {
+            continue;
+        }
+        let current = read_optional(&recorded.path).ok().flatten();
+        if recorded.version == 1
+            && recorded.harness == name
+            && recorded.complete
+            && current.as_deref().map(owned::fingerprint).as_deref() == Some(&recorded.fingerprint)
+        {
+            return Ok(SkillInspection::Shared(recorded.path));
+        }
+        if current.is_none() && fs::symlink_metadata(&recorded.path).is_err() {
+            break;
+        }
+        return Err(conflict(format!(
+            "{} is shared through a symlink to {}, which herdr-threads does not own unedited; {}",
+            path.display(),
+            canonical.display(),
+            shared_remedy(name)
+        )));
+    }
+    if fs::symlink_metadata(canonical).is_err_and(|error| error.kind() == io::ErrorKind::NotFound) {
+        return Ok(SkillInspection::SharedMissing(format!(
+            "{} is shared through a symlink to {}, which is not installed; {}",
+            path.display(),
+            canonical.display(),
+            shared_remedy(name)
+        )));
+    }
+    Err(conflict(format!(
+        "{} is shared through a symlink to {}, which herdr-threads does not own unedited; {}",
+        path.display(),
+        canonical.display(),
+        shared_remedy(name)
+    )))
+}
+
 impl SkillFile {
     pub(super) fn inspect(
         env: &setup::SetupEnv,
         name: &'static str,
         destination: &crate::harness::adapter::InstallerSkillDestination,
-    ) -> Result<Self, RunError> {
+    ) -> Result<SkillInspection, RunError> {
         let root = &destination.root;
         let path = destination.file.clone();
         let folder = path
             .parent()
             .ok_or_else(|| conflict("skill path has no parent"))?;
+        let manifest = setup::manifest_path(env.state_dir()?, &format!("{name}-skill"), &path);
+        // Only a path without a record of its own can be shared; a recorded one keeps the
+        // regular-directory checks below.
+        if fs::symlink_metadata(&manifest)
+            .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+            && let Some(canonical) = owned::shared_through_symlink(root, &path)?
+        {
+            return inspect_shared(env, name, &path, &canonical);
+        }
         for dir in folder.ancestors().take_while(|dir| dir.starts_with(root)) {
             directory(dir)?;
         }
-        let manifest = setup::manifest_path(env.state_dir()?, &format!("{name}-skill"), &path);
         let before = read_optional(&path)?;
         let manifest_before = read_optional(&manifest)?;
         let recorded: Option<Manifest> = manifest_before
@@ -117,7 +215,7 @@ impl SkillFile {
                 folder.display()
             )));
         }
-        Ok(Self {
+        Ok(SkillInspection::File(Self {
             path,
             root: root.clone(),
             manifest,
@@ -125,7 +223,7 @@ impl SkillFile {
             before,
             recorded,
             manifest_before,
-        })
+        }))
     }
 
     pub(super) fn installed(&self) -> bool {

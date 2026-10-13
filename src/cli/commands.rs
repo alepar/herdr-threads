@@ -127,6 +127,7 @@ pub enum CliAction {
     InstallerIntegrations {
         confirm_missing: bool,
         without_permissions: bool,
+        config_roots: Vec<super::installer::ExtraConfigRoot>,
     },
     InternalJsonField {
         path: String,
@@ -922,6 +923,10 @@ enum InternalSub {
         /// Skip the permissions component (installer --without-permissions).
         #[arg(long)]
         without_permissions: bool,
+        /// Also reconcile this config root of a registered harness, after the effective one
+        /// (repeatable; DIR absolute).
+        #[arg(long = "config-root", value_name = "HARNESS=DIR")]
+        config_root: Vec<String>,
     },
     /// Read JSON on stdin and print the value at a dotted path (exit 1 when absent).
     JsonField { path: String },
@@ -2923,10 +2928,16 @@ fn parse_cli_in_registry(
                 InternalSub::InstallerIntegrations {
                     confirm_missing,
                     without_permissions,
+                    config_root,
                 },
         } => CliAction::InstallerIntegrations {
             confirm_missing,
             without_permissions,
+            config_roots: config_root
+                .iter()
+                .map(|value| super::installer::parse_config_root(value, registry))
+                .collect::<Result<_, _>>()
+                .map_err(invalid)?,
         },
         Top::Internal {
             command: InternalSub::JsonField { path },
