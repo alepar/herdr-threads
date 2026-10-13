@@ -523,6 +523,8 @@ class Clean(Fake):
                                     for f in self.filters(argv)), argv)
         images = next(a for a in argvs if a[:1] == ["images"])
         self.assertIn("dangling=true", self.filters(images))
+        self.assertTrue(any(f.startswith("label=dev.herdr-threads.linux-e2e.worktree=")
+                            for f in self.filters(images)))  # only images this worktree built
         self.assertIn(["rm", "-f", "-v", "c1"], argvs)
         self.assertIn(["volume", "rm", "-f", "v1", "v2"], argvs)
         self.assertIn(["rmi", "i1"], argvs)  # unforced: an image in use is kept
@@ -649,6 +651,8 @@ class ImageSelection(Fake):
         run = next(x for x in self.argvs() if x[:1] == ["run"])
         self.assertIn(image_a, run)
         self.assertNotIn("ht-linux-e2e-runner:arm64", run)
+        build = next(x for x in self.argvs() if x[:1] == ["build"])
+        self.assertTrue(any(x.startswith("dev.herdr-threads.linux-e2e.worktree=") for x in build))
         self.assertEqual(a.facts["image"], {"tag": "ht-linux-e2e-runner:arm64", "id": image_a,
                                             "container_image": image_a})
 

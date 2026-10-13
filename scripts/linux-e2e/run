@@ -447,7 +447,8 @@ class Runner:
             print(f"  building image {tag} (log: evidence/host)", flush=True)
             iidfile = Path(ctx) / "iid"
             rc = self.call([self.docker, "build", "--progress=plain", "--platform", f"linux/{arch}",
-                            "--label", f"{LABEL}=1", "-t", tag, "--iidfile", str(iidfile),
+                            "--label", f"{LABEL}=1", "--label", f"{WORKTREE_LABEL}={self.worktree}",
+                            "-t", tag, "--iidfile", str(iidfile),
                             "-f", str(Path(ctx) / "c/scripts/linux-e2e/Dockerfile"), str(Path(ctx) / "c")],
                            "image-build", quiet=True)
             image_id = iidfile.read_text().strip() if rc == 0 and iidfile.exists() else ""
@@ -743,7 +744,7 @@ def clean(args):
     ls = {"containers": ["ps", "-a", "-q", *filters],
           "volumes": ["volume", "ls", "-q", *filters],
           "images": ["images", "-q", "--filter", f"label={LABEL}", "--filter", f"reference={IMAGE}"]
-          if args.all else ["images", "-q", "--filter", f"label={LABEL}", "--filter", "dangling=true"]}
+          if args.all else ["images", "-q", "--filter", f"label={WORKTREE_LABEL}={wt}", "--filter", "dangling=true"]}
     # Dangling images are removed unforced: one still used by a container (any worktree's, or a container started
     # from the image by hand, which inherits its label) is kept and reported.
     rm = {"containers": ["rm", "-f", "-v"], "volumes": ["volume", "rm", "-f"],
