@@ -2436,7 +2436,9 @@ fn send_stays_under_100ms_with_and_after_settled_history() {
 /// admission-observer commit; the wake lane makes at most one pass per 5 s
 /// window; retention drains the backlog; and its prune commits kick no lane.
 /// The short window's pass bound only catches a wake lane woken more often
-/// than every ~2.7 s (see `lane_wiring::idle_five_lanes_30s`).
+/// than every ~2.7 s (see
+/// `lanes_latency::idle_daemon_commits_nothing_from_deadline_wake_request_for_30s`).
+/// It runs on the production 5 s cadence, end to end.
 /// Kills: a retention prune whose kick wakes the wake or deadline lane (the
 /// wake lane would pass more than once per window and commit), and a backlog
 /// that makes retention hold the writer past the idle bound instead of
