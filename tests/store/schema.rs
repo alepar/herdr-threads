@@ -5803,6 +5803,8 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
         "harness_runtime_identities",
         "harness_contract_evidence_v2",
         "harness_unattributed_v2",
+        // V47 adds the sparse per-binding row display marks.
+        "binding_row_displays",
     ];
     // V45/46 create these six tables; none replaces a historical root. Audit
     // their exact final DDL independently from the actual appended migration SQL.
@@ -6369,7 +6371,7 @@ fn v28_upgrade_migrates_bindings_to_session_keyed_v32() {
             .unwrap(),
         schema::LATEST_VERSION
     );
-    assert_eq!(schema::LATEST_VERSION, 46);
+    assert_eq!(schema::LATEST_VERSION, 47);
     // ordinals, sequence and archival guards survive the rebuild
     assert_eq!(
         db.query_row(
@@ -7724,6 +7726,17 @@ fn released_main31_populated_automatic_graph_physically_upgrades_and_reopens() {
     std::fs::remove_file(path).unwrap();
 }
 
+/// Objects whose stored DDL V47 (message priority) legitimately changes: the four tables gain
+/// columns, and three lazy triggers are recreated keyed on row presence and priority.
+const PRIORITY_V47_REWRITTEN: [&str; 7] = [
+    "lazy_recipients",
+    "messages",
+    "send_preparations",
+    "seats",
+    "lazy_recipient_source",
+    "lazy_recipient_display_published",
+    "lazy_manifest_source",
+];
 fn presentation_populated_v39() -> Connection {
     presentation_populated_v39_with_confirmations(false)
 }
@@ -7879,7 +7892,7 @@ fn presentation_schema_populated_v39_upgrade_is_additive_and_reopens() {
             (table, *root),
             "old object/rootpage {name}"
         );
-        if name != "invitations" {
+        if name != "invitations" && !PRIORITY_V47_REWRITTEN.contains(&name.as_str()) {
             assert_eq!(&new.4, sql, "old object DDL {name}");
         }
     }
@@ -7946,7 +7959,7 @@ fn presentation_schema_populated_v39_upgrade_is_additive_and_reopens() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        46
+        47
     );
     schema::initialize(&db, || UtcMillis(20000)).unwrap();
     assert_eq!(presentation_retained_rows(&db), after);
@@ -8095,7 +8108,7 @@ fn presentation_schema_populated_v40_failed_v41_rolls_back_bootstrap_and_catalog
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        46
+        47
     );
     assert_eq!(presentation_schema_catalog(&db), upgraded_catalog);
     presentation_assert_retained_tables(&db, &upgraded);
@@ -8185,7 +8198,9 @@ fn presentation_schema_populated_v40_consumers_upgrade_revised_v41_and_reopen() 
             (table, *root),
             "old45 object/rootpage {name}"
         );
-        if name != "invitation_presentation_consumers" {
+        if name != "invitation_presentation_consumers"
+            && !PRIORITY_V47_REWRITTEN.contains(&name.as_str())
+        {
             assert_eq!(&new.4, sql, "old45 object DDL {name}");
         }
     }
@@ -8194,7 +8209,7 @@ fn presentation_schema_populated_v40_consumers_upgrade_revised_v41_and_reopen() 
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        46
+        47
     );
     schema::initialize(&db, || UtcMillis(10001)).unwrap();
     assert_eq!(read_old(&db), before);

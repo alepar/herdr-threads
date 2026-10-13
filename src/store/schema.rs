@@ -83,7 +83,8 @@ const V43: &str = include_str!("../../migrations/0043_receipt_warning_origins.sq
 const V44: &str = include_str!("../../migrations/0044_automatic_handoff_body_bounds.sql");
 const V45: &str = include_str!("../../migrations/0045_invitation_presentation.sql");
 const V46: &str = include_str!("../../migrations/0046_presentation_relevance.sql");
-pub(crate) const LATEST_VERSION: i64 = 46;
+const V47: &str = include_str!("../../migrations/0047_message_priority.sql");
+pub(crate) const LATEST_VERSION: i64 = 47;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -831,7 +832,128 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
         }
     }
     verify_invitation_presentation_schema(conn, true)?;
-    verify_presentation_relevance_schema(conn)
+    verify_presentation_relevance_schema(conn)?;
+    if version <= 46 {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V47)
+            .map_err(store_error)
+            .and_then(|_| verify_message_priority_schema(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 47)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_message_priority_schema(conn)
+}
+
+/// V47 (ht-yha.2): message delivery priority. Every `CREATE` statement of the migration is compared
+/// with `sqlite_master` exactly (as `verify_existing_v26` does), then the five added columns are
+/// checked for type, nullability, default and `CHECK` text.
+fn verify_message_priority_schema(conn: &Connection) -> Result<(), ApiError> {
+    let ddl = V47
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for statement in ddl
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|s| s.starts_with("CREATE "))
+    {
+        let sql = statement.trim_end_matches(';');
+        let words = sql.split_whitespace().collect::<Vec<_>>();
+        let kind = words[1].to_ascii_lowercase();
+        let name = words[2];
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if actual.as_deref().map(str::trim) != Some(sql) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered message priority {kind} {name}"),
+            ));
+        }
+    }
+    for (table, column, kind, not_null, default, check) in [
+        (
+            "messages",
+            "priority",
+            "INTEGER",
+            true,
+            Some("0"),
+            "priority INTEGER NOT NULL DEFAULT 0 CHECK(priority BETWEEN 0 AND 9)",
+        ),
+        (
+            "send_preparations",
+            "priority",
+            "INTEGER",
+            true,
+            Some("0"),
+            "priority INTEGER NOT NULL DEFAULT 0 CHECK(priority BETWEEN 0 AND 9)",
+        ),
+        (
+            "lazy_recipients",
+            "priority",
+            "INTEGER",
+            true,
+            Some("1"),
+            "priority INTEGER NOT NULL DEFAULT 1 CHECK(priority BETWEEN 0 AND 9)",
+        ),
+        (
+            "lazy_recipients",
+            "decision_seq",
+            "INTEGER",
+            false,
+            None,
+            "decision_seq INTEGER CHECK(decision_seq IS NULL OR decision_seq>0)",
+        ),
+        (
+            "seats",
+            "nudge_threshold",
+            "INTEGER",
+            true,
+            Some("0"),
+            "nudge_threshold INTEGER NOT NULL DEFAULT 0 CHECK(nudge_threshold BETWEEN -1 AND 9)",
+        ),
+    ] {
+        let found: Option<(String, bool, Option<String>)> = conn
+            .query_row(
+                &format!("SELECT type,\"notnull\",dflt_value FROM pragma_table_info('{table}') WHERE name=?1"),
+                [column],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(store_error)?;
+        let table_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if found != Some((kind.to_owned(), not_null, default.map(str::to_owned)))
+            || !table_sql.contains(check)
+        {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered message priority column {table}.{column}"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// V35 (ht-54r.9): the warning offer and notice frontiers move from one row per seat to one row
@@ -1242,7 +1364,9 @@ fn schema_version(conn: &Connection) -> Result<i64, ApiError> {
 }
 
 fn verify_existing_v26(conn: &Connection) -> Result<(), ApiError> {
-    let v34 = schema_version(conn)? >= 34;
+    let version = schema_version(conn)?;
+    let v34 = version >= 34;
+    let v47 = version >= 47;
     // Compare every lazy object, including trigger bodies with embedded semicolons.
     let ddl = V26
         .lines()
@@ -1258,12 +1382,29 @@ fn verify_existing_v26(conn: &Connection) -> Result<(), ApiError> {
         let words = sql.split_whitespace().collect::<Vec<_>>();
         let kind = words[1].to_ascii_lowercase();
         let name = words[2];
+        // V47 recreates these triggers; the V47 audit owns them from then on.
+        if v47
+            && kind == "trigger"
+            && [
+                "lazy_recipient_source",
+                "lazy_recipient_display_published",
+                "lazy_manifest_source",
+            ]
+            .contains(&name)
+        {
+            continue;
+        }
         // V34 appends one column to lazy_recipients; SQLite stores it right after `state`.
         let appended;
         let sql = if kind == "table" && name == "lazy_recipients" && v34 {
+            let columns = if v47 {
+                ", legacy_pending INTEGER NOT NULL DEFAULT 0 CHECK(legacy_pending IN (0,1)), priority INTEGER NOT NULL DEFAULT 1 CHECK(priority BETWEEN 0 AND 9), decision_seq INTEGER CHECK(decision_seq IS NULL OR decision_seq>0)"
+            } else {
+                ", legacy_pending INTEGER NOT NULL DEFAULT 0 CHECK(legacy_pending IN (0,1))"
+            };
             appended = sql.replacen(
                 "CHECK(state IN ('pending','displayed'))",
-                "CHECK(state IN ('pending','displayed')), legacy_pending INTEGER NOT NULL DEFAULT 0 CHECK(legacy_pending IN (0,1))",
+                &format!("CHECK(state IN ('pending','displayed')){columns}"),
                 1,
             );
             appended.as_str()
