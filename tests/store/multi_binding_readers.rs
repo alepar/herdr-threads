@@ -420,9 +420,8 @@ fn carry_binding_forward_carries_every_registered_binding() {
         ],
         "A, B and the disconnected C move to the new epoch; the ended row stays"
     );
-    let anchors: Vec<(i64, String)> = {
-        let mut stmt = f
-            .db
+    let anchors = |db: &Connection| -> Vec<(i64, String)> {
+        let mut stmt = db
             .prepare("SELECT binding_generation,observation_provenance FROM seat_availability WHERE seat_id='s'")
             .unwrap();
         stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -430,8 +429,40 @@ fn carry_binding_forward_carries_every_registered_binding() {
             .collect::<Result<_, _>>()
             .unwrap()
     };
+    // C4: availability follows liveness and the effective view. The moved rows' own (stale)
+    // generation and the missing epoch-2 observation leave the seat unavailable, so the carry
+    // anchors nothing and starts no receipt timer.
     assert_eq!(
-        anchors,
+        anchors(&f.db),
+        vec![],
+        "no anchor while the seat stays unavailable"
+    );
+
+    // The same carry onto a seat it leaves effectively available (current binding generation,
+    // a confirmed epoch-2 observation) anchors exactly once, at the seat generation.
+    let mut g = fixture();
+    g.db.execute_batch(
+        "UPDATE host_instances SET host_epoch=2;
+         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p','b',2,2,1,'fresh','unknown','unknown',0,0,'term','inc','coherent_enumeration',1);",
+    )
+    .unwrap();
+    let tx = g.db.transaction().unwrap();
+    assert!(
+        seats::carry_binding_forward(
+            &tx,
+            "i",
+            UtcMillis(100),
+            &SeatId::new("s"),
+            SEAT_GENERATION,
+            &publication(2),
+            "p",
+            2,
+        )
+        .unwrap()
+    );
+    tx.commit().unwrap();
+    assert_eq!(
+        anchors(&g.db),
         vec![(SEAT_GENERATION as i64, "cooperative_top_level".to_owned())],
         "one availability anchor per seat, at the seat generation"
     );

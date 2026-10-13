@@ -3347,18 +3347,72 @@ pub fn apply_eligibility_transition(
 ) -> Result<bool, ApiError> {
     let changed = transition(tx)?;
     if changed {
-        let rows = tx.execute(
-            "UPDATE host_instances SET send_eligibility_revision=send_eligibility_revision+1 WHERE id=?1 AND send_eligibility_revision<?2",
-            params![instance, i64::MAX],
-        ).map_err(store_error)?;
-        if rows != 1 {
-            return Err(api_error(
-                ErrorCode::SequenceExhausted,
-                "send eligibility revision exhausted",
-            ));
-        }
+        bump_send_eligibility(tx, instance)?;
     }
     Ok(changed)
+}
+
+fn bump_send_eligibility(db: &Connection, instance: &str) -> Result<(), ApiError> {
+    let rows = db.execute(
+        "UPDATE host_instances SET send_eligibility_revision=send_eligibility_revision+1 WHERE id=?1 AND send_eligibility_revision<?2",
+        params![instance, i64::MAX],
+    ).map_err(store_error)?;
+    if rows != 1 {
+        return Err(api_error(
+            ErrorCode::SequenceExhausted,
+            "send eligibility revision exhausted",
+        ));
+    }
+    Ok(())
+}
+
+/// What `messages::stage_recipient` stages for a seat from its bindings: the
+/// receipt's `eligible_at_snapshot` and `availability_provenance`
+/// (`effective_registered_availability`), whether a missing availability is
+/// warned about now or assumed carried (`carry_pending`), and whether an ACK
+/// is expected (`open_binding_role` is not human). Its other inputs are fenced
+/// elsewhere: joined membership and pending invitations (thread membership
+/// revision), the unavailability episode (opened and closed only with an
+/// availability change), duration configuration (its own revision).
+pub(crate) type StagedSeatState = (Option<String>, bool, bool);
+
+pub(crate) fn staged_seat_state(db: &Connection, seat: &str) -> Result<StagedSeatState, ApiError> {
+    let instance: String = db
+        .query_row("SELECT instance_id FROM seats WHERE id=?1", [seat], |r| {
+            r.get(0)
+        })
+        .map_err(store_error)?;
+    Ok((
+        effective_registered_availability(db, seat, None)?,
+        carry_pending(db, seat, &instance)?,
+        open_binding_role(db, &SeatId::new(seat))? == Some("human"),
+    ))
+}
+
+/// Runs one binding write that can change what a send stages for `seat` (a
+/// liveness transition, a registered enrollment, a reopen or placement
+/// refresh, an end) and bumps the seat's instance send fence once exactly
+/// when [`staged_seat_state`] differs before and after (shared contract
+/// amendment §8; constant reads of the seat, at most one row update, no
+/// recipient scan). A binding joining or leaving beside an unchanged
+/// available binding (a subagent, a one-shot) refuses no in-flight send.
+/// `write` returns its result and whether it changed a row.
+pub fn fence_seat_availability<T>(
+    db: &Connection,
+    seat: &str,
+    write: impl FnOnce() -> Result<(T, bool), ApiError>,
+) -> Result<T, ApiError> {
+    let before = staged_seat_state(db, seat)?;
+    let (result, changed) = write()?;
+    if changed && staged_seat_state(db, seat)? != before {
+        let instance: String = db
+            .query_row("SELECT instance_id FROM seats WHERE id=?1", [seat], |r| {
+                r.get(0)
+            })
+            .map_err(store_error)?;
+        bump_send_eligibility(db, &instance)?;
+    }
+    Ok(result)
 }
 
 pub fn bump_membership_revision(tx: &Transaction<'_>, thread: &ThreadId) -> Result<(), ApiError> {
@@ -3405,7 +3459,9 @@ pub fn bump_lifecycle_revision(tx: &Transaction<'_>, instance: &str) -> Result<(
 /// published reconfirmation snapshot advances the epoch while such rows keep
 /// the old one. A binding counts only while connected (liveness; ht-54r.23): a seat is
 /// available while any open, connected, registered binding is confirmed. Returns the binding's
-/// observation provenance when available.
+/// observation provenance when available: deterministically the oldest
+/// qualifying top-level binding's (else the oldest subagent's), so a newer
+/// binding joining or leaving beside it changes neither half of the result.
 /// Recipient staging and unavailability-episode opening must both use this.
 pub fn effective_registered_availability(
     db: &Connection,
@@ -3421,7 +3477,8 @@ pub fn effective_registered_availability(
                AND b.ended_at IS NULL AND b.liveness='connected' AND b.registered_at IS NOT NULL AND b.target_id=s.target_id \
                AND b.generation=s.generation AND b.target_generation=s.target_generation \
                AND b.host_boot=h.host_boot AND b.host_epoch=h.host_epoch \
-               AND (?2 IS NULL OR h.id=?2) LIMIT 1",
+               AND (?2 IS NULL OR h.id=?2) \
+             ORDER BY (b.role='top_level') DESC, b.ordinal LIMIT 1",
             params![seat, instance],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
         )
@@ -3442,22 +3499,27 @@ pub fn effective_registered_availability(
 /// C4 pre-reconciliation window: true while the instance's reconciliation
 /// marker lags the recovery boot/epoch (`reconciled_*` IS NOT `recovery_*`;
 /// publishing a new host epoch always advances `recovery_*`) and the seat's
-/// open registered binding will be structurally carried: resolved seat, a
-/// provenance in `CARRIED_BINDING_PROVENANCES`, the current host boot, an older
-/// host epoch, and an incarnation equal to the seat's structural incarnation.
-/// A send optimistically assumes that carry: the recipient is staged as not yet
-/// available but is not warned about; the carry's availability anchor starts
-/// the receipt timer. If the pass does not carry it, the ordinary unavailable
-/// paths open the episode.
+/// open registered binding will be structurally carried and is connected, so
+/// the carry will make the seat available: resolved seat, a connected binding
+/// with a provenance in `CARRIED_BINDING_PROVENANCES`, the seat's target, the
+/// current host boot and the structural proof's boot, an older host epoch, and
+/// an incarnation equal to the seat's structural incarnation (the binding
+/// predicate the planner's `bound_epoch` and `carry_binding_forward` share,
+/// narrowed to connected rows). A send optimistically assumes that carry: the
+/// recipient is staged as not yet available but is not warned about; the
+/// carry's availability anchor starts the receipt timer. A seat whose lagging
+/// bindings are all disconnected is warned about now: their carry restores no
+/// availability. If the pass does not carry it, the ordinary unavailable paths
+/// open the episode.
 pub fn carry_pending(db: &Connection, seat: &str, instance: &str) -> Result<bool, ApiError> {
     db.query_row(
         "SELECT EXISTS(SELECT 1 FROM seats s JOIN host_instances h ON h.id=s.instance_id \
          JOIN occupant_bindings b ON b.seat_id=s.id \
          WHERE s.id=?1 AND h.id=?2 AND s.state='resolved' \
            AND (h.reconciled_boot IS NOT h.recovery_boot OR h.reconciled_epoch IS NOT h.recovery_epoch) \
-           AND b.ended_at IS NULL AND b.registered_at IS NOT NULL \
-           AND b.observation_provenance IN (?3,?4,?5,?6) \
-           AND b.host_boot=h.host_boot AND b.host_epoch<h.host_epoch \
+           AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.liveness='connected' \
+           AND b.observation_provenance IN (?3,?4,?5,?6) AND b.target_id=s.target_id \
+           AND b.host_boot=h.host_boot AND b.host_boot=s.structural_host_boot AND b.host_epoch<h.host_epoch \
            AND b.incarnation IS NOT NULL AND b.incarnation=s.structural_incarnation)",
         params![
             seat,

@@ -1114,9 +1114,10 @@ pub struct SnapshotSavedSeat {
     /// Current registered binding only. `binding_execution` above may be
     /// historical evidence for an unresolved seat after invalidation.
     pub active_binding_execution: Option<ExecutionId>,
-    /// Host epoch of the open registered binding, only when that binding
-    /// carries the same host boot and incarnation as the seat's structural
-    /// proof. A lagging epoch is what C4 carries forward.
+    /// Oldest host epoch among the open registered bindings with a carried
+    /// provenance and the same host boot and incarnation as the seat's
+    /// structural proof (None when there is none). A lagging epoch is what C4
+    /// carries forward; the carry moves every such binding.
     pub bound_epoch: Option<u64>,
     pub bound_boot: Option<HostBootId>,
     pub bound_incarnation: Option<String>,
@@ -3362,7 +3363,8 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     ) -> Result<ReconciliationOutcome, ApiError>;
     /// Persist that the saved-seat pass of `published` ended with no refused
     /// transition and lift the restore hold when nothing is left to protect.
-    /// Returns whether the marker was written (false for a stale publication).
+    /// Returns whether the publication was current, so the marker names it
+    /// (false for a stale publication); a marker that moves bumps the send fence.
     fn record_reconciliation_pass(
         &self,
         published: &PublishedSnapshot,

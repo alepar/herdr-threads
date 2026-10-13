@@ -1155,7 +1155,10 @@ impl Topology {
         ] {
             db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,1,'native_current_target',1,1,0)",params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str()]).unwrap();
         }
-        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES('sender',1,'w4:p1',?1,1,1,'codex','session',?2,'cooperative_top_level',0,0,'term_1',?1)",params![observation.host_boot.as_str(),execution.to_string()]).unwrap();
+        // The codex occupant's process is this test process, so the daemon's liveness worker
+        // keeps the binding connected (deterministic availability across the epoch carry).
+        let process = herdr_threads::protocol::authority::LivenessFingerprint::current_process();
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES('sender',1,'w4:p1',?1,1,1,'codex','session',?2,'cooperative_top_level',0,0,'term_1',?1,?3,?4)",params![observation.host_boot.as_str(),execution.to_string(),i64::from(process.pid),process.start as i64]).unwrap();
         let contexts = paths
             .instance_dir
             .join("contexts")

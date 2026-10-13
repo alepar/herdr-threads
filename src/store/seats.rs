@@ -1118,31 +1118,46 @@ fn saved_seat_scalar(
         "SELECT terminal_id,incarnation,execution_id,host_boot FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
         [&id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
     ).optional().map_err(store_error)?;
-    type ActiveBinding = (String, i64, String, Option<String>, String);
-    let active_binding: Option<ActiveBinding> = conn
+    let active_binding_execution: Option<String> = conn
         .query_row(
-            "SELECT execution_id,host_epoch,host_boot,incarnation,observation_provenance FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL ORDER BY ordinal DESC LIMIT 1",
+            "SELECT execution_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL ORDER BY ordinal DESC LIMIT 1",
             [&id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            |r| r.get(0),
         )
         .optional()
         .map_err(store_error)?;
-    let bound_epoch =
-        match (&active_binding, &structural_proof) {
-            // C4: only a binding whose provenance is in the carried set
-            // yields a bound epoch; a native binding re-registers instead.
-            (Some((_, epoch, boot, incarnation, provenance)), Some(proof))
-                if CARRIED_BINDING_PROVENANCES.contains(&provenance.as_str())
-                    && boot == proof.host_boot().as_str()
-                    && incarnation.as_deref() == Some(proof.incarnation()) =>
-            {
-                Some(u64::try_from(*epoch).map_err(|_| {
-                    api_error(ErrorCode::StoreCorrupt, "negative binding host epoch")
-                })?)
-            }
-            _ => None,
-        };
-    let active_binding_execution: Option<String> = active_binding.map(|(execution, ..)| execution);
+    // C4: the oldest host epoch among the seat's open registered bindings
+    // whose provenance is in the carried set (a native binding re-registers
+    // instead) and whose host boot and incarnation are the structural proof's.
+    // Every such binding is what `carry_binding_forward` moves (ht-54r.3) and
+    // what `carry_pending` assumes will be carried, so a newer binding (a
+    // one-shot session registered after the epoch change) never hides an
+    // older one that still lags.
+    let bound_epoch: Option<i64> = match &structural_proof {
+        Some(proof) => conn
+            .query_row(
+                "SELECT MIN(host_epoch) FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL AND observation_provenance IN (?2,?3,?4,?5) AND host_boot=?6 AND incarnation=?7 AND target_id=?8",
+                params![
+                    &id,
+                    CARRIED_BINDING_PROVENANCES[0],
+                    CARRIED_BINDING_PROVENANCES[1],
+                    CARRIED_BINDING_PROVENANCES[2],
+                    CARRIED_BINDING_PROVENANCES[3],
+                    proof.host_boot().as_str(),
+                    proof.incarnation(),
+                    target.as_deref()
+                ],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?,
+        None => None,
+    };
+    let bound_epoch = bound_epoch
+        .map(|epoch| {
+            u64::try_from(epoch)
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative binding host epoch"))
+        })
+        .transpose()?;
     let prior_published_observation = if state == "unresolved"
         && unresolved_reason.as_deref() == Some("host_invalidation")
     {
@@ -1691,7 +1706,10 @@ pub(crate) fn lift_baseline_hold_if_clear(
 /// Persist that the saved-seat pass of `published` finished with no refused
 /// transition, then run the hold lift in the same transaction. Writes only
 /// while `published` is still the active publication of the instance's current
-/// recovery boot/epoch; returns whether the marker was written.
+/// recovery boot/epoch. Returns whether `published` was current, so that the
+/// marker now names its boot/epoch (false for a stale publication); the
+/// marker row is written, and the send-eligibility fence bumped, only when the
+/// marker actually moves.
 pub fn record_reconciliation_pass(
     context: &StoreContext,
     conn: &mut Connection,
@@ -1726,12 +1744,26 @@ pub fn record_reconciliation_pass(
             if !current {
                 return Ok(false);
             }
-            tx.execute(
-                "UPDATE host_instances SET reconciled_boot=?1,reconciled_epoch=?2 WHERE id=?3",
-                params![published.boot.as_str(), epoch, published.instance],
-            )
-            .map_err(store_error)?;
-            lift_baseline_hold_if_clear(tx, &published.instance, at.utc)?;
+            // `carry_pending` reads the marker: moving it can end a pending
+            // carry the planner did not schedule (it plans from the latest
+            // open registered binding only), turning a recipient staged
+            // without an unavailable warning into one that needs it. A send
+            // prepared before the move must not publish that stale staging,
+            // so a moving marker bumps the send-eligibility fence. It moves
+            // once per recovery boot/epoch; the re-record after every later
+            // complete pass changes nothing and stays quiet.
+            let moves = tx
+                .execute(
+                    "UPDATE host_instances SET reconciled_boot=?1,reconciled_epoch=?2 WHERE id=?3 AND (reconciled_boot IS NOT ?1 OR reconciled_epoch IS NOT ?2)",
+                    params![published.boot.as_str(), epoch, published.instance],
+                )
+                .map_err(store_error)?
+                != 0;
+            // A lift bumps both fences itself.
+            let lifted = lift_baseline_hold_if_clear(tx, &published.instance, at.utc)?;
+            schema::apply_eligibility_transition(tx, &published.instance, |_| {
+                Ok(moves && !lifted)
+            })?;
             Ok(true)
         },
     )
@@ -1905,7 +1937,7 @@ pub(crate) fn carry_binding_forward(
         ],
     ).map_err(store_error)?;
     // A seat holds many bindings (ht-54r.3): every open registered carried binding moves, and
-    // the seat's availability anchor is written once, from the most recent of them. The seat
+    // the seat's availability anchor is written once (when available), from the most recent. The seat
     // generation is the fence (the caller's compare-and-set); a binding's own is informational.
     if changed == 0 {
         return Ok(false);
@@ -1927,17 +1959,30 @@ pub(crate) fn carry_binding_forward(
             |r| r.get(0),
         )
         .map_err(store_error)?;
+    tx.execute(
+        "UPDATE wake_work SET binding_generation=?1 WHERE seat_id=?2 AND reservation_id IS NULL",
+        params![binding_generation, seat.as_str()],
+    )
+    .map_err(store_error)?;
+    // C4: the carry moves rows regardless of liveness (a disconnected row resumes on its next
+    // reconnect), but availability follows liveness: only a carry that leaves the seat
+    // effectively available (a connected carried row) anchors availability, starting receipt
+    // timers, and closes the unavailability episode. The seat's target generation moves with
+    // the rows first (the caller's later write of the same value is idempotent).
+    tx.execute(
+        "UPDATE seats SET target_generation=?1 WHERE id=?2 AND generation=?3 AND state='resolved'",
+        params![target_generation, seat.as_str(), binding_generation],
+    )
+    .map_err(store_error)?;
+    if schema::effective_registered_availability(tx, seat.as_str(), Some(instance))?.is_none() {
+        return Ok(true);
+    }
     let seq = schema::next_decision_seq(tx, instance)?;
     anchor_seat_availability(tx, seat, seq, at, binding_generation, &provenance)?;
     schema::clear_open_unavailability_for_seat(tx, seat.as_str(), at)?;
     tx.execute(
         "UPDATE seats SET unavailability_open=0 WHERE id=?1",
         [seat.as_str()],
-    )
-    .map_err(store_error)?;
-    tx.execute(
-        "UPDATE wake_work SET binding_generation=?1 WHERE seat_id=?2 AND reservation_id IS NULL",
-        params![binding_generation, seat.as_str()],
     )
     .map_err(store_error)?;
     Ok(true)
@@ -4715,8 +4760,13 @@ pub fn register_available(
             } else {
                 // Restoring availability does not replace the occupant or its generation, and a plain
                 // call never rewrites the recorded observation provenance (ht-54r.79).
-                tx.execute("UPDATE occupant_bindings SET registered_at=?1,host_boot=?2,host_epoch=?3,target_generation=?4,terminal_id=?6,incarnation=?7 WHERE binding_id=?5",
-                    params![at.utc.0,mapping.boot,mapping.epoch as i64,mapping.revision as i64,binding_id.as_str(),terminal,incarnation]).map_err(store_error)?;
+                // The placement write can make the binding count (or re-rank the staged
+                // provenance) whatever `previously_available` said: fence it on its own effect.
+                schema::fence_seat_availability(tx, seat.as_str(), || {
+                    tx.execute("UPDATE occupant_bindings SET registered_at=?1,host_boot=?2,host_epoch=?3,target_generation=?4,terminal_id=?6,incarnation=?7 WHERE binding_id=?5",
+                        params![at.utc.0,mapping.boot,mapping.epoch as i64,mapping.revision as i64,binding_id.as_str(),terminal,incarnation]).map_err(store_error)
+                        .map(|rows| ((), rows != 0))
+                })?;
             }
             let seq = schema::next_decision_seq(tx, &claim.instance)?;
             if lifecycle && claim.harness == crate::protocol::authority::Harness::Human {
