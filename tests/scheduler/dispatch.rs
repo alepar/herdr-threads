@@ -8151,3 +8151,42 @@ fn durable_batch_cleanup_pages_untracked_windows_and_requeues_failed_check() {
     assert_eq!(store.checks.lock().unwrap().len(), 37);
     assert!(notifier.0.lock().unwrap().is_empty());
 }
+
+/// Kills: a second wake into a process its mod channel already woke (ht-327 review). The
+/// channel serves binding `main`; its same-process siblings (same pid and harness) are dropped
+/// with it, while a binding of another process stays a composer target.
+#[test]
+fn channel_woken_process_drops_its_same_process_siblings() {
+    struct Live(&'static str);
+    impl crate::ports::ModChannels for Live {
+        fn binding_live(&self, _: &SeatId, binding: &crate::protocol::ids::BindingId) -> bool {
+            binding.as_str() == self.0
+        }
+    }
+    let mut reservation = test_reservation();
+    let mut targets = one_process_bindings();
+    targets.push(binding_target("other", "codex", Some(20)));
+    reservation.authority = ReservedWakeAuthority::Cooperative {
+        targets,
+        terminal: TerminalId::new("terminal"),
+        incarnation: "incarnation".into(),
+        binding_generation: None,
+        harness: Some("codex".into()),
+    };
+    let left = super::without_covered_targets(&Live("main"), &reservation, UtcMillis(0)).unwrap();
+    let ids: Vec<&str> = left
+        .authority
+        .targets()
+        .iter()
+        .map(|t| t.binding.as_str())
+        .collect();
+    assert_eq!(ids, ["other"]);
+    let mut only = reservation.clone();
+    if let ReservedWakeAuthority::Cooperative { targets, .. } = &mut only.authority {
+        targets.truncate(3);
+    }
+    assert!(
+        super::without_covered_targets(&Live("side1"), &only, UtcMillis(0)).is_none(),
+        "every binding of the woken process is served by its channel's turn"
+    );
+}

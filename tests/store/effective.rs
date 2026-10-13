@@ -466,6 +466,7 @@ fn overdue_receipt_warning_carries_the_recipients_wake_disposition() {
         (1100, Some("unsafe"), "unsafe", "last wake unsafe"),
         (1100, Some("submitted"), "submitted", "last wake submitted"),
         (900, Some("unsafe"), "none", "no native wake recorded"),
+        (1000, Some("unsafe"), "none", "no native wake recorded"),
         (1100, None, "none", "no native wake recorded"),
     ] {
         let mut db = fixture();

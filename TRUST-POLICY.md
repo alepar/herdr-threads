@@ -406,7 +406,11 @@ model open work, and summary closure never changes receipt state or installs glo
   seat-level attention (an invitation, receipt or warning, or a receipt's soft-deadline poke) types once into
   that process's composer: the item reaches whichever of its bindings takes the turn, so no binding is
   chosen. It is owed only while every binding of the process is owed (one served in its turn served the
-  process), and a wake for unread mail alone, which is each binding's own, still needs a unique match. Only a reservation that names no targets
+  process), and a binding whose mod channel woke it takes its process's other bindings off the composer
+  targets. A wake whose reasons name no unoffered seat-level item still needs a unique match: unread mail
+  is each binding's own, so (an accepted limit) a `wake_on: all` seat whose only new attention is lazy mail
+  beside an already-offered receipt stays unwoken by the composer until a seat-level item or a unique
+  binding remains; the item still arrives on its next turn. Only a reservation that names no targets
   (a legacy source) keeps the single-harness rule. A soft poke follows the same targets and rule.
   *Served in-turn* (ht-705, A8): a target that was shown every pending receipt (or invitation) the wake is
   reserved for inside its own turn is owed no wake for it; the seat-level candidate drops those items only

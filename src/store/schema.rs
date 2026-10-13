@@ -3892,14 +3892,11 @@ pub struct OverdueOutcome {
     pub inserted: bool,
 }
 
-/// The retirement time basis is valid only for a job and its fenced seat.
-/// Ordinary scans ignore effectively terminal obligations. This helper does
-/// not settle the obligation; the handler performs settlement in the same tx.
 /// The recipient's native wake disposition for an overdue obligation (ht-327), so the sender
-/// sees a recipient that was never prompted: the outcome of the seat's latest wake attempt
-/// completed since the obligation was created (`submitted` means the wake prompt was typed,
-/// never that anything was read; a refusal sent nothing), else `none` (no native wake
-/// recorded; a mod channel wakes without one).
+/// sees a recipient that was never prompted: the outcome of the seat's latest wake or poke
+/// attempt completed after the obligation was created (any attempt, not necessarily one for
+/// this obligation; `submitted` means a prompt was typed, never that anything was read), else
+/// `none` (no native wake recorded; a mod channel wakes without one).
 fn overdue_wake(
     tx: &Connection,
     obligation: &ObligationRef,
@@ -3933,11 +3930,14 @@ fn overdue_wake(
         .optional()
         .map_err(store_error)?;
     Ok(match (last, created_at) {
-        (Some((Some(outcome), Some(completed))), Some(created)) if completed >= created => outcome,
+        (Some((Some(outcome), Some(completed))), Some(created)) if completed > created => outcome,
         _ => "none".to_owned(),
     })
 }
 
+/// The retirement time basis is valid only for a job and its fenced seat.
+/// Ordinary scans ignore effectively terminal obligations. This helper does
+/// not settle the obligation; the handler performs settlement in the same tx.
 pub fn record_overdue_if_pending(
     tx: &Transaction<'_>,
     obligation: &ObligationRef,
