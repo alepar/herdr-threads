@@ -1411,6 +1411,325 @@ fn send_before_first_pass_to_structurally_continuous_seat_has_no_warning() {
     );
 }
 
+/// Live processes for the marker-race scenario: the sender (`TEST`) and the
+/// recipient's main session (pid 2); the one-shot session's pid 3 has exited.
+struct MainAliveOneShotGone;
+impl crate::ports::ProcessInfo for MainAliveOneShotGone {
+    fn process(&self, pid: u32) -> Option<crate::ports::ProcessRecord> {
+        let test = crate::protocol::authority::LivenessFingerprint::TEST;
+        (pid == test.pid || pid == 2).then(|| crate::ports::ProcessRecord {
+            pid,
+            parent: None,
+            start: 1,
+            argv: Vec::new(),
+        })
+    }
+}
+
+/// When the send's recipients are staged relative to the reconciliation pass
+/// of the new host epoch.
+#[derive(Clone, Copy, Debug)]
+enum MarkerRace {
+    /// Staged before the saved-seat page is planned and applied.
+    StagedBeforePage,
+    /// Staged after the saved-seat page, before the pass records its marker.
+    StagedAfterPage,
+}
+
+/// C4 pre-reconciliation window vs the reconciliation marker (Main review I1).
+/// Production shape: the recipient's main cooperative session (pid 2) is
+/// registered at host epoch 1; Herdr restarts (epoch 2, same boot and
+/// incarnation); a one-shot agent in the same pane checks in as a second
+/// session at epoch 2 and exits (liveness `process_exit`). The seat's latest
+/// open registered binding is now epoch 2 and disconnected, so the planner
+/// schedules no carry, while `carry_pending` (any open carried binding older
+/// than the host epoch) suppresses the unavailable warning until the marker
+/// lands. A send staged before the marker and decided after it must publish
+/// the warning set the post-marker canonical state requires (the recipient is
+/// unavailable and no carry is pending: warned), not the stale suppression.
+/// Kills: a marker that flips `carry_pending` without moving the send
+/// eligibility fence, so the decision keeps a stale staged warning set.
+fn send_staged_across_the_reconciliation_marker(race: MarkerRace) {
+    use crate::ports::SendPreparationProgress;
+    use crate::protocol::commands::{Accept, Invite, PermitMutation, SendMessage};
+    let (service, db) = fixture();
+    let path = db.directory.0.join("store.db");
+    let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let store: Arc<dyn StorePort> = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(path, Arc::new(FixedClock)),
+            "i",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient','i','resolved','native','q',0,0,0)", []).unwrap();
+    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'q','inc','coherent_enumeration',1)", []).unwrap();
+    // Allocation records the seats' structural proof (terminal and
+    // incarnation); the raw fixture rows carry none, so record it here.
+    db.execute("UPDATE seats SET structural_terminal_id='term-'||target_id,structural_incarnation='inc',structural_incarnation_kind='coherent_enumeration',structural_host_boot='b',structural_host_epoch=1,structural_connection_epoch=1,structural_observation_sequence=1,target_generation=1 WHERE id IN ('s','recipient')", []).unwrap();
+    db.execute("UPDATE observed_targets SET generation=1", [])
+        .unwrap();
+    let count = |sql: &str| -> i64 { db.query_row(sql, [], |r| r.get(0)).unwrap() };
+    let fences = || -> (i64, i64) {
+        db.query_row(
+            "SELECT lifecycle_revision,send_eligibility_revision FROM host_instances WHERE id='i'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    // The production pass: plan each saved-seat page, apply its transitions.
+    let reconcile_pages = |publication: &crate::ports::PublishedSnapshot| -> Vec<String> {
+        let mut planned = Vec::new();
+        let mut after = 0;
+        let mut high = None;
+        loop {
+            let page = store
+                .saved_seats_page(&publication.id, after, high, 16, &budget())
+                .unwrap();
+            for transition in crate::identity::reconcile::plan_page(&page).unwrap() {
+                planned.push(format!(
+                    "{}:{:?}",
+                    transition.seat.as_str(),
+                    transition.action
+                ));
+                store
+                    .apply_reconciliation_transition(transition, &budget())
+                    .unwrap();
+            }
+            if !page.has_more {
+                return planned;
+            }
+            after = page.after_ordinal;
+            high = Some(page.high_water_ordinal);
+        }
+    };
+    // Epoch 1 is published and fully reconciled first, so no baseline hold is
+    // left for the epoch-2 marker to lift (a lift bumps both fences anyway).
+    let first = publish_snapshot_at(&context, 1, 2, &["p", "q"], true);
+    reconcile_pages(&first);
+    assert!(store.record_reconciliation_pass(&first, &budget()).unwrap());
+    assert_eq!(
+        count("SELECT baseline_hold_unclaimed FROM host_instances WHERE id='i'"),
+        0
+    );
+
+    let peer = PeerIdentity::from_kernel(501);
+    let sender = checked(&service, lifecycle(claim(), "sender")).context;
+    let mut main = claim();
+    main.seat = SeatId::new("recipient");
+    main.target = HostTargetId::new("q");
+    main.native_session = NativeSessionId::new("recipient-main");
+    main.liveness = Some(crate::protocol::authority::LivenessFingerprint { pid: 2, start: 1 });
+    main.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
+    let main = checked(&service, lifecycle(main, "recipient-main")).context;
+    let CommandResult::ThreadCreated(thread) = service
+        .handle(
+            Command::CreateThread(CreateThread {
+                name: None,
+                topic: "topic".into(),
+                goal: "goal".into(),
+                operation: OperationId::new("thread"),
+                claim: sender.clone(),
+            }),
+            peer,
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("wrong result")
+    };
+    service
+        .handle(
+            Command::Invite(Invite {
+                confirmation: None,
+                thread: thread.clone(),
+                seat: SeatId::new("recipient"),
+                deadline_millis: None,
+                operation: OperationId::new("invite"),
+                claim: sender.clone(),
+            }),
+            peer,
+            &budget(),
+        )
+        .unwrap();
+    service
+        .handle(
+            Command::Accept(Accept {
+                thread: thread.clone(),
+                operation: OperationId::new("accept"),
+                claim: main.clone(),
+            }),
+            peer,
+            &budget(),
+        )
+        .unwrap();
+
+    // Herdr restart: epoch 2 of the same boot and incarnation; the pass has
+    // not run, so the marker lags.
+    let second = publish_snapshot_at(&context, 2, 7, &["p", "q"], true);
+    // The sender checks in again (its binding moves to epoch 2), so the pass
+    // has nothing of the sender's to carry.
+    checked(&service, lifecycle(sender.clone(), "sender-again"));
+    // A one-shot agent in the recipient's pane registers a second session at
+    // epoch 2, then exits; the liveness worker disconnects it.
+    let mut one_shot = main.clone();
+    one_shot.native_session = NativeSessionId::new("recipient-one-shot");
+    one_shot.liveness = Some(crate::protocol::authority::LivenessFingerprint { pid: 3, start: 1 });
+    one_shot.execution = ExecutionId::new("00000000-0000-4000-8000-000000000003");
+    checked(&service, lifecycle(one_shot, "recipient-one-shot"));
+    let worker = crate::service::liveness::LivenessWorker::new(
+        store.clone(),
+        Arc::new(crate::service::fair_writer::FairWriter::new(32)),
+        Arc::new(MainAliveOneShotGone),
+    );
+    assert_eq!(worker.pass(&budget()).unwrap().disconnected, 1);
+    let bindings: Vec<(String, i64, String)> = db
+        .prepare("SELECT native_session,host_epoch,liveness FROM occupant_bindings WHERE seat_id='recipient' AND ended_at IS NULL AND registered_at IS NOT NULL ORDER BY ordinal")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        bindings,
+        vec![
+            ("recipient-main".to_owned(), 1, "connected".to_owned()),
+            (
+                "recipient-one-shot".to_owned(),
+                2,
+                "disconnected".to_owned()
+            ),
+        ],
+        "older connected carried binding, latest registered binding disconnected"
+    );
+    let carry_pending = || crate::store::schema::carry_pending(&db, "recipient", "i").unwrap();
+    let available = || {
+        crate::store::schema::effective_registered_availability(&db, "recipient", Some("i"))
+            .unwrap()
+            .is_some()
+    };
+    assert!(carry_pending(), "the lagging marker leaves a carry pending");
+    assert!(!available());
+
+    let request = |operation: &str| SendMessage {
+        delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+        thread: thread.clone(),
+        body: "across the marker".into(),
+        direct_recipient: None,
+        invited_recipients: vec![],
+        deadline_millis: None,
+        operation: OperationId::new(operation),
+        claim: sender.clone(),
+        relays_user: false,
+        user_intent: None,
+    };
+    let prepare = |send: &SendMessage| loop {
+        match store
+            .prepare_send_step(
+                send,
+                crate::ports::DurableWorkAdmission::new(16).unwrap(),
+                &budget(),
+            )
+            .unwrap()
+        {
+            SendPreparationProgress::Ready { .. } => break,
+            SendPreparationProgress::More { .. } => {}
+            other => panic!("unexpected preparation progress {other:?}"),
+        }
+    };
+    let decide = |send: &SendMessage| {
+        let mutation = PermitMutation::SendMessage(send.clone());
+        let permit = store
+            .issue_cooperative_permit(
+                crate::store::cooperative_permit_request(&mutation).unwrap(),
+                &budget(),
+            )
+            .unwrap();
+        store.mutate(mutation, permit, &budget())
+    };
+    let staged_warnings = || {
+        count(
+            "SELECT count(*) FROM prepared_unavailable_warnings w JOIN send_preparations p ON p.id=w.preparation_id WHERE p.status!='discarded' AND w.affected_seat_id='recipient'",
+        )
+    };
+    let pass_pages = || {
+        let planned = reconcile_pages(&second);
+        assert!(
+            planned.iter().all(|p| !p.contains("CarryForward")),
+            "the planner sees the epoch-2 latest binding and plans no carry: {planned:?}"
+        );
+    };
+
+    let first_send = request("across-marker");
+    if matches!(race, MarkerRace::StagedAfterPage) {
+        pass_pages();
+    }
+    prepare(&first_send);
+    assert_eq!(
+        staged_warnings(),
+        0,
+        "staged before the marker: the pending carry suppresses the warning"
+    );
+    if matches!(race, MarkerRace::StagedBeforePage) {
+        pass_pages();
+    }
+    let before_marker = fences();
+    assert!(
+        store
+            .record_reconciliation_pass(&second, &budget())
+            .unwrap()
+    );
+    // The post-marker canonical state: unavailable, no carry pending, joined.
+    assert!(!carry_pending(), "the marker ends the pending carry");
+    assert!(!available());
+    let after_marker = fences();
+
+    // The client retries a refused decision under a fresh operation.
+    let mut send = first_send;
+    let mut attempts = 0;
+    let message = loop {
+        attempts += 1;
+        assert!(attempts <= 2, "{race:?}: the send does not converge");
+        match decide(&send) {
+            Ok(CommandResult::MessageSent(message)) => break message,
+            Err(error)
+                if error.code == ErrorCode::Conflict
+                    && error
+                        .detail
+                        .starts_with("send preparation snapshot changed") =>
+            {
+                send = request("across-marker-retry");
+                prepare(&send);
+            }
+            other => panic!("{race:?}: unexpected decision {other:?}"),
+        }
+    };
+    let published: Vec<String> = db
+        .prepare("SELECT w.affected_seat_id FROM prepared_unavailable_warnings w JOIN send_manifests m ON m.preparation_id=w.preparation_id WHERE m.message_id=?1 ORDER BY w.warning_offset")
+        .unwrap()
+        .query_map([message.as_str()], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        published,
+        vec!["recipient".to_owned()],
+        "{race:?}: the published warning set is the post-marker canonical one (fences before/after the marker {before_marker:?} -> {after_marker:?})"
+    );
+}
+
+#[test]
+fn send_staged_before_the_saved_seat_page_publishes_post_marker_warnings() {
+    send_staged_across_the_reconciliation_marker(MarkerRace::StagedBeforePage);
+}
+
+#[test]
+fn send_staged_after_the_saved_seat_page_publishes_post_marker_warnings() {
+    send_staged_across_the_reconciliation_marker(MarkerRace::StagedAfterPage);
+}
+
 #[test]
 fn operator_check_in_requires_human_lifecycle() {
     let (service, db) = fixture();

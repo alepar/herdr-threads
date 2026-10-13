@@ -132,8 +132,13 @@ fn host_snapshot(capture: &Capture, sequence: u64) -> HostSnapshot {
 
 /// Stages, seals and publishes one capture through the production stage API,
 /// in slices of at most 16 targets as the observation lane does.
-fn publish(context: &StoreContext, conn: &mut Connection, capture: &Capture, sequence: u64) {
-    publish_from(context, context, conn, capture, sequence);
+fn publish(
+    context: &StoreContext,
+    conn: &mut Connection,
+    capture: &Capture,
+    sequence: u64,
+) -> crate::ports::PublishedSnapshot {
+    publish_from(context, context, conn, capture, sequence)
 }
 
 /// `publish`, with the stage built under `staging` and published under
@@ -144,7 +149,7 @@ fn publish_from(
     conn: &mut Connection,
     capture: &Capture,
     sequence: u64,
-) {
+) -> crate::ports::PublishedSnapshot {
     let context = staging;
     let budget = budget();
     let admission = seats::begin_host_observation(context, conn, "i", &budget).unwrap();
@@ -168,6 +173,7 @@ fn publish_from(
     seats::seal_snapshot_stage(context, conn, &stage.id, &budget).unwrap();
     let published = seats::publish_snapshot_stage(publishing, conn, &stage.id, &budget).unwrap();
     assert_eq!(published.observation_sequence, sequence);
+    published
 }
 
 fn revision(conn: &Connection) -> i64 {
@@ -315,6 +321,51 @@ fn new_host_epoch_bumps_once() {
             ..base.clone()
         },
     );
+}
+
+// Kills both directions of the reconciliation-marker fence (Main review I1):
+// a marker that moves (`carry_pending` reads it) without a bump, and a marker
+// the observation lane re-records after every complete pass (each 5 s
+// publication) that bumps although it did not move. The marker moves once per
+// new recovery boot/epoch; there is no baseline hold here to lift.
+#[test]
+fn reconciliation_marker_bumps_once_when_it_moves_and_repeats_stay_quiet() {
+    let iso = TestIsolation::new("snapshot-eligibility-marker");
+    let (context, mut conn) = host_store(&iso);
+    let base = capture(&["p0", "p1"]);
+    let mark = |conn: &mut Connection, published: &crate::ports::PublishedSnapshot| {
+        assert!(seats::record_reconciliation_pass(&context, conn, published, &budget()).unwrap());
+    };
+    let published = publish(&context, &mut conn, &base, 1);
+    let unmarked = revision(&conn);
+    mark(&mut conn, &published);
+    assert_eq!(revision(&conn), unmarked + 1, "the marker moved: one bump");
+    let marked = revision(&conn);
+    mark(&mut conn, &published);
+    assert_eq!(revision(&conn), marked, "a repeated marker stays quiet");
+    for sequence in 2..5 {
+        let steady = publish(&context, &mut conn, &base, sequence);
+        mark(&mut conn, &steady);
+        assert_eq!(
+            revision(&conn),
+            marked,
+            "steady-state publication plus pass at sequence {sequence} stays quiet"
+        );
+    }
+    let next = Capture {
+        epoch: 2,
+        ..base.clone()
+    };
+    let published = publish(&context, &mut conn, &next, 5);
+    assert_eq!(
+        revision(&conn),
+        marked + 1,
+        "the new epoch publication bumps"
+    );
+    mark(&mut conn, &published);
+    assert_eq!(revision(&conn), marked + 2, "its first marker bumps once");
+    mark(&mut conn, &published);
+    assert_eq!(revision(&conn), marked + 2, "and a repeat stays quiet");
 }
 
 #[test]

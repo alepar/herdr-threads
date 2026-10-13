@@ -1726,12 +1726,26 @@ pub fn record_reconciliation_pass(
             if !current {
                 return Ok(false);
             }
-            tx.execute(
-                "UPDATE host_instances SET reconciled_boot=?1,reconciled_epoch=?2 WHERE id=?3",
-                params![published.boot.as_str(), epoch, published.instance],
-            )
-            .map_err(store_error)?;
-            lift_baseline_hold_if_clear(tx, &published.instance, at.utc)?;
+            // `carry_pending` reads the marker: moving it can end a pending
+            // carry the planner did not schedule (it plans from the latest
+            // open registered binding only), turning a recipient staged
+            // without an unavailable warning into one that needs it. A send
+            // prepared before the move must not publish that stale staging,
+            // so a moving marker bumps the send-eligibility fence. It moves
+            // once per recovery boot/epoch; the re-record after every later
+            // complete pass changes nothing and stays quiet.
+            let moves = tx
+                .execute(
+                    "UPDATE host_instances SET reconciled_boot=?1,reconciled_epoch=?2 WHERE id=?3 AND (reconciled_boot IS NOT ?1 OR reconciled_epoch IS NOT ?2)",
+                    params![published.boot.as_str(), epoch, published.instance],
+                )
+                .map_err(store_error)?
+                != 0;
+            // A lift bumps both fences itself.
+            let lifted = lift_baseline_hold_if_clear(tx, &published.instance, at.utc)?;
+            schema::apply_eligibility_transition(tx, &published.instance, |_| {
+                Ok(moves && !lifted)
+            })?;
             Ok(true)
         },
     )
