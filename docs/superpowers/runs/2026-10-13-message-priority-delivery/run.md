@@ -4,7 +4,8 @@ flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
 resumeChange: 2026-10-13 · "design APPROVED (A-E) ... Move to autonomous stage now (both roasts on). Nudge dev-herdr-threads when merge-ready." (relayed by seePN0MKW, mpqluOeQD) · autonomous=f→t after the interactive root design; nested brainstorms and later gates run Mode B
 resumeChange: 2026-10-14 · "sgtm" (fix run for bugs 1-3 before merging; upstream feedback: "message it to the superpowers space we have here. no need to scrub.") · post-hand-back fix pass for report Remaining items 1-3, then re-sweep and update the report
 resumeChange: 2026-10-14 · "convert to d9, simplicity." + "doesnt each session have its own cursor so that other siblings cant affect it?" · ServiceSend converted to D9 (ht-yha.47); ht-yha.44 rewritten to per-session pending tracking (seat-wide display draft withdrawn, its partial worktree discarded after an unplanned coordinator stop)
-phase: finish
+resumeChange: 2026-10-14 · "SGTM" (views only while connected; rebuilt from the cursor on reconnect) · ht-yha.57
+phase: fix-loop
 feedback: herdr agent prompt wB:pB (superpowers workspace, Claude pane) with upstream-feedback-draft.md, 2026-10-14
 codeMechanism: Workflow
 
@@ -81,4 +82,5 @@ approvals:
 - approvals · leftovers · human · "your call" → orchestrator filed both now: ht-yha.50 (--max-bytes p0 refusal), ht-yha.51 (markers_ok vacuous) (2026-10-14)
 - post-hand-back fixes landed: ht-yha.44 (per-session pending views), .45, .46, .47 (ServiceSend→D9), .49 (protocol 8, v1.0.0), .50, .51, .52 (pending-only deadline walks), .53 (dead fallbacks removed), .54 (view lifecycle, no seat-wide state reads), .55 (spec sync); main dc2996c3 merged a2f1ae2d; q4 fixture 0873fa12; skew 7→8 db18eefc; unreleased v47 repairs dropped e6de8153
 - main-tab handoff · herdr-threads handoff --existing --pane w4:p1 → seat sRpHoWRVk, pair thread tEtr8uFMX, message mbGwVKTMO (2026-10-14); merge into local main is the main tab's
+- approvals · view lifetime · human · views only for connected sessions, dropped on any disconnect, rebuilt on reconnect (ht-yha.57) (2026-10-14)
 - root-design · human · D1-D11 and sections A-E approved via seePN0MKW (mwRZ1YxXs, myas79LQ8, mXmhe1P2d, mpqluOeQD)
