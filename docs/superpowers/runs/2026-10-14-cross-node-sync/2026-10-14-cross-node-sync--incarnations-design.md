@@ -4,7 +4,7 @@ Parent: [root spec](2026-10-14-cross-node-sync-design.md) · Bead: ht-5fr.6
 
 ## Goal
 
-A node restored from a backup, a node whose store was wiped while its key survived, and a log that two holders of one key extended differently all heal without losing a fact. Three outcomes are observable. A restored node rotates to a new incarnation and pulls its lost tail back without waking anyone for settled history. A forked log ends frozen on every node that saw the fork, and its owner re-issues the union of every branch's tail under a new incarnation, with the original fact IDs, so that all nodes converge to the same replicated projection. An operator can rebuild a damaged store from a peer with `sync resync`, after a `VACUUM INTO` backup.
+A node restored from a backup, a node whose store was wiped while its key survived, and a log that two holders of one key extended differently all heal without losing a fact. Three outcomes are observable. A restored node rotates to a new incarnation and pulls its lost tail back without waking anyone for settled history. A forked log ends frozen on every node that saw the fork, and its owner re-issues the union of every branch's tail under a new incarnation, with the original fact IDs, so that all nodes converge to the same replicated projection, except where two branches decided one key differently (§13 item 2, root §12). A cloned node (one key live in two daemons) is detected and holds every automatic repair until an operator repairs it (§6 clone gate). An operator can rebuild a damaged store from a peer with `sync resync`, after a `VACUUM INTO` backup.
 
 ## Problem description
 
@@ -23,6 +23,8 @@ A fork must be proven before anyone acts on it: a different head hash in a `Have
 - **What a re-issue keeps.** A re-issue keeps `kind`, `kind_version`, `hlc`, `creates`, `needs` and the payload bytes. It gets a new log, counter, prev_hash and signature, and its deps are the element-wise maximum of the owner's applied vector and the original deps.
 - **Delivery during re-issue on the owner.** Delivery is suppressed only for settlements that the owner authored in any of its own logs, including `journal_forked`, which is root §7's "already settled" rule. Open obligations are still offered.
 - **Random first incarnation.** A fresh store starts at a random incarnation instead of 1, so a wipe with the key intact is a restore with no fork.
+- **Clone gate.** Clone evidence about this node (a `node_collision` reported by the peer link, or an `own_unknown_newer` log) is persisted, and while any of it is uncleared the node runs no owner rotation, no restore rotation and no re-issue. The operator repairs the clone (moves one copy's node directory aside) and clears the evidence with `sync clone-cleared`.
+- **Own-history hold.** While the owner has a branch `pulling`, the sink sets the `Branches` flag of journal-core's own-history hold, so foreign facts wait for the branch's settlements (root §7).
 - **`sync resync`.** It is a restart-mode rebuild driven by a marker file. It backs up with `VACUUM INTO`, moves the old files aside, starts a fresh store, re-adds the dial targets, salvages verified entries from the backup and pins the rx source to the named peer until its first round completes.
 
 ## Decision points
@@ -97,6 +99,22 @@ CREATE TABLE sync_reissues (            -- owner only, append-only
   PRIMARY KEY(source_log_ix, source_counter, source_hash)
 ) STRICT, WITHOUT ROWID;
 
+CREATE TABLE sync_clone_evidence (     -- clone reports and own_unknown_newer logs
+  ev_ix INTEGER PRIMARY KEY,
+  subject TEXT NOT NULL CHECK(length(subject)=32),           -- the node the evidence is about
+  kind TEXT NOT NULL CHECK(kind IN ('handshake','peer_close','third_party','own_unknown_newer')),
+  log_ix INTEGER REFERENCES sync_logs(log_ix),                -- own_unknown_newer only
+  detail TEXT NOT NULL CHECK(length(detail)<=512),            -- boots, source node, genesis hlc
+  source_node TEXT CHECK(source_node IS NULL OR length(source_node)=32),
+  detected_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  cleared_at INTEGER,
+  cleared_by TEXT CHECK(cleared_by IS NULL OR length(cleared_by)<=128),
+  CHECK((kind='own_unknown_newer') = (log_ix IS NOT NULL)),
+  CHECK((cleared_at IS NULL) = (cleared_by IS NULL))
+) STRICT;
+CREATE UNIQUE INDEX sync_clone_evidence_open ON sync_clone_evidence(subject, kind, coalesce(log_ix, -1)) WHERE cleared_at IS NULL;
+
 CREATE INDEX journal_forked_creates ON journal_forked(creates) WHERE creates IS NOT NULL;
 -- the backward walk of §4 uses journal_forked's existing UNIQUE(log_ix, counter, hash)
 ```
@@ -106,7 +124,7 @@ Triggers, each `RAISE(ABORT, '<name>')`:
 - `sync_forks_append_only` and `sync_reissues_append_only`: BEFORE DELETE.
 - `sync_reissues_immutable`: BEFORE UPDATE.
 
-`sync_branches` is mutable progress state, and rows are never deleted.
+`sync_branches` is mutable progress state, and rows are never deleted. `sync_clone_evidence` rows are never deleted either; a repeat report of an open row only advances `last_seen_at`, and clearing sets `cleared_at`/`cleared_by` once.
 
 Invariants that the store functions keep, and that `sync verify` (ht-5fr.8) and the tests check:
 - **I1.** The active self log (`local_node.active_log_ix`) is never `frozen`. `journal::open` adds this to its startup invariants and refuses the start with `StoreCorrupt "journal invariant: active self log frozen"`.
@@ -197,7 +215,10 @@ The coordinator serves `branch_want` like `want`, through `spawn_blocking` and t
 
 `AheadOfSelf` classified as `Restore` triggers `Job::Restore`. `NotFork` resumes the log. `Corrupt` makes `on_fork` return `ForkAck::Corrupt`, which the coordinator handles like `IngestOutcome::Corrupt`: a 10-minute penalty for `(link, log)` and a reselect. `on_fork` verifies `AheadOfSelf` synchronously (one signature check, about 50 µs), so that it can return the verdict.
 
+**Clone gate.** `store::incarnations::clone_suspect(tx) -> bool` is true while `sync_clone_evidence` holds an uncleared row whose `subject` is this node. `owner_rotate`, `restore_rotate` and `reissue_pass` check it first in their transaction and return `Held{clone}` without writing; the worker keeps the job's trigger in the store (the `sync_forks` row, the advertised head) and re-derives it after clearing (§12). Recording fork evidence (`record_fork`, which freezes only non-active logs), branch tips and pulls are not gated: they lose nothing and the repair needs them later. Evidence is written by `record_clone_evidence(tx, CloneReport)` (from `ForkSink::on_clone`, peer-link §8) and by the worker whenever `status` finds an `own_unknown_newer` log with no row, cleared or open, naming it; so a cleared `own_unknown_newer` log is acknowledged for good. `clear_clone_evidence(tx, operator) -> u32` (behind ht-5fr.8's operator-gated `sync clone-cleared`) clears every open row with the operator's `operator:local-user:<uid>` provenance. The operator's repair before it: stop the copy that should become a new node and move its `<state_dir>/node/` directory (key and store) aside, so it starts as a new node with a new key.
+
 `store::incarnations::owner_rotate(tx, ctx, decision, proof)`, in one background writer quantum:
+0. **Clone gate** (above): a clone suspect returns `Held{clone}`.
 1. **Re-check inside the transaction.** Local commands may have authored since detection, so the worker re-reads the active log head and reclassifies. A former `Restore` that the node has since authored past becomes a `Fork`.
 2. If `proof.log` is the active self log: `inc = next_incarnation(tx)`, then `journal::begin_incarnation(tx, inc, Some(Predecessor{incarnation: proof.log.incarnation, frozen_at: Some(x - 1)}))`. That authors and applies the new genesis and moves `active_log_ix`, which keeps I1.
 3. `record_fork(tx, &proof, source)`, which freezes the old log at `x - 1` (lower-only).
@@ -205,7 +226,7 @@ The coordinator serves `branch_want` like `want`, through `spawn_blocking` and t
 
 For a fork of an own log that is **not** active (an incarnation already rotated away from by a restore, or an older one), steps 1 and 3-4 run with no rotation: the node does not author there anyway.
 
-`restore_rotate(tx, ctx, decision)` re-checks as in step 1, then calls `begin_incarnation(tx, next_incarnation(tx), Some(Predecessor{incarnation, frozen_at: None}))`. The old incarnation is not frozen. It becomes an ordinary own log, which the coordinator wants as soon as the sink resumes it. Ingest appends it normally (ChainRules raises `AheadOfSelf` only for the active log), and ApplyEngine applies it with own-old-incarnation suppression (ht-5fr.3 §8 (a); ht-5fr.4 §12).
+`restore_rotate(tx, ctx, decision)` applies the clone gate, re-checks as in step 1, then calls `begin_incarnation(tx, next_incarnation(tx), Some(Predecessor{incarnation, frozen_at: None}))`. The old incarnation is not frozen. It becomes an ordinary own log, which the coordinator wants as soon as the sink resumes it. Ingest appends it normally (ChainRules raises `AheadOfSelf` only for the active log), and ApplyEngine applies it with own-old-incarnation suppression (ht-5fr.3 §8 (a); ht-5fr.4 §12).
 
 `next_incarnation(tx) -> u32` is a uniformly random value in `1..=u32::MAX` that no `sync_logs` row of this node already uses. It is drawn from `SyncState.incarnation_rng` (an xorshift seeded from `getrandom` at `journal::open`; the test-support `StoreContext::seed_incarnations(u64)` fixes it).
 
@@ -217,6 +238,7 @@ The window between detection and the rotation commit is one background writer tu
 - Holding all local authoring until the first sync round after start: research 09 F2 rejects it because it violates AP, and incarnations make it unnecessary.
 - A sidecar head file written after commits (research 09 F1 (a)): restores of the whole node directory, which is the usual backup unit, copy the sidecar too, and the Have and ingest checks catch the same case once any peer is reachable.
 - Rotating on a fork of an old, non-active own log: the node does not author there, and the active log is unaffected. A rotation would only add a genesis.
+- Healing clones automatically (re-keying one copy, or letting both rotate): both copies satisfy the owner predicate, so each would mint and keep authoring under the same `node_uuid`, and the split never closes; only moving one copy's node directory aside ends it, which is an operator act (root §12).
 
 ### 7. Owner path: branch discovery and pulls
 
@@ -263,7 +285,7 @@ The window between detection and the rotation commit is one background writer tu
   - all `journal_forked` rows, which are the other branches (I2 puts them above the freeze).
 - **Branch order.** A `journal_forked` candidate is ready only when its `prev_hash` names a `journal` row of the log at `counter - 1`, or a `journal_forked` row at `counter - 1` that is already in `sync_reissues`. A candidate that is not ready is skipped and counted in `waiting`, so one stalled branch never blocks the others. `journal` candidates are always ready, because ordering by counter re-issues their predecessors first. The one exception is the rows exposed by a lowered freeze (§7 step 3): they re-issue after higher counters, and receivers rely on `needs` parking for any entity those lower rows create.
 - **Per candidate:** `journal::reissue`, then `INSERT INTO sync_reissues`, in the same transaction.
-- **Driver.** The worker runs passes while `has_more`, after every `record_fork` or `branch_progress` commit, at start, and every 5 s while `waiting > 0`. Every pass is idempotent: a crash between passes leaves `sync_reissues` and `journal` consistent, because they commit together.
+- **Driver.** The worker runs passes while `has_more`, after every `record_fork` or `branch_progress` commit, at start, after `clear_clone_evidence`, and every 5 s while `waiting > 0`. A pass on a clone suspect returns `Held{clone}` and re-issues nothing. Every pass is idempotent: a crash between passes leaves `sync_reissues` and `journal` consistent, because they commit together.
 - **Receivers.** Every node receives the re-issued entries as ordinary entries of the owner's new incarnation. Entries it already applied are no-ops by fact ID (root §5; ht-5fr.4 §3 idempotence list). The rest are new facts and deliver normally under their own suppression rules.
 
 **Considered.**
@@ -274,7 +296,7 @@ The window between detection and the rotation commit is one background writer tu
 
 **Recommended.** These are the changes in `src/store/apply.rs`:
 - `ApplyMode::Reissue{of: LogKey}`. Readiness is not checked: the entry is the head of the active log, and its deps are allowed to exceed the owner's applied vector (§8). `needs` parking applies as usual.
-- `ApplyContext::delivery_suppressed(tx, key)` in this mode is true when a row with `creates = key` exists in `journal` or `journal_forked` in any log of this node. That row is a settlement this node authored in any branch of its past. Root §7 suppresses "receipts that log already settled", and the settlement of an earlier branch usually sits in `journal_forked` when the message is re-issued. An unsettled obligation, such as a message from another branch to a local seat that was never acknowledged, is offered normally through DeliveryTail. This is deliberately narrower than ht-5fr.3 §8 (a)'s blanket rule for ingested own-old-incarnation entries, which this subepic leaves as ht-5fr.3 and ht-5fr.4 define it.
+- `ApplyContext::delivery_suppressed(tx, key)` in this mode is true when a row with `creates = key` exists in `journal` or `journal_forked` in any log of this node (journal-core §8 (b), which covers `journal_forked` in every mode). That row is a settlement this node authored in any branch of its past. Root §7 suppresses "receipts that log already settled", and the settlement of an earlier branch usually sits in `journal_forked` when the message is re-issued. An unsettled obligation, such as a message from another branch to a local seat that was never acknowledged, is offered normally through DeliveryTail. This is deliberately narrower than ht-5fr.3 §8 (a)'s blanket rule for ingested own-old-incarnation entries, which this subepic leaves as ht-5fr.3 and ht-5fr.4 define it.
 - `ApplyContext::is_own_history() -> bool` is true for an own-old-incarnation origin (ht-5fr.3 §8 (a)) and in `Reissue` mode. ht-5fr.4's `attribution::take` uses it to record `local_journal` provenance when no staged row exists. That is the value ht-5fr.4 §3 defines for own history.
 - Provenance stays `Local` (the origin is this node). On other nodes a re-issued fact is `replicated_from:<owner uuid>`.
 
@@ -359,6 +381,8 @@ pub trait ForkSink: Send + Sync {
   - *Log metadata.* The sink and the worker read a log's pubkey and ownership through one new `JournalPort` read, `log_meta(log, budget) -> Result<Option<LogMeta{pubkey, own, active, state, frozen_at, contiguous, head}>, ApiError>` (query connection; `MemoryJournal` answers the same from its maps), next to `stored_hash`. They never open their own SQL for it.
   - *Queue cap.* The 8 MiB cap counts the branch-entry bytes of queued jobs after `Have` coalescing. On overflow the oldest coalescible job (`Have` or `Branch`) is dropped, with one log line per minute, and its branch request is cleared so the next sweep re-requests it.
   - *`owner_rotate` source.* `owner_rotate(tx, ctx, decision, proof, source: Option<NodeUuid>)` takes the node the proof came from (none for a local detection), which it passes to `record_fork` and `upsert_branch_tip`.
+- **Clone reports.** `IncarnationsSink::on_clone(report)` queues `Job::Clone(report)`, and the worker calls `record_clone_evidence`. After each `Have` job and at start the worker computes `own_unknown_newer` and records any new log. While `clone_suspect` is true, `OwnerFork` and `Restore` jobs end `Held{clone}` (logged once per hour) and the re-issue driver idles. After `clear_clone_evidence` commits, the worker runs `reissue_pass`, clears the per-`(source, log)` Have memo and asks the coordinator for a full round (`SyncHandle::request_round`), so the next `Have`s re-trigger Have-time detection and the held rotations.
+- **Own-history `Branches` flag.** After every commit that changes `sync_branches`, the sink sets `own_history.set(Branches, any own row is 'pulling')` (journal-core §7 step 3a). Foreign facts therefore wait while the owner pulls branches that may hold its settlements; the 5-minute cap bounds a stalled branch.
 
 **Considered.**
 - Running repairs on the coordinator's ingest worker: it would serialize fork repair with ordinary relay, and the coordinator must not resolve forks (root).
@@ -368,9 +392,10 @@ pub trait ForkSink: Send + Sync {
 
 **Recommended.** ht-5fr.9 amends TRUST-POLICY.md with fork quarantine and re-issue as defined repairs (root §12). The task that lands `owner_rotate` and `reissue_pass` checks that amendment and adds, in the same commit, any of these accepted limits that it does not already state (AGENTS.md trust rule):
 1. **Dead owner.** When a forked log's owner never returns, the facts on divergent tails stay only on the nodes that hold each branch.
-2. **Same-ordinal facts.** Facts from different branches that decide the same per-home ordinal or one-shot state (a membership transition `n`, an invitation answer, a receipt's settlement `how`) resolve on each node to whichever it applied first. The seat's next transition makes them converge again.
+2. **Same-key facts on divergent branches.** Facts from different branches that decide the same per-home ordinal or one-shot state (a membership transition `n`, an invitation answer, a receipt's settlement `how`/`settled_at`/batch, a seat's `seat.created` kind, a `seat.retired` reason or time) resolve on each node to whichever it applied first; a register written twice at one `(hlc, node)` with different values does too. The seat's next membership transition makes membership converge again; the other columns stay as each node first applied them. This is root §12's "forked-log same-key facts" and the only exception to root §5's order-independence invariant (ht-5fr.4 §3 audit).
 3. **Unresolved seats after a rebuild.** A resync rebuild loses node-local bindings and managed threads, and leaves own seats `unresolved`.
 4. **Re-issued facts are attributed to their origin.** They keep their original fact IDs and HLC, and they are attributed `replicated_from:<owner>`, never to the node that held the branch.
+5. **Clones are operator-repaired.** One key live in two daemons is detected (peer-link handshake and third-node boot comparison, `own_unknown_newer`) and holds every automatic identity action on the node holding the evidence; nothing heals it automatically. The repair is moving one copy's node directory aside (it becomes a new node; facts it authored and never sent stay in its moved-aside store) and `sync clone-cleared` on the other, recorded with operator provenance.
 
 The resync marker records `operator:local-user:<uid>` provenance, and the daemon log line names it.
 
@@ -397,7 +422,9 @@ The resync marker records `operator:local-user:<uid>` provenance, and the daemon
     - a crash between passes (simulated by dropping the store mid-sequence) resumes correctly;
   - re-issue suppression: a settlement found only in `journal_forked` suppresses, an unsettled message to a local seat writes its lazy row and `wake_work`, and `is_own_history` drives the `local_journal` attribution;
   - `serve_branch` from `journal`, from a `journal_forked` walk into `journal`, `None` for an unknown tip, and `None` over the walk bound;
-  - `adopt_declared_freeze` lowers the freeze, and ignores a log that is not held.
+  - `adopt_declared_freeze` lowers the freeze, and ignores a log that is not held;
+  - clone gate: with an open `node_collision` row about self, `owner_rotate`, `restore_rotate` and `reissue_pass` return `Held{clone}` and write nothing while `record_fork` still freezes a non-active own log; a row about another node does not gate; `clear_clone_evidence` clears every open row with the operator provenance, after which the same rotation runs; a repeat report advances `last_seen_at` only; an `own_unknown_newer` log is recorded once and, once cleared, never re-recorded;
+  - own-history `Branches` flag: set while an own `sync_branches` row is `pulling`, cleared when the last one completes or becomes `unavailable`.
 - **JournalPort contract** (`tests/sync/journal_port_contract.rs`): `serve_branch` cases run against both `SqliteStore` and `MemoryJournal`.
 - **Frames and link** (`src/sync/frame.rs`, `src/sync/link.rs`):
   - round trips of the three frames and of `Have.forks`;
@@ -414,11 +441,12 @@ The resync marker records `operator:local-user:<uid>` provenance, and the daemon
 - **Convergence scenarios** (`tests/sync/incarnations_scenarios.rs`, a module of `tests/combined.rs`). These drive three to four in-process stores through the real `SyncCoordinator` over in-process duplex links (SqliteStore/MemoryJournal), with the sink and worker, and no daemons or second frame shuttle. Each ends with ht-5fr.3's oracle comparing `replicated_projection` across all nodes, and with every old incarnation frozen wherever a fork was seen:
   1. **Restore without fork.** A is restored to an earlier copy, B holds A's tail, A rotates, pulls back, and creates no wake rows for settled history.
   2. **Restore, then author.** A forks; C (which holds the old branch) freezes from ingest; D learns the fork only from C's `ForkRef`; A rotates, pulls both branches and re-issues; everything converges.
-  3. **Wiped store with the key intact.** The store bootstraps a new random incarnation, no fork is detected, and the old incarnation is pulled back.
+  3. **Wiped store with the key intact.** The store bootstraps a new random incarnation, no fork is detected, and the old incarnation is pulled back. B holds A's message to A's seat that A's old incarnation had already settled; A pulls B's log before its own old log (B is the rx source for both, and the test serves B's log first). The own-history hold keeps B's `message.sent` unapplied until A's old log is ingested, then it applies with no `lazy_recipients`, no `wake_work` and no wake dispatch for the settled seat; an unsettled message in the same catch-up is offered.
   4. **Have-time mismatch.** Two nodes at equal counters with different heads detect the fork with no ingest.
   5. **Corrupt branch reply.** It penalizes that source, and the branch completes from another.
   6. **Unknown kind.** An entry kind A does not know is re-issued unchanged and applies on a node that knows it.
   7. **Three branches.** The owner's freeze lowers to the minimum divergence.
+  8. **Clone.** A's node directory is copied to A′ (same key, different boot); C links to both. C closes the newer link `node_collision` and reports it; the closed copy records clone evidence about itself and neither rotates nor re-issues when fork evidence about its log arrives; after the operator moves A′'s node directory aside (A′ restarts as a new node) and runs `clear_clone_evidence` on A, A's owner path rotates and re-issues A′'s divergent facts, and the projections converge.
 - **Resync** (`tests/daemon/sync_resync.rs`, test-support, its own `[[test]]` because it runs daemons; two daemons linked with `sync.dial_command`, all processes owned and stopped, followed by `scripts/check-no-leaked-processes`):
   - a request with no path refuses;
   - a request writes the marker and stops the daemon;
@@ -449,7 +477,7 @@ Order: 1 → 2 → (3, 4) → 5 → 6 → 7 → 8 → 9.
 - Errors: none of its own. `Corrupt{which, err}` carries the `EnvelopeError`, and callers `match` every variant.
 
 **IncarnationStore (`store::incarnations`)** — new store module, the only owner of `sync_forks`, `sync_branches` and `sync_reissues`, and the single place where repair decisions become rows.
-- Owns: `record_fork` (store the missing proof entries, insert the evidence row, freeze lower-only), `owner_rotate`/`restore_rotate` (the in-transaction re-check, and rotation before freeze so I1 holds), `next_incarnation`, `upsert_branch_tip`, `branch_progress` (chain checks, skipping common entries, the exponential back-search, lowering the freeze to the first divergence), `reissue_pass` (candidate order, branch readiness, `waiting` counts, idempotence through `sync_reissues`), `adopt_declared_freeze`, `status` (including `own_unknown_newer`), and invariants I2 and I3.
+- Owns: `record_fork` (store the missing proof entries, insert the evidence row, freeze lower-only), `owner_rotate`/`restore_rotate` (the clone gate, the in-transaction re-check, and rotation before freeze so I1 holds), `sync_clone_evidence` with `record_clone_evidence`, `clone_suspect` and `clear_clone_evidence`, `next_incarnation`, `upsert_branch_tip`, `branch_progress` (chain checks, skipping common entries, the exponential back-search, lowering the freeze to the first divergence), `reissue_pass` (candidate order, branch readiness, `waiting` counts, idempotence through `sync_reissues`), `adopt_declared_freeze`, `status` (including `own_unknown_newer`), and invariants I2 and I3.
 - Hides: the three tables, their triggers and the candidate query's ordering.
 - Must not: write `journal`, `journal_forked` or `sync_logs` itself. It goes through Journal's `store_forked`, `freeze`, `begin_incarnation` and `reissue`. It must not hold network or timing state (sources, timeouts and penalties live in the sink), or interpret a payload (re-issue is kind-agnostic).
 - Relationships: called only by IncarnationsWorker inside background writer quanta, by the `node.genesis` handler (`adopt_declared_freeze`), by `journal::open` (`next_incarnation` at bootstrap), and by ht-5fr.8's status. It depends on Journal, ForkProof and `SyncState.incarnation_rng`.
@@ -457,7 +485,7 @@ Order: 1 → 2 → (3, 4) → 5 → 6 → 7 → 8 → 9.
 - Errors: a `branch_progress` verdict (`Corrupt` chain or signature, which penalizes the source; `NeedsEarlier`, which triggers the back-search; progress) is a value, not an `Err`. `Err` stays reserved for store errors, which roll the quantum back. A handler rejection inside a re-issue is recorded as `failed` and is not an error (§8).
 
 **IncarnationsSink / IncarnationsWorker** — new struct pair (`src/sync/incarnations.rs`). The sink is the `ForkSink` implementation and the non-blocking front. The worker is the `herdr-incarnations` std thread that runs repair jobs one writer quantum at a time.
-- Owns: the bounded `Job` queue (a closed enum: `Fork`, `Have`, `Branch`, `OwnerFork`, `Restore`, `Salvage`, plus the re-issue tick) with per-source `Have` coalescing and the 8 MiB reply cap. It also owns one `Mutex`-guarded shared state with the resumed set, the `ForkOutbox`, the `fork_refs`, the `tip → sources` map, the per-`(source, log)` Have memo, and the branch-request table (at most one outstanding request per branch, a 30 s timeout, failover to the next source, 10-minute `(source, log)` penalties, oldest-last-request preference). Finally it owns the triggers that drive `reissue_pass` (after a commit, at start, every 5 s while `waiting`) and the failure path (`Lane::Sync` status plus a 1 s → 60 s backoff).
+- Owns: the bounded `Job` queue (a closed enum: `Fork`, `Have`, `Branch`, `OwnerFork`, `Restore`, `Salvage`, `Clone`, plus the re-issue tick), the own-history `Branches` flag, the post-clear re-derivation (§12) with per-source `Have` coalescing and the 8 MiB reply cap. It also owns one `Mutex`-guarded shared state with the resumed set, the `ForkOutbox`, the `fork_refs`, the `tip → sources` map, the per-`(source, log)` Have memo, and the branch-request table (at most one outstanding request per branch, a 30 s timeout, failover to the next source, 10-minute `(source, log)` penalties, oldest-last-request preference). Finally it owns the triggers that drive `reissue_pass` (after a commit, at start, every 5 s while `waiting`) and the failure path (`Lane::Sync` status plus a 1 s → 60 s backoff).
 - Hides: all fork policy from the coordinator, and when and from whom branches are pulled.
 - Must not: block in any `ForkSink` method (the one synchronous signature check in `on_fork` excepted), write SQL outside `store::incarnations` and Journal, send frames itself (the coordinator drains the outbox), or share its pull penalties with the coordinator's rx-source penalties.
 - Relationships: chosen once in `CoordinatorDeps` in `app.rs`, replacing `LogOnlyForkSink`. The worker uses `store::incarnations`, ForkProof and, for salvage, `JournalPort::ingest`. Per spec §12 there is no `IncarnationsPort`: `ForkSink` and `JournalPort` are the two seams.
@@ -474,7 +502,7 @@ Order: 1 → 2 → (3, 4) → 5 → 6 → 7 → 8 → 9.
 
 **Incarnations** — extended: realized as ForkProof, IncarnationStore, IncarnationsSink/IncarnationsWorker and Resync. Freezes are lower-only and set at the proof counter minus one, and convergence rests on the union re-issue plus idempotent apply by fact ID, not on nodes agreeing on a freeze counter.
 
-**ForkSink** — extended: `on_fork` returns `ForkAck::{Paused, Corrupt}`, and the trait gains `on_have`, `on_branch(BranchReply)`, `outbox() -> ForkOutbox` and `fork_refs()`, all with no-op defaults, so `LogOnlyForkSink` is unchanged apart from its return value.
+**ForkSink** — extended: `on_fork` returns `ForkAck::{Paused, Corrupt}`, and the trait gains `on_have`, `on_branch(BranchReply)`, `outbox() -> ForkOutbox` and `fork_refs()`, all with no-op defaults, so `LogOnlyForkSink` is unchanged apart from its return value. `on_clone(CloneReport)` comes from ht-5fr.5 (peer-link §8); `IncarnationsSink` implements it by queueing `Job::Clone`.
 
 **Journal** — extended: a random bootstrap incarnation through `next_incarnation`; `Predecessor { incarnation, frozen_at: Option }`; a lower-only `freeze` returning `FreezeOutcome::{Frozen, Lowered, Unchanged}` that refuses the active self log; startup invariant I1; `serve_branch`; and `reissue`, the second authoring entry point. `reissue` copies the source fields, deps are the element-wise maximum, the HLC is not ticked, and a rejection never aborts.
 
@@ -499,7 +527,7 @@ Walk-through: A is restored from backup and authors one command. C holds A's old
 Digest:
 - ForkProof: owns what counts as a fork, the proof counter and corrupt-versus-fork; a new proof shape is a `Classified`/`AheadClass` case here;
   callers never act on an unsigned `Have` mismatch or compare entry hashes ad hoc.
-- IncarnationStore (`store::incarnations`): owns `sync_forks`, `sync_branches`, `sync_reissues`, rotation, branch progress and the re-issue pass; new persisted repair state goes here;
+- IncarnationStore (`store::incarnations`): owns `sync_forks`, `sync_branches`, `sync_reissues`, `sync_clone_evidence`, the clone gate, rotation, branch progress and the re-issue pass; new persisted repair state goes here;
   callers never write those tables or freeze, rotate or re-issue through Journal directly.
 - IncarnationsSink/IncarnationsWorker: own the fork job queue, branch-request sources, timeouts and penalties, the outbox and fork refs; new repair triggers are `Job` variants here;
   the coordinator never decides, retries or penalizes a repair, and sink methods never block.

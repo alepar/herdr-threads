@@ -33,7 +33,9 @@ Membership facts carry a home-node transition ordinal `n` for idempotence.
 
 `receipt.settled` is one fact per receipt and carries a settle-batch tag, so the grouped ACK info event is appended once per (batch, thread), when the batch's last receipt in that thread applies.
 
-Crossed direct-pair invitations settle `already_joined` from either arrival order.
+Crossed direct-pair invitations settle `already_joined` from either arrival order. Supersession compares the invitee's joined transition ordinal with the `invitee_n` the inviter saw, never the current membership state, so it is order-independent (root §5 invariant; §3 audit).
+
+Handlers reject a fact whose origin is not the kind's authorized author (§17); that is an authority check on replicated identity, not a view check.
 
 `messages` and `invitations` gain `origin_node`. The overdue recorder refuses obligations authored elsewhere, and the due scans, sparse-due triggers and warning attribution are scoped to match.
 
@@ -179,12 +181,29 @@ Handlers build it from `ApplyContext`, using `decision_seq`, `origin.node`, `ori
 
   The deps vector already orders a recipient's `seat.created` before the message (the author had applied it), so dropping recipients from `needs` past 256 changes only the parked-creator case. There, a recipient whose seat row is missing is a `Rejected` "unknown recipient seat <id>", which is replayable.
 - **Idempotence** (root §5, ht-5fr.6 re-issue):
-  - seat, thread, invitation and message facts are no-ops when their ID row exists;
-  - `thread.direct` updates only the earliest-creator fields;
+  - seat, thread, invitation and message facts are no-ops when their ID row exists (a same-ID fact is a no-op only because it carries the same content: fresh IDs are random per mint, and a re-issue copies the payload bytes);
+  - `thread.direct` is the one same-ID fact two nodes author with different content: it updates only the earliest-creator fields (a min-register, §5);
   - registers are LWW;
   - `invitation.answered` is a no-op unless the invitation is `pending`;
   - membership facts compare `n` (§7);
   - `receipt.settled` is a no-op unless the receipt is `pending`.
+- **Order-independence audit** (root §5 invariant: every replicated column ends with the same value in any apply order). Facts of one seat's home node are totally ordered in its log, and a fact's deps order it after everything its author had applied, so only concurrent facts from different logs can arrive in either order. Per kind:
+
+  | Kind | Concurrent facts that touch the same columns | Merge |
+  |---|---|---|
+  | `node.genesis`, `node.retag` | none (one log each; retag is decided by the higher uuid only) | — |
+  | `seat.created` | none outside a fork (authored once, by the home node, when unpublished) | fork residual: kind |
+  | `seat.retired` | `message.sent` / `invitation.created` to that seat from other nodes | a recipient or invitee retired at apply is settled `recipient_retired` at apply (§4, §6, §8); the retirement job settles the rest; both orders end `recipient_retired`. Fork residual: `retired_at`, reason |
+  | `thread.created` | none (fresh ID); initial registers go through the LWW upsert | LWW |
+  | `thread.direct` | the other pair node's create of the same `d…` | min-register on `(hlc, node_uuid)` over `created_hlc`, `created_node`, `threads.created_at` (§5) |
+  | `thread.register` | registers from any node | LWW on `(hlc, node_uuid)`; an equal pair with a different value needs one node to author twice at one HLC (fork residual) |
+  | `invitation.created` | the invitee's membership transitions (home node) and `seat.retired` | supersession by ordinal: `already_joined` iff the invitee's `last_joined_n > invitee_n` (§6), whichever applies first; `recipient_retired` iff the invitee is retired at apply |
+  | `invitation.answered` | none outside a fork (the invitee's home node answers once, after the invitation applied there) | fork residual: outcome |
+  | `membership.joined` / `.left` | `invitation.created` (sets `invited` only while no transition above `invitee_n` applied) | ordinal `n` (§7); `last_joined_n` drives supersession. Fork residual: two branches' facts with one `n` |
+  | `message.sent` | `seat.retired` of a recipient | `recipient_retired` at apply (§8) |
+  | `receipt.settled` | none outside a fork (the recipient's home node settles once, after the message applied there; its later `seat.retired` follows in the same log) | fork residual: `how`, `settled_at`, batch |
+
+  The fork residual is root §12's accepted limit "forked-log same-key facts" (ht-5fr.6 §13 item 2): each node keeps whichever branch's fact it applied first, and the seat's next membership transition re-converges its membership. A wipe or restore cannot create such a pair: the own-history hold (root §7) applies no foreign fact before the node's own old facts are ingested, so its commands see the old settlement, answer or transition and author nothing twice.
 - **Payload size.** The largest is `message.sent`: body ≤ 64 KiB plus ≤ 100 explicit recipients and the thread audience at about 60 bytes per recipient. A 1000-member audience is about 125 KiB, under the 512 KiB cap. `MessageSent::validate_for_author` refuses a payload over 448 KiB with `InvalidRequest` "audience too large to replicate" before authoring.
 
 **Considered.**
@@ -260,23 +279,23 @@ Handlers build it from `ApplyContext`, using `decision_seq`, `origin.node`, `ori
 ### 6. Invitations: `invitation.created`, `invitation.answered`, `already_joined`
 
 **Recommended.**
-- **`invitation.created` v1** `{invitation, thread, inviter, invitee, created_at, duration_ms, deadline_at: Option<i64>, confirmation: Option<"lazy"|"require_ack">}`. `deadline_at` is `None` exactly when the invitation is lazy.
+- **`invitation.created` v1** `{invitation, thread, inviter, invitee, invitee_n, created_at, duration_ms, deadline_at: Option<i64>, confirmation: Option<"lazy"|"require_ack">}`. `deadline_at` is `None` exactly when the invitation is lazy. `invitee_n` is the invitee's `memberships.home_transition` for that thread in the inviter's view at authoring (0 without a row); A2 already refuses to invite a seat that view shows joined.
   - Root's "content, required flag" maps to `confirmation` and `duration_ms`. An invitation has no free text today: the context an invitee sees is derived from the thread on its own node (`invitation_content`). `require_ack` is the required flag. Service requirement invitations (`requirement_episodes`) are node-local (§2).
   - **`materialize_invitation`:**
     1. No-op if the ID exists.
     2. `episode = service_controls::next_invitation_episode(thread, invitee)`, a local position.
-    3. Insert `invitations(…, state, created_at, created_decision_seq = decision_seq, frozen_duration_ms = duration_ms, deadline_at = deadline_at.unwrap_or(created_at + duration_ms), confirmation, inviter_seat_id = inviter, origin_node)`.
-    4. If the invitee is `joined` (membership row `state = 'joined'`), the row is inserted with `state = 'already_joined'` and nothing else happens: no membership change, no DeliveryTail, no deadline.
+    3. Insert `invitations(…, state, created_at, created_decision_seq = decision_seq, frozen_duration_ms = duration_ms, deadline_at = deadline_at.unwrap_or(created_at + duration_ms), confirmation, inviter_seat_id = inviter, invitee_n, origin_node)`.
+    4. If the invitee's seat is `retired`, the row is inserted with `state = 'recipient_retired'` (`retired_at` = the seat's) and nothing else happens. If the invitee's membership row has `last_joined_n > invitee_n` (a joined transition the inviter had not seen, whether still joined or since left), the row is inserted with `state = 'already_joined'` and nothing else happens: no membership change, no DeliveryTail, no deadline. The current membership `state` is never consulted, because it depends on how many of the invitee's concurrent transitions applied first.
     5. Otherwise the membership row becomes or is inserted as `invited` (today's UPDATE/INSERT). The derived `invite` info event (key `invite:<invitation>`) is appended, and the membership revision and directory/inbox filters are bumped. If the invitee is local and `!suppress(answer_key(invitation))`, `DeliveryTail::invitation(tx, invitee, timed)` runs (§10).
   - `invitations.state` CHECK gains `'already_joined'`. The digest and presentation triggers already treat any non-`pending` state as settled. `inviter_seat_id` becomes `NOT NULL` for journaled threads (the payload always names the inviter, including the former policy-less direct path); service invitations on local-only threads keep `NULL`.
 - **`invitation.answered` v1** `{invitation, outcome: "accepted"|"rejected", reason: Option<String ≤ 256 B>, answered_at, n}`. `n` is the invitee's membership transition ordinal for an accept (§7), and `0` for a reject.
   - **`materialize_answer`:** a no-op unless the invitation is `pending`. Otherwise:
     - **Late overdue.** If `answered_at > deadline_at` and the invitation is timed, call `record_overdue_if_pending` (it acts only on the inviter's node, §13).
-    - **Accepted:** `UPDATE invitations SET state='accepted', accepted_at = answered_at, accepted_actor_seat_id = invitee, accepted_generation/accepted_observation` from `attribution::take(answer:<id>)`. Then the membership transition of §7 to `joined` with `n`, and the derived `accept` event. Then `settle_superseded_invitations(thread, invitee)`: every other pending invitation of that seat in that thread becomes `already_joined`.
+    - **Accepted:** `UPDATE invitations SET state='accepted', accepted_at = answered_at, accepted_actor_seat_id = invitee, accepted_generation/accepted_observation` from `attribution::take(answer:<id>)`. Then the membership transition of §7 to `joined` with `n`, and the derived `accept` event. Then `settle_superseded_invitations(thread, invitee, n)`: every other pending invitation of that seat in that thread becomes `already_joined`.
     - **Rejected:** today's `invitation_rejections` insert, the `voluntary_state` update, and the derived rejection warn event (`append_attributed_event_once`, key `reject:<invitation>`).
     - Both clear the invitation's warning condition and bump the filters.
   - `creates = i…/answer`, so a node that ingested its own answer suppresses delivery of that invitation on catch-up.
-- **`settle_superseded_invitations`** also runs at the end of every `membership.joined` apply. Whichever of "invitee joined" and "invitation created" applies first, the invitation ends `already_joined`. This is the deterministic convergence of crossed invites on every node, including relays. An `already_joined` settlement is not an answer: it wakes nobody, records no overdue, and its `deadline_at` stays as stored.
+- **`settle_superseded_invitations(thread, seat, n)`** settles every `pending` invitation of that seat in that thread with `invitee_n < n` as `already_joined`. It runs at the end of every `membership.joined` apply and of every accept (with the accept's `n`). Whichever of "invitee joined" and "invitation created" applies first, the invitation ends `already_joined`, and a join followed by a leave of the invitee, concurrent with the invitation, supersedes it in every order too. This is the deterministic convergence of crossed invites on every node, including relays. An `already_joined` settlement is not an answer: it wakes nobody, records no overdue, and its `deadline_at` stays as stored.
 - **Episodes** are local positions. The payload never carries one, and `invitations UNIQUE(thread_id, seat_id, episode)` holds per node.
 
 **Considered.**
@@ -288,14 +307,15 @@ Handlers build it from `ApplyContext`, using `decision_seq`, `origin.node`, `ori
 **Recommended.**
 - Payload `{thread, seat, n, at}`, where `n ≥ 1` is the seat's home-node transition ordinal for that thread.
   - New column `memberships.home_transition INTEGER NOT NULL DEFAULT 0`. The home node computes `n = home_transition + 1` at authoring, inside the transaction.
+  - New column `memberships.last_joined_n INTEGER NOT NULL DEFAULT 0`: the highest `n` of an applied joined transition (a join or an accept). It only grows, so it is order-independent, and invitation supersession reads it (§6).
   - Membership transitions of a seat are authored only by its home node and totally ordered in its log (root §6), so a re-issued or duplicate fact has `n ≤ home_transition` and is a no-op.
   - Accept (§6) uses the same counter.
 - **`materialize_membership(joined)`** with `n > home_transition`:
-  - set `state = 'joined'`, `voluntary_state = 'joined'`, `joined_at = at`, `left_at = NULL`, `home_transition = n`, and a new local `episode` (`next_invitation_episode`);
+  - set `state = 'joined'`, `voluntary_state = 'joined'`, `joined_at = at`, `left_at = NULL`, `home_transition = n`, `last_joined_n = max(last_joined_n, n)`, and a new local `episode` (`next_invitation_episode`);
   - insert a `membership_intervals` row with `joined_seq = decision_seq`;
   - `read_cursors::init_for_join` when the seat is local;
   - the derived `join` info event (payload `{"action":"join","seat","generation","observation"}` from `attribution::take`, key `join:<thread>:<seat>:<n>`);
-  - `settle_superseded_invitations`;
+  - `settle_superseded_invitations(thread, seat, n)`;
   - the membership revision and directory/member/inbox filter bumps.
 - **`left`** with `n > home_transition`: `state = 'left'`, close the open interval with `left_seq = decision_seq`, the derived `leave` event, and the same bumps.
 - A joined fact for a seat whose membership row is `retired` is a no-op that still records `home_transition`. Retirement is terminal.
@@ -441,6 +461,7 @@ impl DeliveryTail {
   - the replicated rows (message, `prepared_recipients`, invitation, membership `invited`) are still written;
   - the later settlement fact, which is in the journal by definition, then settles them through the normal handler.
 - Own-old-incarnation entries (ht-5fr.3 §8 (a)) suppress every local recipient, because `delivery_suppressed` is true for any key there. Restoring a node therefore never wakes its seats for history.
+- Another node's fact to a local seat is suppressed by an own settlement in `journal` or `journal_forked` (ht-5fr.3 §8 (b)). After a wipe or restore those settlements arrive in the node's own old logs, so the Apply lane's own-history hold (root §7; ht-5fr.3 §7) keeps foreign facts unapplied until the own logs are ingested. A wiped node therefore applies the peer's `message.sent` only after its own old `receipt.settled`, and wakes nobody for it.
 
 **Considered.** Suppressing by age (`sent_at` older than N): it would drop real messages delivered after a long partition.
 
@@ -496,6 +517,7 @@ impl DeliveryTail {
   - a thread that fails it is deferred with the existing "not eligible" outcome and no quiet-period bookkeeping, so it costs one indexed probe per scan.
 - Threads with `journaled = 0` are unaffected (they have no remote members).
 - **The decision is replicated.** Where the archival lane sets `threads.archived = 1` today, it authors `thread.register{archived, "1"}` through `author_above` inside its background transaction. The handler copies the value and appends the archive event. Other nodes therefore see the thread archived too. Explicit `archive`/`reopen` author the same kind. The archival lane commits kick nothing new: `journal` kicks `Lane::Apply`, whose pass finds nothing ready.
+- **Accepted race** (root §8, §12). The eligibility probe reads the local membership view. A remote seat's concurrent `membership.joined` or accept that has not applied here yet does not block the archive, so the thread is archived on every node, the joiner's included. Posts into it still apply and deliver (root §6), and an explicit `reopen` restores it. No rule makes a later remote join reopen the thread: the race costs one explicit reopen, while a reopen-on-join rule would add a second writer of the `archived` register.
 
 **Considered.** A local-only automatic archive: the thread would be archived on one node and open on the others, with no LWW record to converge on.
 
@@ -514,6 +536,14 @@ impl DeliveryTail {
 ### 17. Error classification per kind
 
 **Recommended.** Handlers return `FactError::Rejected` (recorded `failed`, counted as processed, and `sync unapplied replay`-able) for:
+- **an origin that is not the kind's authorized author** (root §6 "Author authority is not author view"). One helper, `materialize::require_author(tx, m: &MaterializeInput, rule: AuthorRule)`, called first by each handler, with the closed `AuthorRule`:
+  - `SeatHome(seat)`: `origin_node == seats.home_node` for `seat.retired`, `membership.joined`/`.left`, `receipt.settled` (the receipt's seat) and `invitation.answered` (the invitation's invitee);
+  - `SeatHome(inviter)` for `invitation.created`, `SeatHome(author)` for `message.sent`, `SeatHome(creator)` for `thread.created`;
+  - `EitherSeatHome(seat_lo, seat_hi)` for `thread.direct`;
+  - `OwnTag(seat)` for `seat.created`: the seat ID's tag is `tag_for(origin_node, k)` for some `k` from 0 to the origin's current `tag_k` in `node_directory` (the origin's own retags precede the fact in its log, so every node checks against the same `k`);
+  - `Any` for `thread.register` (any node whose seat wrote it) and the `node.*` kinds (their log is the node).
+
+  The rejection is `Rejected(InvalidRequest "origin <uuid8> is not the authorized author of <kind> for <id>")`. The check reads only replicated identity, which `needs` guarantees is applied, so every node rejects the same facts. A re-issue keeps the origin node, so re-issued facts pass. The local-only route (`materialize::local_only`) skips it: its origin is self by construction;
 - payload decode errors;
 - a `thread.direct` ID mismatch;
 - an unknown recipient seat (the needs overflow case);
@@ -521,7 +551,7 @@ impl DeliveryTail {
 - `own seat restore needs an attached host`;
 - constraint violations (`Conflict` from `store_error`).
 
-Store errors pass through as `FactError::Store` via `from_api`. No handler rejects because of the local membership, archive or eligibility view (root §6).
+Store errors pass through as `FactError::Store` via `from_api`. No handler rejects because of the local membership, archive or eligibility view (root §6). The authority check above is not a view check: it compares the origin with replicated identity that every node holds identically, so it never rejects a fact the authorized author allowed.
 
 Commands surface authoring errors unchanged. A `parked_dep` at authoring (for example, inviting a remote seat whose `seat.created` was parked on this node) returns ht-5fr.3's `Conflict` "fact <kind> not applicable: <reason>".
 
@@ -546,7 +576,15 @@ All store tests use ht-5fr.3's seeded identities. Two `SqliteStore`s in one test
   - **Membership re-issue:** join, leave, then a re-issued join with `n=1` is a no-op.
 - **Catch-up suppression:**
   - B authors `receipt.settled`, B's store is wiped (fresh store with the same seed), B re-ingests its old log and A's log. The message applies with no `lazy_recipients`/`wake_work` for the settled seat, and the settlement then applies.
+  - **Wipe, then pull foreign first:** the same setup, but A's log (with the `message.sent`) is ingested on B **before** B's own old log, with the own-history hold set (B's old log advertised beyond B's contiguous). Nothing of A's applies while the hold is set; after B's old log is ingested the hold clears, the message applies with no `lazy_recipients`/`wake_work` for the settled seat, and no wake is dispatched.
   - An unsettled message in the same pull-back also gets no wake (own old incarnation).
+- **Order permutation** (root §5 invariant; `tests/store/fact_order.rs`): for each row of the §3 audit, the same fact set is applied into two fresh stores in two different causal orders (by ingesting the logs in opposite orders), and `replicated_projection` is identical in strict mode:
+  - crossed `thread.direct` (creator fields);
+  - `invitation.created` concurrent with the invitee's join, and with the invitee's join then leave (both end `already_joined`, membership `left`);
+  - `invitation.created` and `message.sent` concurrent with the invitee's or recipient's `seat.retired` (`recipient_retired`);
+  - concurrent `thread.register` writes;
+  - an accept concurrent with a second inviter's invitation (the second ends `already_joined`).
+- **Origin authority:** a validly signed `seat.retired`, `membership.joined`, `receipt.settled`, `invitation.answered`, `invitation.created` and `message.sent` from a node that is not the authorized author, and a `seat.created` whose ID tag is not one of the origin's, each apply as `failed` with the authority message on every node and change no replicated row; the same facts from the authorized author apply; a re-issued fact passes; a `seat.created` minted under the origin's pre-retag tag passes.
 - **Deadline scope:**
   - with an injected clock past `deadline_at`, `scan_due` on B (recipient node) inserts nothing, and on A (sender) inserts one overdue for the remote recipient;
   - the same for invitations through `scan_invitation_due_batch`;
@@ -563,8 +601,8 @@ All store tests use ht-5fr.3's seeded identities. Two `SqliteStore`s in one test
   - `threads(id, topic, goal, name, archived, created_at, journaled)`;
   - `direct_threads(thread_id, seat_a, seat_b, created_hlc, created_node)`;
   - `seats(id, home_node, kind = coalesce(remote_kind, published kind), retired = state='retired', retired_at)` (normalizing local versus remote);
-  - `memberships(thread, seat, state, home_transition)`;
-  - `invitations(id, thread, seat, state, deadline_at, confirmation, inviter, origin_node, accepted_at)`;
+  - `memberships(thread, seat, state, home_transition, last_joined_n)`;
+  - `invitations(id, thread, seat, state, deadline_at, confirmation, inviter, invitee_n, origin_node, accepted_at)`;
   - `invitation_rejections(invitation_id, reason)`;
   - `messages(id, thread, actor_seat_id, body, decision_at, origin_node)` for `kind='ordinary'`;
   - `prepared_recipients(message, seat, frozen_duration_ms, eligible)`;
@@ -574,7 +612,7 @@ All store tests use ht-5fr.3's seeded identities. Two `SqliteStore`s in one test
 - **Checks:** `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (all new files are core and name no harness), `nice scripts/check-default-features`, and focused `nice cargo test --locked --all-features facts fact_convergence messages receipts control archival invitation wake`.
 
 Suggested task cut (files):
-1. Schema additions (`threads.journaled`, `seats.published`, `memberships.home_transition`, `invitations.origin_node`/`already_joined`, `messages.origin_node`, `send_preparations.origin`, `send_manifests.suppressed_seats`, `receipt_state.settle_batch`, `direct_threads.created_*`, `retirements.origin`, `fact_attribution_staging`, the trigger and index changes): `migrations/node/0001_node_baseline.sql`, `src/service/kicks.rs` (classification).
+1. Schema additions (`threads.journaled`, `seats.published`, `memberships.home_transition`/`last_joined_n`, `invitations.origin_node`/`invitee_n`/`already_joined`, `messages.origin_node`, `send_preparations.origin`, `send_manifests.suppressed_seats`, `receipt_state.settle_batch`, `direct_threads.created_*`, `retirements.origin`, `fact_attribution_staging`, the trigger and index changes): `migrations/node/0001_node_baseline.sql`, `src/service/kicks.rs` (classification).
 2. `MaterializeInput`, attribution staging, payload types and key builders: `src/store/materialize.rs`, `src/store/attribution.rs`, `src/sync/facts/payload.rs`, `src/test_support/fact_exchange.rs`.
 3. DeliveryTail extraction (behaviour-preserving, local only): `src/store/delivery_tail.rs`, `src/store/materialization.rs`, `src/store/lazy_delivery.rs`, `src/store/messages.rs`, `src/store/control.rs`.
 4. Seats: `ensure_published`, `seat.created`, `seat.retired`, replicated retirement, eligibility: `src/sync/facts/seat.rs`, `src/store/seats.rs`, `src/store/control.rs`.
@@ -630,7 +668,7 @@ Order: 1 → 2 → 3 → 4 → (5, 6) → 7 → 8 → 9 → (10, 11, 12) → 13.
 
 **seats** — extended: `published` and `ensure_published` (publish at enrollment of the first open binding, with `FactRoute` as an idempotent backstop; kind from the open binding), `materialize_seat_created` / `_retired` with the own-seat restore branch, and remote eligibility in `eligible_delivery_recipient`; callers still test locality only through `LOCAL_SEAT` / `is_local_seat`.
 
-**Store materializers (`control`, `messages`, `receipts`)** — extended: one `materialize_*` per kind (§1), each idempotent by its rule (§3); `settle_superseded_invitations` is the one `already_joined` rule, run by both `invitation.created` and `membership.joined`; `memberships.home_transition` is the membership idempotence counter; `insert_publication` takes `MaterializeInput` and a payload-built `PublicationAuthor`, after either adopting the sealed local preparation or synthesizing a `replicated` one (a fixed two-case branch on `local_origin`, per root §5/§7); `settle_pending` keeps its decision and the batch event moves to `materialize_settlement` keyed by `settle_batch`.
+**Store materializers (`control`, `messages`, `receipts`)** — extended: one `materialize_*` per kind (§1), each idempotent by its rule (§3); `settle_superseded_invitations` is the one `already_joined` rule (supersession by `last_joined_n > invitee_n`, never by current state), run by both `invitation.created` and `membership.joined`; `memberships.home_transition` is the membership idempotence counter and `last_joined_n` the supersession counter; `materialize::require_author` with the closed `AuthorRule` is the one origin-authority check every handler runs first; `insert_publication` takes `MaterializeInput` and a payload-built `PublicationAuthor`, after either adopting the sealed local preparation or synthesizing a `replicated` one (a fixed two-case branch on `local_origin`, per root §5/§7); `settle_pending` keeps its decision and the batch event moves to `materialize_settlement` keyed by `settle_batch`.
 
 **Deadline lane / `record_overdue_if_pending`** — extended: the guard resolves the obligation's `origin_node` and writes nothing for another node's obligation; the sparse-due triggers, invitation due scan and extension-lapse scan are scoped to `origin_node = self`; the retirement job also serves `retirements.origin = 'replicated'`.
 

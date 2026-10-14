@@ -294,6 +294,7 @@ The payload is never parsed except in `genesis_pubkey`. Unknown kinds are stored
   1. Load the applied map from `sync_logs` (`applied_through`, `state`, `frozen_at_counter`).
   2. **Candidates:** for each log with `applied_through < contiguous_counter`, the entry at `applied_through+1`.
   3. **Ready** when every deps triple `(L, c)` has `applied(L) ≥ min(c, frozen_at(L))` (`frozen_at` = ∞ when active), and `L` has a row. A not-ready head sets that log's `blocked_on` to `deps <uuid8>/<inc>@<c>` (written only when it changes) and is skipped.
+  3a. **Own-history hold** (root §7). While `SyncState.own_history.active(now)`, heads of logs whose `node_uuid` is not this node are not candidates (no `blocked_on` write; they stay `pending`). Own-log heads and `apply_authored` are unaffected. `OwnHistoryHold` holds two flags, `Links` (set by SyncCoordinator while an active link advertises an own log beyond its local `contiguous_counter`) and `Branches` (set by ht-5fr.6's IncarnationsSink while an own `sync_branches` row is `pulling`), plus the instant the hold began; `active(now)` is true while either flag is set and the hold is younger than 5 minutes (`OWN_HISTORY_HOLD_MAX`). Clearing the last flag, or the cap expiring, sets `apply_hint` and kicks `Lane::Apply`; expiry logs one line `sync: own-history hold expired after 5 min; applying foreign entries`. Nothing sets a flag on a fresh node (no own log advertised), so it never holds. The hold is in-memory: at start both flags are clear until the coordinator and sink re-derive them.
   4. Apply the ready candidate with the smallest `ingest_seq` (§ below), update the map, and repeat until no candidate is ready or a limit is reached. `has_more` reports a hit limit.
   5. **Re-attempt parked-on-created:** `SELECT p.ingest_seq FROM journal p WHERE p.apply_state='parked_dep' AND EXISTS (SELECT 1 FROM journal c WHERE c.creates=p.parked_on AND c.apply_state='applied') ORDER BY p.ingest_seq`, within the same limits. These entries are already counted in `applied_through` and are re-attempted through the needs check and the handler only.
 - **Applying one entry** (`apply_one(tx, ctx, ingest_seq, mode)`):
@@ -340,7 +341,9 @@ The payload is never parsed except in `genesis_pubkey`. Unknown kinds are stored
 
 **Recommended.** `ApplyContext::delivery_suppressed(tx, settle_key) -> bool` is true when either of these holds:
 - (a) the entry's origin is this node in an incarnation other than `local_node.active_log_ix`'s (own old incarnation, root §7 wipe recovery);
-- (b) a `journal` row with `creates = settle_key` exists in a log whose `node_uuid` is this node, in any apply state. The settlement was already authored by the recipient's home node, which is this node.
+- (b) a `journal` or `journal_forked` row with `creates = settle_key` exists in a log whose `node_uuid` is this node, in any apply state. The settlement was already authored by the recipient's home node, which is this node; after a fork it may sit on a branch the owner pulled into `journal_forked` (ht-5fr.6).
+
+(b) only works when the node's own settlements are ingested before the foreign fact applies. After a wipe or restore they arrive in the node's own old logs, pulled independently of the foreign logs, so §7's own-history hold keeps foreign heads unapplied until the own logs are ingested.
 
 The ApplyEngine never interprets the key. ht-5fr.4's `receipt.settled` kind sets `creates = "<message id>/<seat id>"`, and `invitation.answered` sets `creates = "<invitation id>/answer"`. Their `message.sent` and `invitation.created` handlers ask with the same keys before calling DeliveryTail. The check reads ingested rows, not applied ones, because a settlement can be ingested before the fact it settles is applied (`needs` holds it back).
 
@@ -510,7 +513,8 @@ All store-level tests build stores with test identities: `NodeIdentity::from_see
   - a constraint violation in a handler becomes `failed`, not a wedge;
   - `applied_seq` is unique and increasing;
   - provenance is `replicated_from:<uuid>` for B's entry on A and `Local` for A's own;
-  - `delivery_suppressed` is true for an own-old-incarnation origin and for a self-authored settle key, and false otherwise;
+  - `delivery_suppressed` is true for an own-old-incarnation origin and for a self-authored settle key in `journal` or `journal_forked`, and false otherwise;
+  - own-history hold: with `Links` set, a ready head of B's log stays `pending` while an own-log head applies; clearing the flag applies B's head in the next pass; a hold older than 5 minutes (paused clock) no longer filters; **wipe-then-pull**: store B authors a `receipt.settled` for A's message, B is wiped (same seed), A's log is ingested first with the hold set, then B's old log; A's `message.sent` applies only after the hold clears and `delivery_suppressed` is then true for the settle key;
   - a follow-up's deps include its trigger, and a failed follow-up marks the trigger `failed`;
   - `ReplayScope::Startup` after reopening with a larger registry applies the old `parked_unknown` entries in `ingest_seq` order with late `applied_seq`;
   - `Unapplied{failed}` re-attempts.
@@ -573,7 +577,7 @@ Order: 1 → 2 → 3 → 4 → 5 → (6, 7, 8) → 9 → 10.
 - Errors: none of its own. `ChainStep` is a closed enum, and callers `match` it exhaustively.
 
 **SyncState** — new struct (`src/store/connection.rs`, in `StoreContext.sync: OnceLock`), the journal's per-daemon runtime installed once by `journal::open`.
-- Owns: the `Arc<NodeIdentity>`, the `Mutex<Hlc>`, the `&'static FactRegistry` and the ingest headroom threshold, and the "journal is open" gate.
+- Owns: the `Arc<NodeIdentity>`, the `Mutex<Hlc>`, the `&'static FactRegistry` and the ingest headroom threshold, the "journal is open" gate, and `own_history: OwnHistoryHold` (§7 step 3a: two atomic flags and a start instant, set by SyncCoordinator and the incarnations sink, read by the apply pass; it takes no lock).
 - Hides: whether a given store has a journal. Before `open`, authoring and ingest return `Unsupported "journal not open"`, and `check_self_applied` is a no-op.
 - Must not: be locked outside `src/store/journal.rs`. Only Journal ticks or folds the Hlc, and only inside a writer transaction. It must not be replaced after install (registry upgrades are a reopen).
 - Relationships: owned by StoreContext. Read by Journal, ApplyEngine (registry) and the commit guard.
@@ -597,9 +601,9 @@ Order: 1 → 2 → 3 → 4 → 5 → (6, 7, 8) → 9 → 10.
 
 **FactKind / FactRegistry** — extended: the concrete trait (`NAME`, `MAJOR`, typed `Payload`, `creates`, `needs`, `apply`), the erased `fn` over payload bytes, a builder that panics on a duplicate `(NAME, MAJOR)`, test-only `builtins_plus`, and `FactError::{Rejected, Store}` with `from_api` as the one classifier of `ApiError` codes. The first two kinds, `node.genesis` and `node.retag`, are added with the collision check, which acts on `on_collision` through `follow_up`.
 
-**ApplyEngine** — extended: `apply_pass` (head candidates in `ingest_seq` order, deps capped at `frozen_at`, `blocked_on`), `apply_one` with the registry-miss → needs → savepoint → handler order, `parked_on` re-attempt by the indexed `creates` query (no in-memory wait map), `apply_authored` for local entries (never writes `failed`), `replay` with the closed `ReplayScope::{Startup, Unapplied{states}}`, `ApplyProgress`, and one `decision_seq` per applied entry stored as `applied_seq`. Per spec §7, follow-ups call back into `journal::author` from inside `apply_one`, so `store::apply` and `store::journal` depend on each other. The cycle is deliberate: it puts the follow-up's deps after its trigger.
+**ApplyEngine** — extended: `apply_pass` (head candidates in `ingest_seq` order, deps capped at `frozen_at`, `blocked_on`, foreign heads held while the own-history hold is active), `apply_one` with the registry-miss → needs → savepoint → handler order, `parked_on` re-attempt by the indexed `creates` query (no in-memory wait map), `apply_authored` for local entries (never writes `failed`), `replay` with the closed `ReplayScope::{Startup, Unapplied{states}}`, `ApplyProgress`, and one `decision_seq` per applied entry stored as `applied_seq`. Per spec §7, follow-ups call back into `journal::author` from inside `apply_one`, so `store::apply` and `store::journal` depend on each other. The cycle is deliberate: it puts the follow-up's deps after its trigger.
 
-**ApplyContext** — extended: origin, counter, `ingest_seq`, hlc, decision, `decision_seq`, the closed `Provenance::{Local, ReplicatedFrom(NodeUuid)}` (any own incarnation is `Local`), `is_local_seat`, `delivery_suppressed` (kind-agnostic, over ingested `creates` keys plus own-old-incarnation), the follow-up queue and `set_self_tag_k`, which carries a tag change out to be applied after commit.
+**ApplyContext** — extended: origin, counter, `ingest_seq`, hlc, decision, `decision_seq`, the closed `Provenance::{Local, ReplicatedFrom(NodeUuid)}` (any own incarnation is `Local`), `is_local_seat`, `delivery_suppressed` (kind-agnostic, over ingested own `creates` keys in `journal` or `journal_forked`, plus own-old-incarnation), the follow-up queue and `set_self_tag_k`, which carries a tag change out to be applied after commit.
 
 **Lane (`service/kicks.rs`)** — extended: `Apply` (bit 6), `LaneSet` widened to `u16`, and `kicks_for_commit` as the one rule for which lanes a commit kicks, so Apply never kicks itself.
 
@@ -616,7 +620,7 @@ Digest:
   the engine never splits or interprets a key.
 - ChainRules: owns the per-log append/duplicate/gap/fork/frozen/corrupt decision; a new chain rule is a `ChainStep` variant here;
   Journal and MemoryJournal never re-derive chain checks themselves.
-- SyncState: owns the installed identity, Hlc, registry and headroom, and the "journal open" gate; new journal runtime state goes here;
+- SyncState: owns the installed identity, Hlc, registry and headroom, the "journal open" gate and the own-history hold; new journal runtime state goes here;
   nothing outside `store::journal` locks the Hlc, and nothing swaps the registry after open.
 - ThreadRegisters: owns `thread_registers` and the LWW tie-break; new LWW fields are new register-field variants here;
   handlers never write the table or compare `(hlc, node)` themselves.
