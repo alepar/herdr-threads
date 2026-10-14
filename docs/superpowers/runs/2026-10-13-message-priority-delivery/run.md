@@ -2,7 +2,7 @@
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
 resumeChange: 2026-10-13 · "design APPROVED (A-E) ... Move to autonomous stage now (both roasts on). Nudge dev-herdr-threads when merge-ready." (relayed by seePN0MKW, mpqluOeQD) · autonomous=f→t after the interactive root design; nested brainstorms and later gates run Mode B
-phase: code
+phase: roast-code
 codeMechanism: Workflow
 
 idea: Feature: message PRIORITY replaces lazy/nudge delivery modes in herdr-threads. Interactive design stage first (user reachable only via seat seePN0MKW in 1:1 thread tXPkAdb0O with --nudge; batch questions), then autonomous after design approval; both roasts ON (design + code). When integration branch is merge-ready, nudge dev-herdr-threads (taQXwBH7X). Details: priority = non-negative integer chosen by sender; 0 highest, always nudges. Recipient nudge threshold T: priority <= T nudges; negative T means everything nudges. Lazy mode removed. Default T=0, default send priority=1. Inbox listing and hook/mod injection sort by priority ascending then timestamp oldest first. Needs design: CLI flags and migration of --lazy/--nudge/--require-ack (ACK requests implied nudge today), per-seat vs per-thread threshold, existing recipient wake-on mode, wire/storage compat, docs/skill text, mod/hook surfaces.
@@ -13,17 +13,30 @@ branch: super-auto/message-priority-delivery
 base: main
 
 roastDesignRound: 2
+roastCodeRound: 1
 
 graph-pass: depth 8→7 · width 2.4→2.7 · applied 2 · parked 5
 
 parked:
+- final-review (super-code, wf_24ee41b2-d4e) · escalation · "ServiceSend keeps receipts for its whole audience (AckAudience::Everyone), outside D9's 'receipts only for explicit --require-ack'; D9 was decided for agent/human sends — recommended default: keep ServiceSend unchanged as service-owned required delivery and record it as an accepted limit in TRUST-POLICY.md and the spec; user decision needed at hand-back"
 - graph-pass · graph-change · "ht-yha.8 <- ht-yha.4 drop (same-file hydrate.rs, safe no)"
 - graph-pass · graph-change · "ht-yha.6 <- ht-yha.5.2 drop (same-file read_cursors.rs, safe no)"
 - graph-pass · graph-change · "ht-yha.4 <- ht-yha.3 drop (same-file staging.rs + real-send test, safe no; depth 7→6 with a staging.rs seam contract)"
 - graph-pass · graph-change · "proposal: staging.rs seam contract for ht-yha.3/4/5.2"
 - graph-pass · graph-change · "proposal: frame golden fixture seam for ht-yha.8/9"
 
-approvals:
+codeBuckets:
+  completed: ht-yha.1, ht-yha.2, ht-yha.3, ht-yha.4, ht-yha.5.1, ht-yha.5.2, ht-yha.5.3, ht-yha.5.4, ht-yha.6, ht-yha.7, ht-yha.8, ht-yha.9, ht-yha.10, ht-yha.11, ht-yha.12, ht-yha.13, ht-yha.14, ht-yha.15, ht-yha.16
+  escalated:
+  pendingRetry:
+  parked:
+  stalled: false
+  review: not ready (drain_pages unbounded reads; 7 upgrade tests and pair_accept_delivers_mixed_opening_mail_once failing at HEAD; stale AUTOMATIC_PENDING_GUIDANCE; ServiceSend vs D9; doc-drift sweep)
+  sweep: SWEEP DEFERRED (caller-owned)
+  slowness: round 1: graph-bound — 17 open beads, depth 6, achievable width 3 vs cap 8; edge audit armed now; round 1: merge queue peaked at 3 (first invocation); network outage relaunches ×2 (ENOTFOUND)
+  worktreesKept:
+  processSweep: stopped 0 · survived 0
+
 - launch-mode · interactive design (questions relayed via seat seePN0MKW, thread tXPkAdb0O, --nudge), switch to autonomous after the user approves the design (requester instruction, 2026-10-13)
 - top-split · auto · ht-yha.1 LEAF, ht-yha.2 LEAF, ht-yha.3 LEAF, ht-yha.4 LEAF, ht-yha.5 PROMOTE, ht-yha.6 LEAF, ht-yha.7 LEAF, ht-yha.8 LEAF, ht-yha.9 LEAF, ht-yha.10 LEAF, ht-yha.11 LEAF, ht-yha.12 LEAF, ht-yha.13 LEAF
 - coverage-round-1 · canonical R-list: coverage-round-1-requirements.md (R1-R12) · requirements: 12 · mapped: 12 · unmapped: 0 · R-new appended for round 2: R13 old clients on a new daemon + new handlers/capabilities, R14 in-flight pre-v47 state handled per spec, R15 one ordering verified across every surface, R16 delivery_mode-dependent store paths replaced · auto L1-L12 applied (owns lines on ht-yha.2/3/4/8/9/5.2, edges 9<-4, 8<-14, 11<-3/4/6/8, 5.4<-3, new leaf ht-yha.15) · L13 NEEDS-SPEC not re-run (answered from subspec)
