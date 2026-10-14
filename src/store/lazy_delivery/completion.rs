@@ -36,6 +36,20 @@ pub fn complete_addressed(
     seat: &SeatId,
     message: &MessageId,
 ) -> Result<bool, ApiError> {
+    complete_addressed_as(tx, instance, seat, message, true)
+}
+
+/// [`complete_addressed`] for a given kind of display. `mark_displayed` is false for a subagent
+/// binding's display: the seat-wide `state` stays `pending`, so the wake seek
+/// (`lazy_recipients_pending_order`, `state='pending'`) still finds a row the seat's top-level
+/// binding has not displayed.
+fn complete_addressed_as(
+    tx: &Transaction<'_>,
+    instance: &str,
+    seat: &SeatId,
+    message: &MessageId,
+    mark_displayed: bool,
+) -> Result<bool, ApiError> {
     let addressed: bool = tx
         .query_row(
             ADDRESSED_SQL,
@@ -43,7 +57,7 @@ pub fn complete_addressed(
             |r| r.get(0),
         )
         .map_err(store_error)?;
-    if addressed {
+    if addressed && mark_displayed {
         tx.execute("UPDATE lazy_recipients SET state='displayed' WHERE seat_id=?1 AND message_id=?2 AND state='pending'",params![seat.as_str(),message.as_str()]).map_err(store_error)?;
     }
     Ok(addressed)
@@ -105,7 +119,8 @@ pub fn lazy_completion_state(
 /// Displays completed for `binding`: advances the binding's cursor over the displayed messages
 /// and, when the binding is top-level, clears the seat's displayed legacy rows. With `None` (a
 /// caller that matches no open binding, a pre-binding client) the display counts for the whole
-/// seat as before V34: every open top-level binding advances. Also sets `state` to `displayed`,
+/// seat as before V34: every open top-level binding advances. Also sets `state` to `displayed` (top-level or
+/// pre-binding display only; a subagent's display leaves it `pending`),
 /// which `read_cursors::init_for_join` reads so a join never re-marks a displayed row. The completion handlers validate the caller and the messages before calling.
 pub fn complete_for_binding(
     tx: &Transaction<'_>,
@@ -128,10 +143,14 @@ pub fn complete_displayed_for_binding(
     messages: &[MessageId],
     shown: &[MessageId],
 ) -> Result<(), ApiError> {
+    let clears_legacy = match binding {
+        Some(binding) => is_top_level(tx, binding)?,
+        None => true,
+    };
     let mut by_thread: std::collections::BTreeMap<String, Vec<u64>> = Default::default();
     let mut displayed = Vec::new();
     for message in messages {
-        if !complete_addressed(tx, instance, seat, message)? {
+        if !complete_addressed_as(tx, instance, seat, message, clears_legacy)? {
             continue;
         }
         let (thread, sequence): (String, i64) = tx
@@ -167,10 +186,6 @@ pub fn complete_displayed_for_binding(
     let targets: Vec<BindingId> = match binding {
         Some(binding) => vec![binding.clone()],
         None => bindings::list_open_top_level(tx, seat)?,
-    };
-    let clears_legacy = match binding {
-        Some(binding) => is_top_level(tx, binding)?,
-        None => true,
     };
     if clears_legacy {
         for message in displayed {

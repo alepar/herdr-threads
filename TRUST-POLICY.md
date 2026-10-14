@@ -501,7 +501,7 @@ Delivery and authority gates read the binding's role, liveness and harness, neve
 | open a mod delivery channel (`watch`) | the pane's top-level session of a push-channel harness through its mod, for its own connected top-level binding (the claim's native session); several bindings of one seat each hold their own; recorded as `cooperative_mod_channel`; it grants no other row |
 | mod delivery ACK (`watch ack`) | the connected top-level binding of a push-channel harness that holds a live channel (grace included), the one the claim's key names; the daemon decides each id again before settlement and refuses unknown, unaddressed and truncated ids |
 | hook-pull delivery (`DeliveryPull`, `DeliveryConfirm`) | the connected top-level binding of a hook-pull harness that the claim's key (seat, harness, native session) names, from any of its top-level hooks (including `Stop`); settlement only for ids the daemon offered to that binding; the daemon decides each id against A2 again; recorded as `cooperative_hook_delivery` |
-| set `wake_on` (`wake-on [nudge\|all]`) | a connected top-level binding of the seat (cooperative; changes wake eligibility only, never receipts or authority) |
+| set the nudge threshold (`SetNudgeThreshold`; legacy `wake-on [nudge\|all]` = threshold 0 \| -1) | a connected top-level binding of the seat (cooperative; changes wake eligibility only, never receipts or authority) |
 | check in | the pane's top-level agent (hook) or a human via `ht human me init` |
 | record a launch binding (`managed_launch`) | `launch`, after a host-correlated startup with one observable started process; it grants no row above |
 | rebind, fresh seat, retire, replace, orphan-thread invite | operator |
@@ -766,8 +766,9 @@ Undisplayed rows (`state` still `pending`) past the seat's furthest cursor when 
 (join frontier, below).
 Unpublished rows are invisible and may be discarded in bounded cleanup; published progress is retained.
 Delivery rows create no receipt, deadline, ACK evidence, wake attention, wake, poke or automatic adoption,
-except that a seat with `wake_on: all` is woken (wake eligibility only; still no receipt, digest
-attention or poke).
+except that a row whose priority the seat's current nudge threshold admits (priority <= T; every priority when
+T < 0; the legacy `wake_on: all` is T = -1, `nudge` is T = 0) wakes an idle seat (wake eligibility only; still no
+receipt, digest attention or poke). The threshold is read at every wake decision, never frozen at send.
 
 Only the caller's default text inbox, a standard native hook, a push-channel mod or a hook-pull harness's hook, as below, may claim completion after complete contiguous body output has
 been written and flushed. The completion handler validates the current top-level or human canonical
@@ -815,8 +816,8 @@ A push-channel mod (today the bundled Claude mod) is a second completion source:
 (A5) under the `cooperative_mod_delivery` claim "appended to the transcript" (no per-row source is stored). Like inbox
 completion it is presentation bookkeeping (no ACK actor, adoption or proof of consumption).
 
-A seat that set `wake_on: all` (A5) opts its own lazy rows into push-channel promotion: the daemon marks such a
-row `wakes` in the inbox batch, and the mod delivers it as a `message` line with no ACK to run, marked `wakes`
+A seat whose nudge threshold (A5) admits a row's priority has that row promoted for push-channel delivery: the daemon marks such a
+row `wakes`, computed against the seat's current threshold, in the inbox batch, and the mod delivers it as a `message` line with no ACK to run, marked `wakes`
 on the watch line so the mod still wakes an idle session for it (a `message` line with no ACK and no `wakes` is
 mail another binding already settled: appended, never an idle wake). The daemon still
 creates no receipt, deadline or wake for it. The mod may complete a promoted row delivered via `context` or
@@ -829,8 +830,8 @@ adoption or proof of consumption.
 A standard native hook (top-level SessionStart, Bash PreToolUse, Codex UserPromptSubmit or qualified turn;
 never a subagent event) is a third completion source. Only a digest the hook explicitly requests (`AttentionDigestQuery.lazy`)
 reports pending lazy rows and a lazy token key, so a lazy arrival moves the hook's change marker; the wake
-frontier, wake candidates, prompts, pokes, deadlines and warnings never read lazy rows, except that a seat
-with `wake_on: all` is woken for its own lazy rows (wake eligibility only, above). When the hook
+frontier, wake candidates, prompts, pokes, deadlines and warnings never read delivery rows, except that a seat
+is woken for its own rows its nudge threshold admits (wake eligibility only, above). When the hook
 presents (marker advanced, or a lifecycle check-in) and no mod channel is live, it reads one bounded
 read-only v2 inbox page and places only complete items in the bytes its ordinary context leaves under the
 context bound. After its stdout was written and flushed, and the adapter reported that the output carries
@@ -1005,8 +1006,8 @@ deciding-transaction step, `read_cursors::init_for_join`, in this order:
    cursor it already has is kept.
 
 A seat-pending row is unread for every top-level binding of the seat whatever its cursor (the lazy predicate's
-legacy branch, not membership-gated), and it counts as seat-level unread lazy mail (digest; wake only for
-`wake_on: all`, A8). The first completion that displays it clears the flag for the seat. A completion from a
+legacy branch, not membership-gated), and it counts as seat-level unread lazy mail (digest; wake only for a row
+its nudge threshold admits, A8). The first completion that displays it clears the flag for the seat. A completion from a
 matched top-level binding advances only that binding's cursors: a sibling top-level binding then gets no copy
 of it, even though its own cursor never moved. A completion matching no open binding (the pre-binding legacy
 form, which completes for the whole seat) advances the cursors of every open top-level binding of the seat. A
@@ -1515,9 +1516,9 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
 - **Peer data is cooperative input, never authority.** Peer data (message bodies, topics, names) is cooperative
   input from same-user agents and is presented without adversarial framing; it never overrides the user's
   instructions or permissions, and escaping exists to keep framing intact, not as a trust boundary.
-- **Any same-user process can flip `wake_on`.** The preference is cooperative like every other seat claim (A1): a
-  same-user process that supplies the seat's claim can set it to `all` or back to `nudge`. The effect is bounded to
-  wake eligibility (whether pending lazy messages may wake an idle seat); it creates no receipt, ACK evidence,
+- **Any same-user process can change the nudge threshold.** The preference (and its legacy `wake_on` alias) is
+  cooperative like every other seat claim (A1): a same-user process that supplies the seat's claim can set it to
+  any value -1..=9. The effect is bounded to wake eligibility (which pending messages may wake an idle seat); it creates no receipt, ACK evidence,
   attention or authority, and the daemon records only the seat's own current top-level binding as the actor.
 
 ## Decision record

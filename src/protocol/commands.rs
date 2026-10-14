@@ -1564,6 +1564,8 @@ pub enum PermitMutation {
     CompleteInboxDelivery(CompleteInboxDelivery),
     /// Wake preference of the caller's own seat; wake eligibility only.
     SetWakeOn(SetWakeOn),
+    /// Nudge threshold of the caller's own seat; wake eligibility only.
+    SetNudgeThreshold(SetNudgeThreshold),
     Leave(Leave),
     SetTopic(SetTopic),
     SetThreadName(SetThreadName),
@@ -1601,6 +1603,7 @@ impl TryFrom<Command> for PermitMutation {
             Command::DeliveryConfirm(v) => Ok(Self::DeliveryConfirm(v)),
             Command::CompleteInboxDelivery(v) => Ok(Self::CompleteInboxDelivery(v)),
             Command::SetWakeOn(v) => Ok(Self::SetWakeOn(v)),
+            Command::SetNudgeThreshold(v) => Ok(Self::SetNudgeThreshold(v)),
             Command::Leave(v) => Ok(Self::Leave(v)),
             Command::SetTopic(v) => Ok(Self::SetTopic(v)),
             Command::SetThreadName(v) => Ok(Self::SetThreadName(v)),

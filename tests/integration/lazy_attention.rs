@@ -637,7 +637,7 @@ fn lazy_attention_moves_the_lazy_digest_marker_but_never_wake() {
     assert!(
         after
             .summary()
-            .ends_with(&format!("; lazy=1 [{}@t]", first.as_str()))
+            .ends_with(&format!("; messages=1 [{}@t]", first.as_str()))
     );
     // The default digest (wake fingerprint inputs, old clients) is unchanged.
     let plain = attention::seat_digest(&f.db, "i", &SeatId::new("agent"), &|| Ok(()))

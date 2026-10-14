@@ -24,9 +24,18 @@ pub(in crate::store::queries) fn hydrate_message(
     seat: &SeatId,
     position: Option<&crate::protocol::pagination::InboxBatchV2BodyPosition>,
 ) -> Result<Option<Item>, ApiError> {
-    let row=db.query_row("SELECT thread_id,sequence,actor_seat_id,body,author_role,relays_user,user_intent,author_role_backfilled FROM messages WHERE id=?1 AND kind='ordinary'",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)? as u64,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,bool>(5)?,r.get::<_,Option<String>>(6)?,r.get::<_,bool>(7)?))).optional().map_err(store_error)?;
-    let Some((thread, sequence, sender, body, role, relays_user, intent, author_role_backfilled)) =
-        row
+    let row=db.query_row("SELECT thread_id,sequence,actor_seat_id,body,author_role,relays_user,user_intent,author_role_backfilled,priority FROM messages WHERE id=?1 AND kind='ordinary'",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)? as u64,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,bool>(5)?,r.get::<_,Option<String>>(6)?,r.get::<_,bool>(7)?,r.get::<_,i64>(8)?))).optional().map_err(store_error)?;
+    let Some((
+        thread,
+        sequence,
+        sender,
+        body,
+        role,
+        relays_user,
+        intent,
+        author_role_backfilled,
+        priority,
+    )) = row
     else {
         return Ok(None);
     };
@@ -52,8 +61,12 @@ pub(in crate::store::queries) fn hydrate_message(
         })
         .transpose()?;
     let body = body[offset as usize..].to_owned();
-    let wakes =
-        lazy && crate::store::seats::wake_on(db, seat)? == crate::protocol::commands::WakeOn::All;
+    // Computed once, here, against the seat's current threshold (D1); an item staged before a
+    // threshold change reads the new value without a re-send.
+    let wakes = lazy
+        && crate::store::seats::nudge_threshold(db, seat)?.admits(
+            crate::protocol::priority::DeliveryPriority::from_stored(priority)?,
+        );
     Ok(Some(if lazy {
         Item::LazyMessage {
             priority: None,

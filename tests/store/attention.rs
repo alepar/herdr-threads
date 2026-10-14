@@ -3919,7 +3919,7 @@ fn presentation_capacity_due_exact_keys_have_bounded_actual_sql_plans_and_vm() {
             db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,'t2','o','pending',100)", [format!("history-{n}")]).unwrap();
         }
         db.execute_batch("UPDATE host_instances SET decision_seq=5000 WHERE id='i';
-            UPDATE seats SET wake_on='all' WHERE id='s';
+            UPDATE seats SET nudge_threshold=-1 WHERE id='s';
             INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES ('prep-due-lazy','i','scope','lazy-op',zeroblob(32),'t3',0,0,0,0,0,0,0,'building','lazy'),('prep-due-unpublished','i','scope','unpublished-op',zeroblob(32),'t3',0,0,0,0,0,0,0,'building','lazy');
             INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES ('prep-due-lazy','msg-due-lazy','t3','s'),('prep-due-unpublished','msg-due-unpublished','t3','s');
             INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,delivery_mode) VALUES ('msg-due-lazy','i','t3',50,'ordinary','lazy body',0,30,'lazy'),('msg-due-unpublished','i','t3',51,'ordinary','not published',0,32,'lazy'),('future-message','i','t3',52,'ordinary','future',0,9999,'ordinary');

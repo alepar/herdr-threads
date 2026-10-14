@@ -1820,13 +1820,18 @@ fn lazy_message(f: &Fixture, id: &str, body: &str) {
     let sequence = next_sequence(&f.db);
     let prep = format!("prep-{}", id.trim_start_matches("msg-"));
     f.db.execute(
-        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'i','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'building','lazy')",
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES (?1,'i','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'building','lazy',1)",
         [&prep],
     )
     .unwrap();
     f.db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,'t','s')", params![prep, id]).unwrap();
-    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,delivery_mode) VALUES (?1,'i','t',?2,'ordinary',?3,0,?4,'lazy')", params![id, sequence, body, sequence + 2]).unwrap();
+    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,delivery_mode,priority) VALUES (?1,'i','t',?2,'ordinary',?3,0,?4,'lazy',1)", params![id, sequence, body, sequence + 2]).unwrap();
     f.db.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,'t',?3,0,?4,0,1,0)", params![prep, id, sequence + 2, sequence]).unwrap();
+    f.db.execute(
+        "UPDATE lazy_recipients SET decision_seq=?2 WHERE preparation_id=?1",
+        params![prep, sequence + 2],
+    )
+    .unwrap();
     bump(&f.db, sequence);
 }
 
@@ -2881,7 +2886,7 @@ fn presentation_two_live_bindings_keep_offer_stamps_replay_and_carry_independent
     assert_eq!(a.seat, b.seat);
     assert_eq!(a.binding_generation, b.binding_generation);
     assert_ne!(binding_a, binding_b);
-    f.db.execute("UPDATE seats SET wake_on='all' WHERE id='s'", [])
+    f.db.execute("UPDATE seats SET nudge_threshold=-1 WHERE id='s'", [])
         .unwrap();
     let inviter = check_in(
         &f,
@@ -6349,7 +6354,7 @@ fn presentation_promoted_lazy_raw_carry_survives_restart_with_frozen_prefix() {
     };
     let mut f = fixture(0);
     let recipient = pull_seat(&f);
-    f.db.execute("UPDATE seats SET wake_on='all' WHERE id='s'", [])
+    f.db.execute("UPDATE seats SET nudge_threshold=-1 WHERE id='s'", [])
         .unwrap();
     let inviter = check_in(
         &f,
@@ -11755,7 +11760,7 @@ fn presentation_capacity_due_promoted_lazy_defers_oversize_render_then_retries()
     window
         .f
         .db
-        .execute("UPDATE seats SET wake_on='all' WHERE id='c'", [])
+        .execute("UPDATE seats SET nudge_threshold=-1 WHERE id='c'", [])
         .unwrap();
     let body = format!("{}é", "\0".repeat(65534));
     let id = window.send(0, DeliveryMode::Lazy, &body);
@@ -12428,7 +12433,7 @@ fn presentation_owner_replay_nonfull_once_per_lease_preserves_physical_metadata(
             window
                 .f
                 .db
-                .execute("UPDATE seats SET wake_on='all' WHERE id='c'", [])
+                .execute("UPDATE seats SET nudge_threshold=-1 WHERE id='c'", [])
                 .unwrap();
         }
         let body = if large {
@@ -13915,7 +13920,7 @@ fn presentation_owner_replay_standalone_unrenderable_attempt_is_finite_and_local
     window
         .f
         .db
-        .execute("UPDATE seats SET wake_on='all' WHERE id='c'", [])
+        .execute("UPDATE seats SET nudge_threshold=-1 WHERE id='c'", [])
         .unwrap();
     let id = window.send(0, DeliveryMode::Lazy, &"\0".repeat(65536));
     window.drain(1);

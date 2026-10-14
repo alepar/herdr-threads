@@ -299,7 +299,7 @@ fn lazy_publication_notes_attention_only_for_wake_on_all_recipients() {
     for seat in ["b", "c"] {
         member(&conn, seat, "unresolved", "joined");
     }
-    conn.execute("UPDATE seats SET wake_on='all' WHERE id='b'", [])
+    conn.execute("UPDATE seats SET nudge_threshold=-1 WHERE id='b'", [])
         .unwrap();
     let request = send_request();
     ready(&context, &mut conn, &request);
