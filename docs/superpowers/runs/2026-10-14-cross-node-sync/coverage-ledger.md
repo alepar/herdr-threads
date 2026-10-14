@@ -30,3 +30,13 @@ L27 · r2 · GAP · remote seat occupancy · applied — ht-5fr.2.6 refuses non-
 L28 · r2 · GAP · same-name threads · rejected — root spec §2: names are labels and may repeat; IDs are identity.
 L29 · r2 · UNOWNED-SEAM · reach rule · applied — ht-5fr.5.4 owns sync_node_contact and the reach rule; ht-5fr.13 consumes it.
 L30 · r2 · GAP · docs scope · applied — ht-5fr.12 covers legacy purge, store-only/multi-host doctor and health, state-dir addressing; edges → 1.9, 1.11, 2.10.
+L31 · graph · GRAPH-EDGE · ht-5fr.3 <- ht-5fr.9 · applied — narrowed to existing ht-5fr.3.16 <- ht-5fr.9 (replicated_from provenance); ht-5fr.3.9 needs no edge per its own description
+L32 · graph · GRAPH-EDGE · ht-5fr.2 <- ht-5fr.9 · applied — narrowed to existing ht-5fr.2.6 <- ht-5fr.9 (claim attribution by host)
+L33 · graph · GRAPH-EDGE · ht-5fr.3 <- ht-5fr.1 · parked — narrow to 3.2<-1.1, 3.4<-1.5, 3.6<-1.10, 3.10<-1.6 (30→23 alone); safe no: shared schema.rs, baseline SQL, app.rs, workers.rs, test_support
+L34 · graph · GRAPH-EDGE · ht-5fr.5 <- ht-5fr.3 · parked — narrow to existing 5.1<-3.2, 5.3<-3.12, 5.5/5.12/5.13<-3.9, 5.12<-3.16, 5.10<-3.8/3.13/3.15; safe no: shared sync/mod.rs, app.rs, store/mod.rs
+L35 · graph · GRAPH-EDGE · ht-5fr.6 <- ht-5fr.5.5/5.12/5.13 · parked — narrow to existing 6.2<-5.5, 6.8/6.9<-5.12, 6.8<-5.13; safe no: shared coordinator.rs, sync/mod.rs, kicks.rs
+L36 · graph · GRAPH-EDGE · ht-5fr.4 <- ht-5fr.1 · parked — narrow to 4.2<-1.10, 4.8<-1.6, NEW 4.1<-1.5; safe no: shared schema.rs, baseline SQL, test_support
+L37 · graph · GRAPH-EDGE · ht-5fr.4 <- ht-5fr.3 · parked — narrow to 4.3/4.5/4.12<-3.16, 4.4<-3.14, 4.8<-3.11, 4.15<-3.15; safe no: shared baseline SQL, facts/mod.rs
+L38 · graph · GRAPH-EDGE · ht-5fr.2 <- ht-5fr.1 · parked — narrow to 2.1<-1.5, 2.3/2.12<-1.3, 2.4/2.11<-1.10, 2.7<-1.7, 2.10/2.12<-1.11; safe no: shared ids.rs, ports.rs, schema.rs, baseline SQL
+L39 · graph · GRAPH-EDGE · ht-5fr.4.13 <- ht-5fr.4.12 · parked proposal — split-file src/store/receipts.rs (19→18 after narrows)
+L40 · graph · GRAPH-EDGE · 38 critical leaf edges · kept — each carries a named artifact (see graph-pass judge output)
