@@ -197,6 +197,146 @@ TRUST-POLICY.md is amended in the trust bead (same commit as the first code that
 - Cross-node cases in the pre-release wake e2e.
 - Thread union; partial replication; launchd/systemd units.
 
+## Key abstractions
+
+**NodeIdentity** — new struct (module `src/node/`), the node's key custody and identity: the one place that knows the node's own `node_uuid`, tag and signing key.
+- Owns: loading or creating `node.key` (0600, created once), deriving `node_uuid`, signing hashes, the current tag and the retag rule (`tag_k`, the higher uuid moves to the next k), and regenerating `node.json`.
+- Hides: Ed25519, the tag derivation, and which node moves on a collision.
+- Must not: rewrite or regenerate an existing key it cannot read (it refuses to start), or verify other nodes' entries (Envelope does, with the pubkey from that log's genesis).
+- Relationships: Journal (signing) and PublicIds (tag) use it; it depends on nothing in store or sync.
+- Lifecycle: loaded once at daemon start, held as a read-only `Arc` for the daemon's life; the tag is re-read from the store's tag record after a `node.retag` applies.
+- Errors: key missing, unreadable or with bad permissions refuses the start, distinguishable from store errors; signing does not fail.
+
+**Envelope** — new struct (`src/sync/envelope.rs`), one journal entry's signed wire and storage form.
+- Owns: the fixed length-prefixed canonical bytes, `hash`, signature verification against a given pubkey, the genesis self-check (`SHA-256(pubkey)[0..16] == node_uuid`), and the compact deps encoding.
+- Hides: the byte layout; JSON canonicalization is never used.
+- Must not: look at the payload's meaning or touch the store.
+- Relationships: a value type shared by Journal, PeerLink frames and FactRegistry (payload bytes).
+- Errors: `HashMismatch` and `BadSignature`, distinguishable from a malformed shape.
+
+**Hlc** — new struct, the node's hybrid logical clock (48-bit ms + 16-bit logical).
+- Owns: the local tick (`max(wall, last+1)`), folding a remote HLC under the 60 s skew cap, recording skew for `sync status`, resuming from the self log's maximum.
+- Hides: bit packing, overflow carry, the skew rule.
+- Must not: decide deadlines; ACK and invitation deadlines use the deciding node's wall `Clock` (§7).
+- Relationships: wraps the existing `Clock` trait; lives inside `StoreContext`; Journal is its only mutator.
+- Lifecycle: one per daemon, behind a mutex, touched only under the writer; rebuilt from the store at start.
+
+**Journal** — new module (`src/store/journal.rs`), the single owner of `sync_logs`, `journal` and `journal_forked`: append, ingest, serve and the vector.
+- Owns: local authoring (HLC tick, next counter, prev_hash, sign, insert, then hand to ApplyEngine in the same transaction), batch ingest (contiguity, prev_hash, hash and signature checks, advancing `contiguous_counter`/`head_hash`, the disk-headroom stop), serving committed rows for a `(log, from)` range, the version vector, and the append-only triggers.
+- Hides: the per-log chain rules, and that ingest never reads payloads (unknown kinds relay unchanged).
+- Must not: materialize anything (ApplyEngine), choose peers (SyncCoordinator) or resolve forks (Incarnations); it only reports them.
+- Relationships: composes NodeIdentity, Hlc and Envelope; delegates to ApplyEngine. SyncCoordinator reaches it through a narrow `JournalPort` trait implemented by `SqliteStore` and an in-memory fake for link and routing tests (the fake is the second implementation); `StorePort` is not extended.
+- Lifecycle: state in SQLite; functions run in writer transactions (foreground for authoring, background quanta for ingest).
+- Errors: typed ingest outcomes callers must tell apart: `Gap` (drop the rest of the batch, re-`Want`), `Fork{evidence}` (to Incarnations), `Corrupt{log}` (penalize this source), `Headroom` (pause pulls, keep authoring), store errors (roll back, nothing advanced). An authoring failure aborts the command as an `ApiError` and is never recorded as `failed`.
+
+**FactKind / FactRegistry** — new trait plus a static registry (`src/sync/facts/`, one module per kind), what each replicated fact means.
+- Owns: per kind, the name, major `kind_version`, typed payload, `creates`/`needs` extraction and the apply handler; the registry maps `(kind, major)` to an erased decode-and-apply function.
+- Hides: payload schemas, and "unknown kind or newer major means park" (a registry miss is the park decision).
+- Must not: recompute audiences, reject a fact the author allowed from the local membership view (§6), or emit wakes directly (local delivery goes through DeliveryTail; derived info/warn events through the existing `append_event_once*` writers).
+- Relationships: shared interface; command code authors through a typed `FactKind`; ApplyEngine dispatches through the registry.
+- Lifecycle: `OnceLock` static, immutable, like `harness::registry::builtins()`.
+- Errors: a handler returns a fact-level rejection (recorded `failed`, counted as processed) or a store error (aborts the savepoint and the quantum, retried); callers keep them apart.
+
+**ApplyEngine** — new module, the one `apply(entry)` path for local and remote entries.
+- Owns: readiness (`applied_through = counter-1` and the applied vector covering `deps`), one SAVEPOINT per entry, recording the outcome (`applied`, `parked_unknown`, `parked_dep`, `failed`), assigning local positions (sequence, decision_seq, revisions, ordinals), the startup and `sync unapplied replay` passes, and building the `ApplyContext` handlers get (origin, hlc, `replicated_from` provenance, whether the seat is local, delivery suppression).
+- Hides: causal ordering and the catch-up suppression rule (already settled by its home node, or own old incarnation).
+- Must not: verify signatures (Journal) or know any kind's semantics.
+- Relationships: delegates to FactRegistry; Journal calls it inline for local appends; a new `Lane::Apply` quantum runs it after ingest commits.
+- Lifecycle: stateless code; the Apply lane worker is owned by the daemon worker slot and stopped by `factory_stop`.
+
+**DeliveryTail** — new module, extracted from `messages::insert_publication` and the invitation writers: the local-recipient delivery tail.
+- Owns: `send_manifests`, prepared and lazy recipient rows, the `send_attention` job, `lazy_delivery::note_published`, `wake_work` and invitation attention rows, for local seats only.
+- Hides: the delivery-contract table writes the kicks key on, so a remote fact wakes exactly as a local one does.
+- Must not: create work for remote seats or suppressed facts; it does not decide suppression (ApplyContext does).
+- Relationships: called by the `message.sent` and `invitation.created` handlers; local and replicated sends share it.
+
+**Incarnations** — new module, fork, restore and corruption repair.
+- Owns: fork detection at `Have` time and from ingest evidence, freezing a log at the last common counter, moving the tail to `journal_forked`, linking fork evidence forward, and the owner path (mint a new incarnation, pull every branch, re-issue the union in order under the original fact IDs); restore-without-fork rotation and `sync resync`.
+- Hides: the frozen-incarnation policy and the re-issue order.
+- Must not: delete entries or author under a frozen incarnation.
+- Relationships: called by SyncCoordinator and Journal ingest outcomes; re-issues through Journal authoring; relies on ApplyEngine idempotence.
+- Lifecycle: state in `sync_logs`; the re-issue job's progress is persisted and runs as writer quanta.
+
+**PeerLink** — new struct (`src/sync/link.rs`), one peer connection's protocol lifetime, generic over AsyncRead/AsyncWrite so the ssh child's stdio and an accepted Unix socket run the same code.
+- Owns: the `HTPEER1` preamble (skipping ≤64 KiB noise), u32 framing at 1 MiB, the Hello/Auth/Accept handshake, the credit window, Ping/Pong with the 90 s dead timer.
+- Hides: the wire. `PeerFrame` is a closed enum; `CloseReason` is a closed enum whose one method classifies stop-dialing vs retry.
+- Must not: choose which log to pull from, or write the store.
+- Relationships: owned by SyncCoordinator; reports Have, Entries and Close upward.
+- Lifecycle: a tokio task in the coordinator's JoinSet; ends on EOF, the dead timer or shutdown; the owning Dialer kills the ssh child's process group on teardown.
+- Errors: io/decode errors mean the link is dead (Dialer backs off); `Close{reason}` is typed (`envelope_unsupported`, `self_link`, `auth_failed` stop dialing; `busy` retries).
+
+**SyncCoordinator** — new struct (`src/sync/coordinator.rs`), the node-wide replication brain.
+- Owns: active links by `node_uuid` (lower dialer's link active, duplicate standby), the `rx` source per log with 30 s failover, Want subscriptions and live-tail pushes, `Have` deltas at ~1/s, per-peer error counts.
+- Hides: routing and relay policy.
+- Must not: verify or apply entries (Journal, ApplyEngine), or spawn processes (Dialer).
+- Relationships: composes PeerLinks; uses `JournalPort` and Incarnations; a new `Lane::Sync` kick on journal commits drives live tail and Have.
+- Lifecycle: created in `run_elected_impl`, lives for the daemon; shutdown cancels links.
+
+**Dialer** — new struct, the dial targets' runtime.
+- Owns: `sync_dial_targets` state (full-jitter backoff, the `not installed` 30 min retry, last error, learned uuid), and building and spawning the owned transport child (ssh argv by default, or `sync.dial_command` with `{dest}`).
+- Hides: ssh options and the dial_command template.
+- Must not: discover machines (the discovery worker upserts targets) or route logs.
+- Relationships: hands established streams to SyncCoordinator.
+- Lifecycle: daemon-lived; owns and reaps every child.
+
+**HostSession / HostSessions** — new struct plus registry, one attached Herdr server.
+- Owns: per host, its `Arc<dyn HostPort>` (`NativeCli`), `HostReachability`, observation worker, wake dispatcher, archival sampler and handoff namespace. The registry maps `host_id` to its session, attaches at startup for `herdr_hosts` rows whose socket exists, and lazily when a claim names an unattached endpoint.
+- Hides: how many Herdr servers exist; it is the one place that routes by a seat's `host_id`.
+- Must not: affect sync or other hosts when its host is unreachable; never addressed for remote seats.
+- Relationships: composition; the wake lane, identity and observation get a per-host handle from it, so `HostPort` keeps its single-host shape (§3's per-host handle option).
+- Lifecycle: registry lives for the daemon; a session lives until the daemon stops; unreachable only marks it.
+
+**Store transactions** (`execute_accountable_transaction` / `execute_budgeted_idempotent_transaction_with_constraints`) — extended: the apply phase decides and authors facts through Journal, which applies them in the same transaction; the `operations` replay table stays local; `cooperative_instance` checks `claim.host` against HostSessions instead of `claim.instance == self`.
+
+**`host_instances` → node row + `herdr_hosts`** — extended: node-scope revisions stay on the node row; Herdr-scope epochs and sequences move to `herdr_hosts`.
+
+**seats** — extended with `home_node`; one local-seat predicate (view or helper) is used by observation, reconciliation, liveness, wake and retirement-by-observation; callers never test `home_node` inline.
+
+**PublicIds (`store/public_ids.rs`)** — extended: the minter takes the current tag; plus the pure deterministic `d…` direct-thread ID function.
+
+**Daemon transport** — extended: first-frame sniffing gains a peer-connection kind under its own `MAX_PEER_CONNECTIONS = 16` semaphore.
+
+**Lane (`service/kicks.rs`)** — extended: the closed enum gains `Apply` (kicked on `journal` commits) and `Sync`.
+
+**Deadline lane** — extended: scans only receipts and invitations authored by this node; holds overdue emission after a wall-clock jump until the first sync round completes or 60 s pass.
+
+**InstancePaths → NodePaths** — extended: resolved by state dir only; legacy `instances/` is reported, never opened.
+
+**Daemon idle-exit** — extended: the daemon stays up while it has peer links or dial targets.
+
+Variation: fact kinds are added across releases and unknown kinds must park → each kind implements `FactKind`, and `FactRegistry` is the one place kinds are chosen (a miss or newer major means park). Herdr servers per node vary at runtime → HostSessions is the one routing point, keyed on `host_id`. Transport commands vary (ssh, dial_command, remote_command) only as data in one Dialer function, no trait. Peer frames, Close reasons, discovery sources and apply outcomes are fixed sets → closed enums with `match`.
+
+Walk-through: an agent on A sends to a seat on B. Dispatch reaches `publish_send` in the accountable transaction (`claim.host` resolves through HostSessions); the decide step builds a `message.sent` payload with recipients and deadlines; `Journal::author` ticks the Hlc, chains, signs with NodeIdentity and inserts; ApplyEngine applies it through the registry handler in the same transaction (message row, local sequence, receipt rows; DeliveryTail does nothing, the recipient is remote). The commit kicks `Lane::Sync`; SyncCoordinator pushes to B's subscribed Want. B's PeerLink yields Entries; `Journal::ingest` verifies and commits, kicking `Lane::Apply`; B's ApplyEngine finds deps covered and runs the handler; the seat is local and unsettled, so DeliveryTail writes `wake_work`, the Wakes lane kicks, and the HostSession for the seat's `host_id` wakes the pane if idle. When B's seat ACKs, B authors `receipt.settled`; A applies it and clears overdue tracking. A future `thread.union` kind touches one new `FactKind` module and one registry entry; older nodes park it, and Journal, links and ApplyEngine are untouched.
+
+Per spec §5/§7: one apply path and the handler writes recipient rows, but today's two-phase send stages `prepared_recipients` across bounded preparation transactions — the `message.sent` handler reuses a local preparation's staged rows, keyed by message ID, instead of rewriting them (a deliberate local-origin branch inside the one path; otherwise local sends write their audience twice).
+Per spec §9: the remote side is a stateless `peer --stdio` pump, so the peer protocol lives entirely in the daemon transport and PeerLink; the CLI pump stays a plain splice, with no abstraction.
+
+Digest:
+- NodeIdentity: owns key custody, node_uuid, tag and signing; tag changes arrive only via applied `node.retag`;
+  callers never read `node.key` or derive tags themselves.
+- Envelope: owns canonical bytes, hash and signature verification; envelope fields are added only here;
+  callers never hash JSON or verify ad hoc.
+- Hlc: owns the node's HLC tick, remote fold and skew record; clock rules change only here;
+  callers never use HLC for deadlines.
+- Journal: owns self-log append, verified ingest, serving and the vector; new journal tables or checks go here;
+  callers never write `journal`/`sync_logs` rows or materialize facts directly.
+- FactKind/FactRegistry: owns per-kind payload, needs/creates and apply; a new fact kind is one module plus one registry entry;
+  callers never `match` on kind strings.
+- ApplyEngine: owns readiness, savepoints, outcomes, local positions and catch-up suppression; new apply rules go here;
+  handlers never decide readiness or suppression, and commands never materialize outside it.
+- DeliveryTail: owns local-recipient delivery rows for messages and invitations; delivery-table changes go here;
+  handlers never write `wake_work`/manifests directly or for remote seats.
+- Incarnations: owns fork freeze, `journal_forked`, re-issue and restore rotation; repair policy changes go here;
+  callers never delete entries or author under a frozen incarnation.
+- PeerLink: owns preamble, framing, handshake, credit and liveness of one connection; new frames are `PeerFrame` variants here;
+  callers never read raw frames or choose retries from Close reasons themselves.
+- SyncCoordinator: owns links, rx-source choice, Want/Have routing, live tail and duplicate-link standby; relay policy changes go here;
+  links and Journal never pick sources.
+- Dialer: owns dial targets' backoff, transport-command construction and child processes; new transport templates are data here;
+  nothing else spawns ssh or dial_command children.
+- HostSession/HostSessions: owns per-Herdr-server workers and the host_id routing; new per-host workers go into HostSession;
+  callers never hold a node-wide `HostPort` or route wakes for remote seats.
+
 ## Post-Implementation Notes
 
 > *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
