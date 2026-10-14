@@ -842,9 +842,10 @@ fn observed_health(s: &Scratch) -> Value {
             && !lines("notes")
                 .iter()
                 .any(|note| note == herdr_threads::protocol::results::HEALTH_STARTING_NOTE)
-            && !lines("limitations")
-                .iter()
-                .any(|line| herdr_threads::daemon::health::is_pending_observation_line(line));
+            && !lines("limitations").iter().any(|line| {
+                herdr_threads::daemon::health::is_pending_observation_line(line)
+                    || line == herdr_threads::daemon::health::FIRST_RECONCILIATION_OVERDUE_LINE
+            });
         if observed {
             return health;
         }
