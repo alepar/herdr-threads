@@ -7,7 +7,7 @@ codeMechanism: Workflow
 
 idea: Feature: message PRIORITY replaces lazy/nudge delivery modes in herdr-threads. Interactive design stage first (user reachable only via seat seePN0MKW in 1:1 thread tXPkAdb0O with --nudge; batch questions), then autonomous after design approval; both roasts ON (design + code). When integration branch is merge-ready, nudge dev-herdr-threads (taQXwBH7X). Details: priority = non-negative integer chosen by sender; 0 highest, always nudges. Recipient nudge threshold T: priority <= T nudges; negative T means everything nudges. Lazy mode removed. Default T=0, default send priority=1. Inbox listing and hook/mod injection sort by priority ascending then timestamp oldest first. Needs design: CLI flags and migration of --lazy/--nudge/--require-ack (ACK requests implied nudge today), per-seat vs per-thread threshold, existing recipient wake-on mode, wire/storage compat, docs/skill text, mod/hook surfaces.
 roast-design: 2026-10-13-message-priority-delivery-roast-design-1.md, 2026-10-13-message-priority-delivery-roast-design-2.md
-roast-code: 2026-10-14-message-priority-delivery-roast-pr-1.md, 2026-10-14-message-priority-delivery-roast-pr-2.md
+roast-code: 2026-10-14-message-priority-delivery-roast-pr-1.md, 2026-10-14-message-priority-delivery-roast-pr-2.md, 2026-10-14-message-priority-delivery-roast-pr-post-cap-audit.md
 spec: 2026-10-13-message-priority-delivery-design.md
 epic: ht-yha
 branch: super-auto/message-priority-delivery
@@ -40,6 +40,7 @@ codeBuckets:
   worktreesKept:
   processSweep: stopped 0 · survived 0
 
+friction: 14 events
 sweepFix: 3 failing → ht-yha.40, ht-yha.41, ht-yha.42 · re-run e8ecb681 — 6392 passed, 3 failed, 0 errors, 44 skipped; failing: session_bindings_smoke::config5_resume_within_a_page_and_past_it, golden_surfaces::doctor_reports, lazy_markers::q5_continuation_public::q5_search_public_refits_preserve_2048_byte_filter_route_actor_and_cursor; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast @ e8ecb681
 
 approvals:

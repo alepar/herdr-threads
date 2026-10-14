@@ -18,3 +18,6 @@
 [final review] body --max-bytes 256..~342 refused for every p0 message (fit_annotated_read gives up below 256 after the [p0] row)
 [final review] C: a new client shows [lazy] against an old daemon and [p0] against a new one (upgrade window only)
 [sweep] session_bindings_smoke::config5_resume_within_a_page_and_past_it fails 3/3 at e8ecb681 (passed at dae11184 with identical src): --json inbox page items [] with has_more — same symptom as punch-list item A
+[post-cap audit] [Should-fix] src/ports.rs:2188; tests/scheduler/dispatch.rs:5335 — merge seam: lazy in for_seat_attention re-nudges a one-process sibling after in-turn service; guard test weakened
+[post-cap audit] [Should-fix] tests/integration/token_diet.rs:274; tests/integration/token_diet.rs:271 — ht-yha.41 raised the test bound instead of fixing fit_annotated_read (body/read/search with documented small bounds refused for p0)
+[post-cap audit] [FYI] src/store/lazy_delivery/mod.rs:131; src/store/lazy_delivery/mod.rs:128 — process-exited bindings (every Claude session end) pin delivery rows pending (= item A; branch-introduced vs main)
