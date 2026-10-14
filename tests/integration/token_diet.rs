@@ -94,6 +94,33 @@ fn labeled(id: &str, terminal: &str, label: &str) -> Value {
     value
 }
 
+/// D8: a priority-0 message carries one `[p0] <id>` annotation row (4 bytes,
+/// a space, the 9-byte id, a newline: 15 bytes) in body, read and search
+/// output. Every message in this fixture is p0 (each names an ACK recipient).
+fn p0_row(id: &str) -> String {
+    format!("[p0] {id}\n")
+}
+
+/// Splits the leading `[p0] <message id>` annotation rows off a history read
+/// and returns the annotated ids with the text from the `history` kind line on.
+fn split_p0_rows(text: &str) -> (Vec<&str>, &str) {
+    let mut ids = Vec::new();
+    let mut rest = text;
+    while let Some(row) = rest.strip_prefix("[p0] ") {
+        let (id, tail) = row.split_once('\n').expect("annotation row ends");
+        assert!(
+            herdr_threads::protocol::ids::is_short_public_id(
+                herdr_threads::protocol::ids::prefix::MESSAGE,
+                id,
+            ),
+            "{text}"
+        );
+        ids.push(id);
+        rest = tail;
+    }
+    (ids, rest)
+}
+
 fn keep(name: &str, text: &str) {
     if let Some(dir) = std::env::var_os("HT_TOKEN_DIET_OUT") {
         let dir = PathBuf::from(dir);
@@ -241,10 +268,21 @@ fn agent_facing_machine_text_is_compact() {
     keep("read-recent-3.txt", &paged);
     let body = plugin.text(Some(hatter), &["body", &long_message]);
     keep("body.txt", &body);
-    let body_paged = plugin.text(Some(hatter), &["body", &long_message, "--max-bytes", "256"]);
+    // The daemon refuses a body bound under 256 and the annotated-read refit
+    // gives up where the bound minus the 15-byte `[p0]` row falls under that
+    // floor (271 itself is refused), so the old 256 bound moves to 384.
+    let body_budget = "384";
+    let body_paged = plugin.text(
+        Some(hatter),
+        &["body", &long_message, "--max-bytes", body_budget],
+    );
     keep("body-paged.txt", &body_paged);
 
     // body: one header row, the full body verbatim and indented, no JSON.
+    let marker = p0_row(&long_message);
+    let body = body
+        .strip_prefix(&marker)
+        .unwrap_or_else(|| panic!("body starts with {marker:?}: {body}"));
     let body_lines: Vec<&str> = body.lines().collect();
     assert_eq!(body_lines.len(), 2, "{body}");
     assert!(
@@ -255,6 +293,9 @@ fn agent_facing_machine_text_is_compact() {
     assert_eq!(body_lines[1], format!("  {long}"));
     // A clipped body names its byte range and ends with one `more:` line
     // that runs as printed.
+    let body_paged = body_paged
+        .strip_prefix(&marker)
+        .unwrap_or_else(|| panic!("clipped body starts with {marker:?}: {body_paged}"));
     let paged_lines: Vec<&str> = body_paged.lines().collect();
     assert!(paged_lines[0].contains(" bytes=0-"), "{body_paged}");
     let more = paged_lines
@@ -264,12 +305,18 @@ fn agent_facing_machine_text_is_compact() {
         .expect("more line");
     let args: Vec<&str> = more.split_whitespace().skip(1).collect();
     let rest = plugin.text(Some(hatter), &args);
+    let rest = rest
+        .strip_prefix(&marker)
+        .unwrap_or_else(|| panic!("continuation starts with {marker:?}: {rest}"));
     assert!(rest.starts_with("#6 "), "{rest}");
     let json = plugin.ok(Some(hatter), &["body", &long_message]);
     assert_eq!(json["data"]["content"]["body_data"], json!(long));
 
-    // read --recent 20: kind line, one row per entry, one `next:` line.
-    let lines: Vec<&str> = read.lines().collect();
+    // read --recent 20: one `[p0] <id>` row per message entry (every fixture
+    // message names an ACK recipient, so D3 makes it p0), then the kind line,
+    // one row per entry, one `next:` line.
+    let (annotated, history) = split_p0_rows(&read);
+    let lines: Vec<&str> = history.lines().collect();
     assert_eq!(lines[0], "history", "{read}");
     assert_eq!(lines.len(), 22, "{read}");
     assert_eq!(
@@ -318,6 +365,11 @@ fn agent_facing_machine_text_is_compact() {
         );
         assert!(row.len() < 400, "{row}");
     }
+    let message_rows: Vec<&str> = lines[2..21]
+        .iter()
+        .map(|row| row.split_whitespace().nth(1).unwrap())
+        .collect();
+    assert_eq!(annotated, message_rows, "{read}");
     let next = lines[21].strip_prefix("next: ").unwrap();
     assert!(
         !next.contains("--json"),
@@ -334,7 +386,9 @@ fn agent_facing_machine_text_is_compact() {
     // The continuation runs exactly as printed and reaches the oldest rows.
     let args: Vec<&str> = next.split_whitespace().skip(1).collect();
     let rest = plugin.text(Some(hatter), &args);
-    assert!(rest.starts_with("history\n#4 "), "{rest}");
+    let (rest_annotated, rest_history) = split_p0_rows(&rest);
+    assert!(rest_history.starts_with("history\n#4 "), "{rest}");
+    assert_eq!(rest_annotated.len(), 1, "{rest}");
     assert!(!rest.contains("next: "), "{rest}");
     // The same cursor on another thread is refused as an invalid cursor.
     let wrong = plugin
