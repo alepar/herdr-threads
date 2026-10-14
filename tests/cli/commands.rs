@@ -3900,3 +3900,26 @@ fn automatic_handoff_channel_omission_parses_for_every_destination() {
         }
     }
 }
+
+#[test]
+fn user_max_bytes_floor_stays_256_for_annotated_reads() {
+    use crate::protocol::results::ErrorCode;
+    for argv in [
+        ["body", "m1"],
+        ["read", "t1"],
+        ["search", "word"],
+    ] {
+        for (bound, ok) in [("255", false), ("256", true)] {
+            let mut full = vec!["herdr-threads"];
+            full.extend(argv);
+            full.extend(["--max-bytes", bound]);
+            match parse_argv(full) {
+                Ok(_) => assert!(ok, "{argv:?} {bound} parsed"),
+                Err(e) => {
+                    assert!(!ok, "{argv:?} {bound}: {e:?}");
+                    assert_eq!(e.code, ErrorCode::InvalidBudget, "{argv:?}");
+                }
+            }
+        }
+    }
+}

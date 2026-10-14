@@ -268,10 +268,8 @@ fn agent_facing_machine_text_is_compact() {
     keep("read-recent-3.txt", &paged);
     let body = plugin.text(Some(hatter), &["body", &long_message]);
     keep("body.txt", &body);
-    // The daemon refuses a body bound under 256 and the annotated-read refit
-    // gives up where the bound minus the 15-byte `[p0]` row falls under that
-    // floor (271 itself is refused), so the old 256 bound moves to 384.
-    let body_budget = "384";
+    // The annotated-read refit reserves the 15-byte `[p0]` row under the documented 256 floor (ht-yha.50).
+    let body_budget = "256";
     let body_paged = plugin.text(
         Some(hatter),
         &["body", &long_message, "--max-bytes", body_budget],
@@ -478,4 +476,69 @@ fn agent_facing_machine_text_is_compact() {
     assert!(bounded.len() <= 256, "{} bytes", bounded.len());
     assert!(show.len() < 1_000, "{} bytes", show.len());
     assert!(paged.ends_with(" --limit 3\n"), "{paged}");
+
+    // A small --max-bytes bound still returns a p0 message (ht-yha.50): the refit
+    // reserves only the `[p0] <id>` row, so body/read/search work from the floor up.
+    let probe = plugin.ok(
+        Some(alice),
+        &["send", &thread, "--body", "tiny-p0-probe", "--nudge"],
+    )["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for bound in [256, 257, 270, 271, 272, 300, 341, 342] {
+        let bound_arg = bound.to_string();
+        let body = plugin.text(
+            Some(hatter),
+            &["body", &long_message, "--max-bytes", &bound_arg],
+        );
+        assert!(body.len() <= bound, "body {bound}: {body}");
+        assert!(body.starts_with("[p0] "), "body {bound}: {body}");
+        let header = body
+            .lines()
+            .find(|l| l.starts_with(&format!("#6 {long_message} ")))
+            .unwrap_or_else(|| panic!("body {bound} header: {body}"));
+        let range = header.split("bytes=").nth(1);
+        match range {
+            Some(range) => {
+                let end: usize = range
+                    .split('/')
+                    .next()
+                    .unwrap()
+                    .strip_prefix("0-")
+                    .unwrap_or_else(|| panic!("body {bound} range: {body}"))
+                    .parse()
+                    .unwrap();
+                assert!(end > 0, "body {bound}: {body}");
+            }
+            None => assert!(body.lines().count() >= 3, "body {bound} full: {body}"),
+        }
+        let read = plugin.text(
+            Some(hatter),
+            &["read", &thread, "--recent", "1", "--max-bytes", &bound_arg],
+        );
+        assert!(read.len() <= bound, "read {bound}: {read}");
+        assert!(read.starts_with("[p0] "), "read {bound}: {read}");
+        assert!(read.contains(&probe), "read {bound}: {read}");
+    }
+    // A one-hit search page needs 574 bytes from the daemon even unannotated
+    // (`search match cannot fit`, required minimum 574), so search is measured from
+    // there: the `[p0]` row never pushes a fitting page into a refusal.
+    for bound in [574, 575, 589, 600] {
+        let bound_arg = bound.to_string();
+        let search = plugin.text(
+            Some(hatter),
+            &[
+                "search",
+                "tiny-p0-probe",
+                "--thread",
+                &thread,
+                "--max-bytes",
+                &bound_arg,
+            ],
+        );
+        assert!(search.len() <= bound, "search {bound}: {search}");
+        assert!(search.starts_with("[p0] "), "search {bound}: {search}");
+        assert!(search.contains(&probe), "search {bound}: {search}");
+    }
 }

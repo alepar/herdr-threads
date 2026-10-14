@@ -1,7 +1,9 @@
 use crate::protocol::{
     authority::CallerClaim,
     ids::*,
-    pagination::{Cursor, CursorScope, MAX_PAGE_BYTES, PageRequest},
+    pagination::{
+        Cursor, CursorScope, MAX_PAGE_BYTES, MIN_PAGE_BYTES, MIN_REFIT_READ_BYTES, PageRequest,
+    },
 };
 use serde::{Deserialize, Serialize};
 
@@ -552,7 +554,7 @@ pub struct BodyReadRequest {
 }
 impl BodyReadRequest {
     pub fn validate(&self, message: &MessageId) -> Result<(), &'static str> {
-        if self.max_bytes < 256 || self.max_bytes > MAX_PAGE_BYTES {
+        if self.max_bytes < MIN_REFIT_READ_BYTES || self.max_bytes > MAX_PAGE_BYTES {
             return Err("invalid body output byte bound");
         }
         if self.cursor.is_some() && self.offset.is_some() {
@@ -1296,7 +1298,11 @@ impl Command {
             return Err("a pushed inbox page is a first, unscoped page");
         }
         if let Some(page) = self.page() {
-            page.validate()?;
+            page.validate_with_floor(if matches!(self, Self::History(_) | Self::Search(_)) {
+                MIN_REFIT_READ_BYTES
+            } else {
+                MIN_PAGE_BYTES
+            })?;
             if let Some(raw) = &page.cursor {
                 if matches!(self, Self::InboxBatchV2(_)) {
                     crate::protocol::pagination::InboxBatchV2CursorState::validate_decodable(raw)?;
