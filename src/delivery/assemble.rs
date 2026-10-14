@@ -205,6 +205,7 @@ impl Assembler {
                         body,
                         truncated,
                         wakes,
+                        deadline_at: if wakes { deadline_at } else { None },
                     },
                 }))
             }
@@ -402,6 +403,21 @@ pub fn item_order_key(item: &DeliveryItem) -> crate::protocol::priority::Deliver
         deadline: item.message.deadline_at,
         decision_seq: 0,
         rank: SourceRank::DeliveryRow,
+        ordinal: 0,
+    }
+}
+
+/// The batch key of one assembled invitation (see [`batch_order`]): p0 with its own deadline, ranked
+/// before a message of the same priority and deadline, as the inbox merge ranks it.
+pub fn invitation_order_key(
+    invitation: &DeliveryInvitation,
+) -> crate::protocol::priority::DeliveryOrderKey {
+    use crate::protocol::priority::{DeliveryOrderKey, DeliveryPriority, SourceRank};
+    DeliveryOrderKey {
+        priority: DeliveryPriority::p0(),
+        deadline: invitation.content.deadline_at,
+        decision_seq: 0,
+        rank: SourceRank::Invitation,
         ordinal: 0,
     }
 }

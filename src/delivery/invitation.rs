@@ -105,6 +105,7 @@ impl InvitationContext {
             body: rendered.body,
             truncated: partial,
             wakes: self.wakes(),
+            deadline_at: self.deadline,
         }
     }
     pub fn wakes(&self) -> bool {
@@ -147,6 +148,7 @@ impl FrozenInvitation {
             body,
             truncated: self.truncated,
             wakes: self.wakes,
+            deadline_at: None,
         })
     }
 }

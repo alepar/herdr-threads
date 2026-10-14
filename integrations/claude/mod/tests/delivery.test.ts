@@ -4,6 +4,7 @@
 import { test, expect, mock } from 'claude-code/testing'
 import { createCore, frame, markers, register } from '../hooks/register.js'
 import activationCapture from './fixtures/watch-activation.js'
+import priorityOrderMixed from './fixtures/priority-order-mixed.js'
 
 type Any = any
 
@@ -2521,4 +2522,30 @@ test('a kind:lazy item (an old daemon delivery row) frames as message', () => {
   const text = frame([{ kind: 'lazy', id: 'l9', thread: 'T1', sender: 'S1', body: 'x' }])
   expect(text).toContain('[herdr-threads] message l9 in T1 from S1:\n  x')
   expect(text).not.toContain('lazy')
+})
+
+// ---- the cross-surface order fixture (ht-yha.15) -----------------------------------------------------
+// The same mixed set the Rust surfaces are held to (tests/fixtures/priority_order_mixed.json; a Rust
+// test keeps this folder's copy equal): arrival p5, p1, invitation (p0, deadline), p0, ACK (p0, earlier
+// deadline); expected ack, invitation, p0, p1, p5. Every row wakes (a seat whose threshold admits p5),
+// so the set is one batch; the passive/wake split by `wakes` is covered above.
+const orderedIds = (text: string) => Array.from(text.matchAll(/^\[herdr-threads\] (?:message|invitation) (\S+) /gm), (m: Any) => m[1])
+const fixtureLines = () => (priorityOrderMixed as Any).items.map((o: Any) => ({ schema: 1, ...o }))
+
+test('fixture: the wake path frames the shared mixed set in the expected order', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  for (const o of fixtureLines()) h.line(o)
+  await flush()
+  expect(h.appends.length).toBe(1)
+  expect(orderedIds(h.appends[0])).toEqual((priorityOrderMixed as Any).expected)
+  expect(h.appends[0]).toContain('message m-p5 in T1 "plans" from S1 "alice" [p5]:')
+  expect(h.appends[0]).toContain('message m-ack in T1 "plans" from S1 "alice" [p0]:')
+  expect(h.appends[0]).toContain('message m-p1 in T1 "plans" from S1 "alice":')
+})
+
+test('fixture: busy tool context frames the shared mixed set in the expected order', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  for (const o of fixtureLines()) h.line(o)
+  const r = await h.core.onToolCall({ tool: 'Bash' }, answered)
+  expect(orderedIds(r.context[0])).toEqual((priorityOrderMixed as Any).expected)
 })

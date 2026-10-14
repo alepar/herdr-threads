@@ -34,6 +34,9 @@ use std::sync::{
 #[path = "q4_accept_controls.rs"]
 mod q4_accept_controls;
 
+#[path = "priority_order_pull.rs"]
+mod priority_order_pull;
+
 #[path = "normal_unrenderable_controls.rs"]
 mod normal_unrenderable_controls;
 

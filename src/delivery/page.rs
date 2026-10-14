@@ -4,7 +4,7 @@
 
 use super::assemble::{
     AssembleError, Assembled, Assembler, DeliveryInvitation, DeliveryItem, batch_order,
-    item_order_key,
+    invitation_order_key, item_order_key,
 };
 use crate::protocol::{pagination::Page, results::InboxBatchV2Item};
 
@@ -46,6 +46,12 @@ pub enum DrainEvent {
     },
     /// The last page was read.
     Exhausted,
+}
+
+/// One entry of a drain's ordered batch.
+enum Batched {
+    Item(DeliveryItem),
+    Invitation(DeliveryInvitation),
 }
 
 /// A sink's verdict on one event.
@@ -90,15 +96,16 @@ pub fn drain_pages<E>(
     assembler.partial.clear();
     let mut saw_attention = false;
     // One drain may combine several pages: its items go out as one batch in order-key order.
-    let mut batch: Vec<DeliveryItem> = Vec::new();
+    // Invitations ride the same batch, keyed p0 plus their deadline.
+    let mut batch: Vec<Batched> = Vec::new();
     for _ in 0..max_pages {
         let page = source.page(cursor.take()).map_err(DrainPagesError::Page)?;
         for item in page.items {
             match assembler.push(item).map_err(DrainPagesError::Assemble)? {
-                Assembled::Item(item) => batch.push(item),
+                Assembled::Item(item) => batch.push(Batched::Item(item)),
                 Assembled::Invitation(item) => {
                     saw_attention |= item.content.wakes;
-                    emit!(DrainEvent::Invitation(item));
+                    batch.push(Batched::Invitation(item));
                 }
                 Assembled::Attention => saw_attention = true,
                 Assembled::Pending | Assembled::InformationalNotice | Assembled::Duplicate => {}
@@ -107,9 +114,15 @@ pub fn drain_pages<E>(
         match page.next_cursor {
             Some(next) => cursor = Some(next),
             None => {
-                batch_order(&mut batch, item_order_key);
-                for item in batch.drain(..) {
-                    emit!(DrainEvent::Item(item));
+                batch_order(&mut batch, |entry| match entry {
+                    Batched::Item(item) => item_order_key(item),
+                    Batched::Invitation(item) => invitation_order_key(item),
+                });
+                for entry in batch.drain(..) {
+                    match entry {
+                        Batched::Item(item) => emit!(DrainEvent::Item(item)),
+                        Batched::Invitation(item) => emit!(DrainEvent::Invitation(item)),
+                    }
                 }
                 if saw_attention {
                     let id = format!("attention:{frame_version}");
