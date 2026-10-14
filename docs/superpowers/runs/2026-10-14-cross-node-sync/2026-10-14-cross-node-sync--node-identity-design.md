@@ -337,6 +337,89 @@ Suggested task cut (each with its files):
 
 Order: 1 → 2 → 3 → 4 → (5, 6, 8) → 7.
 
+## Key abstractions
+
+**NodeUuid / NodeTag**: new value structs (`src/node/`). These are the node's two public names, each with its canonical text form and its ordering.
+- Owns: the 32-lowercase-hex form of `NodeUuid` (Display/FromStr/serde) and its byte `Ord`, which defines "higher uuid" everywhere. The 3-character base62 `NodeTag`. The pure `tag_for(uuid, k)` and `on_collision(...) -> RetagDecision`.
+- Hides: SHA-256 over the public key and over `uuid ‖ k`, the digit emission order, and which side moves on a collision.
+- Must not: be built from or printed as a hyphenated `uuid::Uuid`. Must not read the store or keep any state.
+- Relationships: leaf types. `NodeIdentity`, the schema seed, `node_directory`, `protocol::ids` and the descriptor depend on them. They depend only on the shared `base62_digits` and `BASE62` in `protocol::ids`.
+- Errors: `FromStr` rejects bad length or bad characters. `RetagDecision` is a closed enum (`Keep` / `MoveTo{k, tag}`).
+
+**NodeJson**: new module (`src/node/json.rs`). It is the derived `node.json` hint file.
+- Owns: the `format:1` shape, the regenerate-if-differs atomic write (0600), and a reader that returns `Option` (missing or corrupt means "identity unknown").
+- Hides: the file format, and that the file is never authoritative.
+- Must not: be read by the elected daemon as a source of uuid or tag. Only the store row (`local_node`) and the key hold those. Must not create the file anywhere except in the daemon after the store opens or after a retag applies.
+- Relationships: the daemon start sequence and the retag apply handler (ht-5fr.4) write it. `ownership.rs` descriptor validation (it replaces `namespace`), `doctor` and later `peer --stdio` diagnostics read it.
+
+**NodeDirectory**: new store module (`store::node_directory`). It is the only owner of the `node_directory` table.
+- Owns: inserting the self row at `initialize`, the upserts by genesis and retag handlers (ht-5fr.3/.4), and `colliding(conn, tag)`.
+- Hides: the table shape and the `tag` index.
+- Must not: decide a retag. That stays in `on_collision`, and the apply handler acts on the result.
+- Relationships: `schema::initialize` uses it for the self row. Fact handlers use it later.
+
+**HostChoice**: new closed enum (`Hint` / `Remembered` / `Given`) plus a factory closure. It describes how the elected daemon gets its zero or one Herdr server.
+- Owns: the attach decision after the store opens. `Hint` upserts `herdr_hosts` and attaches. `Remembered` picks the most recent row whose endpoint is a live socket. `Given` is a test `FakeHost`. Attaching stamps `last_attached_at`.
+- Hides: `NativeCli` construction (the closure from `main.rs`) and how a socket's liveness is checked.
+- Must not: be resolved before election (the remembered host lives in the store). Must not appear in the daemon address (socket, lock and descriptor path come from the state dir only).
+- Relationships: consumed once by `run_elected_impl`. It produces an `Option` of the attached host (see the HostSession entry). The factory closure is the seed of HostSessions' lazy attach in ht-5fr.2. It is a closure, not a trait: there is one production implementation (`NativeCli`), and tests use `Given`.
+- Lifecycle: consumed at start. Nothing keeps it afterwards.
+
+**LegacyInventory**: new module (`src/cli/legacy.rs`). It is a read-only census of `<state>/instances`, shared by `doctor` and `legacy purge`.
+- Owns: the path, instance count, recursive byte size, settings paths and live owners. A live owner is found by a non-blocking `flock` try that is released at once, with the pid taken from that instance's `endpoint.json`. It also owns the one-line text and the purge preconditions (symlink or not-a-directory, owner, held lock, agent evidence and `--operator`).
+- Hides: every access to `instances/`. It is the only code that touches the directory, and the only removal goes through `remove_dir_all` in purge.
+- Must not: open, migrate or copy any legacy database or settings file. Must not touch `node/`. Must not be reachable from the daemon.
+- Relationships: `doctor` (`collect_local`) renders it. `legacy purge` checks it, then removes. `paths::legacy_instances_dir` is its only path source.
+- Errors: purge refusals are distinct (agent evidence, unsafe directory, held lock with pid), each one line with exit 2. The dry run and the doctor report never fail on legacy contents.
+
+**NodeIdentity**: extended. It gains the concrete key custody: `load_or_create(paths, store_exists)` with the no-clobber `link()`, `NodeKeyError` (a closed enum: `KeyMissingForStore`, `Unreadable`, `Permissions`, `NotRegularFile`, `Malformed`, `IdentityMismatch`, each naming its path and kept separate from store errors), and an `AtomicU32` tag cache that changes only through `set_tag_k`. That call happens at start from `local_node.tag_k` and from the `node.retag` handler. The `local_node` row is the tag record. Per spec §7, minting reads the tag from the row inside the transaction and never from this cache, so PublicIds does not use `NodeIdentity` for the tag. This narrows the ancestor's "PublicIds use it (tag)". `NodeIdentity` is held as `Arc` and created in `run_elected_impl`. It is never a global static and has no trait (one implementation).
+
+**InstancePaths → NodePaths**: extended. It resolves from the state dir only (`node/`, `node.key`, `node.json`, `herdr-threads.db`, socket fallback). It gains `legacy_instances_dir`, and `holds_store` also counts legacy data. `locator`, `namespace` and the per-boot and relocated socket acceptance are gone.
+
+**RuntimeContext / EndpointDescriptor**: extended. `host_endpoint` becomes `Option` (the claim host), and `require_host()` is the one place that produces the "host endpoint missing" error. The descriptor carries `node_uuid: NodeUuid` and `primary_host: Option<PathBuf>`. The interim single-host guard compares the claim host with `primary_host` (different, or `None`, gives `HostUnavailable`). It is one client-side function, so ht-5fr.2 deletes it in one place.
+
+**HostSession**: extended (introduced early in single-host form). The attached primary host is one value holding `host_id`, the canonical endpoint, `Arc<dyn HostPort>` and the bootstrap observer. The daemon keeps it as `Option`. The host-bound workers (observation, wake dispatcher, archival sampler, handoff and bootstrap observer, `HostGuardedStart`) are spawned only from `Some`. `None` is the store-only daemon (health `hosts: 0`, doctor label `store-only`). ht-5fr.2 turns the `Option` into HostSessions without changing what one session owns.
+
+**StoreContext**: extended. A set-once `primary_host` (`OnceLock<i64>`) and a single accessor that returns the id or `HostUnavailable`. Every query that moved to `herdr_hosts WHERE host_id=?` goes through that accessor and never reads the field directly. That makes it the one seam ht-5fr.2 replaces with per-seat `host_id` routing.
+
+**Schema (`store::schema`)**: extended. `initialize(conn, now, &NodeSeed)` either creates the baseline, the `local_node` row and the self `node_directory` row in one `BEGIN IMMEDIATE`, or runs `verify_baseline`. `verify_baseline` compares against an in-memory copy of `NODE_BASELINE` cached in a `OnceLock`. `IncompatibleSchema` names the first object that differs, or reports a wrong `application_id` or version. All the `migrate_v*` and `verify_*` functions are deleted. Ordering hazard: the `local_node` row must be inserted before anything in `initialize` mints an ID, because `fresh` now reads the tag from that row.
+
+**`host_instances` → `local_node` + `herdr_hosts`**: extended, as the ancestor describes. Concretely, the node row gains `tag`/`tag_k`, `herdr_hosts` gains `endpoint` and `last_attached_at` plus the moved columns and triggers, and the snapshot upsert becomes an `UPDATE` keyed by `host_id`.
+
+**seats**: extended. It gains `home_node`, `is_local`, `remote_kind`, `host_id` and state `remote`, enforced by triggers (home never changes). There is one published predicate `LOCAL_SEAT` / `is_local_seat`, and both local insert paths write `home_node = self` and `host_id = primary` through the StoreContext accessor.
+
+**PublicIds (`protocol::ids`, `store::public_ids`)**: extended. IDs are `<prefix><tag><8>`, checked with `is_public_id` / `public_id_parts`. The shared `base62_digits` lives here. `derived_message_id` carries the tag along. There is a pure `direct_thread_id` with `DirectIdError::SameSeat`. `fresh` keeps its signature and reads the tag in the caller's transaction. `short_seat` uses the random suffix.
+
+Variation: very little varies in this subepic, so it adds no trait.
+- How a daemon gets its host varies across three fixed cases, so it is the closed enum `HostChoice`. `NativeCli` construction is a closure, because only one production implementation exists.
+- The number of attached hosts is 0 or 1 now and many in ht-5fr.2. `Option<HostSession>` plus the StoreContext accessor are the two seams that ht-5fr.2 widens.
+- Key-start failures, retag outcomes, direct-ID errors, seat states and purge refusals are fixed sets, so each is a closed enum or CHECK, handled with `match`.
+- Schema changes are edits to the one baseline file until release, and `verify_baseline` is the only check, so no per-version code exists.
+
+Walk-through: an agent in a pane on Herdr server H runs `send`, and no daemon is running yet.
+1. `resolve_context` resolves state dir S and claim host H.
+2. `spawn_detached` runs `daemon run --state-dir S --host-endpoint H`.
+3. After election, `NodePaths::resolve(S)` resolves the paths. `NodeIdentity::load_or_create(paths, false)` writes `node.key` with the no-clobber link.
+4. `schema::initialize` gets `NodeSeed{uuid, tag_for(uuid,0), 0}` and creates the baseline, `local_node` and the self `node_directory` row.
+5. The daemon reads `local_node.(id, tag_k)`, checks the id against the key, and calls `set_tag_k`. NodeJson regenerates `node.json`.
+6. `HostChoice::Hint(H)` upserts and attaches `herdr_hosts`. `StoreContext.primary_host` is set, the `HostSession` is `Some`, and the host workers start. The descriptor publishes `node_uuid` and `primary_host = H`.
+7. The client's interim guard sees that H matches and sends the request.
+8. The seat insert writes `home_node = self`, `is_local = 1` and `host_id` from the accessor. `fresh` mints `s<tag><8>`, reading the tag from `local_node` in the same transaction.
+9. Later, a pane on server H2 gets `HostUnavailable` from the guard on the client, and nothing reaches the store. A restart with the key deleted fails at step 3 with `KeyMissingForStore`. `instances/` is never touched, and doctor reports it through LegacyInventory.
+
+Likely future change: ht-5fr.4 adds retag.
+- One new FactKind module, `node.retag`, plus one registry entry.
+- Its genesis handler upserts NodeDirectory, calls `colliding` and then `on_collision`. On `MoveTo` it authors `node.retag`.
+- The retag apply handler updates `local_node.tag`/`tag_k`, then calls `NodeIdentity::set_tag_k` and NodeJson regenerate.
+- `fresh`, NodePaths and the schema check do not change: the next mint sees the new row.
+
+Digest:
+- NodeUuid/NodeTag: owns the canonical hex and base62 forms, uuid ordering, `tag_for` and `on_collision`. A change to tag derivation or the retag rule goes in `src/node/tag.rs`. Callers never hash keys or compare uuid strings themselves.
+- NodeJson: owns the `node.json` format, regenerate-if-differs, and the hint-only reader. New diagnostic fields go here. Callers never treat it as authority or write it outside the daemon start and retag paths.
+- NodeDirectory: owns the `node_directory` rows and collision lookup. Peer-node directory writes go here. Callers never write the table directly or decide retags in it.
+- HostChoice: owns the start-time choice (hint, remembered or given) and the attach stamp. A new way to choose the start host is a variant here. Callers never build a `HostPort` before election or put the host into the daemon address.
+- LegacyInventory: owns every read of `instances/` and the purge preconditions. New legacy findings go here. Nothing else, and never the daemon, opens or removes `instances/`.
+
 ## Post-Implementation Notes
 
 > *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
