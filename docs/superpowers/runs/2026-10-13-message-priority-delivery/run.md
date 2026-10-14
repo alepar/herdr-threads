@@ -2,7 +2,9 @@
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
 resumeChange: 2026-10-13 · "design APPROVED (A-E) ... Move to autonomous stage now (both roasts on). Nudge dev-herdr-threads when merge-ready." (relayed by seePN0MKW, mpqluOeQD) · autonomous=f→t after the interactive root design; nested brainstorms and later gates run Mode B
-phase: finish
+resumeChange: 2026-10-14 · "sgtm" (fix run for bugs 1-3 before merging; upstream feedback: "message it to the superpowers space we have here. no need to scrub.") · post-hand-back fix pass for report Remaining items 1-3, then re-sweep and update the report
+phase: fix-loop
+feedback: herdr agent prompt wB:pB (superpowers workspace, Claude pane) with upstream-feedback-draft.md, 2026-10-14
 codeMechanism: Workflow
 
 idea: Feature: message PRIORITY replaces lazy/nudge delivery modes in herdr-threads. Interactive design stage first (user reachable only via seat seePN0MKW in 1:1 thread tXPkAdb0O with --nudge; batch questions), then autonomous after design approval; both roasts ON (design + code). When integration branch is merge-ready, nudge dev-herdr-threads (taQXwBH7X). Details: priority = non-negative integer chosen by sender; 0 highest, always nudges. Recipient nudge threshold T: priority <= T nudges; negative T means everything nudges. Lazy mode removed. Default T=0, default send priority=1. Inbox listing and hook/mod injection sort by priority ascending then timestamp oldest first. Needs design: CLI flags and migration of --lazy/--nudge/--require-ack (ACK requests implied nudge today), per-seat vs per-thread threshold, existing recipient wake-on mode, wire/storage compat, docs/skill text, mod/hook surfaces.
@@ -71,4 +73,5 @@ approvals:
 - fix-round-1 beads · ht-yha.31 drain-halt · ht-yha.32 seat-pending-predicate (completion.rs) · ht-yha.33 old-client cursor format · ht-yha.34 merge-readiness (failing tests, guidance, doc drift) · ht-yha.35 v46→v47 replay test · ht-yha.36 probe-failure downgrade · ht-yha.37 batch-order-key · ServiceSend Must-fix not filed (parked for the user)
 - regressionPass-round-2: 3 filed · [Should-fix] src/store/lazy_delivery/mod.rs:112; src/store/lazy_delivery/wake.rs:13; src/store/lazy_delivery/mod.rs:109, [Should-fix] src/store/lazy_delivery/mod.rs:110; src/store/lazy_delivery/completion.rs:68, [Should-fix] integrations/skill/SKILL.md:17 · no re-roast (beads ht-yha.38, ht-yha.39; the amended ht-yha.33 rides the same re-entry)
 - baseAbsorbed: 998d7d34 → 6657c2be, 3 conflicted files (AGENTS.md, TRUST-POLICY.md, scripts/wake-e2e.py); seam decision (orchestrator): a threshold-admitted delivery-row wake (reason lazy) counts as seat attention in for_seat_attention like pending_receipt; test one_process_composer_wake_serves_a_threshold_admitted_delivery_row
+- post-hand-back fix pass (user 2026-10-14 'sgtm'): ht-yha.44 stale pending rows (connected-only owing + every display path marks; reconnect gap recorded as accepted limit), ht-yha.45 lazy composer wake served-in-turn check, ht-yha.46 mod stall counts admitted delivery rows
 - root-design · human · D1-D11 and sections A-E approved via seePN0MKW (mwRZ1YxXs, myas79LQ8, mXmhe1P2d, mpqluOeQD)
