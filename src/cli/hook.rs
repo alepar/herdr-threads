@@ -418,7 +418,7 @@ pub fn observe_harness_in(
             state_dir: state_dir.map(Path::to_path_buf),
             clock: Arc::clone(&clock),
         },
-        &budget(Instant::now() + timeout, clock.as_ref()),
+        &budget(clock.instant_now() + timeout, clock.as_ref()),
     );
     Err(observation_failure(observation))
 }
@@ -456,7 +456,7 @@ pub fn parse_event(
     };
     let clock = SystemClock::new();
     let admitted = registration
-        .admit(&request, &budget(Instant::now() + TOOL_BUDGET, &clock))
+        .admit(&request, &budget(clock.instant_now() + TOOL_BUDGET, &clock))
         .map_err(|error| ContextError::UnsupportedVersion(error.diagnostic))?;
     registration
         .decode(
@@ -1421,6 +1421,8 @@ fn report_parse_failure_to_daemon(
 
 /// The call budget left before `deadline`, measured on `clock` (the hook's injected clock:
 /// the host's in production), so a run's IPC timeouts shrink only as that clock advances.
+/// `deadline` must be in `clock`'s domain: derive it from `clock.instant_now()`, never from
+/// `Instant::now()` (with a held test clock that would inflate the budget).
 pub(super) fn budget(deadline: Instant, clock: &dyn Clock) -> CallBudget {
     let remaining = deadline.saturating_duration_since(clock.instant_now());
     CallBudget {
@@ -4049,7 +4051,7 @@ pub fn run_process_with(
                 args,
                 &stdin,
                 hook_state_dir(args).as_deref(),
-                Instant::now() + super::hook_evidence::FOREIGN_CALL,
+                clock.instant_now() + super::hook_evidence::FOREIGN_CALL,
                 super::hook_evidence::FOREIGN_CALL,
                 clock,
             );
@@ -4086,7 +4088,7 @@ pub fn run_process_with(
                     state_dir: state_dir.clone(),
                     clock: Arc::clone(&clock),
                 },
-                &budget(Instant::now() + observe_budget, clock.as_ref()),
+                &budget(clock.instant_now() + observe_budget, clock.as_ref()),
             );
             if registration.hook_admission_policy() == HookAdmissionPolicy::InstalledObservation
                 && matches!(

@@ -6847,9 +6847,16 @@ mod registered_resume {
         }
         /// Follow the host from the pin on: every real millisecond, the fixture child's
         /// included, spends the callback's budget, as the host clock does in production.
+        /// Only from a fresh pin: after `advance` the held instant is ahead of the host, and
+        /// a running clock would read UTC and `Instant` from different domains.
         pub(super) fn run(&self) {
             let mut held = self.held.lock().unwrap();
-            held.as_mut().expect("run a pinned fixture clock").running = true;
+            let h = held.as_mut().expect("run a pinned fixture clock");
+            assert!(
+                h.at <= Instant::now(),
+                "run a fixture clock only from a fresh pin, never after advance"
+            );
+            h.running = true;
         }
         fn held(&self) -> Option<Held> {
             *self.held.lock().unwrap()
@@ -10062,20 +10069,10 @@ mod registered_resume {
             let turn = hermes_cli_turn("cli-a", "t1", 2 + round * 10);
             let clock = fixture_clock();
             let (started, turned) = std::thread::scope(|scope| {
+                // Both runs share the test's held fixture clock (pinned above, never re-pinned
+                // here), so host load cannot overrun the turn's 1.2 s callback budget.
                 let a = scope.spawn(|| on_fixture_clock(&clock, || f.run(r, &start)));
-                let b = scope.spawn(|| {
-                    on_fixture_clock(&clock, || ());
-                    let began = Instant::now();
-                    let mut outcome = f.run(r, &turn);
-                    // A debug hook on a loaded machine can overrun the 1.2 s
-                    // callback cap and fail open with no output. Only such an
-                    // overrun is retried: the same event with fresh timestamps
-                    // is a canonical replay (same operation key).
-                    if outcome.stdout.is_empty() && began.elapsed() >= Duration::from_secs(1) {
-                        outcome = f.run(r, &hermes_cli_turn("cli-a", "t1", 2 + round * 10));
-                    }
-                    outcome
-                });
+                let b = scope.spawn(|| on_fixture_clock(&clock, || f.run(r, &turn)));
                 (a.join().unwrap(), b.join().unwrap())
             });
             assert!(started.stdout.is_empty());
