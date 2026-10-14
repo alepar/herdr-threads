@@ -4,7 +4,9 @@
 //! Owns: window collection from the three existing walks, key building (`DeliveryOrderKey`) for
 //! each item, the sort, and the re-collected-vs-fresh skip rule (a re-collected window skips keys
 //! <= the last emitted key, a fresh window skips nothing), bounded by `DEADLINE_WINDOW` items and
-//! `WINDOW_VISITS` visits so every page advances.
+//! `WINDOW_VISITS` visits so every page advances. The three walks seek only pending, published
+//! items (invitations and receipts through their pending projections, unread through its unread
+//! predicate), so settled and unpublished history costs no visit.
 //! Hides: how the walks step and where they stop; a better deadline ordering changes only this file.
 //! Must not: persist items (only walk positions go into the cursor), sort or resume deadline items
 //! anywhere else, or read `messages.priority` (every deadline-class item is priority 0).
