@@ -5385,3 +5385,8 @@ fn stand_in_host_drop_joins_a_blocked_serving_thread() {
 /// rig's private items).
 #[path = "agy_sweep.rs"]
 mod agy_sweep;
+
+/// ht-yha.15: one delivery order across the CLI inbox, the watch stream and accept (a child
+/// module, so it reuses the rig's private items).
+#[path = "priority_order_surfaces.rs"]
+mod priority_order_surfaces;
