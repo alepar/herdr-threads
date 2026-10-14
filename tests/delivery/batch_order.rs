@@ -1,5 +1,5 @@
-//! The batch sort: one drain's combined items go out in `DeliveryOrderKey` order (priority, then
-//! deadline with none last), arrival breaking every remaining tie; separate drains keep arrival.
+//! The batch sort: one page's items go out in `DeliveryOrderKey` order (priority, then
+//! deadline with none last), arrival breaking every remaining tie; pages and separate drains keep arrival.
 use super::*;
 use crate::delivery::page::{DrainEvent, PageError, PageSource, Stop, drain_pages};
 use crate::protocol::{
@@ -104,14 +104,14 @@ fn equal_keys_keep_arrival_order() {
 }
 
 #[test]
-fn a_later_page_p0_precedes_an_earlier_pages_p1() {
+fn each_page_is_emitted_in_arrival_order_before_the_next() {
     let pages = vec![
         vec![msg("first-p1", 1, None), msg("second-p1", 1, None)],
         vec![msg("late-p0", 0, None)],
     ];
     assert_eq!(
         drain(&mut Assembler::new(None), pages),
-        ["late-p0", "first-p1", "second-p1"]
+        ["first-p1", "second-p1", "late-p0"]
     );
 }
 

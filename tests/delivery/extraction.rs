@@ -481,6 +481,55 @@ fn the_sink_can_halt_or_fail_the_drain() {
 }
 
 #[test]
+fn a_sink_halt_never_fetches_the_next_page() {
+    let mut source = Scripted::of(vec![
+        vec![whole("m1", "a"), whole("m2", "b")],
+        vec![whole("m3", "c")],
+    ]);
+    let mut seen = Vec::new();
+    let result = drain_pages::<()>(&mut source, &mut Assembler::default(), 1, 10, |event| {
+        seen.push(event);
+        Ok(Stop::Halt)
+    });
+    assert!(result.is_ok());
+    assert_eq!(ids(&seen), ["m1"]);
+    assert_eq!(source.cursors, vec![None], "page 2 was never requested");
+}
+
+#[test]
+fn pages_are_emitted_as_they_arrive() {
+    use std::{cell::Cell, rc::Rc};
+    struct Counting {
+        inner: Scripted,
+        served: Rc<Cell<usize>>,
+    }
+    impl PageSource for Counting {
+        fn page(&mut self, cursor: Option<String>) -> Result<Page<InboxBatchV2Item>, PageError> {
+            self.served.set(self.served.get() + 1);
+            self.inner.page(cursor)
+        }
+    }
+    let served = Rc::new(Cell::new(0));
+    let mut source = Counting {
+        inner: Scripted::of(vec![vec![whole("m1", "a")], vec![whole("m2", "b")]]),
+        served: Rc::clone(&served),
+    };
+    let mut at = Vec::new();
+    drain_pages::<()>(&mut source, &mut Assembler::default(), 1, 10, |event| {
+        if let DrainEvent::Item(item) = &event {
+            at.push((item.id.as_str().to_owned(), served.get()));
+        }
+        Ok(Stop::Continue)
+    })
+    .unwrap();
+    assert_eq!(
+        at,
+        [("m1".to_owned(), 1), ("m2".to_owned(), 2)],
+        "each item is emitted before the next page is served"
+    );
+}
+
+#[test]
 fn label_flattens_controls_trims_and_cuts_at_120_chars() {
     assert_eq!(
         label("release plan\nsecond\u{2028}line").as_deref(),
