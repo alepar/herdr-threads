@@ -195,10 +195,12 @@ Handlers build it from `ApplyContext`, using `decision_seq`, `origin.node`, `ori
 ### 4. Seats: publication, `seat.created`, `seat.retired`, remote rows
 
 **Recommended.**
-- **Publish on first reference.** New column `seats.published INTEGER NOT NULL DEFAULT 0 CHECK(published IN (0,1))`, with the CHECK `is_local=1 OR published=1`.
-  - `seats::ensure_published(tx, seat)` is a no-op for remote or already published seats. Otherwise it reads `schema::open_binding_role(tx, seat)` (`Some("human")` → `human`, anything else → `agent`), authors `seat.created`, and the handler sets `published = 1`.
-  - Allocation (~L2614) and operator fresh seat (~L3411) stay local inserts and author nothing. Panes that never take part in a replicated fact cost no journal entries.
-  - Accepted limit: a seat's published kind is fixed. If its occupant later switches between human and agent, other nodes keep the published kind. Only the ACK expectation of remote recipients depends on it.
+- **Publish at enrollment (amended, coverage R17).** New column `seats.published INTEGER NOT NULL DEFAULT 0 CHECK(published IN (0,1))`, with the CHECK `is_local=1 OR published=1`.
+  - A local seat is published when it is resolved to an occupant: the transaction that enrolls its first open binding (`bindings::enroll_with_hooks`, the one insert path for occupant bindings) calls `seats::ensure_published(tx, seat)` after the binding row is inserted, so the kind is known. Other nodes therefore list the seat after sync with no prior interaction, and can invite it or open a direct pair with it. Publishing on first reference alone was rejected: a seat nobody had yet addressed stayed invisible on other nodes, so it could never be addressed from them (coverage R17).
+  - `seats::ensure_published(tx, seat)` is a no-op for remote or already published seats. Otherwise it reads `schema::open_binding_role(tx, seat)` (`Some("human")` → `human`, anything else → `agent`), authors `seat.created`, and the handler sets `published = 1`. `FactRoute::Journal` still calls it for every referenced local seat (§2) as an idempotent backstop. It is never called on the local-only route.
+  - Allocation by observation (~L2614) and the operator fresh seat insert (~L3411) stay local inserts and author nothing. A pane that never enrolls an occupant costs no journal entries, and an enrolled seat costs one `seat.created`, once.
+  - Remote seats appear in the directory and seat-listing reads (participants, thread show, directory, member listings, `seats` without `--panes`), with state `remote` (§14).
+- Accepted limit: a seat's published kind is fixed. If its occupant later switches between human and agent, other nodes keep the published kind. Only the ACK expectation of remote recipients depends on it.
 - **`seat.created` v1** payload `{seat, kind: "agent"|"human", display_name: null}`. `display_name` is reserved and always `null` in v1, because seats carry no name today. The created time is the envelope HLC, so the payload does not repeat it.
 
   `materialize_seat_created`:
@@ -218,6 +220,7 @@ Handlers build it from `ApplyContext`, using `decision_seq`, `origin.node`, `ori
 
 **Considered.**
 - Authoring `seat.created` at allocation: one fact per observed pane, most of which never matter, and the agent/human kind is unknown before a binding.
+- Publishing only on first reference (the original recommendation): a never-referenced seat on B is invisible on A, so A cannot invite it or open a direct pair with it (coverage R17).
 - Authoring a `seat.kind` change fact: outside the root's kind list. The kind affects only ACK expectation.
 - Retiring an unrestorable own seat locally: a local-only retirement would diverge from every other node, and retiring on heuristic evidence breaks TRUST-POLICY.
 
@@ -478,7 +481,7 @@ impl DeliveryTail {
   - **Retirement-by-observation:** only local seats can be closed by a snapshot. Only `seat.retired` retires a remote seat (§4).
 - Remote seats have no bindings. `effective_registered_availability`, `open_binding_role` and `carry_pending` return "none" for them, and their callers in `stage_recipient` take the remote branch (§8) before calling those functions.
 - **Reads** (`src/store/queries.rs`):
-  - Participants, thread show, directory and member listings include remote seats. Their pane columns are NULL, and their state renders as `remote` (one short word, in the existing state column, so there is no new line per seat).
+  - Participants, thread show, directory, member listings and the `seats` listing (without `--panes`) include remote seats. Their pane columns are NULL, and their state renders as `remote` (one short word, in the existing state column, so there is no new line per seat).
   - Listings that exist to show panes (`panes`, the picker directory, `seats --panes`) filter `LOCAL_SEAT`.
   - The per-node `unreachable` marker is ht-5fr.13's.
   - Model-visible change: the state value `remote` (6 bytes) replaces a pane label on remote rows. Nothing else changes.
@@ -625,7 +628,7 @@ Order: 1 → 2 → 3 → 4 → (5, 6) → 7 → 8 → 9 → (10, 11, 12) → 13.
 
 **DeliveryTail** — extended (§10): `attention` is the single `wake_work` writer and the one locality guard (a no-op for remote seats); `message` writes the `send_attention` job on every node and suppressed recipients ride `send_manifests.suppressed_seats`; `invitation` replaces `control.rs`'s inline upserts; `materialization::bump` becomes `attention`. Per spec §10, the job's receipt projection stays shared by local and replicated sends, so the root's "DeliveryTail does nothing for a remote recipient" means no attention, not no job.
 
-**seats** — extended: `published` and `ensure_published` (publish on first reference, kind from the open binding), `materialize_seat_created` / `_retired` with the own-seat restore branch, and remote eligibility in `eligible_delivery_recipient`; callers still test locality only through `LOCAL_SEAT` / `is_local_seat`.
+**seats** — extended: `published` and `ensure_published` (publish at enrollment of the first open binding, with `FactRoute` as an idempotent backstop; kind from the open binding), `materialize_seat_created` / `_retired` with the own-seat restore branch, and remote eligibility in `eligible_delivery_recipient`; callers still test locality only through `LOCAL_SEAT` / `is_local_seat`.
 
 **Store materializers (`control`, `messages`, `receipts`)** — extended: one `materialize_*` per kind (§1), each idempotent by its rule (§3); `settle_superseded_invitations` is the one `already_joined` rule, run by both `invitation.created` and `membership.joined`; `memberships.home_transition` is the membership idempotence counter; `insert_publication` takes `MaterializeInput` and a payload-built `PublicationAuthor`, after either adopting the sealed local preparation or synthesizing a `replicated` one (a fixed two-case branch on `local_origin`, per root §5/§7); `settle_pending` keeps its decision and the batch event moves to `materialize_settlement` keyed by `settle_batch`.
 
