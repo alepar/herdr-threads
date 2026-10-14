@@ -4,7 +4,7 @@ flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
 resumeChange: 2026-10-13 · "design APPROVED (A-E) ... Move to autonomous stage now (both roasts on). Nudge dev-herdr-threads when merge-ready." (relayed by seePN0MKW, mpqluOeQD) · autonomous=f→t after the interactive root design; nested brainstorms and later gates run Mode B
 resumeChange: 2026-10-14 · "sgtm" (fix run for bugs 1-3 before merging; upstream feedback: "message it to the superpowers space we have here. no need to scrub.") · post-hand-back fix pass for report Remaining items 1-3, then re-sweep and update the report
 resumeChange: 2026-10-14 · "convert to d9, simplicity." + "doesnt each session have its own cursor so that other siblings cant affect it?" · ServiceSend converted to D9 (ht-yha.47); ht-yha.44 rewritten to per-session pending tracking (seat-wide display draft withdrawn, its partial worktree discarded after an unplanned coordinator stop)
-phase: fix-loop
+phase: report
 feedback: herdr agent prompt wB:pB (superpowers workspace, Claude pane) with upstream-feedback-draft.md, 2026-10-14
 codeMechanism: Workflow
 
@@ -35,8 +35,8 @@ codeBuckets:
   pendingRetry:
   parked:
   stalled: false
-  review: not ready (A stale pending delivery rows via process-exited bindings and cursor-only body reads push new rows off first pages; B mod stall rule counts only receipts so a wedged mod holding a p0 delivery row never recovers; body --max-bytes 256-342 refused for p0; markers_ok vacuous; ServiceSend and ht-yha.33/.42 need the user)
-  sweep: e8ecb681 — 6392 passed, 3 failed, 0 errors, 44 skipped; failing: session_bindings_smoke::config5_resume_within_a_page_and_past_it, golden_surfaces::doctor_reports, lazy_markers::q5_continuation_public::q5_search_public_refits_preserve_2048_byte_filter_route_actor_and_cursor; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast @ e8ecb681
+  review: not ready (process-exited bindings keep their pending view indefinitely — growth limit needs the user's decision; main merged and q4 fixture fixed after it; full suite then run @ e6de8153)
+  sweep: e6de8153 — 6412 passed, 4 failed, 0 errors, 44 skipped; failing: cli::doctor::doctor_json::doctor_classifies_claude_on_path, mod_delivery::stall_with_only_a_p0_delivery_row_hands_over_to_the_native_wake, harness::hermes::runtime::tests::capture_kills_and_reaps_owned_hung_child, harness::hermes::runtime::tests::capture_tolerates_bootstrap_slower_than_two_seconds; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast @ e6de8153
   slowness: round 1: graph-bound — 17 open beads, depth 6, achievable width 3 vs cap 8; edge audit armed now; round 1: merge queue peaked at 3 (first invocation); network outage relaunches ×2 (ENOTFOUND)
   worktreesKept:
   processSweep: stopped 0 · survived 0
@@ -79,4 +79,5 @@ approvals:
 - approvals · ht-yha.41/.42 test rewrites · human · lgtm (2026-10-14)
 - approvals · merge into main · human · hand off to the main tab when done (2026-10-14)
 - approvals · leftovers · human · "your call" → orchestrator filed both now: ht-yha.50 (--max-bytes p0 refusal), ht-yha.51 (markers_ok vacuous) (2026-10-14)
+- post-hand-back fixes landed: ht-yha.44 (per-session pending views), .45, .46, .47 (ServiceSend→D9), .49 (protocol 8, v1.0.0), .50, .51, .52 (pending-only deadline walks), .53 (dead fallbacks removed), .54 (view lifecycle, no seat-wide state reads), .55 (spec sync); main dc2996c3 merged a2f1ae2d; q4 fixture 0873fa12; skew 7→8 db18eefc; unreleased v47 repairs dropped e6de8153
 - root-design · human · D1-D11 and sections A-E approved via seePN0MKW (mwRZ1YxXs, myas79LQ8, mXmhe1P2d, mpqluOeQD)
