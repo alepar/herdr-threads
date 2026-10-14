@@ -2,6 +2,7 @@
 use crate::protocol::{
     commands::DeliveryMode, ids::SeatId, priority::DeliveryPriority, summary::UserIntent,
 };
+use crate::store::connection::DurableSync;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -511,7 +512,7 @@ pub(crate) fn retry<C: LocalClient + ?Sized, W: Write>(
         writer.write_all(&bytes)?;
         writer.flush()?;
         std::fs::remove_file(super::handoff::progress_path(journal, reference))?;
-        std::fs::File::open(journal.root())?.sync_all()?;
+        std::fs::File::open(journal.root())?.durable_sync()?;
         journal.complete(reference)?;
         Ok(())
     })();

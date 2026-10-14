@@ -236,7 +236,7 @@ fn a_long_chunked_body_is_produced_once_its_first_8_kib_are_assembled() {
 
 #[test]
 fn truncation_cuts_at_8_kib_on_a_char_boundary_and_records_the_hint() {
-    let dir = std::env::temp_dir().join(format!(
+    let dir = crate::test_support::scratch::temp_path(format!(
         "htd-trunc-{:08x}",
         uuid::Uuid::new_v4().as_fields().0
     ));

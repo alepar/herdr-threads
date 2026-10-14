@@ -523,6 +523,17 @@ pub struct AdmissionRequest {
     pub installed: InstallObservation,
     pub input: Option<HookInput>,
     pub runtime_candidate: Option<RuntimeIdentity>,
+    /// The admitting caller's clock reading (a hook passes its injected clock's), against
+    /// which an adapter measures a callback window the input carries. `None`: the caller
+    /// has no run clock, and the adapter reads the host's.
+    pub admitted_at: Option<AdmissionInstant>,
+}
+/// One reading of the admitting caller's clock, both domains at the same present: an
+/// adapter validates a callback window in UTC and anchors what remains of it on `instant`.
+#[derive(Clone, Copy, Debug)]
+pub struct AdmissionInstant {
+    pub utc: crate::protocol::time::UtcMillis,
+    pub instant: std::time::Instant,
 }
 pub enum AdmissionDecision<A> {
     ContractDeclared {
@@ -633,7 +644,9 @@ pub enum EnrollmentWitness {
 pub struct EventMetadata {
     pub enrollment_witness: Option<EnrollmentWitness>,
     pub skill_pointer: bool,
-    /// An adapter callback can shorten the core end-to-end limit.
+    /// An adapter callback can shorten the core end-to-end limit: the native callback's
+    /// deadline on the admitting clock's monotonic domain, anchored at admission, so a later
+    /// wall-clock step never grows it.
     pub callback_deadline: Option<std::time::Instant>,
     pub context_source: String,
     pub capability: super::Capability,
@@ -1451,6 +1464,7 @@ pub fn observe_daemon_default<A: HarnessAdapter + ?Sized>(
                 installed,
                 input: None,
                 runtime_candidate: None,
+                admitted_at: None,
             },
             budget,
         ) {
@@ -1542,7 +1556,10 @@ mod tests {
         };
         let registry = super::super::registry::builtins();
         let registration = registry.by_id(registry.agent("claude").unwrap()).unwrap();
-        let root = std::env::temp_dir().join(format!("local-status-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_support::scratch::temp_path(format!(
+            "local-status-{}",
+            uuid::Uuid::new_v4()
+        ));
         let mut environment = SetupEnvironment {
             executable: root.join("plugin"),
             state_dir: Some(root.join("state")),
@@ -1792,6 +1809,7 @@ mod tests {
                 },
                 input: None,
                 runtime_candidate: None,
+                admitted_at: None,
             };
             assert!(registration.admit(&request, &budget).is_err());
             let status = registration.status(

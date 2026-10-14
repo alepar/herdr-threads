@@ -2,7 +2,6 @@
 //! only declared post-refit argv is malformed for corruption controls.
 use super::{RunError, normalize_read_continuation_budget, output::ReadModes, run_wire_result};
 use crate::{
-    app::SystemClock,
     ports::{LocalClient, ReadContext, StorePort},
     protocol::{
         capabilities::MESSAGE_DELIVERY_MODES,
@@ -185,7 +184,12 @@ impl Fixture {
     }
     fn with_long_body(long: bool) -> Self {
         let iso = TestIsolation::new("q5-normalizer-real-results");
-        let context = StoreContext::new(iso.path("db"), Arc::new(SystemClock::new()));
+        // The calibration's subject is byte budgets, not search's 100 ms
+        // wall budget (store::queries search_clipped_budget_* covers it).
+        let context = StoreContext::new(
+            iso.path("db"),
+            Arc::new(crate::test_support::slow_clock::SlowMonotonicClock::new()),
+        );
         let db = context.open_writer().unwrap();
         db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES('i',0,'host',1,10000);
             INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s','i','resolved','native','pane-s',1,1,0);

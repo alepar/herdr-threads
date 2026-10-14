@@ -1469,7 +1469,10 @@ mod operator_tests {
     };
     #[test]
     fn mismatched_kernel_peer_is_rejected_before_target_preparation() {
-        let path = std::env::temp_dir().join(format!("operator-peer-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "operator-peer-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let store = Arc::new(
             SqliteStore::new(
@@ -1510,7 +1513,10 @@ mod operator_tests {
             ids::{ExecutionId, LeaseToken, NativeSessionId, SeatId, SummaryJobId, ThreadId},
             summary::{SummaryJobRequest, SummaryOutcome, SummaryRequest, SummarySubmitRequest},
         };
-        let path = std::env::temp_dir().join(format!("summary-route-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "summary-route-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let store = Arc::new(
             SqliteStore::new(
@@ -1656,7 +1662,10 @@ mod topology_contract_dispatch_tests {
     use super::*;
     #[test]
     fn topology_contract_new_commands_are_inert() {
-        let root = std::env::temp_dir().join(format!("topology-dispatch-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_support::scratch::temp_path(format!(
+            "topology-dispatch-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("store.db");
         let clock: Arc<dyn Clock> = Arc::new(crate::app::SystemClock::new());

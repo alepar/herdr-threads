@@ -46,7 +46,9 @@ use std::{
 };
 
 /// The wake lane's safety tick (the deadline lane's is `TICK_MILLIS`).
-const WAKE_SAFETY_TICK_MILLIS: u64 = 5_000;
+pub const WAKE_SAFETY_TICK_MILLIS: u64 = 5_000;
+/// The observation lane's capture cadence while healthy.
+pub const OBSERVATION_CADENCE: Duration = Duration::from_millis(5_000);
 /// The wake lane's wait when a seat's retry time has already passed.
 const WAKE_MIN_WAIT_MILLIS: u64 = 100;
 
@@ -960,6 +962,26 @@ pub fn start_deadline_worker(
     cancellation: Cancellation,
     status: Arc<WorkerStatus>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
+    start_deadline_worker_ticking(
+        store,
+        writer,
+        pacer,
+        cancellation,
+        status,
+        Duration::from_millis(TICK_MILLIS),
+    )
+}
+
+/// [`start_deadline_worker`] on safety tick `tick` (production: `TICK_MILLIS`;
+/// see `ServiceConfig::lane_tick`), which is also the driver's tick gate.
+pub fn start_deadline_worker_ticking(
+    store: Arc<dyn StorePort>,
+    writer: Arc<FairWriter>,
+    pacer: Arc<Pacer>,
+    cancellation: Cancellation,
+    status: Arc<WorkerStatus>,
+    tick: Duration,
+) -> std::io::Result<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("herdr-deadlines".into())
         .spawn(move || {
@@ -967,8 +989,8 @@ pub fn start_deadline_worker(
             status.attach_pacer(Arc::clone(&pacer));
             let _guard = status.lane_guard(&cancellation);
             let port = ScheduledStore::new(store, writer);
-            let mut driver = DeadlineDriver::new(&port);
-            let tick = Duration::from_millis(TICK_MILLIS);
+            let mut driver = DeadlineDriver::new(&port)
+                .with_tick_millis(u64::try_from(tick.as_millis()).unwrap_or(TICK_MILLIS));
             // The first pass runs at boot, before the first wait.
             let mut waited = false;
             while !cancellation.is_cancelled() {
@@ -1628,10 +1650,13 @@ pub fn start_wake_worker(
         mod_channels,
         hook_pull,
         None,
+        Duration::from_millis(WAKE_SAFETY_TICK_MILLIS),
     )
 }
 
-/// [`start_wake_worker`] with the liveness re-check that runs before each wake decision.
+/// [`start_wake_worker`] with the liveness re-check that runs before each wake decision, on
+/// safety tick `safety_tick` (production: `WAKE_SAFETY_TICK_MILLIS`; see
+/// `ServiceConfig::lane_tick`).
 // Allowed: worker start-up wiring: each argument is a distinct dependency.
 #[allow(clippy::too_many_arguments)]
 pub fn start_wake_worker_with_liveness(
@@ -1649,6 +1674,7 @@ pub fn start_wake_worker_with_liveness(
     mod_channels: Arc<dyn crate::ports::ModChannels>,
     hook_pull: Arc<dyn crate::ports::HookPullOutlook>,
     liveness: Option<Arc<crate::service::liveness::LivenessWorker>>,
+    safety_tick: Duration,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("herdr-wakes".into())
@@ -1664,7 +1690,6 @@ pub fn start_wake_worker_with_liveness(
                 .with_poke_capabilities(poke_capabilities.as_ref())
                 .with_mod_channels(mod_channels.as_ref())
                 .with_hook_pull(hook_pull.as_ref());
-            let safety_tick = Duration::from_millis(WAKE_SAFETY_TICK_MILLIS);
             // The first pass runs at boot, before the first wait.
             let mut next_due_at: Option<crate::protocol::time::MonoInstant> = None;
             let mut waited = false;
@@ -1931,8 +1956,9 @@ pub fn start_observation_worker(
     host_evidence: Arc<crate::service::host_evidence::HostEvidenceStatus>,
     pacer: Arc<Pacer>,
     reachability: Arc<HostReachability>,
+    cadence: Duration,
 ) -> std::io::Result<thread::JoinHandle<()>> {
-    spawn_observation_loop(
+    spawn_observation_loop_every(
         identity,
         ScheduledStore::new(store, writer),
         cancellation,
@@ -1940,6 +1966,7 @@ pub fn start_observation_worker(
         host_evidence,
         pacer,
         reachability,
+        cadence,
     )
 }
 
@@ -1949,6 +1976,7 @@ pub fn start_observation_worker(
 /// The lane blocks in its Pacer: the 5 s cadence while healthy, the capped
 /// backoff after a failed capture, and no wait while a reconciliation
 /// continuation page is pending (pacer spec D4).
+#[cfg(test)]
 fn spawn_observation_loop<S>(
     identity: Arc<crate::identity::repair::OrdinaryIdentity>,
     port: S,
@@ -1957,6 +1985,35 @@ fn spawn_observation_loop<S>(
     host_evidence: Arc<crate::service::host_evidence::HostEvidenceStatus>,
     pacer: Arc<Pacer>,
     reachability: Arc<HostReachability>,
+) -> std::io::Result<thread::JoinHandle<()>>
+where
+    S: crate::identity::reconcile::observation_store::ObservationStore + 'static,
+{
+    spawn_observation_loop_every(
+        identity,
+        port,
+        cancellation,
+        status,
+        host_evidence,
+        pacer,
+        reachability,
+        OBSERVATION_CADENCE,
+    )
+}
+
+/// [`spawn_observation_loop`] on capture cadence `cadence` (production:
+/// [`OBSERVATION_CADENCE`]; see `ServiceConfig::lane_tick`).
+// Allowed: worker start-up wiring: each argument is a distinct dependency.
+#[allow(clippy::too_many_arguments)]
+fn spawn_observation_loop_every<S>(
+    identity: Arc<crate::identity::repair::OrdinaryIdentity>,
+    port: S,
+    cancellation: Cancellation,
+    status: Arc<WorkerStatus>,
+    host_evidence: Arc<crate::service::host_evidence::HostEvidenceStatus>,
+    pacer: Arc<Pacer>,
+    reachability: Arc<HostReachability>,
+    cadence: Duration,
 ) -> std::io::Result<thread::JoinHandle<()>>
 where
     S: crate::identity::reconcile::observation_store::ObservationStore + 'static,
@@ -2080,7 +2137,7 @@ where
                 // Re-run immediately while a continuation page is pending;
                 // otherwise block in the Pacer (cadence, backoff, cancel).
                 if continuation.is_none()
-                    && pacer.wait_blocking(Duration::from_millis(5_000)) == Wake::Cancelled
+                    && pacer.wait_blocking(cadence) == Wake::Cancelled
                 {
                     break;
                 }

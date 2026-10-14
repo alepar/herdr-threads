@@ -810,8 +810,10 @@ fn real_store_reconfirms_host_invalidated_seat_from_production_shaped_publicatio
         stage.id
     }
     for binding_incarnation in ["inc-a", "inc-old"] {
-        let path =
-            std::env::temp_dir().join(format!("herdr-reconcile-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "herdr-reconcile-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
         let mut conn = context.open_writer().unwrap();
         let budget = CallBudget {
@@ -1131,8 +1133,10 @@ fn real_store_reconfirms_never_registered_seat_from_its_structural_proof() {
         stage.id
     }
     for proof_incarnation in ["inc-a", "inc-old"] {
-        let path =
-            std::env::temp_dir().join(format!("herdr-reconcile-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "herdr-reconcile-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
         let mut conn = context.open_writer().unwrap();
         let budget = CallBudget {
@@ -1259,8 +1263,10 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
         }
     }
 
-    let path =
-        std::env::temp_dir().join(format!("herdr-ordinary-shell-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-ordinary-shell-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
     let mut conn = context.open_writer().unwrap();
     conn.execute(
@@ -1565,8 +1571,10 @@ fn real_store_registered_seat_follows_observed_move_with_unsupported_execution()
         seats::publish_snapshot_stage(context, conn, &stage.id, budget).unwrap()
     }
     for bound_terminal in ["terminal-b", "terminal-other"] {
-        let path =
-            std::env::temp_dir().join(format!("herdr-reconcile-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "herdr-reconcile-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
         let mut conn = context.open_writer().unwrap();
         let budget = CallBudget {
@@ -3044,7 +3052,10 @@ mod carry_forward {
     /// way `mark_seat_unresolved` leaves a seat: generation bumped, binding
     /// ended.
     fn fixture(provenance: &str, unresolved: bool) -> Fixture {
-        let path = std::env::temp_dir().join(format!("herdr-carry-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "herdr-carry-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
         let conn = context.open_writer().unwrap();
         let budget = CallBudget {

@@ -142,7 +142,7 @@ mod tests {
         pub struct Dir(PathBuf);
         impl Dir {
             pub fn new(contents: Option<&str>) -> Self {
-                let path = std::env::temp_dir().join(format!(
+                let path = crate::test_support::scratch::temp_path(format!(
                     "herdr-threads-settings-{}-{}",
                     std::process::id(),
                     uuid::Uuid::new_v4()

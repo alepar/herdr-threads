@@ -106,7 +106,10 @@ fn selected_wire_output_is_optional_bounded_and_never_an_authority_field() {
 
 #[test]
 fn private_instance_settings_load_overrides_and_reject_unsafe_files() {
-    let root = std::env::temp_dir().join(format!("herdr-settings-{}", Uuid::new_v4()));
+    let root = herdr_threads::test_support::scratch::temp_path(format!(
+        "herdr-settings-{}",
+        Uuid::new_v4()
+    ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let context =
         RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
@@ -176,7 +179,10 @@ fn private_instance_settings_load_overrides_and_reject_unsafe_files() {
 #[test]
 fn summary_settings_load_from_the_instance_settings_file() {
     use herdr_threads::protocol::summary::SummarySettings;
-    let root = std::env::temp_dir().join(format!("herdr-summary-settings-{}", Uuid::new_v4()));
+    let root = herdr_threads::test_support::scratch::temp_path(format!(
+        "herdr-summary-settings-{}",
+        Uuid::new_v4()
+    ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let context =
         RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
@@ -233,7 +239,10 @@ fn summary_settings_load_from_the_instance_settings_file() {
 
 #[test]
 fn daemon_rejects_invalid_instance_settings_before_endpoint_publication() {
-    let root = std::env::temp_dir().join(format!("herdr-config-child-{}", Uuid::new_v4()));
+    let root = herdr_threads::test_support::scratch::temp_path(format!(
+        "herdr-config-child-{}",
+        Uuid::new_v4()
+    ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let context =
         RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
@@ -292,7 +301,10 @@ fn daemon_rejects_invalid_instance_settings_before_endpoint_publication() {
 
 #[test]
 fn pending_ops_cli_keeps_explicit_context_in_its_local_journal_route() {
-    let root = std::env::temp_dir().join(format!("herdr-intents-{}", Uuid::new_v4()));
+    let root = herdr_threads::test_support::scratch::temp_path(format!(
+        "herdr-intents-{}",
+        Uuid::new_v4()
+    ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let mut rendered = Vec::new();
     herdr_threads::cli::run(
@@ -390,7 +402,10 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
             self.inner.handle_with_output(command, peer, budget, output)
         }
     }
-    let root = std::env::temp_dir().join(format!("herdr-cli-ipc-{}", Uuid::new_v4()));
+    let root = herdr_threads::test_support::scratch::temp_path(format!(
+        "herdr-cli-ipc-{}",
+        Uuid::new_v4()
+    ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let state = root.join("state");
     let host = root.join("host.sock");
@@ -865,7 +880,10 @@ fn elected_service_reports_actual_private_settings_over_ipc() {
 }
 
 fn elected_service_fixture(custom_settings: bool) {
-    let root = std::env::temp_dir().join(format!("herdr-service-{}", Uuid::new_v4()));
+    let root = herdr_threads::test_support::scratch::temp_path(format!(
+        "herdr-service-{}",
+        Uuid::new_v4()
+    ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let context =
         RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
@@ -1456,7 +1474,10 @@ fn elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined() {
         atomic::{AtomicBool, Ordering},
         mpsc,
     };
-    let root = std::env::temp_dir().join(format!("herdr-wake-service-{}", Uuid::new_v4()));
+    let root = herdr_threads::test_support::scratch::temp_path(format!(
+        "herdr-wake-service-{}",
+        Uuid::new_v4()
+    ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let context =
         RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
@@ -2510,7 +2531,10 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
     let _stdio_guard = super::IN_PROCESS_DAEMON
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    let root = std::env::temp_dir().join(format!("herdr-evidence-{}", Uuid::new_v4()));
+    let root = herdr_threads::test_support::scratch::temp_path(format!(
+        "herdr-evidence-{}",
+        Uuid::new_v4()
+    ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     struct Remove(std::path::PathBuf);
     impl Drop for Remove {

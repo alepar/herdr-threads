@@ -994,7 +994,7 @@ fn probe_service_send_v1() {
         },
         store::{SqliteStore, StoreSettings, connection::StoreContext},
     };
-    let dir = std::env::temp_dir().join(format!("htcap-send-{}", Uuid::new_v4()));
+    let dir = crate::test_support::scratch::temp_path(format!("htcap-send-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let context = StoreContext::new(dir.join("probe.db"), Arc::new(FixedClock));
     {

@@ -56,6 +56,10 @@ pub struct StoreContext {
     /// `relax_commit_durability`).
     #[cfg(any(test, feature = "test-support"))]
     relaxed_durability: AtomicBool,
+    /// Test hook: writers keep TEMP storage in memory (see
+    /// `use_memory_temp_store`).
+    #[cfg(any(test, feature = "test-support"))]
+    memory_temp_store: AtomicBool,
     #[cfg(test)]
     setup_busy_signal: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
     #[cfg(test)]
@@ -70,15 +74,69 @@ pub struct DecisionInstant {
     pub monotonic: MonoInstant,
 }
 
-/// Test-support builds only: a process started with this set to `1` (every
-/// child tagged by `test_support::spawn`, so test-spawned CLIs and daemons)
-/// commits with `synchronous=NORMAL`, as do the library's own unit tests
-/// (see `require_commit_durability`). Hundreds of test daemons each fsyncing
-/// every WAL commit made the suite disk-bound on a loaded machine; a test
-/// cannot observe the difference, which only matters on power loss.
+/// Test-support builds only: the `herdr-threads` executable started with this
+/// set to `1` (every child tagged by `test_support::spawn`, so test-spawned
+/// CLIs and daemons) takes the test-process fast paths ([`test_fast_paths`]).
 /// Production builds never compile it and always commit with `FULL`.
 #[cfg(any(test, feature = "test-support"))]
 pub const TEST_RELAXED_DURABILITY_ENV: &str = "HT_TEST_RELAXED_DURABILITY";
+
+/// Whether this process takes the test-process fast paths: stores commit
+/// with `synchronous=NORMAL` by default (see `require_commit_durability`),
+/// [`durable_sync`] skips its flush and a new store file is copied from a
+/// fresh-schema template (`fresh_schema_template`). Hundreds of test stores and daemons each
+/// fsyncing every commit made the suite disk-bound on a loaded machine; a
+/// test cannot observe the difference, which only matters on power loss.
+///
+/// On in a library linked into a test binary (unit or integration tests,
+/// in-process daemons included). The `herdr-threads` executable resets it
+/// first thing in `main` ([`fast_paths_from_env`]), so a test-support build
+/// of the shipped binary runs the production paths unless its environment
+/// sets [`TEST_RELAXED_DURABILITY_ENV`].
+#[cfg(any(test, feature = "test-support"))]
+static TEST_FAST_PATHS: AtomicBool = AtomicBool::new(true);
+
+/// The executable's entry: test fast paths only when the environment asks
+/// for them (see [`TEST_FAST_PATHS`]).
+#[cfg(any(test, feature = "test-support"))]
+pub fn fast_paths_from_env() {
+    let tagged = std::env::var_os(TEST_RELAXED_DURABILITY_ENV).is_some_and(|v| v == "1");
+    TEST_FAST_PATHS.store(tagged, Ordering::SeqCst);
+}
+
+/// See [`TEST_FAST_PATHS`]; always false in ordinary builds.
+pub fn test_fast_paths() -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        TEST_FAST_PATHS.load(Ordering::SeqCst)
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        false
+    }
+}
+
+/// `File::sync_all` for the crash-safe file writes outside the store, skipped
+/// in a test process ([`test_fast_paths`]): every CLI write synced files and
+/// directories several times (`F_FULLFSYNC` on macOS), which queued on the
+/// disk under a loaded suite. Ordinary builds always sync.
+pub fn durable_sync(file: &std::fs::File) -> std::io::Result<()> {
+    if test_fast_paths() {
+        return Ok(());
+    }
+    file.sync_all()
+}
+
+/// [`durable_sync`] as a method, the drop-in for `File::sync_all`.
+pub trait DurableSync {
+    fn durable_sync(&self) -> std::io::Result<()>;
+}
+
+impl DurableSync for std::fs::File {
+    fn durable_sync(&self) -> std::io::Result<()> {
+        durable_sync(self)
+    }
+}
 
 /// Process-local evidence that a hidden snapshot stage repeats its captured
 /// active publication so far: `matched` leading staged targets each equal the
@@ -151,10 +209,9 @@ impl StoreContext {
             #[cfg(any(test, feature = "test-support"))]
             lane_fault: std::sync::Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
-            relaxed_durability: AtomicBool::new(
-                cfg!(test)
-                    || std::env::var_os(TEST_RELAXED_DURABILITY_ENV).is_some_and(|v| v == "1"),
-            ),
+            relaxed_durability: AtomicBool::new(test_fast_paths()),
+            #[cfg(any(test, feature = "test-support"))]
+            memory_temp_store: AtomicBool::new(false),
             #[cfg(test)]
             setup_busy_signal: std::sync::Mutex::new(None),
             #[cfg(test)]
@@ -177,11 +234,21 @@ impl StoreContext {
         self.relaxed_durability.store(true, Ordering::SeqCst);
     }
 
-    /// Unit-test builds relax every store by default (each in-process store
-    /// test's fsyncs made the library suite disk-bound under load); a test
-    /// that asserts the production `FULL` setting opts back in here.
-    #[cfg(test)]
-    pub(crate) fn require_commit_durability(&self) {
+    /// Test hook for setup-only writers: writers opened afterwards keep TEMP
+    /// storage (statement journals) in memory, so a large setup transaction
+    /// does not spill to temporary files. Applied as the connection opens,
+    /// before any TEMP object exists: changing `temp_store` later drops every
+    /// TEMP object, including the binding-evidence guards installed below.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn use_memory_temp_store(&self) {
+        self.memory_temp_store.store(true, Ordering::SeqCst);
+    }
+
+    /// Test processes relax every store by default ([`test_fast_paths`]); a
+    /// test that asserts the production `FULL` setting, or a budget that
+    /// must include the production fsyncs, opts back in here.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn require_commit_durability(&self) {
         self.relaxed_durability.store(false, Ordering::SeqCst);
     }
 
@@ -232,9 +299,16 @@ impl StoreContext {
     }
 
     pub fn open_writer(&self) -> Result<Connection, ApiError> {
-        #[cfg(test)]
-        fresh_schema_template::seed(&self.path);
+        #[cfg(any(test, feature = "test-support"))]
+        if test_fast_paths() {
+            fresh_schema_template::seed(&self.path);
+        }
         let conn = Connection::open(&self.path).map_err(store_error)?;
+        #[cfg(any(test, feature = "test-support"))]
+        if self.memory_temp_store.load(Ordering::SeqCst) {
+            conn.pragma_update(None, "temp_store", "MEMORY")
+                .map_err(store_error)?;
+        }
         conn.busy_timeout(Duration::from_secs(2))
             .map_err(store_error)?;
         conn.pragma_update(None, "foreign_keys", "ON")
@@ -775,15 +849,18 @@ fn unclassified(error: &rusqlite::Error) -> ApiError {
 #[path = "../../tests/store/schema.rs"]
 pub(crate) mod tests;
 
-/// Unit tests run one process per test and open hundreds of fresh stores;
+/// Tests run one process per test and open hundreds of fresh stores;
 /// replaying every migration costs each ~60 ms of CPU (schema 27's table
-/// rebuilds alone ~17 ms). A writer whose store file does not exist yet is
-/// seeded with this test binary's fresh-schema template, built once by the
-/// production fresh-creation path; `schema::initialize` then verifies it as
-/// it verifies any existing store. Existing files, in-memory databases and
-/// direct `schema::initialize` calls are untouched, and any seeding failure
-/// falls back to ordinary creation.
-#[cfg(test)]
+/// rebuilds alone ~17 ms). In a test process ([`test_fast_paths`]: test
+/// binaries and the tagged `herdr-threads` children they spawn), a writer
+/// whose store file does not exist yet is seeded with this executable's
+/// fresh-schema template, built once by the production fresh-creation path;
+/// `schema::initialize` then verifies it as it verifies any existing store.
+/// Existing files, in-memory databases and direct `schema::initialize` calls
+/// are untouched, and any seeding failure falls back to ordinary creation.
+/// The shipped binary (and a test-support build of it without the test
+/// environment) always creates stores by replaying the migrations.
+#[cfg(any(test, feature = "test-support"))]
 mod fresh_schema_template {
     use super::schema;
     use crate::protocol::time::UtcMillis;
@@ -807,8 +884,9 @@ mod fresh_schema_template {
         let _ = std::fs::remove_file(&staging);
     }
 
-    /// Keyed by this binary's identity, so a rebuild never reuses a template
-    /// produced by different schema code.
+    /// Keyed by this executable's identity (name, size, modification time)
+    /// and the schema version, so a rebuild never reuses a template produced
+    /// by different schema code.
     fn template() -> Option<PathBuf> {
         let exe = std::env::current_exe().ok()?;
         let meta = std::fs::metadata(&exe).ok()?;

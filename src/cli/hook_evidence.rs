@@ -38,6 +38,7 @@
 //! Evidence is advisory data about the harness, never authority (see
 //! TRUST-POLICY.md): this module adds no caller attribution and no seat state.
 use super::hook::HookArgs;
+use crate::store::connection::DurableSync;
 use crate::{
     client::local::LocalSocketClient,
     daemon::{
@@ -413,7 +414,7 @@ fn write_gate(state_dir: &Path, path: &Path, state: &GateState) -> io::Result<()
         .create_new(true)
         .mode(0o600)
         .open(&temporary)
-        .and_then(|mut out| out.write_all(&bytes).and_then(|()| out.sync_all()))
+        .and_then(|mut out| out.write_all(&bytes).and_then(|()| out.durable_sync()))
         .and_then(|()| std::fs::rename(&temporary, path));
     if written.is_err() {
         let _ = std::fs::remove_file(&temporary);
@@ -760,7 +761,7 @@ impl V2GateState {
             .create_new(true)
             .mode(0o600)
             .open(&temporary)
-            .and_then(|mut out| out.write_all(&bytes).and_then(|()| out.sync_all()))
+            .and_then(|mut out| out.write_all(&bytes).and_then(|()| out.durable_sync()))
             .and_then(|()| std::fs::rename(&temporary, path));
         if written.is_err() {
             let _ = std::fs::remove_file(&temporary);
@@ -973,6 +974,7 @@ fn connect_running(
 /// remaining time (`deadline`), every error ignored. The in-pane hook calls it
 /// last, after the check-in (`hook::sequence`), so it never cuts the probe's
 /// or the check-in's budget.
+/// `deadline` is in `clock`'s domain (see `hook::budget`).
 pub fn report(
     args: &HookArgs,
     stdin: &[u8],
@@ -981,12 +983,12 @@ pub fn report(
     call_cap: Duration,
     clock: Arc<dyn Clock>,
 ) {
-    let remaining = deadline.saturating_duration_since(Instant::now());
+    let remaining = deadline.saturating_duration_since(clock.instant_now());
     let cap = remaining.min(call_cap);
     if cap.is_zero() {
         return;
     }
-    let budget = super::hook::budget(Instant::now() + cap, clock.as_ref());
+    let budget = super::hook::budget(clock.instant_now() + cap, clock.as_ref());
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let Some(registration) = registration_for(args.harness) else {
             return;

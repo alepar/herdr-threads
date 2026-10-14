@@ -58,7 +58,10 @@ fn fixture() -> (OwnedFixture<DomainService>, OwnedFixture<Connection>) {
 fn fixture_with_clock(
     clock: Arc<dyn Clock>,
 ) -> (OwnedFixture<DomainService>, OwnedFixture<Connection>) {
-    let path = std::env::temp_dir().join(format!("service-cooperative-{}", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "service-cooperative-{}",
+        uuid::Uuid::new_v4()
+    ));
     eprintln!("OWNED_COOPERATIVE_DIRECTORY {}", path.display());
     std::fs::DirBuilder::new()
         .mode(0o700)

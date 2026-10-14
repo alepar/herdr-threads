@@ -861,6 +861,7 @@ fn execute_guarded_inner(
                     installed,
                     input: None,
                     runtime_candidate: None,
+                    admitted_at: None,
                 },
                 &local_budget,
             )
@@ -1425,7 +1426,7 @@ mod task23_tests {
     }
     impl Scratch {
         fn new() -> Self {
-            let root = std::env::temp_dir().join(format!(
+            let root = crate::test_support::scratch::temp_path(format!(
                 "ht-launch-{}",
                 &uuid::Uuid::new_v4().simple().to_string()[..10]
             ));

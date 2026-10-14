@@ -10,7 +10,7 @@ use super::{
     delivery,
     paths::{self, AgyRoots},
     setup::{self, AllowEntryState},
-    witness::{self, BRAIN_ENTRY_CAP},
+    witness::{self, brain_entry_cap},
 };
 use crate::{
     cli::doctor::scalar,
@@ -36,7 +36,7 @@ pub const SANDBOX_NOTE: &str = "agy --sandbox sessions may not reach the herdr-t
 pub struct WitnessHealth {
     pub presence_dir: bool,
     pub brain_entries: usize,
-    /// False when `brain/` has more than [`BRAIN_ENTRY_CAP`] entries or the deadline ended the scan.
+    /// False when `brain/` has more than [`witness::BRAIN_ENTRY_CAP`] entries or the deadline ended the scan.
     pub bounded: bool,
     pub recent_top_level_without_lock: usize,
     /// Why `brain/` could not be listed, when it could not.
@@ -61,7 +61,7 @@ fn is_dir(path: &std::path::Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_dir())
 }
 
-/// Bounded, read-only scan: streams `data/brain` (at most [`BRAIN_ENTRY_CAP`] + 1 entries),
+/// Bounded, read-only scan: streams `data/brain` (at most [`witness::BRAIN_ENTRY_CAP`] + 1 entries),
 /// takes up to [`SCAN_DIRS`] conversation directories modified in the last 24 h, and counts those
 /// that have no presence lock and are not listed under another scanned conversation. It uses
 /// directory listings and `symlink_metadata` only: no file is ever opened.
@@ -91,12 +91,13 @@ pub fn witness_health(
         }
     };
     let mut recent: Vec<String> = Vec::new();
+    let cap = brain_entry_cap();
     for entry in entries {
-        if health.brain_entries >= BRAIN_ENTRY_CAP
+        if health.brain_entries >= cap
             || (health.brain_entries.is_multiple_of(DEADLINE_STRIDE) && expired())
         {
             health.bounded = false;
-            if health.brain_entries >= BRAIN_ENTRY_CAP {
+            if health.brain_entries >= cap {
                 health.brain_entries += 1;
             }
             break;

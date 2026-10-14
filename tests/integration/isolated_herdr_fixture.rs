@@ -267,7 +267,7 @@ fn availability_policy() {
 }
 
 fn tempdir(prefix: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
+    let dir = herdr_threads::test_support::scratch::temp_path(format!(
         "{prefix}-{}-{:?}",
         std::process::id(),
         std::thread::current().id()

@@ -36,7 +36,10 @@ fn budget(ms: u64) -> CallBudget {
     }
 }
 fn socket_path() -> PathBuf {
-    std::env::temp_dir().join(format!("ht-host-socket-{}", uuid::Uuid::new_v4()))
+    herdr_threads::test_support::scratch::temp_path(format!(
+        "ht-host-socket-{}",
+        uuid::Uuid::new_v4()
+    ))
 }
 fn read_request(stream: &mut UnixStream) -> Value {
     let mut line = String::new();
@@ -143,6 +146,9 @@ fn releases_from_the_floor_allow_transport_and_snapshot_without_claiming_capabil
                     Err(error) => panic!("operation accept: {error}"),
                 }
             };
+            // macOS accept inherits the listener's O_NONBLOCK flag; the read
+            // must block (bounded by the timeout) until the client writes.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();

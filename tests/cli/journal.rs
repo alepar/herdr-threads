@@ -16,7 +16,7 @@ use std::{
 };
 
 fn temp() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("herdr-intent-test-{}", uuid::Uuid::new_v4()))
+    crate::test_support::scratch::temp_path(format!("herdr-intent-test-{}", uuid::Uuid::new_v4()))
 }
 fn claim() -> CallerClaim {
     CallerClaim {
@@ -1912,7 +1912,10 @@ fn retry_preflight_read_only_absent_journal() {
 
 #[test]
 fn retry_preflight_retained_human_root_refuses_before_connect() {
-    let dir = std::env::temp_dir().join(format!("ht-retry-' space-{}", uuid::Uuid::new_v4()));
+    let dir = crate::test_support::scratch::temp_path(format!(
+        "ht-retry-' space-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let state = dir.join("state");
     let host = dir.join("host.sock");

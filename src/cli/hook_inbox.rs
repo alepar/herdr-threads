@@ -323,7 +323,9 @@ impl LazyCommit {
 
     pub fn submit<C: LocalClient + ?Sized>(self, client: &C) -> Result<(), ApiError> {
         // Its own small cap: the hook (and a PreToolUse's tool) waits on it.
-        let deadline = self.deadline.min(Instant::now() + COMMIT_BUDGET);
+        let deadline = self
+            .deadline
+            .min(self.link.clock.instant_now() + COMMIT_BUDGET);
         let budget = super::hook::budget(deadline, self.link.clock.as_ref());
         // The binding's own read position first; a failure only means the messages are offered
         // again (at least once), so it never blocks the lazy completion.

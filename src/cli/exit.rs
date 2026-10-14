@@ -111,7 +111,7 @@ mod tests {
     /// `io_exit_code` (PermissionDenied would then fall through to status 1).
     #[test]
     fn unsafe_local_state_io_error_exits_with_usage_status() {
-        let root = std::env::temp_dir().join(format!(
+        let root = crate::test_support::scratch::temp_path(format!(
             "htux-exit-{}",
             &uuid::Uuid::new_v4().simple().to_string()[..10]
         ));

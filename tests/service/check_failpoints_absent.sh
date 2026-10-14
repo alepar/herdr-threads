@@ -17,15 +17,52 @@ printf '  %s\n' $names
 
 # Reuse one Cargo cache for the two feature configurations. CI already
 # builds both releases before the suite; separate cold trees rebuilt
-# all dependencies twice and starved timing-sensitive tests. Preserve each
-# binary before the next build overwrites Cargo's shared output path.
+# all dependencies twice and starved timing-sensitive tests.
+#
+# The two configurations build concurrently: each is mostly one crate's
+# serial frontend and its binary, so one after the other they left the
+# proof the suite's last test. Cargo locks a whole target directory, so the
+# control builds in a copy of the shared release tree (clonefile on macOS,
+# else a reflink or plain copy, modification times kept so Cargo's freshness
+# checks see the same tree): dependencies built in the shared tree, and a
+# control CI already built there, are reused. A cold tree builds its
+# dependencies in both directories.
 mkdir -p "$target"
+# A run killed past nextest's grace period leaves its proof directory (and
+# its copy of the release tree). Prune only old ones: a proof running beside
+# this one (a focused run next to a full suite) keeps its copy.
+find "$target" -maxdepth 1 -name 'failpoints-proof.*' -mmin +30 -exec rm -rf {} + 2>/dev/null || true
 proof=$(mktemp -d "$target/failpoints-proof.XXXXXX")
-trap 'rm -rf "$proof"' EXIT HUP INT TERM
-CARGO_TARGET_DIR="$target" nice -n 19 cargo build --locked --release --quiet
+pids=
+# Cargo does not pass a TERM on to its rustc children: stop them first.
+cleanup() {
+  for pid in $pids; do
+    pkill -TERM -P "$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
+  done
+  rm -rf "$proof"
+}
+trap cleanup EXIT
+trap 'cleanup; exit 1' HUP INT TERM
+clone="$proof/control-target"
+mkdir -p "$clone"
+if [ -d "$target/release" ]; then
+  cp -c -R "$target/release" "$clone/release" 2>/dev/null \
+    || { rm -rf "$clone/release"; cp -pR --reflink=auto "$target/release" "$clone/release" 2>/dev/null; } \
+    || { rm -rf "$clone/release"; cp -pR "$target/release" "$clone/release"; }
+fi
+CARGO_TARGET_DIR="$target" nice -n 19 cargo build --locked --release --quiet &
+release_build=$!
+CARGO_TARGET_DIR="$clone" nice -n 19 cargo build --locked --release --features test-support --quiet &
+control_build=$!
+pids="$release_build $control_build"
+built=0
+wait "$release_build" || built=$?
+wait "$control_build" || built=$?
+pids=
+[ "$built" -eq 0 ] || { echo "FAIL: release proof build exited $built"; exit 1; }
 cp "$target/release/herdr-threads" "$proof/release"
-CARGO_TARGET_DIR="$target" nice -n 19 cargo build --locked --release --features test-support --quiet
-cp "$target/release/herdr-threads" "$proof/control"
+cp "$clone/release/herdr-threads" "$proof/control"
 release="$proof/release"
 control="$proof/control"
 

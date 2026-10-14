@@ -22,8 +22,16 @@ pub struct ServiceConfig {
     wake_batch_delay_ms: u64,
     archive_after_ms: u64,
     watch_connection_cap: usize,
+    /// `Some` only in test-support builds ([`Self::with_test_lane_tick`]).
+    test_lane_tick: Option<std::time::Duration>,
     summary: SummarySettings,
 }
+
+/// The test-support variable (milliseconds) that replaces the lanes' 5 s
+/// safety ticks and cadences in a daemon loaded by [`ServiceConfig::load`].
+/// Ordinary builds ignore it.
+#[cfg(feature = "test-support")]
+pub const TEST_LANE_TICK_ENV: &str = "HT_TEST_LANE_TICK_MS";
 
 impl Default for ServiceConfig {
     fn default() -> Self {
@@ -33,6 +41,7 @@ impl Default for ServiceConfig {
             wake_batch_delay_ms: crate::daemon::settings::DEFAULT_WAKE_BATCH_DELAY_MS,
             archive_after_ms: crate::store::archival::DEFAULT_AFTER_MS,
             watch_connection_cap: crate::protocol::watch::MAX_WATCH_CONNECTIONS,
+            test_lane_tick: None,
             summary: SummarySettings::default(),
         }
     }
@@ -57,6 +66,25 @@ impl ServiceConfig {
         self.watch_connection_cap = cap;
         Ok(self)
     }
+    /// The period a lane uses for its production 5 s safety tick or cadence
+    /// (`production`): the wake and deadline safety ticks, the observation
+    /// cadence and the liveness re-check. Production builds always return
+    /// `production`; only a test-support build can set the override.
+    pub fn lane_tick(&self, production: std::time::Duration) -> std::time::Duration {
+        self.test_lane_tick.unwrap_or(production)
+    }
+    /// Replace every lane's 5 s tick or cadence with `tick`, so a test whose
+    /// windows are multiples of the tick runs them scaled down; the property
+    /// each window proves is unchanged.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_test_lane_tick(mut self, tick: std::time::Duration) -> Result<Self, &'static str> {
+        if tick < std::time::Duration::from_millis(100) || tick > std::time::Duration::from_secs(5)
+        {
+            return Err("invalid test lane tick");
+        }
+        self.test_lane_tick = Some(tick);
+        Ok(self)
+    }
     pub fn with_archive_after(mut self, after_ms: u64) -> Result<Self, &'static str> {
         if after_ms > (i64::MAX - crate::store::archival::MAX_GAP_MS) as u64 {
             return Err("invalid archive grace");
@@ -67,7 +95,25 @@ impl ServiceConfig {
 
     /// Load optional, private settings for one resolved host instance. A restart
     /// applies edits; the running owner keeps its validated in-memory values.
+    /// A test-support build also honours [`TEST_LANE_TICK_ENV`].
     pub fn load(paths: &InstancePaths) -> io::Result<Self> {
+        let config = Self::load_file(paths)?;
+        #[cfg(feature = "test-support")]
+        if let Some(value) = std::env::var_os(TEST_LANE_TICK_ENV) {
+            let millis = value
+                .to_str()
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "invalid test lane tick")
+                })?;
+            return config
+                .with_test_lane_tick(std::time::Duration::from_millis(millis))
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error));
+        }
+        Ok(config)
+    }
+
+    fn load_file(paths: &InstancePaths) -> io::Result<Self> {
         let instance_dir = &paths.instance_dir;
         let instance = match fs::symlink_metadata(instance_dir) {
             Ok(metadata) => metadata,
@@ -209,6 +255,7 @@ impl ServiceConfig {
             wake_batch_delay_ms: crate::daemon::settings::DEFAULT_WAKE_BATCH_DELAY_MS,
             archive_after_ms: crate::store::archival::DEFAULT_AFTER_MS,
             watch_connection_cap: crate::protocol::watch::MAX_WATCH_CONNECTIONS,
+            test_lane_tick: None,
             summary: SummarySettings::default(),
         })
     }
@@ -261,6 +308,41 @@ impl ServiceConfig {
             minimum_wake_delay_ms: self.minimum_wake_delay_ms,
             wake_batch_delay_ms: self.wake_batch_delay_ms,
             summary: self.summary.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod lane_tick_tests {
+    use super::ServiceConfig;
+    use std::time::Duration;
+
+    // The production cadences the test-support lane tick replaces stay 5 s.
+    const _: () = assert!(crate::service::workers::WAKE_SAFETY_TICK_MILLIS == 5_000);
+    const _: () = assert!(crate::scheduler::deadlines::TICK_MILLIS == 5_000);
+    const _: () = assert!(crate::service::workers::OBSERVATION_CADENCE.as_millis() == 5_000);
+    const _: () = assert!(crate::scheduler::config::LIVENESS_RECHECK_INTERVAL.as_millis() == 5_000);
+
+    /// Kills: a production config (default, or loaded from any settings file) that runs a lane
+    /// on anything but its production cadence, and a test tick outside its bounds.
+    #[test]
+    fn production_configs_keep_every_lane_on_its_production_cadence() {
+        let production = Duration::from_secs(5);
+        let loaded =
+            ServiceConfig::from_settings(&crate::daemon::settings::parse(b"{}").unwrap()).unwrap();
+        for config in [ServiceConfig::default(), loaded] {
+            assert_eq!(config.lane_tick(production), production);
+            assert_eq!(
+                config.lane_tick(Duration::from_millis(1_234)),
+                Duration::from_millis(1_234)
+            );
+        }
+        let ticked = ServiceConfig::default()
+            .with_test_lane_tick(Duration::from_millis(500))
+            .unwrap();
+        assert_eq!(ticked.lane_tick(production), Duration::from_millis(500));
+        for bad in [Duration::from_millis(99), Duration::from_millis(5_001)] {
+            assert!(ServiceConfig::default().with_test_lane_tick(bad).is_err());
         }
     }
 }

@@ -1332,7 +1332,8 @@ mod tests {
     /// as identical.
     #[test]
     fn layer_observation_matches_the_escaped_owned_command() {
-        let dir = std::env::temp_dir().join(format!("ht-layer-{}", uuid::Uuid::new_v4()));
+        let dir =
+            crate::test_support::scratch::temp_path(format!("ht-layer-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&dir).unwrap();
         let command = r#"'/a"b\c/herdr-threads' '--state-dir' '/s' 'hook' 'codex'"#;
         let path = dir.join("config.toml");
@@ -1359,7 +1360,8 @@ mod tests {
     /// layers, or walking past the Git root.
     #[test]
     fn layer_paths_cover_codex_home_system_and_project_up_to_git_root() {
-        let dir = std::env::temp_dir().join(format!("ht-walk-{}", uuid::Uuid::new_v4()));
+        let dir =
+            crate::test_support::scratch::temp_path(format!("ht-walk-{}", uuid::Uuid::new_v4()));
         let sub = dir.join("repo").join("a");
         fs::create_dir_all(&sub).unwrap();
         fs::create_dir(dir.join("repo").join(".git")).unwrap();
@@ -1400,7 +1402,8 @@ mod tests {
     /// stops short of an existing Git root.
     #[test]
     fn codex_layer_paths_stop_at_cwd_without_a_git_root() {
-        let dir = std::env::temp_dir().join(format!("ht-walk-{}", uuid::Uuid::new_v4()));
+        let dir =
+            crate::test_support::scratch::temp_path(format!("ht-walk-{}", uuid::Uuid::new_v4()));
         let cwd = dir.join("x/a/b");
         fs::create_dir_all(&cwd).unwrap();
         let layers = |root: &Path| {
@@ -1436,7 +1439,10 @@ mod tests {
     /// An isolated state directory and Claude config dir, with `settings`
     /// as the user settings, and an `advised` install report for them.
     fn suggestion_fixture(settings: &[u8]) -> (PathBuf, SetupEnv, Value) {
-        let root = std::env::temp_dir().join(format!("setup-suggestions-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_support::scratch::temp_path(format!(
+            "setup-suggestions-{}",
+            uuid::Uuid::new_v4()
+        ));
         fs::create_dir_all(root.join("state/setup")).unwrap();
         fs::create_dir_all(root.join("claude")).unwrap();
         fs::write(root.join("claude/settings.json"), settings).unwrap();
@@ -1546,7 +1552,8 @@ mod detect_tests {
     }
 
     fn scratch() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ht-detect-{}", uuid::Uuid::new_v4()));
+        let dir =
+            crate::test_support::scratch::temp_path(format!("ht-detect-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&dir).unwrap();
         dir
     }

@@ -2437,7 +2437,9 @@ fn send_stays_under_100ms_with_and_after_settled_history() {
 /// admission-observer commit; the wake lane makes at most one pass per 5 s
 /// window; retention drains the backlog; and its prune commits kick no lane.
 /// The short window's pass bound only catches a wake lane woken more often
-/// than every ~2.7 s (see `lane_wiring::idle_five_lanes_30s`).
+/// than every ~2.7 s (see
+/// `lanes_latency::idle_daemon_commits_nothing_from_deadline_wake_request_for_30s`).
+/// It runs on the production 5 s cadence, end to end.
 /// Kills: a retention prune whose kick wakes the wake or deadline lane (the
 /// wake lane would pass more than once per window and commit), and a backlog
 /// that makes retention hold the writer past the idle bound instead of
@@ -2462,6 +2464,7 @@ fn retention_runs_alongside_the_wake_idle_bound() {
     let counts = s.probe.commit_counts();
     let kicks_from = s.probe.kick_log().len();
     let wake_from = s.probe.registered_idle_events(Lane::Wakes);
+    let deadline_from = s.probe.registered_idle_events(Lane::Deadlines);
     let observation_from = counts.get("observation").copied().unwrap_or(0);
     let elapsed = run_idle_window(&s, wake_from, observation_from);
     let after = s.probe.commit_counts();
@@ -2495,6 +2498,13 @@ fn retention_runs_alongside_the_wake_idle_bound() {
     assert!(
         (1..=ticks).contains(&wake_passes),
         "the wake lane made {wake_passes} passes in {elapsed:?} (at most {ticks})"
+    );
+    // The deadline lane's idle wait at the production cadence: the ticked
+    // idle test (lanes_latency) bounds it only relative to its test tick.
+    let deadline_passes = s.probe.registered_idle_events(Lane::Deadlines) - deadline_from;
+    assert!(
+        (1..=ticks).contains(&deadline_passes),
+        "the deadline lane made {deadline_passes} passes in {elapsed:?} (at most {ticks})"
     );
 }
 

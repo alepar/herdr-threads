@@ -464,7 +464,10 @@ struct PathCase {
 
 impl PathCase {
     fn new(tag: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("ht-doctor-{}-{tag}", std::process::id()));
+        let dir = crate::test_support::scratch::temp_path(format!(
+            "ht-doctor-{}-{tag}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Self { dir }

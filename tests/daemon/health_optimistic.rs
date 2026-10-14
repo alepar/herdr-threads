@@ -41,8 +41,10 @@ fn override_table(
     tag: &str,
     broken: Option<(&str, &str)>,
 ) -> &'static [crate::harness::claude::ClaudeRecipe] {
-    let dir =
-        std::env::temp_dir().join(format!("ht-health-optimistic-{}-{tag}", std::process::id()));
+    let dir = crate::test_support::scratch::temp_path(format!(
+        "ht-health-optimistic-{}-{tag}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let document = dir.join("versions.json");
     let known_broken = broken
@@ -154,7 +156,8 @@ fn supported_requires_native_receipt_and_listed() {
 
     // Codex: an optimistic version (a stub no recipe lists, carrying no
     // schemas) is not supported even when the receipt capability is.
-    let dir = std::env::temp_dir().join(format!("ht-health-codex-{}", std::process::id()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("ht-health-codex-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     write_stub_harness(&dir, "codex", "0.199.0");
     let admission = InstalledAdmission::observe_on_path(Some(dir.as_os_str()), VERSION_TIMEOUT);

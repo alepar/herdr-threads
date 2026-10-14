@@ -532,7 +532,7 @@ fn schema_match_is_evaluated_only_for_row_four_candidates() {
 // -- the test-only override -----------------------------------------------
 
 fn write_document(name: &str, document: serde_json::Value) -> std::ffi::OsString {
-    let path = std::env::temp_dir().join(format!(
+    let path = crate::test_support::scratch::temp_path(format!(
         "herdr-threads-admission-{}-{name}.json",
         std::process::id()
     ));
@@ -639,6 +639,7 @@ fn registry_admission_refuses_mismatched_runtime_identity_before_adapter() {
         },
         input: None,
         runtime_candidate: None,
+        admitted_at: None,
     };
     let budget = crate::protocol::time::CallBudget {
         deadline: crate::protocol::time::MonoInstant(100),

@@ -256,7 +256,7 @@ impl World {
         panes: Vec<Value>,
         wake_batch_delay_ms: Option<u64>,
     ) -> Self {
-        let root = std::env::temp_dir().join(format!(
+        let root = herdr_threads::test_support::scratch::temp_path(format!(
             "{prefix}-{}",
             &uuid::Uuid::new_v4().simple().to_string()[..8]
         ));

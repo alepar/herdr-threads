@@ -11,6 +11,7 @@ anything in --exclude never match):
   artifact    argv[0] or cwd is under <root>/target/  (root: --root, else git toplevel)
   orphan-temp PPID 1, a `herdr server` or `daemon run`, HOME or --state-dir under a
               test temp prefix, and no live owner tag
+With --run-id it also runs scripts/check-no-leaked-temp-files for the same run.
 Exit 0 clean, 1 leaks (one `LEAK rule=... pid=... ppid=... cmd=...` line each), 2 usage.
 Never kills unless --kill is passed; never matches the real ~/.config/herdr server or
 the user's real daemon (no test tag, HOME and state dir outside the temp prefixes)."""
@@ -189,6 +190,28 @@ def scan(root, run_id, extra_exclude):
 
 
 def main(argv=None) -> int:
+    rc = process_main(argv)
+    run_id = _run_id_arg(argv)
+    if run_id:
+        # Sibling check: temp files this run's tests left behind (same run scope).
+        sibling = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check-no-leaked-temp-files")
+        extra = ["--remove"] if "--kill" in (argv if argv is not None else sys.argv[1:]) else []
+        temp_rc = subprocess.run([sys.executable, sibling, "--run-id", run_id] + extra, check=False).returncode
+        rc = rc or temp_rc
+    return rc
+
+
+def _run_id_arg(argv):
+    args = list(argv if argv is not None else sys.argv[1:])
+    for i, arg in enumerate(args):
+        if arg == "--run-id" and i + 1 < len(args):
+            return args[i + 1]
+        if arg.startswith("--run-id="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def process_main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="check-no-leaked-processes")
     parser.add_argument("--run-id")
     parser.add_argument("--root")

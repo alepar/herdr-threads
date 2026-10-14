@@ -4,7 +4,10 @@ use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, process::Output};
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("ht-installer-{}", uuid::Uuid::new_v4()));
+        let root = herdr_threads::test_support::scratch::temp_path(format!(
+            "ht-installer-{}",
+            uuid::Uuid::new_v4()
+        ));
         fs::create_dir_all(root.join("bin")).unwrap();
         for (name, version) in [
             ("claude", "2.1.284 (Claude Code)"),

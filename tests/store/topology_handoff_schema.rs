@@ -633,7 +633,7 @@ fn handoff_bounds_upgrade_preserves_populated_completed_and_recovery_history() {
                 let _ = std::fs::remove_file(&self.0);
             }
         }
-        let private = PrivateDb(std::env::temp_dir().join(format!(
+        let private = PrivateDb(herdr_threads::test_support::scratch::temp_path(format!(
             "ht-handoff-bounds-upgrade-{}.db",
             uuid::Uuid::new_v4()
         )));

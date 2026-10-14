@@ -724,7 +724,10 @@ mod tests {
     use super::*;
 
     fn tmp() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("ht-codex-config-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_support::scratch::temp_path(format!(
+            "ht-codex-config-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir(&dir).unwrap();
         dir
     }

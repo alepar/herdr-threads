@@ -659,8 +659,10 @@ fn production_history(
     Connection,
     RemoveOnDrop,
 ) {
-    let path =
-        std::env::temp_dir().join(format!("ht-digestfix3-history-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "ht-digestfix3-history-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context = crate::store::connection::StoreContext::new(
         path.clone(),
         std::sync::Arc::new(crate::app::SystemClock::new()),
@@ -906,7 +908,7 @@ fn production_warning_history(
     Connection,
     RemoveOnDrop,
 ) {
-    let path = std::env::temp_dir().join(format!(
+    let path = crate::test_support::scratch::temp_path(format!(
         "ht-digestfix4-warnings-{}.db",
         uuid::Uuid::new_v4()
     ));

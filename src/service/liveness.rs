@@ -21,7 +21,6 @@ use crate::{
         results::ApiError,
         time::{CallBudget, Cancellation, MonoInstant},
     },
-    scheduler::config::LIVENESS_RECHECK_INTERVAL,
     service::{
         fair_writer::FairWriter,
         pacer::{Pacer, Wake},
@@ -157,7 +156,8 @@ impl LivenessWorker {
     }
 }
 
-/// The liveness thread: one pass per [`LIVENESS_RECHECK_INTERVAL`] on its own `Pacer`. It is not
+/// The liveness thread: one pass per `interval` ([`crate::scheduler::config::LIVENESS_RECHECK_INTERVAL`] in production; see
+/// `ServiceConfig::lane_tick`) on its own `Pacer`. It is not
 /// a store lane (no kick set, no Health entry); a failed pass backs off on the Pacer and is
 /// logged (first failure, then every 60th). Its commits carry no lane origin, so a disconnect
 /// kicks the lanes that read presence (wakes, deadlines).
@@ -166,6 +166,7 @@ pub fn start_liveness_worker(
     pacer: Arc<Pacer>,
     cancellation: Cancellation,
     log: Arc<dyn Fn(&str) + Send + Sync>,
+    interval: std::time::Duration,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
         .name("herdr-liveness".into())
@@ -195,7 +196,7 @@ pub fn start_liveness_worker(
                         failures += 1;
                     }
                 }
-                if pacer.wait_blocking(LIVENESS_RECHECK_INTERVAL) == Wake::Cancelled {
+                if pacer.wait_blocking(interval) == Wake::Cancelled {
                     break;
                 }
             }

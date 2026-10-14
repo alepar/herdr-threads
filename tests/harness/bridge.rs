@@ -21,10 +21,10 @@ fn fixture() -> (
     OccupantContext,
     LifecycleEvent,
 ) {
-    let root = std::env::temp_dir()
-        .canonicalize()
-        .unwrap()
-        .join(format!("bridge-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_support::scratch::temp_path_canonical(format!(
+        "bridge-{}",
+        uuid::Uuid::new_v4()
+    ));
     fs::create_dir(&root).unwrap();
     #[cfg(unix)]
     {

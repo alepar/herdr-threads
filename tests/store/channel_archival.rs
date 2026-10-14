@@ -2216,9 +2216,9 @@ fn archival_store_startup_pass_and_next_wait_for_canonical_host_instance() {
         ports::StorePort,
         store::{SqliteStore, StoreSettings, connection::StoreContext},
     };
-    let dir = super::handoff_fences::Directory(
-        std::env::temp_dir().join(format!("ht-archival-startup-{}", uuid::Uuid::new_v4())),
-    );
+    let dir = super::handoff_fences::Directory(herdr_threads::test_support::scratch::temp_path(
+        format!("ht-archival-startup-{}", uuid::Uuid::new_v4()),
+    ));
     std::fs::create_dir(&dir.0).unwrap();
     let path = dir.0.join("store.db");
     let store = SqliteStore::new(

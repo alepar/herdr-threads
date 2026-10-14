@@ -896,10 +896,10 @@ mod tests {
             protocol::time::{CallBudget, Cancellation, Clock, MonoInstant},
         };
         use std::{fs, time::Duration};
-        let directory = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("cache-read-{}", Uuid::new_v4()));
+        let directory = crate::test_support::scratch::temp_path_canonical(format!(
+            "cache-read-{}",
+            Uuid::new_v4()
+        ));
         fs::create_dir(&directory).unwrap();
         #[cfg(unix)]
         {

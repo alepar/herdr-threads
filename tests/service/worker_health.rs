@@ -35,8 +35,10 @@ struct ScratchDir(std::path::PathBuf);
 impl ScratchDir {
     fn new() -> Self {
         use std::os::unix::fs::DirBuilderExt;
-        let path =
-            std::env::temp_dir().join(format!("herdr-worker-health-{}", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "herdr-worker-health-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::DirBuilder::new()
             .mode(0o700)
             .create(&path)

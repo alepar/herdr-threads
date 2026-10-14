@@ -11,7 +11,10 @@ struct Database {
 
 impl Database {
     fn new() -> Self {
-        let directory = std::env::temp_dir().join(format!("ht-lazy26-{}", uuid::Uuid::new_v4()));
+        let directory = herdr_threads::test_support::scratch::temp_path(format!(
+            "ht-lazy26-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir(&directory).unwrap();
         Self { directory }
     }

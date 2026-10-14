@@ -6,10 +6,10 @@ struct Scope {
 }
 impl Scope {
     fn new() -> Self {
-        let dir = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("ht-codex-permissions-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_support::scratch::temp_path_canonical(format!(
+            "ht-codex-permissions-{}",
+            uuid::Uuid::new_v4()
+        ));
         fs::create_dir_all(dir.join("codex")).unwrap();
         Self { dir }
     }

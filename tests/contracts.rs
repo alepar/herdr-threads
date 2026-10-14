@@ -1339,7 +1339,10 @@ fn direct_request_deserialization_enforces_version_and_page_validation() {
 
 #[test]
 fn production_entry_rejects_missing_command_without_creating_state() {
-    let temp = std::env::temp_dir().join(format!("herdr-threads-contract-{}", std::process::id()));
+    let temp = herdr_threads::test_support::scratch::temp_path(format!(
+        "herdr-threads-contract-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&temp).unwrap();
     let output = scrubbed_command(env!("CARGO_BIN_EXE_herdr-threads"))
         .current_dir(&temp)

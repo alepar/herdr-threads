@@ -40,7 +40,8 @@ fn fixture() -> (super::super::connection::StoreContext, rusqlite::Connection) {
 fn fixture_with_temp_store(
     memory_temp: bool,
 ) -> (super::super::connection::StoreContext, rusqlite::Connection) {
-    let path = std::env::temp_dir().join(format!("herdr-query-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-query-{}.db", uuid::Uuid::new_v4()));
     let store = super::super::connection::StoreContext::new(path, Arc::new(FixedClock));
     let db = store.open_writer().unwrap();
     if memory_temp {
@@ -2710,7 +2711,10 @@ fn search_clipped_budget_returns_same_position_contextual_retry() {
             MonoInstant(self.0.fetch_add(50, std::sync::atomic::Ordering::SeqCst))
         }
     }
-    let path = std::env::temp_dir().join(format!("herdr-query-budget-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-query-budget-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let store = super::super::connection::StoreContext::new(
         path,
         Arc::new(Ticking(std::sync::atomic::AtomicU64::new(0))),

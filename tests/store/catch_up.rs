@@ -864,9 +864,10 @@ struct Store {
 }
 
 fn store() -> Store {
-    let directory = PrivateDirectory(
-        std::env::temp_dir().join(format!("catch-up-store-{}", uuid::Uuid::new_v4())),
-    );
+    let directory = PrivateDirectory(crate::test_support::scratch::temp_path(format!(
+        "catch-up-store-{}",
+        uuid::Uuid::new_v4()
+    )));
     std::fs::create_dir(&directory.0).unwrap();
     let clock = Arc::new(TestClock(AtomicU64::new(100)));
     let context = StoreContext::new(directory.0.join("store.db"), clock);
