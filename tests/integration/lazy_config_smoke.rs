@@ -498,7 +498,7 @@ fn lazy_config_current_cli_inbox_v1_daemon_refuses_lazy_before_intent() {
         .db()
         .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
         .unwrap();
-    for extra in [vec![], vec!["--lazy"]] {
+    for extra in [vec![], vec!["-p", "1"]] {
         let mut a = vec!["send", &w.thread, "--body", "must never be sent"];
         a.extend(extra);
         let o = w.raw(Some(0), false, &a);

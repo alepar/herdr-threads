@@ -4493,9 +4493,7 @@ mod main539_composition {
     #[test]
     fn invitation_policy_public_cli_freezes_modes_and_duplicate_keeps_episode() {
         for (flags, expected, duration) in [
-            (vec![], "lazy", 300_000),
-            (vec!["--lazy"], "lazy", 300_000),
-            (vec!["--require-ack"], "require_ack", 300_000),
+            (vec![], "require_ack", 300_000),
             (vec!["--deadline", "7"], "require_ack", 7000),
         ] {
             let f = Fixture::new(false);
@@ -4530,19 +4528,15 @@ mod main539_composition {
                 expected
             );
             drop(commands);
-            let duplicate = if expected == "lazy" {
-                vec![
-                    "ht",
-                    "invite",
-                    "t",
-                    "--seat",
-                    "recipient",
-                    "--deadline",
-                    "9",
-                ]
-            } else {
-                vec!["ht", "invite", "t", "--seat", "recipient"]
-            };
+            let duplicate = vec![
+                "ht",
+                "invite",
+                "t",
+                "--seat",
+                "recipient",
+                "--deadline",
+                "9",
+            ];
             f.run(
                 duplicate.into_iter().map(str::to_owned).collect(),
                 &mut Vec::new(),
@@ -4781,7 +4775,7 @@ mod main539_composition {
 
     #[test]
     fn invitation_policy_modern_failed_submission_retains_frozen_mode_and_duration() {
-        for flags in [vec![], vec!["--require-ack"], vec!["--deadline", "7"]] {
+        for flags in [vec![], vec!["--deadline", "7"]] {
             let f = Fixture::new(false);
             let client = InvitationClient {
                 base: &f.client,
@@ -4819,11 +4813,7 @@ mod main539_composition {
             };
             assert_eq!(
                 invite.confirmation,
-                Some(if flags.is_empty() {
-                    crate::protocol::commands::InvitationConfirmation::Lazy
-                } else {
-                    crate::protocol::commands::InvitationConfirmation::RequireAck
-                })
+                Some(crate::protocol::commands::InvitationConfirmation::RequireAck)
             );
             assert_eq!(
                 invite.deadline_millis,

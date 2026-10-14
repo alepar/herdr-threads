@@ -1,12 +1,21 @@
 //! Frozen target-seat send composition over the ordinary delivery engine.
-use crate::protocol::{commands::DeliveryMode, ids::SeatId, summary::UserIntent};
+use crate::protocol::{
+    commands::DeliveryMode, ids::SeatId, priority::DeliveryPriority, summary::UserIntent,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
     pub target: SeatId,
+    /// The legacy mode of a plan recorded for a daemon without `send.priority_v1` (or before the
+    /// priority feature); `Ordinary` and omitted when the plan carries a `priority`.
+    #[serde(default, skip_serializing_if = "DeliveryMode::is_ordinary")]
     pub delivery_mode: DeliveryMode,
+    /// The delivery priority; `start` keeps it only against a `send.priority_v1` daemon and
+    /// otherwise replaces it by the legacy mode, so the frozen plan is exactly what is sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<DeliveryPriority>,
     pub body: String,
     pub require_ack: Vec<SeatId>,
     pub deadline_millis: Option<u64>,
@@ -45,6 +54,29 @@ pub struct Plan {
 fn invalid(detail: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, detail)
 }
+impl Request {
+    /// A request that is not p0: a legacy lazy mode, or a carried priority above 0.
+    fn is_lazy_class(&self) -> bool {
+        match self.priority {
+            Some(p) => p.get() > 0,
+            None => self.delivery_mode == DeliveryMode::Lazy,
+        }
+    }
+    /// The legacy mode a plan without a carried priority sends.
+    fn legacy_mode(&self) -> Option<DeliveryMode> {
+        self.priority.is_none().then_some(self.delivery_mode)
+    }
+    /// Re-shape for the daemon: against `send.priority_v1` the priority stays; otherwise it becomes
+    /// the legacy mode. Returns the priority that mode cannot express, if any.
+    fn reshape(&mut self, priority_v1: bool) -> Option<DeliveryPriority> {
+        let shape = super::send_priority::shape(self.priority?, priority_v1);
+        let super::send_priority::SendShape::Legacy { lost, .. } = shape else {
+            return None;
+        };
+        (self.delivery_mode, self.priority) = shape.wire();
+        lost
+    }
+}
 impl Plan {
     pub fn validate(&self) -> io::Result<()> {
         self.namespace.validate().map_err(invalid)?;
@@ -56,8 +88,8 @@ impl Plan {
             || r.body.len() > super::input::MAX_BODY_BYTES
             || r.require_ack.len() > 1
             || r.require_ack.iter().any(|s| s != &r.target)
-            || (r.delivery_mode == DeliveryMode::Lazy
-                && (!r.require_ack.is_empty() || r.deadline_millis.is_some()))
+            || (r.is_lazy_class() && (!r.require_ack.is_empty() || r.deadline_millis.is_some()))
+            || (r.priority.is_some() && r.deadline_millis.is_some() && r.require_ack.is_empty())
             || r.deadline_millis == Some(0)
             || self.ensure_key == self.send_key
             || [&self.ensure_key, &self.send_key]
@@ -83,7 +115,7 @@ impl Plan {
     fn send(&self, claim: &CallerClaim, thread: ThreadId) -> SendMessage {
         let r = &self.request;
         SendMessage {
-            priority: None,
+            priority: r.priority,
             delivery_mode: r.delivery_mode,
             user_intent: r.user_intent,
             thread,
@@ -251,6 +283,11 @@ pub(crate) fn start<C: LocalClient + ?Sized, W: Write>(
     output: &OutputSpec,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    let mut request = request;
+    let priority_v1 = super::send_priority::supports(client, &super::cooperative_budget(clock));
+    let lost = request.reshape(priority_v1);
+    // The pair creation policy stays the legacy invitation policy: a daemon with
+    // `direct.auto_join_v1` ignores it and auto-joins, an older one keeps its invitation path.
     let p = Plan {
         creation_policy: Some(crate::protocol::commands::EnsureCreationPolicy {
             confirmation: crate::protocol::commands::InvitationConfirmation::Lazy,
@@ -262,15 +299,18 @@ pub(crate) fn start<C: LocalClient + ?Sized, W: Write>(
         send_key: OperationId::new(uuid::Uuid::new_v4().to_string()),
     };
     p.validate_claim(&claim)?;
-    if p.request.delivery_mode == DeliveryMode::Ordinary {
+    if p.request.legacy_mode() == Some(DeliveryMode::Ordinary) {
         super::require_send_time_receipts_capability(client, clock)?;
     }
     capability(
         client,
         clock,
-        p.request.delivery_mode == DeliveryMode::Lazy,
+        p.request.legacy_mode() == Some(DeliveryMode::Lazy),
         p.creation_policy.is_some(),
     )?;
+    if let Some(lost) = lost {
+        eprintln!("{}", super::send_priority::lossy_notice(lost));
+    }
     let caller = inspect(client, clock, &claim.seat)?;
     if caller.summary.generation != claim.binding_generation
         || caller.summary.target.as_ref() != Some(&claim.target)
@@ -379,13 +419,13 @@ pub(crate) fn retry<C: LocalClient + ?Sized, W: Write>(
     let result = (|| -> Result<(), RunError> {
         let mut progress: Progress = super::handoff::load_progress(journal, reference)?;
         progress.validate(p, claim)?;
-        if p.request.delivery_mode == DeliveryMode::Ordinary && progress.message.is_none() {
+        if p.request.legacy_mode() == Some(DeliveryMode::Ordinary) && progress.message.is_none() {
             super::require_send_time_receipts_capability(client, clock)?;
         }
         capability(
             client,
             clock,
-            p.request.delivery_mode == DeliveryMode::Lazy,
+            p.request.legacy_mode() == Some(DeliveryMode::Lazy),
             p.creation_policy.is_some(),
         )?;
         let ensured = client.call(

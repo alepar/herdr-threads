@@ -141,7 +141,7 @@ are 1:1 SEAT_A SEAT_B with sorted IDs. Explicit new topic defaults to Handoff to
 legacy launch uses the pane display, new-tab uses its label, delivery uses the
 canonical seat ID. Goal defaults to topic. --name names the native agent, not the channel.
 One positional body after --, --file PATH or --stdin supplies durable work (1..65536 UTF-8 bytes), acquired once and frozen exactly, never native argv.
-The body always requires an addressed ACK. --deadline SECONDS sets its independent duration; omitted defaults resolve once at canonical send. Invitations default lazy; --require-invite-ack or --invite-deadline SECONDS requests timed acceptance with an independent deadline. Registration/launch is never acceptance or ACK. The message timer starts at send even without registration or join. Missed requested deadlines notify the original sender.
+The body always requires an addressed ACK. --deadline SECONDS sets its independent duration; omitted defaults resolve once at canonical send. Invitations require acceptance; --invite-deadline SECONDS sets its independent deadline. Registration/launch is never acceptance or ACK. The message timer starts at send even without registration or join. Missed requested deadlines notify the original sender.
 Native launch options use repeatable --agent-arg=OPTION; launch -- native arguments
 is unchanged. @OPTS@ prepend optional
 arguments using shell-style quotes and escapes without variable or command

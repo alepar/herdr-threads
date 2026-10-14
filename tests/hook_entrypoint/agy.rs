@@ -546,7 +546,7 @@ fn agy_lazy_row_settles_only_through_the_transcript_confirm_never_hook_context()
         "claude",
         "peer",
         "w9:p2",
-        &["send", &thread, "--lazy", "--body", "passive hello"],
+        &["send", &thread, "--body", "passive hello"],
     ));
     assert_eq!(lazy_row_state(&fx, &lazy), "pending");
 
@@ -610,7 +610,12 @@ fn agy_lazy_row_settles_only_through_the_transcript_confirm_never_hook_context()
 
 // Kills: classifying Lazy invitation as passive but losing its complete
 // pending item between canonical inbox paging and the registered turn hook.
+// The CLI can no longer create a lazy invitation (`invite` always requires acceptance, message-priority
+// D6); a lazy row only survives from before the upgrade or from a pair created by an older daemon's
+// path. The pull path this test pinned is exercised for lazy pairs by
+// `modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement`.
 #[test]
+#[ignore = "the CLI no longer creates lazy invitations; no lazy-invitation fixture until the daemon invitation tasks land"]
 fn agy_turn_hook_carries_lazy_invitation_without_accepting_or_confirming_it() {
     let fx = Fixture::start();
     let home = home_with(&fx, "top-level");

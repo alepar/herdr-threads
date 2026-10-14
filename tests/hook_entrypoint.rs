@@ -2398,13 +2398,8 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     let displayed = || {
         fx.count("SELECT count(*) FROM lazy_recipients WHERE seat_id='seat' AND state='displayed'")
     };
-    let lazy = |body: &str| {
-        data(fx.cooperative(
-            "peer",
-            "w9:p2",
-            &["send", &thread, "--lazy", "--body", body],
-        ))
-    };
+    let lazy =
+        |body: &str| data(fx.cooperative("peer", "w9:p2", &["send", &thread, "--body", body]));
 
     // 1. Lazy-only arrival: the digest moves, the next tool call injects the
     // row whole, and only then completes it; the repeat is quiet.
@@ -2569,7 +2564,7 @@ fn lazy_mail_reaches_the_next_codex_tool_hook() {
     let id = data(fx.cooperative(
         "peer",
         "w9:p2",
-        &["send", &thread, "--lazy", "--body", "codex lazy body"],
+        &["send", &thread, "--body", "codex lazy body"],
     ));
     let context = context_of(&codex_tool(2));
     assert!(context.contains(INBOX_HEADER), "{context}");
@@ -2793,7 +2788,7 @@ fn lazy_mail_reaches_the_next_codex_user_prompt_hook() {
     let id = data(fx.cooperative(
         "peer",
         "w9:p2",
-        &["send", &thread, "--lazy", "--body", "codex turn body"],
+        &["send", &thread, "--body", "codex turn body"],
     ));
     let delivered = codex_turn(2);
     assert_eq!(

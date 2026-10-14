@@ -12,10 +12,11 @@ use crate::ports::LocalClient;
 use crate::{
     harness::context::Role,
     protocol::{
-        capabilities::SEAT_WAKE_ON_V1,
+        capabilities::{SEAT_NUDGE_THRESHOLD_V1, SEAT_WAKE_ON_V1},
         commands::{Command, SetWakeOn, WakeOn, WakeOnQuery},
         ids::OperationId,
         output::OutputFormat,
+        priority::NudgeThreshold,
         results::{CommandResult, WakeOnState},
         time::Clock,
     },
@@ -57,6 +58,22 @@ pub(crate) fn run<C: LocalClient + ?Sized, W: Write>(
         unreachable!("wake_on::run is only called for wake-on actions");
     };
     let budget = super::cooperative_budget(clock);
+    // Deprecated alias: against a daemon with the nudge threshold, `wake-on V` is `nudge-threshold`
+    // of the mapped value, plus one stderr deprecation line (about 55 bytes).
+    if client.supports_capability(SEAT_NUDGE_THRESHOLD_V1, &budget) {
+        super::nudge_threshold::run(
+            &parsed,
+            value.map(NudgeThreshold::from_wake_on),
+            selection,
+            paths,
+            instance,
+            client,
+            clock,
+            writer,
+        )?;
+        eprintln!("herdr-threads: wake-on is deprecated; use nudge-threshold N");
+        return Ok(());
+    }
     if !client.supports_capability(SEAT_WAKE_ON_V1, &budget) {
         return Err(super::unsupported(
             "this daemon does not support wake-on; restart it on the current herdr-threads",
@@ -99,7 +116,7 @@ pub(crate) fn run<C: LocalClient + ?Sized, W: Write>(
 
 /// The seat's saved context as a claim, after proving it is the service's
 /// current binding generation (the same check `summary` makes).
-fn current_claim<C: LocalClient + ?Sized>(
+pub(super) fn current_claim<C: LocalClient + ?Sized>(
     selection: &CooperativeSelection,
     paths: &InstancePaths,
     instance: uuid::Uuid,

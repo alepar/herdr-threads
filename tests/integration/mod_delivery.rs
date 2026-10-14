@@ -483,7 +483,7 @@ impl Rig {
         let mark = rig.host.mark();
         rig.cli(
             Some((&rig.a, PANE_A)),
-            &["invite", &rig.thread, "--seat", &rig.b, "--require-ack"],
+            &["invite", &rig.thread, "--seat", &rig.b],
         )
         .data("invite");
         // Setup deliberately requires a native wake: ordinary invitations
@@ -2584,7 +2584,8 @@ fn activation_v2_elected_watch_capabilities_lease_output_confirm() {
                     format!("invitation:{}", item["id"].as_str().unwrap())
                 );
                 assert_eq!(line["body"], item["content"]["body"]);
-                assert_eq!(line["wakes"], false);
+                // Every agent invitation now requires acceptance, so it wakes.
+                assert_eq!(line["wakes"], true);
             }
             "notice" => {
                 assert_eq!(line["kind"], "notice");
@@ -3157,13 +3158,7 @@ fn activation_v2_watch_replacement_replays_uncommitted_output() {
         .text("replacement attention thread");
     rig.cli(
         Some((&rig.a, PANE_A)),
-        &[
-            "invite",
-            &attention_thread,
-            "--seat",
-            &rig.b,
-            "--require-ack",
-        ],
+        &["invite", &attention_thread, "--seat", &rig.b],
     )
     .data("replacement timed invitation");
     let confirming = || {
@@ -3283,7 +3278,7 @@ fn activation_v2_watch_replacement_replays_uncommitted_output() {
             .iter()
             .any(|line| line["kind"] == "invitation"
                 && line["thread"] == invitation
-                && line["wakes"] == false)
+                && line["wakes"] == true)
     );
     assert_eq!(
         rig.receipt_state(&ordinary),
@@ -3357,7 +3352,7 @@ fn activation_v2_watch_lost_confirm_response_replays_exact_subset() {
     );
     assert!(watch.seen.iter().any(|line| line["kind"] == "invitation"
         && line["thread"] == invitation
-        && line["wakes"] == false));
+        && line["wakes"] == true));
     assert_eq!(
         rig.receipt_state(&ordinary),
         "pending",
@@ -4339,9 +4334,8 @@ fn watch_ack_already_settled_after_inbox_ack() {
 
 /// Spec D4: invitations (anything without a body) reach the mod as one
 /// `attention` line carrying the fixed marker, never as an acked item. The
-/// invitation requests confirmation (`--require-ack`): an ordinary invitation
-/// is Lazy by default (handoff-delivery-redesign) and is presented as a
-/// passive `invitation` line that requests no attention.
+/// invitation requests confirmation (every agent invitation does since the
+/// message-priority change; there is no lazy CLI invitation any more).
 #[test]
 fn attention_marker_line_for_invitation() {
     let rig = Rig::new();
@@ -4355,7 +4349,7 @@ fn attention_marker_line_for_invitation() {
         .text("thread create");
     rig.cli(
         Some((&rig.a, PANE_A)),
-        &["invite", &other, "--seat", &rig.b, "--require-ack"],
+        &["invite", &other, "--seat", &rig.b],
     )
     .data("invite");
     let line = watch.wait_attention_marker();
@@ -4411,7 +4405,7 @@ fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
         .text("thread create");
     rig.cli(
         Some((&rig.a, PANE_A)),
-        &["invite", &other, "--seat", &rig.b, "--require-ack"],
+        &["invite", &other, "--seat", &rig.b],
     )
     .data("invite");
     let attention = watch.wait_attention_marker();

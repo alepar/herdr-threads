@@ -209,9 +209,21 @@ pub(crate) fn stage_work<C: LocalClient + ?Sized>(
     }
     *phase = "send";
     if progress.message.is_none() {
+        // The addressed instructions always require the recipient's ACK: priority 0.
+        let priority = super::send_priority::resolve(super::send_priority::SendPriorityFlags {
+            explicit_ack: true,
+            deadline: plan.policy.is_some_and(|p| p.deadline_millis.is_some()),
+            ..Default::default()
+        })?;
+        let (delivery_mode, priority) = super::send_priority::shape(
+            priority,
+            super::send_priority::supports(client, &super::cooperative_budget(clock)),
+        )
+        .wire();
         let result = call(
             SemanticMutation::SendMessage {
-                delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+                delivery_mode,
+                priority,
                 thread,
                 body: plan.body.into(),
                 direct_recipient: None,

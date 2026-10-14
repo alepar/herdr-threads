@@ -36,6 +36,13 @@ struct Client {
     calls: Mutex<Vec<Command>>,
 }
 impl LocalClient for Client {
+    fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
+        if let Some(capabilities) = &self.capability_override {
+            capabilities.iter().any(|candidate| candidate == name)
+        } else {
+            self.supported && herdr_threads::protocol::capabilities::ADVERTISED.contains(&name)
+        }
+    }
     fn call_with_output(
         &self,
         command: Command,
@@ -394,6 +401,98 @@ fn modern_lazy_direct_send_is_exempt_from_receipt_capability() {
     assert!(sends[0].deadline_millis.is_none());
 }
 
+// A priority direct send keeps the legacy pair creation policy (a daemon with direct.auto_join_v1
+// ignores it) and, with send.priority_v1, freezes the priority and omits the delivery mode.
+#[test]
+fn priority_direct_send_freezes_the_priority_and_keeps_the_legacy_creation_policy() {
+    use herdr_threads::protocol::{
+        capabilities::{
+            DIRECT_AUTO_JOIN_V1, DIRECT_THREADS_V1, ENSURE_CREATION_POLICY_V1, SEND_PRIORITY_V1,
+        },
+        commands::{DeliveryMode, InvitationConfirmation},
+    };
+    for with_auto_join in [false, true] {
+        let mut f = Fixture::new(false);
+        let mut capabilities = vec![
+            DIRECT_THREADS_V1.to_owned(),
+            ENSURE_CREATION_POLICY_V1.into(),
+            SEND_PRIORITY_V1.into(),
+        ];
+        if with_auto_join {
+            capabilities.push(DIRECT_AUTO_JOIN_V1.into());
+        }
+        f.client.capability_override = Some(capabilities);
+        *f.client.lose.lock().unwrap() = Some("before_send");
+        let result = f.run(
+            &["send", "--seat", "seat-b", "--body", "p3", "-p", "3"],
+            &mut Vec::new(),
+        );
+        assert!(
+            result.is_err(),
+            "the injected loss keeps the intent pending"
+        );
+        let calls = f.client.calls.lock().unwrap();
+        assert!(calls.iter().any(|command| matches!(command,
+            Command::EnsureDirectThread(ensure) if ensure.creation_policy.as_ref().is_some_and(|policy|
+                policy.confirmation == InvitationConfirmation::Lazy && policy.deadline_millis.is_none())
+        )));
+        let sends = calls
+            .iter()
+            .filter_map(|command| match command {
+                Command::SendMessage(send) => Some(send),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].priority.map(|p| p.get()), Some(3));
+        assert_eq!(sends[0].delivery_mode, DeliveryMode::Ordinary);
+        let json = serde_json::to_value(sends[0]).unwrap();
+        assert!(json.get("delivery_mode").is_none(), "{json}");
+        assert_eq!(json["priority"], 3);
+    }
+}
+
+#[test]
+fn priority_direct_send_to_an_old_daemon_sends_the_legacy_mode_and_creation_policy() {
+    use herdr_threads::protocol::{
+        capabilities::{
+            DIRECT_THREADS_V1, ENSURE_CREATION_POLICY_V1, LAZY_SEND, SEND_TIME_RECEIPTS_V1,
+        },
+        commands::{DeliveryMode, InvitationConfirmation},
+    };
+    for (flags, mode) in [
+        (vec!["-p", "4"], DeliveryMode::Lazy),
+        (vec!["-p", "1"], DeliveryMode::Lazy),
+        (vec!["-p", "0"], DeliveryMode::Ordinary),
+    ] {
+        let mut f = Fixture::new(false);
+        f.client.capability_override = Some(vec![
+            DIRECT_THREADS_V1.into(),
+            ENSURE_CREATION_POLICY_V1.into(),
+            LAZY_SEND.into(),
+            SEND_TIME_RECEIPTS_V1.into(),
+        ]);
+        let mut args = vec!["send", "--seat", "seat-b", "--body", "legacy"];
+        args.extend(flags.iter().copied());
+        f.run(&args, &mut Vec::new()).unwrap();
+        let calls = f.client.calls.lock().unwrap();
+        assert!(calls.iter().any(|command| matches!(command,
+            Command::EnsureDirectThread(ensure) if ensure.creation_policy.as_ref().is_some_and(|policy|
+                policy.confirmation == InvitationConfirmation::Lazy && policy.deadline_millis.is_none())
+        )));
+        let sends = calls
+            .iter()
+            .filter_map(|command| match command {
+                Command::SendMessage(send) => Some(send),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sends.len(), 1, "{flags:?}");
+        assert_eq!(sends[0].delivery_mode, mode, "{flags:?}");
+        assert_eq!(sends[0].priority, None, "{flags:?}");
+    }
+}
+
 fn record_historical_direct_receipt_control(
     f: &Fixture,
     mode: herdr_threads::protocol::commands::DeliveryMode,
@@ -423,6 +522,7 @@ fn record_historical_direct_receipt_control(
         request: Request {
             target: target.clone(),
             delivery_mode: mode,
+            priority: None,
             body: body.into(),
             require_ack: if mode == DeliveryMode::Ordinary {
                 vec![target]
