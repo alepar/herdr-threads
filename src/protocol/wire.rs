@@ -34,7 +34,9 @@ use std::io::{self, Write};
 ///    Canonical pair resolution and direct_recipient use thread.direct_v1;
 ///    automatic handoff uses handoff.automatic_v1 within version 6.
 /// 7: session-keyed binding claims: CallerClaim gains optional agent_id and liveness fingerprint (ht-54r).
-pub const PROTOCOL_VERSION: u16 = 7;
+/// 8: message delivery priority: a deliberate break, so a v0.x CLI or daemon is refused at the version
+///    check instead of half-working (e.g. on a format-2 inbox cursor). Legacy lazy/ordinary mappings stay.
+pub const PROTOCOL_VERSION: u16 = 8;
 pub const MAX_WIRE_FRAME_BYTES: usize = 1_048_576;
 /// Only replies to modern explicitly frozen-policy automatic topology requests use this envelope.
 pub const MAX_AUTOMATIC_RESPONSE_FRAME_BYTES: usize = 2 * MAX_WIRE_FRAME_BYTES;

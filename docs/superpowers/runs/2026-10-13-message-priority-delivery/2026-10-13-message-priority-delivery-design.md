@@ -150,7 +150,7 @@ Merge note (v0.11.0, ht-327): a wake whose reason is a threshold-admitted delive
   `wakes`-driven promotion follows the threshold. The new client frames from variant + priority (D8). An old
   client's `WakeOnQuery` gets `all` when T < 0, else `nudge`. An old client's lazy `Invite` is recorded as a
   confirming invitation; an old client's direct send creates an auto-joined pair (its creation policy is ignored).
-- **Old client, new daemon, `next:` inbox continuation (accepted limit)**: an old CLI cannot follow a new daemon's `next:` inbox continuation (format-2 cursor); it shows its own `unknown v2 cursor version` error and a plain `inbox` rerun recovers. First pages stay old-readable; CLI and daemon ship as one binary, so this exists only in an upgrade window.
+- **Mixed versions (user decision 2026-10-14, ht-yha.49)**: `PROTOCOL_VERSION` is 8, so an older CLI or daemon is refused at the version check before any request (superseding the `PROTOCOL_VERSION` bullet below; the old-client derivations above remain as internal legacy mappings).
 - **New client, old daemon, 1:1 pairs**: without `direct.auto_join_v1` the client keeps sending the legacy pair
   creation policy, so the old daemon's invitation/accept path works unchanged.
 - **Overdue warnings** come only from receipts, which exist only for explicit ACK recipients (D9), so a non-ACK

@@ -3,7 +3,7 @@
 //! real process holding the real owner lock, socket and descriptor) with a
 //! `daemon run --state-dir <state>` command line, which is what the skew-tolerant
 //! `daemon stop` identifies an owner by. "Old" is the real release skew pair:
-//! a protocol-3 daemon or CLI against this protocol-7 build; the protocol-1 CLI
+//! a protocol-3 daemon or CLI against this protocol-8 build; the protocol-1 CLI
 //! frame is still exercised by `old_cli_gets_a_decodable_skew_error` and by the
 //! frozen frames in `wire_compat`.
 //! Mounted from tests/integration.rs.
@@ -46,7 +46,7 @@ const OLD_PROTOCOL: u16 = 3;
 /// Kills: a protocol bump that leaves the skew tests on a synthetic pair.
 #[test]
 fn skew_tests_use_the_real_release_pair() {
-    assert_eq!(PROTOCOL_VERSION, 7);
+    assert_eq!(PROTOCOL_VERSION, 8);
     const { assert!(OLD_PROTOCOL < PROTOCOL_VERSION) };
 }
 

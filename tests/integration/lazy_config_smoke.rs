@@ -1,5 +1,5 @@
 //! Actual executable/current-daemon configuration matrix. Legacy means inbox-v1
-//! capabilities on wire protocol 7, never a historical executable or protocol-1 daemon.
+//! capabilities on wire protocol 8, never a historical executable or protocol-1 daemon.
 use herdr_threads::{
     daemon::{
         ownership::{read_descriptor, read_existing_namespace},
