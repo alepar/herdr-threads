@@ -14,3 +14,7 @@ R13 The store starts clean; legacy instance data is reported and purgeable but n
 R14 TRUST-POLICY is amended (origin signatures, replicated provenance, accepted limits) and the agent skill and user docs describe cross-node use.
 R15 Mixed-version nodes interoperate: link capabilities are negotiated and unknown kinds are relayed and parked.
 R16 A multi-node test harness exists and each enumerated configuration (2-node, 3-node relay, partition+heal, restore fork, mixed versions, store-only node, two Herdr hosts) is exercised end to end.
+R17 A seat on one node can be found and addressed (invite, direct pair) by an agent on another node before the two have interacted.
+R18 Peer authentication binds a node_uuid to its public key: a link presenting a key whose hash is not the claimed node_uuid is refused.
+R19 Every reader and validator of public IDs (CLI parsing, delivery framing, the Claude mod, harness adapters and hooks) accepts the tagged <prefix><tag><8> form and the deterministic d… direct-thread IDs.
+R20 The node store can change its schema after the clean baseline through a forward migration path.
