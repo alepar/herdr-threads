@@ -827,8 +827,9 @@ pub(super) struct Publication {
 /// Inserts the message, its manifest and ordinary-only `send_attention` job for the sealed
 /// preparation `(scope, key, digest)`. The caller proved authority and revision
 /// currency; this touches a constant number of rows regardless of audience size,
-/// except that a lazy send writes one `wake_work` row per `wake_on: all`
-/// recipient (set-based; `nudge` recipients cost no write).
+/// except that a delivery-row send writes one `wake_work` row per recipient
+/// whose nudge threshold admits the priority (p <= T; every priority when T < 0;
+/// set-based; other recipients cost no write).
 // Allowed: one deciding insert: transaction, instant, replay identity and author.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn insert_publication(

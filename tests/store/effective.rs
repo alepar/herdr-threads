@@ -978,6 +978,36 @@ fn receipt_upgrade_snapshot(db: &Connection, table: &str) -> Vec<Vec<rusqlite::t
         .unwrap()
 }
 
+/// The `priority` column V47 appends to `messages` and `send_preparations`, derived from the
+/// pre-upgrade rows (a lazy `delivery_mode` becomes priority 1, anything else 0), in
+/// `receipt_upgrade_snapshot` row order. Other tables gain no column.
+fn receipt_upgrade_v47_priority(db: &Connection, table: &str) -> Option<Vec<i64>> {
+    if !["messages", "send_preparations"].contains(&table) {
+        return None;
+    }
+    let mut statement = db
+        .prepare(&format!(
+            "SELECT CASE WHEN delivery_mode='lazy' THEN 1 ELSE 0 END FROM {table} ORDER BY rowid"
+        ))
+        .unwrap();
+    Some(
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap(),
+    )
+}
+
+fn push_v47_priority(rows: &mut [Vec<rusqlite::types::Value>], priority: &Option<Vec<i64>>) {
+    if let Some(priority) = priority {
+        assert_eq!(rows.len(), priority.len());
+        for (row, value) in rows.iter_mut().zip(priority) {
+            row.push(rusqlite::types::Value::Integer(*value));
+        }
+    }
+}
+
 struct UpgradeClock;
 impl Clock for UpgradeClock {
     fn utc_now(&self) -> UtcMillis {
@@ -1248,6 +1278,43 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
                 "declared45/46 {kind}"
             );
         }
+        // Derive the declared47 objects the same way: replay migration 0047 over the scratch
+        // schema (with the four triggers it drops, taken from the old catalog). Objects that
+        // already exist take the rewritten DDL; the rest are new and join the page-normalized set.
+        for row in &expected_catalog {
+            if row.0 == "trigger"
+                && [
+                    "messages_immutable",
+                    "lazy_recipient_source",
+                    "lazy_recipient_display_published",
+                    "lazy_manifest_source",
+                ]
+                .contains(&row.1.as_str())
+            {
+                expected.execute_batch(row.4.as_deref().unwrap()).unwrap();
+            }
+        }
+        let before_v47 = catalog(&expected);
+        expected
+            .execute_batch(include_str!("../../migrations/0047_message_priority.sql"))
+            .unwrap();
+        for row in catalog(&expected) {
+            match before_v47.iter().find(|old| old.1 == row.1) {
+                Some(old) if old.4 == row.4 => {}
+                Some(_) => {
+                    if let Some(target) = expected_catalog.iter_mut().find(|e| e.1 == row.1) {
+                        target.4 = row.4;
+                    } else {
+                        let target = presentation_objects
+                            .iter_mut()
+                            .find(|e| e.1 == row.1)
+                            .unwrap();
+                        target.4 = row.4;
+                    }
+                }
+                None => presentation_objects.push(row),
+            }
+        }
         let new_names: std::collections::HashSet<_> = presentation_objects
             .iter()
             .map(|row| row.1.clone())
@@ -1280,6 +1347,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
         expected_catalog.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
         let mut expected_rows = before.clone();
         for (table, rows) in tables.iter().zip(&mut expected_rows) {
+            push_v47_priority(rows, &receipt_upgrade_v47_priority(&db, table));
             if *table == "invitations" {
                 for row in rows {
                     row.push(rusqlite::types::Value::Integer(0));
@@ -1440,6 +1508,10 @@ fn dormant_upgrade_discovers_physical_and_unmaterialized_manifest_without_availa
     for row in &mut retained {
         row.push(rusqlite::types::Value::Null);
     }
+    push_v47_priority(
+        &mut retained,
+        &receipt_upgrade_v47_priority(&db, "messages"),
+    );
     schema::initialize(&db, || UtcMillis(5000)).unwrap();
     let context = crate::store::connection::StoreContext::new(
         path.clone(),
@@ -1476,7 +1548,11 @@ fn dormant_upgrade_discovers_physical_and_unmaterialized_manifest_without_availa
 #[test]
 fn dormant_upgrade_bounded_batches_survive_restart_and_continuing_arrivals() {
     let (path, mut db) = dormant_upgrade_fixture(250, 250);
-    let retained_preparations = receipt_upgrade_snapshot(&db, "send_preparations");
+    let mut retained_preparations = receipt_upgrade_snapshot(&db, "send_preparations");
+    push_v47_priority(
+        &mut retained_preparations,
+        &receipt_upgrade_v47_priority(&db, "send_preparations"),
+    );
     let retained_recipients = receipt_upgrade_snapshot(&db, "prepared_recipients");
     let retained_manifests = receipt_upgrade_snapshot(&db, "send_manifests");
     schema::initialize(&db, || UtcMillis(5000)).unwrap();
@@ -2135,6 +2211,10 @@ fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_
             .iter()
             .map(|name| receipt_upgrade_snapshot(&db, name))
             .collect();
+        let priorities: Vec<_> = tables
+            .iter()
+            .map(|name| receipt_upgrade_v47_priority(&db, name))
+            .collect();
         let objects = |db: &Connection| {
             // These eight migration42 additions are separate from the exact
             // historical catalog; all other receipt objects remain compared.
@@ -2206,12 +2286,13 @@ END"#
                 .unwrap(),
             schema::LATEST_VERSION
         );
-        for (name, mut expected) in tables.iter().zip(before) {
+        for ((name, mut expected), priority) in tables.iter().zip(before).zip(&priorities) {
             if version == 28 && ["receipts", "receipt_state", "messages"].contains(name) {
                 for row in &mut expected {
                     row.push(rusqlite::types::Value::Null);
                 }
             }
+            push_v47_priority(&mut expected, priority);
             assert_eq!(receipt_upgrade_snapshot(&db, name), expected, "{name}");
         }
         assert_eq!(

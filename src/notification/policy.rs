@@ -77,7 +77,8 @@ impl<'a> AttentionSnapshot<'a> {
             warnings: candidate.actionable_warning_seq.is_some()
                 && !candidate.warning_offered_for_current_occupant(),
         };
-        // A `wake_on: all` seat's unreserved lazy row is eligible work on its
+        // A delivery row whose priority the seat's nudge threshold admits (p <= T; every
+        // priority when T < 0) and that is unreserved is eligible work on its
         // own (DP8); it selects no prompt class, so the rest stays as is.
         (selected.invites
             || selected.ordinary

@@ -187,7 +187,7 @@ First live run, one case (spends a little quota):
 
 ```sh
 scripts/linux-e2e/run wake-e2e --live --codex-auth-file ~/codex-test-auth.json \
-    -- --harness codex --cases send-nudge/group
+    -- --harness codex --cases send-p0/group
 scripts/linux-e2e/run wake-e2e --live --claude-oauth-token-file ~/claude-test-token \
-    -- --harness claude --cases send-nudge/group
+    -- --harness claude --cases send-p0/group
 ```

@@ -1,4 +1,4 @@
-//! Lazy delivery state per binding (ht-54r.22). Included from `src/store/lazy_delivery.rs` as
+//! Lazy delivery state per binding (ht-54r.22). Included from `src/store/lazy_delivery/mod.rs` as
 //! `binding_lazy_tests`. A lazy message is unread for a binding until its cursor passes it.
 use super::*;
 use crate::protocol::{ids::*, time::UtcMillis};

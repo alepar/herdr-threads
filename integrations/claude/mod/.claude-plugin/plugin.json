@@ -1,7 +1,7 @@
 {
   "name": "herdr-threads",
   "version": "0.0.0",
-  "description": "Delivers herdr-threads messages into this Claude Code session (between tool calls, as a new turn when idle, and passively for lazy messages) through a herdr-threads watch child.",
+  "description": "Delivers herdr-threads messages into this Claude Code session (between tool calls, as a new turn when idle, and passively for items that do not wake the session) through a herdr-threads watch child.",
   "author": {
     "name": "herdr-threads"
   },

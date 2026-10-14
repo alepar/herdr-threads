@@ -364,8 +364,9 @@ struct Chunk {
     priority: Option<crate::protocol::priority::DeliveryPriority>,
     deadline_at: Option<crate::protocol::time::UtcMillis>,
     lazy: bool,
-    /// A lazy row of a `wake_on: all` seat, delivered as a `message` line with
-    /// no ACK to run (delivery-policy DP8); the daemon still completes it lazily.
+    /// A delivery row whose priority the seat's nudge threshold admits (p <= T; every
+    /// priority when T < 0), delivered as a `message` line with no ACK to run
+    /// (delivery-policy DP8); the daemon still completes it lazily.
     promoted: bool,
     ack_required: bool,
     thread: crate::protocol::ids::ThreadId,
