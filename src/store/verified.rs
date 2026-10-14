@@ -21,9 +21,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// Enough for every step of a couple of concurrent requests. An entry keeps
-/// its inputs and value: at most a few maximum bodies each.
-const CAPACITY: usize = 8;
+/// One handoff decision touches about seven steps, so this holds about two
+/// at once; concurrent handoffs beyond that evict each other and recompute
+/// (correct, at the old cost). An entry keeps its inputs and value for the
+/// daemon's lifetime: at most a few maximum bodies each.
+const CAPACITY: usize = 16;
 
 struct Entry {
     step: &'static str,
@@ -53,15 +55,17 @@ pub(crate) fn remembered<T: Clone + Send + Sync + 'static>(
     check: impl FnOnce() -> Result<T, ApiError>,
 ) -> Result<T, ApiError> {
     let value_type = TypeId::of::<T>();
+    // Clone the shared value after the lock is released: it can be a
+    // maximum body.
     let hit = {
         let cache = REMEMBERED.lock().unwrap_or_else(|p| p.into_inner());
         cache
             .iter()
             .find(|e| e.matches(step, value_type, inputs))
-            .and_then(|e| e.value.downcast_ref::<T>().cloned())
+            .map(|e| Arc::clone(&e.value))
     };
-    if let Some(value) = hit {
-        return Ok(value);
+    if let Some(value) = hit.as_deref().and_then(|v| v.downcast_ref::<T>()) {
+        return Ok(value.clone());
     }
     let value = check()?;
     let mut cache = REMEMBERED.lock().unwrap_or_else(|p| p.into_inner());
