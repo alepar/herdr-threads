@@ -118,8 +118,9 @@ pub(super) struct InvitationStep {
     pub(super) decision_seq: i64,
     pub(super) pending: bool,
 }
-/// The next invitation of `seat` after `after` within `high` and the publication bound, with its
-/// pending check (not cancelled, rejected or settled).
+/// The next pending invitation of `seat` after `after` within `high` and the publication bound,
+/// so settled, cancelled and rejected invitations cost no visit; the pending re-check is defence
+/// in depth (the projection is trigger-maintained).
 pub(super) fn next_invitation(
     db: &Connection,
     seat: &SeatId,
@@ -127,7 +128,7 @@ pub(super) fn next_invitation(
     high: i64,
     decision: u64,
 ) -> Result<Option<InvitationStep>, ApiError> {
-    let row:Option<(i64,String,String,String,String,i64,i64)>=db.query_row("SELECT i.ordinal,i.id,i.thread_id,t.topic,t.goal,t.topic_revision,i.created_decision_seq FROM invitations i JOIN threads t ON t.id=i.thread_id WHERE i.seat_id=?1 AND i.ordinal>?2 AND i.ordinal<=?3 AND i.created_decision_seq<=?4 ORDER BY i.ordinal LIMIT 1",params![seat.as_str(),after,high,decision as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
+    let row:Option<(i64,String,String,String,String,i64,i64)>=db.query_row("SELECT i.ordinal,i.id,i.thread_id,t.topic,t.goal,t.topic_revision,i.created_decision_seq FROM digest_pending_invitations d INDEXED BY invitation_content_initial CROSS JOIN invitations i ON i.id=d.invitation_id JOIN threads t ON t.id=i.thread_id WHERE d.seat_id=?1 AND d.ordinal>?2 AND d.ordinal<=?3 AND d.created_decision_seq<=?4 ORDER BY d.ordinal LIMIT 1",params![seat.as_str(),after,high,decision as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
     let Some((ordinal, id, thread, topic, goal, revision, decision_seq)) = row else {
         return Ok(None);
     };
@@ -188,7 +189,8 @@ pub(super) struct ReceiptStep {
     /// Candidates examined; 0 means the walk is exhausted.
     pub(super) visited: usize,
 }
-/// One receipt-walk step from `position`. An obligation that is also unread for `reading` is
+/// One receipt-walk step from `position` over the seat's pending, published receipts (settled and
+/// unpublished rows cost no visit). An obligation that is also unread for `reading` is
 /// listed once, by the unread walk.
 pub(super) fn next_receipt(
     db: &Connection,
@@ -199,7 +201,7 @@ pub(super) fn next_receipt(
 ) -> Result<ReceiptStep, ApiError> {
     let slice = scan_effective_receipts(
         db,
-        &ReceiptScanScope::Seat(seat.as_str().into()),
+        &ReceiptScanScope::SeatPending(seat.as_str().into()),
         Some(position),
         1,
     )?;

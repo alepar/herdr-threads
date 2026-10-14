@@ -224,7 +224,13 @@ pub enum ReceiptSource {
 pub enum ReceiptScanScope {
     /// Scan a published message's complete logical recipient set.
     Message(String),
+    /// A seat's complete receipt history: every physical row and every staged recipient, settled
+    /// and unpublished included.
     Seat(String),
+    /// A seat's pending, published receipts: open physical rows and published manifest
+    /// recipients still in the pending projection. Settled and unpublished rows are never
+    /// candidates (inbox deadline class, ht-yha.52); callers that need history use `Seat`.
+    SeatPending(String),
     /// Pending physical rows plus still-unsettled staged recipients (the v8
     /// pending projection). Settled receipts are never candidates; callers
     /// that need settled history use `Seat` or `Message`.
@@ -262,6 +268,13 @@ pub struct EffectiveSeatAttention {
     pub frontier: LogicalAttentionFrontier,
 }
 
+/// `SeatPending` physical candidate: open physical rows of the seat in ordinal order.
+pub(crate) const SEAT_PENDING_PHYSICAL_SQL: &str = "SELECT message_id,seat_id,ordinal FROM receipts INDEXED BY receipts_seat_state_ordinal WHERE seat_id=?1 AND state='pending' AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1";
+/// `SeatPending` manifest candidate: the pending projection, published rows only (the join is
+/// inside the seek, so a staged preparation costs no visit; its SQL work is bounded by
+/// `cleanup_unpublished` expiry).
+pub(crate) const SEAT_PENDING_MANIFEST_SQL: &str = "SELECT sm.message_id,d.seat_id,d.ordinal FROM digest_pending_manifest_receipts d INDEXED BY digest_pending_manifest_receipts_seat CROSS JOIN send_manifests sm ON sm.preparation_id=d.preparation_id WHERE d.seat_id=?1 AND d.ordinal>?2 AND d.ordinal<=?3 ORDER BY d.ordinal LIMIT 1";
+
 fn receipt_high_water(
     db: &Connection,
     scope: &ReceiptScanScope,
@@ -274,6 +287,14 @@ fn receipt_high_water(
         ),
         (ReceiptScanScope::Seat(seat), true) => (
             "SELECT COALESCE(MAX(ordinal),0) FROM prepared_recipients WHERE seat_id=?1",
+            Some(seat),
+        ),
+        (ReceiptScanScope::SeatPending(seat), false) => (
+            "SELECT COALESCE(MAX(ordinal),0) FROM receipts INDEXED BY receipts_seat_state_ordinal WHERE seat_id=?1 AND state='pending'",
+            Some(seat),
+        ),
+        (ReceiptScanScope::SeatPending(seat), true) => (
+            "SELECT COALESCE(MAX(ordinal),0) FROM digest_pending_manifest_receipts WHERE seat_id=?1",
             Some(seat),
         ),
         (ReceiptScanScope::Thread(thread), false) => (
@@ -322,6 +343,8 @@ fn receipt_candidate(
             "SELECT sm.message_id,pr.seat_id,pr.ordinal FROM prepared_recipients pr LEFT JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE pr.seat_id=?1 AND pr.ordinal>?2 AND pr.ordinal<=?3 ORDER BY pr.ordinal LIMIT 1",
             Some(seat),
         ),
+        (ReceiptScanScope::SeatPending(seat), false) => (SEAT_PENDING_PHYSICAL_SQL, Some(seat)),
+        (ReceiptScanScope::SeatPending(seat), true) => (SEAT_PENDING_MANIFEST_SQL, Some(seat)),
         (ReceiptScanScope::Thread(thread), false) => (
             "SELECT message_id,seat_id,ordinal FROM receipts WHERE thread_id=?1 AND state='pending' AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1",
             Some(thread),
@@ -361,7 +384,8 @@ fn receipt_candidate(
     .map_err(store_error)
 }
 
-/// Visit at most `max_candidates` indexed physical and staged-recipient rows.
+/// Visit at most `max_candidates` indexed physical and staged-recipient rows. `SeatPending` and
+/// `Thread` visit only pending rows (and `SeatPending` only published ones).
 /// Published manifest recipients are canonical; physical projection rows for
 /// the same logical receipt are counted but omitted. The two captured source
 /// high waters prevent a later projection from moving a cursor's identity.

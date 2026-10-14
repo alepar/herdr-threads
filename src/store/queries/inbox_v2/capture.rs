@@ -134,14 +134,22 @@ pub(super) fn capture(
             .map_err(store_error)?
             .unwrap_or(0),
     };
+    let pending_max = |sql: &str| -> Result<i64, ApiError> {
+        db.query_row(sql, [seat.as_str()], |r| r.get(0))
+            .map_err(store_error)
+    };
     let unread = matches!(reader, Reader::Bound(_));
     let manifest = max("prepared_recipients")?;
     // The private presentation never walks invitations: it neither bounds nor reads them.
     let invitations = if subset.private() {
         0
     } else {
-        max("invitations")?
+        pending_max(
+            "SELECT COALESCE(MAX(ordinal),0) FROM digest_pending_invitations INDEXED BY invitation_content_initial WHERE seat_id=?1",
+        )?
     };
+    // The invitation and physical walks seek pending rows only, so a fresh page's first window
+    // starts at the oldest pending item (positions stay 0) and the high waters need no history scan.
     let mut state = State {
         seat: seat.clone(),
         binding_generation: generation,
@@ -156,7 +164,9 @@ pub(super) fn capture(
             high: DeadlineHighWaters {
                 invitation: invitations,
                 unread: unread.then_some(manifest as u64),
-                physical: max("receipts")?,
+                physical: pending_max(
+                    "SELECT COALESCE(MAX(ordinal),0) FROM receipts INDEXED BY receipts_seat_state_ordinal WHERE seat_id=?1 AND state='pending'",
+                )?,
                 manifest,
             },
             window_start: DeadlineWalks {
