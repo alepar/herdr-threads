@@ -1,6 +1,8 @@
 use super::*;
+use crate::protocol::pagination::DeliveryRowsPosition;
 
 /// Candidates include staged rows (no message yet): publication is tested after the seek.
+/// Replaced by [`seek_pending`] (`DeliveryRowSeek`); removed by ht-yha.5.4.
 pub const PENDING_CANDIDATES_SQL: &str = concat!(
     "SELECT r.ordinal,r.preparation_id,r.message_id,r.thread_id,r.seat_id FROM lazy_recipients r INDEXED BY lazy_recipients_seat_ordinal LEFT JOIN messages m ON m.id=r.message_id WHERE r.seat_id=?1 AND (m.id IS NULL OR ",
     seat_unread_sql!(),
@@ -27,6 +29,202 @@ pub const BINDING_THREAD_PENDING_CANDIDATES_SQL: &str = concat!(
     binding_lazy_unread_sql!(),
     ")) AND r.ordinal>?2 AND r.ordinal<=?3 ORDER BY r.ordinal LIMIT ?4"
 );
+
+/// The ordered candidate of the delivery-row seek: the next pending published row of the seat
+/// after `(?3,?4,?5)` = (priority, decision_seq, ordinal), published at or below `?2`. The partial
+/// index holds only published pending rows, so unpublished rows are never visited and no sort runs.
+const SEEK_SEAT_SQL: &str = "SELECT r.priority,r.decision_seq,r.ordinal,r.preparation_id,r.message_id,r.thread_id FROM lazy_recipients r INDEXED BY lazy_recipients_pending_order WHERE r.seat_id=?1 AND r.state='pending' AND r.decision_seq IS NOT NULL AND r.decision_seq<=?2 AND (r.priority,r.decision_seq,r.ordinal)>(?3,?4,?5) ORDER BY r.priority,r.decision_seq,r.ordinal LIMIT 1";
+/// [`SEEK_SEAT_SQL`] for one thread (`?6`), on the thread twin of the index.
+const SEEK_THREAD_SQL: &str = "SELECT r.priority,r.decision_seq,r.ordinal,r.preparation_id,r.message_id,r.thread_id FROM lazy_recipients r INDEXED BY lazy_recipients_pending_thread_order WHERE r.seat_id=?1 AND r.thread_id=?6 AND r.state='pending' AND r.decision_seq IS NOT NULL AND r.decision_seq<=?2 AND (r.priority,r.decision_seq,r.ordinal)>(?3,?4,?5) ORDER BY r.priority,r.decision_seq,r.ordinal LIMIT 1";
+
+/// The post-seek filters, one `EXISTS` per candidate (`?1` ordinal, `?2` instance, `?3` publication
+/// bound) so the seek's own plan stays index-only. The row identity joins are the pending page's.
+const SEAT_FILTER_SQL: &str = concat!(
+    "SELECT EXISTS(SELECT 1 FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id JOIN messages m ON m.id=sm.message_id WHERE r.ordinal=?1 AND sm.instance_id=?2 AND sm.decision_seq<=?3 AND ",
+    seat_unread_sql!(),
+    ")"
+);
+/// `?4` is the reading binding, `?5` the exclusive sequence bound (`i64::MAX` when none).
+const BINDING_FILTER_SQL: &str = concat!(
+    "SELECT EXISTS(SELECT 1 FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id JOIN messages m ON m.id=sm.message_id JOIN occupant_bindings b ON b.binding_id=?4 AND b.seat_id=r.seat_id WHERE r.ordinal=?1 AND sm.instance_id=?2 AND sm.decision_seq<=?3 AND m.sequence<?5 AND ",
+    binding_lazy_unread_sql!(),
+    ")"
+);
+
+/// Which rows [`seek_pending`] may return after the indexed ordered seek (a post-seek filter; every
+/// rejected row costs one visit).
+#[derive(Debug, Clone, Copy)]
+pub enum RowFilter<'a> {
+    /// Seat-level pending (`seat_unread_sql!`).
+    Seat,
+    /// The binding's own unread rows (`binding_lazy_unread_sql!`, displayed marks excluded).
+    Binding(&'a BindingId),
+    /// Binding unread in one thread, below `stop` (`read_cursors::first_ordinary_walk_stop`,
+    /// computed once per seek call by the caller, as `pending_page_in` does).
+    ThreadBinding {
+        binding: &'a BindingId,
+        thread: &'a ThreadId,
+        stop: i64,
+    },
+    /// Seat-level pending in one thread.
+    Thread(&'a ThreadId),
+    /// Private presentation eligibility (`PRIVATE_LAZY_ELIGIBILITY_SQL`): the presentation path's
+    /// own test, here so it never walks `lazy_recipients` itself.
+    PrivatePresentation(&'a BindingId),
+}
+
+impl RowFilter<'_> {
+    fn thread(&self) -> Option<&ThreadId> {
+        match self {
+            RowFilter::ThreadBinding { thread, .. } | RowFilter::Thread(thread) => Some(thread),
+            _ => None,
+        }
+    }
+}
+
+/// The outcome of one [`seek_pending`] call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeekResult {
+    /// The first row that passed the filter.
+    pub row: Option<(DeliveryRowsPosition, Recipient)>,
+    /// Index rows examined, accepted or rejected.
+    pub visited: usize,
+    /// The last position examined (accepted or rejected); resume strictly after it.
+    pub position: Option<DeliveryRowsPosition>,
+    /// The index holds no further row after `position` within the publication bound.
+    pub exhausted: bool,
+}
+
+/// DeliveryRowSeek: the next pending published delivery row of `seat` after `after` in
+/// (priority, decision_seq, ordinal) order, published at or below `dh`, that passes `filter`,
+/// visiting at most `max_visits` index rows.
+///
+/// Owns: the one ordered seek over `lazy_recipients` (the v47 partial indexes, thread twin for a
+/// thread-scoped filter), the publication bound inside it, and the post-seek binding filter.
+/// Hides: the index choice, the position encoding in the bounds, the displayed-mark exclusion and
+/// the private presentation eligibility test. Must not: let a caller walk `lazy_recipients` for
+/// delivery order itself (the presentation path included), visit an unpublished row, or sort.
+pub fn seek_pending(
+    conn: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    filter: RowFilter<'_>,
+    after: Option<DeliveryRowsPosition>,
+    dh: u64,
+    max_visits: usize,
+) -> Result<SeekResult, ApiError> {
+    let out_of_range = || {
+        api_error(
+            ErrorCode::StoreCorrupt,
+            "delivery row position out of range",
+        )
+    };
+    let dh = i64::try_from(dh)
+        .map_err(|_| api_error(ErrorCode::InvalidRequest, "invalid lazy publication bound"))?;
+    let mut position = after;
+    let mut visited = 0;
+    while visited < max_visits {
+        let (p, d, o) = position.map_or((-1, 0, 0), |p| {
+            (
+                i64::from(p.priority.get()),
+                i64::try_from(p.decision_seq).unwrap_or(i64::MAX),
+                i64::try_from(p.ordinal).unwrap_or(i64::MAX),
+            )
+        });
+        let read = |r: &rusqlite::Row<'_>| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        };
+        let candidate = match filter.thread() {
+            Some(thread) => conn
+                .prepare_cached(SEEK_THREAD_SQL)
+                .map_err(store_error)?
+                .query_row(params![seat.as_str(), dh, p, d, o, thread.as_str()], read),
+            None => conn
+                .prepare_cached(SEEK_SEAT_SQL)
+                .map_err(store_error)?
+                .query_row(params![seat.as_str(), dh, p, d, o], read),
+        }
+        .optional()
+        .map_err(store_error)?;
+        let Some((priority, decision_seq, ordinal, preparation_id, message, thread)) = candidate
+        else {
+            return Ok(SeekResult {
+                row: None,
+                visited,
+                position,
+                exhausted: true,
+            });
+        };
+        visited += 1;
+        let here = DeliveryRowsPosition {
+            priority: u8::try_from(priority)
+                .ok()
+                .and_then(|v| crate::protocol::priority::DeliveryPriority::new(v).ok())
+                .ok_or_else(out_of_range)?,
+            decision_seq: u64::try_from(decision_seq).map_err(|_| out_of_range())?,
+            ordinal: u64::try_from(ordinal).map_err(|_| out_of_range())?,
+        };
+        position = Some(here);
+        let accepted: bool = match filter {
+            RowFilter::Seat | RowFilter::Thread(_) => conn
+                .prepare_cached(SEAT_FILTER_SQL)
+                .map_err(store_error)?
+                .query_row(params![ordinal, instance, dh], |r| r.get(0)),
+            RowFilter::Binding(binding) => conn
+                .prepare_cached(BINDING_FILTER_SQL)
+                .map_err(store_error)?
+                .query_row(
+                    params![ordinal, instance, dh, binding.as_str(), i64::MAX],
+                    |r| r.get(0),
+                ),
+            RowFilter::ThreadBinding { binding, stop, .. } => conn
+                .prepare_cached(BINDING_FILTER_SQL)
+                .map_err(store_error)?
+                .query_row(
+                    params![ordinal, instance, dh, binding.as_str(), stop],
+                    |r| r.get(0),
+                ),
+            RowFilter::PrivatePresentation(binding) => conn
+                .prepare_cached(crate::store::queries::PRIVATE_LAZY_ELIGIBILITY_SQL)
+                .map_err(store_error)?
+                .query_row(
+                    params![seat.as_str(), message, binding.as_str(), instance, dh],
+                    |r| r.get(0),
+                ),
+        }
+        .map_err(store_error)?;
+        if accepted {
+            return Ok(SeekResult {
+                row: Some((
+                    here,
+                    Recipient {
+                        ordinal,
+                        preparation_id,
+                        message: MessageId::new(message),
+                        thread: ThreadId::new(thread),
+                        seat: seat.clone(),
+                    },
+                )),
+                visited,
+                position,
+                exhausted: false,
+            });
+        }
+    }
+    Ok(SeekResult {
+        row: None,
+        visited,
+        position,
+        exhausted: false,
+    })
+}
 
 /// With a `binding`, the high water counts only rows unread for that binding (staged rows still
 /// count); without one, the seat form.
@@ -368,3 +566,7 @@ pub fn pending_summary(conn: &Connection, seat: &SeatId) -> Result<(i64, i64), A
     let (count, max) = seat_lazy_pending(conn, seat, PENDING_SUMMARY_CAP)?;
     Ok((i64::try_from(count).unwrap_or(i64::MAX), max))
 }
+
+#[cfg(test)]
+#[path = "../../../tests/store/delivery_row_seek.rs"]
+mod delivery_row_seek_tests;

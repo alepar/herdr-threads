@@ -174,9 +174,29 @@ fn send_in(
     body: &str,
     delivery_mode: crate::protocol::commands::DeliveryMode,
 ) -> MessageId {
+    send_in_priority(fx, thread, body, delivery_mode, None)
+}
+/// An ordinary-mode send with an explicit delivery priority and no ACK recipients: a delivery row.
+fn send_priority(fx: &mut Fx, body: &str, priority: u8) -> MessageId {
+    let priority = crate::protocol::priority::DeliveryPriority::new(priority).unwrap();
+    send_in_priority(
+        fx,
+        "t",
+        body,
+        crate::protocol::commands::DeliveryMode::Ordinary,
+        Some(priority),
+    )
+}
+fn send_in_priority(
+    fx: &mut Fx,
+    thread: &str,
+    body: &str,
+    delivery_mode: crate::protocol::commands::DeliveryMode,
+    priority: Option<crate::protocol::priority::DeliveryPriority>,
+) -> MessageId {
     fx.sends += 1;
     // Only explicit ACK recipients owe receipts (D9): an ordinary send names every other member.
-    let acks: Vec<SeatId> = if delivery_mode.is_ordinary() {
+    let acks: Vec<SeatId> = if delivery_mode.is_ordinary() && priority.is_none() {
         fx.conn
             .prepare("SELECT seat_id FROM memberships WHERE thread_id=?1 AND state='joined' AND seat_id<>'a' ORDER BY seat_id")
             .unwrap()
@@ -188,7 +208,7 @@ fn send_in(
         vec![]
     };
     let request = SendMessage {
-        priority: None,
+        priority,
         delivery_mode,
         user_intent: None,
         thread: ThreadId::new(thread),
@@ -773,6 +793,62 @@ fn bound_lazy_stream_is_per_binding() {
     assert!(shows(&fx, &sub), "the subagent's own cursor is short of it");
     advance(&fx, &sub, "lazy-adv-sub", &[&m]);
     assert!(!shows(&fx, &sub), "the subagent's cursor passed it");
+}
+
+/// A p0 row displayed before an older p1 row of the same thread is not offered again to the binding
+/// that displayed it, through the cursor-only `AdvanceCursors` path (top-level and subagent
+/// streams, body reads), while the p1 row stays unread (ht-yha.5.2, `binding_row_displays`).
+#[test]
+fn out_of_order_display_through_advance_cursors_is_not_reoffered() {
+    let mut fx = fx("bi-out-of-order");
+    let parent = binding_of(&fx, &claim_b1());
+    insert_binding(
+        &fx.conn,
+        "b",
+        "nb1",
+        EXEC_B1,
+        Some((parent.as_str(), "agent-1")),
+    );
+    let sub = claim("b", "nb1", EXEC_B1, Some("agent-1"));
+    let low = send_priority(&mut fx, "p1 first", 1);
+    let urgent = send_priority(&mut fx, "p0 second", 0);
+    let shows = |fx: &Fx, c: &CallerClaim, m: &MessageId| {
+        page(fx, Some(c))
+            .iter()
+            .any(|row| matches!(row, Row::Lazy(id) if id == m.as_str()))
+    };
+    for c in [claim_b1(), sub.clone()] {
+        assert!(
+            shows(&fx, &c, &low) && shows(&fx, &c, &urgent),
+            "both unread"
+        );
+    }
+    advance(&fx, &claim_b1(), "ooo-top", &[&urgent]);
+    assert!(
+        !shows(&fx, &claim_b1(), &urgent),
+        "displayed p0 is not offered again"
+    );
+    assert!(shows(&fx, &claim_b1(), &low), "the p1 row is still owed");
+    assert!(
+        shows(&fx, &claim_b2(), &urgent),
+        "another binding's stream is untouched"
+    );
+    advance(&fx, &sub, "ooo-sub", &[&urgent]);
+    assert!(!shows(&fx, &sub, &urgent) && shows(&fx, &sub, &low));
+    advance(&fx, &claim_b1(), "ooo-low", &[&low]);
+    assert!(!shows(&fx, &claim_b1(), &low) && !shows(&fx, &claim_b1(), &urgent));
+    let marks: i64 = fx
+        .conn
+        .query_row(
+            "SELECT count(*) FROM binding_row_displays WHERE binding_id=?1",
+            [parent.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        marks, 0,
+        "the cursor passed the marked row and pruned its mark"
+    );
 }
 
 /// A binding enrolled after its seat left a thread owns no cursor row for it; a missing row must

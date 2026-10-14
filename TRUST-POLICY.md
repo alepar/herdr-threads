@@ -776,6 +776,13 @@ caller (A2) and exact published addressed message IDs in its deciding transactio
 cannot complete delivery. JSON, machine, explicit-seat reads, history, bodies and summaries remain
 read-only for Lazy completion. A complete successful own text body display may separately advance only
 the calling binding's read cursor, as specified below; it is not Lazy completion or a receipt ACK.
+A binding's display of a delivery row that stays above its cursor (delivery order is (priority, decision), the
+cursor walks message sequence, so a higher-priority row can be shown before a lower-sequence one) is remembered per
+binding (`binding_row_displays`, written by the one cursor-advance function for every display path, top-level
+completion and `AdvanceCursors` alike): every binding-level unread and pending predicate excludes a marked row, the
+display walk passes it, the mark is dropped once the cursor passes it, and a successor binding inherits the marks
+of the cursor it inherits. Marks are the binding's own display bookkeeping, never evidence about another binding,
+and confer no receipt, ACK or wake authority; a bookkeeping failure still leaves the row offered again (at least once).
 A top-level agent's text `accept` (and `accept-required`) output is that same default text inbox
 display, thread-scoped (ht-br0): after the accept result was written and flushed (with a live mod channel,
 only after the channel grace below has run out), it reads one `InboxBatchV2` page of the caller's own stream restricted to the

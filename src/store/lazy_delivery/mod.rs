@@ -64,7 +64,11 @@ macro_rules! binding_lazy_scope_sql {
 }
 pub(crate) use binding_lazy_scope_sql;
 
-/// Modern unread plus the unchanged top-level legacy-pending branch. The named
+/// Modern unread plus the unchanged top-level legacy-pending branch. The modern branch excludes
+/// the rows this binding displayed out of order above its cursor (`binding_row_displays`, written
+/// by `read_cursors::advance_through_displayed_with_change`), so every binding-level unread or
+/// pending predicate, and `seat_unread_sql!` through it, inherits the exclusion (two point lookups:
+/// the message by (thread, sequence), then its mark by primary key; `CROSS JOIN` fixes that order). The named
 /// form accepts scalar inputs, with no required message alias; callers validate
 /// message/recipient/manifest identity against their canonical message row first.
 /// The historical aliases remain available through the zero-argument wrapper.
@@ -91,7 +95,13 @@ macro_rules! binding_lazy_unread_sql {
                 binding: $binding, seat: $seat, thread: $thread,
                 instance: $instance, publication: $publication,
             },
-            ") OR (",
+            " AND NOT EXISTS(SELECT 1 FROM messages rdm CROSS JOIN binding_row_displays rd ON rd.message_id=rdm.id WHERE rd.binding_id=",
+            $binding,
+            " AND rdm.thread_id=",
+            $thread,
+            " AND rdm.sequence=",
+            $sequence,
+            ")) OR (",
             $legacy,
             "=1 AND ",
             $role,
