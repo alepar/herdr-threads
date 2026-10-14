@@ -22,7 +22,7 @@ pub const MIN_HERDR_VERSION: Version = Version::new(0, 9, 1);
 /// `tests/herdr-releases.tsv`, which `scripts/herdr-release-smoke` runs the
 /// e2e smoke against (a test keeps them in step). A newer release is admitted
 /// with one Health warning.
-pub const NEWEST_TESTED_HERDR_VERSION: Version = Version::new(0, 9, 3);
+pub const NEWEST_TESTED_HERDR_VERSION: Version = Version::new(0, 9, 4);
 
 /// Releases known to break Threads although they are above the floor. Empty
 /// today; an entry refuses that exact release (prereleases included).
@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn admits_every_release_from_the_floor_regardless_of_protocol() {
-        for version in ["0.9.1", "0.9.2", "0.9.3"] {
+        for version in ["0.9.1", "0.9.2", "0.9.3", "0.9.4"] {
             for protocol in [Some(22), Some(23), Some(14), None] {
                 let release = admit(Some(version), protocol).unwrap();
                 assert_eq!(release.support, ReleaseSupport::Tested, "{version}");
@@ -312,14 +312,14 @@ mod tests {
 
     #[test]
     fn newer_releases_connect_with_one_warning() {
-        for version in ["0.9.4", "0.10.0", "1.0.0", "0.9.4-rc.1"] {
+        for version in ["0.9.5", "0.10.0", "1.0.0", "0.9.5-rc.1"] {
             let release = admit(Some(version), Some(23)).unwrap();
             assert_eq!(release.support, ReleaseSupport::Untested, "{version}");
         }
         let release = admit(Some("0.10.0"), Some(23)).unwrap();
         assert_eq!(
             release.warning().as_deref(),
-            Some("untested Herdr 0.10.0; tested 0.9.1-0.9.3")
+            Some("untested Herdr 0.10.0; tested 0.9.1-0.9.4")
         );
         assert_eq!(release.summary(), "0.10.0 (protocol 23)");
     }
