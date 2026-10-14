@@ -401,10 +401,12 @@ pub fn binding_has_unread_lazy(db: &Connection, binding: &BindingId) -> Result<b
     .map_err(store_error)
 }
 
-/// Seat-level view for seat-keyed consumers (mod fingerprint, kicks, the legacy seat inbox):
-/// published lazy messages unread for at least one connected top-level binding of the seat, plus
-/// legacy pending rows; a seat with no connected top-level binding counts only legacy rows.
-/// Returns `(count, max ordinal)` over the newest `cap` rows.
+/// Seat-level pending oracle for tests (no production reader; seat-level readers seek the
+/// connected views through `seek_pending` / `wake_frontier`): published lazy messages unread for
+/// at least one connected top-level binding of the seat, plus legacy pending rows; a seat with no
+/// connected top-level binding counts only legacy rows. Returns `(count, max ordinal)` over the
+/// newest `cap` rows.
+#[cfg(test)]
 pub fn seat_lazy_pending(db: &Connection, seat: &SeatId, cap: i64) -> Result<(u64, i64), ApiError> {
     let (count, max): (i64, i64) = db
         .query_row(
@@ -418,21 +420,6 @@ pub fn seat_lazy_pending(db: &Connection, seat: &SeatId, cap: i64) -> Result<(u6
         )
         .map_err(store_error)?;
     Ok((u64::try_from(count).unwrap_or(0), max))
-}
-
-/// Bound of the pending-lazy count (a change detector for the mod fingerprint
-/// and the wake frontier, not a count anyone presents).
-pub const PENDING_SUMMARY_CAP: i64 = 1000;
-
-/// `(count, max ordinal)` of the seat's published pending lazy rows, over the
-/// newest `PENDING_SUMMARY_CAP`. Published rows only: a staged row is invisible
-/// to the mod and to wake, and its publication (manifest + message) must change
-/// both. Shared by `mod_seat_view` and `wake_seat_attention`.
-pub fn pending_summary(conn: &Connection, seat: &SeatId) -> Result<(i64, i64), ApiError> {
-    // Pending means unread for some connected top-level binding (`seat_unread_sql!`), the same
-    // seat-level definition the ordered seat seeks apply over the connected bindings' views.
-    let (count, max) = seat_lazy_pending(conn, seat, PENDING_SUMMARY_CAP)?;
-    Ok((i64::try_from(count).unwrap_or(i64::MAX), max))
 }
 
 #[cfg(test)]

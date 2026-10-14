@@ -42,7 +42,7 @@ existing `InvalidCursor` error.
 
 **Delivery-row class (exact).** Recommended: v47 adds `lazy_recipients_pending_order ON lazy_recipients(seat_id,
 priority, decision_seq, ordinal) WHERE state='pending' AND decision_seq IS NOT NULL` and the thread-scoped twin
-`(seat_id, thread_id, priority, decision_seq, ordinal)` with the same predicate. `decision_seq` is copied onto the
+`(seat_id, thread_id, priority, decision_seq, ordinal)` with the same predicate. (Superseded 2026-10-14: see Post-Implementation Notes.) `decision_seq` is copied onto the
 row at publication (`note_published`, owned by the wake child `ht-yha.4`) and backfilled by the migration, so "published and not past the captured
 high water" is `decision_seq IS NOT NULL AND decision_seq <= dh` inside the seek — no unpublished row is ever
 visited, which strictly improves the 2026-10-07 bounded-walk rule. The seek resumes with `(priority,
@@ -184,3 +184,7 @@ Digest:
 - `delivery_mode` readers converted: `RECEIVABLE_WHERE` and `continued_ordinary` rely on the `prepared_recipients`
   join, `ordinary_presentation_message_by_id` branches on whether the seat holds a delivery row, and hot-thread
   recency counts priority-0 messages (the legacy `ordinary` mode maps to priority 0).
+
+### 2026-10-14, ht-yha.44 / ht-yha.52 / ht-yha.54 (per-binding views, pending-only deadline walks)
+
+The delivery-row class seeks `binding_pending_order` / `binding_pending_thread_order` on the reading binding's own view; a seat-level reader min-merges the connected top-level views and `lazy_recipients_legacy_order` (`seek_pending` in `src/store/lazy_delivery/inbox.rs`). The two v47 `lazy_recipients_pending_*order` indexes were dropped. The 2026-10-14 ht-yha.5.4 note about `MARK_DISPLAYED_SQL` describes an intermediate state: the seat-wide `state` is no longer read by any seek. The deadline class's invitation and receipt walks seek pending-only projections (ht-yha.52), so settled and unpublished history costs no window visit.

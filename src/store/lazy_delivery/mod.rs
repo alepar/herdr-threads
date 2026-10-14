@@ -103,9 +103,8 @@ pub(crate) use binding_lazy_unread_sql;
 
 /// A lazy recipient row `r` (with its message `m`, possibly absent) is unread at seat level when
 /// it is legacy pending (carried from before V34) or some connected top-level binding of the seat
-/// finds it unread (`binding_lazy_unread_sql!`). The window walks (`pending_lazy`,
-/// `seat_lazy_pending`: mod fingerprint, kick count) and the seat inbox filter use it as a
-/// post-filter; the ordered seat-level seeks and the wake seeks read each connected top-level
+/// finds it unread (`binding_lazy_unread_sql!`). The seat inbox filter, `attention::pending_lazy` and the mod
+/// stall tail (`STALL_ROWS_TAIL`) use it as a post-filter; the ordered seat-level seeks and the wake seeks read each connected top-level
 /// binding's pending view (`binding_pending`) plus the legacy rows and apply it to each
 /// candidate. Display marking uses `seat_owes_display_sql!` instead.
 macro_rules! seat_unread_sql {
