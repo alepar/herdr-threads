@@ -215,11 +215,9 @@ pub(crate) fn stage_work<C: LocalClient + ?Sized>(
             deadline: plan.policy.is_some_and(|p| p.deadline_millis.is_some()),
             ..Default::default()
         })?;
-        let (delivery_mode, priority) = super::send_priority::shape(
-            priority,
-            super::send_priority::supports(client, &super::cooperative_budget(clock)),
-        )
-        .wire();
+        // p0 has an exact legacy spelling every daemon accepts, and the handoff plan freezes no wire
+        // shape: a retry after a daemon upgrade must replay the first attempt byte for byte.
+        let (delivery_mode, priority) = super::send_priority::shape(priority, false).wire();
         let result = call(
             SemanticMutation::SendMessage {
                 delivery_mode,

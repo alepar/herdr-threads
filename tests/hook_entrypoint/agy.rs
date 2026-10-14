@@ -1711,7 +1711,10 @@ mod activation {
         assert_eq!(send.claim, origin);
         assert_eq!(send.thread, actual.thread);
         assert_eq!(send.body, body);
-        assert_eq!(send.delivery_mode, DeliveryMode::Lazy);
+        // The daemon advertises send.priority_v1: the default send carries priority 1 (the
+        // passive class) and no legacy delivery mode.
+        assert_eq!(send.priority.map(|p| p.get()), Some(1));
+        assert_eq!(send.delivery_mode, DeliveryMode::Ordinary);
         assert_eq!(send.deadline_millis, None);
         assert_eq!(
             send.direct_recipient.as_ref(),
