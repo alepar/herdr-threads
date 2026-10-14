@@ -610,7 +610,11 @@ mod live {
         }
         /// Freezes time just before a child's permit issuance.
         fn hold(&self) -> HeldStoreClockHold<'_> {
-            *self.held.lock().unwrap() = Some(self.running());
+            let mut held = self.held.lock().unwrap();
+            // Not reentrant: a nested hold would move the frozen instant.
+            assert!(held.is_none(), "store clock hold is not reentrant");
+            *held = Some(self.running());
+            drop(held);
             HeldStoreClockHold(self)
         }
         /// Moves the frozen instant by the window when `role` is targeted.
