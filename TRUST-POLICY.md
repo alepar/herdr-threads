@@ -424,7 +424,9 @@ model open work, and summary closure never changes receipt state or installs glo
   the prompt, after the reservation fence, the daemon rechecks the binding the composer chose (or, with no
   composer choice, the seat-level binding a registered or recovery-hint wake reaches) against its own records; a served
   binding gets a pre-send refusal (nothing typed, the ladder does not climb) and an unserved sibling's wake
-  stays owed for a later attempt.
+  stays owed for a later attempt. A target that already displayed the threshold-admitted frontier delivery row the
+  wake is reserved for (reason `lazy`: its cursor passed the row or its displayed mark holds it) is owed no wake for
+  it, so a one-process composer wake for that row is refused once any binding of the process displayed it.
   Verified 2026-10-11 (`evidence/ht-54r.89/summary.md`, derived fingerprints, no harness logged in): the
   fingerprint pid is a foreground process for Claude 2.1.296 (live: `CLAUDE_PID` among seven foreground
   processes), Codex 0.162.1 native and via npm (node launcher plus native child), Hermes v0.21.5 and

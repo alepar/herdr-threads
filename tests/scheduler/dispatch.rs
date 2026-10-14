@@ -5326,11 +5326,20 @@ fn one_process_composer_wake_serves_a_threshold_admitted_delivery_row() {
     assert_eq!(prompted[0].bound_harness.as_deref(), Some("codex"));
 }
 
-/// Kills: widening the one-process rule past what it is sound for. A wake naming no seat-level
-/// reason still needs a unique binding; two harnesses on one pid are not one composer; a process
-/// that is not in the foreground is no match.
+/// Kills: widening the one-process rule past what it is sound for. A lazy wake one binding of
+/// the process already displayed is refused, not typed; a wake naming no seat-level reason still
+/// needs a unique binding; two harnesses on one pid are not one composer; a process that is not
+/// in the foreground is no match.
 #[test]
 fn one_process_composer_wake_stays_refused_outside_seat_attention() {
+    let served = ServedReservationCheck { served: &["main"] };
+    let (outcome, prompted) = composer_wake_for(one_process_bindings(), &[10], &["lazy"], &served);
+    assert_eq!(
+        outcome,
+        WakeOutcome::Refused(RefusalCause::Unavailable),
+        "main already displayed the row"
+    );
+    assert!(prompted.is_empty(), "nothing typed");
     let owed = ServedReservationCheck { served: &[] };
     let (outcome, prompted) = composer_wake_for(one_process_bindings(), &[10], &[], &owed);
     assert_eq!(outcome, WakeOutcome::Refused(RefusalCause::Unsafe));

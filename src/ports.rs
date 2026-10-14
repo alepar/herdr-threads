@@ -2176,7 +2176,9 @@ impl WakeReservation {
     /// Whether the wake is for seat-level attention (an invitation, receipt or warning, a
     /// receipt's soft-deadline poke, or a delivery row the seat's nudge threshold admitted: the
     /// `lazy` reason, which since priority delivery is what a bare `--nudge` leaves, as it makes
-    /// no receipt), which is shown to whichever binding of the seat takes its next turn.
+    /// no receipt), which is shown to whichever binding of the seat takes its next turn. A
+    /// binding that already displayed the frontier row is owed no `lazy` wake
+    /// (`wake_owed_to_binding`), so one served binding of a process takes its composer wake off.
     pub fn for_seat_attention(&self) -> bool {
         self.reasons.iter().any(|reason| {
             matches!(
