@@ -1075,9 +1075,9 @@ class Recipient:
         connected = [b for b in sides if b["liveness"] == "connected"]
         checks = {"bindings_after_side": sides, "connected_same_pid":
                   len(connected) > 1 and len({b["pid"] for b in connected}) == 1}
-        # The setup must have happened: the hookless recipient keeps every side binding connected on its one
-        # pid; a hooked one has them (superseded by its lifecycle-claimed session).
-        setup_ok = (checks["connected_same_pid"] and len(connected) == 1 + SIDE_FORKS if self.plain
+        # The setup must have happened (a later case adds its own sides): the hookless recipient keeps every
+        # side binding connected on its one pid; a hooked one has them (superseded by its lifecycle-claimed session).
+        setup_ok = (checks["connected_same_pid"] and len(connected) >= 1 + SIDE_FORKS if self.plain
                     else len(sides) >= 1 + SIDE_FORKS)
         checks["side_setup_ok"] = setup_ok
         gap = SPACING_S - (time.time() - self.last_wake)
