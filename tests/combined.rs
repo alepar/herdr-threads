@@ -129,3 +129,6 @@ mod direct_send;
 
 #[path = "integration/priority_config_smoke.rs"]
 mod priority_config_smoke;
+
+#[path = "integration/priority_sweep.rs"]
+mod priority_sweep;

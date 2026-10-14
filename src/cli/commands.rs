@@ -797,9 +797,8 @@ enum Top {
     /// section of `herdr-threads skill`).
     #[command(args_conflicts_with_subcommands = true)]
     Summary(SummaryArgs),
-    /// Show or set whether pending lazy messages also wake this seat when it
-    /// is idle: `nudge` (default) keeps the ordinary wake policy, `all` wakes
-    /// for every pending message. A preference only: it never ACKs or
+    /// Alias of `nudge-threshold`: `nudge` is threshold 0 (default), `all` is -1
+    /// (wake for every pending message). A preference only: it never ACKs or
     /// changes receipts.
     WakeOn(WakeOnArgs),
     /// Show or set this seat's nudge threshold T (-1..=9, default 0): an idle seat wakes on a
@@ -1961,8 +1960,8 @@ where
         *confirmation = None;
     }
     if actor == InvocationActor::Human {
-        // A person's handoff invitation cannot require agent confirmation (the daemon refuses it):
-        // without an explicit invitation deadline it stays the lazy, discoverable invitation.
+        // A person's handoff invitation asks for the Lazy policy when it has no explicit deadline;
+        // the daemon ignores the requested policy (invitations always confirm).
         let policy = match &mut parsed.action {
             CliAction::Handoff(request) => request.policy.as_mut(),
             CliAction::TopologyHandoff(request) => request.policy.as_mut(),

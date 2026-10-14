@@ -21,10 +21,10 @@ use serde_json::Value;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, PartialEq, Eq)]
-struct Wake {
-    delivery_row: bool,
-    invitation: bool,
-    receipt: bool,
+pub(super) struct Wake {
+    pub(super) delivery_row: bool,
+    pub(super) invitation: bool,
+    pub(super) receipt: bool,
 }
 
 /// The predicate under test, restated: a negative threshold admits every priority.
@@ -32,7 +32,7 @@ fn admits(threshold: i64, priority: i64) -> bool {
     threshold < 0 || priority <= threshold
 }
 
-fn wake(w: &World) -> Wake {
+pub(super) fn wake(w: &World) -> Wake {
     let db = w.db();
     let seen = attention::wake_seat_attention(&db, &w.seats[1])
         .unwrap()
@@ -45,7 +45,7 @@ fn wake(w: &World) -> Wake {
 }
 
 /// Polls `cond` for up to 10 s; publication of a send is asynchronous to the CLI return.
-fn eventually(what: &str, mut cond: impl FnMut() -> bool) {
+pub(super) fn eventually(what: &str, mut cond: impl FnMut() -> bool) {
     let start = Instant::now();
     while !cond() {
         assert!(
@@ -56,11 +56,11 @@ fn eventually(what: &str, mut cond: impl FnMut() -> bool) {
     }
 }
 
-fn count(w: &World, sql: &str, id: &str) -> i64 {
+pub(super) fn count(w: &World, sql: &str, id: &str) -> i64 {
     w.db().query_row(sql, [id], |r| r.get(0)).unwrap()
 }
 
-fn receipts_for(w: &World, message: &str) -> i64 {
+pub(super) fn receipts_for(w: &World, message: &str) -> i64 {
     count(
         w,
         "SELECT (SELECT count(*) FROM receipts WHERE message_id=?1)+(SELECT count(*) FROM receipt_state WHERE message_id=?1)",
@@ -68,13 +68,13 @@ fn receipts_for(w: &World, message: &str) -> i64 {
     )
 }
 
-fn invitations_total(w: &World) -> i64 {
+pub(super) fn invitations_total(w: &World) -> i64 {
     w.db()
         .query_row("SELECT count(*) FROM invitations", [], |r| r.get(0))
         .unwrap()
 }
 
-fn published_row(w: &World, message: &str) -> bool {
+pub(super) fn published_row(w: &World, message: &str) -> bool {
     w.db()
         .query_row(
             "SELECT count(*) FROM lazy_recipients WHERE message_id=?1 AND seat_id=?2 AND decision_seq IS NOT NULL",
@@ -85,14 +85,14 @@ fn published_row(w: &World, message: &str) -> bool {
         == 1
 }
 
-fn inbox_items(w: &World) -> Vec<Value> {
+pub(super) fn inbox_items(w: &World) -> Vec<Value> {
     w.ok(Some(1), false, &["inbox"])["data"]["items"]
         .as_array()
         .unwrap()
         .clone()
 }
 
-fn item_id(item: &Value) -> String {
+pub(super) fn item_id(item: &Value) -> String {
     let key = if item["kind"] == "invitation" {
         "invitation"
     } else {
@@ -101,21 +101,21 @@ fn item_id(item: &Value) -> String {
     item[key].as_str().unwrap().to_string()
 }
 
-fn new_thread(w: &World, topic: &str) -> String {
+pub(super) fn new_thread(w: &World, topic: &str) -> String {
     w.ok(Some(0), false, &["thread", "create", "--topic", topic])["data"]
         .as_str()
         .unwrap()
         .to_string()
 }
 
-fn send_ack(w: &World) -> String {
+pub(super) fn send_ack(w: &World) -> String {
     w.send(
         "ack body",
         &["--require-ack", &w.seats[1], "--deadline", "60"],
     )
 }
 
-fn invite(w: &World, topic: &str) -> (String, String) {
+pub(super) fn invite(w: &World, topic: &str) -> (String, String) {
     let thread = new_thread(w, topic);
     let invitation = w.ok(Some(0), false, &["invite", &thread, "--seat", &w.seats[1]])["data"]
         .as_str()
