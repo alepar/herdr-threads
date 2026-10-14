@@ -78,4 +78,5 @@ approvals:
 - approvals · ht-yha.33 · human · replaced: break backwards compatibility, PROTOCOL_VERSION 7→8 + crate 1.0.0 (ht-yha.49) (2026-10-14)
 - approvals · ht-yha.41/.42 test rewrites · human · lgtm (2026-10-14)
 - approvals · merge into main · human · hand off to the main tab when done (2026-10-14)
+- approvals · leftovers · human · "your call" → orchestrator filed both now: ht-yha.50 (--max-bytes p0 refusal), ht-yha.51 (markers_ok vacuous) (2026-10-14)
 - root-design · human · D1-D11 and sections A-E approved via seePN0MKW (mwRZ1YxXs, myas79LQ8, mXmhe1P2d, mpqluOeQD)
