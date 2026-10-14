@@ -1470,6 +1470,77 @@ fn relaxed_commit_durability_is_a_per_context_test_hook() {
     assert_eq!(synchronous(&durable.open_writer().unwrap()), 2, "FULL");
 }
 
+/// A writer with in-memory TEMP storage (`use_memory_temp_store`, set before
+/// the TEMP guards are installed) keeps every TEMP object a default writer
+/// has, compared by type, name and SQL, and its production binding-evidence
+/// guards still refuse an active binding inserted or registered without
+/// reconfirmation evidence while a binding with evidence is written.
+#[test]
+fn temp_store_writer_keeps_production_temp_guards() {
+    let temp_objects = |db: &Connection| -> Vec<(String, String, Option<String>)> {
+        let mut stmt = db
+            .prepare("SELECT type, name, sql FROM sqlite_temp_master ORDER BY type, name")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let path = db_path();
+    let default_db = StoreContext::new(path.clone(), Arc::new(FixedClock))
+        .open_writer()
+        .unwrap();
+    let memory = StoreContext::new(path, Arc::new(FixedClock));
+    memory.use_memory_temp_store();
+    let db = memory.open_writer().unwrap();
+    assert_eq!(
+        db.query_row("PRAGMA temp_store", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        2,
+        "MEMORY"
+    );
+    let expected = temp_objects(&default_db);
+    let names: Vec<&str> = expected.iter().map(|(_, name, _)| name.as_str()).collect();
+    assert!(
+        names.contains(&"occupant_binding_evidence_insert")
+            && names.contains(&"occupant_binding_evidence_register"),
+        "{names:?}"
+    );
+    assert_eq!(temp_objects(&db), expected);
+    db.execute_batch(
+        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1);\
+         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','pane-s',1,1,0);",
+    )
+    .unwrap();
+    let binding = |terminal: &str| {
+        format!(
+            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'pane-s','b',1,'codex','session','00000000-0000-4000-8000-0000000000aa','fresh',0,NULL,'{terminal}','inc')"
+        )
+    };
+    let lacking = |error: rusqlite::Error| {
+        assert!(
+            error
+                .to_string()
+                .contains("occupant binding lacks reconfirmation evidence"),
+            "{error}"
+        );
+    };
+    lacking(db.execute(&binding(""), []).unwrap_err());
+    db.execute(&binding("term-s"), []).unwrap();
+    lacking(
+        db.execute(
+            "UPDATE occupant_bindings SET registered_at=1, terminal_id='' WHERE seat_id='s'",
+            [],
+        )
+        .unwrap_err(),
+    );
+    db.execute(
+        "UPDATE occupant_bindings SET registered_at=1 WHERE seat_id='s'",
+        [],
+    )
+    .unwrap();
+}
+
 #[test]
 fn fresh_database_has_durable_settings_constraints_and_read_only_queries() {
     let path = db_path();

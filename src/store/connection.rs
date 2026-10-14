@@ -56,6 +56,10 @@ pub struct StoreContext {
     /// `relax_commit_durability`).
     #[cfg(any(test, feature = "test-support"))]
     relaxed_durability: AtomicBool,
+    /// Test hook: writers keep TEMP storage in memory (see
+    /// `use_memory_temp_store`).
+    #[cfg(any(test, feature = "test-support"))]
+    memory_temp_store: AtomicBool,
     #[cfg(test)]
     setup_busy_signal: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
     #[cfg(test)]
@@ -206,6 +210,8 @@ impl StoreContext {
             lane_fault: std::sync::Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
             relaxed_durability: AtomicBool::new(test_fast_paths()),
+            #[cfg(any(test, feature = "test-support"))]
+            memory_temp_store: AtomicBool::new(false),
             #[cfg(test)]
             setup_busy_signal: std::sync::Mutex::new(None),
             #[cfg(test)]
@@ -226,6 +232,16 @@ impl StoreContext {
     #[cfg(any(test, feature = "test-support"))]
     pub fn relax_commit_durability(&self) {
         self.relaxed_durability.store(true, Ordering::SeqCst);
+    }
+
+    /// Test hook for setup-only writers: writers opened afterwards keep TEMP
+    /// storage (statement journals) in memory, so a large setup transaction
+    /// does not spill to temporary files. Applied as the connection opens,
+    /// before any TEMP object exists: changing `temp_store` later drops every
+    /// TEMP object, including the binding-evidence guards installed below.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn use_memory_temp_store(&self) {
+        self.memory_temp_store.store(true, Ordering::SeqCst);
     }
 
     /// Test processes relax every store by default ([`test_fast_paths`]); a
@@ -288,6 +304,11 @@ impl StoreContext {
             fresh_schema_template::seed(&self.path);
         }
         let conn = Connection::open(&self.path).map_err(store_error)?;
+        #[cfg(any(test, feature = "test-support"))]
+        if self.memory_temp_store.load(Ordering::SeqCst) {
+            conn.pragma_update(None, "temp_store", "MEMORY")
+                .map_err(store_error)?;
+        }
         conn.busy_timeout(Duration::from_secs(2))
             .map_err(store_error)?;
         conn.pragma_update(None, "foreign_keys", "ON")

@@ -3746,13 +3746,15 @@ impl Fixture {
         // setup connection commits with `synchronous=NORMAL` (WAL), so writing
         // the history is not fsync-bound on a disk shared with the suite.
         context.relax_commit_durability();
-        let conn = context.open_writer().unwrap();
-        conn.busy_timeout(Duration::from_secs(30)).unwrap();
         // Its statement journals stay in memory: on the default file temp
         // store a spilling writer statement creates, writes and unlinks a
         // temporary file, which under disk load made most of the invitation
-        // history's time. The rows written are the same either way.
-        conn.pragma_update(None, "temp_store", "MEMORY").unwrap();
+        // history's time. Set as the writer opens, so the production TEMP
+        // binding-evidence guards it installs stay in place
+        // (schema::temp_store_writer_keeps_production_temp_guards).
+        context.use_memory_temp_store();
+        let conn = context.open_writer().unwrap();
+        conn.busy_timeout(Duration::from_secs(30)).unwrap();
         (context, conn)
     }
     fn pending_axis_history(&self, axis: PendingAxis, n: u64) -> Duration {
