@@ -11,7 +11,7 @@ roast-design: 2026-10-14-cross-node-sync-roast-design-1.md
 branch: super-auto/cross-node-sync
 base: main
 
-roastDesignRound: 1
+roastDesignRound: 2
 
 stepBackDesign-round-1: patch — 5 findings mostly independent; clusters clone-identity and order-independent-apply swept as rules
 
