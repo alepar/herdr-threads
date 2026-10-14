@@ -108,17 +108,36 @@ fn the_lossy_notice_names_the_lost_priority_in_one_short_line() {
     assert!(!line.contains('\n') && line.len() < 100);
 }
 
-struct Caps(bool);
+/// `advertised`: what a capabilities call lists; `probe_error`: the capabilities call itself fails
+/// (and `supports_capability` then reads as "none", as the real client's cached probe does).
+struct Caps {
+    advertised: bool,
+    probe_error: Option<ErrorCode>,
+}
 impl LocalClient for Caps {
     fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
-        self.0 && name == SEND_PRIORITY_V1
+        self.advertised && self.probe_error.is_none() && name == SEND_PRIORITY_V1
     }
     fn call(
         &self,
-        _: crate::protocol::commands::Command,
+        command: crate::protocol::commands::Command,
         _: &CallBudget,
     ) -> Result<crate::protocol::results::CommandResult, ApiError> {
-        unreachable!("the probe asks only for the capability")
+        assert!(matches!(
+            command,
+            crate::protocol::commands::Command::Capabilities
+        ));
+        if let Some(code) = &self.probe_error {
+            return Err(ApiError::new(code.clone(), "probe failed"));
+        }
+        let capabilities = if self.advertised {
+            vec![SEND_PRIORITY_V1.to_owned()]
+        } else {
+            Vec::new()
+        };
+        Ok(crate::protocol::results::CommandResult::Capabilities(
+            crate::protocol::results::CapabilityList { capabilities },
+        ))
     }
     fn call_with_output(
         &self,
@@ -130,9 +149,38 @@ impl LocalClient for Caps {
     }
 }
 
+fn caps(advertised: bool, probe_error: Option<ErrorCode>) -> Caps {
+    Caps {
+        advertised,
+        probe_error,
+    }
+}
+
 #[test]
 fn supports_follows_the_advertised_capability() {
     let budget = crate::cli::cooperative_budget(&crate::app::SystemClock::new());
-    assert!(supports(&Caps(true), &budget));
-    assert!(!supports(&Caps(false), &budget));
+    assert!(supports(&caps(true, None), &budget).unwrap());
+    assert!(!supports(&caps(false, None), &budget).unwrap());
+}
+
+#[test]
+fn a_failed_probe_is_an_error_not_a_silent_downgrade() {
+    let budget = crate::cli::cooperative_budget(&crate::app::SystemClock::new());
+    for code in [
+        ErrorCode::HostUnavailable,
+        ErrorCode::DeadlineExceeded,
+        ErrorCode::ServiceBusy,
+    ] {
+        let err = supports(&caps(true, Some(code.clone())), &budget).unwrap_err();
+        assert_eq!(err.code, code);
+        assert_eq!(err.detail, "probe failed");
+    }
+}
+
+#[test]
+fn a_definitive_unsupported_answer_means_an_old_daemon() {
+    let budget = crate::cli::cooperative_budget(&crate::app::SystemClock::new());
+    for code in [ErrorCode::Unsupported, ErrorCode::InvalidRequest] {
+        assert!(!supports(&caps(true, Some(code)), &budget).unwrap());
+    }
 }

@@ -3598,7 +3598,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             };
             // The wire shape of a send is decided once, here, and recorded: a retry replays it.
             let priority_v1 = matches!(&mutation, MutationSpec::Send { .. })
-                && send_priority::supports(client, &cooperative_budget(clock));
+                && send_priority::supports(client, &cooperative_budget(clock))?;
             if let MutationSpec::Send { priority, .. } = &mutation
                 && !priority_v1
                 && priority.to_mode().lossy
