@@ -544,6 +544,77 @@ Suggested task cut (files):
 
 Order: 1 → 2 → 3 → 4 → 5 → (6, 7, 8) → 9 → 10.
 
+## Key abstractions
+
+**LogKey / LogHead / Vector** — new value structs (`src/sync/mod.rs`), the name and replication state of one origin log.
+- Owns: `LogKey { node, incarnation }` as the only identity of a log, ordered by `(node bytes, incarnation)` (the deps order); `LogHead` (contiguous counter, head hash, `LogState::{Active, Frozen}`, `frozen_at`); `Vector` as the node's full per-log head map; `BatchLimits`.
+- Hides: the local `log_ix` interning. Only Journal maps `LogKey` to `log_ix`, and it never leaves `src/store/journal.rs` and `src/store/apply.rs`.
+- Must not: carry an "is self" meaning. Self-ness comes from `local_node.active_log_ix` and the node uuid, so an older own incarnation is an ordinary log.
+- Relationships: leaf types under Envelope, ChainRules, JournalPort and SyncCoordinator. They depend only on `NodeUuid`.
+
+**EntityKey** — new value struct (`src/sync/mod.rs`), the kind-agnostic name of something a fact establishes or depends on.
+- Owns: the 1..160-byte `[0-9A-Za-z._:/-]` grammar, its validating constructor and its `Ord` (sorted, unique `needs`), and the `/`-joined composite form for settlement records (`m<id>/s<id>`, `i<id>/answer`).
+- Hides: nothing beyond the grammar. ApplyEngine and Journal compare keys as opaque strings and never split them.
+- Must not: be parsed by the engine to learn a kind or an entity type. Only the kinds that build composite keys know their parts.
+- Relationships: produced by `FactKind::creates`/`needs`. Stored in `journal.creates` and `journal.needs`. Read by readiness (`parked_on`) and by `ApplyContext::delivery_suppressed`.
+- Errors: construction rejects bad length or characters as `EnvelopeError::Malformed{field}`.
+
+**ChainRules** — new pure module (`src/sync/chain.rs`): `check_next` over `HeldLog` → `ChainStep`, the one statement of the per-log chain rules.
+- Owns: the decision table of §6 (`AheadOfSelf`, `Gap{expected}`, `Genesis`, `Duplicate`, `Conflict`, `BeyondFrozen`, `Append`, `Corrupt(EnvelopeError)`), including "a mismatched hash with a bad signature is `Corrupt`, never a fork".
+- Hides: the order in which contiguity, freeze, prev-hash and signature are checked.
+- Must not: touch the store or the clock, act on a step, or read the payload (except `Envelope::genesis_pubkey` on `Genesis`).
+- Relationships: called by Journal's ingest and by `MemoryJournal`, which act on the step. It depends on Envelope and LogKey only. It is the reason the two `JournalPort` implementations cannot disagree.
+- Errors: none of its own. `ChainStep` is a closed enum, and callers `match` it exhaustively.
+
+**SyncState** — new struct (`src/store/connection.rs`, in `StoreContext.sync: OnceLock`), the journal's per-daemon runtime installed once by `journal::open`.
+- Owns: the `Arc<NodeIdentity>`, the `Mutex<Hlc>`, the `&'static FactRegistry` and the ingest headroom threshold, and the "journal is open" gate.
+- Hides: whether a given store has a journal. Before `open`, authoring and ingest return `Unsupported "journal not open"`, and `check_self_applied` is a no-op.
+- Must not: be locked outside `src/store/journal.rs`. Only Journal ticks or folds the Hlc, and only inside a writer transaction. It must not be replaced after install (registry upgrades are a reopen).
+- Relationships: owned by StoreContext. Read by Journal, ApplyEngine (registry) and the commit guard.
+- Lifecycle: set once per StoreContext. It lives as long as the store, and tests install a larger registry by reopening.
+- Errors: "journal not open" is a programming error, distinct from every store and fact error.
+
+**ThreadRegisters** — new store module (`src/store/thread_registers.rs`), the only owner of `thread_registers`.
+- Owns: the LWW upsert keyed by `(thread, field)` with the `(HlcStamp, NodeUuid)` tie-break, its `RegisterOutcome::{Won, Lost}`, and `current` (the floor for `author_above`). The register field set (`topic`, `name`, `archived`) is a closed enum matching the CHECK.
+- Hides: the `ON CONFLICT … WHERE` form and the monotone trigger.
+- Must not: write `threads` (ht-5fr.4's handlers copy winners), reference `threads` by FK (root §4), or read the local clock.
+- Relationships: called by future `thread.*` handlers and by authors choosing a floor. It depends on HlcStamp and NodeUuid only.
+- Errors: losing is `Lost`, not an error. A trigger abort means a broken caller and surfaces as a store error.
+
+**Envelope** — extended: concrete v1 canonical layout with the `HTJRNL01` magic, `UnsignedEnvelope::seal`, `validate_shape` (the envelope v1 limits), `Deps` (unique sorted triples, own log excluded), `WireEnvelope` (hex fields plus a `RawValue` payload that is never re-encoded) and the closed `EnvelopeError::{Malformed{field}, HashMismatch, BadSignature, UuidMismatch, NotGenesis}`.
+
+**Hlc** — extended: `HlcStamp` with `tick_above` (LWW floor, absorbing only under the 60 s cap), `Fold::{Absorbed, Skewed{ahead_ms}}` and the capped `resume`. It lives in SyncState.
+
+**Journal** — extended: `open` (startup invariants, HLC resume, genesis bootstrap through `begin_incarnation`), `author`/`author_above` generic over `FactKind`, the commit guard `check_self_applied`, the headroom and batch-bound checks before BEGIN, and `store_forked`/`freeze` exposed for Incarnations. The concrete `IngestOutcome::{Stored, Gap, Fork{ForkEvidence}, Frozen, Corrupt, Headroom}` keeps "nothing stored" (`Corrupt`, `Headroom`) apart from "prefix kept" (`Gap`, `Fork`, `Frozen`), and `Err` stays reserved for store errors.
+
+**JournalPort / MemoryJournal** — extended: the port gains `apply_pending` so the Apply lane worker needs no second trait. `MemoryJournal` runs the same ChainRules and verification, with a handler-less `apply_pending` and `author_raw` for link tests. Per spec §1/§12, the port is therefore wider than "narrow for SyncCoordinator"; the alternative was a single-implementation `ApplyPort`.
+
+**FactKind / FactRegistry** — extended: the concrete trait (`NAME`, `MAJOR`, typed `Payload`, `creates`, `needs`, `apply`), the erased `fn` over payload bytes, a builder that panics on a duplicate `(NAME, MAJOR)`, test-only `builtins_plus`, and `FactError::{Rejected, Store}` with `from_api` as the one classifier of `ApiError` codes. The first two kinds, `node.genesis` and `node.retag`, are added with the collision check, which acts on `on_collision` through `follow_up`.
+
+**ApplyEngine** — extended: `apply_pass` (head candidates in `ingest_seq` order, deps capped at `frozen_at`, `blocked_on`), `apply_one` with the registry-miss → needs → savepoint → handler order, `parked_on` re-attempt by the indexed `creates` query (no in-memory wait map), `apply_authored` for local entries (never writes `failed`), `replay` with the closed `ReplayScope::{Startup, Unapplied{states}}`, `ApplyProgress`, and one `decision_seq` per applied entry stored as `applied_seq`. Per spec §7, follow-ups call back into `journal::author` from inside `apply_one`, so `store::apply` and `store::journal` depend on each other. The cycle is deliberate: it puts the follow-up's deps after its trigger.
+
+**ApplyContext** — extended: origin, counter, `ingest_seq`, hlc, decision, `decision_seq`, the closed `Provenance::{Local, ReplicatedFrom(NodeUuid)}` (any own incarnation is `Local`), `is_local_seat`, `delivery_suppressed` (kind-agnostic, over ingested `creates` keys plus own-old-incarnation), the follow-up queue and `set_self_tag_k`, which carries a tag change out to be applied after commit.
+
+**Lane (`service/kicks.rs`)** — extended: `Apply` (bit 6), `LaneSet` widened to `u16`, and `kicks_for_commit` as the one rule for which lanes a commit kicks, so Apply never kicks itself.
+
+**Store transactions** — extended: the two base writers call `check_self_applied` before commit. Closures author through `journal::author` with no signature change. Idempotent replay never re-authors.
+
+Variation: fact kinds are the only open-ended set. Each is a `FactKind` module, and `FactRegistry::builtins()` is the one place kinds are chosen; a miss means `parked_unknown`. `JournalPort` has exactly the two implementations the spec names (`SqliteStore`, `MemoryJournal`), and `ChainRules` is shared so they cannot diverge. Everything else is fixed and is a closed enum handled with `match`: `ChainStep`, `IngestOutcome`, `ForkEvidence`, `EnvelopeError`, `FactError`, `Fold`, `LogState`, apply states, `ReplayScope`, `Provenance`, `RegisterOutcome` and the register field. Envelope layout changes are a new magic, not a trait.
+
+Walk-through: a command on A calls `journal::author::<K>` inside its accountable transaction. Journal ticks the Hlc in SyncState, reads the active self log, takes `applied_vector` as `Deps`, seals the Envelope with NodeIdentity and inserts the row as `pending`. ApplyEngine's `apply_authored` runs `apply_one`: the registry hit, needs met by applied `creates` rows, a savepoint, one `decision_seq`, then the handler with an ApplyContext whose provenance is `Local`. The commit guard sees `applied_through = contiguous`. The `journal` commit kicks `Lane::Apply`, whose pass finds nothing ready. Later, B's PeerLink hands A's batch to `JournalPort::ingest`. Journal checks headroom and bounds, ChainRules returns `Append` for each entry, the rows are stored `pending` with the Hlc folded, and the commit kicks Apply. B's worker calls `apply_pending`: deps are covered, the handler runs with `ReplicatedFrom(A)`, and the outcome is recorded. Likely future change: ht-5fr.4 adds `thread.register`. That is one `FactKind` module whose handler calls `ThreadRegisters::upsert` and copies the winner to `threads`, plus one `.with::<ThreadRegister>()` in `builtins()`. The command authors with `author_above` and the floor from `ThreadRegisters::current`. Journal, ChainRules, ApplyEngine and JournalPort are untouched; only the test oracle's projection gains that table's columns.
+
+Digest:
+- LogKey/LogHead/Vector: owns log identity, head state and the per-log vector; new per-log replicated state goes in `LogHead`;
+  callers never use `log_ix` outside Journal/ApplyEngine or treat a log as "self" by flag.
+- EntityKey: owns the creates/needs key grammar and ordering; new entity or settlement keys are new composite spellings built in their kind;
+  the engine never splits or interprets a key.
+- ChainRules: owns the per-log append/duplicate/gap/fork/frozen/corrupt decision; a new chain rule is a `ChainStep` variant here;
+  Journal and MemoryJournal never re-derive chain checks themselves.
+- SyncState: owns the installed identity, Hlc, registry and headroom, and the "journal open" gate; new journal runtime state goes here;
+  nothing outside `store::journal` locks the Hlc, and nothing swaps the registry after open.
+- ThreadRegisters: owns `thread_registers` and the LWW tie-break; new LWW fields are new register-field variants here;
+  handlers never write the table or compare `(hlc, node)` themselves.
+
 ## Post-Implementation Notes
 
 > *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
