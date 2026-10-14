@@ -13,7 +13,6 @@ use crate::{
         WarningOfferFrontier,
     },
     protocol::{
-        commands::WakeOn,
         ids::{
             BindingId, ExecutionId, HostBootId, HostTargetId, SeatId, TerminalId, WakeAttemptId,
         },
@@ -718,10 +717,9 @@ pub fn reserve(
         let Some((decision_seq,episode,open,generation,target,target_generation,boot))=row else {return Ok(None)};
         if !witness.valid_for(candidate,instance,nonnegative(decision_seq)?,nonnegative(episode)?,open!=0) {return Ok(None)}
         // The lazy frontier is not covered by the decision sequence: re-read it
-        // (and `wake_on`) so a reservation never rests on a moved frontier.
-        let current_lazy=match super::seats::wake_on(tx,&candidate.seat)? {
-            WakeOn::All=>super::lazy_delivery::wake_frontier(tx,candidate.seat.as_str())?,
-            WakeOn::Nudge=>None};
+        // (and the nudge threshold) so a reservation never rests on a moved frontier.
+        let current_lazy=super::lazy_delivery::wake_frontier(tx,candidate.seat.as_str(),
+            super::seats::nudge_threshold(tx,&candidate.seat)?)?;
         if current_lazy!=witness.frontier().lazy {return Ok(None)}
         let attention=EffectiveSeatAttention {has_pending_invitation:witness.pending_invitation,
             has_pending_receipt:witness.pending_receipt,latest_warning_seq:witness.latest_warning_seq.map(|seq|i64::try_from(seq).map_err(|_|api_error(ErrorCode::StoreCorrupt,"warning sequence overflow"))).transpose()?,frontier:witness.frontier()};
@@ -1195,10 +1193,11 @@ pub fn batch_window(
                 urgent |= super::receipts::effective_deadline(tx, &receipt)?.is_some_and(|at| at <= now);
             }
         }
-        // A `wake_on: all` seat's oldest pending lazy row batches like an
-        // ordinary receipt (DP8).
+        // The oldest pending delivery row the seat's threshold admits batches like an
+        // ordinary receipt.
         if scan.attention.frontier.lazy.is_some()
-            && let Some(at) = super::lazy_delivery::oldest_pending_at(tx, candidate.seat.as_str())? {
+            && let Some(at) = super::lazy_delivery::oldest_pending_at(tx, candidate.seat.as_str(),
+                super::seats::nudge_threshold(tx, &candidate.seat)?)? {
             first = Some(first.map_or(at, |prior| prior.min(at)));
         }
         let existing: Option<i64> = tx.query_row("SELECT deadline_at FROM wake_batches WHERE seat_id=?1",

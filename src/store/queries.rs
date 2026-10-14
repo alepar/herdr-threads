@@ -322,6 +322,27 @@ fn query_inner(
                     changed: false,
                 })
             }),
+        Command::NudgeThreshold(q) => db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2)",
+                params![q.seat.as_str(), instance],
+                |r| r.get::<_, bool>(0),
+            )
+            .map_err(|e| db.map_error(e))
+            .and_then(|known| {
+                if known {
+                    super::seats::nudge_threshold(&db, &q.seat)
+                } else {
+                    Err(api_error(ErrorCode::NotFound, "seat not found"))
+                }
+            })
+            .map(|threshold| {
+                CommandResult::NudgeThreshold(crate::protocol::results::NudgeThresholdState {
+                    seat: q.seat.clone(),
+                    threshold,
+                    changed: false,
+                })
+            }),
         Command::Search(q) => search(&db, store, instance, q, output, &active_budget),
         Command::Directory(q) => directory(&db, instance, q, output),
         Command::PickerDirectory(q) => {

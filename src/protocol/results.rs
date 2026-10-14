@@ -1291,9 +1291,9 @@ pub enum InboxBatchV2Item {
         body_start: u64,
         body_end: u64,
         body_len: u64,
-        /// The reading seat's `wake_on` is `all` (delivery-policy DP8): a
+        /// The reading seat's current nudge threshold admits this row's priority: a
         /// push-channel consumer promotes this row to a `message` line.
-        /// Absent (false) for a default seat and from an older daemon.
+        /// Absent (false) when it does not, and from an older daemon.
         #[serde(default, skip_serializing_if = "is_false")]
         wakes: bool,
         /// The message's delivery priority; absent from an older daemon.

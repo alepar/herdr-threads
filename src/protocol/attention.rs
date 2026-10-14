@@ -380,7 +380,7 @@ impl AttentionDigest {
             .lazy
             .as_ref()
             .filter(|lazy| lazy.count > 0)
-            .map_or_else(String::new, |lazy| format!("; {}", class("lazy", lazy)));
+            .map_or_else(String::new, |lazy| format!("; {}", class("messages", lazy)));
         let mail = self
             .mail
             .as_ref()

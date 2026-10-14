@@ -2411,7 +2411,7 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     let first = lazy("lazy hello from the peer");
     let context = context_of(&tool_hook("lazy only"));
     assert!(
-        context.contains(&format!("lazy=1 [{first}@{thread}]")),
+        context.contains(&format!("messages=1 [{first}@{thread}]")),
         "{context}"
     );
     assert!(context.contains(INBOX_HEADER), "{context}");
@@ -2433,7 +2433,7 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     assert_eq!(child.code, Some(0), "{}", child.stderr);
     let notice = context_of(&child);
     assert!(
-        notice.contains(&format!("lazy=1 [{second}@{thread}]")),
+        notice.contains(&format!("messages=1 [{second}@{thread}]")),
         "{notice}"
     );
     assert!(
@@ -2480,7 +2480,7 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     let third = lazy(&big);
     let context = context_of(&tool_hook("oversized"));
     assert!(
-        context.contains(&format!("lazy=1 [{third}@{thread}]")),
+        context.contains(&format!("messages=1 [{third}@{thread}]")),
         "{context}"
     );
     assert!(!context.contains(&big[..100]), "{context}");

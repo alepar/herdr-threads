@@ -310,7 +310,8 @@ fn capability_constants_are_stable() {
             "attention.binding_digest_v1",
             "inbox.in_turn_offer_v1",
             "inbox.thread_scope_v1",
-            "send.priority_v1"
+            "send.priority_v1",
+            "seat.nudge_threshold_v1"
         ]
     );
 }
@@ -476,6 +477,35 @@ fn every_advertised_capability_has_a_handler() {
                 assert_eq!(
                     handler
                         .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
+            SEAT_NUDGE_THRESHOLD_V1 => {
+                // The daemon serves the read and routes the set: both are on the wire and
+                // round-trip; an unknown seat is NotFound (a daemon without the handlers would
+                // refuse the command itself). The store tests cover set-then-read.
+                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let command =
+                    Command::NudgeThreshold(crate::protocol::commands::NudgeThresholdQuery {
+                        seat: crate::protocol::ids::SeatId::new("nobody"),
+                    });
+                assert!(command.validate().is_ok());
+                let json = serde_json::to_value(&command).unwrap();
+                assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
+                assert_eq!(
+                    handler
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+                let set: Command = serde_json::from_value(serde_json::json!({"kind":"set_nudge_threshold","args":{"value":3,"operation":"op","claim":{"instance":"i","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                assert!(set.validate().is_ok());
+                assert_eq!(
+                    handler
+                        .handle(set, PeerIdentity::from_kernel(501), &budget())
                         .unwrap_err()
                         .code,
                     ErrorCode::NotFound
@@ -753,6 +783,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "inbox.in_turn_offer_v1",
             "inbox.thread_scope_v1",
             "send.priority_v1",
+            "seat.nudge_threshold_v1",
             "invitation.confirmation_v1"
         ]
     );

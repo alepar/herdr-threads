@@ -1299,20 +1299,20 @@ fn lazy_inbox_wakes_follows_wake_on_and_mod_ack_completes_it() {
         !wakes_of(&first_page(&context)),
         "default seat does not wake"
     );
-    conn.execute("UPDATE seats SET wake_on='all' WHERE id='b'", [])
+    conn.execute("UPDATE seats SET nudge_threshold=-1 WHERE id='b'", [])
         .unwrap();
     let page = first_page(&context);
     assert!(wakes_of(&page), "wake_on=all seat wakes");
     // Wire: the waking row carries the key, nothing else changed.
     let wire = serde_json::to_value(&page.items[0]).unwrap();
     assert_eq!(wire["wakes"], serde_json::json!(true));
-    conn.execute("UPDATE seats SET wake_on='nudge' WHERE id='b'", [])
+    conn.execute("UPDATE seats SET nudge_threshold=0 WHERE id='b'", [])
         .unwrap();
     let wire = serde_json::to_value(&first_page(&context).items[0]).unwrap();
     assert!(wire.as_object().unwrap().get("wakes").is_none());
 
     // A push-channel ACK (`watch ack --via submit`) completes it as a lazy row.
-    conn.execute("UPDATE seats SET wake_on='all' WHERE id='b'", [])
+    conn.execute("UPDATE seats SET nudge_threshold=-1 WHERE id='b'", [])
         .unwrap();
     conn.execute(
         "UPDATE occupant_bindings SET harness='claude' WHERE seat_id='b'",

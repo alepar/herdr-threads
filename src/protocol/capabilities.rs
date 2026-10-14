@@ -88,7 +88,7 @@ pub const DELIVERY_PULL: &str = "delivery.pull_v1";
 /// advertised with the send handler (ht-yha.3).
 pub const SEND_PRIORITY_V1: &str = "send.priority_v1";
 /// `Command::NudgeThreshold` / `Command::SetNudgeThreshold`. Defined by the ht-yha.1 seam;
-/// advertised by its handler's task.
+/// advertised with its handlers (ht-yha.4).
 pub const SEAT_NUDGE_THRESHOLD_V1: &str = "seat.nudge_threshold_v1";
 /// 1:1 pairs auto-join both seats. Defined by the ht-yha.1 seam; advertised by its handler's task.
 pub const DIRECT_AUTO_JOIN_V1: &str = "direct.auto_join_v1";
@@ -133,6 +133,7 @@ pub const ADVERTISED: &[&str] = &[
     IN_TURN_OFFER,
     INBOX_THREAD_SCOPE,
     SEND_PRIORITY_V1,
+    SEAT_NUDGE_THRESHOLD_V1,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

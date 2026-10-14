@@ -1659,6 +1659,9 @@ impl StorePort for SqliteStore {
             PermitMutation::SetWakeOn(v) => {
                 seats::set_wake_on(&self.context, &mut writer, budget, &v, permit)
             }
+            PermitMutation::SetNudgeThreshold(v) => {
+                seats::set_nudge_threshold(&self.context, &mut writer, budget, &v, permit)
+            }
             PermitMutation::CheckIn(_) => Err(api_error(
                 ErrorCode::InvalidRequest,
                 "check-in requires verified registration and read context",
@@ -3119,6 +3122,10 @@ mod tests;
 #[cfg(test)]
 #[path = "../../tests/store/wake_on_wake.rs"]
 mod wake_on_wake_tests;
+
+#[cfg(test)]
+#[path = "../../tests/store/nudge_threshold.rs"]
+mod nudge_threshold_tests;
 #[cfg(test)]
 #[path = "../../tests/store/wake.rs"]
 mod wake_tests;
@@ -3327,6 +3334,13 @@ pub fn cooperative_permit_request(
             v.operation.clone(),
             ObligationRef::CheckIn(v.claim.seat.clone()),
             control::cooperative_payload_hash("set_wake_on", v)?,
+            None,
+        ),
+        PermitMutation::SetNudgeThreshold(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.claim.seat.clone()),
+            control::cooperative_payload_hash("set_nudge_threshold", v)?,
             None,
         ),
         PermitMutation::Leave(v) => (
