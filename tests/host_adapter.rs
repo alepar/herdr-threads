@@ -143,6 +143,9 @@ fn releases_from_the_floor_allow_transport_and_snapshot_without_claiming_capabil
                     Err(error) => panic!("operation accept: {error}"),
                 }
             };
+            // macOS accept inherits the listener's O_NONBLOCK flag; the read
+            // must block (bounded by the timeout) until the client writes.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
