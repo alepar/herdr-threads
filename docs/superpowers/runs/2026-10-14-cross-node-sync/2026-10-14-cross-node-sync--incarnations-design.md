@@ -411,7 +411,7 @@ The resync marker records `operator:local-user:<uid>` provenance, and the daemon
   - `refs_changed` produces one delta;
   - `ForkAck::Corrupt` penalizes and reselects;
   - `resync_pin` restricts the candidates until the round completes, then lifts.
-- **Convergence scenarios** (`tests/sync/incarnations_scenarios.rs`, a module of `tests/combined.rs`). These drive three to four in-process stores through `JournalPort` and the sink and worker with an in-memory frame shuttle, with no daemons. Each ends with ht-5fr.3's oracle comparing `replicated_projection` across all nodes, and with every old incarnation frozen wherever a fork was seen:
+- **Convergence scenarios** (`tests/sync/incarnations_scenarios.rs`, a module of `tests/combined.rs`). These drive three to four in-process stores through the real `SyncCoordinator` over in-process duplex links (SqliteStore/MemoryJournal), with the sink and worker, and no daemons or second frame shuttle. Each ends with ht-5fr.3's oracle comparing `replicated_projection` across all nodes, and with every old incarnation frozen wherever a fork was seen:
   1. **Restore without fork.** A is restored to an earlier copy, B holds A's tail, A rotates, pulls back, and creates no wake rows for settled history.
   2. **Restore, then author.** A forks; C (which holds the old branch) freezes from ingest; D learns the fork only from C's `ForkRef`; A rotates, pulls both branches and re-issues; everything converges.
   3. **Wiped store with the key intact.** The store bootstraps a new random incarnation, no fork is detected, and the old incarnation is pulled back.
