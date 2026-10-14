@@ -15,6 +15,8 @@ Amended 2026-10-13 for message priority delivery (ht-yha.3): delivery rows are t
 audience member, and receipts exist only for explicit ACK recipients (A8, A5a, A6).
 Amended 2026-10-13 for the one-process composer wake (ht-327): several bindings of one process share its
 composer for seat-level attention; no binding is chosen, merged, moved or ended.
+Amended 2026-10-14 for service sends under D9 (ht-yha.47): a service send's receipts are only its explicit
+non-human `recipients`; its joined snapshot gets priority-0 delivery rows (A8).
 
 ## Abstract
 
@@ -781,7 +783,7 @@ warning `informational` in the inbox batch, so `watch` raises no `attention` lin
 (default 1), frozen at send and independent of sender role, relay and human intent. Delivery rows
 (`lazy_recipients`, the former "lazy" bookkeeping, now for every priority) are the bookkeeping of the whole
 audience: each joined non-author audience member that is not an explicit ACK recipient gets one row carrying the
-message priority, human seats included. Only an explicit non-human ACK recipient (`--require-ack SEAT`) gets a
+message priority, human seats included. Only an explicit non-human ACK recipient (`--require-ack SEAT`, or a service send's explicit `recipients`) gets a
 receipt instead (D9); a human explicit recipient gets a priority-0 row, never a receipt, and a priority above 0
 cannot be combined with explicit ACK recipients (the daemon refuses it, as it refuses a deadline without explicit
 ACK recipients). Receipts, deadlines, overdue warnings and ACK obligations therefore exist only for explicit ACK

@@ -17,14 +17,14 @@ let result = client.submit(ServiceOperation::EnsureThread(EnsureManagedThread {
 
 ## Sending, history and receipts (v2)
 
-A registered service posts an ACK-required request into one of its own managed threads with `client.send(ServiceSend { .. }, &budget)`. Sends are allowed on managed threads only (an ordinary thread, or a managed thread owned by another author, is refused). The message is an ordinary receipt-bearing message authored by the service ID, with no seat actor. Obligations follow native semantics: every joined member at commit time, plus any explicit `recipients` that are invited or joined; the service itself is never a recipient. `deadline_millis: None` uses the instance default receipt duration, and `Some(ms)` must be positive. `send` is journaled like any mutation: the operation key in `ServiceSend::operation` is the intent key.
+A registered service posts a message into one of its own managed threads with `client.send(ServiceSend { .. }, &budget)`. Sends are allowed on managed threads only (an ordinary thread, or a managed thread owned by another author, is refused). The message is an ordinary priority-0 message authored by the service ID, with no seat actor. Every joined member at commit time gets a delivery row that wakes it; only the explicit `recipients` (invited or joined, non-human) owe an ACK and get a receipt with the deadline. A send with no explicit `recipients` creates no receipts (`recipient_count` is 0 and `deadline_millis` is unused); an empty audience is refused (`InvalidRequest`). The service itself is never a recipient. `deadline_millis: None` uses the instance default receipt duration, and `Some(ms)` must be positive. `send` is journaled like any mutation: the operation key in `ServiceSend::operation` is the intent key.
 
 ```rust,ignore
 let (key, sent) = client.send(ServiceSend {
     thread, body: "Do X, then ACK this message by its exact ID.".into(),
-    recipients: vec![], deadline_millis: Some(600_000), operation: OperationId::new("req-1"),
+    recipients: vec![worker.clone()], deadline_millis: Some(600_000), operation: OperationId::new("req-1"),
 }, &budget).await?;
-// sent.recipient_count obligations were created; read their live state with receipts().
+// sent.recipient_count receipts (the explicit recipients) were created; read their live state with receipts().
 let inspection = client.receipts(ServiceReceiptsQuery { message: sent.summary.message.clone(), page }, &budget).await?;
 let replies = client.history(ServiceHistoryQuery {
     thread, page, initial: Some(HistoryRange::After { sequence: sent.summary.sequence }),
@@ -33,7 +33,7 @@ let replies = client.history(ServiceHistoryQuery {
 
 `MessageSent` is a bounded snapshot: the summary, the author, `recipient_count` and the receipt duration. It carries no per-recipient list. Read live state through `client.receipts(..)` (only for this author's own messages; each recipient is `Pending`, `Acknowledged` with the stored ACK provenance and time, or `Retired` with its retirement cutover) and read the thread through `client.history(..)`. Neither read is journaled, and neither needs a mutation intent.
 
-`Conflict` is definitive: nothing was published (the thread's audience kept changing beyond the daemon's bounded restart allowance), so resubmit under a **new** key. A pending error (`pending_operation()` returns a key) is ambiguous: reconnect, register, and `replay` the same key; the daemon answers the committed result once and never publishes a duplicate. Design: [service-send-amendment.md](design/graph-system-identity/service-send-amendment.md).
+`Conflict` is definitive: nothing was published (the thread's audience kept changing beyond the daemon's bounded restart allowance), so resubmit under a **new** key. A pending error (`pending_operation()` returns a key) is ambiguous: reconnect, register, and `replay` the same key; the daemon answers the committed result once and never publishes a duplicate. Design: [service-send-amendment.md](design/graph-system-identity/service-send-amendment.md). D9 of the message-priority design (2026-10-14) supersedes that amendment's whole-audience obligation rule.
 
 ## Replay and completion
 

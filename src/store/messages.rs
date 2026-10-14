@@ -444,7 +444,7 @@ fn prepare_send_step_impl(
         thread: &request.thread,
         high_water,
         explicit: &explicit,
-        ack: AckAudience::Only(&ack),
+        ack: &ack,
         priority: resolved_priority(request),
         exclude: Some(&seat),
         duration,
@@ -517,22 +517,13 @@ pub(super) struct AudienceWalk<'a> {
     pub thread: &'a ThreadId,
     pub high_water: i64,
     pub explicit: &'a [&'a SeatId],
-    /// The audience members that get receipts. Everyone else, human seats included, gets a delivery
-    /// row at `priority`.
-    pub ack: AckAudience<'a>,
+    /// The explicit ACK recipients (D9). Every other audience member, and a human explicit
+    /// recipient, gets a delivery row at `priority`.
+    pub ack: &'a [&'a SeatId],
     pub priority: DeliveryPriority,
     /// The sender, never its own recipient. `None` for a service author.
     pub exclude: Option<&'a SeatId>,
     pub duration: i64,
-}
-
-/// Who owes an ACK in one send (D9).
-#[derive(Clone, Copy)]
-pub(super) enum AckAudience<'a> {
-    /// A service send is receipt-bearing for its whole audience.
-    Everyone,
-    /// A native send: only the explicit `--require-ack` recipients.
-    Only(&'a [&'a SeatId]),
 }
 
 impl AudienceWalk<'_> {
@@ -540,10 +531,7 @@ impl AudienceWalk<'_> {
         Staging {
             duration: self.duration,
             priority: self.priority,
-            ack: match self.ack {
-                AckAudience::Everyone => true,
-                AckAudience::Only(seats) => seats.iter().any(|seat| seat.as_str() == recipient),
-            },
+            ack: self.ack.iter().any(|seat| seat.as_str() == recipient),
         }
     }
 }
