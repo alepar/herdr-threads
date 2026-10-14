@@ -12,6 +12,7 @@ pub mod owner_watch;
 pub mod search_barrier;
 #[cfg(feature = "test-support")]
 pub mod server_completion;
+pub mod slow_clock;
 pub mod spawn;
 
 /// A short real temp root for fixtures that bind Unix sockets (macOS caps
