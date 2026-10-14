@@ -1,3 +1,4 @@
-# a lock, and a brain directory one entry past the glob cap
+# a lock, and a brain directory one entry past the glob cap that the tests hold
+# (TEST_BRAIN_CAP = 2048 in tests/harness/agy_witness.rs; production BRAIN_ENTRY_CAP is 65,536)
 presence/534e47d6-64b3-4fd6-bd7f-446ceec4d86c.lock
-#generate brain 65537
+#generate brain 2049

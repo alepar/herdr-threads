@@ -24,9 +24,9 @@ use crate::{
         mod_channels::ModChannelRegistry,
         pacer::Pacer,
         workers::{
-            WorkerStatus, admission_handle, start_admission_observer, start_deadline_worker,
-            start_mod_channel_worker, start_observation_worker, start_retention_worker,
-            start_wake_worker_with_liveness,
+            WorkerStatus, admission_handle, start_admission_observer,
+            start_deadline_worker_ticking, start_mod_channel_worker, start_observation_worker,
+            start_retention_worker, start_wake_worker_with_liveness,
         },
     },
     store::{SqliteStore, connection::StoreContext},
@@ -1385,12 +1385,15 @@ where
             let mut workers = factory_slot
                 .lock()
                 .map_err(|_| io::Error::other("worker slot poisoned"))?;
-            let worker = start_deadline_worker(
+            let worker = start_deadline_worker_ticking(
                 Arc::clone(&store),
                 Arc::clone(&writer),
                 register_lane(Lane::Deadlines),
                 factory_stop.clone(),
                 Arc::clone(&factory_status),
+                config.lane_tick(Duration::from_millis(
+                    crate::scheduler::deadlines::TICK_MILLIS,
+                )),
             )?;
             workers.push(worker);
             // Shared by the observation lane (writer) and the wake lane: the
@@ -1450,6 +1453,9 @@ where
                 Arc::clone(&mod_channels),
                 Arc::clone(&delivery_pull) as Arc<dyn crate::ports::HookPullOutlook>,
                 Some(Arc::clone(&liveness)),
+                config.lane_tick(Duration::from_millis(
+                    crate::service::workers::WAKE_SAFETY_TICK_MILLIS,
+                )),
             )?);
             workers.push(crate::service::liveness::start_liveness_worker(
                 liveness,
@@ -1463,6 +1469,7 @@ where
                     let log = Arc::clone(&rate_limited_log);
                     Arc::new(move |line: &str| log.write_line(line))
                 },
+                config.lane_tick(crate::scheduler::config::LIVENESS_RECHECK_INTERVAL),
             )?);
             let observation_pacer = Arc::new(Pacer::new(
                 Lane::Observation.name(),
@@ -1610,6 +1617,7 @@ where
                 Arc::clone(&factory_host_evidence),
                 observation_pacer,
                 reachability,
+                config.lane_tick(crate::service::workers::OBSERVATION_CADENCE),
             )?);
             drop(workers);
             let mut lane_statuses = vec![

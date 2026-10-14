@@ -5,7 +5,7 @@ use super::*;
 use crate::{
     app::{AdmissionReobserver, HarnessObservations},
     daemon::health::HarnessStatus,
-    harness::stub_binaries::write_stub_harness,
+    harness::stub_binaries::{write_regular_stub_harness, write_stub_harness},
     protocol::time::{MonoInstant, UtcMillis},
 };
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize};
@@ -44,7 +44,9 @@ fn swapping_the_binary_reobserves_on_the_next_tick() {
     let dir = std::env::temp_dir().join(format!("ht-reobserve-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    write_stub_harness(&dir, "claude", "2.1.286");
+    // Regular files: the swap below must be detected by inode alone (same
+    // path, same size), not by a changed symlink target.
+    write_regular_stub_harness(&dir, "claude", "2.1.286");
     let lines = Arc::new(Mutex::new(Vec::<String>::new()));
     let sink = Arc::clone(&lines);
     let reobserver = AdmissionReobserver::new(
@@ -105,7 +107,7 @@ fn swapping_the_binary_reobserves_on_the_next_tick() {
     // Swap the binary for a newer one (a new inode, same size), then tick.
     let staging = std::env::temp_dir().join(format!("ht-reobserve-staging-{}", std::process::id()));
     std::fs::create_dir_all(&staging).unwrap();
-    let staged = write_stub_harness(&staging, "claude", "2.1.299");
+    let staged = write_regular_stub_harness(&staging, "claude", "2.1.299");
     std::fs::rename(&staged, dir.join("claude")).unwrap();
     let _ = std::fs::remove_dir_all(&staging);
     advance(&pacer);

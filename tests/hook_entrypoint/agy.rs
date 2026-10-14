@@ -774,6 +774,10 @@ mod activation {
                         }
                         Err(error) => panic!("observer accept: {error}"),
                     };
+                    // macOS hands the accepted socket the listener's O_NONBLOCK:
+                    // a hook that has connected but not yet written its frame
+                    // would read as WouldBlock and be dropped mid-request.
+                    client.set_nonblocking(false).unwrap();
                     client
                         .set_read_timeout(Some(Duration::from_secs(2)))
                         .unwrap();

@@ -38,6 +38,7 @@
 //! Evidence is advisory data about the harness, never authority (see
 //! TRUST-POLICY.md): this module adds no caller attribution and no seat state.
 use super::hook::HookArgs;
+use crate::store::connection::DurableSync;
 use crate::{
     client::local::LocalSocketClient,
     daemon::{
@@ -413,7 +414,7 @@ fn write_gate(state_dir: &Path, path: &Path, state: &GateState) -> io::Result<()
         .create_new(true)
         .mode(0o600)
         .open(&temporary)
-        .and_then(|mut out| out.write_all(&bytes).and_then(|()| out.sync_all()))
+        .and_then(|mut out| out.write_all(&bytes).and_then(|()| out.durable_sync()))
         .and_then(|()| std::fs::rename(&temporary, path));
     if written.is_err() {
         let _ = std::fs::remove_file(&temporary);
@@ -760,7 +761,7 @@ impl V2GateState {
             .create_new(true)
             .mode(0o600)
             .open(&temporary)
-            .and_then(|mut out| out.write_all(&bytes).and_then(|()| out.sync_all()))
+            .and_then(|mut out| out.write_all(&bytes).and_then(|()| out.durable_sync()))
             .and_then(|()| std::fs::rename(&temporary, path));
         if written.is_err() {
             let _ = std::fs::remove_file(&temporary);

@@ -168,7 +168,14 @@ pub(super) struct Smoke {
     pub(super) labels: usize,
     /// Stand-in harness processes started by `stand_in`, stopped with the fixture.
     pub(super) processes: Vec<spawn::OwnedChild>,
+    /// `Some`: the daemon's lanes (liveness re-check, observation cadence, wake and deadline
+    /// safety ticks) run on this test-support tick instead of 5 s.
+    pub(super) lane_tick: Option<Duration>,
 }
+
+/// The test-support lane tick of [`Smoke::ticking`]: the configurations whose waits are set by
+/// the 5 s liveness and observation cadences, not by what they prove, run on it.
+pub(super) const SMOKE_TICK: Duration = Duration::from_secs(1);
 
 impl Smoke {
     /// An isolated Herdr, state dir and daemon. `None` (after `IsolatedHerdr` prints
@@ -177,8 +184,21 @@ impl Smoke {
         Self::with_settings(case, "")
     }
 
+    /// [`Self::new`] with the daemon's lanes on [`SMOKE_TICK`].
+    pub(super) fn ticking(case: &'static str) -> Option<Self> {
+        Self::build(case, "", Some(SMOKE_TICK))
+    }
+
     /// `extra` is spliced into the daemon's settings object (`"key":value,`).
     pub(super) fn with_settings(case: &'static str, extra: &str) -> Option<Self> {
+        Self::build(case, extra, None)
+    }
+
+    pub(super) fn build(
+        case: &'static str,
+        extra: &str,
+        lane_tick: Option<Duration>,
+    ) -> Option<Self> {
         let herdr = IsolatedHerdr::new(case)?;
         let root = herdr.root().to_path_buf();
         fs::create_dir_all(root.join("cfg")).unwrap();
@@ -189,6 +209,7 @@ impl Smoke {
             herdr,
             labels: 0,
             processes: Vec::new(),
+            lane_tick,
         };
         fs::create_dir_all(&smoke.cwd).unwrap();
         smoke.write_settings(extra);
@@ -269,6 +290,13 @@ impl Smoke {
             .env_remove("HERDR_PANE_ID");
         if let Some(pane) = pane {
             command.env("HERDR_ENV", "1").env("HERDR_PANE_ID", pane);
+        }
+        // Read only by the daemon a call starts (test-support builds).
+        if let Some(tick) = self.lane_tick {
+            command.env(
+                herdr_threads::service::config::TEST_LANE_TICK_ENV,
+                tick.as_millis().to_string(),
+            );
         }
     }
 
@@ -636,7 +664,7 @@ pub(super) fn joined_thread(
 // installed hook's output.
 #[test]
 fn config1_claude_main_and_two_subagents() {
-    let Some(mut smoke) = Smoke::new("config1_claude_main_and_two_subagents") else {
+    let Some(mut smoke) = Smoke::ticking("config1_claude_main_and_two_subagents") else {
         return;
     };
     let (pane, peer_pane) = (smoke.pane(), smoke.pane());
@@ -815,7 +843,8 @@ fn config1_claude_main_and_two_subagents() {
     };
     still_settled();
     // One liveness cadence later (the worker's next pass): the same three facts, and no churn.
-    let until = Instant::now() + Duration::from_secs(6);
+    // The window is 6/5 of the cadence (6 s at the production 5 s).
+    let until = Instant::now() + SMOKE_TICK * 6 / 5;
     while Instant::now() < until {
         still_settled();
         assert_eq!(
@@ -968,7 +997,8 @@ impl Smoke {
 // process is gone, and the per-turn `on_session_end` disconnecting the interactive Hermes.
 #[test]
 fn config3_hermes_interactive_and_a_one_shot_in_a_claude_pane() {
-    let Some(mut smoke) = Smoke::new("config3_hermes_interactive_and_a_one_shot_in_a_claude_pane")
+    let Some(mut smoke) =
+        Smoke::ticking("config3_hermes_interactive_and_a_one_shot_in_a_claude_pane")
     else {
         return;
     };
@@ -1210,7 +1240,36 @@ fn config3_hermes_interactive_and_a_one_shot_in_a_claude_pane() {
         || attempted(mark),
     );
     smoke.hermes(&lone, "session_finalize", "finalize-lone");
+    // An attempt reserved before the teardown may still complete (as unsafe)
+    // after it; on a short lane tick a retry of the first send can be that
+    // attempt. Let it settle, then no new attempt may be reserved or completed.
+    let in_flight = || {
+        smoke
+            .db()
+            .query_row(
+                "SELECT reservation_id IS NOT NULL FROM wake_work WHERE seat_id=?1",
+                [&lone_seat],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap_or(false)
+    };
+    let last_reserved = || {
+        smoke
+            .db()
+            .query_row(
+                "SELECT COALESCE(last_reserved_at_utc,0) FROM wake_work WHERE seat_id=?1",
+                [&lone_seat],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+    };
+    wait_until(
+        "the lone seat's in-flight wake attempt to settle",
+        Duration::from_secs(20),
+        || !in_flight(),
+    );
     let mark = last_attempt();
+    let reserved_mark = last_reserved();
     smoke
         .cli(
             &peer,
@@ -1226,7 +1285,7 @@ fn config3_hermes_interactive_and_a_one_shot_in_a_claude_pane() {
         .data();
     std::thread::sleep(Duration::from_secs(3));
     assert!(
-        !attempted(mark),
+        !attempted(mark) && !in_flight() && last_reserved() == reserved_mark,
         "a disconnected binding is not a wake target"
     );
 }
@@ -1331,7 +1390,7 @@ fn codex_end(session: &str) -> Value {
 // drops a pending ACK obligation (obligations are never skipped).
 #[test]
 fn config5_resume_within_a_page_and_past_it() {
-    let Some(mut smoke) = Smoke::new("config5_resume_within_a_page_and_past_it") else {
+    let Some(mut smoke) = Smoke::ticking("config5_resume_within_a_page_and_past_it") else {
         return;
     };
     let (pane, peer_pane) = (smoke.pane(), smoke.pane());
@@ -1490,9 +1549,10 @@ impl Smoke {
 // settings file; never a real hour.
 #[test]
 fn config6_pane_close_retires_and_the_inactive_thread_archives() {
-    let Some(mut smoke) = Smoke::with_settings(
+    let Some(mut smoke) = Smoke::build(
         "config6_pane_close_retires_and_the_inactive_thread_archives",
         r#""auto_archive_after_ms":2000,"#,
+        Some(SMOKE_TICK),
     ) else {
         return;
     };
@@ -2068,7 +2128,8 @@ impl Smoke {
 // `claude -p` one-shot that takes over (or is counted as) a session.
 #[test]
 fn config9_foreground_and_background_agents_in_one_pane() {
-    let Some(mut smoke) = Smoke::new("config9_foreground_and_background_agents_in_one_pane") else {
+    let Some(mut smoke) = Smoke::ticking("config9_foreground_and_background_agents_in_one_pane")
+    else {
         return;
     };
     let (pane, peer_pane) = (smoke.pane(), smoke.pane());

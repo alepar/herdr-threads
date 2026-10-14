@@ -51,6 +51,10 @@ fn detached_child(args: &[OsString]) -> io::Result<()> {
 }
 
 fn main() {
+    // Test-support builds: a test library defaults to the test fast paths;
+    // this executable takes them only when its environment asks.
+    #[cfg(feature = "test-support")]
+    herdr_threads::store::connection::fast_paths_from_env();
     let args: Vec<OsString> = std::env::args_os().collect();
     if args.get(1).is_some_and(|s| s == "daemon") && args.get(2).is_some_and(|s| s == "run") {
         if let Err(error) = detached_child(&args) {
