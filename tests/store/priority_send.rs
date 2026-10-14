@@ -75,22 +75,75 @@ fn add_member(conn: &Connection, id: &str, kind: Kind) {
     .unwrap();
 }
 
-/// Sender `a` plus agents `b` and `c` and human `h`, all joined to thread `t`.
-fn setup(iso: &TestIsolation, members: &[(&str, Kind)]) -> (StoreContext, Connection) {
-    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
-    let conn = context.open_writer().unwrap();
+/// Inserts the fixture rows: sender `a` plus `members`, all joined to thread `t`.
+fn fixture(conn: &Connection, members: &[(&str, Kind)]) {
     conn.execute(
         "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1)",
         [],
     )
     .unwrap();
     conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
-    add_member(&conn, "a", Kind::Agent);
+    add_member(conn, "a", Kind::Agent);
     // The sender's own binding is the one the claim names.
     conn.execute("UPDATE occupant_bindings SET execution_id='00000000-0000-4000-8000-0000000000aa',native_session='n' WHERE seat_id='a'",[]).unwrap();
     for (id, kind) in members {
-        add_member(&conn, id, *kind);
+        add_member(conn, id, *kind);
     }
+}
+
+/// Sender `a` plus agents `b` and `c` and human `h`, all joined to thread `t`.
+fn setup(iso: &TestIsolation, members: &[(&str, Kind)]) -> (StoreContext, Connection) {
+    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
+    let conn = context.open_writer().unwrap();
+    fixture(&conn, members);
+    (context, conn)
+}
+
+/// A schema v46 store (migrations 0001..=0046, no `open_writer`) holding the fixture and the
+/// `building` preparation v46 code wrote for `old` (no priority column): its real digest, the
+/// thread's and host's current revisions, `delivery_mode` as recorded. Reopened through
+/// `open_writer`, which upgrades it to v47.
+fn v46_setup(
+    iso: &TestIsolation,
+    members: &[(&str, Kind)],
+    old: &SendMessage,
+) -> (StoreContext, Connection) {
+    let path = iso.path("store.db");
+    {
+        let db = Connection::open(&path).unwrap();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        let mut paths = std::fs::read_dir(root)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect::<Vec<_>>();
+        paths.sort();
+        for path in paths.into_iter().take(46) {
+            db.execute_batch(&std::fs::read_to_string(path).unwrap())
+                .unwrap();
+        }
+        db.execute_batch("PRAGMA user_version=46").unwrap();
+        fixture(&db, members);
+        let digest = crate::store::schema::canonical_digest(&messages::send_payload(old)).unwrap();
+        let mode = match old.delivery_mode {
+            DeliveryMode::Ordinary => "ordinary",
+            DeliveryMode::Lazy => "lazy",
+        };
+        db.execute(
+            "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) \
+             SELECT 'prep-v46','i','seat:a',?1,?2,'t',t.membership_revision,h.lifecycle_revision,h.send_eligibility_revision,t.timeline_revision,h.duration_config_revision,m.hw,m.hw,'building',?3 \
+             FROM threads t JOIN host_instances h ON h.id=t.instance_id, \
+                  (SELECT COALESCE(MAX(ordinal),0) AS hw FROM membership_intervals WHERE thread_id='t') m WHERE t.id='t'",
+            rusqlite::params![request().operation.as_str(), digest.as_slice(), mode],
+        )
+        .unwrap();
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM send_preparations"),
+            1,
+            "v46 preparation row inserted"
+        );
+    }
+    let context = StoreContext::new(path, Arc::new(FixedClock));
+    let conn = context.open_writer().unwrap();
     (context, conn)
 }
 
@@ -506,6 +559,65 @@ fn retry_keeps_its_recorded_shape() {
         assert_eq!(message_mode(&conn).1, expected);
         assert_eq!(rows(&conn).len(), 3);
         assert!(rows(&conn).iter().all(|(_, p)| *p == expected));
+    }
+}
+
+// Kills: a v47 retry of a send prepared at v46 that loses its recorded shape: the migrated
+// `building` row must keep its digest and derive its priority from the mode (ordinary -> 0,
+// lazy -> 1), resume rather than restart, publish one message, replay idempotently, and still
+// refuse the same key in the new priority shape.
+#[test]
+fn v46_prepared_send_retries_under_v47_in_its_recorded_shape() {
+    for (mode, expected) in [(DeliveryMode::Ordinary, 0), (DeliveryMode::Lazy, 1)] {
+        let iso = TestIsolation::new("prio-v46-retry");
+        let mut old = request();
+        old.delivery_mode = mode;
+        let v46_digest =
+            crate::store::schema::canonical_digest(&messages::send_payload(&old)).unwrap();
+        let (context, mut conn) = v46_setup(&iso, GROUP, &old);
+        assert_eq!(count(&conn, "PRAGMA user_version"), 47);
+        let stored: (i64, Vec<u8>) = conn
+            .query_row("SELECT priority,digest FROM send_preparations", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(stored, (expected, v46_digest.to_vec()));
+
+        prepare(&context, &mut conn, &old);
+        let first = publish(&context, &mut conn, &old);
+        let after: (String, Vec<u8>, i64) = conn
+            .query_row(
+                "SELECT id,digest,priority FROM send_preparations",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            after,
+            ("prep-v46".to_owned(), v46_digest.to_vec(), expected)
+        );
+        assert_eq!(count(&conn, "SELECT count(*) FROM send_preparations"), 1);
+        assert_eq!(count(&conn, "SELECT count(*) FROM messages"), 1);
+        assert_eq!(message_mode(&conn).1, expected);
+        assert_eq!(rows(&conn).len(), 3);
+        assert!(rows(&conn).iter().all(|(_, p)| *p == expected));
+
+        assert_eq!(publish(&context, &mut conn, &old), first);
+        assert_eq!(count(&conn, "SELECT count(*) FROM messages"), 1);
+        assert_eq!(rows(&conn).len(), 3);
+
+        let mut new_shape = old.clone();
+        new_shape.priority = p(expected as u8);
+        let error = messages::prepare_send_step(
+            &context,
+            &mut conn,
+            &new_shape,
+            messages::MessageLimits::default(),
+            &budget(),
+            DurableWorkAdmission::new(16).unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::OperationPayloadMismatch);
     }
 }
 
