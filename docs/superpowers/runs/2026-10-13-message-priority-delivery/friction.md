@@ -11,3 +11,4 @@
 - [2026-10-14T07:48:38Z] super-roast PR round 1 rung: Workflow
 - [2026-10-14T08:44:48Z] ht-yha.33 escalated (blocker ht-xot: no compat mechanism decided for old-CLI format-2 continuation); orchestrator decided option (c) accept+record limitation (one-binary distribution, transient upgrade window), amended bead, closed blocker
 - [2026-10-14T10:21:27Z] sweep-fix beads ht-yha.41/.42 blocked: bead text forbade test edits but the code follows D8; orchestrator chose option C (update stale test expectations, no spec/code change), amended both, closed their blockers
+- [2026-10-14T11:17:14Z] sweep re-run at e8ecb681: config5 deterministic failure with no src change since dae11184 (env/timing-dependent); doctor_reports and q5 pass 3/3 isolated (flakes). Filed then closed ht-yha.43 (not a sweep-fix regression).

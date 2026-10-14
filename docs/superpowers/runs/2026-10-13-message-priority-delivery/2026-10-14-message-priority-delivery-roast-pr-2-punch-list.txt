@@ -17,3 +17,4 @@
 [final review] B: mod_stall_oldest counts only pending receipts, so a wedged registered mod holding a p0 delivery row (bare --nudge, first p0 pair message) is never stall-closed and the seat never wakes (super-code-final-review-wf_33b8fe4a-079.md)
 [final review] body --max-bytes 256..~342 refused for every p0 message (fit_annotated_read gives up below 256 after the [p0] row)
 [final review] C: a new client shows [lazy] against an old daemon and [p0] against a new one (upgrade window only)
+[sweep] session_bindings_smoke::config5_resume_within_a_page_and_past_it fails 3/3 at e8ecb681 (passed at dae11184 with identical src): --json inbox page items [] with has_more — same symptom as punch-list item A

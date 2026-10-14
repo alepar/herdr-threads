@@ -35,7 +35,7 @@ codeBuckets:
   parked:
   stalled: true
   review: not ready (A rows stay pending via never-returning process-exited bindings and cursor-only body reads; B main merge conflicts + for_seat_attention seam; C ht-yha.33 and ServiceSend need user decisions; markers_ok vacuous; no full suite)
-  sweep: dae11184 — 6392 passed, 3 failed, 0 errors, 44 skipped; failing: cli::watch::tests::lazy_rows_stream_as_lazy_without_ack_required, token_diet::agent_facing_machine_text_is_compact, wire_compat::cli_against_an_old_fixture_daemon_never_sends_full_bodies; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast @ dae11184
+  sweep: e8ecb681 — 6392 passed, 3 failed, 0 errors, 44 skipped; failing: session_bindings_smoke::config5_resume_within_a_page_and_past_it, golden_surfaces::doctor_reports, lazy_markers::q5_continuation_public::q5_search_public_refits_preserve_2048_byte_filter_route_actor_and_cursor; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast @ e8ecb681
   slowness: round 1: graph-bound — 17 open beads, depth 6, achievable width 3 vs cap 8; edge audit armed now; round 1: merge queue peaked at 3 (first invocation); network outage relaunches ×2 (ENOTFOUND)
   worktreesKept:
   processSweep: stopped 0 · survived 0
