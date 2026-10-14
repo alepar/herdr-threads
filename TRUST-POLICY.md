@@ -774,8 +774,8 @@ ACK recipients and `lazy` otherwise, and is never read for decisions; an old cli
 priority 0 and `lazy` to priority 1 (a request's own priority wins; its payload digest covers the priority only
 when carried, so journaled old-shape intents retry unchanged). A delivery audience is frozen by canonical
 preparation and publication; recipient identity is immutable, and its pending/displayed progress is monotonic.
-A top-level completion marks the row `displayed` seat-wide only once no connected top-level binding of the seat
-still finds it unread (a sibling binding keeps its own unread view, and the ordered pending seek keeps listing the row for it).
+A top-level completion marks the row `displayed` seat-wide only once no open (not ended) top-level binding of the seat,
+connected or disconnected, still finds it unread (a sibling binding keeps its own unread view, and the ordered pending seek keeps listing the row for it, also after it reconnects).
 Already addressed rows survive leaving, retirement and archival, with no transfer to another seat.
 Undisplayed rows (`state` still `pending`) past the seat's furthest cursor when it joins become seat-pending
 (join frontier, below).
