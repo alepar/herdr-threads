@@ -47,7 +47,7 @@ One object per line, `schema: 1`; consumers ignore unknown keys.
 | `kind` | `id` | notes |
 |---|---|---|
 | `message` | message id | ordinary message; `ack_required: true` while its receipt is pending, `false` when another binding of the seat already settled it. Both are acked: the second answers `already_settled` and only moves this session's read position |
-| `lazy` | message id | `ack_required: false` |
+| `lazy` | message id | legacy: an older daemon's lazy message; `ack_required: false`, framed as `message` |
 | `attention` | `attention:<version>` | never acked; re-sent once per version and after each (re)start |
 | `attention_cleared` | `attention_cleared:<version>` | after an attention line, nothing it pointed at is still pending; the mod drops unsent attention items |
 | `status` | `status:<n>` | `state` connected, refused or closing; optional `reason`, `exit` |
@@ -99,8 +99,9 @@ builds `io` from `$`. Rules (spec D5, D6):
   `herdr-threads: wake up` is submitted with `$.prompt.submit`; the turn it starts sees the rows. The
   append is awaited before the submit, so the order is append, then submit. A denied append submits no wake
   (items stay queued, ledger `refused` via `append`, 30 s backoff). The submit is never awaited in a hook and
-  never issued while a main turn is open (re-checked right before the call). `lazy` rows
-  go to `$.session.append` at once. Each context or append delivery logs one dim `$.ui.log` line
+  never issued while a main turn is open (re-checked right before the call). Rows the daemon
+  marks `wakes: false` (priority above the seat's nudge threshold; legacy `lazy`) go to
+  `$.session.append` at once. Each context or append delivery logs one dim `$.ui.log` line
   (`delivered N message(s)`; Claude Code adds the plugin-name prefix).
 - **Attention freshness.** A queued attention item is dropped (ledger `refused`, `attention_cleared`) when
   `watch` reports that nothing it pointed at is still pending: an accepted invitation, or notices a check-in
