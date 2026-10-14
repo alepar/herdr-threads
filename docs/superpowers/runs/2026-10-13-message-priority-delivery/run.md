@@ -80,4 +80,5 @@ approvals:
 - approvals · merge into main · human · hand off to the main tab when done (2026-10-14)
 - approvals · leftovers · human · "your call" → orchestrator filed both now: ht-yha.50 (--max-bytes p0 refusal), ht-yha.51 (markers_ok vacuous) (2026-10-14)
 - post-hand-back fixes landed: ht-yha.44 (per-session pending views), .45, .46, .47 (ServiceSend→D9), .49 (protocol 8, v1.0.0), .50, .51, .52 (pending-only deadline walks), .53 (dead fallbacks removed), .54 (view lifecycle, no seat-wide state reads), .55 (spec sync); main dc2996c3 merged a2f1ae2d; q4 fixture 0873fa12; skew 7→8 db18eefc; unreleased v47 repairs dropped e6de8153
+- main-tab handoff · herdr-threads handoff --existing --pane w4:p1 → seat sRpHoWRVk, pair thread tEtr8uFMX, message mbGwVKTMO (2026-10-14); merge into local main is the main tab's
 - root-design · human · D1-D11 and sections A-E approved via seePN0MKW (mwRZ1YxXs, myas79LQ8, mXmhe1P2d, mpqluOeQD)
