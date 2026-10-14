@@ -661,9 +661,10 @@ fn all_targets_covered(
 }
 
 /// The reservation with the bindings a mod channel already serves removed from its targets, so
-/// the composer wake never types to a binding that was woken through its channel. `None`: every
-/// target is covered, nothing is left for the composer. A reservation without targets is
-/// returned unchanged (the legacy single-harness rule).
+/// the composer wake never types to a binding that was woken through its channel, nor to
+/// another binding of that binding's process (same fingerprint pid and harness, ht-327): the
+/// channel's turn already woke the process. `None`: nothing is left for the composer. A
+/// reservation without targets is returned unchanged (the legacy single-harness rule).
 fn without_covered_targets(
     channels: &dyn ModChannels,
     reservation: &WakeReservation,
@@ -674,8 +675,19 @@ fn without_covered_targets(
         if targets.is_empty() {
             return Some(reservation);
         }
-        targets
-            .retain(|target| !binding_covered(channels, &reservation.seat, &target.binding, now));
+        let woken: Vec<(u32, String)> = targets
+            .iter()
+            .filter(|target| binding_covered(channels, &reservation.seat, &target.binding, now))
+            .filter_map(|target| Some((target.fingerprint_pid?, target.harness.clone())))
+            .collect();
+        targets.retain(|target| {
+            !binding_covered(channels, &reservation.seat, &target.binding, now)
+                && !target.fingerprint_pid.is_some_and(|pid| {
+                    woken
+                        .iter()
+                        .any(|(woken_pid, harness)| *woken_pid == pid && *harness == target.harness)
+                })
+        });
         if targets.is_empty() {
             return None;
         }

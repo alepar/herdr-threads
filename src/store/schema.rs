@@ -3892,6 +3892,49 @@ pub struct OverdueOutcome {
     pub inserted: bool,
 }
 
+/// The recipient's native wake disposition for an overdue obligation (ht-327), so the sender
+/// sees a recipient that was never prompted: the outcome of the seat's latest wake or poke
+/// attempt completed after the obligation was created (any attempt, not necessarily one for
+/// this obligation; `submitted` means a prompt was typed, never that anything was read), else
+/// `none` (no native wake recorded; a mod channel wakes without one).
+fn overdue_wake(
+    tx: &Connection,
+    obligation: &ObligationRef,
+    seat: &str,
+) -> Result<String, ApiError> {
+    let created_at: Option<i64> = match obligation {
+        ObligationRef::Invitation(id) => tx
+            .query_row(
+                "SELECT created_at FROM invitations WHERE id=?1",
+                [id.as_str()],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?,
+        ObligationRef::Receipt { message, .. } => tx
+            .query_row(
+                "SELECT decision_at FROM messages WHERE id=?1",
+                [message.as_str()],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?,
+        _ => None,
+    };
+    let last: Option<(Option<String>, Option<i64>)> = tx
+        .query_row(
+            "SELECT last_outcome, completed_at_utc FROM wake_work WHERE seat_id=?1",
+            [seat],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    Ok(match (last, created_at) {
+        (Some((Some(outcome), Some(completed))), Some(created)) if completed > created => outcome,
+        _ => "none".to_owned(),
+    })
+}
+
 /// The retirement time basis is valid only for a job and its fenced seat.
 /// Ordinary scans ignore effectively terminal obligations. This helper does
 /// not settle the obligation; the handler performs settlement in the same tx.
@@ -4396,12 +4439,21 @@ fn record_overdue_inner(
     } else {
         "pending"
     };
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "obligation": match obligation { ObligationRef::Invitation(_) => "invitation", _ => "receipt" },
         "seat": seat.as_str(), "deadline_at": deadline,
         "classified_at": classify_at, "materialized_at": decision_at.0,
         "current_status": effective_status, "physical_status": "pending",
-    }).to_string();
+    });
+    if matches!(basis, TimeBasis::Decision) {
+        let wake = overdue_wake(tx, obligation, seat.as_str())?;
+        payload["detail"] = match wake.as_str() {
+            "none" => "no native wake recorded".into(),
+            outcome => format!("last wake {outcome}").into(),
+        };
+        payload["wake"] = wake.into();
+    }
+    let payload = payload.to_string();
     let event = EventInput {
         thread: &thread,
         key: &key,

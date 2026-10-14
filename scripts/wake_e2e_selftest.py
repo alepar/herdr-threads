@@ -1458,8 +1458,9 @@ class CodexStartOrder(unittest.TestCase):
     def test_linux_codex_starts_one_at_a_time(self):
         self.assertEqual(self.starts("linux"), ["run", "up", "run", "up"])
 
-    def test_macos_codex_starts_stay_concurrent(self):
-        self.assertEqual(self.starts("macos")[:2], ["run", "run"])
+    def test_macos_codex_starts_are_serial_too(self):
+        # Three Codex recipients raced on the scratch state DB on macOS as well (ht-327 side-case run).
+        self.assertEqual(self.starts("macos"), ["run", "up", "run", "up"])
 
 
 class ReviewMinors(TempDir):
@@ -1639,3 +1640,22 @@ class MainExitCode(TempDir):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SideCases(unittest.TestCase):
+    """ht-327 opt-in side cases: who runs them, and how the hookless Codex is launched."""
+
+    def test_side_cases_run_on_codex_only_and_co_plain_runs_nothing_else(self):
+        r = lambda name, harness, plain=False: SimpleNamespace(name=name, harness=harness, plain=plain)
+        run = SimpleNamespace(recipients=[r("cl-nudge", "claude"), r("co-nudge", "codex"),
+                                          r("co-plain", "codex", True)])
+        self.assertEqual(W.expected_rows(run, ["send-nudge/group", "side-nudge/group"]),
+                         {("cl-nudge", "send-nudge/group"), ("co-nudge", "send-nudge/group"),
+                          ("co-nudge", "side-nudge/group"), ("co-plain", "side-nudge/group")})
+
+    def test_plain_codex_launch_turns_its_hooks_off_and_only_then(self):
+        run = W.Run.__new__(W.Run)
+        run.bindir, run.cwd, run.codex_home = Path("/b"), "/repo", Path("/h")
+        run.args = SimpleNamespace(codex_args="--approve-for-me", codex_model=None, harness_mode="macos")
+        self.assertIn("features.codex_hooks=false", run.launch_line("codex", plain=True))
+        self.assertNotIn("codex_hooks", run.launch_line("codex"))
