@@ -662,6 +662,128 @@ fn lazy_markers_budget_includes_escaping_and_exact_body_continuation() {
         "marker bytes must force canonical reselection, not local clipping"
     );
 }
+/// A p0 daemon that validates the wire floor like the real one and fits the body
+/// to the request bound.
+struct BoundedP0Body {
+    calls: Mutex<Vec<Command>>,
+    body: String,
+}
+impl LocalClient for BoundedP0Body {
+    fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
+        name == MESSAGE_DELIVERY_MODES || name == SEND_PRIORITY_V1
+    }
+    fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
+        self.call_with_output(command, &OutputSpec::default(), budget)
+    }
+    fn call_with_output(
+        &self,
+        command: Command,
+        spec: &OutputSpec,
+        _: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.calls.lock().unwrap().push(command.clone());
+        command.validate().map_err(ApiError::invalid_budget)?;
+        match command {
+            Command::MessageDeliveryModes(q) => Ok(CommandResult::MessageDeliveryModes(
+                q.messages
+                    .into_iter()
+                    .map(|message| MessageDeliveryMode {
+                        priority: Some(DeliveryPriority::new(0).unwrap()),
+                        message,
+                        delivery_mode: DeliveryMode::Lazy,
+                    })
+                    .collect(),
+            )),
+            Command::Message(q) => {
+                let mut len = self.body.len();
+                loop {
+                    let complete = len == self.body.len();
+                    let result = CommandResult::Message(MessageDetails {
+                        summary: summary(2),
+                        content: MessageContent::Ordinary {
+                            body_data: self.body[..len].to_owned(),
+                            body_offset: 0,
+                            body_total_bytes: self.body.len() as u64,
+                            body_complete: complete,
+                            body_next_cursor: (!complete).then(|| format!("cursor-{len}")),
+                            body_next_argv: (!complete).then(|| {
+                                vec![
+                                    "herdr-threads".into(),
+                                    "body".into(),
+                                    "msg-2".into(),
+                                    "--offset".into(),
+                                    len.to_string(),
+                                    "--max-bytes".into(),
+                                    q.body.max_bytes.to_string(),
+                                ]
+                            }),
+                        },
+                    });
+                    if encode_selected(&result, spec)?.len() <= q.body.max_bytes as usize {
+                        return Ok(result);
+                    }
+                    if len == 0 {
+                        return Err(ApiError::invalid_budget("body framing does not fit"));
+                    }
+                    len -= 1;
+                }
+            }
+            _ => panic!("unexpected {command:?}"),
+        }
+    }
+}
+#[test]
+fn p0_body_fits_every_bound_from_the_documented_floor() {
+    use herdr_threads::protocol::pagination::MIN_REFIT_READ_BYTES;
+    let client = BoundedP0Body {
+        calls: Mutex::new(vec![]),
+        body: "abcdefghij".repeat(40),
+    };
+    for bound in 256..=342usize {
+        let arg = bound.to_string();
+        let before = client.calls.lock().unwrap().len();
+        let (text, _) = run(&["body", "msg-2", "--max-bytes", &arg], &client);
+        assert!(text.len() <= bound, "{bound}: {text}");
+        assert!(text.starts_with("[p0] msg-2\n"), "{bound}: {text}");
+        let range = text.lines().find(|l| l.starts_with("#2 ")).unwrap();
+        let end: usize = range
+            .split("bytes=0-")
+            .nth(1)
+            .unwrap()
+            .split('/')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(end > 0, "{bound}: at least one body byte: {text}");
+        if end < 400 {
+            assert!(
+                text.contains(&format!("--max-bytes {bound}")),
+                "{bound}: continuation carries the invocation bound: {text}"
+            );
+        }
+        let calls = client.calls.lock().unwrap();
+        for call in &calls[before..] {
+            if let Command::Message(q) = call {
+                assert!(q.body.max_bytes >= MIN_REFIT_READ_BYTES, "{bound}");
+            }
+        }
+    }
+    let first_run: Vec<u32> = client
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|c| match c {
+            Command::Message(q) => Some(q.body.max_bytes),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        first_run.iter().any(|b| *b < 256),
+        "the refit went below the documented floor: {first_run:?}"
+    );
+}
 #[test]
 fn lazy_markers_human_selected_body_and_search_are_canonical() {
     for argv in [

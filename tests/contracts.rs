@@ -2735,3 +2735,69 @@ fn direct_recipient_send_preserves_historical_bytes_and_roundtrips() {
         command
     );
 }
+
+#[test]
+fn refit_read_floor_applies_only_to_history_search_and_body() {
+    use herdr_threads::protocol::{
+        commands::{
+            BodyReadRequest, DirectoryMembership, DirectoryQuery, HistoryQuery, InboxQuery,
+            MessageQuery, SearchQuery,
+        },
+        ids::{MessageId, ThreadId},
+    };
+    assert_eq!(MIN_PAGE_BYTES, 256);
+    assert_eq!(MIN_REFIT_READ_BYTES, 128);
+    let page = |max_bytes| PageRequest {
+        cursor: None,
+        limit: 20,
+        max_bytes,
+    };
+    assert!(page(255).validate().is_err());
+    assert!(page(256).validate().is_ok());
+    let history = |b| {
+        Command::History(HistoryQuery {
+            thread: ThreadId::new("t"),
+            page: page(b),
+            initial: None,
+            full_bodies: false,
+        })
+    };
+    let search = |b| {
+        Command::Search(SearchQuery {
+            literal: "x".into(),
+            thread: None,
+            page: page(b),
+            max_candidates: 10,
+        })
+    };
+    let message = |b| {
+        Command::Message(MessageQuery {
+            message: MessageId::new("m"),
+            body: BodyReadRequest {
+                cursor: None,
+                offset: None,
+                max_bytes: b,
+            },
+        })
+    };
+    for build in [&history as &dyn Fn(u32) -> Command, &search, &message] {
+        assert!(build(128).validate().is_ok());
+        assert!(build(127).validate().is_err());
+    }
+    let inbox = Command::Inbox(InboxQuery {
+        seat: None,
+        page: page(255),
+        claim: None,
+        thread: None,
+        pushed: false,
+    });
+    let directory = Command::Directory(DirectoryQuery {
+        recent: false,
+        membership: None,
+        membership_filter: DirectoryMembership::default(),
+        topic_contains: None,
+        page: page(255),
+    });
+    assert!(inbox.validate().is_err());
+    assert!(directory.validate().is_err());
+}

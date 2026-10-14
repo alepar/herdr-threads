@@ -6,7 +6,7 @@ use crate::protocol::{
     commands::{Command as WireCommand, *},
     ids::*,
     output::{ContinuationContext, OutputFormat, OutputSpec},
-    pagination::{DEFAULT_PAGE_BYTES, DEFAULT_PAGE_LIMIT, PageRequest},
+    pagination::{DEFAULT_PAGE_BYTES, DEFAULT_PAGE_LIMIT, MIN_PAGE_BYTES, PageRequest},
     priority::{DeliveryPriority, NudgeThreshold},
     results::{ApiError, CommandResult, ErrorCode},
     summary::UserIntent,
@@ -2601,14 +2601,22 @@ fn parse_cli_in_registry(
                 full_bodies: false,
             }))
         }
-        Top::Body(args) => CliAction::Wire(WireCommand::Message(MessageQuery {
-            message: message_id(args.message)?,
-            body: BodyReadRequest {
-                cursor: args.cursor,
-                offset: args.offset,
-                max_bytes: args.max_bytes.unwrap_or(DEFAULT_PAGE_BYTES),
-            },
-        })),
+        Top::Body(args) => {
+            let max_bytes = args.max_bytes.unwrap_or(DEFAULT_PAGE_BYTES);
+            // The wire accepts a lower bound for the annotated-read refit; a user
+            // keeps the documented floor (ht-yha.50).
+            if max_bytes < MIN_PAGE_BYTES {
+                return Err(validation_error("invalid body output byte bound"));
+            }
+            CliAction::Wire(WireCommand::Message(MessageQuery {
+                message: message_id(args.message)?,
+                body: BodyReadRequest {
+                    cursor: args.cursor,
+                    offset: args.offset,
+                    max_bytes,
+                },
+            }))
+        }
         Top::Search(args) => CliAction::Wire(WireCommand::Search(SearchQuery {
             literal: bounded(args.literal, "search")?,
             thread: args.thread.map(thread_id).transpose()?,

@@ -5,6 +5,13 @@ pub const DEFAULT_PAGE_LIMIT: u16 = 20;
 pub const MAX_PAGE_LIMIT: u16 = 100;
 pub const DEFAULT_PAGE_BYTES: u32 = 16_384;
 pub const MAX_PAGE_BYTES: u32 = 65_536;
+/// The documented `--max-bytes` floor and the wire floor for every paged command
+/// except History and Search.
+pub const MIN_PAGE_BYTES: u32 = 256;
+/// The wire floor for History, Search and Message body reads: below the documented
+/// floor so the CLI's annotated-read refit can reserve its `[pN] <id>` rows under a
+/// user bound at `MIN_PAGE_BYTES` (ht-yha.50). The CLI never accepts it from a user.
+pub const MIN_REFIT_READ_BYTES: u32 = 128;
 pub const MAX_CURSOR_BYTES: usize = 1_024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,10 +32,13 @@ impl Default for PageRequest {
 }
 impl PageRequest {
     pub fn validate(&self) -> Result<(), &'static str> {
+        self.validate_with_floor(MIN_PAGE_BYTES)
+    }
+    pub fn validate_with_floor(&self, min_bytes: u32) -> Result<(), &'static str> {
         if self.limit == 0 || self.limit > MAX_PAGE_LIMIT {
             return Err("invalid page limit");
         }
-        if self.max_bytes < 256 || self.max_bytes > MAX_PAGE_BYTES {
+        if self.max_bytes < min_bytes || self.max_bytes > MAX_PAGE_BYTES {
             return Err("invalid page byte bound");
         }
         if let Some(cursor) = &self.cursor {

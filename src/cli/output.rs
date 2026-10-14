@@ -427,6 +427,14 @@ impl ReadModes {
     /// A service-generated row preceding the unchanged selected encoding.
     /// Peer text cannot fabricate this column-zero row (body lines are indented,
     /// and history/search peer fields are escaped by the established encoder).
+    /// The bytes `annotate` prepends: one `<marker> <id>\n` row per marked message.
+    pub(crate) fn annotation_len(&self) -> usize {
+        self.marked
+            .iter()
+            .map(|(id, marker)| marker.len() + 1 + id.as_str().len() + 1)
+            .sum()
+    }
+
     pub(crate) fn annotate(&self, bytes: Vec<u8>) -> Vec<u8> {
         if self.is_empty() {
             return bytes;

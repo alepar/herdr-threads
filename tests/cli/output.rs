@@ -346,3 +346,18 @@ fn invitation_policy_lazy_hook_display_remains_recoverable_without_acceptance() 
         "invitation presentation must not settle membership or messages"
     );
 }
+
+#[test]
+fn read_modes_annotation_len_is_the_prepended_bytes() {
+    use crate::protocol::ids::MessageId;
+    let modes = ReadModes {
+        marked: vec![
+            (MessageId::new("msg-2"), "[p0]"),
+            (MessageId::new("msg-3"), "[lazy]"),
+        ],
+        enforce_final_bound: false,
+    };
+    assert_eq!(modes.annotate(b"x".to_vec()).len(), 1 + modes.annotation_len());
+    assert_eq!(modes.annotation_len(), 11 + 13);
+    assert_eq!(ReadModes::default().annotation_len(), 0);
+}
