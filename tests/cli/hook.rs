@@ -6846,8 +6846,9 @@ mod registered_resume {
             });
             utc
         }
-        /// Right after the hook's admission reads this clock (its UTC, then its `Instant`),
-        /// `elapsed` passes on the monotonic clock (slow decode and local evidence) while the
+        /// Right after the hook's admission reads this clock (its `Instant` and UTC; the step
+        /// fires on the first `Instant` read after a UTC read, which returns the unstepped
+        /// present), `elapsed` passes on the monotonic clock (slow decode and local evidence) while the
         /// wall clock moves `elapsed + wall_ms` (`wall_ms < 0`: stepped backward). The held
         /// present then stays at that point.
         pub(super) fn step_after_admission(&self, elapsed: Duration, wall_ms: i64) {
@@ -6905,7 +6906,7 @@ mod registered_resume {
             match held.as_mut() {
                 Some(h) if !h.running => {
                     let at = h.at;
-                    // The admission's pair is read; every later read sees the step.
+                    // The admission's UTC is read: this read is the last one before the step.
                     if let Some(step) = h.step.filter(|s| s.utc_seen) {
                         h.at += step.elapsed;
                         h.utc = UtcMillis(h.utc.0 + step.elapsed.as_millis() as i64 + step.wall_ms);

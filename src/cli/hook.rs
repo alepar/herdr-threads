@@ -3013,9 +3013,14 @@ fn hook_admission_request(
             registered_event: input.registered_event.clone(),
         }),
         runtime_candidate: None,
-        admitted_at: Some(crate::harness::adapter::AdmissionInstant {
-            utc: clock.utc_now(),
-            instant: clock.instant_now(),
+        admitted_at: Some({
+            // Instant first: the anchor never trails the UTC sample, so the window can only
+            // err short.
+            let instant = clock.instant_now();
+            crate::harness::adapter::AdmissionInstant {
+                utc: clock.utc_now(),
+                instant,
+            }
         }),
     }
 }
