@@ -63,8 +63,23 @@ impl CodexPermissions {
         }
     }
 
+    /// The component for an owned rules file recorded at `rules` (an owner found by its manifest).
+    pub fn at(rules: PathBuf, manifest: PathBuf) -> Self {
+        Self { rules, manifest }
+    }
+
     pub fn rules_file(&self) -> &Path {
         &self.rules
+    }
+
+    /// The rules file a Codex permission manifest records, if it is one.
+    pub fn recorded_file(manifest: &Path) -> Option<PathBuf> {
+        let bytes = fs::read(manifest).ok()?;
+        let manifest: PermissionComponentManifest = serde_json::from_slice(&bytes).ok()?;
+        if manifest.backend != BACKEND || manifest.resources.len() != 1 {
+            return None;
+        }
+        manifest.resources.into_iter().next().map(|r| r.file)
     }
 
     fn current(&self) -> Result<Option<Vec<u8>>, SetupError> {

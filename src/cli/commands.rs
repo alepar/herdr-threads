@@ -128,9 +128,13 @@ pub enum CliAction {
     InstallerIntegrations {
         confirm_missing: bool,
         without_permissions: bool,
+        /// Raw `--config-root` values; each is validated by the installer, an invalid one
+        /// failing only its own entry.
+        config_roots: Vec<String>,
     },
     InternalJsonField {
         path: String,
+        keys: bool,
     },
     /// `read THREAD --follow`: recent messages, then each new one as it is
     /// committed. Read-only: never ACKs or accepts.
@@ -941,9 +945,18 @@ enum InternalSub {
         /// Skip the permissions component (installer --without-permissions).
         #[arg(long)]
         without_permissions: bool,
+        /// Also reconcile this config root of a registered harness, after the effective one
+        /// (repeatable; DIR absolute).
+        #[arg(long = "config-root", value_name = "HARNESS=DIR")]
+        config_root: Vec<String>,
     },
     /// Read JSON on stdin and print the value at a dotted path (exit 1 when absent).
-    JsonField { path: String },
+    JsonField {
+        path: String,
+        /// Print the keys of the object at the path, one per line (exit 3 when not an object).
+        #[arg(long)]
+        keys: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2946,14 +2959,16 @@ fn parse_cli_in_registry(
                 InternalSub::InstallerIntegrations {
                     confirm_missing,
                     without_permissions,
+                    config_root,
                 },
         } => CliAction::InstallerIntegrations {
             confirm_missing,
             without_permissions,
+            config_roots: config_root,
         },
         Top::Internal {
-            command: InternalSub::JsonField { path },
-        } => CliAction::InternalJsonField { path },
+            command: InternalSub::JsonField { path, keys },
+        } => CliAction::InternalJsonField { path, keys },
         Top::Retry { recovery_ref } => CliAction::Retry(id(recovery_ref, LocalRecoveryRef::parse)?),
         Top::View(args) => CliAction::View {
             once: args.once,

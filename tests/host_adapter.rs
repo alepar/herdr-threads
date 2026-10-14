@@ -98,10 +98,11 @@ fn releases_from_the_floor_allow_transport_and_snapshot_without_claiming_capabil
         ("0.9.1", 22, None),
         ("0.9.2", 22, None),
         ("0.9.3", 22, None),
+        ("0.9.4", 22, None),
         (
             "0.10.0",
             23,
-            Some("untested Herdr 0.10.0; tested 0.9.1-0.9.3"),
+            Some("untested Herdr 0.10.0; tested 0.9.1-0.9.4"),
         ),
     ] {
         let snapshot = json!({"type":"session_snapshot","snapshot":{
@@ -326,8 +327,14 @@ fn connected_no_reply_obeys_whole_call_deadline_and_closes_owned_socket() {
 
 #[test]
 fn cancellation_closes_socket_and_prompt_result_is_unknown() {
-    let (path, handle) = serve(|stream, request| {
+    let call_budget = budget(5000);
+    let cancel = call_budget.cancellation.clone();
+    // Cancel only once the whole request has arrived, so the cancellation
+    // always lands while the client awaits the reply (a wall-clock timer can
+    // fire before the write on a loaded runner, and nothing is sent at all).
+    let (path, handle) = serve(move |stream, request| {
         assert_eq!(request["method"], "agent.prompt");
+        cancel.cancel();
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
@@ -335,17 +342,10 @@ fn cancellation_closes_socket_and_prompt_result_is_unknown() {
         assert_eq!(std::io::Read::read(stream, &mut byte).unwrap(), 0);
     });
     let cli = NativeCli::new(path.clone(), Arc::new(TestClock(Instant::now())));
-    let call_budget = budget(5000);
-    let cancel = call_budget.cancellation.clone();
-    let notifier = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(50));
-        cancel.cancel();
-    });
     assert_eq!(
         cli.prompt("w4:p1", "hint", &call_budget),
         PromptOutcome::Unknown
     );
-    notifier.join().unwrap();
     cleanup(path, handle);
 }
 
@@ -1484,7 +1484,7 @@ fn answered_ping_is_observed_even_when_the_operation_fails() {
         assert_eq!(release.summary(), "0.10.0 (protocol 23)");
         assert_eq!(
             release.warning().as_deref(),
-            Some("untested Herdr 0.10.0; tested 0.9.1-0.9.3")
+            Some("untested Herdr 0.10.0; tested 0.9.1-0.9.4")
         );
     }
 }

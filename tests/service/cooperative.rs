@@ -3440,6 +3440,73 @@ fn hermes_child_early_call_then_subagent_start_leaves_only_the_parent_connected(
     hermes_child_early_call_then_subagent_start(false);
 }
 
+/// Kills: the ht-327 store state reaching the dispatcher as "no composer". Main's Codex (one
+/// process, plain calls only) ran two `/side` conversations, each an in-process fork with its
+/// own session; their CLI calls enrolled plain-call top-level bindings on its fingerprint. No
+/// lifecycle claim ranks the group, so the worker leaves all three connected (TRUST-POLICY A4)
+/// and seat-level attention targets all three: the composer choice must be their one process.
+#[test]
+fn codex_side_conversations_leave_one_process_composer_for_seat_attention() {
+    let (service, db) = fixture();
+    let main = with_fingerprint(CallerClaim {
+        native_session: NativeSessionId::new("codex-main"),
+        ..claim()
+    });
+    for (session, execution) in [
+        ("codex-main", "00000000-0000-4000-8000-000000000001"),
+        ("codex-side-1", "00000000-0000-4000-8000-000000000002"),
+        ("codex-side-2", "00000000-0000-4000-8000-000000000003"),
+    ] {
+        checked(
+            &service,
+            Command::CheckIn(CheckIn {
+                lineage_parent: None,
+                mode: CheckInMode::Current,
+                claim: CallerClaim {
+                    native_session: NativeSessionId::new(session),
+                    execution: ExecutionId::new(execution),
+                    ..main.clone()
+                },
+                operation: OperationId::new(session),
+            }),
+        );
+    }
+    let rows: Vec<(String, String, String)> = db
+        .prepare(
+            "SELECT role,liveness,observation_provenance FROM occupant_bindings ORDER BY ordinal",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let plain = (
+        "top_level".to_owned(),
+        "connected".to_owned(),
+        "cooperative_env_session".to_owned(),
+    );
+    assert_eq!(rows, vec![plain.clone(), plain.clone(), plain], "{rows:?}");
+    let candidates = crate::store::bindings::liveness_candidates(&db, None).unwrap();
+    assert_eq!(
+        crate::service::liveness::classify(&candidates, &AliveTable),
+        vec![],
+        "a plain-only group stays as it is"
+    );
+    let targets = crate::store::wake::wake_targets(&db, &main.seat, true).unwrap();
+    assert_eq!(targets.len(), 3, "{targets:?}");
+    let authority = crate::ports::ReservedWakeAuthority::Cooperative {
+        terminal: crate::protocol::ids::TerminalId::new("t"),
+        incarnation: "i".into(),
+        binding_generation: None,
+        harness: None,
+        targets,
+    };
+    match authority.composer_choice(&[crate::protocol::authority::LivenessFingerprint::TEST.pid]) {
+        crate::ports::ComposerChoice::Process(group) => assert_eq!(group.len(), 3),
+        other => panic!("expected the one Codex process, got {other:?}"),
+    }
+}
+
 /// Kills: read-only decided from the claim's shape alone. A Hermes child's CLI claim is
 /// top-level-shaped but resolves to its registered subagent row; a check-in under it must be
 /// refused (no availability row, child row untouched) while its own cursor advance still works.

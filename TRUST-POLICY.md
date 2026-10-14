@@ -13,6 +13,8 @@ Amended 2026-10-12 for the consented Codex pane environment block (foreground co
 binding, receipt or attribution rule changes).
 Amended 2026-10-13 for message priority delivery (ht-yha.3): delivery rows are the bookkeeping of every message and
 audience member, and receipts exist only for explicit ACK recipients (A8, A5a, A6).
+Amended 2026-10-13 for the one-process composer wake (ht-327): several bindings of one process share its
+composer for seat-level attention; no binding is chosen, merged, moved or ended.
 
 ## Abstract
 
@@ -400,7 +402,21 @@ model open work, and summary closure never changes receipt state or installs glo
   reports the pane idle. Membership is exact pid equality: an ancestor or descendant of a foreground
   process is not a match. No match, several matches, no fingerprint or no foreground report means no composer wake, with
   no fallback to the latest claim or touch, even for a seat with one target (nothing is guessed, and the
-  refusal is pre-send so the reminder ladder does not climb). Only a reservation that names no targets
+  refusal is pre-send so the reminder ladder does not climb). One exception (ht-327): several matching targets
+  with the same fingerprint pid and harness are bindings of one process (a plain-call-only group the
+  same-process rule leaves connected, such as the in-process `/side` sessions of a Codex TUI), and a wake for
+  seat-level attention (an invitation, receipt or warning, or a receipt's soft-deadline poke) types once into
+  that process's composer: the item reaches whichever of its bindings takes the turn, so no binding is
+  chosen. Like a single target it is not held to the several-targets idle condition (an ordinary wake
+  reads no composer before that point); the adapter's final composer read immediately before submission
+  still refuses typed input and a busy agent. It is owed only while every binding of the process is owed (one served in its turn served the
+  process), and a binding whose mod channel woke it takes its process's other bindings off the composer
+  targets. Seat-level attention includes a delivery row the seat's nudge threshold admitted (reason `lazy`,
+  the lazy frontier admitted by `NudgeThreshold`): under message priority delivery (D9) a bare `--nudge`
+  (p0, no `--require-ack`) makes no receipt, so this row is what wakes the seat, and it counts exactly as
+  `pending_receipt` does for the one-process rule (orchestrator decision at the ht-327 merge; the item is shown
+  to whichever binding of the process takes the turn, as before). A wake whose reasons name no such item still
+  needs a unique match, and a threshold-silent row (priority above T) never reserves a wake at all. Only a reservation that names no targets
   (a legacy source) keeps the single-harness rule. A soft poke follows the same targets and rule.
   *Served in-turn* (ht-705, A8): a target that was shown every pending receipt (or invitation) the wake is
   reserved for inside its own turn is owed no wake for it; the seat-level candidate drops those items only

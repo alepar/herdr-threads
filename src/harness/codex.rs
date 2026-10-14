@@ -2352,15 +2352,22 @@ impl InstallerPolicy for CodexAdapter {
     fn permission_backend(&self) -> Option<crate::harness::permissions::PermissionBackend> {
         Some(permissions::BACKEND)
     }
-    fn permissions_granted(&self, request: &StatusRequest) -> Result<Option<bool>, SetupFailure> {
+    fn permission_state(
+        &self,
+        request: &StatusRequest,
+    ) -> Result<Option<InstallerPermissionState>, SetupFailure> {
         let env = crate::harness::setup::legacy::scoped_legacy_environment(
             Harness::Codex,
             &request.scope,
             &request.environment,
         )?;
-        setup::permissions_granted(&env)
+        // An API error keeps its whole detail (a shared file's remedy names two paths).
+        setup::installer_permission_state(&env)
             .map(Some)
-            .map_err(|error| SetupFailure::Invalid(error.to_string()))
+            .map_err(|error| match error {
+                crate::cli::RunError::Api(error) => SetupFailure::Api(error),
+                other => SetupFailure::Invalid(other.to_string()),
+            })
     }
     fn inspect_hooks(
         &self,

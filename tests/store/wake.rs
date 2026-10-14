@@ -2348,7 +2348,20 @@ fn composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match() {
     };
     assert_eq!(found(10).as_deref(), Some("a"));
     assert_eq!(found(20).as_deref(), Some("b"));
-    assert_eq!(found(30), None, "two bindings share the pid: ambiguous");
+    assert_eq!(
+        found(30),
+        None,
+        "two bindings share the pid: no unique binding"
+    );
+    // ...but they are one process (same pid and harness, ht-327): its composer, for the
+    // dispatcher to use only for seat-level attention.
+    match authority.composer_choice(&[30]) {
+        crate::ports::ComposerChoice::Process(group) => assert_eq!(
+            group.iter().map(|t| t.binding.as_str()).collect::<Vec<_>>(),
+            ["dup1", "dup2"]
+        ),
+        other => panic!("one process expected, got {other:?}"),
+    }
     assert_eq!(found(40), None, "a subagent is never the foreground agent");
     assert_eq!(
         found(50),

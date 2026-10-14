@@ -71,6 +71,7 @@ import re
 import shlex
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -92,6 +93,21 @@ THRESHOLDS = (0, -1, 3)
 # 1:1 pair at the default p1 (the pair auto-joins both seats, so there is no invitation).
 ITEM_PRIORITY = {"send-p1": 1, "send-p0": 0, "send-p3": 3, "send-ack": 0, "invite": 0, "pair-open": 1}
 MIXED_DEADLINE_S = 90
+# Opt-in Codex cases (ht-327), never in the default matrix: before the send the recipient's one Codex process holds
+# extra session bindings from two `/side` conversations (ephemeral in-process forks) that each made one
+# herdr-threads `inbox` call. side-nudge: a p0 send (`--nudge`, no ACK) still wakes an idle recipient at T=0. side-draft: a typed composer draft is never typed
+# into (busy-input guard) and the sender's overdue warning names the refused wake. They also run on `co-plain`, a
+# Codex with its hooks feature off, so every session binds by a plain CLI call only (as Main's seat did on
+# 2026-10-13): no lifecycle claim ranks the group, the same-process rule leaves all three connected.
+SIDE_CASES = ("side-nudge/group", "side-draft/group")
+SIDE_FORKS = 2
+SIDE_DEADLINE_S = 45
+SIDE_DRAFT = "draft-kept-by-wake-e2e"
+# Codex's shell snapshot can put the installed herdr-threads ahead of the run's shim (ht-l16); a hooked recipient
+# learns the run's --state-dir from its hook context, a plain one is given the shim's exact path instead.
+PLAIN_HINT = (" Your herdr-threads hooks are off: always run herdr-threads by the exact path `{shim}` (never a bare "
+              "`herdr-threads`), and whenever a turn starts with `herdr-threads: wake up`, run `{shim} inbox` once, "
+              "then handle what it shows as above.")
 # Busy cases send while the recipient is mid-turn (between two tool calls): no wake may be typed or submitted, during
 # the turn or after it, and the item must arrive in that turn at the next tool boundary (Delivery contract rules 3-4).
 BUSY_PROMPT = ("Busy-turn test {tag}: run the shell command `sleep 12`, then run the shell command `sleep 1`, then "
@@ -536,10 +552,13 @@ class Run:
                 name = f"{h[:2]}-t{threshold}"
                 pane = self.tab(name)
                 self.recipients.append(Recipient(self, name, h, threshold, pane, self.seat(pane)))
+        if "codex" in self.args.harness and getattr(self, "side_cases", False):
+            pane = self.tab("co-plain")
+            self.recipients.append(Recipient(self, "co-plain", "codex", 0, pane, self.seat(pane), plain=True))
         print(f"  workspace {self.workspace}: coordinators {self.coord_seats()}; " +
               ", ".join(f"{r.name}={r.seat}" for r in self.recipients), flush=True)
 
-    def launch_line(self, harness):
+    def launch_line(self, harness, plain=False):
         q = shlex.quote
         path = f"PATH={q(str(self.bindir))}:\"$PATH\""
         if harness == "claude":
@@ -557,6 +576,8 @@ class Run:
                 "-c", "check_for_update_on_startup=false", *shlex.split(self.args.codex_args)]
         if self.args.codex_model:
             argv += ["-m", self.args.codex_model]
+        if plain:
+            argv += ["-c", "features.codex_hooks=false"]
         return f"{path} HERDR_AGENT=codex CODEX_HOME={q(str(self.codex_home))} {shlex.join(argv)}"
 
     @property
@@ -803,8 +824,9 @@ def wake_count(text):
 
 
 class Recipient:
-    def __init__(self, run, name, harness, threshold, pane, seat):
+    def __init__(self, run, name, harness, threshold, pane, seat, plain=False):
         self.run, self.name, self.harness, self.threshold, self.pane, self.seat = run, name, harness, threshold, pane, seat
+        self.plain = plain  # Codex hooks feature off: every binding is a plain CLI call
         self.last_wake = 0.0
         self.group = None
         self.pair = None
@@ -872,10 +894,12 @@ class Recipient:
         # (seen in the linux runner: "migration 3: duplicate column name: thread_id", one Codex exits). In the linux
         # mode the second start waits until the first Codex is up: the lock is released once this Codex is detected
         # (its TUI is drawn, so its state DB is migrated) or the detection failed (the error releases it too).
-        # macOS keeps concurrent starts by design: its behaviour stays as it was; the race was not seen there.
-        serial = self.harness == "codex" and getattr(self.run.args, "harness_mode", "macos") == "linux"
+        # macOS hit it too with three Codex recipients (the opt-in side cases add co-plain): every Codex start is
+        # serial on both platforms.
+        serial = self.harness == "codex"
         with (self.run.codex_start if serial else contextlib.nullcontext()):
-            self.run.herdr("pane", "run", self.pane, self.run.launch_line(self.harness))
+            line = self.run.launch_line(self.harness, plain=True) if self.plain else self.run.launch_line(self.harness)
+            self.run.herdr("pane", "run", self.pane, line)
             end = time.time() + 180
             while time.time() < end:
                 data = self.run.herdr("agent", "get", self.pane, check=False)
@@ -899,7 +923,9 @@ class Recipient:
                 raise RuntimeError(f"{self.name}: startup dialog (nothing typed): {self.tail()}")
         for _attempt in range(2):  # one retry: a transient model/capacity error ends the first turn early
             reported = re.compile(r"SETUP-DONE nudge_threshold=%s\b" % re.escape(str(self.threshold)))
-            self.prompt(STANDING.format(coord=self.run.coord_seats(), threshold=self.threshold), expect=reported)
+            self.prompt(STANDING.format(coord=self.run.coord_seats(), threshold=self.threshold)
+                        + (PLAIN_HINT.format(shim=self.run.bindir / "herdr-threads") if self.plain else ""),
+                        expect=reported)
             if reported.search(self.screen()):
                 break
         else:
@@ -1058,8 +1084,154 @@ class Recipient:
                          "hello_sent": False, "checks": checks, "ref": ref,
                          "result": "PASS" if passed else "FAIL", "utc": utc()})
 
+    # ---------- side cases (ht-327) ----------
+    def store_rows(self, sql, args=()):
+        """Read-only rows from the run's own daemon store (never a shared one)."""
+        rows = []
+        for db in sorted(self.run.state.glob("instances/*/threads.sqlite3")):
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+            try:
+                rows += con.execute(sql, args).fetchall()
+            finally:
+                con.close()
+        return rows
+
+    def bindings(self):
+        keys = ("session", "provenance", "liveness", "pid", "disconnect")
+        return [dict(zip(keys, row)) for row in self.store_rows(
+            "SELECT native_session,observation_provenance,liveness,liveness_pid,disconnect_reason "
+            "FROM occupant_bindings WHERE seat_id=? AND role='top_level' AND ended_at IS NULL ORDER BY ordinal",
+            (self.seat,))]
+
+    def wake_state(self):
+        rows = self.store_rows("SELECT last_outcome,completed_at_utc,retry_step FROM wake_work WHERE seat_id=?",
+                               (self.seat,))
+        return dict(zip(("last_outcome", "completed_at_utc", "retry_step"), rows[0])) if rows else None
+
+    def open_sides(self, tag):
+        """SIDE_FORKS `/side` conversations, each making one herdr-threads `inbox` call under its own session,
+        then Ctrl+C back to the main thread. Returns what the store holds for the seat afterwards."""
+        for i in range(SIDE_FORKS):
+            self.wait_idle()
+            self.run.herdr("agent", "prompt", self.pane, "/side", check=False)
+            time.sleep(2)
+            shim = self.run.bindir / "herdr-threads"
+            # `inbox` (nothing is pending here) is a call that enrolls the side session's own binding; a read-only
+            # `thread list` does not.
+            self.prompt(f"Side {i + 1} of wake-e2e {tag}: run the shell command `{shim} inbox` once, then print "
+                        f"SIDE-{i + 1}-DONE. Do not act on anything it shows.",
+                        expect=re.compile(r"^[^\w\n]*SIDE-%d-DONE" % (i + 1), re.M))
+            self.run.herdr("agent", "send-keys", self.pane, "ctrl+c", check=False)
+            time.sleep(2)
+            self.wait_idle()
+        self.settled()
+        return self.bindings()
+
+    def follow_up(self):
+        """The neutral next turn; a hookless recipient has no turn-start delivery, so it reads its inbox."""
+        if self.plain:
+            return (f"Run `{self.run.bindir / 'herdr-threads'} inbox` once and handle what it shows as your standing "
+                    "instructions say.")
+        return "hello"
+
+    def side_case(self, case):
+        action = case.split("/")[0]
+        tag = f"{case} {self.run.run_id}"
+        sides = self.open_sides(tag)
+        connected = [b for b in sides if b["liveness"] == "connected"]
+        checks = {"bindings_after_side": sides, "connected_same_pid":
+                  len(connected) > 1 and len({b["pid"] for b in connected}) == 1}
+        # The setup must have happened (a later case adds its own sides): the hookless recipient keeps every
+        # side binding connected on its one pid; a hooked one has them (superseded by its lifecycle-claimed session).
+        setup_ok = (checks["connected_same_pid"] and len(connected) >= 1 + SIDE_FORKS if self.plain
+                    else len(sides) >= 1 + SIDE_FORKS)
+        checks["side_setup_ok"] = setup_ok
+        gap = SPACING_S - (time.time() - self.last_wake)
+        if gap > 0:
+            self.run.stopping.wait(gap)
+        self.wait_idle()
+        ref = {}
+        if action == "side-nudge":
+            expect_wake = True
+            ref["message"] = self.send("p0", tag, direct=False)
+            t_wake = self.watch_for_wake(WAKE_WINDOW_S)
+            checks["late_wake_s"] = None if t_wake is not None else self.watch_for_wake(20)
+            woke = t_wake is not None
+            checks["wake_state"] = self.wake_state()
+            hello = False
+            if not woke and checks["late_wake_s"] is None:
+                hello = True
+                self.prompt(self.follow_up())
+            self.wait_idle()
+            checks["delivered"] = self.on_screen(ref["message"])
+            passed = setup_ok and woke and checks["delivered"]
+        else:
+            # Busy-input guard: a typed draft is never typed into or submitted; the sender sees the refused wake.
+            expect_wake = False
+            self.run.herdr("pane", "send-text", self.pane, SIDE_DRAFT)
+            try:
+                woke, t_wake, mid = self.draft_phase(checks, ref, tag)
+            finally:  # never leave the draft behind for a later case
+                self.run.herdr("agent", "send-keys", self.pane, "ctrl+u", check=False)
+                time.sleep(1)
+            hello = True
+            self.prompt(self.follow_up())
+            checks["delivered"] = self.on_screen(mid)
+            passed = (setup_ok and not woke and checks["draft_intact"] and checks["delivered"]
+                      and checks["warning_wake"] not in (None, "submitted"))
+        self.settled()
+        self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
+                         "expect_wake": expect_wake, "woke": woke, "t_wake_s": t_wake, "hello_sent": hello,
+                         "checks": checks, "ref": ref, "result": "PASS" if passed else "FAIL", "utc": utc()})
+
+    def draft_phase(self, checks, ref, tag):
+        """side-draft after the draft is typed: send, watch past the deadline, read composer and warning."""
+        time.sleep(1)
+        argv = ["send", self.group, "--body", tag, "--nudge", "--deadline", str(SIDE_DEADLINE_S)]
+        sent_seq = max([row.get("sequence") or 0 for row in walk(self.coord("read", self.group, "--recent", "1"))]
+                       or [0])
+        mid = (self.coord(*argv).get("result") or {}).get("data")
+        ref["message"] = mid
+        t_wake = self.watch_for_wake(SIDE_DEADLINE_S + 20)
+        woke = t_wake is not None
+        screen = self.run.herdr("pane", "read", self.pane, "--source", "detection", check=False).get("raw", "")
+        composer = [l for l in screen.splitlines() if l.startswith("\u203a ")]
+        checks["composer_at_end"] = composer[-1] if composer else None
+        checks["draft_intact"] = bool(composer) and composer[-1] == "\u203a " + SIDE_DRAFT
+        checks["wake_state"] = self.wake_state()
+        # The sender's view: the overdue warning for this seat after the send, its full event read by `body`.
+        warn = None
+        for _ in range(30):
+            for row in walk(self.coord("read", self.group, "--recent", "20")):
+                # The group thread is this recipient's own; the seat is confirmed from the full event.
+                if row.get("kind") == "warn" and (row.get("sequence") or 0) > sent_seq:
+                    warn = row
+            if warn:
+                break
+            time.sleep(2)
+        event = None
+        if warn:
+            for row in walk(self.coord("body", warn["message"])):
+                if "obligation" in row and "seat" in row:
+                    event = row
+                for key in ("body_data", "event_json", "preview_data"):
+                    value = row.get(key)
+                    if isinstance(value, dict) and "obligation" in value:
+                        event = value
+                    elif isinstance(value, str) and '"obligation"' in value:
+                        with contextlib.suppress(ValueError):
+                            event = json.loads(value)
+        if event and event.get("seat") != self.seat:
+            event = None
+        checks["overdue_warning"] = {"message": warn and warn["message"], "event": event}
+        checks["warning_wake"] = (event or {}).get("wake")
+        checks["warning_detail"] = (event or {}).get("detail")
+        return woke, t_wake, mid
+
     # ---------- one case ----------
     def case(self, case):
+        if case.startswith("side-"):
+            return self.side_case(case)
         if case.startswith("busy-"):
             return self.busy_case(case)
         action, channel = case.split("/")
@@ -1245,6 +1417,7 @@ class Recipient:
         self.settled()
 
     def run_cases(self, cases):
+        cases = [c for c in cases if applies(self, c)]
         try:
             self.start()
             for case in cases:
@@ -1285,8 +1458,15 @@ def record(self, row):
 Run.record = record
 
 
+def applies(recipient, case):
+    """Side cases run on Codex recipients only; the plain-hooks Codex runs nothing else."""
+    if case in SIDE_CASES:
+        return recipient.harness == "codex"
+    return not getattr(recipient, "plain", False)
+
+
 def expected_rows(run, cases):
-    return {(r.name, c) for r in getattr(run, "recipients", []) for c in cases}
+    return {(r.name, c) for r in getattr(run, "recipients", []) for c in cases if applies(r, c)}
 
 
 def summary(run, cases):
@@ -1342,7 +1522,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="wake-e2e", description=__doc__.splitlines()[0])
     ap.add_argument("--bin", default=str(REPO / "bin" / "herdr-threads"), help="herdr-threads binary under test")
     ap.add_argument("--harness", default="claude,codex", help="comma-separated: claude,codex")
-    ap.add_argument("--cases", default=",".join(CASES), help="comma-separated subset of: " + ", ".join(CASES))
+    ap.add_argument("--cases", default=",".join(CASES), help="comma-separated subset of: " + ", ".join(CASES)
+                    + "; opt-in, Codex only: " + ", ".join(SIDE_CASES))
     ap.add_argument("--evidence-dir", help="default: <run root>/evidence")
     ap.add_argument("--keep", action="store_true", help="leave the workspace and daemon running for inspection")
     ap.add_argument("--claude-model", help="passed as --model (default: the account default)")
@@ -1376,7 +1557,7 @@ def main(argv=None):
                   "(--approve-for-me); pass --codex-args to choose explicitly", file=sys.stderr)
     args.harness = [h for h in args.harness.split(",") if h]
     cases = [c for c in args.cases.split(",") if c]
-    unknown = [c for c in cases if c not in CASES] + [h for h in args.harness if h not in ("claude", "codex")]
+    unknown = [c for c in cases if c not in CASES + SIDE_CASES] + [h for h in args.harness if h not in ("claude", "codex")]
     if unknown:
         ap.error(f"unknown case/harness: {unknown}")
     def terminate(signum, _frame):
@@ -1384,6 +1565,7 @@ def main(argv=None):
     saved = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
     signal.signal(signal.SIGTERM, terminate)  # SIGTERM takes the same cleanup path as Ctrl-C
     run = Run(args)
+    run.side_cases = any(c in SIDE_CASES for c in cases)
     rc = EXIT_FAIL
     try:
         run.preflight()

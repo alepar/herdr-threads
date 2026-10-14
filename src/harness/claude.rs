@@ -1446,14 +1446,23 @@ impl InstallerPolicy for ClaudeAdapter {
     fn permission_backend(&self) -> Option<crate::harness::permissions::PermissionBackend> {
         Some(permissions::BACKEND)
     }
-    fn permissions_granted(&self, request: &StatusRequest) -> Result<Option<bool>, SetupFailure> {
+    fn permission_state(
+        &self,
+        request: &StatusRequest,
+    ) -> Result<Option<InstallerPermissionState>, SetupFailure> {
         let env = crate::harness::setup::legacy::scoped_legacy_environment(
             Harness::Claude,
             &request.scope,
             &request.environment,
         )?;
         setup::permissions_granted(&env)
-            .map(Some)
+            .map(|granted| {
+                Some(if granted {
+                    InstallerPermissionState::Granted
+                } else {
+                    InstallerPermissionState::Missing
+                })
+            })
             .map_err(|error| SetupFailure::Invalid(error.to_string()))
     }
     fn inspect_hooks(

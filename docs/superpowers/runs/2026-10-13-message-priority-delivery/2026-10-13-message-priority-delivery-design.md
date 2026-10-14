@@ -98,6 +98,8 @@ fast-forward leaves no row that wakes the seat. The watch stream and mod carry `
 item and sort every batch they frame by the same key (arrival order breaks the final tie); separate batches stay
 in arrival order.
 
+Merge note (v0.11.0, ht-327): a wake whose reason is a threshold-admitted delivery row (`lazy`) counts as seat attention for the one-process composer wake (`WakeReservation::for_seat_attention`) exactly like `pending_receipt`, because a bare `--nudge` (p0, no `--require-ack`) makes no receipt under D9 and must keep waking a one-process multi-binding seat.
+
 ## Surfaces
 
 - **CLI send** (`send`, `send --seat`, `human send`): `--priority/-p N`, `--nudge` alias, default 1. `--deadline`

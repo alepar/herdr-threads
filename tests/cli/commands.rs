@@ -2970,7 +2970,8 @@ fn permission_consent_flags_are_setup_scoped() {
         .action,
         CliAction::InstallerIntegrations {
             confirm_missing: false,
-            without_permissions: true
+            without_permissions: true,
+            ..
         }
     ));
     // The executable inventory flags are gone with absolute-path spellings.

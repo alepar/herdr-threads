@@ -143,6 +143,8 @@ herdr-threads leave THREAD
 
 `warnings --seat SEAT` keeps overdue, clear, unavailable-recipient and service-notice history. Inbox/digest counts are **pending** only. Built-in open/clear events and service notices settle once carried by a committed check-in offer or turn-hook delivery page to the checking-in session's binding; fresh offers omit settled events. Exact operation retry may present its retained result. A new event or successor occupant can receive a fresh offer. This is informational delivery, never invitation acceptance, receipt ACK or task completion.
 
+An overdue warning names the recipient's latest native wake or poke attempt since the send, for any item (`wake=`; text `last wake OUTCOME` or `no native wake recorded`). `submitted`: a prompt was typed (not proof it was read); `outcome_unknown`: typed, not verified; `unsafe`: refused before typing (composer not safe or target ambiguous); `unavailable`: nothing typed (already shown in its turn, or no safe target); `none`: no native wake (a mod-channel seat wakes without one). The recipient still gets the item on its next turn. If that cannot wait, tell your user; do not type into another agent's pane yourself.
+
 ## Errors and recovery
 
 For service connection recovery, `herdr-threads service inspect` is a read-only observation of the current connection, daemon boot and generation; it does not attest agent liveness. Only on an explicit operator request, use `herdr-threads human service disconnect --expected-boot BOOT --expected-generation GENERATION` with values returned by inspect. The daemon refuses stale values, and disconnect does not stop the daemon. Subagents must not disconnect.

@@ -304,7 +304,7 @@ fn untested_herdr_release_warns_without_degrading() {
         .iter()
         .filter(|line| line.starts_with("untested Herdr"))
         .collect();
-    assert_eq!(warnings, ["untested Herdr 0.10.0; tested 0.9.1-0.9.3"]);
+    assert_eq!(warnings, ["untested Herdr 0.10.0; tested 0.9.1-0.9.4"]);
 
     let tested = crate::host::compatibility::admit(Some("0.9.2"), Some(22)).unwrap();
     let mut inputs = ready_inputs();
