@@ -69,6 +69,38 @@ impl PresentationRenderProfile {
     }
 }
 
+/// Put a page's messages and invitations in one `DeliveryOrderKey` order (stable, so arrival breaks
+/// ties). They fill only the slots messages and invitations already hold; notices and controls keep
+/// their positions.
+pub fn order_deliveries(items: &mut [Item]) {
+    use crate::protocol::priority::{DeliveryOrderKey, DeliveryPriority, SourceRank};
+    let key = |item: &Item| match item {
+        Item::Message { content, .. } => Some(DeliveryOrderKey {
+            priority: content.priority.unwrap_or(DeliveryPriority::DEFAULT),
+            deadline: content.deadline_at,
+            decision_seq: 0,
+            rank: SourceRank::DeliveryRow,
+            ordinal: 0,
+        }),
+        Item::Invitation { content, .. } => Some(DeliveryOrderKey {
+            priority: DeliveryPriority::p0(),
+            deadline: content.deadline_at,
+            decision_seq: 0,
+            rank: SourceRank::Invitation,
+            ordinal: 0,
+        }),
+        _ => None,
+    };
+    let slots: Vec<usize> = (0..items.len())
+        .filter(|&n| key(&items[n]).is_some())
+        .collect();
+    let mut moved: Vec<Item> = slots.iter().map(|&n| items[n].clone()).collect();
+    moved.sort_by_key(|item| key(item));
+    for (slot, item) in slots.into_iter().zip(moved) {
+        items[slot] = item;
+    }
+}
+
 pub fn emitted_controls(items: &[Item]) -> Vec<Stamp> {
     items
         .iter()

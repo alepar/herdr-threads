@@ -2701,6 +2701,7 @@ pub(super) fn pull(
         }
     }
     let fresh_output = !outputs.is_empty();
+    presentation::order_deliveries(&mut outputs);
     if let Some(stamp) = pending_control {
         use crate::protocol::delivery::PresentationControlStampV2 as Stamp;
         let output = match &stamp {

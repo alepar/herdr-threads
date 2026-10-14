@@ -2777,6 +2777,7 @@ fn passive_invitation_item() -> PresentationItemV2 {
             body: "topic\ngoal: goal\nnext: herdr-threads accept t-passive".into(),
             truncated: false,
             wakes: false,
+            deadline_at: None,
             topic_revision: Some("1".into()),
             command_context_epoch: Some("0".into()),
         },

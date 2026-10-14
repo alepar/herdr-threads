@@ -502,6 +502,10 @@ pub struct WatchInvitation {
     pub body: String,
     pub truncated: bool,
     pub wakes: bool,
+    /// A confirming invitation's own deadline (its order key is p0 plus this deadline); absent for a
+    /// lazy invitation and from an older daemon. Never model-visible by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_at: Option<crate::protocol::time::UtcMillis>,
 }
 
 /// A message or lazy row. `body` is the full body, or its first

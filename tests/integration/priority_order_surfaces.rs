@@ -9,9 +9,7 @@
 //! display (delivery rows only). The hook page and the hook presentation page are in
 //! `tests/service/priority_order_pull.rs`; the mod's JS mirror runs the same mixed set from
 //! `tests/fixtures/priority_order_mixed.json` (`integrations/claude/mod/tests/delivery.test.ts`).
-//! The invitation is presented outside the message order on the watch and hook surfaces (ht-cbb):
-//! the order assertions there cover the messages, and the full-order assertions are `#[ignore]`d
-//! until that is fixed.
+//! The confirming invitation sits in the same order on every surface (p0 with its deadline).
 use super::*;
 use herdr_threads::protocol::{
     priority::{DeliveryOrderKey, DeliveryPriority, SourceRank},
@@ -236,10 +234,8 @@ fn inbox_json_text_continuation_and_watch_follow_the_delivery_order_key() {
     );
 }
 
-/// The watch stream carries the invitation at its key position (p0 with its deadline). Today its
-/// descriptor carries neither a priority nor a deadline, so the mod places it by arrival.
+/// The watch stream carries the invitation at its key position (p0 with its deadline).
 #[test]
-#[ignore = "blocked by ht-cbb: the watch invitation line has no deadline_at"]
 fn watch_stream_places_the_invitation_by_its_deadline() {
     let rig = Rig::new();
     let mixed = publish_mixed(&rig);

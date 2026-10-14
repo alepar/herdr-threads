@@ -213,18 +213,16 @@ fn the_hook_presentation_page_lists_the_mixed_messages_in_key_order() {
 }
 
 /// The invitation (p0, deadline) takes its place between the ACK message (earlier deadline) and
-/// the p0 row without one. Today the v1 hook page frames it first.
+/// the p0 row without one.
 #[test]
-#[ignore = "blocked by ht-cbb: invitations are presented outside the message order"]
 fn the_hook_page_places_the_invitation_by_its_deadline() {
     let (f, recipient, mixed) = mixed_fixture();
     let page = page(pull(&f, &recipient, None));
     assert_eq!(text_ids(&page.text), mixed.expected(), "{}", page.text);
 }
 
-/// Today the hook presentation page lists the invitation after the messages.
+/// The hook presentation page orders the invitation with the messages.
 #[test]
-#[ignore = "blocked by ht-cbb: invitations are presented outside the message order"]
 fn the_hook_presentation_page_places_the_invitation_by_its_deadline() {
     let (f, recipient, mixed) = mixed_fixture();
     let crate::protocol::delivery::DeliveryPullReplyV2::Page(page) =
