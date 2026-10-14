@@ -503,6 +503,86 @@ Suggested task cut (files touched):
 
 Order: 1 → 2 → (3, 4, 7) → 5 → 6 → 8 → 9 → 10 → 11.
 
+## Key abstractions
+
+**PeerIntake** — new struct (`src/sync/coordinator.rs`), the bounded hand-off from the daemon transport to the coordinator for sniffed inbound peer connections.
+- Owns: the 16-slot `mpsc` sender, and the `PeerStream { stream, first_frame, permit }` value that carries the peer permit with the stream into the coordinator's `JoinSet`.
+- Hides: that the receiver is an actor; the transport only offers and either hands over or gets "busy".
+- Must not: run the handshake or hold the stream after a successful offer; the transport task returns at once, so the 250 ms drain never waits on a link.
+- Relationships: created by `SyncCoordinator::start`, passed as `Option` into `serve_with_gate`; `peer_connection::hand_off` is its only caller. `None` (coordinator not started or stopped) and a full or closed channel both end in `Close{busy}`.
+- Lifecycle: lives as long as the coordinator; the transport holds a clone until it stops serving.
+- Errors: a refused offer is one outcome (busy), not an error the transport tells apart further.
+
+**SyncStorePort / MemorySyncStore** — new trait plus test fake (`src/sync/sync_store.rs`), the coordinator's narrow store port for its own two tables.
+- Owns: `enabled_targets`, `record_transition` and `record_contacts` for the runtime; each write takes its own FairWriter background turn.
+- Hides: SQLite, the background turn and the store modules behind it.
+- Must not: grow into a general store API; `StorePort` and `JournalPort` stay unextended. Operator writes (`add_explicit`, `forget`) and discovery (`upsert_discovered`) go straight to `store::sync_dial_targets` from ht-5fr.8 and ht-5fr.7, not through this port.
+- Relationships: implemented by `SqliteStore` (delegating to `store::sync_dial_targets` and `store::sync_contacts`) and by `MemorySyncStore` for coordinator and dialer tests (the spec's named second implementation).
+- Errors: store errors only; the Dialer logs a failed `record_transition` and keeps its in-memory state, and a failed contact flush retries at the next flush.
+
+**DialTargets (`store::sync_dial_targets`)** — new store module, the only owner of `sync_dial_targets`.
+- Owns: the row rules: control-character and leading-`-` rejection, explicit-beats-discovered precedence, forget-disables-only, the 64-target cap, the `stopped` ↔ reason invariant, `clear_stale_stops` by `CARGO_PKG_VERSION`, and applying a `DialTransition` (closed enum: `Dialing`, `Linked{node}`, `Backoff{attempts, next_at, error}`, `NotInstalled`, `Stopped{reason, version}`) to state, attempts, `next_attempt_at` and error columns.
+- Hides: the table shape and the precedence `ON CONFLICT` forms.
+- Must not: compute backoff delays or classify link errors (the Dialer decides the transition; this module only records it); must never delete a row.
+- Relationships: used by SyncStorePort's SQLite impl, by ht-5fr.8's `peer add/forget/list` and by ht-5fr.7's discovery. The `CloseReason` subset it stores in `stopped_reason` is the `StopDialing` class.
+- Errors: `InvalidRequest` (control characters, cap reached) is kept apart from `Skipped` (discovery over the cap, not an error) and from store errors.
+
+**ContactBook / SyncContacts (`store::sync_contacts`)** — new struct (`src/sync/signals.rs`) plus store module, per-node reachability: the in-memory relative-age gossip and the one persisted reach rule.
+- Owns: ContactBook holds `node → (last_contact_wall_ms, Direct | Relayed)`, records direct contact from inbound frames, builds `Seen` ages (self at 0, the receiving link's node excluded), merges received ages only when newer, and decides which rows are due for a flush (≥30 s advance or a threshold crossing, at most every 10 s). SyncContacts owns `sync_node_contact`, the `MAX(last_contact_at)` upsert, `UNREACHABLE_AFTER_MS` and `reach() -> NodeReach::{Reachable, Unreachable{since}}`.
+- Hides: that gossip carries ages and never absolute times; the threshold.
+- Must not: compare wall clocks across nodes; ContactBook must not be shared outside the actor (only the table is read elsewhere).
+- Relationships: the actor owns the ContactBook and flushes through SyncStorePort; ht-5fr.13's `store::queries` and daemon-less `doctor` call `reach` directly.
+- Lifecycle: ContactBook is rebuilt empty on each start; rows persist.
+
+**SyncSignals** — new struct (`src/sync/signals.rs`), the in-memory "first sync round complete" signal.
+- Owns: per active link the round start and completion, `request_round(at)` and `round_state(since) -> RoundState::{NoLinks, Complete, Pending{links}}`.
+- Hides: the completion rule (a full `Have` after the start, and every advertised-ahead log caught up or unwantable).
+- Must not: persist anything or block; it is a lock-protected snapshot the actor writes and the deadline lane reads.
+- Relationships: written only by the SyncCoordinator actor; `SyncHandle::signals()` hands the `Arc` to the deadline-lane composition in `app.rs` (ht-5fr.13). `request_round` records the request and wakes the actor, which sends `Have{full, ask: true}`.
+- Lifecycle: created by `SyncCoordinator::start`, shared as `Arc` for the daemon's life.
+
+**ForkSink** — new trait (`src/sync/coordinator.rs`), where the coordinator reports a fork and learns that a paused log may resume.
+- Owns: the two-call contract `on_fork(log, evidence, source)` and `resumed()` (polled on the 1 s tick).
+- Hides: fork policy entirely; the coordinator only pauses and unpauses wants.
+- Must not: be called for anything but `IngestOutcome::Fork`; the coordinator never freezes or re-issues (root SyncCoordinator "must not").
+- Relationships: `LogOnlyForkSink` (rate-limited log line, never resumes) now; ht-5fr.6's Incarnations implementation next. Chosen once in `CoordinatorDeps` in `app.rs`.
+- Errors: none; implementations log their own failures, and an unresolved fork stays paused.
+
+**PeerLink** — extended: concrete `PeerFrame` (internally tagged by `"t"`, with `#[serde(other)] Unknown` ignored and counted, so it is closed for matching but open on the wire behind caps), `PeerHello`, `CloseReason` with `class() -> CloseClass::{StopDialing, Retry}` (plus `unknown`), the closed `LinkError` whose `class()` delegates to `CloseReason`, the domain-separated two-hello Auth signature, `LocalHello`/`Established`/`PeerInfo`, a `LinkHandle` (control queue before byte-credited data queue) and `LinkEvent` upward. It handles `ping`, `pong`, `credit` and `unknown` itself and forwards all other frames; it decides nothing about routing. Generic over `AsyncRead + AsyncWrite` (ssh child stdio, accepted `UnixStream` halves, `duplex` in tests), not a trait object.
+
+**SyncCoordinator** — extended: a single tokio actor owning `links`, `by_node`, `rx`, `local`, the ContactBook and SyncSignals writes; `CoordinatorDeps` as its one composition point; a sequential ingest worker (one FairWriter background turn at a time, per-log order kept) and `spawn_blocking` for every `JournalPort`/SyncStorePort call; one exhaustive `match` on `IngestOutcome`; duplicate-link order `(dialer node_uuid, dialer nonce)` computed locally on both ends; `Unwant`. `SyncHandle` (cloneable facade) exposes `snapshot`, `signals`, `link_count`, `reload_targets` and the enabled-target count. `reselect` and the duplicate-link order are pure functions over actor state so they test without links.
+
+**Dialer** — extended: constructed inside the actor and driven by its reload diff; one `DialTask` per enabled target owns its child (`process_group(0)`, `kill_on_drop`, killpg TERM→KILL, reap) on every exit path including cancellation; `TransportCommand::build` is the one place argv is built (ssh default or `DialTemplate` via `/bin/sh -c` with sh-quoted `{dest}`); `FullJitter` reuses `service::pacer::Backoff`'s xorshift; the only place a `LinkError`/child exit becomes a `DialTransition`.
+
+**Daemon transport** — extended: the hello sniff after the watch sniff, the `MAX_PEER_CONNECTIONS` semaphore, `peer_connection::hand_off` into PeerIntake, and `ConnectionGauge` (an atomic count of non-peer connection tasks with a drop guard), which only idle exit reads.
+
+**Daemon idle-exit** — extended (per spec §15 it is new code: no idle exit exists today, so the root's "existing idle period" is created as `IDLE_EXIT_AFTER = 10 min`): `IdleExit` in `src/daemon/idle_exit.rs` checks every 30 s that hosts, links, enabled targets and `ConnectionGauge` are all zero for 10 continuous minutes, then cancels the same `shutdown` as `Stop`. `ActivityProbe` is a plain struct over `HostSessions`, `SyncHandle` and `ConnectionGauge`, not a trait. It reads the target count through `SyncHandle`, because the Dialer lives inside the actor (spec §15 writes `Dialer::enabled_targets()`).
+
+**Lane (`service/kicks.rs`)** — extended: `Sync` at bit 7; `journal`, `sync_logs`, `sync_dial_targets` map to it; `sync_node_contact` is in `KNOWN_UNMAPPED`; `kicks_for_commit` keeps `Sync` for Sync- and Apply-origin commits.
+
+**InstanceSettings / ServiceConfig** — extended: `SyncSettings { dial_command }` validated once into `DialTemplate`; test-support `with_idle_exit_after`.
+
+Variation: what carries a link's bytes varies (ssh child, accepted socket, test duplex) → PeerLink is generic over the stream, and the Dialer and transport are the only two places a link starts. Fork handling varies (log-only now, Incarnations in ht-5fr.6) → the `ForkSink` trait, chosen once in `CoordinatorDeps`. The sync store backend varies between SQLite and tests → `SyncStorePort` with its two named implementations. Transport commands vary only as data (`TransportCommand::build`, `DialTemplate`), with no trait. Peer frames grow across releases but each node matches a fixed set → closed `PeerFrame` with an `Unknown` catch-all, and new frames are variants gated by a cap string. Close reasons, link errors, dial transitions, dial sources, target states, ingest outcomes, `NodeReach` and `RoundState` are fixed → closed enums or CHECKs with `match`. `peer --stdio` is a plain two-thread splice with no abstraction (root, spec §2).
+
+Walk-through: A has an explicit target `b-host`. At start `clear_stale_stops` runs, `SyncCoordinator::start` builds the Dialer, and it reads `enabled_targets` through SyncStorePort and spawns a DialTask. The task records `Dialing`, spawns `ssh … -- b-host 'exec … peer --stdio'` in its own process group and reads the preamble. On B, the pump runs `ensure_running`, connects and writes `HTPEER1\n`. B's transport sniffs A's hello, counts it outside `ConnectionGauge`, and offers a `PeerStream` to B's PeerIntake. Both sides run the PeerLink handshake, check the two-hello Auth signatures, and reach `Established`. Each actor ranks the link as active and sends a full `Have`. A sees B ahead on log L, and `reselect` picks B (the origin) and sends `Want`. B's actor serves committed rows through `spawn_blocking` and `try_send_entries` within the credit window. A's ingest worker takes one background turn, and `JournalPort::ingest` returns `Stored`. The actor grants credit, advances `local`, records contact in the ContactBook, and pushes to other subscribers of L. The commit kicks `Lane::Sync` for Have deltas. The round completes, so SyncSignals reports `Complete`. Later, killing B gives `LinkError::Dead` or `Io`. The coordinator reports `LinkEnded` to the DialTask, which kills and reaps the group and records a `Backoff` transition with `FullJitter`. Likely future change: ht-5fr.6 resolves forks. That is one new `IncarnationsForkSink` implementing `ForkSink` plus one line in `CoordinatorDeps` in `app.rs`. Its branch-pull frames are new `PeerFrame` variants behind `"fork.v1"` (spec §16 also allows one new coordinator method). PeerLink framing, the Dialer, DialTargets, SyncStorePort and the ingest worker are untouched.
+
+Per spec §15: the root lists daemon idle-exit as "extended", but no idle exit exists, so this subepic creates it under the root's name.
+Per spec §8/§10: the actor plus one ingest worker serializes all ingest node-wide, which is deliberate because FairWriter would serialize it anyway.
+
+Digest:
+- PeerIntake: owns the bounded transport→coordinator hand-off of sniffed peer streams with their permits; inbound link admission rules go here and in `peer_connection::hand_off`;
+  the transport never runs a handshake or keeps a stream it offered.
+- SyncStorePort/MemorySyncStore: owns the coordinator's narrow writes and reads of dial targets and contacts, with their FairWriter turns; new runtime sync-table access is a method here;
+  the coordinator never touches `SqliteStore`, `StorePort` or SQL directly.
+- DialTargets (`store::sync_dial_targets`): owns `sync_dial_targets` rows, precedence, cap, stop clearing and recording transitions; new target columns or sources go here;
+  callers never write the table directly or delete rows.
+- ContactBook/SyncContacts: own relative-age reachability gossip and the persisted `reach` rule; new reachability rules go in `store::sync_contacts::reach`;
+  nothing gossips absolute times or computes reachable/unreachable itself.
+- SyncSignals: owns the round-complete state and `request_round`; new sync readiness signals go here;
+  readers never inspect coordinator link state to decide whether sync caught up.
+- ForkSink: owns the fork hand-off contract; new fork handling is a new implementation chosen in `CoordinatorDeps`;
+  the coordinator never freezes, re-issues or resumes a log on its own.
+
 ## Post-Implementation Notes
 
 > *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
