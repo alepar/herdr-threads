@@ -567,6 +567,49 @@ mod live {
         native_marker: Option<std::path::PathBuf>,
         block_native: bool,
         verify_wire: bool,
+        /// When set, the durable-child store decides on this held clock
+        /// instead of the real one (see [`HeldStoreClock`]).
+        store_clock: Option<Arc<HeldStoreClock>>,
+    }
+    /// A store clock that moves only when the test moves it. The durable
+    /// child path issues a 250 ms cooperative permit and consumes it in the
+    /// deciding transaction, both sampled on the store context's clock. A
+    /// fixture whose subject is not timing holds that clock so host load
+    /// cannot expire the permit; `permit_window` is how far the clock moves
+    /// between permit issuance and the decision, so the expiry itself stays
+    /// exercised (see `held_store_clock_permit_window_*`).
+    struct HeldStoreClock {
+        utc: std::sync::atomic::AtomicI64,
+        monotonic: std::sync::atomic::AtomicU64,
+        permit_window: std::sync::atomic::AtomicU64,
+    }
+    impl HeldStoreClock {
+        fn new() -> Self {
+            Self {
+                utc: std::sync::atomic::AtomicI64::new(
+                    crate::protocol::time::Clock::utc_now(&crate::app::SystemClock::new()).0,
+                ),
+                monotonic: std::sync::atomic::AtomicU64::new(0),
+                permit_window: std::sync::atomic::AtomicU64::new(0),
+            }
+        }
+        fn pass_permit_window(&self) {
+            use std::sync::atomic::Ordering;
+            let millis = self.permit_window.load(Ordering::SeqCst);
+            self.monotonic.fetch_add(millis, Ordering::SeqCst);
+            self.utc
+                .fetch_add(i64::try_from(millis).unwrap(), Ordering::SeqCst);
+        }
+    }
+    impl crate::protocol::time::Clock for HeldStoreClock {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(self.utc.load(std::sync::atomic::Ordering::SeqCst))
+        }
+        fn monotonic_now(&self) -> crate::protocol::time::MonoInstant {
+            crate::protocol::time::MonoInstant(
+                self.monotonic.load(std::sync::atomic::Ordering::SeqCst),
+            )
+        }
     }
     impl LocalClient for Peer {
         fn call_with_output(
@@ -799,14 +842,20 @@ mod live {
             budget: &CallBudget,
         ) -> Result<CommandResult, ApiError> {
             use crate::ports::StorePort;
+            let store_clock = || -> Arc<dyn crate::protocol::time::Clock> {
+                match &self.store_clock {
+                    Some(held) => held.clone(),
+                    None => Arc::new(crate::app::SystemClock::new()),
+                }
+            };
             let context = crate::store::connection::StoreContext::new(
                 self.database_path.clone(),
-                Arc::new(crate::app::SystemClock::new()),
+                store_clock(),
             );
             let store = crate::store::SqliteStore::new(
                 crate::store::connection::StoreContext::new(
                     self.database_path.clone(),
-                    Arc::new(crate::app::SystemClock::new()),
+                    store_clock(),
                 ),
                 "i",
                 Default::default(),
@@ -850,6 +899,9 @@ mod live {
                 crate::store::cooperative_permit_request(&mutation)?,
                 budget,
             )?;
+            if let Some(held) = &self.store_clock {
+                held.pass_permit_window();
+            }
             let permit = if matches!(
                 mutation,
                 crate::protocol::commands::PermitMutation::Invite(_)
@@ -1135,12 +1187,21 @@ mod live {
                     native_marker: None,
                     block_native: false,
                     verify_wire: request.body.len() == 65_536,
+                    store_clock: None,
                 }),
                 _temp: temp,
                 clock,
                 context,
                 witness,
             }
+        }
+        /// Holds the durable-child store clock (see [`HeldStoreClock`]).
+        fn hold_store_clock(&mut self) -> Arc<HeldStoreClock> {
+            let held = Arc::new(HeldStoreClock::new());
+            Arc::get_mut(&mut self.peer)
+                .expect("hold the store clock before sharing the peer")
+                .store_clock = Some(held.clone());
+            held
         }
         /// Captures the fixture's whole on-disk state (journal, retained
         /// files, canonical database) and the peer's call log, so a matrix
@@ -2073,13 +2134,17 @@ mod live {
     fn composition_maximum_legal_escaped_serializer_memory_and_budgets() {
         use crate::ports::StorePort;
         use std::sync::atomic::Ordering;
-        let f = Fixture::with_layout(
+        let mut f = Fixture::with_layout(
             Fault::None,
             request(),
             Some(vec![format!("--config={}", "\u{1}".repeat(1250)); 16]),
             true,
             true,
         );
+        // Setup only: the subject is the maximal report's canonical
+        // completion and the composition pass's own budgets below, not the
+        // 250 ms permit, so host load must not expire the child permits.
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher {
             max_report: true,
             ..Default::default()
@@ -2648,6 +2713,40 @@ mod live {
             done.completed.unwrap().legacy_result.state,
             HandoffState::Completed
         );
+        assert_downstream_once(&f, &launcher);
+    }
+    /// Negative control for [`HeldStoreClock`]: holding the clock does not
+    /// disable the permit expiry. A window past `MAX_PERMIT_MILLIS` between
+    /// issuance and decision still refuses the child mutation, leaving the
+    /// bootstrap Attached (the hosted-CI failure shape); the exact bound
+    /// still completes.
+    #[test]
+    fn held_store_clock_permit_window_past_the_bound_still_expires() {
+        let mut f = Fixture::downstream(Fault::None);
+        let held = f.hold_store_clock();
+        held.permit_window.store(
+            crate::protocol::authority::MAX_PERMIT_MILLIS + 1,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        let mut launcher = DownstreamLauncher::default();
+        let error = downstream(&f, &mut launcher, &mut vec![]).unwrap_err();
+        assert!(
+            matches!(&error, RunError::Api(e) if e.code == ErrorCode::CallerUnverified && e.detail == "permit expired"),
+            "{error:?}"
+        );
+        assert_eq!(f.peer.status().state, BootstrapState::Attached);
+    }
+    #[test]
+    fn held_store_clock_permit_window_at_the_bound_completes() {
+        let mut f = Fixture::downstream(Fault::None);
+        let held = f.hold_store_clock();
+        held.permit_window.store(
+            crate::protocol::authority::MAX_PERMIT_MILLIS,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        let mut launcher = DownstreamLauncher::default();
+        let done = downstream(&f, &mut launcher, &mut vec![]).unwrap();
+        assert_eq!(done.state, BootstrapState::Completed);
         assert_downstream_once(&f, &launcher);
     }
     #[test]
@@ -4234,6 +4333,7 @@ mod live {
             native_marker: Some(root.join("native-calls")),
             block_native: input["block"].as_bool().unwrap(),
             verify_wire: false,
+            store_clock: None,
         };
         let clock = crate::app::SystemClock::new();
         let context = HostCallContext {
