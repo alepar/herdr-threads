@@ -136,6 +136,8 @@ The 5 s first-frame timeout (`ORDINARY_TIMEOUT`) also applies to peers: the dial
 
 Unknown caps are ignored. No version is compared anywhere (AGENTS.md versionless rule).
 
+The boot id is a random `Uuid` drawn once per daemon process, so the `self_link` versus `node_collision` split assumes each copy of a cloned node runs its own daemon process started after the copy. A memory-preserving clone (a live VM snapshot or a fork of a running daemon) keeps the boot id; it is out of scope (root §12).
+
 **Considered.**
 - Signing only the peer nonce: it does not bind the peer's advertised caps and limits.
 - A challenge–response round before the hellos: one more round trip over ssh for no added property.
@@ -297,7 +299,7 @@ The actor flushes through `SyncStorePort::record_contacts(&[NodeContact])` (one 
 - starts at activation, or when `request_round(at)` is called (the actor then sends `Have{full, ask: true}` on every active link);
 - completes once a full `Have` from the peer has arrived after the start, and every log it advertised ahead of us has local `contiguous ≥` the advertised counter or became unwantable (paused, frozen or penalized).
 
-`SyncSignals::round_state(since: MonoInstant) -> RoundState::{NoLinks, Complete, Pending{links: u32}}` is `Complete` when every active link has completed a round started at or after `since`. ht-5fr.13 calls `request_round(now)` on a wall-clock jump, then holds overdue emission while the state is `Pending`, for at most 60 s. `SyncHandle::signals()` hands the `Arc` to the deadline-lane composition in `app.rs`.
+`SyncSignals::round_state(since: MonoInstant) -> RoundState::{NoLinks, Complete, Pending{links: u32}}` is `Complete` when every active link has completed a round started at or after `since`. ht-5fr.13 calls `request_round(now)` at daemon start (once the coordinator is up) and on a wall-clock jump, then holds overdue emission while the state is `Pending`, or `NoLinks` while an enabled dial target exists (its link is still being dialed), for at most 60 s (root §7 overdue hold). `SyncHandle::signals()` hands the `Arc` to the deadline-lane composition in `app.rs`.
 
 **Considered.**
 - Absolute timestamps in gossip: cross-node skew would make nodes look reachable or unreachable wrongly (root §4 accepts skew only for LWW and shown times).
@@ -458,7 +460,7 @@ ht-5fr.6 extends `PeerFrame` behind `fork.v1`, implements `ForkSink`, and may re
   - `Headroom` pauses every want for 60 s;
   - `Fork` calls the sink and pauses the log;
   - an unsolicited `entries` frame is dropped and its credit granted;
-  - `round_state` goes `Pending` → `Complete`, and `request_round` resets it;
+  - `round_state` goes `Pending` → `Complete`, and `request_round` resets it; a `request_round` before any link is up reports `NoLinks` until the first link activates, then `Pending` until its round completes;
   - `Seen` relative ages give C a relayed contact for A in a line, and the contact flush writes only on a ≥30 s advance or a threshold crossing.
 - **Dialer** (`src/sync/dialer.rs` unit):
   - exact ssh argv including `--` and the default remote command;

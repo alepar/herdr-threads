@@ -87,6 +87,8 @@ The publish fence drops `captured_timeline_revision` for preparations with no un
 
 No command writes a replicated table directly after this subepic. A test-support assertion enforces it (Testing, "write-path closure").
 
+**Restore-window authoring hold** (root §7). While `SyncState.own_history.active(now)` (ht-5fr.3 §7 step 3a), `FactRoute::Journal` refuses to author `receipt.settled`, `membership.joined`, `membership.left`, `invitation.answered` or `seat.retired` for a local seat with a retryable `Unavailable "own history catching up"`, before anything is written, because the node's unpulled old tail may hold a different fact for that key (root §5). Commands that author one of them (`ack`, `accept`, `reject`, `join`, `leave`, `create_thread*`, `ensure_direct_thread`, seat retirement) fail with that error and are retried by their caller. `settle_pending`'s display entry points (`ack_displayed`, `ack_mod_delivered`, `delivery_confirm`, `ack_policy_delivered`) do not fail the delivery: they skip the settlement and leave the receipts pending, so the bounded re-offer shows them again after the hold unless the old tail settled them. The retirement job retries after the hold. Sends, invitations, thread and register facts and `seat.created` are not held. The refusal lifts with the hold, at the latest at its 5-minute cap; a same-key fact authored after the cap while the old tail is unpulled is root §12's restore-window residual.
+
 Per-command fact order:
 
 | Command | Facts, in order |
@@ -203,7 +205,7 @@ Handlers build it from `ApplyContext`, using `decision_seq`, `origin.node`, `ori
   | `message.sent` | `seat.retired` of a recipient | `recipient_retired` at apply (§8) |
   | `receipt.settled` | none outside a fork (the recipient's home node settles once, after the message applied there; its later `seat.retired` follows in the same log) | fork residual: `how`, `settled_at`, batch |
 
-  The fork residual is root §12's accepted limit "forked-log same-key facts" (ht-5fr.6 §13 item 2): each node keeps whichever branch's fact it applied first, and the seat's next membership transition re-converges its membership. A wipe or restore cannot create such a pair: the own-history hold (root §7) applies no foreign fact before the node's own old facts are ingested, so its commands see the old settlement, answer or transition and author nothing twice.
+  The fork residual is root §12's accepted limit "forked-log same-key facts" (ht-5fr.6 §13 item 2): each node keeps whichever branch's fact it applied first, and the seat's next membership transition re-converges its membership. A wipe or restore creates such a pair only past the own-history hold's cap: while the hold is active, the restore-window authoring hold (§2) refuses the held kinds for local seats, and once the node's own old facts are ingested its commands see the old settlement, answer or transition and author nothing twice. A held kind authored after the cap while the old tail is still unpulled, or a `seat.created` authored during the hold, can still pair with a different fact in that tail; that is root §12's restore-window residual and resolves like the fork residual.
 - **Payload size.** The largest is `message.sent`: body ≤ 64 KiB plus ≤ 100 explicit recipients and the thread audience at about 60 bytes per recipient. A 1000-member audience is about 125 KiB, under the 512 KiB cap. `MessageSent::validate_for_author` refuses a payload over 448 KiB with `InvalidRequest` "audience too large to replicate" before authoring.
 
 **Considered.**
@@ -460,8 +462,8 @@ impl DeliveryTail {
   - no lazy row, no attention, no `wake_work`, and no invitation `wake_work`;
   - the replicated rows (message, `prepared_recipients`, invitation, membership `invited`) are still written;
   - the later settlement fact, which is in the journal by definition, then settles them through the normal handler.
-- Own-old-incarnation entries (ht-5fr.3 §8 (a)) suppress every local recipient, because `delivery_suppressed` is true for any key there. Restoring a node therefore never wakes its seats for history.
-- Another node's fact to a local seat is suppressed by an own settlement in `journal` or `journal_forked` (ht-5fr.3 §8 (b)). After a wipe or restore those settlements arrive in the node's own old logs, so the Apply lane's own-history hold (root §7; ht-5fr.3 §7) keeps foreign facts unapplied until the own logs are ingested. A wiped node therefore applies the peer's `message.sent` only after its own old `receipt.settled`, and wakes nobody for it.
+- A fact to a local seat, from another node or from this node's own old incarnation alike, is suppressed by an own settlement in `journal` or `journal_forked` (ht-5fr.3 §8 (b)). After a wipe or restore those settlements arrive in the node's own old logs, so the Apply lane's own-history hold (root §7; ht-5fr.3 §7) keeps foreign and own-old facts unapplied until the own logs are ingested. A wiped node therefore applies a `message.sent` only after its own old `receipt.settled`, and wakes nobody for it.
+- An own-old-incarnation entry is not suppressed for being own history (ht-5fr.3 §8 (a)): an unsettled ACK or invitation obligation in the pulled-back tail writes its lazy row, attention and `wake_work` normally once the hold lifts, so the seat sees what its sender's node will report overdue.
 
 **Considered.** Suppressing by age (`sent_at` older than N): it would drop real messages delivered after a long partition.
 
@@ -485,7 +487,7 @@ impl DeliveryTail {
   - `receipts::scan_extension_lapses` adds the same `messages.origin_node` predicate.
 - **Warning recipients are local.** `materialization::attribute`/`warning_unit` and the service-notification unit deliver only to local seats, through `DeliveryTail::attention` and `AND s.is_local=1` in their recipient selection. The deciding node's overdue warn event is visible in its own timeline. Remote nodes never derive it. This is accepted: the warning is the sender's.
 - **Catch-up extensions** (`catch_up.extension_until`) exist only for local bindings. A remote recipient's receipt is judged on its frozen `deadline_at`. Accepted limit, recorded in the module doc: a remote recipient that is mid catch-up can be reported overdue earlier than a local one would be.
-- The sleep/wall-jump hold is ht-5fr.13's. It consumes this scope change and adds nothing here.
+- The overdue hold at daemon start and after a sleep/wall-jump is ht-5fr.13's. It consumes this scope change and adds nothing here.
 
 **Considered.**
 - Deriving "authored here" from `actor_seat_id`/`inviter_seat_id` locality: it fails for NULL inviters and service authors, and needs a join in every scan.
@@ -577,7 +579,8 @@ All store tests use ht-5fr.3's seeded identities. Two `SqliteStore`s in one test
 - **Catch-up suppression:**
   - B authors `receipt.settled`, B's store is wiped (fresh store with the same seed), B re-ingests its old log and A's log. The message applies with no `lazy_recipients`/`wake_work` for the settled seat, and the settlement then applies.
   - **Wipe, then pull foreign first:** the same setup, but A's log (with the `message.sent`) is ingested on B **before** B's own old log, with the own-history hold set (B's old log advertised beyond B's contiguous). Nothing of A's applies while the hold is set; after B's old log is ingested the hold clears, the message applies with no `lazy_recipients`/`wake_work` for the settled seat, and no wake is dispatched.
-  - An unsettled message in the same pull-back also gets no wake (own old incarnation).
+  - **Own old unsettled:** B sends a `require_ack` message from one local seat to another, B's store is restored to a copy from before the send (or wiped), and B pulls the old tail back. While the hold is set nothing of the tail applies; after it clears the unsettled message writes its lazy row and `wake_work` for the recipient, while a settled message in the same tail writes neither.
+  - **Restore-window authoring hold:** with the own-history hold active, `ack`, `accept`, `join` and `leave` for a local seat fail with retryable `Unavailable "own history catching up"` and write nothing; `ack_displayed` leaves the receipt pending; a send and an invite succeed; after the hold clears the same `ack` succeeds, and when the old tail already held a settlement for that receipt, the restored node authors no second `receipt.settled`.
 - **Order permutation** (root §5 invariant; `tests/store/fact_order.rs`): for each row of the §3 audit, the same fact set is applied into two fresh stores in two different causal orders (by ingesting the logs in opposite orders), and `replicated_projection` is identical in strict mode:
   - crossed `thread.direct` (creator fields);
   - `invitation.created` concurrent with the invitee's join, and with the invitee's join then leave (both end `already_joined`, membership `left`);
@@ -638,7 +641,7 @@ Order: 1 → 2 → 3 → 4 → (5, 6) → 7 → 8 → 9 → (10, 11, 12) → 13.
 - Lifecycle: a borrowed value for one apply or one local-only write.
 
 **FactRoute** — new closed enum (`src/store/materialize.rs`, `Journal` / `LocalOnly`) plus one generic emit, the one place a command turns a decided payload into rows.
-- Owns: picking the route once per command from `threads.journaled`; for `Journal`, publishing every local seat the payload references (`seats::ensure_published`, §4) and then `journal::author` / `author_above`; for `LocalOnly`, refusing any remote seat with `Unsupported` "service threads are node-local" (§2) and calling the kind's materializer with `local_only`.
+- Owns: picking the route once per command from `threads.journaled`; for `Journal`, the restore-window authoring hold (§2: one-shot same-key kinds for local seats refuse as retryable while the own-history hold is active), publishing every local seat the payload references (`seats::ensure_published`, §4) and then `journal::author` / `author_above`; for `LocalOnly`, refusing any remote seat with `Unsupported` "service threads are node-local" (§2) and calling the kind's materializer with `local_only`.
 - Hides: the managed-thread exception, so no converted command branches on `journaled`.
 - Must not: skip the journal for a journaled thread, publish seats on the local-only route (§2: managed membership never publishes), or decide anything the command decides (validation, IDs, audience).
 - Relationships: commands call it in their fixed per-command order (§2); it depends on Journal and on each kind's materializer entry, which `FactKind` handlers also use.
@@ -681,7 +684,7 @@ Walk-through: an agent on A sends to B's seat in a journaled thread. `publish_se
 Digest:
 - MaterializeInput: owns the per-apply origin, position, provenance and suppression handed to materializers, plus the `local_only` constructor; new apply-time inputs are fields here;
   materializers never read `ApplyContext` and handlers never write tables.
-- FactRoute: owns the journal-or-local-only choice, seat publication before authoring and the managed-thread remote-seat refusal; a new kind needs only its referenced-seat list;
+- FactRoute: owns the journal-or-local-only choice, the restore-window authoring hold, seat publication before authoring and the managed-thread remote-seat refusal; a new kind needs only its referenced-seat list;
   commands never branch on `threads.journaled` or call `ensure_published` themselves.
 - Attribution: owns `fact_attribution_staging`, the staging keys and the fallback provenance observation; new attributed kinds add a staging key here;
   materializers never read bindings for attribution and payloads never carry it.
