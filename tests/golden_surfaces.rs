@@ -649,7 +649,10 @@ fn doctor_reports() {
         let h = HermesScope::new();
         let installed = h.run("setup", true);
         assert!(installed.status.success(), "{}", text(&installed.stderr));
-        fs::copy(&h.launcher, h.scratch.bin.join("hermes")).unwrap();
+        // A link to the launcher setup already executed, not a fresh copy:
+        // macOS assesses a new file's first exec (up to seconds under load),
+        // which pushed the doctor's Hermes probe past its bound.
+        std::os::unix::fs::symlink(&h.launcher, h.scratch.bin.join("hermes")).unwrap();
         let mut command = h.scratch.command();
         command
             .env("PATH", &h.scratch.bin)
