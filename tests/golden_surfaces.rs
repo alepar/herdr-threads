@@ -816,6 +816,47 @@ fn hook_stdout_per_event() {
     }
 }
 
+/// `daemon health` once the daemon's first boot observations have landed:
+/// the host probed (reachability no longer `unknown`) and every harness's
+/// executable observed. Before that, Health is the designed `starting` state
+/// (`HEALTH_STARTING_NOTE` first in `notes`, unobserved harnesses as pending
+/// limitations): answering `daemon health` (`DaemonGuard::start`) does not
+/// mean those asynchronous lanes have run, and on a loaded host the first
+/// sample can precede them. Startup-grace expiry cannot satisfy this wait:
+/// an unprobed host stays `unknown`.
+fn observed_health(s: &Scratch) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let out = s.ok(&["--json", "daemon", "health"]);
+        let health: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let data = &health["result"]["data"];
+        let lines = |key: &str| -> Vec<String> {
+            data[key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|line| line.as_str().unwrap().to_owned())
+                .collect()
+        };
+        let observed = data["host"]["reachability"] != "unknown"
+            && !lines("notes")
+                .iter()
+                .any(|note| note == herdr_threads::protocol::results::HEALTH_STARTING_NOTE)
+            && !lines("limitations")
+                .iter()
+                .any(|line| herdr_threads::daemon::health::is_pending_observation_line(line));
+        if observed {
+            return health;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon boot observations never landed: {}",
+            text(&out.stdout)
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// The deterministic part of `daemon health --json`: the harness map and the
 /// notes (the rest carries boot ids, clocks and retry counters). Unobserved:
 /// no harness executable on the daemon's PATH. Observed: fake claude, codex
@@ -829,8 +870,7 @@ fn health_json_observed_unobserved() {
             s.harness("hermes", "Hermes Agent v0.21.5");
         }
         let _daemon = DaemonGuard::start(&s);
-        let out = s.ok(&["--json", "daemon", "health"]);
-        let health: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let health = observed_health(&s);
         let data = &health["result"]["data"];
         let projected = json!({
             "protocol_version": data["protocol_version"],
