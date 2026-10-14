@@ -829,6 +829,8 @@ struct Fixture {
     host: PathBuf,
     db: PathBuf,
     instance_dir: PathBuf,
+    /// The elected daemon's endpoint, for raw protocol calls ([`Fixture::call`]).
+    descriptor: herdr_threads::daemon::ownership::EndpointDescriptor,
     stop: Cancellation,
     worker: Option<std::thread::JoinHandle<()>>,
     check_ins: Arc<AtomicU64>,
@@ -1009,6 +1011,7 @@ impl Fixture {
             host,
             db,
             instance_dir: paths.instance_dir.clone(),
+            descriptor,
             stop,
             worker: Some(worker),
             check_ins,
@@ -1023,6 +1026,29 @@ impl Fixture {
             codex,
             _gate: gate,
         }
+    }
+    /// One raw protocol command to the elected daemon (for shapes the CLI can no longer produce).
+    fn call(
+        &self,
+        command: Command,
+    ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+        use herdr_threads::ports::LocalClient;
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        let client = herdr_threads::client::local::LocalSocketClient::new(
+            self.descriptor.endpoint.clone(),
+            Arc::clone(&clock),
+            self.descriptor.instance_uuid,
+            Some(self.descriptor.boot_id),
+        );
+        client.call(
+            command,
+            &CallBudget {
+                deadline: herdr_threads::protocol::time::MonoInstant(
+                    clock.monotonic_now().0 + 5_000,
+                ),
+                cancellation: Cancellation::default(),
+            },
+        )
     }
     fn hook(&self, pane: &str, stdin: &[u8]) -> Hook {
         run_hook_traced(
@@ -2398,13 +2424,8 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     let displayed = || {
         fx.count("SELECT count(*) FROM lazy_recipients WHERE seat_id='seat' AND state='displayed'")
     };
-    let lazy = |body: &str| {
-        data(fx.cooperative(
-            "peer",
-            "w9:p2",
-            &["send", &thread, "--lazy", "--body", body],
-        ))
-    };
+    let lazy =
+        |body: &str| data(fx.cooperative("peer", "w9:p2", &["send", &thread, "--body", body]));
 
     // 1. Lazy-only arrival: the digest moves, the next tool call injects the
     // row whole, and only then completes it; the repeat is quiet.
@@ -2569,7 +2590,7 @@ fn lazy_mail_reaches_the_next_codex_tool_hook() {
     let id = data(fx.cooperative(
         "peer",
         "w9:p2",
-        &["send", &thread, "--lazy", "--body", "codex lazy body"],
+        &["send", &thread, "--body", "codex lazy body"],
     ));
     let context = context_of(&codex_tool(2));
     assert!(context.contains(INBOX_HEADER), "{context}");
@@ -2793,7 +2814,7 @@ fn lazy_mail_reaches_the_next_codex_user_prompt_hook() {
     let id = data(fx.cooperative(
         "peer",
         "w9:p2",
-        &["send", &thread, "--lazy", "--body", "codex turn body"],
+        &["send", &thread, "--body", "codex turn body"],
     ));
     let delivered = codex_turn(2);
     assert_eq!(

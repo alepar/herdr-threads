@@ -3590,18 +3590,11 @@ fn adapters_discovery_refuses_invalid_provider_before_daemon_dispatch() {
 }
 
 #[test]
-fn invitation_policy_defaults_lazy_and_materializes_explicit_timing() {
-    use crate::protocol::commands::InvitationConfirmation::{Lazy, RequireAck};
+fn invitation_policy_defaults_to_require_ack_and_materializes_explicit_timing() {
+    use crate::protocol::commands::InvitationConfirmation::RequireAck;
     for (flags, mode, millis) in [
-        (vec![], Lazy, None),
-        (vec!["--lazy"], Lazy, None),
-        (vec!["--require-ack"], RequireAck, None),
+        (vec![], RequireAck, None),
         (vec!["--deadline", "7"], RequireAck, Some(7000)),
-        (
-            vec!["--require-ack", "--deadline", "7"],
-            RequireAck,
-            Some(7000),
-        ),
     ] {
         let mut argv = vec!["ht", "invite", "t1", "--seat", "s1"];
         argv.extend(flags);
@@ -3623,6 +3616,8 @@ fn invitation_policy_defaults_lazy_and_materializes_explicit_timing() {
 #[test]
 fn invitation_policy_conflicts_and_invalid_deadlines_refuse_at_parse() {
     for flags in [
+        vec!["--lazy"],
+        vec!["--require-ack"],
         vec!["--lazy", "--require-ack"],
         vec!["--lazy", "--deadline", "7"],
         vec!["--deadline", "0"],
@@ -3637,14 +3632,16 @@ fn invitation_policy_conflicts_and_invalid_deadlines_refuse_at_parse() {
 
 #[test]
 fn invitation_policy_explicit_flags_parse_and_human_keeps_legacy_semantics() {
-    for flags in [
-        vec!["--lazy"],
-        vec!["--require-ack"],
-        vec!["--deadline", "7"],
-    ] {
+    for flags in [vec![], vec!["--deadline", "7"]] {
         let mut argv = vec!["ht", "invite", "t1", "--seat", "s1"];
         argv.extend(flags);
         assert!(parse_argv(argv.clone()).is_ok(), "{argv:?}");
+    }
+    for flag in ["--lazy", "--require-ack"] {
+        assert!(
+            parse_argv(["ht", "invite", "t1", "--seat", "s1", flag]).is_err(),
+            "{flag}"
+        );
     }
     for flags in [vec![], vec!["--deadline", "7"]] {
         let mut argv = vec!["ht", "human", "invite", "t1", "--seat", "s1"];
@@ -3796,7 +3793,8 @@ fn direct_send_file_and_options_preserve_frozen_input() {
         "seat-b",
         "--file",
         path.to_str().unwrap(),
-        "--nudge",
+        "--require-ack",
+        "seat-b",
         "--deadline",
         "30",
         "--relays-user",
@@ -3806,7 +3804,7 @@ fn direct_send_file_and_options_preserve_frozen_input() {
     .unwrap();
     std::fs::remove_file(path).unwrap();
     assert!(
-        matches!(parsed.action, CliAction::Mutation(MutationSpec::DirectSend(request)) if request.target.as_str() == "seat-b" && request.body == "first\n雪\n" && request.delivery_mode == DeliveryMode::Ordinary && request.deadline_millis == Some(30_000) && request.relays_user && request.user_intent == Some(UserIntent::Request))
+        matches!(parsed.action, CliAction::Mutation(MutationSpec::DirectSend(request)) if request.target.as_str() == "seat-b" && request.body == "first\n雪\n" && request.priority == Some(crate::protocol::priority::DeliveryPriority::p0()) && request.deadline_millis == Some(30_000) && request.relays_user && request.user_intent == Some(UserIntent::Request))
     );
     for argv in [
         vec![

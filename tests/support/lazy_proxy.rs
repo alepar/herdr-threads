@@ -90,6 +90,7 @@ impl Proxy {
                                     c.as_str(),
                                     Some(
                                         "send.lazy_v1"
+                                            | "send.priority_v1"
                                             | "inbox.batch_v2"
                                             | "messages.delivery_modes_v1"
                                     )

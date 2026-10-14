@@ -387,7 +387,7 @@ fn guide_daily_loop_reply_creates_notification_attention() {
 fn guide_send_passive_and_explicit_receipt_controls() {
     for (options, ordinary) in [
         (vec![], false),
-        (vec!["--lazy"], false),
+        (vec!["-p", "1"], false),
         (vec!["--nudge"], true),
         (vec!["--require-ack", "agent"], true),
     ] {

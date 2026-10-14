@@ -97,6 +97,8 @@ impl Drop for Fixture {
 struct Client {
     capability: Result<bool, ErrorCode>,
     send_time_capability: bool,
+    /// Advertise `send.priority_v1` through `supports_capability`.
+    priority_v1: bool,
     calls: Mutex<Vec<Command>>,
 }
 impl Client {
@@ -104,11 +106,15 @@ impl Client {
         Self {
             capability,
             send_time_capability: true,
+            priority_v1: false,
             calls: Mutex::new(vec![]),
         }
     }
 }
 impl LocalClient for Client {
+    fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
+        self.priority_v1 && name == "send.priority_v1"
+    }
     fn call_with_output(
         &self,
         command: Command,
@@ -163,7 +169,6 @@ fn lazy_send_flag_freezes_lazy_mode() {
                 "t1",
                 "--body",
                 "announcement",
-                "--lazy",
                 "--relays-user",
                 "--user-intent",
                 "rule"
@@ -197,13 +202,13 @@ fn lazy_send_flag_freezes_lazy_mode() {
     );
 }
 #[test]
-fn lazy_send_rejects_ack_seats_panes_and_deadline() {
+fn removed_lazy_flag_points_to_the_default_priority_before_the_body_is_read() {
     for options in [
+        vec![],
         vec!["--require-ack", "s1"],
         vec!["--require-ack-pane", "p1"],
-        vec!["--deadline", "0"],
         vec!["--deadline", "10"],
-        vec!["--require-ack-pane", "p1", "--space", "workspace"],
+        vec!["--nudge"],
     ] {
         let mut argv = vec![
             "ht",
@@ -216,10 +221,8 @@ fn lazy_send_rejects_ack_seats_panes_and_deadline() {
         argv.extend(options);
         let error = parse_argv(argv).unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidRequest);
-        assert!(
-            error.detail.contains("--lazy cannot be combined"),
-            "{error:?}"
-        );
+        assert!(error.detail.contains("--lazy was removed"), "{error:?}");
+        assert!(error.detail.contains("priority 1"), "{error:?}");
     }
 }
 #[test]
@@ -229,7 +232,7 @@ fn lazy_send_unsupported_daemon_records_no_intent() {
         Err(ErrorCode::Unsupported),
         Err(ErrorCode::InvalidRequest),
     ] {
-        for lazy_option in [vec![], vec!["--lazy"]] {
+        for lazy_option in [vec![], vec!["-p", "1"], vec!["-p", "5"]] {
             let f = Fixture::new();
             let client = Client::new(capability.clone());
             let mut argv = vec!["ht", "send", "t1", "--body", "announcement"];
@@ -318,7 +321,7 @@ fn lazy_send_retry_preserves_frozen_claim_and_mode() {
     let client = Client::new(Ok(true));
     assert!(
         f.run(
-            &["ht", "send", "t1", "--body", "announcement", "--lazy"],
+            &["ht", "send", "t1", "--body", "announcement"],
             &client,
             &mut LostOutput
         )
@@ -402,43 +405,97 @@ fn lazy_send_journal_rejects_obligations_before_recording() {
     );
 }
 
-#[test]
-fn lazy_send_default_and_nudge_ack_selection() {
+fn parsed_priority(options: &[&str]) -> u8 {
     use herdr_threads::cli::commands::MutationSpec;
+    let mut argv = vec!["ht", "send", "t1", "--body", "announcement"];
+    argv.extend(options);
+    let parsed = parse_argv(argv).unwrap();
+    let CliAction::Mutation(MutationSpec::Send { priority, .. }) = parsed.action else {
+        panic!("not send")
+    };
+    priority.get()
+}
+fn parse_error(options: &[&str]) -> ApiError {
+    let mut argv = vec!["ht", "send", "t1", "--file", "/nonexistent/body"];
+    argv.extend(options);
+    parse_argv(argv).unwrap_err()
+}
+
+#[test]
+fn send_priority_flag_matrix() {
     for (options, expected) in [
-        (vec![], DeliveryMode::Lazy),
-        (vec!["--lazy"], DeliveryMode::Lazy),
-        (vec!["--nudge"], DeliveryMode::Ordinary),
-        (vec!["--require-ack", "s1"], DeliveryMode::Ordinary),
-        (vec!["--require-ack-pane", "p1"], DeliveryMode::Ordinary),
-        (
-            vec!["--require-ack", "s1", "--deadline", "5"],
-            DeliveryMode::Ordinary,
-        ),
-        (vec!["--nudge", "--deadline", "5"], DeliveryMode::Ordinary),
+        (vec![], 1),
+        (vec!["-p", "0"], 0),
+        (vec!["--priority", "9"], 9),
+        (vec!["-p", "5"], 5),
+        (vec!["--nudge"], 0),
+        (vec!["--require-ack", "s1"], 0),
+        (vec!["--require-ack-pane", "p1"], 0),
+        (vec!["--require-ack", "s1", "-p", "0"], 0),
+        (vec!["--require-ack", "s1", "--nudge"], 0),
+        (vec!["--require-ack", "s1", "--deadline", "5"], 0),
     ] {
-        let mut argv = vec!["ht", "send", "t1", "--body", "announcement"];
-        argv.extend(options);
-        let parsed = parse_argv(argv).unwrap();
-        let CliAction::Mutation(MutationSpec::Send { delivery_mode, .. }) = parsed.action else {
-            panic!("not send")
-        };
-        assert_eq!(delivery_mode, expected);
+        assert_eq!(parsed_priority(&options), expected, "{options:?}");
     }
 }
+
 #[test]
-fn lazy_send_default_refuses_deadline_and_explicit_mode_conflicts() {
+fn send_priority_bounds_and_conflicts_are_usage_errors() {
     for options in [
-        vec!["--deadline", "5"],
-        vec!["--lazy", "--deadline", "5"],
-        vec!["--lazy", "--require-ack", "s1"],
-        vec!["--lazy", "--require-ack-pane", "p1"],
-        vec!["--lazy", "--nudge"],
+        vec!["-p", "10"],
+        vec!["-p", "-1"],
+        vec!["-p", "x"],
+        vec!["--nudge", "-p", "2"],
+        vec!["-p", "2", "--nudge"],
     ] {
         let mut argv = vec!["ht", "send", "t1", "--body", "announcement"];
-        argv.extend(options);
-        assert!(parse_argv(argv).is_err());
+        argv.extend(options.clone());
+        assert!(parse_argv(argv).is_err(), "{options:?}");
     }
+}
+
+#[test]
+fn ack_with_a_lower_urgency_and_deadline_without_ack_are_refused_before_the_body_is_read() {
+    // `--file` names a missing path: reaching the body read would be a different error.
+    let ack = parse_error(&["--require-ack", "s1", "-p", "2"]);
+    assert_eq!(ack.code, ErrorCode::InvalidRequest);
+    assert_eq!(
+        ack.detail,
+        "--require-ack implies priority 0; drop --priority"
+    );
+    for options in [
+        vec!["--deadline", "5"],
+        vec!["--nudge", "--deadline", "5"],
+        vec!["-p", "0", "--deadline", "5"],
+    ] {
+        let error = parse_error(&options);
+        assert_eq!(error.code, ErrorCode::InvalidRequest, "{options:?}");
+        assert_eq!(
+            error.detail, "--deadline requires --require-ack recipients",
+            "{options:?}"
+        );
+    }
+}
+
+#[test]
+fn direct_ack_target_rule_is_kept() {
+    let error = parse_argv([
+        "ht",
+        "send",
+        "--seat",
+        "s-target",
+        "--body",
+        "x",
+        "--require-ack",
+        "s-other",
+    ])
+    .unwrap_err();
+    assert!(
+        error
+            .detail
+            .contains("direct ACK requests may name only the target seat"),
+        "{error:?}"
+    );
 }
 
 #[test]
@@ -529,4 +586,144 @@ fn lazy_send_does_not_require_send_time_receipts_capability() {
     assert!(
         matches!(client.calls.lock().unwrap().as_slice(),[Command::Capabilities,Command::SendMessage(send)] if send.delivery_mode==DeliveryMode::Lazy)
     );
+}
+
+fn sent(client: &Client) -> Vec<herdr_threads::protocol::commands::SendMessage> {
+    client
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|c| match c {
+            Command::SendMessage(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn old_daemon_gets_the_legacy_mode_for_every_priority() {
+    for (options, mode) in [
+        (vec!["-p", "0"], DeliveryMode::Ordinary),
+        (vec!["--nudge"], DeliveryMode::Ordinary),
+        (vec!["-p", "1"], DeliveryMode::Lazy),
+        (vec![], DeliveryMode::Lazy),
+        (vec!["-p", "4"], DeliveryMode::Lazy),
+        (vec!["-p", "9"], DeliveryMode::Lazy),
+    ] {
+        let f = Fixture::new();
+        let client = Client::new(Ok(true));
+        let mut argv = vec!["ht", "send", "t1", "--body", "legacy"];
+        argv.extend(options.clone());
+        f.run(&argv, &client, &mut Vec::new()).unwrap();
+        let sends = sent(&client);
+        assert_eq!(sends.len(), 1, "{options:?}");
+        assert_eq!(sends[0].delivery_mode, mode, "{options:?}");
+        assert_eq!(sends[0].priority, None, "{options:?}");
+    }
+}
+
+#[test]
+fn priority_v1_daemon_gets_the_priority_and_no_delivery_mode_key() {
+    for n in [0u8, 1, 2, 9] {
+        let f = Fixture::new();
+        let mut client = Client::new(Ok(false));
+        client.priority_v1 = true;
+        f.run(
+            &["ht", "send", "t1", "--body", "p", "-p", &n.to_string()],
+            &client,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        // No capability round trip: a priority_v1 daemon needs neither lazy nor receipts probes.
+        let calls = client.calls.lock().unwrap().clone();
+        assert!(
+            matches!(calls.as_slice(), [Command::SendMessage(_)]),
+            "{calls:?}"
+        );
+        let sends = sent(&client);
+        assert_eq!(sends[0].priority.map(|p| p.get()), Some(n));
+        let json = serde_json::to_value(&sends[0]).unwrap();
+        assert!(json.get("delivery_mode").is_none(), "{json}");
+        assert_eq!(json["priority"], n);
+    }
+}
+
+#[test]
+fn default_send_records_priority_one_for_a_priority_v1_daemon() {
+    let f = Fixture::new();
+    let mut client = Client::new(Ok(false));
+    client.priority_v1 = true;
+    assert!(
+        f.run(
+            &["ht", "send", "t1", "--body", "default"],
+            &client,
+            &mut LostOutput
+        )
+        .is_err()
+    );
+    let pending = f.journal.page(&Default::default()).unwrap();
+    let reference = f
+        .journal
+        .resolve_recovery_ref(pending.items[0].recovery_ref.as_str())
+        .unwrap();
+    let saved = f.journal.load(&reference).unwrap();
+    let json = serde_json::to_value(&saved.semantic).unwrap();
+    assert_eq!(json["mutation"]["priority"], 1);
+    assert!(json["mutation"].get("delivery_mode").is_none());
+}
+
+#[test]
+fn priority_retry_keeps_the_frozen_priority_whatever_the_daemon_now_advertises() {
+    let f = Fixture::new();
+    let mut client = Client::new(Ok(false));
+    client.priority_v1 = true;
+    assert!(
+        f.run(
+            &["ht", "send", "t1", "--body", "frozen", "-p", "3"],
+            &client,
+            &mut LostOutput
+        )
+        .is_err()
+    );
+    let pending = f.journal.page(&Default::default()).unwrap();
+    let recovery = pending.items[0].recovery_ref.as_str().to_owned();
+    // Retry against a daemon that no longer advertises the capability: same request, byte for byte.
+    let downgraded = Client::new(Ok(false));
+    f.run(&["ht", "retry", &recovery], &downgraded, &mut Vec::new())
+        .unwrap();
+    let first = sent(&client);
+    let again = sent(&downgraded);
+    assert_eq!(first.len(), 1);
+    assert_eq!(again, first);
+    assert_eq!(again[0].priority.map(|p| p.get()), Some(3));
+}
+
+#[test]
+fn pre_upgrade_lazy_intent_retries_in_its_recorded_shape_on_a_priority_daemon() {
+    let f = Fixture::new();
+    let legacy: SemanticMutation = serde_json::from_str(r#"{"kind":"send_message","delivery_mode":"lazy","thread":"t1","body":"old","invited_recipients":[],"deadline_millis":null}"#).unwrap();
+    let reference = f
+        .journal
+        .record(
+            IntentScope::Cooperative {
+                instance: f.context.instance.to_string(),
+                seat: herdr_threads::protocol::ids::SeatId::new(f.context.seat.clone()),
+            },
+            SemanticMutation::freeze(legacy, caller_claim(&f.context).unwrap()).unwrap(),
+            0,
+        )
+        .unwrap();
+    let mut client = Client::new(Ok(true));
+    client.priority_v1 = true;
+    f.run(
+        &["ht", "retry", &reference.recovery_ref()],
+        &client,
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let sends = sent(&client);
+    assert_eq!(sends.len(), 1);
+    assert_eq!(sends[0].delivery_mode, DeliveryMode::Lazy);
+    assert_eq!(sends[0].priority, None);
 }

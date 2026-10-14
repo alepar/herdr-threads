@@ -24,11 +24,13 @@ pub mod journal;
 pub mod launch;
 pub mod lazy_display;
 pub mod me;
+pub(crate) mod nudge_threshold;
 pub mod output;
 pub mod panes;
 pub(crate) mod peer_locations;
 mod picker;
 pub mod retry;
+pub(crate) mod send_priority;
 pub mod setup;
 pub mod skill;
 pub mod summary;
@@ -1006,6 +1008,9 @@ fn run_parsed_in_pane<W: Write>(
         CliAction::Follow(_) => unreachable!("follow is handled after context resolution"),
         CliAction::Summary(_) => unreachable!("summary always derives a caller selection"),
         CliAction::WakeOn(_) => unreachable!("wake-on always derives a caller selection"),
+        CliAction::NudgeThreshold(_) => {
+            unreachable!("nudge-threshold always derives a caller selection")
+        }
         CliAction::View { once, page } => {
             if !once {
                 return Err(unsupported(
@@ -2260,6 +2265,12 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
     if matches!(&parsed.action, CliAction::WakeOn(_)) {
         return wake_on::run(parsed, selection, paths, instance, client, clock, writer);
     }
+    if let CliAction::NudgeThreshold(value) = &parsed.action {
+        let value = *value;
+        return nudge_threshold::run(
+            &parsed, value, selection, paths, instance, client, clock, writer,
+        );
+    }
     if historical.is_some()
         && let CliAction::Retry(recovery) = &parsed.action
     {
@@ -2701,6 +2712,7 @@ fn caller_need(
         CliAction::CachedCheckIn(_)
         | CliAction::Summary(_)
         | CliAction::WakeOn(_)
+        | CliAction::NudgeThreshold(_)
         | CliAction::Handoff(_)
         | CliAction::TopologyHandoff(_)
         | CliAction::Watch(_)
@@ -2799,10 +2811,7 @@ where
     let (instance, client) = connection.get()?;
     if matches!(
         &parsed.action,
-        CliAction::Mutation(MutationSpec::Send {
-            delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
-            ..
-        })
+        CliAction::Mutation(MutationSpec::Send { priority, .. }) if priority.get() == 0
     ) {
         require_send_time_receipts_capability(client, clock.as_ref())?;
     }
@@ -3587,13 +3596,24 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 }
                 _ => None,
             };
-            let semantic = SemanticMutation::freeze(cooperative_semantic(mutation)?, claim)?;
+            // The wire shape of a send is decided once, here, and recorded: a retry replays it.
+            let priority_v1 = matches!(&mutation, MutationSpec::Send { .. })
+                && send_priority::supports(client, &cooperative_budget(clock));
+            if let MutationSpec::Send { priority, .. } = &mutation
+                && !priority_v1
+                && priority.to_mode().lossy
+            {
+                eprintln!("{}", send_priority::lossy_notice(*priority));
+            }
+            let semantic =
+                SemanticMutation::freeze(cooperative_semantic(mutation, priority_v1)?, claim)?;
             require_invitation_confirmation_capability(client, clock, &semantic)?;
             if semantic.is_lazy_send() {
                 require_lazy_send_capability(client, clock)?;
             }
             if semantic.kind() == crate::protocol::results::IntentKind::SendMessage
                 && !semantic.is_lazy_send()
+                && !semantic.is_priority_send()
             {
                 require_send_time_receipts_capability(client, clock)?;
             }
@@ -3730,6 +3750,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 }
                 if pending.semantic.kind() == crate::protocol::results::IntentKind::SendMessage
                     && !pending.semantic.is_lazy_send()
+                    && !pending.semantic.is_priority_send()
                 {
                     require_send_time_receipts_capability(client, clock)?;
                 }
@@ -3772,7 +3793,7 @@ fn bridge_run_error(error: crate::harness::bridge::BridgeError) -> RunError {
         crate::harness::bridge::BridgeError::Io(e) => RunError::Io(e),
     }
 }
-fn cooperative_semantic(mutation: MutationSpec) -> io::Result<SemanticMutation> {
+fn cooperative_semantic(mutation: MutationSpec, priority_v1: bool) -> io::Result<SemanticMutation> {
     Ok(match mutation {
         MutationSpec::Create { name, topic, goal } => {
             SemanticMutation::CreateThread { name, topic, goal }
@@ -3815,23 +3836,27 @@ fn cooperative_semantic(mutation: MutationSpec) -> io::Result<SemanticMutation> 
         },
         MutationSpec::Leave(thread) => SemanticMutation::Leave { thread },
         MutationSpec::Send {
-            delivery_mode,
+            priority,
             thread,
             body,
             require_ack,
             deadline_millis,
             relays_user,
             user_intent,
-        } => SemanticMutation::SendMessage {
-            delivery_mode,
-            thread,
-            body,
-            direct_recipient: None,
-            invited_recipients: require_ack,
-            deadline_millis,
-            relays_user,
-            user_intent,
-        },
+        } => {
+            let (delivery_mode, priority) = send_priority::shape(priority, priority_v1).wire();
+            SemanticMutation::SendMessage {
+                delivery_mode,
+                priority,
+                thread,
+                body,
+                direct_recipient: None,
+                invited_recipients: require_ack,
+                deadline_millis,
+                relays_user,
+                user_intent,
+            }
+        }
         MutationSpec::Ack(messages) => SemanticMutation::Ack { messages },
         MutationSpec::Archive(thread) => SemanticMutation::Archive { thread },
         MutationSpec::Reopen(thread) => SemanticMutation::Reopen { thread },

@@ -35,6 +35,7 @@ fn claim() -> CallerClaim {
 fn send() -> SemanticMutation {
     SemanticMutation::SendMessage {
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+        priority: None,
         thread: ThreadId::new("thread-1"),
         body: "body secret\n".into(),
         direct_recipient: None,
@@ -855,6 +856,7 @@ fn invalid_semantic_batch_does_not_reserve_ordinal_or_publish_intent() {
                 scope(),
                 SemanticMutation::SendMessage {
                     delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+                    priority: None,
                     thread: ThreadId::new("thread-1"),
                     body: "hello".into(),
                     direct_recipient: None,
@@ -1349,6 +1351,7 @@ fn send_relays_user_is_journaled_only_when_set_and_old_intents_still_load() {
             ..
         } => SemanticMutation::SendMessage {
             delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+            priority: None,
             thread,
             body,
             direct_recipient,
@@ -1585,7 +1588,7 @@ fn user_intent_send_retry_preserves_recorded_claim() {
         let CliAction::Mutation(spec) = parsed.action else {
             panic!("not a mutation")
         };
-        let semantic = crate::cli::cooperative_semantic(spec).unwrap();
+        let semantic = crate::cli::cooperative_semantic(spec, false).unwrap();
         let frozen = SemanticMutation::freeze(semantic, claim()).unwrap();
         let selected_scope = IntentScope::Cooperative {
             instance: "i".into(),
@@ -2483,4 +2486,141 @@ fn direct_recipient_semantic_preserves_absent_bytes_and_roundtrips() {
         Sha256::digest(serde_json::to_vec(&decoded).unwrap()),
         Sha256::digest(historical)
     );
+}
+
+// ---- delivery priority in the journal (message-priority spec §Compatibility) ----
+
+fn priority_send(
+    priority: Option<u8>,
+    mode: crate::protocol::commands::DeliveryMode,
+) -> SemanticMutation {
+    match send() {
+        SemanticMutation::SendMessage {
+            thread,
+            body,
+            direct_recipient,
+            invited_recipients,
+            deadline_millis,
+            relays_user,
+            user_intent,
+            ..
+        } => SemanticMutation::SendMessage {
+            delivery_mode: mode,
+            priority: priority
+                .map(|p| crate::protocol::priority::DeliveryPriority::new(p).unwrap()),
+            thread,
+            body,
+            direct_recipient,
+            invited_recipients,
+            deadline_millis,
+            relays_user,
+            user_intent,
+        },
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn a_priority_send_serializes_the_priority_and_no_delivery_mode() {
+    let json = serde_json::to_value(priority_send(
+        Some(3),
+        crate::protocol::commands::DeliveryMode::Ordinary,
+    ))
+    .unwrap();
+    assert_eq!(json["priority"], 3);
+    assert!(json.get("delivery_mode").is_none(), "{json}");
+}
+
+#[test]
+fn an_absent_priority_keeps_the_historical_serialization() {
+    let json = serde_json::to_value(priority_send(
+        None,
+        crate::protocol::commands::DeliveryMode::Ordinary,
+    ))
+    .unwrap();
+    assert!(json.get("priority").is_none() && json.get("delivery_mode").is_none());
+}
+
+#[test]
+fn a_pre_upgrade_lazy_entry_replays_its_recorded_mode() {
+    use crate::protocol::commands::DeliveryMode;
+    let legacy = r#"{"kind":"send_message","delivery_mode":"lazy","thread":"t1","body":"b","invited_recipients":[],"deadline_millis":null}"#;
+    let semantic: SemanticMutation = serde_json::from_str(legacy).unwrap();
+    assert!(semantic.is_lazy_send() && !semantic.is_priority_send());
+    assert_eq!(serde_json::to_string(&semantic).unwrap(), legacy);
+    let Command::SendMessage(sent) = semantic
+        .to_command(OperationId::new("op"), Some(claim()))
+        .unwrap()
+    else {
+        panic!("not a send")
+    };
+    assert_eq!(
+        (sent.delivery_mode, sent.priority),
+        (DeliveryMode::Lazy, None)
+    );
+}
+
+#[test]
+fn a_priority_entry_retries_with_its_recorded_priority() {
+    use crate::protocol::commands::DeliveryMode;
+    let semantic = priority_send(Some(3), DeliveryMode::Ordinary);
+    assert!(semantic.is_priority_send() && !semantic.is_lazy_send());
+    let Command::SendMessage(sent) = semantic
+        .to_command(OperationId::new("op"), Some(claim()))
+        .unwrap()
+    else {
+        panic!("not a send")
+    };
+    assert_eq!(sent.priority.map(|p| p.get()), Some(3));
+    assert_eq!(sent.delivery_mode, DeliveryMode::Ordinary);
+}
+
+#[test]
+fn a_lower_urgency_send_cannot_carry_ack_recipients() {
+    use crate::protocol::commands::DeliveryMode;
+    let mut semantic = priority_send(Some(2), DeliveryMode::Ordinary);
+    if let SemanticMutation::SendMessage {
+        invited_recipients, ..
+    } = &mut semantic
+    {
+        invited_recipients.push(SeatId::new("seat-2"));
+    }
+    assert!(
+        Journal::open(temp())
+            .unwrap()
+            .record(scope(), semantic, 1)
+            .is_err()
+    );
+}
+
+#[test]
+fn cooperative_semantic_records_the_shape_chosen_for_the_daemon() {
+    use crate::cli::commands::{CliAction, parse_argv};
+    for (priority_v1, argv, want_priority, want_mode) in [
+        (true, vec!["-p", "3"], Some(3u8), "ordinary"),
+        (false, vec!["-p", "3"], None, "lazy"),
+        (false, vec!["--nudge"], None, "ordinary"),
+        (true, vec![], Some(1), "ordinary"),
+    ] {
+        let mut full = vec!["herdr-threads", "send", "t1", "--body", "x"];
+        full.extend(argv.clone());
+        let CliAction::Mutation(spec) = parse_argv(full).unwrap().action else {
+            panic!("not a mutation")
+        };
+        let json =
+            serde_json::to_value(crate::cli::cooperative_semantic(spec, priority_v1).unwrap())
+                .unwrap();
+        assert_eq!(
+            json.get("priority")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u8),
+            want_priority,
+            "{argv:?} v1={priority_v1}"
+        );
+        let mode = json
+            .get("delivery_mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("ordinary");
+        assert_eq!(mode, want_mode, "{argv:?} v1={priority_v1}");
+    }
 }

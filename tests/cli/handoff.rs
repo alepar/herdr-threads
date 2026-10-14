@@ -5188,6 +5188,37 @@ fn handoff_policy_parses_independent_deadlines_before_body_effects() {
 }
 
 #[test]
+fn handoff_invitations_always_require_ack_and_the_old_flag_is_gone() {
+    let parsed = crate::cli::commands::parse_argv([
+        "ht", "handoff", "--pane", "w1:p2", "--kind", "codex", "--thread", "t1", "--", "go",
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    assert_eq!(
+        serde_json::to_value(request).unwrap()["policy"]["invitation_confirmation"],
+        "require_ack"
+    );
+    assert!(
+        crate::cli::commands::parse_argv([
+            "ht",
+            "handoff",
+            "--pane",
+            "w1:p2",
+            "--kind",
+            "codex",
+            "--thread",
+            "t1",
+            "--require-invite-ack",
+            "--",
+            "go",
+        ])
+        .is_err()
+    );
+}
+
+#[test]
 fn handoff_policy_refuses_unsupported_daemon_before_journal_or_launch() {
     struct Old(Client, Vec<String>);
     impl LocalClient for Old {
