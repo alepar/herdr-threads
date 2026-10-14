@@ -554,12 +554,13 @@ fn lazy_and_service_items_carry_their_own_names() {
         &mut Assembler::default(),
         1,
     );
-    let lazy_item = item_of(&events[0]);
+    // The priority-less plain message is p0 and the lazy row p1, so the batch puts the plain one first.
+    let lazy_item = item_of(&events[1]);
     assert_eq!(lazy_item.kind, DeliveryKind::Lazy);
     assert!(!lazy_item.message.ack_required);
     assert_eq!(lazy_item.message.sender_name.as_deref(), Some("service"));
     assert_eq!(lazy_item.message.thread_name.as_deref(), Some("topic"));
-    let plain = item_of(&events[1]);
+    let plain = item_of(&events[0]);
     assert!(!plain.message.ack_required, "no ack_candidate");
     assert_eq!(plain.message.sender_name.as_deref(), Some("sender"));
 }

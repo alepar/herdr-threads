@@ -65,14 +65,11 @@ export function frame(items) {
 }
 
 /**
- * The batch order key, mirroring the Rust `DeliveryOrderKey` of a watch batch (src/delivery/assemble.rs
- * `batch_order`): priority asc (absent: 1 for a message, 0 for an invitation or notice), then deadline asc
+ * The batch order key, mirroring Rust `src/delivery/assemble.rs` `batch_key`: priority asc (absent: 1 for a
+ * `lazy` row, else 0, so a priority-less message, an ACK, an invitation or a notice is p0), then deadline asc
  * with none last. Arrival breaks every remaining tie because `Array.prototype.sort` is stable.
  */
-const orderKey = (it) => [
-  it.priority ?? (it.kind === 'invitation' || it.kind === 'notice' ? 0 : 1),
-  it.deadline ?? Infinity,
-]
+const orderKey = (it) => [it.priority ?? (it.kind === 'lazy' ? 1 : 0), it.deadline ?? Infinity]
 export const batchOrder = (items) => [...items].sort((a, b) => {
   const [pa, da] = orderKey(a)
   const [pb, db] = orderKey(b)
