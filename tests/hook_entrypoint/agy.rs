@@ -610,13 +610,16 @@ fn agy_lazy_row_settles_only_through_the_transcript_confirm_never_hook_context()
 
 // Kills: classifying Lazy invitation as passive but losing its complete
 // pending item between canonical inbox paging and the registered turn hook.
-// The CLI can no longer create a lazy invitation (`invite` always requires acceptance, message-priority
-// D6); a lazy row only survives from before the upgrade or from a pair created by an older daemon's
-// path. The pull path this test pinned is exercised for lazy pairs by
-// `modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement`.
+// The CLI can no longer create a lazy invitation (an agent `invite` always requires acceptance,
+// message-priority D6); a lazy one only survives from before the upgrade. The fixture builds that
+// legacy shape by sending the lazy `Invite` straight to the daemon with the peer's canonical claim.
 #[test]
-#[ignore = "the CLI no longer creates lazy invitations; no lazy-invitation fixture until the daemon invitation tasks land"]
 fn agy_turn_hook_carries_lazy_invitation_without_accepting_or_confirming_it() {
+    use herdr_threads::protocol::{
+        authority::{CallerClaim, CallerRole, LivenessFingerprint},
+        commands::{Command, InvitationConfirmation, Invite},
+        ids::{ExecutionId, HostTargetId, NativeSessionId, OperationId, SeatId},
+    };
     let fx = Fixture::start();
     let home = home_with(&fx, "top-level");
     system_message(&run(&fx, &home, "SessionStart", "session-start-top"));
@@ -640,13 +643,44 @@ fn agy_turn_hook_carries_lazy_invitation_without_accepting_or_confirming_it() {
             "review recipient remit before acceptance",
         ],
     ));
-    cooperative_as(
-        &fx,
-        "claude",
-        "peer",
-        "w9:p2",
-        &["invite", &thread, "--seat", "seat"],
-    );
+    // Legacy shape: a lazy invitation sent by the peer's canonical claim straight to the daemon.
+    let claim: CallerClaim = rusqlite::Connection::open(&fx.db)
+        .unwrap()
+        .query_row(
+            "SELECT seat_id,generation,execution_id,liveness_pid,liveness_start FROM occupant_bindings WHERE target_id='w9:p2' AND harness='claude' AND native_session='peer-sess' AND role='top_level' AND agent_id='' AND ended_at IS NULL",
+            [],
+            |row| {
+                let liveness = match (row.get::<_, Option<i64>>(3)?, row.get::<_, Option<i64>>(4)?) {
+                    (Some(pid), Some(start)) => Some(LivenessFingerprint {
+                        pid: u32::try_from(pid).unwrap(),
+                        start: u64::try_from(start).unwrap(),
+                    }),
+                    _ => None,
+                };
+                Ok(CallerClaim {
+                    instance: fx.descriptor.instance_uuid.to_string(),
+                    seat: SeatId::new(row.get::<_, String>(0)?),
+                    binding_generation: u64::try_from(row.get::<_, i64>(1)?).unwrap(),
+                    role: CallerRole::TopLevel,
+                    harness: herdr_threads::protocol::authority::Harness::Claude,
+                    native_session: NativeSessionId::new("peer-sess"),
+                    execution: ExecutionId::new(row.get::<_, String>(2)?),
+                    target: HostTargetId::new("w9:p2"),
+                    agent_id: None,
+                    liveness,
+                })
+            },
+        )
+        .unwrap();
+    fx.call(Command::Invite(Invite {
+        confirmation: Some(InvitationConfirmation::Lazy),
+        thread: herdr_threads::protocol::ids::ThreadId::new(thread.clone()),
+        seat: SeatId::new("seat"),
+        deadline_millis: None,
+        operation: OperationId::new("lazy-invite"),
+        claim,
+    }))
+    .unwrap();
     let text = system_message(&run(&fx, &home, "PreInvocation", "pre-invocation-inv1"));
     assert!(text.contains("passive invitation for review"), "{text}");
     assert!(
