@@ -506,11 +506,10 @@ impl MutationSpec {
                 relays_user,
                 user_intent,
             } => {
-                // No capability knowledge here: the legacy shape is accepted by every daemon.
-                let (delivery_mode, priority) = super::send_priority::shape(priority, false).wire();
+                // The current wire shape: the priority is carried and `delivery_mode` is omitted.
                 WireCommand::SendMessage(SendMessage {
-                    priority,
-                    delivery_mode,
+                    priority: Some(priority),
+                    delivery_mode: DeliveryMode::Ordinary,
                     thread,
                     body,
                     direct_recipient: None,

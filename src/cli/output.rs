@@ -311,7 +311,7 @@ pub fn write_selected<W: Write>(
 /// the v1 result, saved summary content, or delivery progress.
 #[derive(Default)]
 pub(crate) struct ReadModes {
-    /// `(id, marker)` rows to print: `[pN]` from a `send.priority_v1` daemon, else `[lazy]`.
+    /// `(id, marker)` rows to print: `[pN]` for every priority except the default 1.
     marked: Vec<(crate::protocol::ids::MessageId, &'static str)>,
     // An actual refit must retain its invocation bound through final decorations,
     // including when the newly selected page has no Lazy rows.
@@ -327,7 +327,7 @@ impl ReadModes {
     ) -> Result<Self, ApiError> {
         use crate::protocol::{
             capabilities::MESSAGE_DELIVERY_MODES,
-            commands::{Command, DeliveryMode, MessageDeliveryModesQuery},
+            commands::{Command, MessageDeliveryModesQuery},
             output::selected_result,
             results::{MessageContent, MessageKind, SearchHit},
         };
@@ -365,8 +365,6 @@ impl ReadModes {
         if ids.is_empty() || !client.supports_capability(MESSAGE_DELIVERY_MODES, budget) {
             return Ok(Self::default());
         }
-        let with_priority =
-            client.supports_capability(crate::protocol::capabilities::SEND_PRIORITY_V1, budget);
         let mut marked = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let ids: Vec<_> = ids
@@ -376,7 +374,7 @@ impl ReadModes {
         for batch in ids.chunks(100) {
             let result = match client.call(
                 Command::MessageDeliveryModes(MessageDeliveryModesQuery {
-                    with_priority,
+                    with_priority: true,
                     messages: batch.to_vec(),
                 }),
                 budget,
@@ -403,10 +401,9 @@ impl ReadModes {
                 ));
             }
             marked.extend(modes.into_iter().filter_map(|mode| {
-                let marker = match mode.priority {
-                    Some(priority) => priority.marker(),
-                    None => (mode.delivery_mode == DeliveryMode::Lazy).then_some("[lazy]"),
-                };
+                let marker = mode
+                    .priority
+                    .and_then(crate::protocol::priority::DeliveryPriority::marker);
                 marker.map(|marker| (mode.message, marker))
             }));
         }

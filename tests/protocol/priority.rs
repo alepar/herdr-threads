@@ -42,32 +42,9 @@ fn delivery_priority_serde_is_a_bare_integer_and_rejects_out_of_range() {
 }
 
 #[test]
-fn delivery_priority_legacy_mapping_both_ways() {
+fn delivery_priority_from_the_stored_legacy_mode() {
     assert_eq!(DeliveryPriority::from_mode(DeliveryMode::Ordinary), p(0));
     assert_eq!(DeliveryPriority::from_mode(DeliveryMode::Lazy), p(1));
-    assert_eq!(
-        p(0).to_mode(),
-        LegacyMode {
-            mode: DeliveryMode::Ordinary,
-            lossy: false
-        }
-    );
-    assert_eq!(
-        p(1).to_mode(),
-        LegacyMode {
-            mode: DeliveryMode::Lazy,
-            lossy: false
-        }
-    );
-    for n in 2..=9 {
-        assert_eq!(
-            p(n).to_mode(),
-            LegacyMode {
-                mode: DeliveryMode::Lazy,
-                lossy: true
-            }
-        );
-    }
 }
 
 #[test]
@@ -126,24 +103,9 @@ fn nudge_threshold_admits_is_p_le_t_and_negative_admits_all() {
 }
 
 #[test]
-fn nudge_threshold_wake_on_alias_both_ways() {
+fn nudge_threshold_wake_on_alias() {
     assert_eq!(NudgeThreshold::from_wake_on(WakeOn::All).get(), -1);
     assert_eq!(NudgeThreshold::from_wake_on(WakeOn::Nudge).get(), 0);
-    assert_eq!(
-        NudgeThreshold::new(-1).unwrap().to_wake_on(),
-        Some(WakeOn::All)
-    );
-    assert_eq!(
-        NudgeThreshold::new(0).unwrap().to_wake_on(),
-        Some(WakeOn::Nudge)
-    );
-    for t in 1..=9 {
-        assert_eq!(
-            NudgeThreshold::new(t).unwrap().to_wake_on(),
-            None,
-            "T={t} is inexpressible"
-        );
-    }
     // An old client's WakeOnQuery: `all` iff T < 0, else `nudge`.
     assert_eq!(
         NudgeThreshold::new(-1).unwrap().legacy_wake_on(),

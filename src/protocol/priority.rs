@@ -13,7 +13,7 @@ use std::cmp::Ordering;
 
 /// A message's immutable notification priority, 0 (most urgent) ..= 9.
 /// Owns: the range, the default (1), the fixed p0 for invitations, ACK requests and actionable warnings,
-/// the legacy mapping both ways (`ordinary` <-> 0, `lazy` <-> 1; p >= 1 -> `lazy`, lossy when p > 1),
+/// the stored/journaled legacy mapping (`ordinary` -> 0, `lazy` -> 1, `from_mode`),
 /// and the `[p<N>]` marker (only when N != 1).
 /// Does not: decide wake (NudgeThreshold does) or create receipts/deadlines (send preparation does,
 /// for explicit ACK recipients only).
@@ -22,14 +22,6 @@ use std::cmp::Ordering;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "u8", into = "u8")]
 pub struct DeliveryPriority(u8);
-
-/// A priority rendered as an old daemon's two-valued mode. An old daemon only knows two modes;
-/// `lossy` tells the client to say so once on stderr.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LegacyMode {
-    pub mode: DeliveryMode,
-    pub lossy: bool,
-}
 
 const MARKERS: [&str; 10] = [
     "[p0]", "", "[p2]", "[p3]", "[p4]", "[p5]", "[p6]", "[p7]", "[p8]", "[p9]",
@@ -79,23 +71,6 @@ impl DeliveryPriority {
         match mode {
             DeliveryMode::Ordinary => Self(0),
             DeliveryMode::Lazy => Self::DEFAULT,
-        }
-    }
-
-    pub fn to_mode(self) -> LegacyMode {
-        match self.0 {
-            0 => LegacyMode {
-                mode: DeliveryMode::Ordinary,
-                lossy: false,
-            },
-            1 => LegacyMode {
-                mode: DeliveryMode::Lazy,
-                lossy: false,
-            },
-            _ => LegacyMode {
-                mode: DeliveryMode::Lazy,
-                lossy: true,
-            },
         }
     }
 
@@ -193,15 +168,6 @@ impl NudgeThreshold {
         match value {
             WakeOn::All => Self::ALL,
             WakeOn::Nudge => Self::DEFAULT,
-        }
-    }
-
-    /// Exact alias, for the new-client/old-daemon fallback; `None` when T is not expressible.
-    pub fn to_wake_on(self) -> Option<WakeOn> {
-        match self.0 {
-            -1 => Some(WakeOn::All),
-            0 => Some(WakeOn::Nudge),
-            _ => None,
         }
     }
 

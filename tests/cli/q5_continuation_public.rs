@@ -55,7 +55,8 @@ impl Fixture {
         db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES('i',0,'host',1,10000);
             INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s','i','resolved','native','pane-s',1,1,0);
             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','i','topic','goal',0,0,41);").unwrap();
-        // Historical ordinary-content rows with canonical mixed delivery modes.
+        // Ordinary-content rows with canonical mixed priorities: the `is_lazy` rows are p0 (marked `[p0]`),
+        // the others p1 (unmarked).
         // Read/Search do not require a membership/read cursor; none is manufactured.
         for n in 1..=40_i64 {
             let id = format!("q5-msg-{n}");
@@ -63,8 +64,8 @@ impl Fixture {
                 Some(wanted) => wanted == id,
                 None => n % 2 == 0,
             };
-            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode,author_role) VALUES(?1,'i','t',?2,'ordinary','s',?3,?2,0,?4,'agent')",
-                rusqlite::params![id, n, format!("needle value π {}", "x".repeat(180)), if is_lazy { "lazy" } else { "ordinary" }]).unwrap();
+            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode,author_role,priority) VALUES(?1,'i','t',?2,'ordinary','s',?3,?2,0,?4,'agent',?5)",
+                rusqlite::params![id, n, format!("needle value π {}", "x".repeat(180)), if is_lazy { "lazy" } else { "ordinary" }, if is_lazy { 0 } else { 1 }]).unwrap();
         }
         let client = RecordedStore {
             inner: StoreClient {
@@ -95,13 +96,13 @@ impl Fixture {
             },
         )
     }
-    fn lazy_ids(&self, result: &CommandResult) -> Vec<MessageId> {
+    fn marked_ids(&self, result: &CommandResult) -> Vec<MessageId> {
         ids(result)
             .into_iter()
             .filter(|id| {
                 self.db
                     .query_row(
-                        "SELECT delivery_mode='lazy' FROM messages WHERE id=?1",
+                        "SELECT priority=0 FROM messages WHERE id=?1",
                         [id.as_str()],
                         |r| r.get::<_, bool>(0),
                     )
@@ -299,7 +300,7 @@ fn boundary(
         let lazy = if lose_lazy {
             vec![selected.last().unwrap().clone()]
         } else {
-            f.lazy_ids(&raw)
+            f.marked_ids(&raw)
         };
         if lazy.is_empty() || lazy.len() == selected.len() {
             continue;
@@ -307,7 +308,7 @@ fn boundary(
         let bytes = encode_selected(&raw, &spec).unwrap().len();
         let markers: usize = lazy
             .iter()
-            .map(|id| format!("[lazy] {}\n", id.as_str()).len())
+            .map(|id| format!("[p0] {}\n", id.as_str()).len())
             .sum();
         if bytes <= max as usize && bytes + markers > max as usize {
             return (args, lose_lazy.then(|| lazy[0].as_str().to_owned()));
@@ -385,17 +386,17 @@ fn follow(search: bool, max: u32, human: bool, lose_lazy: bool) {
                     "fixture must cross a real annotation refit"
                 );
                 let initial_ids = ids(&reads[0].2);
-                assert!(!f.lazy_ids(&reads[0].2).is_empty());
+                assert!(!f.marked_ids(&reads[0].2).is_empty());
                 assert!(
-                    f.lazy_ids(&reads[0].2).len() < initial_ids.len(),
+                    f.marked_ids(&reads[0].2).len() < initial_ids.len(),
                     "initial page must mix ordinary/Lazy"
                 );
                 if lose_lazy {
                     assert!(
-                        f.lazy_ids(&reads.last().unwrap().2).is_empty(),
+                        f.marked_ids(&reads.last().unwrap().2).is_empty(),
                         "reselected page must have no Lazy rows"
                     );
-                    assert!(!String::from_utf8_lossy(&out).contains("[lazy]"));
+                    assert!(!String::from_utf8_lossy(&out).contains("[p0]"));
                 }
             }
             let (_, _, raw) = reads.last().unwrap();
@@ -423,8 +424,8 @@ fn follow(search: bool, max: u32, human: bool, lose_lazy: bool) {
                 argv[last] = max.to_string();
             }
             let mut expected_bytes = Vec::new();
-            for id in f.lazy_ids(raw) {
-                expected_bytes.extend_from_slice(format!("[lazy] {}\n", id.as_str()).as_bytes());
+            for id in f.marked_ids(raw) {
+                expected_bytes.extend_from_slice(format!("[p0] {}\n", id.as_str()).as_bytes());
             }
             {
                 let _namespace = herdr_threads::protocol::output::CommandNamespaceGuard::enter(

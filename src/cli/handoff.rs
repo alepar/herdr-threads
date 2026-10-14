@@ -215,13 +215,14 @@ pub(crate) fn stage_work<C: LocalClient + ?Sized>(
             deadline: plan.policy.is_some_and(|p| p.deadline_millis.is_some()),
             ..Default::default()
         })?;
-        // p0 has an exact legacy spelling every daemon accepts, and the handoff plan freezes no wire
-        // shape: a retry after a daemon upgrade must replay the first attempt byte for byte.
-        let (delivery_mode, priority) = super::send_priority::shape(priority, false).wire();
+        debug_assert_eq!(priority, crate::protocol::priority::DeliveryPriority::p0());
+        // p0 in the spelling a handoff journaled before the priority field used: the handoff plan
+        // freezes no wire shape, so a retry of such a handoff must replay its first attempt byte
+        // for byte (the daemon derives ordinary -> p0).
         let result = call(
             SemanticMutation::SendMessage {
-                delivery_mode,
-                priority,
+                delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+                priority: None,
                 thread,
                 body: plan.body.into(),
                 direct_recipient: None,

@@ -44,7 +44,7 @@ pub enum Command {
     MessageDeliveryModes(MessageDeliveryModesQuery),
     /// Read a seat's `wake_on` preference; gated by `seat.wake_on_v1`.
     WakeOn(WakeOnQuery),
-    /// Read a seat's nudge threshold; gated by `seat.nudge_threshold_v1`.
+    /// Read a seat's nudge threshold; advertised as `seat.nudge_threshold_v1`.
     NudgeThreshold(NudgeThresholdQuery),
     Warnings(WarningsQuery),
     /// Bounded read-only active warning conditions for one thread.
@@ -123,7 +123,7 @@ pub enum Command {
     /// Set the caller seat's `wake_on` preference (TRUST-POLICY A5); gated by
     /// `seat.wake_on_v1`.
     SetWakeOn(SetWakeOn),
-    /// Set the caller seat's nudge threshold (TRUST-POLICY A5 cooperative mutation); gated by
+    /// Set the caller seat's nudge threshold (TRUST-POLICY A5 cooperative mutation); advertised as
     /// `seat.nudge_threshold_v1`.
     SetNudgeThreshold(SetNudgeThreshold),
     Leave(Leave),
@@ -926,7 +926,7 @@ pub struct NudgeThresholdQuery {
 #[serde(deny_unknown_fields)]
 pub struct MessageDeliveryModesQuery {
     pub messages: Vec<MessageId>,
-    /// Set only by a client that saw `send.priority_v1`; the reply carries `priority` only when set.
+    /// Set by every current client; the reply carries `priority` only when set.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub with_priority: bool,
 }

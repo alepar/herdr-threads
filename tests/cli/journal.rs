@@ -1588,7 +1588,7 @@ fn user_intent_send_retry_preserves_recorded_claim() {
         let CliAction::Mutation(spec) = parsed.action else {
             panic!("not a mutation")
         };
-        let semantic = crate::cli::cooperative_semantic(spec, false).unwrap();
+        let semantic = crate::cli::cooperative_semantic(spec).unwrap();
         let frozen = SemanticMutation::freeze(semantic, claim()).unwrap();
         let selected_scope = IntentScope::Cooperative {
             instance: "i".into(),
@@ -2596,31 +2596,28 @@ fn a_lower_urgency_send_cannot_carry_ack_recipients() {
 #[test]
 fn cooperative_semantic_records_the_shape_chosen_for_the_daemon() {
     use crate::cli::commands::{CliAction, parse_argv};
-    for (priority_v1, argv, want_priority, want_mode) in [
-        (true, vec!["-p", "3"], Some(3u8), "ordinary"),
-        (false, vec!["-p", "3"], None, "lazy"),
-        (false, vec!["--nudge"], None, "ordinary"),
-        (true, vec![], Some(1), "ordinary"),
+    for (argv, want_priority, want_mode) in [
+        (vec!["-p", "3"], Some(3u8), "ordinary"),
+        (vec!["--nudge"], Some(0), "ordinary"),
+        (vec![], Some(1), "ordinary"),
     ] {
         let mut full = vec!["herdr-threads", "send", "t1", "--body", "x"];
         full.extend(argv.clone());
         let CliAction::Mutation(spec) = parse_argv(full).unwrap().action else {
             panic!("not a mutation")
         };
-        let json =
-            serde_json::to_value(crate::cli::cooperative_semantic(spec, priority_v1).unwrap())
-                .unwrap();
+        let json = serde_json::to_value(crate::cli::cooperative_semantic(spec).unwrap()).unwrap();
         assert_eq!(
             json.get("priority")
                 .and_then(|v| v.as_u64())
                 .map(|v| v as u8),
             want_priority,
-            "{argv:?} v1={priority_v1}"
+            "{argv:?}"
         );
         let mode = json
             .get("delivery_mode")
             .and_then(|v| v.as_str())
             .unwrap_or("ordinary");
-        assert_eq!(mode, want_mode, "{argv:?} v1={priority_v1}");
+        assert_eq!(mode, want_mode, "{argv:?}");
     }
 }

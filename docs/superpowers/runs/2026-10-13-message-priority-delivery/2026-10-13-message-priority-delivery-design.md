@@ -136,28 +136,16 @@ Merge note (v0.11.0, ht-327): a wake whose reason is a threshold-admitted delive
   recipients (keeping the existing CHECK and audit valid). Existing pending receipts stay owed; existing pending
   lazy invitations keep their recorded no-deadline, non-waking behaviour; new invitations are written
   `require_ack`.
-- **Wire**: `SendMessage.priority: Option<u8>` (omitted → derived from `delivery_mode`: ordinary → 0, lazy → 1),
-  capabilities `send.priority_v1`, `seat.nudge_threshold_v1`, `direct.auto_join_v1`. The daemon accepts an old
-  `Invite.confirmation` and records `require_ack` regardless; it ignores an old pair `creation_policy` and
-  auto-joins.
-- **New client, old daemon**: p0 → `ordinary`, p >= 1 → `lazy` (the exact priority is lost; the client says so
-  once on stderr when N > 1); `nudge-threshold -1|0` → `wake-on all|nudge`, other values refused with an upgrade
-  hint; invitations fall back to `require_ack`.
-- **Old client, new daemon**: works through the derivations above. Reads stay old-readable: the daemon keeps the
-  existing inbox v2 / watch item variants (a delivery row is still the `LazyMessage`/`Lazy` variant with its
-  daemon-computed `wakes`, a receipt is still `Message`) and only adds `priority` (and `deadline_at`) as optional
-  fields, so an old CLI or an already-installed old Claude mod parses and frames them as before, and its
-  `wakes`-driven promotion follows the threshold. The new client frames from variant + priority (D8). An old
-  client's `WakeOnQuery` gets `all` when T < 0, else `nudge`. An old client's lazy `Invite` is recorded as a
-  confirming invitation; an old client's direct send creates an auto-joined pair (its creation policy is ignored).
-- **Mixed versions (user decision 2026-10-14, ht-yha.49)**: `PROTOCOL_VERSION` is 8, so an older CLI or daemon is refused at the version check before any request (superseding the `PROTOCOL_VERSION` bullet below; the old-client derivations above remain as internal legacy mappings).
-- **New client, old daemon, 1:1 pairs**: without `direct.auto_join_v1` the client keeps sending the legacy pair
-  creation policy, so the old daemon's invitation/accept path works unchanged.
+- **Wire**: `SendMessage.priority: Option<u8>`. A request without it (a journaled pre-v47 intent retried in its
+  recorded shape) derives it from `delivery_mode`: ordinary → 0, lazy → 1. The daemon advertises
+  `send.priority_v1`, `seat.nudge_threshold_v1` and `direct.auto_join_v1`, and clients do not probe them. It
+  records `require_ack` for any `Invite.confirmation`, and it validates only the shape of a pair
+  `creation_policy`, then auto-joins.
 - **Overdue warnings** come only from receipts, which exist only for explicit ACK recipients (D9), so a non-ACK
   message never produces one; pre-v47 receipts stay owed as recorded.
 - **Person-authored "priority"** (summaries/catch-up `is_priority`, the wake-e2e note) is a separate, unchanged
   axis; it is not a delivery priority and does not enter `DeliveryOrderKey`.
-- `PROTOCOL_VERSION` does not change.
+- Protocol 8; mixed versions are refused: an older CLI or daemon fails the version check before any request (user decision 2026-10-14, ht-yha.49).
 
 ## Legacy readers, wire validators and receipt-side effects (design roast round 1)
 

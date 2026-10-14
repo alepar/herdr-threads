@@ -50,16 +50,6 @@ fn row_priority(w: &World, message: &str) -> i64 {
         .unwrap()
 }
 
-fn threshold_of(w: &World) -> i64 {
-    w.db()
-        .query_row(
-            "SELECT nudge_threshold FROM seats WHERE id=?1",
-            [&w.seats[1]],
-            |r| r.get(0),
-        )
-        .unwrap()
-}
-
 fn item_of(w: &World, id: &str) -> Value {
     inbox_items(w)
         .into_iter()
@@ -257,75 +247,6 @@ fn priority_sweep_mixed_inbox_order() {
     eventually("ack receipt", || wake(&w).receipt);
     let got: Vec<String> = inbox_items(&w).iter().map(item_id).collect();
     assert_eq!(got, [ack, invitation, p0, p1, p3, p9]);
-}
-
-/// Flow 8a: the wake-on pair of a client that has no nudge-threshold.
-#[test]
-fn priority_sweep_old_shape_wake_on_maps_to_threshold() {
-    let w = World::agents_only();
-    let proxy = Proxy::new(w.paths(), &w.root);
-    proxy.mode.store(4, Ordering::SeqCst);
-    assert_eq!(threshold_of(&w), 0);
-    w.ok(Some(1), false, &["wake-on", "all"]);
-    assert_eq!(threshold_of(&w), -1);
-    let shown = w.ok(Some(1), false, &["wake-on"]);
-    assert_eq!(shown["data"]["wake_on"], "all", "{shown}");
-    w.ok(Some(1), false, &["wake-on", "nudge"]);
-    assert_eq!(threshold_of(&w), 0);
-    let kinds: Vec<String> = proxy
-        .requests()
-        .iter()
-        .filter_map(|q| q["command"]["kind"].as_str().map(str::to_owned))
-        .collect();
-    assert!(kinds.contains(&"set_wake_on".into()), "{kinds:?}");
-    assert!(!kinds.contains(&"set_nudge_threshold".into()), "{kinds:?}");
-}
-
-/// Flow 8b: `delivery_mode` sends, no `priority` on the wire, p0/p1 rows in the daemon.
-#[test]
-fn priority_sweep_old_shape_sends_map_to_p0_and_p1() {
-    let w = World::agents_only();
-    let proxy = Proxy::new(w.paths(), &w.root);
-    proxy.mode.store(4, Ordering::SeqCst);
-    let lazy = w.send("old lazy", &[]);
-    let nudge = w.send("old nudge", &["--nudge"]);
-    let acked = w.send("old ack", &["--require-ack", &w.seats[1]]);
-    assert_eq!(row_priority(&w, &lazy), 1);
-    assert_eq!(row_priority(&w, &nudge), 0);
-    assert_eq!(row_priority(&w, &acked), 0);
-    assert_eq!(receipts_for(&w, &acked), 1);
-    let sends: Vec<Value> = proxy
-        .requests()
-        .into_iter()
-        .filter(|q| q["command"]["kind"] == "send_message")
-        .collect();
-    assert_eq!(sends.len(), 3, "{sends:#?}");
-    for q in &sends {
-        assert!(
-            q["command"]["args"].get("priority").is_none(),
-            "old shape carries no priority: {q}"
-        );
-    }
-    assert_eq!(sends[0]["command"]["args"]["delivery_mode"], "lazy");
-    assert!(sends[1]["command"]["args"].get("delivery_mode").is_none());
-    // A priority the old daemon cannot express is sent as p1 with a one-line notice.
-    let lossy = w.raw(
-        Some(0),
-        false,
-        &["send", &w.thread, "--body", "lossy", "-p", "4"],
-    );
-    assert!(lossy.status.success());
-    let stderr = String::from_utf8_lossy(&lossy.stderr);
-    assert!(stderr.contains("lacks send.priority_v1"), "{stderr}");
-    let stored: i64 = w
-        .db()
-        .query_row(
-            "SELECT priority FROM messages WHERE body='lossy'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(stored, 1);
 }
 
 /// Flow 8c: a lazy invitation from a pre-priority client is recorded as a confirming invitation.

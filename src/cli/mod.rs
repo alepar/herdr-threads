@@ -3631,26 +3631,8 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 _ => None,
             };
             // The wire shape of a send is decided once, here, and recorded: a retry replays it.
-            let priority_v1 = matches!(&mutation, MutationSpec::Send { .. })
-                && send_priority::supports(client, &cooperative_budget(clock))?;
-            if let MutationSpec::Send { priority, .. } = &mutation
-                && !priority_v1
-                && priority.to_mode().lossy
-            {
-                eprintln!("{}", send_priority::lossy_notice(*priority));
-            }
-            let semantic =
-                SemanticMutation::freeze(cooperative_semantic(mutation, priority_v1)?, claim)?;
+            let semantic = SemanticMutation::freeze(cooperative_semantic(mutation)?, claim)?;
             require_invitation_confirmation_capability(client, clock, &semantic)?;
-            if semantic.is_lazy_send() {
-                require_lazy_send_capability(client, clock)?;
-            }
-            if semantic.kind() == crate::protocol::results::IntentKind::SendMessage
-                && !semantic.is_lazy_send()
-                && !semantic.is_priority_send()
-            {
-                require_send_time_receipts_capability(client, clock)?;
-            }
             let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
                 journal,
                 scope,
@@ -3827,7 +3809,7 @@ fn bridge_run_error(error: crate::harness::bridge::BridgeError) -> RunError {
         crate::harness::bridge::BridgeError::Io(e) => RunError::Io(e),
     }
 }
-fn cooperative_semantic(mutation: MutationSpec, priority_v1: bool) -> io::Result<SemanticMutation> {
+fn cooperative_semantic(mutation: MutationSpec) -> io::Result<SemanticMutation> {
     Ok(match mutation {
         MutationSpec::Create { name, topic, goal } => {
             SemanticMutation::CreateThread { name, topic, goal }
@@ -3878,10 +3860,10 @@ fn cooperative_semantic(mutation: MutationSpec, priority_v1: bool) -> io::Result
             relays_user,
             user_intent,
         } => {
-            let (delivery_mode, priority) = send_priority::shape(priority, priority_v1).wire();
             SemanticMutation::SendMessage {
-                delivery_mode,
-                priority,
+                // The `send.priority_v1` shape: the priority is carried, `delivery_mode` omitted.
+                delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+                priority: Some(priority),
                 thread,
                 body,
                 direct_recipient: None,

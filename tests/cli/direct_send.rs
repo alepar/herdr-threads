@@ -231,74 +231,6 @@ impl Write for LostOutput {
     }
 }
 
-// Kills: admitting a new ordinary direct compound from Direct/Ensure support
-// alone, mutating the pair before send-time receipt semantics are negotiated.
-#[test]
-fn modern_ordinary_direct_send_requires_receipt_capability_before_any_effect() {
-    use herdr_threads::protocol::{
-        capabilities::{DIRECT_THREADS_V1, ENSURE_CREATION_POLICY_V1},
-        results::ErrorCode,
-    };
-    for flags in [
-        vec!["--nudge"],
-        vec!["--require-ack", "seat-b", "--deadline", "30"],
-    ] {
-        let mut f = Fixture::new(false);
-        f.client.capability_override = Some(vec![
-            DIRECT_THREADS_V1.into(),
-            ENSURE_CREATION_POLICY_V1.into(),
-        ]);
-        let effects = [
-            "direct_threads",
-            "threads",
-            "invitations",
-            "memberships",
-            "messages",
-            "operations",
-            "send_preparations",
-            "send_manifests",
-            "prepared_recipients",
-            "lazy_recipients",
-            "receipts",
-            "receipt_state",
-            "wake_work",
-        ];
-        let before = effects.map(|table| f.count(table));
-        let mut args = vec!["send", "--seat", "seat-b", "--body", "modern ordinary"];
-        args.extend(flags);
-        let mut output = Vec::new();
-        let result = f.run(&args, &mut output);
-        assert!(
-            matches!(result, Err(RunError::Api(ref error)) if error.code == ErrorCode::Unsupported),
-            "Direct/Ensure without send-time receipts must refuse the new ordinary compound: {result:?}"
-        );
-        assert!(output.is_empty());
-        assert!(
-            f.journal
-                .page(&Default::default())
-                .unwrap()
-                .items
-                .is_empty()
-        );
-        assert_eq!(effects.map(|table| f.count(table)), before);
-        assert!(
-            // The send.priority_v1 miss is confirmed by one fresh probe (a failed probe must not
-            // read as an old daemon), then the receipt-capability refusal: capability reads only.
-            matches!(
-                f.client.calls.lock().unwrap().as_slice(),
-                [Command::Capabilities, Command::Capabilities, ..]
-            ) && f
-                .client
-                .calls
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|c| matches!(c, Command::Capabilities)),
-            "refusal must precede journal, inspection, Ensure and Send"
-        );
-    }
-}
-
 #[test]
 fn modern_ordinary_direct_send_with_receipt_capability_commits_exact_ordinary_body() {
     use herdr_threads::protocol::{
@@ -368,62 +300,10 @@ fn modern_ordinary_direct_send_with_receipt_capability_commits_exact_ordinary_bo
     );
 }
 
+// A priority direct send keeps the selection policy (the daemon validates its shape and auto-joins)
+// and freezes the priority, omitting the delivery mode.
 #[test]
-fn modern_lazy_direct_send_is_exempt_from_receipt_capability() {
-    use herdr_threads::protocol::{
-        capabilities::{DIRECT_THREADS_V1, ENSURE_CREATION_POLICY_V1, LAZY_SEND},
-        commands::{DeliveryMode, InvitationConfirmation},
-    };
-    let mut f = Fixture::new(false);
-    f.client.capability_override = Some(vec![
-        DIRECT_THREADS_V1.into(),
-        ENSURE_CREATION_POLICY_V1.into(),
-        LAZY_SEND.into(),
-    ]);
-    f.run(
-        &["send", "--seat", "seat-b", "--body", "modern lazy"],
-        &mut Vec::new(),
-    )
-    .unwrap();
-    assert!(
-        f.journal
-            .page(&Default::default())
-            .unwrap()
-            .items
-            .is_empty()
-    );
-    assert_eq!(f.count("direct_threads"), 1);
-    assert_eq!(f.count("lazy_recipients"), 1);
-    assert_eq!(f.count("receipts"), 0);
-    assert_eq!(f.count("prepared_recipients"), 0);
-    assert_eq!(f.count("receipt_state"), 0);
-    let calls = f.client.calls.lock().unwrap();
-    assert!(calls.iter().any(|command| matches!(command,
-        Command::EnsureDirectThread(ensure) if ensure.creation_policy.as_ref().is_some_and(|policy|
-            policy.confirmation == InvitationConfirmation::Lazy && policy.deadline_millis.is_none())
-    )));
-    let sends = calls
-        .iter()
-        .filter_map(|command| match command {
-            Command::SendMessage(send) => Some(send),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(sends.len(), 1);
-    assert_eq!(sends[0].delivery_mode, DeliveryMode::Lazy);
-    assert_eq!(sends[0].body, "modern lazy");
-    assert_eq!(
-        sends[0].direct_recipient.as_ref().unwrap().as_str(),
-        "seat-b"
-    );
-    assert!(sends[0].invited_recipients.is_empty());
-    assert!(sends[0].deadline_millis.is_none());
-}
-
-// A priority direct send keeps the legacy pair creation policy (a daemon with direct.auto_join_v1
-// ignores it) and, with send.priority_v1, freezes the priority and omits the delivery mode.
-#[test]
-fn priority_direct_send_freezes_the_priority_and_keeps_the_legacy_creation_policy() {
+fn priority_direct_send_freezes_the_priority_and_the_selection_policy() {
     use herdr_threads::protocol::{
         capabilities::{
             DIRECT_AUTO_JOIN_V1, DIRECT_THREADS_V1, ENSURE_CREATION_POLICY_V1, SEND_PRIORITY_V1,
@@ -468,47 +348,6 @@ fn priority_direct_send_freezes_the_priority_and_keeps_the_legacy_creation_polic
         let json = serde_json::to_value(sends[0]).unwrap();
         assert!(json.get("delivery_mode").is_none(), "{json}");
         assert_eq!(json["priority"], 3);
-    }
-}
-
-#[test]
-fn priority_direct_send_to_an_old_daemon_sends_the_legacy_mode_and_creation_policy() {
-    use herdr_threads::protocol::{
-        capabilities::{
-            DIRECT_THREADS_V1, ENSURE_CREATION_POLICY_V1, LAZY_SEND, SEND_TIME_RECEIPTS_V1,
-        },
-        commands::{DeliveryMode, InvitationConfirmation},
-    };
-    for (flags, mode) in [
-        (vec!["-p", "4"], DeliveryMode::Lazy),
-        (vec!["-p", "1"], DeliveryMode::Lazy),
-        (vec!["-p", "0"], DeliveryMode::Ordinary),
-    ] {
-        let mut f = Fixture::new(false);
-        f.client.capability_override = Some(vec![
-            DIRECT_THREADS_V1.into(),
-            ENSURE_CREATION_POLICY_V1.into(),
-            LAZY_SEND.into(),
-            SEND_TIME_RECEIPTS_V1.into(),
-        ]);
-        let mut args = vec!["send", "--seat", "seat-b", "--body", "legacy"];
-        args.extend(flags.iter().copied());
-        f.run(&args, &mut Vec::new()).unwrap();
-        let calls = f.client.calls.lock().unwrap();
-        assert!(calls.iter().any(|command| matches!(command,
-            Command::EnsureDirectThread(ensure) if ensure.creation_policy.as_ref().is_some_and(|policy|
-                policy.confirmation == InvitationConfirmation::Lazy && policy.deadline_millis.is_none())
-        )));
-        let sends = calls
-            .iter()
-            .filter_map(|command| match command {
-                Command::SendMessage(send) => Some(send),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(sends.len(), 1, "{flags:?}");
-        assert_eq!(sends[0].delivery_mode, mode, "{flags:?}");
-        assert_eq!(sends[0].priority, None, "{flags:?}");
     }
 }
 

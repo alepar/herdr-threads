@@ -11,6 +11,7 @@ use herdr_threads::{
         ids::*,
         output::OutputSpec,
         pagination::PageRequest,
+        priority::DeliveryPriority,
         results::{CheckInResult, CommandResult, ErrorCode, InboxBatchV2Item},
         time::{CallBudget, Clock, MonoInstant, UtcMillis},
     },
@@ -333,7 +334,7 @@ fn parsed_send(f: &Fixture, words: Vec<String>, operation: &str) -> SendMessage 
     };
     // `--nudge` alone is a priority-0 delivery row now; the receipt-bearing shape these controls
     // exercise names its recipient (D9). The CLI/guide wording is a later task's.
-    if send.delivery_mode == DeliveryMode::Ordinary && send.invited_recipients.is_empty() {
+    if send.priority == Some(DeliveryPriority::p0()) && send.invited_recipients.is_empty() {
         send.invited_recipients = vec![SeatId::new("agent")];
     }
     send

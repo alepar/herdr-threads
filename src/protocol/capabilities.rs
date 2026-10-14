@@ -90,12 +90,15 @@ pub const MOD_WATCH_PRESENTATION_V2: &str = "mod.watch_presentation_v2";
 pub const DELIVERY_PULL: &str = "delivery.pull_v1";
 
 /// `SendMessage.priority` and the priority-aware inbox/watch fields. Defined by the ht-yha.1 seam;
-/// advertised with the send handler (ht-yha.3).
+/// advertised with the send handler (ht-yha.3). Advertised for diagnostics; protocol-8 clients do not
+/// probe it.
 pub const SEND_PRIORITY_V1: &str = "send.priority_v1";
 /// `Command::NudgeThreshold` / `Command::SetNudgeThreshold`. Defined by the ht-yha.1 seam;
-/// advertised with its handlers (ht-yha.4).
+/// advertised with its handlers (ht-yha.4). Advertised for diagnostics; protocol-8 clients do not
+/// probe it.
 pub const SEAT_NUDGE_THRESHOLD_V1: &str = "seat.nudge_threshold_v1";
 /// 1:1 pairs auto-join both seats. Defined by the ht-yha.1 seam; advertised with the pair handler (ht-yha.6).
+/// Advertised for diagnostics; protocol-8 clients do not probe it.
 pub const DIRECT_AUTO_JOIN_V1: &str = "direct.auto_join_v1";
 
 /// Everything this daemon build serves. A capability is listed only once its

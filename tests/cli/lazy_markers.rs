@@ -4,7 +4,7 @@ use herdr_threads::{
     harness::context::{ContextJournal, Role},
     ports::LocalClient,
     protocol::{
-        capabilities::{MESSAGE_DELIVERY_MODES, SEND_PRIORITY_V1},
+        capabilities::MESSAGE_DELIVERY_MODES,
         commands::{Command, DeliveryMode},
         ids::{MessageId, ThreadId},
         output::{OutputSpec, encode_selected},
@@ -56,8 +56,6 @@ fn page<T>(items: Vec<T>) -> Page<T> {
     }
 }
 struct Client {
-    /// The daemon advertises `send.priority_v1`.
-    priority_v1: bool,
     advertised: bool,
     count: u64,
     calls: Mutex<Vec<Command>>,
@@ -65,7 +63,6 @@ struct Client {
 impl Client {
     fn new(advertised: bool, count: u64) -> Self {
         Self {
-            priority_v1: false,
             advertised,
             count,
             calls: Mutex::new(vec![]),
@@ -113,24 +110,24 @@ impl Client {
 impl LocalClient for Client {
     fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
         self.advertised && name == MESSAGE_DELIVERY_MODES
-            || self.priority_v1 && name == SEND_PRIORITY_V1
     }
     fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
         self.calls.lock().unwrap().push(command.clone());
         if let Command::MessageDeliveryModes(q) = command {
             assert!(self.advertised, "old daemon received new command");
-            if q.with_priority {
-                assert!(self.priority_v1, "pre-priority daemon asked for priority");
-            }
+            assert!(
+                q.with_priority,
+                "every current client asks for the priority"
+            );
             assert!(!q.messages.is_empty() && q.messages.len() <= 100);
             return Ok(CommandResult::MessageDeliveryModes(
                 q.messages
                     .into_iter()
                     .map(|message| {
                         let lazy = message.as_str() != "msg-1";
-                        // Priority daemon: msg-1 is p1 (silent), msg-2 p0, msg-3 p5, others p1.
+                        // msg-1 is p1 (silent), msg-2 p0, msg-3 p5, others p1.
                         // `delivery_mode` stays the legacy column (msg-2 is recorded lazy).
-                        let priority = q.with_priority.then(|| {
+                        let priority = Some({
                             let n = match message.as_str() {
                                 "msg-2" => 0,
                                 "msg-3" => 5,
@@ -211,25 +208,23 @@ fn lazy_markers_history_body_search_use_canonical_metadata() {
     ] {
         let client = Client::new(true, 2);
         let (text, _) = run(&argv, &client);
-        assert!(text.contains("[lazy] msg-2"), "{text}");
+        assert!(text.contains("[p0] msg-2"), "{text}");
         assert!(
-            !text.contains("[lazy] msg-1"),
+            !text.contains("] msg-1\n"),
             "peer text cannot mark an ordinary message: {text}"
         );
         assert!(text.contains("canonical passive body"));
     }
 }
-// Kills: `[lazy]` surviving on a priority daemon, a marker for p1, a legacy query that asks for
-// priority, and a priority query sent to a daemon without `send.priority_v1`.
+// Kills: `[lazy]` surviving, a marker for p1, and a query that does not ask for the priority.
 #[test]
-fn priority_markers_replace_lazy_when_the_daemon_has_priority_v1() {
+fn priority_markers_mark_every_non_default_priority() {
     for argv in [
         vec!["read", "t"],
         vec!["body", "msg-2"],
         vec!["search", "body"],
     ] {
-        let mut client = Client::new(true, 3);
-        client.priority_v1 = true;
+        let client = Client::new(true, 3);
         let (text, _) = run(&argv, &client);
         assert!(text.contains("[p0] msg-2\n"), "{text}");
         assert!(
@@ -253,24 +248,15 @@ fn priority_markers_replace_lazy_when_the_daemon_has_priority_v1() {
             "{queries:?}"
         );
     }
-    let mut client = Client::new(true, 3);
-    client.priority_v1 = true;
-    let (text, _) = run(&["read", "t"], &client);
-    assert!(text.starts_with("[p0] msg-2\n[p5] msg-3\n"), "{text}");
-    // A daemon without the capability keeps the legacy query and `[lazy]`.
     let client = Client::new(true, 3);
     let (text, _) = run(&["read", "t"], &client);
-    assert!(text.starts_with("[lazy] msg-2\n[lazy] msg-3\n"), "{text}");
-    assert!(client.calls.lock().unwrap().iter().all(|c| match c {
-        Command::MessageDeliveryModes(q) => !q.with_priority,
-        _ => true,
-    }));
+    assert!(text.starts_with("[p0] msg-2\n[p5] msg-3\n"), "{text}");
 }
 #[test]
 fn lazy_markers_lookup_only_selected_ids_at_most100() {
     let client = Client::new(true, 205);
     let (text, _) = run(&["read", "t", "--max-bytes", "32768"], &client);
-    assert!(text.contains("[lazy] msg-205"));
+    assert!(text.contains("[p5] msg-3\n"), "{text}");
     let calls = client.calls.lock().unwrap();
     let batches: Vec<_> = calls
         .iter()
@@ -502,7 +488,7 @@ fn lazy_markers_real_store_preserves_pending_delivery_and_ready_cached_summary()
         vec!["search", "full", "--thread", "t"],
     ] {
         let (text, _) = run(&argv, &client);
-        assert!(text.contains("[lazy] msg-2"), "{text}");
+        assert!(text.contains("[p0] msg-2"), "{text}");
     }
     for argv in [
         vec!["read", "t", "--max-bytes", "1024"],
@@ -513,7 +499,7 @@ fn lazy_markers_real_store_preserves_pending_delivery_and_ready_cached_summary()
             text.len() <= 1024,
             "actual annotated history/search page exceeds its bound: {text}"
         );
-        assert!(text.starts_with("[lazy] msg-"));
+        assert!(text.starts_with("[p0] msg-"));
         assert!(
             text.contains("next:"),
             "the daemon must retain exact page continuation: {text}"
@@ -555,7 +541,7 @@ impl LocalClient for BoundedBody {
                 q.messages
                     .into_iter()
                     .map(|message| MessageDeliveryMode {
-                        priority: None,
+                        priority: Some(DeliveryPriority::new(0).unwrap()),
                         message,
                         delivery_mode: DeliveryMode::Lazy,
                     })
@@ -626,7 +612,7 @@ fn lazy_markers_budget_includes_escaping_and_exact_body_continuation() {
             text.len() <= 512,
             "actual marker/escaped body/continuation must fit: {text}"
         );
-        assert!(text.starts_with("[lazy] msg-2\n"));
+        assert!(text.starts_with("[p0] msg-2\n"));
         assert!(text.contains("escaped"));
         let range = text.lines().find(|l| l.starts_with("#2 ")).unwrap();
         let end = range
@@ -670,7 +656,7 @@ struct BoundedP0Body {
 }
 impl LocalClient for BoundedP0Body {
     fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
-        name == MESSAGE_DELIVERY_MODES || name == SEND_PRIORITY_V1
+        name == MESSAGE_DELIVERY_MODES
     }
     fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
         self.call_with_output(command, &OutputSpec::default(), budget)
@@ -792,7 +778,7 @@ fn lazy_markers_human_selected_body_and_search_are_canonical() {
     ] {
         let client = Client::new(true, 2);
         let (text, _) = run(&argv, &client);
-        assert!(text.starts_with("[lazy] msg-2\n"));
+        assert!(text.starts_with("[p0] msg-2\n"));
         assert!(text.contains("canonical passive body"));
     }
 }
@@ -888,7 +874,7 @@ fn lazy_markers_manifest_warning_history_and_body_render_readonly() {
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','i','topic','goal',0,0,4);
         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('p','i','scope','op',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
         INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES('p','key','warn-id','s',1,1,'{}');
-        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at,delivery_mode) VALUES('ordinary-id','i','t',1,'ordinary','ordinary control',10,0,'ordinary'),('lazy-id','i','t',3,'ordinary','lazy control',11,0,'lazy');
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at,delivery_mode,priority) VALUES('ordinary-id','i','t',1,'ordinary','ordinary control',10,0,'ordinary',0),('lazy-id','i','t',3,'ordinary','lazy control',11,0,'lazy',1);
         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('p','ordinary-id','i','t',10,0,1,0,1,1);").unwrap();
     let client = StoreClient {
         store: SqliteStore::new(context, "i", StoreSettings::default()).unwrap(),
@@ -904,11 +890,11 @@ fn lazy_markers_manifest_warning_history_and_body_render_readonly() {
     let (history, _) = history_result.unwrap();
     assert!(history.contains("warn-id"), "{history}");
     assert!(history.contains("ordinary control"), "{history}");
-    assert!(history.contains("[lazy] lazy-id"), "{history}");
-    assert!(!history.contains("[lazy] ordinary-id"));
+    assert!(history.contains("[p0] ordinary-id"), "{history}");
+    assert!(!history.contains("] lazy-id\n"), "{history}");
     let (body, _) = body_result.unwrap();
     assert!(body.contains("warn-id"), "{body}");
-    assert!(!body.contains("[lazy]"), "{body}");
+    assert!(!body.contains("[p"), "{body}");
     for argv in [
         vec!["body", "ordinary-id"],
         vec!["body", "lazy-id"],
