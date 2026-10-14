@@ -592,11 +592,12 @@ fn all_offered(
 }
 
 /// `?1` binding, `?2` seat, `?3` the reservation's lazy frontier (`lazy_recipients.decision_seq`): the binding
-/// still finds a pending frontier row unread (its cursor has not passed it and no `binding_row_displays` mark
-/// holds it; `binding_lazy_unread_sql!`). A row no longer pending was displayed seat-wide, so no connected
-/// top-level binding is owed it.
-const LAZY_FRONTIER_UNREAD_SQL: &str = concat!(
-    "SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN lazy_recipients r ON r.seat_id=b.seat_id JOIN messages m ON m.id=r.message_id WHERE b.binding_id=?1 AND r.seat_id=?2 AND r.state='pending' AND r.decision_seq=?3 AND ",
+/// still finds a frontier row unread (its cursor has not passed it and no `binding_row_displays` mark holds
+/// it; `binding_lazy_unread_sql!`). Decided from the binding's own records, never the seat-wide `state`: a
+/// sibling's display never decides whether this binding is woken. Reached through `messages` by decision
+/// sequence, then `lazy_recipients` by its unique key.
+pub(crate) const LAZY_FRONTIER_UNREAD_SQL: &str = concat!(
+    "SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN seats ss ON ss.id=b.seat_id JOIN messages m ON m.instance_id=ss.instance_id AND m.decision_seq=?3 AND m.kind='ordinary' JOIN lazy_recipients r ON r.message_id=m.id AND r.seat_id=b.seat_id WHERE b.binding_id=?1 AND b.seat_id=?2 AND r.decision_seq=?3 AND ",
     crate::store::lazy_delivery::binding_lazy_unread_sql!(),
     ")"
 );

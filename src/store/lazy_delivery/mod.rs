@@ -125,32 +125,56 @@ pub(crate) use seat_unread_sql;
 /// which reconnects on its next call). A binding disconnected as superseded, by an end event,
 /// retirement, unresolve, replacement or migration owes nothing, so it neither keeps the seat-wide
 /// `state` `pending` nor (through `seat_unread_sql!`, which counts connected bindings only) holds the
-/// wake frontier open. Decides only the seat-wide `state` (`MARK_DISPLAYED_SQL`), which no seek reads.
+/// wake frontier open. Decides only the seat-wide `state` (`MARK_DISPLAYED_SQL`), which no delivery or wake decision reads.
 macro_rules! seat_owes_display_sql {
     () => {
         concat!(
-            "(r.legacy_pending=1 OR EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=r.seat_id AND b.ended_at IS NULL AND b.role='top_level' AND (b.liveness='connected' OR b.disconnect_reason='liveness_process_exit') AND ",
+            "(r.legacy_pending=1 OR EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=r.seat_id AND b.role='top_level' AND ",
+            $crate::store::lazy_delivery::view_held_sql!("b"),
+            " AND ",
             $crate::store::lazy_delivery::binding_lazy_unread_sql!(),
             "))"
         )
     };
 }
 
-/// The published rows a binding finds unread now (`binding_lazy_unread_sql!`): the seed of a binding's
-/// pending view (`binding_pending`). The triggers of v47 keep the view after that; this is the only Rust
-/// writer.
+/// A binding (alias `$b`) that can still be offered delivery rows, so it holds a pending view
+/// (`binding_pending`): open and connected, or disconnected because its process exited (it reconnects on
+/// its next call). The v47 triggers `binding_pending_publish` and `binding_pending_legacy_set` spell the
+/// same predicate for alias `b` (pinned by `the_view_triggers_spell_the_held_predicate`).
+macro_rules! view_held_sql {
+    ($b:literal) => {
+        concat!(
+            "(",
+            $b,
+            ".ended_at IS NULL AND (",
+            $b,
+            ".liveness='connected' OR ",
+            $b,
+            ".disconnect_reason='liveness_process_exit'))"
+        )
+    };
+}
+pub(crate) use view_held_sql;
+
+/// The published rows a held binding (`view_held_sql!`) finds unread now (`binding_lazy_unread_sql!`): the
+/// seed of a binding's pending view (`binding_pending`). The triggers of v47 keep the view after that; this
+/// is the only Rust writer.
 macro_rules! seed_view_sql {
     ($filter:literal) => {
         concat!(
             "INSERT OR IGNORE INTO binding_pending(binding_id,ordinal,thread_id,priority,decision_seq) SELECT b.binding_id,r.ordinal,r.thread_id,r.priority,r.decision_seq FROM occupant_bindings b JOIN lazy_recipients r ON r.seat_id=b.seat_id JOIN messages m ON m.id=r.message_id WHERE ",
             $filter,
-            " AND b.ended_at IS NULL AND r.decision_seq IS NOT NULL AND ",
+            " AND ",
+            view_held_sql!("b"),
+            " AND r.decision_seq IS NOT NULL AND ",
             binding_lazy_unread_sql!()
         )
     };
 }
 
-/// Seed `binding`'s pending view. `read_cursors::seed` runs it last, after the cursors and inherited marks
+/// Seed `binding`'s pending view; only a held binding gets rows (`view_held_sql!`). Called by
+/// `read_cursors::seed` and by `bindings::connect` on every disconnected -> connected transition. `read_cursors::seed` runs it last, after the cursors and inherited marks
 /// are written, so the view starts as exactly the binding's unread rows (one pass over the seat's delivery
 /// rows, the cost class of `capture_high_water`'s binding form, once per enrolment, re-adoption or
 /// reopening).
@@ -160,7 +184,7 @@ pub fn seed_binding_pending(tx: &Connection, binding: &BindingId) -> Result<(), 
     Ok(())
 }
 
-/// Seed the view of every open binding (the v47 migration's backfill and the pre-amendment repair).
+/// Seed the view of every held binding (the v47 migration's backfill and the pre-amendment repair).
 pub fn seed_all_binding_pending(conn: &Connection) -> Result<(), ApiError> {
     conn.execute(seed_view_sql!("1"), []).map_err(store_error)?;
     Ok(())

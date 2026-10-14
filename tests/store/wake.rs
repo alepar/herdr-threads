@@ -2752,6 +2752,138 @@ fn a_one_process_lazy_wake_is_refused_once_a_binding_displayed_the_frontier_row(
     let _ = std::fs::remove_file(path);
 }
 
+/// Inserts the p0 delivery row of the neighbouring test (message `msg-1`, frontier `decision_seq` 2).
+fn insert_p0_delivery_row(db: &Connection) {
+    db.execute(
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-1','i','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES('prep-1','msg-1','t','s',0)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('msg-1','i','t',1,'ordinary',2,'passive',0,'lazy')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('prep-1','msg-1','i','t',2,0,2,0,1,0)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE lazy_recipients SET decision_seq=2 WHERE preparation_id='prep-1'",
+        [],
+    )
+    .unwrap();
+    db.execute("UPDATE host_instances SET decision_seq=2", [])
+        .unwrap();
+}
+
+/// ht-yha.54 (S1): the served-in-turn recheck decides from the binding's own records, never the
+/// seat-wide `state`. Binding `b` was away (end event) while `a` displayed the p0 row; once `b`
+/// resumes, its re-seeded view owes it the row, so it is still woken. Kills: reading
+/// `lazy_recipients.state='pending'` in `LAZY_FRONTIER_UNREAD_SQL`, which refuses `b`.
+#[test]
+fn a_resumed_binding_is_still_owed_the_wake_a_sibling_displayed() {
+    use crate::protocol::{authority::LivenessFingerprint, ids::BindingId, time::UtcMillis};
+    use crate::store::bindings::{ConnectTrigger, DisconnectReason};
+    let (store, path) = multi_store(&[row("a", "codex", 10), row("b", "codex", 20)]);
+    serve_in_turn(&store, "a", "inv");
+    serve_in_turn(&store, "b", "inv");
+    {
+        let db = store.context.open_writer().unwrap();
+        db.execute(
+            "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES ('a','t',0),('b','t',0)",
+            [],
+        )
+        .unwrap();
+        insert_p0_delivery_row(&db);
+    }
+    {
+        let db = store.context.open_writer().unwrap();
+        assert!(
+            crate::store::bindings::disconnect_with_hooks(
+                &db,
+                &BindingId::new("b"),
+                DisconnectReason::EndEvent,
+                UtcMillis(5),
+                &[]
+            )
+            .unwrap()
+        );
+        db.execute("UPDATE binding_cursors SET seq=1 WHERE binding_id='a'", [])
+            .unwrap();
+        db.execute(
+            "UPDATE lazy_recipients SET state='displayed' WHERE message_id='msg-1'",
+            [],
+        )
+        .unwrap();
+        assert!(
+            crate::store::bindings::connect(
+                &db,
+                &BindingId::new("b"),
+                Some(LivenessFingerprint { pid: 20, start: 1 }),
+                ConnectTrigger::Lifecycle,
+                UtcMillis(6)
+            )
+            .unwrap()
+        );
+    }
+    let reservation = StorePort::reserve_wake(&store, &owed_candidate(&store).unwrap(), &budget())
+        .unwrap()
+        .expect("the resumed binding still owes a wake");
+    assert_eq!(reservation.reasons, ["lazy"]);
+    let owed = |binding: &str| {
+        StorePort::wake_owed_to_binding(
+            &store,
+            &reservation,
+            Some(&BindingId::new(binding)),
+            &budget(),
+        )
+        .unwrap()
+    };
+    assert!(owed("b"));
+    assert!(!owed("a"), "a displayed the row itself");
+    assert_eq!(
+        dispatch_to(&store, &reservation, FOREGROUND_B).1.len(),
+        1,
+        "the resumed binding is typed to"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// The served-in-turn check reaches its row through `messages` by decision sequence and
+/// `lazy_recipients` by its unique key, never a scan of the seat's delivery rows.
+#[test]
+fn lazy_frontier_unread_check_is_index_driven() {
+    let (store, path) = multi_store(&[row("a", "codex", 10)]);
+    let db = store.context.open_writer().unwrap();
+    let plan: Vec<String> = db
+        .prepare(&format!(
+            "EXPLAIN QUERY PLAN {}",
+            crate::store::wake::LAZY_FRONTIER_UNREAD_SQL
+        ))
+        .unwrap()
+        .query_map(rusqlite::params!["a", "s", 2], |r| r.get::<_, String>(3))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(
+        !plan
+            .iter()
+            .any(|step| step.contains("SCAN r") || step.contains("SCAN lazy_recipients")),
+        "{plan:?}"
+    );
+    drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
 /// ht-705: an in-turn offer recorded after the wake was reserved (the binding's turn served the
 /// item while the wake was in flight) is honoured at dispatch, rechecked after the reservation
 /// fence. Kills: deciding only at discovery or reservation time.

@@ -5206,10 +5206,11 @@ fn mod_seat_view_mode(
     }))
 }
 
-/// Head of the stall query over the seat's published pending delivery rows (aliases `r`, `m`, `s`);
-/// the threshold predicate (`THRESHOLD_ADMITS_SQL`, a non-const-concat `&str`) and `STALL_ROWS_TAIL`
+/// Head of the stall query over the seat's published pending delivery rows (aliases `r`, `m`, `s`), driven
+/// from the connected top-level bindings' pending views and the seat's legacy rows; never the seat-wide
+/// `state`. The threshold predicate (`THRESHOLD_ADMITS_SQL`, a non-const-concat `&str`) and `STALL_ROWS_TAIL`
 /// follow.
-const STALL_ROWS_HEAD: &str = "SELECT min(m.decision_at) FROM lazy_recipients r JOIN seats s ON s.id=r.seat_id JOIN messages m ON m.id=r.message_id WHERE r.seat_id=?1 AND r.state='pending' AND r.decision_seq IS NOT NULL AND m.kind='ordinary' AND length(CAST(m.body AS BLOB))<=?2 AND m.decision_at<=?3 AND ";
+const STALL_ROWS_HEAD: &str = "SELECT min(m.decision_at) FROM lazy_recipients r JOIN seats s ON s.id=r.seat_id JOIN messages m ON m.id=r.message_id WHERE r.ordinal IN (SELECT p.ordinal FROM occupant_bindings vb JOIN binding_pending p ON p.binding_id=vb.binding_id WHERE vb.seat_id=?1 AND vb.ended_at IS NULL AND vb.role='top_level' AND vb.liveness='connected' UNION SELECT lr.ordinal FROM lazy_recipients lr INDEXED BY lazy_recipients_legacy WHERE lr.seat_id=?1 AND lr.legacy_pending=1) AND r.seat_id=?1 AND r.decision_seq IS NOT NULL AND m.kind='ordinary' AND length(CAST(m.body AS BLOB))<=?2 AND m.decision_at<=?3 AND ";
 /// Tail: the row is unread for some connected top-level binding (`seat_unread_sql!`).
 const STALL_ROWS_TAIL: &str = concat!(" AND ", crate::store::lazy_delivery::seat_unread_sql!());
 
