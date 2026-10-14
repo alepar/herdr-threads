@@ -4,6 +4,8 @@
 
 ## v0.11.0
 
+- **Codex wakes after `/side`.** Multiple plain-call session bindings sharing one foreground Codex process can receive one seat-level attention wake. Submission still requires an idle session and an empty composer; independent processes retain their refusal rules.
+- **Wake diagnostics for senders.** Overdue confirmation warnings include the recipient's latest wake-attempt outcome since the message was sent, when available. These diagnostics distinguish refused or attempted wakes from message delivery and ACKs.
 - **Installation across AISW profiles.** The installer discovers configured Claude and Codex profiles and reconciles each root separately, alongside the default roots. `--no-aisw-profiles` skips discovery; `internal installer-integrations --config-root HARNESS=DIR` selects additional roots explicitly. Invalid roots retain their individual failure reports.
 - **Shared skills and permissions.** Profiles that share owned, unedited skill or rule files through directory symlinks report them as shared. Setup preserves those links and files; foreign or edited files require reconciliation through their owning root.
 - **Skill update backups.** Replacing an existing owned skill now saves a timestamped `.herdr-threads` preimage before atomic replacement. Unchanged reruns create no additional backup, and edited skills remain protected.
