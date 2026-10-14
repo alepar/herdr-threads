@@ -38,6 +38,8 @@ The wire gets one new value type, `HostLocator`, which is the canonical Herdr so
 - `Option<HostLocator>` in the claim: every claim comes from a pane, and an optional field would bring back the ambiguity this subepic removes.
 - Bundling `{host, target}` into one `PaneRef` type: cleaner, but it churns every target consumer for no behaviour change.
 
+**Claim host precedence (settled at coverage round 2).** Every claim producer (Claude/Codex hooks, agy hooks, the Hermes bridge, the Claude mod's `watch`) reaches `CallerClaim` through the CLI. For the claim, the pane's `HERDR_SOCKET_PATH` wins over a setup-time `--host-endpoint`, and `cli/hook.rs::foreign_session` no longer treats another Herdr server of the same node as foreign; only a different state dir (node) is foreign. ht-5fr.2.3 owns this.
+
 ### 2. `HostSession` and `HostSessions`
 
 **Recommended.** A new core module `src/service/host_sessions.rs`. It composes service workers, so it lives in `service` and not in `host`.
