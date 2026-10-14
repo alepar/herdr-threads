@@ -3478,9 +3478,9 @@ fn hook_pull_once(
     }
 }
 
-/// Pending items the seat's pulls have read so far (the drain's store walk).
-fn items_read(f: &Fixture) -> usize {
-    f.state.probe.items_read.load(Ordering::SeqCst)
+/// Inbox page items the seat's pulls have read from the store so far.
+fn rows_read(f: &Fixture) -> usize {
+    f.state.probe.rows_read.load(Ordering::SeqCst)
 }
 
 // Kills: a full offer table evicting still-pending ids (re-offered afresh: shown again < 60 s later, more than
@@ -3581,13 +3581,13 @@ fn a_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox()
             .0
             .store(first_shown + round * REOFFER_AFTER_MS, Ordering::SeqCst);
         for index in 0..12 {
-            let before = items_read(&f);
+            let before = rows_read(&f);
             hook_pull_once(&f, &context, &mut seen, &mut shown);
             if round == 1 && index == 0 {
-                let read = items_read(&f) - before;
+                let read = rows_read(&f) - before;
                 assert!(
-                    read <= PAGE_MAX_BLOCKS,
-                    "the first re-offer pull stops after its due ids; it read {read} of {backlog}"
+                    read <= 2 * crate::delivery::PAGE_MAX_ITEMS,
+                    "the first re-offer pull stops after its due ids; it read {read} store rows of {backlog}"
                 );
             }
             advance(&f, 100);
@@ -3607,10 +3607,10 @@ fn a_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox()
     // A new notice on the parked full table rides a page without reading the pending set: nothing in it could be
     // shown or freed.
     service_notice(&f, "w-2");
-    let before = items_read(&f);
+    let before = rows_read(&f);
     let text = hook_pull_once(&f, &context, &mut seen, &mut shown).expect("the notice is shown");
     assert!(text.contains("notice w-2"), "{text}");
-    assert_eq!(items_read(&f), before, "the drain was skipped");
+    assert_eq!(rows_read(&f), before, "the drain was skipped");
     assert!(
         shown
             .values()
