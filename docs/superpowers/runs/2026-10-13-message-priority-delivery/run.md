@@ -29,17 +29,20 @@ parked:
 - graph-pass · graph-change · "proposal: frame golden fixture seam for ht-yha.8/9"
 
 codeBuckets:
-  completed: ht-yha.1, ht-yha.2, ht-yha.3, ht-yha.4, ht-yha.5.1, ht-yha.5.2, ht-yha.5.3, ht-yha.5.4, ht-yha.6, ht-yha.7, ht-yha.8, ht-yha.9, ht-yha.10, ht-yha.11, ht-yha.12, ht-yha.13, ht-yha.14, ht-yha.15, ht-yha.16, ht-yha.31, ht-yha.32, ht-yha.33, ht-yha.34, ht-yha.35, ht-yha.36, ht-yha.37, ht-yha.38, ht-yha.39
+  completed: ht-yha.1, ht-yha.2, ht-yha.3, ht-yha.4, ht-yha.5.1, ht-yha.5.2, ht-yha.5.3, ht-yha.5.4, ht-yha.6, ht-yha.7, ht-yha.8, ht-yha.9, ht-yha.10, ht-yha.11, ht-yha.12, ht-yha.13, ht-yha.14, ht-yha.15, ht-yha.16, ht-yha.31, ht-yha.32, ht-yha.33, ht-yha.34, ht-yha.35, ht-yha.36, ht-yha.37, ht-yha.38, ht-yha.39, ht-yha.40, ht-yha.41, ht-yha.42
   escalated:
   pendingRetry:
   parked:
-  stalled: true
-  review: not ready (A rows stay pending via never-returning process-exited bindings and cursor-only body reads; B main merge conflicts + for_seat_attention seam; C ht-yha.33 and ServiceSend need user decisions; markers_ok vacuous; no full suite)
+  stalled: false
+  review: not ready (A stale pending delivery rows via process-exited bindings and cursor-only body reads push new rows off first pages; B mod stall rule counts only receipts so a wedged mod holding a p0 delivery row never recovers; body --max-bytes 256-342 refused for p0; markers_ok vacuous; ServiceSend and ht-yha.33/.42 need the user)
   sweep: e8ecb681 — 6392 passed, 3 failed, 0 errors, 44 skipped; failing: session_bindings_smoke::config5_resume_within_a_page_and_past_it, golden_surfaces::doctor_reports, lazy_markers::q5_continuation_public::q5_search_public_refits_preserve_2048_byte_filter_route_actor_and_cursor; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast @ e8ecb681
   slowness: round 1: graph-bound — 17 open beads, depth 6, achievable width 3 vs cap 8; edge audit armed now; round 1: merge queue peaked at 3 (first invocation); network outage relaunches ×2 (ENOTFOUND)
   worktreesKept:
   processSweep: stopped 0 · survived 0
 
+sweepFix: 3 failing → ht-yha.40, ht-yha.41, ht-yha.42 · re-run e8ecb681 — 6392 passed, 3 failed, 0 errors, 44 skipped; failing: session_bindings_smoke::config5_resume_within_a_page_and_past_it, golden_surfaces::doctor_reports, lazy_markers::q5_continuation_public::q5_search_public_refits_preserve_2048_byte_filter_route_actor_and_cursor; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast @ e8ecb681
+
+approvals:
 - launch-mode · interactive design (questions relayed via seat seePN0MKW, thread tXPkAdb0O, --nudge), switch to autonomous after the user approves the design (requester instruction, 2026-10-13)
 - top-split · auto · ht-yha.1 LEAF, ht-yha.2 LEAF, ht-yha.3 LEAF, ht-yha.4 LEAF, ht-yha.5 PROMOTE, ht-yha.6 LEAF, ht-yha.7 LEAF, ht-yha.8 LEAF, ht-yha.9 LEAF, ht-yha.10 LEAF, ht-yha.11 LEAF, ht-yha.12 LEAF, ht-yha.13 LEAF
 - coverage-round-1 · canonical R-list: coverage-round-1-requirements.md (R1-R12) · requirements: 12 · mapped: 12 · unmapped: 0 · R-new appended for round 2: R13 old clients on a new daemon + new handlers/capabilities, R14 in-flight pre-v47 state handled per spec, R15 one ordering verified across every surface, R16 delivery_mode-dependent store paths replaced · auto L1-L12 applied (owns lines on ht-yha.2/3/4/8/9/5.2, edges 9<-4, 8<-14, 11<-3/4/6/8, 5.4<-3, new leaf ht-yha.15) · L13 NEEDS-SPEC not re-run (answered from subspec)
