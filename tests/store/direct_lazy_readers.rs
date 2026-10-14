@@ -390,7 +390,14 @@ fn q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap() {
             (first.clone(), "earlier undisplayed body".into()),
             (later.clone(), "later inspected body".into()),
         ];
-        assert_eq!(f.lazy(&f.a), want);
+        // A's out-of-order display of `later` is remembered (`binding_row_displays`): it is not
+        // offered to A again, while the earlier body A never saw, and both for B, still are.
+        let want_a = if display_later {
+            want[..1].to_vec()
+        } else {
+            want.clone()
+        };
+        assert_eq!(f.lazy(&f.a), want_a);
         assert_eq!(f.lazy(&b), want);
         assert_eq!(
             f.db.query_row::<i64, _, _>(

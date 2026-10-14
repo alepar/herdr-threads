@@ -275,6 +275,9 @@ fn unique_point(line: &str, alias: &str, event: bool) -> bool {
         ],
         "b" => &[&["binding_id=?"]],
         "lc" => &[&["binding_id=?", "thread_id=?"]],
+        // The displayed-mark exclusion: the message by (thread, sequence), then its mark.
+        "rdm" => &[&["thread_id=?", "sequence=?"]],
+        "rd" => &[&["binding_id=?", "message_id=?"]],
         "lm" => &[&["thread_id=?", "seat_id=?"]],
         "ld" => &[&["thread_id=?"]],
         "ls" => &[&["id=?"]],
@@ -389,7 +392,9 @@ fn q4_episode_private_and_reconciliation_points_have_constant_sqlite_work() {
                     text("i"),
                     Value::Integer(2100000),
                 ],
-                &["r", "sm", "m", "b", "lc", "lc", "lm", "ld", "ls", "li"],
+                &[
+                    "r", "sm", "m", "b", "lc", "lc", "rdm", "rd", "lm", "ld", "ls", "li",
+                ],
             );
             assert_eq!(private.0, want, "private candidate={n}");
             let canonical = indexed(
@@ -413,7 +418,9 @@ fn q4_episode_private_and_reconciliation_points_have_constant_sqlite_work() {
                     row[2].clone(),
                     row[3].clone(),
                 ],
-                &["r", "sm", "b", "lc", "lc", "lm", "ld", "ls", "li"],
+                &[
+                    "r", "sm", "b", "lc", "lc", "rdm", "rd", "lm", "ld", "ls", "li",
+                ],
             );
             assert_eq!(recon.0, want, "recon candidate={n}");
             let continuation = indexed(
@@ -465,7 +472,9 @@ fn q4_scalar_agreement_and_strict_retirement_use_exact_scope() {
         Value::Integer(canonical.2),
         Value::Integer(canonical.3),
     ];
-    let aliases = ["r", "sm", "b", "lc", "lc", "lm", "ld", "ls", "li"];
+    let aliases = [
+        "r", "sm", "b", "lc", "lc", "rdm", "rd", "lm", "ld", "ls", "li",
+    ];
     assert_eq!(
         indexed(
             &tx,
