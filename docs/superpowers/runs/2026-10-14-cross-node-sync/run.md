@@ -7,13 +7,15 @@ codeMechanism: Workflow
 idea: Cross-node herdr-threads sync. Seed: the vision spec docs/superpowers/specs/2026-10-13-cross-node-sync-vision-design.md plus research in docs/superpowers/research/2026-10-13-cross-node-sync/. Write the actual (detailed) spec, checking for any gaps, split into beads; all autonomously; both roasts on.
 spec: 2026-10-14-cross-node-sync-design.md
 epic: ht-5fr
-roast-design: 2026-10-14-cross-node-sync-roast-design-1.md
+roast-design: 2026-10-14-cross-node-sync-roast-design-1.md, 2026-10-14-cross-node-sync-roast-design-2.md
 branch: super-auto/cross-node-sync
 base: main
 
 roastDesignRound: 2
 
 stepBackDesign-round-1: patch — 5 findings mostly independent; clusters clone-identity and order-independent-apply swept as rules
+
+roastDesignExit: converged at round 2 — Should-fix (6 confirmed) [converged], 0 Blocking, 5 resolved, 0 regressed, 0 escalations; punch list (4 Should-fix + 2 Nit: restore-older-than-rotation trips clone gate; own-old-incarnation suppression drops unsettled ACK obligations; restore-window same-key authoring [fix-regression]; cold-start overdue hold; memory-clone boot id; root PeerHello lacks boot) applied as spec patches without re-roast
 
 approvals:
 - top-split · auto · ht-5fr.1 PROMOTE, ht-5fr.2 PROMOTE, ht-5fr.3 PROMOTE, ht-5fr.4 PROMOTE, ht-5fr.5 PROMOTE, ht-5fr.6 PROMOTE, ht-5fr.7 LEAF, ht-5fr.8 LEAF, ht-5fr.9 LEAF, ht-5fr.10 LEAF, ht-5fr.11 LEAF, ht-5fr.12 LEAF, ht-5fr.13 LEAF
