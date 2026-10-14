@@ -1845,5 +1845,12 @@ class MainExitCode(TempDir):
         self.assertIn("herdr gone", doc["cleanup"]["problems"][0])
 
 
+class MixedOrderJudged(unittest.TestCase):
+    def test_order_is_judged_only_where_p5_and_p1_stay_silent(self):
+        self.assertTrue(W.mixed_order_judged(0))
+        self.assertFalse(W.mixed_order_judged(-1))  # p5 wakes the recipient before p0 and the ACK exist
+        self.assertFalse(W.mixed_order_judged(3))  # p1 wakes it too
+
+
 if __name__ == "__main__":
     unittest.main()

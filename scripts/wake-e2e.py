@@ -15,7 +15,9 @@ requests are p0, so they wake at every T. A silent item (for example a p1 send a
 arrives on its next turn (a neutral `hello` prompt). ACK requests must come back acknowledged, invitations must be
 accepted, and the first message of a 1:1 pair must be delivered with no `accept` (the pair auto-joins).
 mixed-order/group sends p5, p1, p0 and an ACK request with a deadline to an idle recipient and checks they appear in
-presentation order: the ACK request (deadline) first, then p0, p1, p5.
+presentation order: the ACK request (deadline) first, then p0, p1, p5. The order is judged only at T=0, where the
+p5 and p1 sent first cannot wake the recipient; at T=-1 and T=3 the row checks delivery, markers and the ACK and
+records the order as unjudged.
 The busy-* cases repeat invite/p1/p0/ack while the recipient is mid-turn: a recipient is nudged only when idle,
 so no wake prompt may be typed during or after that turn, and the item must arrive inside the turn instead.
 
@@ -142,6 +144,13 @@ def expect_wake(action, channel, threshold):
     """Idle recipient wakes iff the item's priority <= T (T < 0: always); invitations and ACK requests are p0.
     `channel` is part of the case key only: the wake rule is the same on an ordinary thread and a 1:1 pair."""
     return threshold < 0 or ITEM_PRIORITY[action] <= threshold
+
+
+def mixed_order_judged(threshold):
+    """The mixed-order presentation order is judged only where the first two sends (p5, p1) cannot wake the recipient
+    before the p0 and the ACK request are published: expect_wake false for both, which is T=0. At T=-1 (p5 wakes) and
+    T=3 (p1 wakes) the recipient may already be reading a page without them, so the order row is recorded unjudged."""
+    return threshold >= 0 and min(5, 1) > threshold  # p1 is the lower number: p5 then stays silent too
 
 
 def send_flags(kind, seat, deadline_s=None):
@@ -1186,7 +1195,9 @@ class Recipient:
         screen = self.screen(1000)
         want = expected_order(items)
         shown = screen_order(screen, every)
-        checks["order"] = shown == want
+        judged = mixed_order_judged(self.threshold)
+        checks["order"] = shown == want if judged else "unjudged"
+        checks["order_judged"] = judged
         checks["order_shown"] = shown
         checks["order_expected"] = want
         checks["markers"] = markers_ok(header_priorities(screen), {i["id"]: i["priority"] for i in items})
@@ -1202,8 +1213,8 @@ class Recipient:
             self.wait_idle()
             self.settled()
         expect = True
-        verified = all(v is True or v == "acknowledged" for k, v in checks.items()
-                       if k in ("delivered", "order", "markers", "ack"))
+        verified = all(v is True or v == "acknowledged" or (k == "order" and v == "unjudged")
+                       for k, v in checks.items() if k in ("delivered", "order", "markers", "ack"))
         passed = woke == expect and verified and checks["trailing_wake_s"] is None
         self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
                          "expect_wake": expect, "woke": woke, "t_wake_s": t_wake, "hello_sent": hello,
