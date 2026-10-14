@@ -104,6 +104,134 @@ pub(super) fn continued_ordinary(
         retire: displayed >= sequence && terminal,
     })
 }
+/// The next unread ordinary row for `binding` after `after` and within `high` and the publication
+/// bound: `(recipient ordinal, message id, manifest decision_seq)`.
+pub(super) fn next_unread(
+    db: &Connection,
+    seat: &SeatId,
+    binding: &BindingId,
+    after: i64,
+    high: i64,
+    decision: u64,
+) -> Result<Option<(i64, String, i64)>, ApiError> {
+    use crate::store::read_cursors::{RECEIVABLE_FROM, RECEIVABLE_WHERE, UNREAD_EXTRA};
+    db.query_row(
+        &format!("SELECT pr.ordinal,m.id,sm.decision_seq FROM {RECEIVABLE_FROM} WHERE {RECEIVABLE_WHERE} {UNREAD_EXTRA} AND pr.ordinal>?3 AND pr.ordinal<=?4 AND sm.decision_seq<=?5 ORDER BY pr.ordinal LIMIT 1"),
+        params![seat.as_str(), binding.as_str(), after, high, decision as i64],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .optional()
+    .map_err(store_error)
+}
+pub(super) struct InvitationStep {
+    pub(super) ordinal: i64,
+    pub(super) id: String,
+    pub(super) thread: String,
+    pub(super) topic: String,
+    pub(super) goal: String,
+    pub(super) revision: i64,
+    pub(super) decision_seq: i64,
+    pub(super) pending: bool,
+}
+/// The next invitation of `seat` after `after` within `high` and the publication bound, with its
+/// pending check (not cancelled, rejected or settled).
+pub(super) fn next_invitation(
+    db: &Connection,
+    seat: &SeatId,
+    after: i64,
+    high: i64,
+    decision: u64,
+) -> Result<Option<InvitationStep>, ApiError> {
+    let row:Option<(i64,String,String,String,String,i64,i64)>=db.query_row("SELECT i.ordinal,i.id,i.thread_id,t.topic,t.goal,t.topic_revision,i.created_decision_seq FROM invitations i JOIN threads t ON t.id=i.thread_id WHERE i.seat_id=?1 AND i.ordinal>?2 AND i.ordinal<=?3 AND i.created_decision_seq<=?4 ORDER BY i.ordinal LIMIT 1",params![seat.as_str(),after,high,decision as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
+    let Some((ordinal, id, thread, topic, goal, revision, decision_seq)) = row else {
+        return Ok(None);
+    };
+    let pending:bool=db.query_row("SELECT state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations WHERE invitation_id=?1) AND NOT EXISTS(SELECT 1 FROM invitation_rejections WHERE invitation_id=?1) FROM invitations WHERE id=?1",[&id],|r|r.get(0)).map_err(store_error)?;
+    Ok(Some(InvitationStep {
+        ordinal,
+        id,
+        thread,
+        topic,
+        goal,
+        revision,
+        decision_seq,
+        pending,
+    }))
+}
+/// The inbox item of a pending invitation step; `None` when it is no longer pending.
+fn invitation_item(
+    db: &Connection,
+    seat: &SeatId,
+    step: InvitationStep,
+) -> Result<Option<Item>, ApiError> {
+    if !step.pending {
+        return Ok(None);
+    }
+    let InvitationStep {
+        id,
+        thread,
+        topic,
+        goal,
+        revision,
+        ..
+    } = step;
+    let required_service =
+        crate::store::service_substrate::current_requirement(db, &ThreadId::new(&thread), seat)?
+            .filter(|r| {
+                r.state == crate::protocol::service::RequirementState::Pending
+                    && r.invitation.as_str() == id
+            });
+    let (confirmation, deadline_at) = invitation_confirmation_metadata(db, &id)?;
+    Ok(Some(Item::Invitation {
+        thread: ThreadId::new(&thread),
+        topic_data: topic,
+        goal_data: Some(goal),
+        topic_revision: Some(
+            u64::try_from(revision)
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative topic revision"))?,
+        ),
+        invitation: crate::protocol::ids::InvitationId::new(id),
+        confirmation,
+        deadline_at,
+        required_service,
+    }))
+}
+pub(super) struct ReceiptStep {
+    /// The pending, published, not-also-unread receipt of this step, if any.
+    pub(super) receipt: Option<crate::store::effective::EffectiveReceipt>,
+    pub(super) position: ReceiptScanPosition,
+    /// Candidates examined; 0 means the walk is exhausted.
+    pub(super) visited: usize,
+}
+/// One receipt-walk step from `position`. An obligation that is also unread for `reading` is
+/// listed once, by the unread walk.
+pub(super) fn next_receipt(
+    db: &Connection,
+    seat: &SeatId,
+    reading: Option<&BindingId>,
+    position: ReceiptScanPosition,
+    decision: u64,
+) -> Result<ReceiptStep, ApiError> {
+    let slice = scan_effective_receipts(
+        db,
+        &ReceiptScanScope::Seat(seat.as_str().into()),
+        Some(position),
+        1,
+    )?;
+    let mut pending = slice.items.into_iter().next().filter(|r| {
+        r.state == EffectiveReceiptState::Pending && r.decision_seq.unwrap_or(0) <= decision as i64
+    });
+    if let (Some(receipt), Some(binding)) = (&pending, reading)
+        && unread_ordinal(db, seat, binding, &receipt.message_id, decision)?.is_some()
+    {
+        pending = None;
+    }
+    Ok(ReceiptStep {
+        receipt: pending,
+        position: slice.position,
+        visited: slice.visited as usize,
+    })
+}
 #[allow(clippy::too_many_arguments)]
 pub(super) fn scan(
     db: &Connection,
@@ -120,7 +248,6 @@ pub(super) fn scan(
     let seat = &state.seat.clone();
     match state.source {
         Source::Unread => {
-            use crate::store::read_cursors::{RECEIVABLE_FROM, RECEIVABLE_WHERE, UNREAD_EXTRA};
             let binding = reading.expect("unread walk only on a bound read");
             let position = state.unread.expect("unread walk carries its position");
             let decision = state.publication_decision_high_water;
@@ -180,21 +307,15 @@ pub(super) fn scan(
                 let ack = current_agent && receipt_pending(db, seat, &id, decision)?;
                 return Ok((message(db, &id, false, ack, state)?, 1));
             }
-            let row: Option<(i64, String)> = db
-                    .query_row(
-                        &format!("SELECT pr.ordinal,m.id FROM {RECEIVABLE_FROM} WHERE {RECEIVABLE_WHERE} {UNREAD_EXTRA} AND pr.ordinal>?3 AND pr.ordinal<=?4 AND sm.decision_seq<=?5 ORDER BY pr.ordinal LIMIT 1"),
-                        params![
-                            seat.as_str(),
-                            binding.as_str(),
-                            position.after_ordinal as i64,
-                            position.high_water_ordinal as i64,
-                            decision as i64
-                        ],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )
-                    .optional()
-                    .map_err(store_error)?;
-            let Some((ordinal, id)) = row else {
+            let row = next_unread(
+                db,
+                seat,
+                binding,
+                position.after_ordinal as i64,
+                position.high_water_ordinal as i64,
+                decision,
+            )?;
+            let Some((ordinal, id, _)) = row else {
                 state.unread = Some(InboxBatchV2UnreadPosition {
                     after_ordinal: position.high_water_ordinal,
                     ..position
@@ -324,74 +445,37 @@ pub(super) fn scan(
         }
         Source::Invitations => {
             let a = &state.attention;
-            let row:Option<(i64,String,String,String,String,i64)>=db.query_row("SELECT i.ordinal,i.id,i.thread_id,t.topic,t.goal,t.topic_revision FROM invitations i JOIN threads t ON t.id=i.thread_id WHERE i.seat_id=?1 AND i.ordinal>?2 AND i.ordinal<=?3 AND i.created_decision_seq<=?4 ORDER BY i.ordinal LIMIT 1",params![seat.as_str(),a.invitation_after_ordinal,a.invitation_frontier.unwrap().1,state.publication_decision_high_water as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(store_error)?;
-            let Some((ordinal, id, thread, topic, goal, revision)) = row else {
+            let step = next_invitation(
+                db,
+                seat,
+                a.invitation_after_ordinal,
+                a.invitation_frontier.unwrap().1,
+                state.publication_decision_high_water,
+            )?;
+            let Some(step) = step else {
                 state.attention.invitations_done = true;
                 return Ok((None, 0));
             };
-            state.attention.invitation_after_ordinal = ordinal;
-            state.attention.invitation_after_seq = ordinal;
-            let pending:bool=db.query_row("SELECT state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations WHERE invitation_id=?1) AND NOT EXISTS(SELECT 1 FROM invitation_rejections WHERE invitation_id=?1) FROM invitations WHERE id=?1",[&id],|r|r.get(0)).map_err(store_error)?;
-            let item = if pending {
-                let required_service = crate::store::service_substrate::current_requirement(
-                    db,
-                    &ThreadId::new(&thread),
-                    seat,
-                )?
-                .filter(|r| {
-                    r.state == crate::protocol::service::RequirementState::Pending
-                        && r.invitation.as_str() == id
-                });
-                let (confirmation, deadline_at) = invitation_confirmation_metadata(db, &id)?;
-                Some(Item::Invitation {
-                    thread: ThreadId::new(&thread),
-                    topic_data: topic,
-                    goal_data: Some(goal),
-                    topic_revision: Some(u64::try_from(revision).map_err(|_| {
-                        api_error(ErrorCode::StoreCorrupt, "negative topic revision")
-                    })?),
-                    invitation: crate::protocol::ids::InvitationId::new(id),
-                    confirmation,
-                    deadline_at,
-                    required_service,
-                })
-            } else {
-                None
-            };
-            Ok((item, 1))
+            state.attention.invitation_after_ordinal = step.ordinal;
+            state.attention.invitation_after_seq = step.ordinal;
+            Ok((invitation_item(db, seat, step)?, 1))
         }
         Source::Receipts => {
-            let slice = scan_effective_receipts(
+            let step = next_receipt(
                 db,
-                &ReceiptScanScope::Seat(seat.as_str().into()),
-                Some(batch_receipt_position(&state.attention)),
-                1,
+                seat,
+                reading,
+                batch_receipt_position(&state.attention),
+                state.publication_decision_high_water,
             )?;
-            let mut pending = slice.items.into_iter().next().filter(|r| {
-                r.state == EffectiveReceiptState::Pending
-                    && r.decision_seq.unwrap_or(0) <= state.publication_decision_high_water as i64
-            });
-            // An obligation that is also unread for this binding is listed once, by the
-            // unread walk.
-            if let (Some(receipt), Some(binding)) = (&pending, reading)
-                && unread_ordinal(
-                    db,
-                    seat,
-                    binding,
-                    &receipt.message_id,
-                    state.publication_decision_high_water,
-                )?
-                .is_some()
-            {
-                pending = None;
-            }
-            let item = pending
+            let item = step
+                .receipt
                 .map(|r| message(db, &r.message_id, false, current_agent, state))
                 .transpose()?
                 .flatten();
-            state.attention.receipts_done = slice.visited == 0;
-            batch_set_receipt_position(&mut state.attention, slice.position);
-            Ok((item, slice.visited as usize))
+            state.attention.receipts_done = step.visited == 0;
+            batch_set_receipt_position(&mut state.attention, step.position);
+            Ok((item, step.visited))
         }
         Source::Warnings => {
             let a = &state.attention;

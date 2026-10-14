@@ -1,6 +1,9 @@
 // Separate passive traversal: source positions and completion never enter v1
 // attention. Start with Lazy, then rotate after each inspected candidate.
 mod capture;
+// Wired by ht-yha.5.4 (inbox v2 merge).
+#[cfg_attr(not(test), allow(dead_code))]
+mod deadline_window;
 mod hydrate;
 mod sources;
 
