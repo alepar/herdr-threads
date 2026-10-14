@@ -14,3 +14,4 @@
 - [2026-10-14T11:17:14Z] sweep re-run at e8ecb681: config5 deterministic failure with no src change since dae11184 (env/timing-dependent); doctor_reports and q5 pass 3/3 isolated (flakes). Filed then closed ht-yha.43 (not a sweep-fix regression).
 - [2026-10-14T11:18:29Z] flakiness tab (memory herdr-threads-flakes-to-flakiness-tab) is not running; filed flake beads ht-3wm (q5) and ht-kk8 (doctor_reports) in the tracker instead
 - [2026-10-14T11:33:14Z] phase 7: instruction named dev-herdr-threads as (taQXwBH7X), which is a thread id, not a seat; seat send failed not_found; joined the discoverable thread and posted there (mmRxNj0E3)
+- [2026-10-14T13:55:07Z] unplanned coordinator stop (wf_cf7de11c-e3f) mid-dispatch to rewrite ht-yha.44 after the user rejected its seat-wide display rule; ht-yha.44 partial worktree discarded, .45/.46 worktrees kept for reuse

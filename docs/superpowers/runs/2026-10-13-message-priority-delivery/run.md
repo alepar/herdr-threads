@@ -3,6 +3,7 @@
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
 resumeChange: 2026-10-13 · "design APPROVED (A-E) ... Move to autonomous stage now (both roasts on). Nudge dev-herdr-threads when merge-ready." (relayed by seePN0MKW, mpqluOeQD) · autonomous=f→t after the interactive root design; nested brainstorms and later gates run Mode B
 resumeChange: 2026-10-14 · "sgtm" (fix run for bugs 1-3 before merging; upstream feedback: "message it to the superpowers space we have here. no need to scrub.") · post-hand-back fix pass for report Remaining items 1-3, then re-sweep and update the report
+resumeChange: 2026-10-14 · "convert to d9, simplicity." + "doesnt each session have its own cursor so that other siblings cant affect it?" · ServiceSend converted to D9 (ht-yha.47); ht-yha.44 rewritten to per-session pending tracking (seat-wide display draft withdrawn, its partial worktree discarded after an unplanned coordinator stop)
 phase: fix-loop
 feedback: herdr agent prompt wB:pB (superpowers workspace, Claude pane) with upstream-feedback-draft.md, 2026-10-14
 codeMechanism: Workflow
@@ -23,7 +24,6 @@ graph-pass: depth 8→7 · width 2.4→2.7 · applied 2 · parked 5
 
 parked:
 - super-code-final-review-wf_ecf6a4ce-925.md · escalation · "ht-yha.33 shipped option (c) (old CLI cannot follow a new daemon's next: inbox cursor; recorded in spec §Compatibility and docs/agent-usage.md) — orchestrator decision in the autonomous run, needs the user's ratification or another scheme"
-- final-review (super-code, wf_24ee41b2-d4e) · escalation · "ServiceSend keeps receipts for its whole audience (AckAudience::Everyone), outside D9's 'receipts only for explicit --require-ack'; D9 was decided for agent/human sends — recommended default: keep ServiceSend unchanged as service-owned required delivery and record it as an accepted limit in TRUST-POLICY.md and the spec; user decision needed at hand-back"
 - graph-pass · graph-change · "ht-yha.8 <- ht-yha.4 drop (same-file hydrate.rs, safe no)"
 - graph-pass · graph-change · "ht-yha.6 <- ht-yha.5.2 drop (same-file read_cursors.rs, safe no)"
 - graph-pass · graph-change · "ht-yha.4 <- ht-yha.3 drop (same-file staging.rs + real-send test, safe no; depth 7→6 with a staging.rs seam contract)"
@@ -74,4 +74,6 @@ approvals:
 - regressionPass-round-2: 3 filed · [Should-fix] src/store/lazy_delivery/mod.rs:112; src/store/lazy_delivery/wake.rs:13; src/store/lazy_delivery/mod.rs:109, [Should-fix] src/store/lazy_delivery/mod.rs:110; src/store/lazy_delivery/completion.rs:68, [Should-fix] integrations/skill/SKILL.md:17 · no re-roast (beads ht-yha.38, ht-yha.39; the amended ht-yha.33 rides the same re-entry)
 - baseAbsorbed: 998d7d34 → 6657c2be, 3 conflicted files (AGENTS.md, TRUST-POLICY.md, scripts/wake-e2e.py); seam decision (orchestrator): a threshold-admitted delivery-row wake (reason lazy) counts as seat attention in for_seat_attention like pending_receipt; test one_process_composer_wake_serves_a_threshold_admitted_delivery_row
 - post-hand-back fix pass (user 2026-10-14 'sgtm'): ht-yha.44 stale pending rows (connected-only owing + every display path marks; reconnect gap recorded as accepted limit), ht-yha.45 lazy composer wake served-in-turn check, ht-yha.46 mod stall counts admitted delivery rows
+- approvals · ServiceSend vs D9 · human · convert to D9 (2026-10-14)
+- approvals · delivery view · human · each session keeps its own independent pending view (2026-10-14)
 - root-design · human · D1-D11 and sections A-E approved via seePN0MKW (mwRZ1YxXs, myas79LQ8, mXmhe1P2d, mpqluOeQD)
