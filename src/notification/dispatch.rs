@@ -260,11 +260,21 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         // The bindings the composer wake reaches: one, or every binding of one process.
         let mut composer_bindings: Vec<crate::protocol::ids::BindingId> = Vec::new();
         if cooperative && !reservation.authority.targets().is_empty() {
+            let gated = reservation.authority.targets().len() > 1
+                && !poke_only
+                && observation.ui != HostUiState::Idle;
+            // Only a seat-attention wake can be exempt (one process, below): any other gated
+            // wake is refused as before, with no host read.
+            if gated && !reservation.for_seat_attention() {
+                return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
+            }
             let foreground = match self
                 .host
                 .foreground_pids(&reservation.target, &read_context)
             {
                 Ok(pids) => pids,
+                // A gated wake keeps the gate's own refusal when the read fails.
+                Err(_) if gated => return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe),
                 Err(err) => return refuse_error(err),
             };
             let choice = reservation.authority.composer_choice(&foreground);
@@ -272,13 +282,7 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             // classification here (an ordinary wake never reads the composer, so its
             // observation is `Unknown`); the adapter's final composer read before submission
             // still refuses typed input and a busy agent.
-            let one_process =
-                matches!(choice, ComposerChoice::Process(_)) && reservation.for_seat_attention();
-            if reservation.authority.targets().len() > 1
-                && !poke_only
-                && !one_process
-                && observation.ui != HostUiState::Idle
-            {
+            if gated && !matches!(choice, ComposerChoice::Process(_)) {
                 return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
             }
             match choice {

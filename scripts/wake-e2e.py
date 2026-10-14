@@ -1075,6 +1075,11 @@ class Recipient:
         connected = [b for b in sides if b["liveness"] == "connected"]
         checks = {"bindings_after_side": sides, "connected_same_pid":
                   len(connected) > 1 and len({b["pid"] for b in connected}) == 1}
+        # The setup must have happened: the hookless recipient keeps every side binding connected on its one
+        # pid; a hooked one has them (superseded by its lifecycle-claimed session).
+        setup_ok = (checks["connected_same_pid"] and len(connected) == 1 + SIDE_FORKS if self.plain
+                    else len(sides) >= 1 + SIDE_FORKS)
+        checks["side_setup_ok"] = setup_ok
         gap = SPACING_S - (time.time() - self.last_wake)
         if gap > 0:
             self.run.stopping.wait(gap)
@@ -1093,60 +1098,69 @@ class Recipient:
                 self.prompt(self.follow_up())
             self.wait_idle()
             checks["delivered"] = self.on_screen(ref["message"])
-            passed = woke and checks["delivered"]
+            passed = setup_ok and woke and checks["delivered"]
         else:
             # Busy-input guard: a typed draft is never typed into or submitted; the sender sees the refused wake.
             expect_wake = False
             self.run.herdr("pane", "send-text", self.pane, SIDE_DRAFT)
-            time.sleep(1)
-            argv = ["send", self.group, "--body", tag, "--nudge", "--deadline", str(SIDE_DEADLINE_S)]
-            sent_seq = max([row.get("sequence") or 0 for row in walk(self.coord("read", self.group, "--recent", "1"))]
-                           or [0])
-            mid = (self.coord(*argv).get("result") or {}).get("data")
-            ref["message"] = mid
-            t_wake = self.watch_for_wake(SIDE_DEADLINE_S + 20)
-            woke = t_wake is not None
-            screen = self.run.herdr("pane", "read", self.pane, "--source", "detection", check=False).get("raw", "")
-            composer = [l for l in screen.splitlines() if l.startswith("\u203a ")]
-            checks["composer_at_end"] = composer[-1] if composer else None
-            checks["draft_intact"] = bool(composer) and composer[-1] == "\u203a " + SIDE_DRAFT
-            checks["wake_state"] = self.wake_state()
-            # The sender's view: the overdue warning for this seat after the send, its full event read by `body`.
-            warn = None
-            for _ in range(30):
-                for row in walk(self.coord("read", self.group, "--recent", "20")):
-                    if (row.get("kind") == "warn" and f'"seat":"{self.seat}"' in str(row.get("preview_data"))
-                            and (row.get("sequence") or 0) > sent_seq):
-                        warn = row
-                if warn:
-                    break
-                time.sleep(2)
-            event = None
-            if warn:
-                for row in walk(self.coord("body", warn["message"])):
-                    if "obligation" in row and "seat" in row:
-                        event = row
-                    for key in ("body_data", "event_json", "preview_data"):
-                        value = row.get(key)
-                        if isinstance(value, dict) and "obligation" in value:
-                            event = value
-                        elif isinstance(value, str) and '"obligation"' in value:
-                            with contextlib.suppress(ValueError):
-                                event = json.loads(value)
-            checks["overdue_warning"] = {"message": warn and warn["message"], "event": event}
-            checks["warning_wake"] = (event or {}).get("wake")
-            checks["warning_detail"] = (event or {}).get("detail")
-            self.run.herdr("agent", "send-keys", self.pane, "ctrl+u", check=False)
-            time.sleep(1)
+            try:
+                woke, t_wake, mid = self.draft_phase(checks, ref, tag)
+            finally:  # never leave the draft behind for a later case
+                self.run.herdr("agent", "send-keys", self.pane, "ctrl+u", check=False)
+                time.sleep(1)
             hello = True
             self.prompt(self.follow_up())
             checks["delivered"] = self.on_screen(mid)
-            passed = (not woke and checks["draft_intact"] and checks["delivered"]
+            passed = (setup_ok and not woke and checks["draft_intact"] and checks["delivered"]
                       and checks["warning_wake"] not in (None, "submitted"))
         self.settled()
         self.run.record({"case": case, "harness": self.harness, "wake_on": self.wake_on, "recipient": self.name,
                          "expect_wake": expect_wake, "woke": woke, "t_wake_s": t_wake, "hello_sent": hello,
                          "checks": checks, "ref": ref, "result": "PASS" if passed else "FAIL", "utc": utc()})
+
+    def draft_phase(self, checks, ref, tag):
+        """side-draft after the draft is typed: send, watch past the deadline, read composer and warning."""
+        time.sleep(1)
+        argv = ["send", self.group, "--body", tag, "--nudge", "--deadline", str(SIDE_DEADLINE_S)]
+        sent_seq = max([row.get("sequence") or 0 for row in walk(self.coord("read", self.group, "--recent", "1"))]
+                       or [0])
+        mid = (self.coord(*argv).get("result") or {}).get("data")
+        ref["message"] = mid
+        t_wake = self.watch_for_wake(SIDE_DEADLINE_S + 20)
+        woke = t_wake is not None
+        screen = self.run.herdr("pane", "read", self.pane, "--source", "detection", check=False).get("raw", "")
+        composer = [l for l in screen.splitlines() if l.startswith("\u203a ")]
+        checks["composer_at_end"] = composer[-1] if composer else None
+        checks["draft_intact"] = bool(composer) and composer[-1] == "\u203a " + SIDE_DRAFT
+        checks["wake_state"] = self.wake_state()
+        # The sender's view: the overdue warning for this seat after the send, its full event read by `body`.
+        warn = None
+        for _ in range(30):
+            for row in walk(self.coord("read", self.group, "--recent", "20")):
+                # The group thread is this recipient's own; the seat is confirmed from the full event.
+                if row.get("kind") == "warn" and (row.get("sequence") or 0) > sent_seq:
+                    warn = row
+            if warn:
+                break
+            time.sleep(2)
+        event = None
+        if warn:
+            for row in walk(self.coord("body", warn["message"])):
+                if "obligation" in row and "seat" in row:
+                    event = row
+                for key in ("body_data", "event_json", "preview_data"):
+                    value = row.get(key)
+                    if isinstance(value, dict) and "obligation" in value:
+                        event = value
+                    elif isinstance(value, str) and '"obligation"' in value:
+                        with contextlib.suppress(ValueError):
+                            event = json.loads(value)
+        if event and event.get("seat") != self.seat:
+            event = None
+        checks["overdue_warning"] = {"message": warn and warn["message"], "event": event}
+        checks["warning_wake"] = (event or {}).get("wake")
+        checks["warning_detail"] = (event or {}).get("detail")
+        return woke, t_wake, mid
 
     # ---------- one case ----------
     def case(self, case):
