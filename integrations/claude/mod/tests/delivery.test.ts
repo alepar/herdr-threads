@@ -2490,15 +2490,16 @@ test('passive path: a mixed batch of wakes:false rows is framed in the same orde
   expect(headerIds(h.appends[h.appends.length - 1])).toEqual(SORTED)
 })
 
-test('a message with no priority sorts as p1, an invitation as p0, ties by arrival', async () => {
+test('a priority-less message sorts as p0, a lazy row as p1, an invitation as p0, ties by arrival', async () => {
   const h = await harness({ state: busyState() }).boot()
   h.line(msg('plain1'))
+  h.line({ schema: 1, id: 'lz1', kind: 'lazy', thread: 'T1', thread_name: 'plans', sender: 'S1', body: 'x', wakes: true })
   h.line(msg('p2', { priority: 2 }))
   h.line({ schema: 1, id: 'invitation:i1', kind: 'invitation', thread: 'T1', thread_name: 'plans', body: 'join', wakes: true })
   h.line(msg('plain2'))
   const r = await h.core.onToolCall({ tool: 'Bash' }, answered)
   const order = Array.from(r.context[0].matchAll(/^\[herdr-threads\] (?:message|invitation) (\S+) /gm), (m: Any) => m[1])
-  expect(order).toEqual(['invitation:i1', 'plain1', 'plain2', 'p2'])
+  expect(order).toEqual(['plain1', 'invitation:i1', 'plain2', 'lz1', 'p2'])
 })
 
 test('passive and wake split follows wakes: a p1 wakes:false row is passive, a p1 wakes:true row wakes', async () => {

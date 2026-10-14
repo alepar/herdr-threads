@@ -69,26 +69,24 @@ impl PresentationRenderProfile {
     }
 }
 
-/// Put a page's messages and invitations in one `DeliveryOrderKey` order (stable, so arrival breaks
+/// Put a page's messages and invitations in one [`batch_key`](crate::delivery::assemble::batch_key) order (stable, so arrival breaks
 /// ties). They fill only the slots messages and invitations already hold; notices and controls keep
 /// their positions.
 pub fn order_deliveries(items: &mut [Item]) {
-    use crate::protocol::priority::{DeliveryOrderKey, DeliveryPriority, SourceRank};
+    use crate::delivery::assemble::{BatchKind, batch_key};
     let key = |item: &Item| match item {
-        Item::Message { content, .. } => Some(DeliveryOrderKey {
-            priority: content.priority.unwrap_or(DeliveryPriority::DEFAULT),
-            deadline: content.deadline_at,
-            decision_seq: 0,
-            rank: SourceRank::DeliveryRow,
-            ordinal: 0,
-        }),
-        Item::Invitation { content, .. } => Some(DeliveryOrderKey {
-            priority: DeliveryPriority::p0(),
-            deadline: content.deadline_at,
-            decision_seq: 0,
-            rank: SourceRank::Invitation,
-            ordinal: 0,
-        }),
+        Item::Message { lazy, content, .. } => Some(batch_key(
+            if *lazy {
+                BatchKind::Lazy
+            } else {
+                BatchKind::Message
+            },
+            content.priority,
+            content.deadline_at,
+        )),
+        Item::Invitation { content, .. } => {
+            Some(batch_key(BatchKind::Invitation, None, content.deadline_at))
+        }
         _ => None,
     };
     let slots: Vec<usize> = (0..items.len())

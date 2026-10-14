@@ -381,13 +381,42 @@ struct Chunk {
     body_len: u64,
 }
 
-/// Sorts one emitted batch (several pages or arrivals combined) by the delivery order key.
-///
-/// Watch items carry no `decision_seq` or ordinal and the inbox v2 merge already ordered each page
-/// by the full key, so callers build the key as `DeliveryOrderKey { priority, deadline,
-/// decision_seq: 0, rank: SourceRank::DeliveryRow, ordinal: 0 }`: only priority and deadline
-/// differ. The sort is stable, so arrival (the merge order) breaks every remaining tie; ranking
-/// by `SourceRank` here would contradict the merge's `decision_seq`-before-rank order.
+/// What a batch entry is, for the priority an older daemon leaves out (spec D10, rule 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchKind {
+    /// A `message` line: an ordinary or ACK message (p0 when no priority is carried).
+    Message,
+    /// A `lazy` line: a delivery row (p1 when no priority is carried).
+    Lazy,
+    /// An invitation: always p0.
+    Invitation,
+}
+
+/// The one batch order key: priority (the carried one, else the legacy fallback of `kind`), then
+/// deadline with none last. Rank and ordinal are constant, so [`batch_order`]'s stable sort lets
+/// arrival (the merge order) break every remaining tie.
+pub fn batch_key(
+    kind: BatchKind,
+    priority: Option<crate::protocol::priority::DeliveryPriority>,
+    deadline: Option<crate::protocol::time::UtcMillis>,
+) -> crate::protocol::priority::DeliveryOrderKey {
+    use crate::protocol::priority::{DeliveryOrderKey, DeliveryPriority, SourceRank};
+    let priority = match kind {
+        BatchKind::Invitation => DeliveryPriority::p0(),
+        BatchKind::Lazy => priority.unwrap_or(DeliveryPriority::DEFAULT),
+        BatchKind::Message => priority.unwrap_or_else(DeliveryPriority::p0),
+    };
+    DeliveryOrderKey {
+        priority,
+        deadline,
+        decision_seq: 0,
+        rank: SourceRank::DeliveryRow,
+        ordinal: 0,
+    }
+}
+
+/// Sorts one batch by [`batch_key`]: priority asc, then deadline asc with none last; a stable sort,
+/// so arrival breaks every tie.
 pub fn batch_order<T>(
     items: &mut [T],
     key: impl Fn(&T) -> crate::protocol::priority::DeliveryOrderKey,
@@ -395,31 +424,23 @@ pub fn batch_order<T>(
     items.sort_by_key(key);
 }
 
-/// The batch key of one assembled message item (see [`batch_order`]).
+/// The batch key of one assembled message item (see [`batch_key`]).
 pub fn item_order_key(item: &DeliveryItem) -> crate::protocol::priority::DeliveryOrderKey {
-    use crate::protocol::priority::{DeliveryOrderKey, DeliveryPriority, SourceRank};
-    DeliveryOrderKey {
-        priority: item.message.priority.unwrap_or(DeliveryPriority::DEFAULT),
-        deadline: item.message.deadline_at,
-        decision_seq: 0,
-        rank: SourceRank::DeliveryRow,
-        ordinal: 0,
-    }
+    batch_key(
+        match item.kind {
+            DeliveryKind::Lazy => BatchKind::Lazy,
+            DeliveryKind::Message => BatchKind::Message,
+        },
+        item.message.priority,
+        item.message.deadline_at,
+    )
 }
 
-/// The batch key of one assembled invitation (see [`batch_order`]): p0 with its own deadline, ranked
-/// before a message of the same priority and deadline, as the inbox merge ranks it.
+/// The batch key of one assembled invitation (see [`batch_key`]).
 pub fn invitation_order_key(
     invitation: &DeliveryInvitation,
 ) -> crate::protocol::priority::DeliveryOrderKey {
-    use crate::protocol::priority::{DeliveryOrderKey, DeliveryPriority, SourceRank};
-    DeliveryOrderKey {
-        priority: DeliveryPriority::p0(),
-        deadline: invitation.content.deadline_at,
-        decision_seq: 0,
-        rank: SourceRank::Invitation,
-        ordinal: 0,
-    }
+    batch_key(BatchKind::Invitation, None, invitation.content.deadline_at)
 }
 
 /// A user-controlled name for one header line (spec D4): every control

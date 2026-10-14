@@ -3,7 +3,7 @@
 use super::*;
 use crate::delivery::page::{DrainEvent, PageError, PageSource, Stop, drain_pages};
 use crate::protocol::{
-    ids::{MessageId, SeatId, ThreadId},
+    ids::{InvitationId, MessageId, SeatId, ThreadId},
     pagination::{Consistency, Page, StopReason},
     priority::DeliveryPriority,
     time::UtcMillis,
@@ -28,6 +28,47 @@ fn msg(id: &str, priority: u8, deadline: Option<i64>) -> InboxBatchV2Item {
         body_len: 1,
         ack_candidate: None,
         deadline_at: deadline.map(UtcMillis),
+    }
+}
+
+fn lazy_msg(id: &str, priority: Option<u8>) -> InboxBatchV2Item {
+    InboxBatchV2Item::LazyMessage {
+        priority: priority.map(|p| DeliveryPriority::new(p).unwrap()),
+        thread: ThreadId::new("t1"),
+        topic_data: "topic".into(),
+        message: MessageId::new(id),
+        sequence: 1,
+        sender: None,
+        author_role: None,
+        relays_user: false,
+        user_intent: None,
+        author_role_backfilled: false,
+        body: "b".into(),
+        body_start: 0,
+        body_end: 1,
+        body_len: 1,
+        wakes: false,
+    }
+}
+
+fn plain(id: &str) -> InboxBatchV2Item {
+    let mut item = msg(id, 1, None);
+    if let InboxBatchV2Item::Message { priority, .. } = &mut item {
+        *priority = None;
+    }
+    item
+}
+
+fn invite(id: &str) -> InboxBatchV2Item {
+    InboxBatchV2Item::Invitation {
+        thread: ThreadId::new("t1"),
+        topic_data: "topic".into(),
+        goal_data: Some("goal".into()),
+        topic_revision: None,
+        invitation: InvitationId::new(id),
+        confirmation: None,
+        deadline_at: None,
+        required_service: None,
     }
 }
 
@@ -62,8 +103,10 @@ fn drain(assembler: &mut Assembler, pages: Vec<Vec<InboxBatchV2Item>>) -> Vec<St
     );
     let mut ids = Vec::new();
     drain_pages::<()>(&mut source, assembler, 1, 8, |event| {
-        if let DrainEvent::Item(item) = event {
-            ids.push(item.id.as_str().to_owned());
+        match event {
+            DrainEvent::Item(item) => ids.push(item.id.as_str().to_owned()),
+            DrainEvent::Invitation(inv) => ids.push(format!("invitation:{}", inv.id.as_str())),
+            _ => {}
         }
         Ok(Stop::Continue)
     })
@@ -124,14 +167,93 @@ fn separate_drains_stay_in_arrival_order() {
 }
 
 #[test]
-fn absent_priority_sorts_as_default() {
-    let mut none = msg("none", 1, None);
-    if let InboxBatchV2Item::Message { priority, .. } = &mut none {
-        *priority = None;
-    }
-    let items = vec![msg("p2", 2, None), none, msg("p0", 0, None)];
+fn absent_priority_follows_the_legacy_kind() {
+    let items = vec![
+        msg("p2", 2, None),
+        lazy_msg("lazy", None),
+        plain("plain"),
+        msg("p0", 0, None),
+    ];
     assert_eq!(
         drain(&mut Assembler::new(None), vec![items]),
-        ["p0", "none", "p2"]
+        ["plain", "p0", "lazy", "p2"]
     );
+}
+
+#[test]
+fn an_invitation_ties_with_a_message_by_arrival() {
+    let forward = vec![msg("m", 0, None), invite("i1")];
+    assert_eq!(
+        drain(&mut Assembler::new(None), vec![forward]),
+        ["m", "invitation:i1"]
+    );
+    let reverse = vec![invite("i2"), msg("m2", 0, None)];
+    assert_eq!(
+        drain(&mut Assembler::new(None), vec![reverse]),
+        ["invitation:i2", "m2"]
+    );
+}
+
+#[test]
+fn order_deliveries_uses_the_same_key() {
+    use crate::protocol::{
+        delivery::PresentationItemV2 as Item,
+        watch::{WatchInvitation, WatchMessage},
+    };
+    let content = |priority: Option<u8>| WatchMessage {
+        thread: ThreadId::new("t1"),
+        thread_name: None,
+        sender: None,
+        sender_name: None,
+        author_role: None,
+        relays_user: false,
+        user_intent: None,
+        body: "b".into(),
+        body_len: 1,
+        truncated: false,
+        ack_required: false,
+        wakes: false,
+        priority: priority.map(|p| DeliveryPriority::new(p).unwrap()),
+        deadline_at: None,
+    };
+    let message = |id: &str, lazy: bool, priority: Option<u8>| Item::Message {
+        id: MessageId::new(id),
+        lazy,
+        content: content(priority),
+    };
+    let mut items = vec![
+        message("lazy", true, None),
+        Item::Notice {
+            warning: MessageId::new("w"),
+            thread: ThreadId::new("t1"),
+            body: "n".into(),
+        },
+        message("plain", false, None),
+        Item::Invitation {
+            id: InvitationId::new("inv"),
+            content: WatchInvitation {
+                command_context_epoch: None,
+                topic_revision: None,
+                thread: ThreadId::new("t1"),
+                thread_name: None,
+                body: "join".into(),
+                truncated: false,
+                wakes: true,
+                deadline_at: None,
+            },
+        },
+        message("p2", false, Some(2)),
+    ];
+    crate::delivery::presentation::order_deliveries(&mut items);
+    let names: Vec<String> = items
+        .iter()
+        .map(|item| match item {
+            Item::Message { id, .. } => id.as_str().to_owned(),
+            Item::Invitation { id, .. } => format!("invitation:{}", id.as_str()),
+            Item::Notice { .. } => "notice".to_owned(),
+            _ => "other".to_owned(),
+        })
+        .collect();
+    // plain (p0) and the invitation (p0) tie by arrival; the notice keeps slot 1.
+    assert_eq!(names, ["plain", "notice", "invitation:inv", "lazy", "p2"]);
 }
