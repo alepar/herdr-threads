@@ -587,6 +587,68 @@ Suggested task cut (files):
 
 Order: 1 → 2 → 3 → 4 → (5, 6) → 7 → 8 → 9 → (10, 11, 12) → 13.
 
+## Key abstractions
+
+**MaterializeInput** — new struct (`src/store/materialize.rs`), the one seam between "who applied this" and "what rows it writes": every store materializer takes it, whether a `FactKind` handler or a local-only writer called it.
+- Owns: the apply instant, `decision_seq`, origin node and ms, `local_origin`, provenance and the suppression query (§2); `materialize::local_only`, the only other constructor (fresh `decision_seq`, self origin, never suppresses).
+- Hides: whether the caller is ApplyEngine or a managed-thread writer, so each materializer exists once.
+- Must not: allocate positions itself beyond `local_only`'s one `next_decision_seq`, or carry kind data (the payload stays a separate argument).
+- Relationships: built from `ApplyContext` by the handlers and by `local_only`; consumed by the materializers, which stay `pub(crate)` in their table-owning store files (`seats`, `control`, `messages`, `receipts`), so `src/sync` holds no SQL and `src/store` never reads `ApplyContext`.
+- Lifecycle: a borrowed value for one apply or one local-only write.
+
+**FactRoute** — new closed enum (`src/store/materialize.rs`, `Journal` / `LocalOnly`) plus one generic emit, the one place a command turns a decided payload into rows.
+- Owns: picking the route once per command from `threads.journaled`; for `Journal`, publishing every local seat the payload references (`seats::ensure_published`, §4) and then `journal::author` / `author_above`; for `LocalOnly`, refusing any remote seat with `Unsupported` "service threads are node-local" (§2) and calling the kind's materializer with `local_only`.
+- Hides: the managed-thread exception, so no converted command branches on `journaled`.
+- Must not: skip the journal for a journaled thread, publish seats on the local-only route (§2: managed membership never publishes), or decide anything the command decides (validation, IDs, audience).
+- Relationships: commands call it in their fixed per-command order (§2); it depends on Journal and on each kind's materializer entry, which `FactKind` handlers also use.
+- Errors: authoring errors pass through unchanged (including ht-5fr.3's `parked_dep` `Conflict`); the remote-seat refusal is a distinct `Unsupported`.
+
+**Attribution** — new module plus struct (`src/store/attribution.rs`), the only owner of `fact_attribution_staging` and of the local-binding columns' values on replicated rows.
+- Owns: `stage` by the command and `take` by the materializer under the local staging keys (§3); the fallback observation (`replicated_from:<uuid>`, or `local_journal` for an own-old-incarnation entry with nothing staged).
+- Hides: that attribution never crosses the wire, and the provenance strings TRUST-POLICY defines.
+- Must not: be keyed by an `EntityKey`, or survive its transaction (a staged row left at commit is a bug, caught by WriteGuard's suites).
+- Relationships: per spec §2 `MaterializeInput.provenance` is a string rather than ApplyContext's closed `Provenance`; Attribution is its only reader.
+- Lifecycle: staged and taken within one writer transaction.
+
+**Fact payloads (`sync::facts::payload`)** — new module, the shared payload value types and the `EntityKey` spellings for the v1 kinds.
+- Owns: `SeatKind`, `RecipientSpec`, `ReceiptObligation`, `SettleHow`, `AnswerOutcome`, `RegisterField`, `SettleBatch` (closed enums or plain structs, snake_case, `serde(default)`-tolerant); the key builders (`seat_key` … `answer_key`); each payload's list of referenced seats, which FactRoute publishes.
+- Hides: the composite key spellings (`m…/s…`, `i…/answer`), so ApplyEngine and the suppression query treat them as opaque.
+- Must not: carry local positions (`decision_seq`, sequence, episode, revision, `host_id`) or attribution.
+- Relationships: used by the kind modules, by command authoring and by the materializers; depends only on `EntityKey` and the ID types.
+
+**WriteGuard** — new test-support module (`src/test_support/write_guard.rs`), a SQLite authorizer that enforces the write-path closure (Testing).
+- Owns: the replicated-table list and the rule "writes only inside an apply savepoint or a `local_only` scope".
+- Must not: exist outside `test-support` builds or change behaviour when disarmed.
+- Relationships: armed around converted commands in the existing store suites; the oracle projection (ht-5fr.3) checks the same table set from the other side.
+
+**FactKind / FactRegistry** — extended: eleven v1 kinds in six entity-grouped modules under `src/sync/facts/`, each `MAJOR = 1`, one `.with::<K>()` each in `builtins()`. Every handler is the same shape (decode, `MaterializeInput` from `ApplyContext`, its one materializer, `FactError::from_api`), and the materializer entry is the one FactRoute's local-only path calls.
+
+**DeliveryTail** — extended (§10): `attention` is the single `wake_work` writer and the one locality guard (a no-op for remote seats); `message` writes the `send_attention` job on every node and suppressed recipients ride `send_manifests.suppressed_seats`; `invitation` replaces `control.rs`'s inline upserts; `materialization::bump` becomes `attention`. Per spec §10, the job's receipt projection stays shared by local and replicated sends, so the root's "DeliveryTail does nothing for a remote recipient" means no attention, not no job.
+
+**seats** — extended: `published` and `ensure_published` (publish on first reference, kind from the open binding), `materialize_seat_created` / `_retired` with the own-seat restore branch, and remote eligibility in `eligible_delivery_recipient`; callers still test locality only through `LOCAL_SEAT` / `is_local_seat`.
+
+**Store materializers (`control`, `messages`, `receipts`)** — extended: one `materialize_*` per kind (§1), each idempotent by its rule (§3); `settle_superseded_invitations` is the one `already_joined` rule, run by both `invitation.created` and `membership.joined`; `memberships.home_transition` is the membership idempotence counter; `insert_publication` takes `MaterializeInput` and a payload-built `PublicationAuthor`, after either adopting the sealed local preparation or synthesizing a `replicated` one (a fixed two-case branch on `local_origin`, per root §5/§7); `settle_pending` keeps its decision and the batch event moves to `materialize_settlement` keyed by `settle_batch`.
+
+**Deadline lane / `record_overdue_if_pending`** — extended: the guard resolves the obligation's `origin_node` and writes nothing for another node's obligation; the sparse-due triggers, invitation due scan and extension-lapse scan are scoped to `origin_node = self`; the retirement job also serves `retirements.origin = 'replicated'`.
+
+**Node-local workers and reads** — extended: wake, liveness, observation, archival and pane listings filter `LOCAL_SEAT`; archival defers threads with a live remote member and authors `thread.register{archived}` through `author_above`.
+
+Variation: fact kinds are the open set: one `FactKind` type in its entity module, one registry entry, one materializer in the table-owning store file. The route (journal or local-only) is a fixed two-case enum chosen once from `threads.journaled`. Payload enums (`SeatKind`, `SettleHow`, `AnswerOutcome`, `RegisterField`), preparation origin and retirement origin are closed sets handled with `match` or a CHECK. Who applies a fact (ApplyEngine or the local-only path) varies only as data in `MaterializeInput`, so there is no trait for it. Per spec §2, local attribution travels through a staged row rather than an `ApplyContext` extension, so it is a store module and not part of the handler surface.
+
+Walk-through: an agent on A sends to B's seat in a journaled thread. `publish_send` keeps its revision checks (timeline only when warnings exist, §16), reads the sealed preparation, builds the sorted `RecipientSpec` list with the remote seat as `ack` (expectation from `remote_kind`), and stages `send:<m>` Attribution. `FactRoute::Journal` publishes the author (its first replicated reference) through `seat.created`, then authors `message.sent`. ApplyEngine runs the `MessageSent` handler, which builds `MaterializeInput` and calls `messages::materialize_message`: the local branch adopts the staged rows (audience equal), `insert_publication` takes the attribution and writes the message with `origin_node = A`, and `DeliveryTail::message` writes the `send_attention` job. The job projects B's receipt row, and `attention` skips the remote seat. On B the same handler takes the synthesized branch, Attribution falls back to `replicated_from:A`, the suppression query is false, and the job's `attention` writes `wake_work` for the local seat. A's sparse-due trigger holds the receipt and B's does not, so only A can warn. Likely future change: a `seat.renamed` kind filling the reserved `display_name`. That is one `SeatRenamed` type in `src/sync/facts/seat.rs`, one `.with::<SeatRenamed>()`, and one `seats::materialize_seat_renamed`; its payload lists the seat, so FactRoute publishes it, and MaterializeInput, Attribution, DeliveryTail and the commands that do not rename are untouched.
+
+Digest:
+- MaterializeInput: owns the per-apply origin, position, provenance and suppression handed to materializers, plus the `local_only` constructor; new apply-time inputs are fields here;
+  materializers never read `ApplyContext` and handlers never write tables.
+- FactRoute: owns the journal-or-local-only choice, seat publication before authoring and the managed-thread remote-seat refusal; a new kind needs only its referenced-seat list;
+  commands never branch on `threads.journaled` or call `ensure_published` themselves.
+- Attribution: owns `fact_attribution_staging`, the staging keys and the fallback provenance observation; new attributed kinds add a staging key here;
+  materializers never read bindings for attribution and payloads never carry it.
+- Fact payloads (`sync::facts::payload`): own the shared payload value types and the v1 `EntityKey` builders; new shared payload types and key spellings go here;
+  callers never format `creates`/`needs` keys inline or put local positions in a payload.
+- WriteGuard: owns the replicated-table write check for tests; a new replicated table is added to its list and the oracle projection;
+  converted commands never write a replicated table outside apply or `local_only`.
+
 ## Post-Implementation Notes
 
 > *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
