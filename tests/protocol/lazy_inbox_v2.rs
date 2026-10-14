@@ -552,6 +552,37 @@ fn cursor_v2_rejects_a_format_1_token_with_the_older_daemon_detail() {
     assert_eq!(State::decode(&unknown), Err("unknown v2 cursor version"));
 }
 
+/// The pre-upgrade (base 3a1203e0) `decode_parts` rules, mirrored: `ib2:` prefix, base64url,
+/// more than a tag of bytes, then the first payload byte must be 1.
+fn old_v1_decode_rules(encoded: &str) -> Result<u8, &'static str> {
+    let raw = encoded.strip_prefix("ib2:").ok_or("not a v2 cursor")?;
+    let bytes = b64_decode(raw);
+    if bytes.len() <= herdr_threads::protocol::pagination::CURSOR_TAG_BYTES {
+        return Err("truncated v2 cursor");
+    }
+    match bytes[0] {
+        1 => Ok(1),
+        _ => Err("unknown v2 cursor version"),
+    }
+}
+
+#[test]
+fn old_cli_rejects_a_new_daemon_format_2_cursor_cleanly() {
+    // Accepted limit (spec Compatibility, old client / new daemon): an old CLI cannot follow a
+    // format-2 `next:` token; it fails with its own error and a plain `inbox` rerun recovers.
+    let token = base_v2().encode("instance").unwrap();
+    assert_eq!(payload_of(&token)[0], 2);
+    assert_eq!(
+        old_v1_decode_rules(&token),
+        Err("unknown v2 cursor version")
+    );
+    // The new client is symmetric: a format-1 token is a clean stale-cursor error, not a page.
+    let v1 = retag(&[1, 0, 1, 1, b's', 0, 0, 0, 0], "instance", "s");
+    assert_eq!(old_v1_decode_rules(&v1), Ok(1));
+    assert_eq!(State::decode(&v1), Err(CURSOR_FROM_OLDER_DAEMON));
+    assert_eq!(State::validate_decodable(&v1), Ok(()));
+}
+
 #[test]
 fn cursor_v2_binding_mismatch_is_unchanged() {
     let s = base_v2();

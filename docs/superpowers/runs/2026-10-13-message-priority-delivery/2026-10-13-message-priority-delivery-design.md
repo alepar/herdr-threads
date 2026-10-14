@@ -148,6 +148,7 @@ in arrival order.
   `wakes`-driven promotion follows the threshold. The new client frames from variant + priority (D8). An old
   client's `WakeOnQuery` gets `all` when T < 0, else `nudge`. An old client's lazy `Invite` is recorded as a
   confirming invitation; an old client's direct send creates an auto-joined pair (its creation policy is ignored).
+- **Old client, new daemon, `next:` inbox continuation (accepted limit)**: an old CLI cannot follow a new daemon's `next:` inbox continuation (format-2 cursor); it shows its own `unknown v2 cursor version` error and a plain `inbox` rerun recovers. First pages stay old-readable; CLI and daemon ship as one binary, so this exists only in an upgrade window.
 - **New client, old daemon, 1:1 pairs**: without `direct.auto_join_v1` the client keeps sending the legacy pair
   creation policy, so the old daemon's invitation/accept path works unchanged.
 - **Overdue warnings** come only from receipts, which exist only for explicit ACK recipients (D9), so a non-ACK
