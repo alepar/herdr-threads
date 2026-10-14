@@ -4,8 +4,11 @@
 
 use crate::ports::LocalClient;
 use crate::protocol::{
-    capabilities::SEND_PRIORITY_V1, commands::DeliveryMode, priority::DeliveryPriority,
-    results::ApiError, time::CallBudget,
+    capabilities::SEND_PRIORITY_V1,
+    commands::{Command, DeliveryMode},
+    priority::DeliveryPriority,
+    results::{ApiError, CommandResult, ErrorCode},
+    time::CallBudget,
 };
 
 /// The CLI's send-priority flags, before any body is read.
@@ -81,9 +84,25 @@ pub(crate) fn shape(priority: DeliveryPriority, priority_v1: bool) -> SendShape 
     }
 }
 
-/// Whether the daemon advertises `send.priority_v1`.
-pub(crate) fn supports<C: LocalClient + ?Sized>(client: &C, budget: &CallBudget) -> bool {
-    client.supports_capability(SEND_PRIORITY_V1, budget)
+/// Whether the daemon advertises `send.priority_v1`. `Ok(false)` only when the daemon answered and
+/// lacks it; a failed probe (busy, timeout, transport loss) is an `Err`, never a silent downgrade
+/// of the send to the legacy shape. `supports_capability` reads a failed call as "no capabilities"
+/// (and caches that), so a miss there is confirmed with one fresh capabilities call.
+pub(crate) fn supports<C: LocalClient + ?Sized>(
+    client: &C,
+    budget: &CallBudget,
+) -> Result<bool, ApiError> {
+    if client.supports_capability(SEND_PRIORITY_V1, budget) {
+        return Ok(true);
+    }
+    match client.call(Command::Capabilities, budget) {
+        Ok(CommandResult::Capabilities(list)) => {
+            Ok(list.capabilities.iter().any(|c| c == SEND_PRIORITY_V1))
+        }
+        Ok(_) => Ok(false),
+        Err(e) if matches!(e.code, ErrorCode::Unsupported | ErrorCode::InvalidRequest) => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]

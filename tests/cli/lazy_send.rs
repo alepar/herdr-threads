@@ -126,7 +126,7 @@ impl LocalClient for Client {
     fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
         self.calls.lock().unwrap().push(command.clone());
         match command {
-            Command::Capabilities => match self.capability {
+            Command::Capabilities => match self.capability.clone() {
                 Ok(supported) => Ok(CommandResult::Capabilities(CapabilityList {
                     capabilities: if supported {
                         let mut names = vec!["send.lazy_v1".into()];
@@ -140,7 +140,7 @@ impl LocalClient for Client {
                 })),
                 Err(ErrorCode::Unsupported) => Err(ApiError::unsupported("old daemon")),
                 Err(ErrorCode::InvalidRequest) => Err(ApiError::invalid_request("old daemon")),
-                _ => panic!("unexpected fixture capability"),
+                Err(code) => Err(ApiError::new(code, "probe failed")),
             },
             Command::SendMessage(_) => Ok(CommandResult::MessageSent(MessageId::new("published"))),
             _ => panic!("unexpected command: {command:?}"),
@@ -243,7 +243,10 @@ fn lazy_send_unsupported_daemon_records_no_intent() {
             };
             assert_eq!(error.code, ErrorCode::Unsupported);
             assert!(error.detail.contains("send.lazy_v1") && error.detail.contains("upgrade"));
-            assert_eq!(*client.calls.lock().unwrap(), vec![Command::Capabilities]);
+            assert_eq!(
+                *client.calls.lock().unwrap(),
+                vec![Command::Capabilities, Command::Capabilities]
+            );
             assert!(
                 f.journal
                     .page(&Default::default())
@@ -312,7 +315,11 @@ fn ordinary_send_omits_mode_and_preserves_digest() {
     .unwrap();
     assert!(matches!(
         client.calls.lock().unwrap().as_slice(),
-        [Command::Capabilities, Command::SendMessage(_)]
+        [
+            Command::Capabilities,
+            Command::Capabilities,
+            Command::SendMessage(_)
+        ]
     ));
 }
 #[test]
@@ -517,7 +524,10 @@ fn ordinary_send_refuses_unsupported_daemon_before_intent() {
         };
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(error.detail.contains("messages.send_time_receipts_v1"));
-        assert_eq!(*client.calls.lock().unwrap(), vec![Command::Capabilities]);
+        assert_eq!(
+            *client.calls.lock().unwrap(),
+            vec![Command::Capabilities, Command::Capabilities]
+        );
         assert!(
             f.journal
                 .page(&Default::default())
@@ -584,7 +594,7 @@ fn lazy_send_does_not_require_send_time_receipts_capability() {
     )
     .unwrap();
     assert!(
-        matches!(client.calls.lock().unwrap().as_slice(),[Command::Capabilities,Command::SendMessage(send)] if send.delivery_mode==DeliveryMode::Lazy)
+        matches!(client.calls.lock().unwrap().as_slice(),[Command::Capabilities,Command::Capabilities,Command::SendMessage(send)] if send.delivery_mode==DeliveryMode::Lazy)
     );
 }
 
@@ -726,4 +736,34 @@ fn pre_upgrade_lazy_intent_retries_in_its_recorded_shape_on_a_priority_daemon() 
     assert_eq!(sends.len(), 1);
     assert_eq!(sends[0].delivery_mode, DeliveryMode::Lazy);
     assert_eq!(sends[0].priority, None);
+}
+
+#[test]
+fn a_failed_capability_probe_refuses_the_send_instead_of_downgrading_it() {
+    for flags in [vec!["-p", "5"], vec![], vec!["--nudge"]] {
+        let f = Fixture::new();
+        let client = Client::new(Err(ErrorCode::ServiceBusy));
+        let mut argv = vec!["ht", "send", "t1", "--body", "announcement"];
+        argv.extend(flags);
+        let Err(RunError::Api(error)) = f.run(&argv, &client, &mut Vec::new()) else {
+            panic!("a failed probe must refuse the send")
+        };
+        assert_eq!(error.code, ErrorCode::ServiceBusy);
+        assert_eq!(error.detail, "probe failed");
+        assert!(
+            !client
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| matches!(c, Command::SendMessage(_)))
+        );
+        assert!(
+            f.journal
+                .page(&Default::default())
+                .unwrap()
+                .items
+                .is_empty()
+        );
+    }
 }

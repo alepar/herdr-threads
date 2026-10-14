@@ -284,7 +284,7 @@ pub(crate) fn start<C: LocalClient + ?Sized, W: Write>(
     writer: &mut W,
 ) -> Result<(), RunError> {
     let mut request = request;
-    let priority_v1 = super::send_priority::supports(client, &super::cooperative_budget(clock));
+    let priority_v1 = super::send_priority::supports(client, &super::cooperative_budget(clock))?;
     let lost = request.reshape(priority_v1);
     // The pair creation policy stays the legacy invitation policy: a daemon with
     // `direct.auto_join_v1` ignores it and auto-joins, an older one keeps its invitation path.

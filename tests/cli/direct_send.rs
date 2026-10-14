@@ -282,10 +282,18 @@ fn modern_ordinary_direct_send_requires_receipt_capability_before_any_effect() {
         );
         assert_eq!(effects.map(|table| f.count(table)), before);
         assert!(
+            // The send.priority_v1 miss is confirmed by one fresh probe (a failed probe must not
+            // read as an old daemon), then the receipt-capability refusal: capability reads only.
             matches!(
                 f.client.calls.lock().unwrap().as_slice(),
-                [Command::Capabilities]
-            ),
+                [Command::Capabilities, Command::Capabilities, ..]
+            ) && f
+                .client
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|c| matches!(c, Command::Capabilities)),
             "refusal must precede journal, inspection, Ensure and Send"
         );
     }
