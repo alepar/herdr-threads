@@ -432,6 +432,73 @@ Suggested task cut (files touched):
 
 Order: 1 → 2 → (3, 4) → 5 → 6 → 7 → 8 → 9.
 
+## Key abstractions
+
+**ForkProof (`classify_pair`, `classify_ahead_of_self`)** — new pure functions plus the `Proof` value struct and the closed enums `Classified::{Proof, Same, NotProof, Corrupt}` and `AheadClass::{Restore, Fork, NotFork, Corrupt}` (in `src/sync/incarnations.rs`). Together they are the one statement of what counts as a fork.
+- Owns: the rule that a proof is two validly signed entries proven distinct at one counter (same counter, or a prev-link mismatch), the choice of held versus conflicting entry, the proof counter `x` and so the freeze bound `x - 1`, and the corrupt-versus-fork split (a bad signature is never a fork).
+- Hides: the order of the verify, counter-distance and prev-link checks.
+- Must not: touch the store, the clock or the network, act on a verdict, or read payloads.
+- Relationships: a sibling of ChainRules, which raises `AheadOfSelf` before verifying, so this verifies first. It depends only on Envelope and LogKey. Its callers are `IncarnationsSink::on_fork` (synchronously, for `AheadOfSelf`), the worker (ingest `Conflict`, Have-time and forwarded `ForkRef` replies), and the re-check inside `owner_rotate`/`restore_rotate`. Those pure functions are the only part of `sync::incarnations` that `store::incarnations` uses.
+- Errors: none of its own. `Corrupt{which, err}` carries the `EnvelopeError`, and callers `match` every variant.
+
+**IncarnationStore (`store::incarnations`)** — new store module, the only owner of `sync_forks`, `sync_branches` and `sync_reissues`, and the single place where repair decisions become rows.
+- Owns: `record_fork` (store the missing proof entries, insert the evidence row, freeze lower-only), `owner_rotate`/`restore_rotate` (the in-transaction re-check, and rotation before freeze so I1 holds), `next_incarnation`, `upsert_branch_tip`, `branch_progress` (chain checks, skipping common entries, the exponential back-search, lowering the freeze to the first divergence), `reissue_pass` (candidate order, branch readiness, `waiting` counts, idempotence through `sync_reissues`), `adopt_declared_freeze`, `status` (including `own_unknown_newer`), and invariants I2 and I3.
+- Hides: the three tables, their triggers and the candidate query's ordering.
+- Must not: write `journal`, `journal_forked` or `sync_logs` itself. It goes through Journal's `store_forked`, `freeze`, `begin_incarnation` and `reissue`. It must not hold network or timing state (sources, timeouts and penalties live in the sink), or interpret a payload (re-issue is kind-agnostic).
+- Relationships: called only by IncarnationsWorker inside background writer quanta, by the `node.genesis` handler (`adopt_declared_freeze`), by `journal::open` (`next_incarnation` at bootstrap), and by ht-5fr.8's status. It depends on Journal, ForkProof and `SyncState.incarnation_rng`.
+- Lifecycle: stateless functions over persisted state. Every function is one transaction, so a crash between quanta resumes from the rows.
+- Errors: a `branch_progress` verdict (`Corrupt` chain or signature, which penalizes the source; `NeedsEarlier`, which triggers the back-search; progress) is a value, not an `Err`. `Err` stays reserved for store errors, which roll the quantum back. A handler rejection inside a re-issue is recorded as `failed` and is not an error (§8).
+
+**IncarnationsSink / IncarnationsWorker** — new struct pair (`src/sync/incarnations.rs`). The sink is the `ForkSink` implementation and the non-blocking front. The worker is the `herdr-incarnations` std thread that runs repair jobs one writer quantum at a time.
+- Owns: the bounded `Job` queue (a closed enum: `Fork`, `Have`, `Branch`, `OwnerFork`, `Restore`, `Salvage`, plus the re-issue tick) with per-source `Have` coalescing and the 8 MiB reply cap. It also owns one `Mutex`-guarded shared state with the resumed set, the `ForkOutbox`, the `fork_refs`, the `tip → sources` map, the per-`(source, log)` Have memo, and the branch-request table (at most one outstanding request per branch, a 30 s timeout, failover to the next source, 10-minute `(source, log)` penalties, oldest-last-request preference). Finally it owns the triggers that drive `reissue_pass` (after a commit, at start, every 5 s while `waiting`) and the failure path (`Lane::Sync` status plus a 1 s → 60 s backoff).
+- Hides: all fork policy from the coordinator, and when and from whom branches are pulled.
+- Must not: block in any `ForkSink` method (the one synchronous signature check in `on_fork` excepted), write SQL outside `store::incarnations` and Journal, send frames itself (the coordinator drains the outbox), or share its pull penalties with the coordinator's rx-source penalties.
+- Relationships: chosen once in `CoordinatorDeps` in `app.rs`, replacing `LogOnlyForkSink`. The worker uses `store::incarnations`, ForkProof and, for salvage, `JournalPort::ingest`. Per spec §12 there is no `IncarnationsPort`: `ForkSink` and `JournalPort` are the two seams.
+- Lifecycle: started before `SyncCoordinator::start`. The worker is owned by the daemon worker slot, is cancelled after the coordinator stops (3 s join bound), and is stopped by `factory_stop`. The in-memory state is rebuilt empty at start, and the worker re-derives its pulls and re-issues from the store.
+- Errors: `ForkAck::Corrupt` (the coordinator penalizes and reselects) is kept apart from `Paused`. A dropped job on overflow is logged and recovered by timeout or by the next `Have`.
+
+**Resync (`src/sync/resync.rs`)** — new module: `ResyncMarker` (`resync.json` v1), the closed `ResyncPhase::{Requested, Moved, Salvaging}`, `ResyncPlan` and the salvage reader. It is the restart-mode rebuild state machine.
+- Owns: the request preconditions and their order, the atomic marker writes, the step-0 phase transitions (backup by `VACUUM INTO`, moving the old files into `orig/`, choosing `backup_db`), the plan handed to composition, and deleting the marker when salvage ends.
+- Hides: the marker format, the backup directory layout, and that a rebuild is a restart against a missing store.
+- Must not: delete the old database or the backups, swap a store under a running daemon, or admit salvaged rows except through `JournalPort::ingest` (which verifies every entry).
+- Relationships: `request` is called by ht-5fr.8's operator-gated CLI path, and it uses the existing graceful stop. `resume_at_start` is step 0 of `run_elected_impl`. `app.rs` turns the plan into `add_explicit` targets, `CoordinatorDeps.resync_pin` and `Job::Salvage`.
+- Lifecycle: the marker file is the persisted state. Each phase is restart-safe, and `moved`/`salvaging` never back up a second time.
+- Errors: request refusals are kept apart: `InvalidRequest` (unknown node), `Unavailable` (no path) and `StoreFull` (no room for the backup). A failed vacuum is logged and the rebuild continues. A start failure is a `StartError`.
+
+**Incarnations** — extended: realized as ForkProof, IncarnationStore, IncarnationsSink/IncarnationsWorker and Resync. Freezes are lower-only and set at the proof counter minus one, and convergence rests on the union re-issue plus idempotent apply by fact ID, not on nodes agreeing on a freeze counter.
+
+**ForkSink** — extended: `on_fork` returns `ForkAck::{Paused, Corrupt}`, and the trait gains `on_have`, `on_branch(BranchReply)`, `outbox() -> ForkOutbox` and `fork_refs()`, all with no-op defaults, so `LogOnlyForkSink` is unchanged apart from its return value.
+
+**Journal** — extended: a random bootstrap incarnation through `next_incarnation`; `Predecessor { incarnation, frozen_at: Option }`; a lower-only `freeze` returning `FreezeOutcome::{Frozen, Lowered, Unchanged}` that refuses the active self log; startup invariant I1; `serve_branch`; and `reissue`, the second authoring entry point. `reissue` copies the source fields, deps are the element-wise maximum, the HLC is not ticked, and a rejection never aborts.
+
+**JournalPort / MemoryJournal** — extended: `serve_branch` with the same rules on both implementations (a `journal` range, a bounded `journal_forked` walk back into `journal`, or `None`), covered by the contract suite.
+
+**ApplyEngine / ApplyContext** — extended: `ApplyMode::Reissue{of}` (no readiness check, `needs` parking kept); the re-issue suppression rule (suppress only when this node authored a settlement for the key in any of its logs, in `journal` or `journal_forked`); and `is_own_history()`, which Attribution reads to record `local_journal`.
+
+**PeerLink (`PeerFrame`)** — extended: the `BranchWant`, `BranchEntries` and `BranchNone` variants, `ForkRef`, and `Have.forks` behind the `"fork.v1"` cap. `branch_entries` shares the credit-gated data queue with `entries`.
+
+**SyncCoordinator** — extended: it calls `on_have` after each merge, routes `branch_*` frames (with a shape check before `on_branch`, then grants credit), serves `branch_want` with no subscription and at most 4 outstanding per link, drains the outbox on the 1 s tick to `fork.v1` links only, carries `fork_refs` in full `Have`s and in the `refs_changed` delta, treats `ForkAck::Corrupt` as `IngestOutcome::Corrupt`, and applies `ResyncPin` in `reselect` until a round with the pinned peer completes or 10 minutes pass.
+
+**`node.genesis` (FactKind)** — extended: `predecessor` becomes `{incarnation, frozen_at}`, and a `Some` freeze calls `adopt_declared_freeze`.
+
+**SyncState** — extended: `incarnation_rng` (an xorshift seeded from `getrandom` at `open`, fixed by the test-support `seed_incarnations`).
+
+**Lane (`service/kicks.rs`)** — extended: `sync_forks`, `sync_branches` and `sync_reissues` go into `KNOWN_UNMAPPED`. Freezes kick `Lane::Sync` through the existing `sync_logs` mapping.
+
+Variation: how forks are handled varies (log-only, or Incarnations), so that stays the ancestor's `ForkSink` trait, chosen once in `CoordinatorDeps`, and no new trait is added (spec §12 rejects `IncarnationsPort`). Fact kinds vary, but repair is kind-agnostic: re-issue copies kind, version, HLC, creates, needs and payload bytes, so a new kind needs nothing here. Everything else is a fixed set and is a closed enum or CHECK handled with `match`: `Classified`, `AheadClass`, `ForkAck`, `Job`, `FreezeOutcome`, `ApplyMode`, `ResyncPhase`, fork `origin` (`evidence`/`declared`), branch `state` (`pulling`/`complete`/`unavailable`) and the new `PeerFrame` variants behind `fork.v1`. Per spec §6, the owner path and the third-party path are one worker that branches on "is this my log", which is the fixed ownership test (`node_uuid` equality), not a kind switch.
+
+Walk-through: A is restored from backup and authors one command. C holds A's old tail. C's ingest of A's new entry returns `Fork{Conflict}`, so the coordinator pauses the log and calls `on_fork`, and the sink queues `Job::Fork`. The worker runs `classify_pair`, gets `Proof{x}`, and `record_fork` stores the conflicting entry in `journal_forked`, inserts the evidence row and freezes at `x - 1`. After the commit, the sink resumes the log and sets `refs_changed`. The coordinator sends a `Have` delta with `forks`. D receives the `ForkRef`, fetches the side it lacks through `branch_want`, and records the same fork. A sees C's `Have` head mismatch or ingests C's entry as `AheadOfSelf`. `on_fork` classifies `Fork`, and the worker's `owner_rotate` re-checks, mints a random incarnation with `predecessor.frozen_at = Some(x - 1)`, freezes the old log and upserts C's tip. Branch pulls fill `journal_forked`, `reissue_pass` interleaves both branches by counter through `journal::reissue`, and the re-issued entries apply with re-issue suppression. Every node then applies them as entries of A's new log, already-held facts are no-ops by ID, and the replicated projections converge. Likely future change: a new fact kind (for example ht-5fr.4's `seat.renamed`) adds one `FactKind` module and one registry entry. Its forked entries are pulled, stored and re-issued byte for byte, and ForkProof, IncarnationStore and the sink are untouched.
+
+Digest:
+- ForkProof: owns what counts as a fork, the proof counter and corrupt-versus-fork; a new proof shape is a `Classified`/`AheadClass` case here;
+  callers never act on an unsigned `Have` mismatch or compare entry hashes ad hoc.
+- IncarnationStore (`store::incarnations`): owns `sync_forks`, `sync_branches`, `sync_reissues`, rotation, branch progress and the re-issue pass; new persisted repair state goes here;
+  callers never write those tables or freeze, rotate or re-issue through Journal directly.
+- IncarnationsSink/IncarnationsWorker: own the fork job queue, branch-request sources, timeouts and penalties, the outbox and fork refs; new repair triggers are `Job` variants here;
+  the coordinator never decides, retries or penalizes a repair, and sink methods never block.
+- Resync: owns the resync marker, its phases, the backup and move, and salvage; new rebuild steps are phases here;
+  nothing deletes old store files or rebuilds the store inside a running daemon.
+
 ## Post-Implementation Notes
 
 > *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
