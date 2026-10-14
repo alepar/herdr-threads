@@ -13,3 +13,4 @@
 - [2026-10-14T10:21:27Z] sweep-fix beads ht-yha.41/.42 blocked: bead text forbade test edits but the code follows D8; orchestrator chose option C (update stale test expectations, no spec/code change), amended both, closed their blockers
 - [2026-10-14T11:17:14Z] sweep re-run at e8ecb681: config5 deterministic failure with no src change since dae11184 (env/timing-dependent); doctor_reports and q5 pass 3/3 isolated (flakes). Filed then closed ht-yha.43 (not a sweep-fix regression).
 - [2026-10-14T11:18:29Z] flakiness tab (memory herdr-threads-flakes-to-flakiness-tab) is not running; filed flake beads ht-3wm (q5) and ht-kk8 (doctor_reports) in the tracker instead
+- [2026-10-14T11:33:14Z] phase 7: instruction named dev-herdr-threads as (taQXwBH7X), which is a thread id, not a seat; seat send failed not_found; joined the discoverable thread and posted there (mmRxNj0E3)
