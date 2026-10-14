@@ -10,3 +10,4 @@
 - [2026-10-14T04:50:35Z] base drift is material (40 files,  17 files changed, 1166 insertions(+), 303 deletions(-)); includes src/store/wake.rs + attention/effective paths that ht-yha.4 rewrites → expect a conflict pass at absorption
 - [2026-10-14T07:48:38Z] super-roast PR round 1 rung: Workflow
 - [2026-10-14T08:44:48Z] ht-yha.33 escalated (blocker ht-xot: no compat mechanism decided for old-CLI format-2 continuation); orchestrator decided option (c) accept+record limitation (one-binary distribution, transient upgrade window), amended bead, closed blocker
+- [2026-10-14T10:21:27Z] sweep-fix beads ht-yha.41/.42 blocked: bead text forbade test edits but the code follows D8; orchestrator chose option C (update stale test expectations, no spec/code change), amended both, closed their blockers
