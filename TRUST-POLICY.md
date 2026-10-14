@@ -405,7 +405,9 @@ model open work, and summary closure never changes receipt state or installs glo
   same-process rule leaves connected, such as the in-process `/side` sessions of a Codex TUI), and a wake for
   seat-level attention (an invitation, receipt or warning, or a receipt's soft-deadline poke) types once into
   that process's composer: the item reaches whichever of its bindings takes the turn, so no binding is
-  chosen. It is owed only while every binding of the process is owed (one served in its turn served the
+  chosen. Like a single target it is not held to the several-targets idle condition (an ordinary wake
+  reads no composer before that point); the adapter's final composer read immediately before submission
+  still refuses typed input and a busy agent. It is owed only while every binding of the process is owed (one served in its turn served the
   process), and a binding whose mod channel woke it takes its process's other bindings off the composer
   targets. A wake whose reasons name no unoffered seat-level item still needs a unique match: unread mail
   is each binding's own, so (an accepted limit) a `wake_on: all` seat whose only new attention is lazy mail

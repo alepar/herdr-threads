@@ -254,18 +254,12 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
         }
         // Every target set shares one composer (spec §3 Wake): type only to the target whose
-        // process is the pane's foreground process; with several targets also only when Herdr
-        // reports the pane idle. No unique match, no composer wake; never a guess.
+        // process is the pane's foreground process; with several targets in several processes
+        // also only when the pane reads idle. No unique match, no composer wake; never a guess.
         let mut composer_harness: Option<String> = None;
         // The bindings the composer wake reaches: one, or every binding of one process.
         let mut composer_bindings: Vec<crate::protocol::ids::BindingId> = Vec::new();
         if cooperative && !reservation.authority.targets().is_empty() {
-            if reservation.authority.targets().len() > 1
-                && !poke_only
-                && observation.ui != HostUiState::Idle
-            {
-                return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
-            }
             let foreground = match self
                 .host
                 .foreground_pids(&reservation.target, &read_context)
@@ -273,7 +267,21 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                 Ok(pids) => pids,
                 Err(err) => return refuse_error(err),
             };
-            match reservation.authority.composer_choice(&foreground) {
+            let choice = reservation.authority.composer_choice(&foreground);
+            // One process is one composer (ht-327): like a single target it needs no idle
+            // classification here (an ordinary wake never reads the composer, so its
+            // observation is `Unknown`); the adapter's final composer read before submission
+            // still refuses typed input and a busy agent.
+            let one_process =
+                matches!(choice, ComposerChoice::Process(_)) && reservation.for_seat_attention();
+            if reservation.authority.targets().len() > 1
+                && !poke_only
+                && !one_process
+                && observation.ui != HostUiState::Idle
+            {
+                return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
+            }
+            match choice {
                 ComposerChoice::Binding(chosen) => {
                     composer_harness = Some(chosen.harness.clone());
                     composer_bindings.push(chosen.binding.clone());

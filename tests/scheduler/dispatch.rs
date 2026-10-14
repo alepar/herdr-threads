@@ -5171,6 +5171,18 @@ fn composer_wake_for(
     reasons: &[&str],
     check: &dyn ReservationCheck,
 ) -> (WakeOutcome, Vec<SafeWakeTarget>) {
+    composer_wake_seen(targets, foreground, reasons, check, HostUiState::Idle)
+}
+
+/// [`composer_wake_for`] with the observation's UI state: an ordinary wake never reads the
+/// composer, so production observations are `Unknown` unless Herdr reports a blocked UI.
+fn composer_wake_seen(
+    targets: Vec<crate::ports::WakeTarget>,
+    foreground: &[u32],
+    reasons: &[&str],
+    check: &dyn ReservationCheck,
+    ui: HostUiState,
+) -> (WakeOutcome, Vec<SafeWakeTarget>) {
     let clock = FakeClock(AtomicU64::new(0));
     let context = HostCallContext {
         budget: CallBudget {
@@ -5191,7 +5203,7 @@ fn composer_wake_for(
     };
     let mut observation = fresh_observation();
     observation.occupant = None;
-    observation.ui = HostUiState::Idle;
+    observation.ui = ui;
     observation.occupancy = StructuralOccupancy::Unknown;
     observation.execution = ExecutionEvidence::Unknown;
     let host = CooperativeRecordingHost {
@@ -5251,6 +5263,53 @@ fn composer_wake_types_once_into_one_process_holding_several_bindings() {
         assert_eq!(outcome, WakeOutcome::Submitted, "{reasons:?}");
         assert_eq!(prompted.len(), 1, "{reasons:?}: one composer, one wake");
         assert_eq!(prompted[0].bound_harness.as_deref(), Some("codex"));
+    }
+}
+
+/// Kills: the live ht-327 repro on 608ad9a9 (wake-e2e side-nudge, co-plain): an ordinary wake
+/// never reads the composer, so its observation is `Unknown`, and the several-targets idle gate
+/// refused the one process anyway. One process is one composer: like a single target it relies
+/// on the adapter's final composer read before submission, not on that gate. Distinct processes
+/// keep the gate.
+#[test]
+fn one_process_composer_wake_does_not_need_a_composer_classified_idle() {
+    let owed = ServedReservationCheck { served: &[] };
+    let (outcome, prompted) = composer_wake_seen(
+        one_process_bindings(),
+        &[10],
+        &["pending_receipt"],
+        &owed,
+        HostUiState::Unknown,
+    );
+    assert_eq!(outcome, WakeOutcome::Submitted);
+    assert_eq!(prompted.len(), 1);
+    let distinct = vec![
+        binding_target("a", "codex", Some(10)),
+        binding_target("b", "codex", Some(20)),
+    ];
+    let (outcome, prompted) = composer_wake_seen(
+        distinct,
+        &[10],
+        &["pending_receipt"],
+        &owed,
+        HostUiState::Unknown,
+    );
+    assert_eq!(outcome, WakeOutcome::Refused(RefusalCause::Unsafe));
+    assert!(prompted.is_empty());
+    for ui in [HostUiState::HumanInput, HostUiState::ActiveTurn] {
+        let (outcome, prompted) = composer_wake_seen(
+            one_process_bindings(),
+            &[10],
+            &["pending_receipt"],
+            &owed,
+            ui,
+        );
+        assert_eq!(
+            outcome,
+            WakeOutcome::Refused(RefusalCause::Unsafe),
+            "{ui:?}"
+        );
+        assert!(prompted.is_empty());
     }
 }
 

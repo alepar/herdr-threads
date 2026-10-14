@@ -1458,8 +1458,9 @@ class CodexStartOrder(unittest.TestCase):
     def test_linux_codex_starts_one_at_a_time(self):
         self.assertEqual(self.starts("linux"), ["run", "up", "run", "up"])
 
-    def test_macos_codex_starts_stay_concurrent(self):
-        self.assertEqual(self.starts("macos")[:2], ["run", "run"])
+    def test_macos_codex_starts_are_serial_too(self):
+        # Three Codex recipients raced on the scratch state DB on macOS as well (ht-327 side-case run).
+        self.assertEqual(self.starts("macos"), ["run", "up", "run", "up"])
 
 
 class ReviewMinors(TempDir):
