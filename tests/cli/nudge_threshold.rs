@@ -3,9 +3,8 @@ use crate::cli::commands::{
     CliAction, CooperativeSelection, ParseFailure, parse_argv, parse_argv_or_informational,
 };
 use crate::protocol::{
-    commands::{WakeOn, WakeOnQuery},
     ids::*,
-    results::{CheckInContextDisposition, CheckInResult, SeatInspection, WakeOnState},
+    results::{CheckInContextDisposition, CheckInResult, SeatInspection},
     time::UtcMillis,
 };
 
@@ -23,19 +22,13 @@ fn empty<T>() -> crate::protocol::pagination::Page<T> {
     }
 }
 
-/// A daemon double holding one seat's threshold (modern) or wake preference (old).
+/// A daemon double holding one seat's threshold.
 struct Client {
     calls: std::sync::Mutex<Vec<Command>>,
     threshold: std::sync::Mutex<NudgeThreshold>,
-    modern: bool,
-    wake_on: bool,
     generation: std::sync::atomic::AtomicU64,
 }
 impl LocalClient for Client {
-    fn supports_capability(&self, name: &str, _: &crate::protocol::time::CallBudget) -> bool {
-        (self.modern && name == SEAT_NUDGE_THRESHOLD_V1)
-            || (self.wake_on && name == SEAT_WAKE_ON_V1)
-    }
     fn call_with_output(
         &self,
         command: Command,
@@ -106,21 +99,6 @@ impl LocalClient for Client {
                     changed,
                 }))
             }
-            Command::WakeOn(q) => Ok(CommandResult::WakeOn(WakeOnState {
-                seat: q.seat,
-                wake_on: stored.legacy_wake_on(),
-                changed: false,
-            })),
-            Command::SetWakeOn(set) => {
-                let new = NudgeThreshold::from_wake_on(set.value);
-                let changed = *stored != new;
-                *stored = new;
-                Ok(CommandResult::WakeOn(WakeOnState {
-                    seat: set.claim.seat,
-                    wake_on: set.value,
-                    changed,
-                }))
-            }
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -134,7 +112,7 @@ struct Fixture {
     client: Client,
 }
 impl Fixture {
-    fn new(stored: i64, modern: bool) -> Self {
+    fn new(stored: i64) -> Self {
         let root = std::env::temp_dir().join(format!("cli-nudge-thr-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let runtime = crate::daemon::paths::RuntimeContext::explicit(
@@ -156,8 +134,6 @@ impl Fixture {
             client: Client {
                 calls: Default::default(),
                 threshold: std::sync::Mutex::new(NudgeThreshold::new(stored).unwrap()),
-                modern,
-                wake_on: true,
                 generation: std::sync::atomic::AtomicU64::new(1),
             },
         };
@@ -268,7 +244,7 @@ fn parse_refuses_out_of_range_and_junk_with_exit_2() {
 
 #[test]
 fn set_text_reports_changed_then_unchanged() {
-    let fixture = Fixture::new(0, true);
+    let fixture = Fixture::new(0);
     let (result, out) = fixture.run(&["herdr-threads", "nudge-threshold", "3"]);
     result.unwrap();
     assert_eq!(out, "nudge_threshold: 3 (changed)\n");
@@ -285,7 +261,7 @@ fn set_text_reports_changed_then_unchanged() {
 
 #[test]
 fn a_negative_set_sends_minus_one() {
-    let fixture = Fixture::new(0, true);
+    let fixture = Fixture::new(0);
     let (result, out) = fixture.run(&["herdr-threads", "nudge-threshold", "-7"]);
     result.unwrap();
     assert_eq!(out, "nudge_threshold: -1 (changed)\n");
@@ -298,7 +274,7 @@ fn a_negative_set_sends_minus_one() {
 
 #[test]
 fn bare_reads_without_a_claim() {
-    let fixture = Fixture::new(2, true);
+    let fixture = Fixture::new(2);
     let (result, out) = fixture.run(&["herdr-threads", "nudge-threshold"]);
     result.unwrap();
     assert_eq!(out, "nudge_threshold: 2\n");
@@ -312,7 +288,7 @@ fn bare_reads_without_a_claim() {
 
 #[test]
 fn json_encodes_the_daemon_result_as_returned() {
-    let fixture = Fixture::new(0, true);
+    let fixture = Fixture::new(0);
     let (result, out) = fixture.run(&["herdr-threads", "nudge-threshold", "4", "--json"]);
     result.unwrap();
     let value: serde_json::Value = serde_json::from_str(out.trim_end()).unwrap();
@@ -325,7 +301,7 @@ fn json_encodes_the_daemon_result_as_returned() {
 
 #[test]
 fn a_subagent_cannot_set_and_sends_nothing() {
-    let mut fixture = Fixture::new(0, true);
+    let mut fixture = Fixture::new(0);
     fixture.selection.role = Role::Subagent;
     let (result, out) = fixture.run(&["herdr-threads", "nudge-threshold", "2"]);
     assert!(result.is_err());
@@ -333,70 +309,11 @@ fn a_subagent_cannot_set_and_sends_nothing() {
     assert!(fixture.commands().is_empty());
 }
 
-// ---- running against an older daemon ----
-
-#[test]
-fn an_old_daemon_maps_zero_and_minus_one_to_wake_on() {
-    let fixture = Fixture::new(0, false);
-    let (result, out) = fixture.run(&["herdr-threads", "nudge-threshold", "-1"]);
-    result.unwrap();
-    assert_eq!(out, "nudge_threshold: -1 (changed)\n");
-    let sent = fixture.mutating_or_reading();
-    let [Command::SetWakeOn(set)] = sent.as_slice() else {
-        panic!("expected one SetWakeOn, got {sent:?}");
-    };
-    assert_eq!(set.value, WakeOn::All);
-    let (result, out) = fixture.run(&["herdr-threads", "nudge-threshold", "0"]);
-    result.unwrap();
-    assert_eq!(out, "nudge_threshold: 0 (changed)\n");
-}
-
-#[test]
-fn an_old_daemon_reads_through_wake_on() {
-    let fixture = Fixture::new(-1, false);
-    let (result, out) = fixture.run(&["herdr-threads", "nudge-threshold"]);
-    result.unwrap();
-    assert_eq!(out, "nudge_threshold: -1\n");
-    assert_eq!(
-        fixture.commands(),
-        vec![Command::WakeOn(WakeOnQuery {
-            seat: SeatId::new("seat")
-        })]
-    );
-}
-
-#[test]
-fn an_old_daemon_refuses_other_values_with_an_upgrade_hint_and_sends_nothing() {
-    let fixture = Fixture::new(0, false);
-    let (result, out) = fixture.run(&["herdr-threads", "nudge-threshold", "3"]);
-    let error = result.unwrap_err();
-    assert_eq!(error.exit_code(), crate::cli::exit::EXIT_UNSUPPORTED);
-    assert!(
-        format!("{error:?}").contains("supports nudge-threshold -1 or 0 only"),
-        "{error:?}"
-    );
-    assert!(out.is_empty());
-    assert!(fixture.commands().is_empty());
-}
-
-#[test]
-fn a_daemon_with_neither_capability_is_refused_before_any_call() {
-    let mut fixture = Fixture::new(0, false);
-    fixture.client.wake_on = false;
-    let (result, out) = fixture.run(&["herdr-threads", "nudge-threshold"]);
-    assert_eq!(
-        result.unwrap_err().exit_code(),
-        crate::cli::exit::EXIT_UNSUPPORTED
-    );
-    assert!(out.is_empty());
-    assert!(fixture.commands().is_empty());
-}
-
 // ---- the wake-on alias ----
 
 #[test]
-fn wake_on_aliases_to_the_threshold_on_a_capable_daemon() {
-    let fixture = Fixture::new(0, true);
+fn wake_on_aliases_to_the_threshold() {
+    let fixture = Fixture::new(0);
     let (result, out) = fixture.run(&["herdr-threads", "wake-on", "all"]);
     result.unwrap();
     assert_eq!(out, "nudge_threshold: -1 (changed)\n");

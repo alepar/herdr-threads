@@ -8,12 +8,11 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct Request {
     pub target: SeatId,
-    /// The legacy mode of a plan recorded for a daemon without `send.priority_v1` (or before the
-    /// priority feature); `Ordinary` and omitted when the plan carries a `priority`.
+    /// The mode of a plan journaled before the priority field; `Ordinary` and omitted when the plan
+    /// carries a `priority`.
     #[serde(default, skip_serializing_if = "DeliveryMode::is_ordinary")]
     pub delivery_mode: DeliveryMode,
-    /// The delivery priority; `start` keeps it only against a `send.priority_v1` daemon and
-    /// otherwise replaces it by the legacy mode, so the frozen plan is exactly what is sent.
+    /// The delivery priority; every new plan carries it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<DeliveryPriority>,
     pub body: String,
@@ -65,16 +64,6 @@ impl Request {
     /// The legacy mode a plan without a carried priority sends.
     fn legacy_mode(&self) -> Option<DeliveryMode> {
         self.priority.is_none().then_some(self.delivery_mode)
-    }
-    /// Re-shape for the daemon: against `send.priority_v1` the priority stays; otherwise it becomes
-    /// the legacy mode. Returns the priority that mode cannot express, if any.
-    fn reshape(&mut self, priority_v1: bool) -> Option<DeliveryPriority> {
-        let shape = super::send_priority::shape(self.priority?, priority_v1);
-        let super::send_priority::SendShape::Legacy { lost, .. } = shape else {
-            return None;
-        };
-        (self.delivery_mode, self.priority) = shape.wire();
-        lost
     }
 }
 impl Plan {
@@ -283,11 +272,8 @@ pub(crate) fn start<C: LocalClient + ?Sized, W: Write>(
     output: &OutputSpec,
     writer: &mut W,
 ) -> Result<(), RunError> {
-    let mut request = request;
-    let priority_v1 = super::send_priority::supports(client, &super::cooperative_budget(clock))?;
-    let lost = request.reshape(priority_v1);
-    // The pair creation policy stays the legacy invitation policy: a daemon with
-    // `direct.auto_join_v1` ignores it and auto-joins, an older one keeps its invitation path.
+    // The daemon validates the shape of this policy and auto-joins the pair (D7). The policy's
+    // presence asks it for the `DirectThreadEnsured` selection reply that the output prints.
     let p = Plan {
         creation_policy: Some(crate::protocol::commands::EnsureCreationPolicy {
             confirmation: crate::protocol::commands::InvitationConfirmation::Lazy,
@@ -308,9 +294,6 @@ pub(crate) fn start<C: LocalClient + ?Sized, W: Write>(
         p.request.legacy_mode() == Some(DeliveryMode::Lazy),
         p.creation_policy.is_some(),
     )?;
-    if let Some(lost) = lost {
-        eprintln!("{}", super::send_priority::lossy_notice(lost));
-    }
     let caller = inspect(client, clock, &claim.seat)?;
     if caller.summary.generation != claim.binding_generation
         || caller.summary.target.as_ref() != Some(&claim.target)

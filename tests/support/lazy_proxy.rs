@@ -86,25 +86,7 @@ impl Proxy {
                         write_frame(&mut d, &b);
                         let Some(reply) = frame(&mut d) else { continue };
                         let mode = mode_c.load(Ordering::SeqCst);
-                        if matches!(mode, 4 | 5) && q["command"]["kind"] == "capabilities" {
-                            // A pre-priority daemon as the current CLI sees it: lazy sends and the
-                            // wake-on pair exist, priority, nudge-threshold and pair auto-join do not.
-                            let mut v: Value = serde_json::from_slice(&reply).unwrap();
-                            v["result"]["Ok"]["data"]["capabilities"]
-                                .as_array_mut()
-                                .expect("actual capability shape")
-                                .retain(|c| {
-                                    !matches!(
-                                        c.as_str(),
-                                        Some(
-                                            "send.priority_v1"
-                                                | "seat.nudge_threshold_v1"
-                                                | "direct.auto_join_v1"
-                                        )
-                                    )
-                                });
-                            write_frame(&mut s, &serde_json::to_vec(&v).unwrap());
-                        } else if mode == 1 && q["command"]["kind"] == "capabilities" {
+                        if mode == 1 && q["command"]["kind"] == "capabilities" {
                             let mut v: Value = serde_json::from_slice(&reply).unwrap();
                             let caps = v["result"]["Ok"]["data"]["capabilities"]
                                 .as_array_mut()

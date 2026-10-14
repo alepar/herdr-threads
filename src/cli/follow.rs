@@ -1419,7 +1419,7 @@ mod lazy_marker_follow_tests {
                         messages
                             .into_iter()
                             .map(|message| MessageDeliveryMode {
-                                priority: None,
+                                priority: Some(crate::protocol::priority::DeliveryPriority::p0()),
                                 message,
                                 delivery_mode: DeliveryMode::Lazy,
                             })
@@ -1512,8 +1512,8 @@ mod lazy_marker_follow_tests {
                 usize::from(advertised)
             );
         }
-        assert!(current.starts_with(b"[lazy] m2\n"));
-        assert_eq!(&current[b"[lazy] m2\n".len()..], old);
+        assert!(current.starts_with(b"[p0] m2\n"));
+        assert_eq!(&current[b"[p0] m2\n".len()..], old);
     }
     #[test]
     fn follow_human_marks_exact_message_but_json_lines_stay_unchanged() {
@@ -1539,7 +1539,7 @@ mod lazy_marker_follow_tests {
                 .message(&summary(), &client, &mut cache(), &spec)
                 .unwrap();
             if form == Form::Human {
-                assert!(out.starts_with(b"[lazy] m2\n"));
+                assert!(out.starts_with(b"[p0] m2\n"));
                 assert!(String::from_utf8(out).unwrap().contains("full lazy body"));
             } else {
                 assert_eq!(out, format!("{}\n", json_line(&summary())).as_bytes());

@@ -183,8 +183,8 @@ pub enum SemanticMutation {
     SendMessage {
         #[serde(default, skip_serializing_if = "DeliveryMode::is_ordinary")]
         delivery_mode: DeliveryMode,
-        /// Set when the daemon advertised `send.priority_v1` at recording time; absent in entries
-        /// recorded before the upgrade, which replay their `delivery_mode` unchanged.
+        /// Carried by every send a protocol-8 CLI records; absent in entries recorded before the
+        /// priority field, which replay their `delivery_mode` unchanged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         priority: Option<crate::protocol::priority::DeliveryPriority>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
