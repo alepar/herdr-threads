@@ -376,6 +376,11 @@ fn modern_lazy_retirement_requires_intact_captured_publication_and_recipient_aut
             }
             "missing_recipient" => {
                 fault_with_restored_guard(f, "lazy_recipient_published_retained", || {
+                    // binding_pending rows reference the recipient row.
+                    f.db.execute(
+                        "DELETE FROM binding_pending WHERE ordinal IN (SELECT ordinal FROM lazy_recipients WHERE message_id=?1 AND seat_id=?2)",
+                        params![c.old.as_str(), f.b.seat.as_str()],
+                    )?;
                     f.db.execute(
                         "DELETE FROM lazy_recipients WHERE message_id=?1 AND seat_id=?2",
                         params![c.old.as_str(), f.b.seat.as_str()],
