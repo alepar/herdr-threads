@@ -5803,8 +5803,9 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
         "harness_runtime_identities",
         "harness_contract_evidence_v2",
         "harness_unattributed_v2",
-        // V47 adds the sparse per-binding row display marks.
+        // V47 adds the sparse per-binding row display marks and the per-binding pending views.
         "binding_row_displays",
+        "binding_pending",
     ];
     // V45/46 create these six tables; none replaces a historical root. Audit
     // their exact final DDL independently from the actual appended migration SQL.
@@ -7233,23 +7234,24 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         // lazy_recipients_seat_ordinal); catch_up and its triggers are rebuilt one for one.
         // V35 deltas: +2 indexes (warning_offer_seat, digest_notice_offer_seat); the two
         // frontier tables are rebuilt one for one. V36 deltas: +1 table (in_turn_offer), +1 index
-        // (in_turn_offer_seat). V47 deltas: +1 table (binding_row_displays), +2 indexes
-        // (lazy_recipients_pending_order, lazy_recipients_pending_thread_order), +4 triggers
-        // (message_priority_immutable, preparation_priority_immutable,
-        // lazy_recipient_priority_immutable, lazy_recipient_decision_seq_once); messages_immutable,
-        // lazy_recipient_source, lazy_recipient_display_published and lazy_manifest_source are
+        // (in_turn_offer_seat). V47 deltas: +2 tables (binding_row_displays, binding_pending), +3 indexes
+        // (binding_pending_order, binding_pending_thread_order, lazy_recipients_legacy_order; the
+        // two state='pending' order indexes are dropped again by the same migration, net +1), +11 triggers (message_priority_immutable,
+        // preparation_priority_immutable, lazy_recipient_priority_immutable,
+        // lazy_recipient_decision_seq_once and the seven binding_pending_* view triggers);
+        // messages_immutable, lazy_recipient_source, lazy_recipient_display_published and lazy_manifest_source are
         // recreated one for one.
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
-            97
+            98
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
-            170
+            171
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
-            311
+            318
         );
     }
 }

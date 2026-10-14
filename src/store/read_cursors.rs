@@ -32,7 +32,7 @@ fn to_i64(seq: u64) -> Result<i64, ApiError> {
     i64::try_from(seq).map_err(|_| api_error(ErrorCode::InvalidRequest, "cursor out of range"))
 }
 
-/// Start the cursors of `binding` according to `mode`. `first_contact` is true only for a
+/// Start the cursors of `binding` according to `mode`, then seed its pending delivery view. `first_contact` is true only for a
 /// fresh binding with no predecessor to inherit from.
 pub fn seed(tx: &Connection, binding: &BindingId, mode: SeedMode) -> Result<SeedOutcome, ApiError> {
     let first_contact = matches!(mode, SeedMode::Fresh);
@@ -41,6 +41,8 @@ pub fn seed(tx: &Connection, binding: &BindingId, mode: SeedMode) -> Result<Seed
         threads += copy_lineage(tx, from, binding)?;
     }
     threads += init_for_new_binding(tx, binding)?;
+    // Last: the cursors and inherited marks are final, so the view starts as the binding's unread rows.
+    super::lazy_delivery::seed_binding_pending(tx, binding)?;
     Ok(SeedOutcome {
         first_contact,
         threads,

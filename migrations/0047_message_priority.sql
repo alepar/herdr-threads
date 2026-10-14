@@ -69,12 +69,82 @@ ALTER TABLE seats ADD COLUMN nudge_threshold INTEGER NOT NULL DEFAULT 0 CHECK(nu
 
 UPDATE seats SET nudge_threshold=-1 WHERE wake_on='all';
 
-CREATE INDEX lazy_recipients_pending_order ON lazy_recipients(seat_id,priority,decision_seq,ordinal) WHERE state='pending' AND decision_seq IS NOT NULL;
-
-CREATE INDEX lazy_recipients_pending_thread_order ON lazy_recipients(seat_id,thread_id,priority,decision_seq,ordinal) WHERE state='pending' AND decision_seq IS NOT NULL;
-
 CREATE TABLE binding_row_displays (
     binding_id TEXT NOT NULL REFERENCES occupant_bindings(binding_id),
     message_id TEXT NOT NULL CHECK(length(CAST(message_id AS BLOB)) BETWEEN 1 AND 128),
     PRIMARY KEY(binding_id, message_id)
 ) STRICT;
+
+-- ht-yha.44 per-binding pending views (also the repair tail of a pre-amendment v47 store).
+DROP INDEX IF EXISTS lazy_recipients_pending_order;
+
+DROP INDEX IF EXISTS lazy_recipients_pending_thread_order;
+
+CREATE TABLE binding_pending (
+    binding_id TEXT NOT NULL REFERENCES occupant_bindings(binding_id),
+    ordinal INTEGER NOT NULL REFERENCES lazy_recipients(ordinal),
+    thread_id TEXT NOT NULL,
+    priority INTEGER NOT NULL CHECK(priority BETWEEN 0 AND 9),
+    decision_seq INTEGER NOT NULL CHECK(decision_seq>0),
+    PRIMARY KEY(binding_id, ordinal)
+) STRICT;
+
+CREATE INDEX binding_pending_order ON binding_pending(binding_id,priority,decision_seq,ordinal);
+
+CREATE INDEX binding_pending_thread_order ON binding_pending(binding_id,thread_id,priority,decision_seq,ordinal);
+
+CREATE INDEX lazy_recipients_legacy_order ON lazy_recipients(seat_id,priority,decision_seq,ordinal) WHERE legacy_pending=1 AND decision_seq IS NOT NULL;
+
+CREATE TRIGGER binding_pending_publish AFTER UPDATE OF decision_seq ON lazy_recipients
+WHEN OLD.decision_seq IS NULL AND NEW.decision_seq IS NOT NULL
+BEGIN
+    INSERT OR IGNORE INTO binding_pending(binding_id,ordinal,thread_id,priority,decision_seq)
+    SELECT b.binding_id,NEW.ordinal,NEW.thread_id,NEW.priority,NEW.decision_seq FROM occupant_bindings b
+    WHERE b.seat_id=NEW.seat_id AND b.ended_at IS NULL
+      AND (EXISTS(SELECT 1 FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=NEW.thread_id)
+        OR EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=NEW.thread_id AND mb.seat_id=NEW.seat_id AND mb.state IN ('joined','invited')));
+END;
+
+CREATE TRIGGER binding_pending_legacy_set AFTER UPDATE OF legacy_pending ON lazy_recipients
+WHEN OLD.legacy_pending=0 AND NEW.legacy_pending=1 AND NEW.decision_seq IS NOT NULL
+BEGIN
+    INSERT OR IGNORE INTO binding_pending(binding_id,ordinal,thread_id,priority,decision_seq)
+    SELECT b.binding_id,NEW.ordinal,NEW.thread_id,NEW.priority,NEW.decision_seq FROM occupant_bindings b
+    WHERE b.seat_id=NEW.seat_id AND b.ended_at IS NULL AND b.role='top_level';
+END;
+
+CREATE TRIGGER binding_pending_legacy_clear AFTER UPDATE OF legacy_pending ON lazy_recipients
+WHEN OLD.legacy_pending=1 AND NEW.legacy_pending=0
+BEGIN
+    DELETE FROM binding_pending WHERE ordinal=NEW.ordinal
+      AND (binding_id IN (SELECT c.binding_id FROM binding_cursors c WHERE c.thread_id=NEW.thread_id AND c.seq>=(SELECT m.sequence FROM messages m WHERE m.id=NEW.message_id))
+        OR binding_id IN (SELECT d.binding_id FROM binding_row_displays d WHERE d.message_id=NEW.message_id));
+END;
+
+CREATE TRIGGER binding_pending_cursor_insert AFTER INSERT ON binding_cursors
+BEGIN
+    DELETE FROM binding_pending WHERE binding_id=NEW.binding_id AND thread_id=NEW.thread_id
+      AND (SELECT m.sequence FROM lazy_recipients r JOIN messages m ON m.id=r.message_id WHERE r.ordinal=binding_pending.ordinal)<=NEW.seq
+      AND NOT EXISTS(SELECT 1 FROM lazy_recipients r JOIN occupant_bindings ob ON ob.binding_id=NEW.binding_id WHERE r.ordinal=binding_pending.ordinal AND r.legacy_pending=1 AND ob.role='top_level');
+END;
+
+CREATE TRIGGER binding_pending_cursor_advance AFTER UPDATE OF seq ON binding_cursors
+WHEN NEW.seq>OLD.seq
+BEGIN
+    DELETE FROM binding_pending WHERE binding_id=NEW.binding_id AND thread_id=NEW.thread_id
+      AND (SELECT m.sequence FROM lazy_recipients r JOIN messages m ON m.id=r.message_id WHERE r.ordinal=binding_pending.ordinal)<=NEW.seq
+      AND NOT EXISTS(SELECT 1 FROM lazy_recipients r JOIN occupant_bindings ob ON ob.binding_id=NEW.binding_id WHERE r.ordinal=binding_pending.ordinal AND r.legacy_pending=1 AND ob.role='top_level');
+END;
+
+CREATE TRIGGER binding_pending_row_display AFTER INSERT ON binding_row_displays
+BEGIN
+    DELETE FROM binding_pending WHERE binding_id=NEW.binding_id AND ordinal IN (
+        SELECT r.ordinal FROM lazy_recipients r JOIN occupant_bindings ob ON ob.binding_id=NEW.binding_id AND ob.seat_id=r.seat_id
+        WHERE r.message_id=NEW.message_id AND NOT (r.legacy_pending=1 AND ob.role='top_level'));
+END;
+
+CREATE TRIGGER binding_pending_binding_end AFTER UPDATE OF ended_at ON occupant_bindings
+WHEN OLD.ended_at IS NULL AND NEW.ended_at IS NOT NULL
+BEGIN
+    DELETE FROM binding_pending WHERE binding_id=NEW.binding_id;
+END;

@@ -27,46 +27,28 @@ pub fn recorded_mode(
     .transpose()
 }
 
-/// Canonical caller validation and contiguous display proof belong to the
-/// completion handler. Updates only published addressed progress, returning true
-/// for both pending and already displayed addressed rows (idempotent eligibility).
-pub fn complete_addressed(
+/// Whether a published row addressed to `seat` exists for `message` in `instance` (`ADDRESSED_SQL`).
+fn is_addressed(
     tx: &Transaction<'_>,
     instance: &str,
     seat: &SeatId,
     message: &MessageId,
 ) -> Result<bool, ApiError> {
-    complete_addressed_as(tx, instance, seat, message, true)
-}
-
-/// [`complete_addressed`] for a given kind of display. `mark_displayed` is false for a subagent
-/// binding's display: the seat-wide `state` stays `pending`, so the wake seek
-/// (`lazy_recipients_pending_order`, `state='pending'`) still finds a row the seat's top-level
-/// binding has not displayed.
-fn complete_addressed_as(
-    tx: &Transaction<'_>,
-    instance: &str,
-    seat: &SeatId,
-    message: &MessageId,
-    mark_displayed: bool,
-) -> Result<bool, ApiError> {
-    let addressed: bool = tx
-        .query_row(
-            ADDRESSED_SQL,
-            params![seat.as_str(), message.as_str(), instance],
-            |r| r.get(0),
-        )
-        .map_err(store_error)?;
-    if addressed && mark_displayed {
-        tx.execute("UPDATE lazy_recipients SET state='displayed' WHERE seat_id=?1 AND message_id=?2 AND state='pending'",params![seat.as_str(),message.as_str()]).map_err(store_error)?;
-    }
-    Ok(addressed)
+    tx.query_row(
+        ADDRESSED_SQL,
+        params![seat.as_str(), message.as_str(), instance],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
 }
 
 /// A top-level display marks the row displayed seat-wide, unless a top-level binding of the seat
 /// that still owes it (`seat_owes_display_sql!`: connected, or disconnected by process exit; the
 /// displaying one included, for a row it left above its cursor) still finds it unread.
-/// `?1` = seat, `?2` = message; run after the displaying cursors moved.
+/// `?1` = seat, `?2` = message; run after the displaying cursors moved. `state` is the seat-wide
+/// display fact read by the join frontier (`read_cursors::init_for_join`) and the binding-less completion
+/// state; no delivery seek reads it (the per-binding views are kept by the v47 triggers from the cursor
+/// and mark writes).
 const MARK_DISPLAYED_SQL: &str = concat!(
     "UPDATE lazy_recipients SET state='displayed' WHERE seat_id=?1 AND message_id=?2 AND state='pending' AND NOT EXISTS(SELECT 1 FROM lazy_recipients r JOIN messages m ON m.id=r.message_id WHERE r.seat_id=?1 AND r.message_id=?2 AND ",
     seat_owes_display_sql!(),
@@ -163,7 +145,7 @@ pub fn complete_displayed_for_binding(
         // The seat-wide `state` flips only after the cursors moved (below): a sibling top-level
         // binding that has not displayed the row still owes it, and the ordered seek only holds
         // `pending` rows.
-        if !complete_addressed_as(tx, instance, seat, message, false)? {
+        if !is_addressed(tx, instance, seat, message)? {
             continue;
         }
         let (thread, sequence): (String, i64) = tx

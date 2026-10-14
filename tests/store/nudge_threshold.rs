@@ -421,13 +421,13 @@ fn p0_row_behind_1001_p1_rows_wakes() {
             lazy_delivery::FRONTIER_SEEK_SQL
         ))
         .unwrap()
-        .query_map(params!["s", 0], |r| r.get::<_, String>(3))
+        .query_map(params!["any-binding", 0], |r| r.get::<_, String>(3))
         .unwrap()
         .map(Result::unwrap)
         .collect();
     assert!(
         plan.iter()
-            .any(|step| step.contains("lazy_recipients_pending_order") && step.contains("SEARCH")),
+            .any(|step| step.contains("binding_pending_order") && step.contains("SEARCH")),
         "{plan:?}"
     );
     drop(db);
