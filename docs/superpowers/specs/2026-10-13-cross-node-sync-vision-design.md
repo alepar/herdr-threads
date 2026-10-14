@@ -2,113 +2,121 @@
 
 ## Goal
 
-herdr-threads instances on SSH-linked machines share one thread space: agents on any node send, invite, join and ACK as if all were local, through prolonged partitions (AP; PA/EL), and converge once any path between nodes returns. Sized for 2-10 nodes and ~1-10 msg/s in total.
+herdr-threads instances on SSH-linked machines share one thread space: agents on any node send, invite, join and ACK as if all were local, through prolonged partitions (AP; PA/EL), and converge once any path between nodes returns. Sized for 2-10 nodes and bursts of ~1-10 msg/s in total.
 
-This is a vision spec: it fixes requirements and the shape of the model so a `/deep-research` pass can work out storage, sync protocol, API and table shapes (see "Research questions"). It amends two earlier positions: the original design's non-goal "No cross-machine federation" (`docs/design/herdr-threads/2026-09-27-herdr-threads-design.md:24`) and TRUST-POLICY's "same local user, same machine" assumption.
+This is a vision spec: it fixes requirements and the shape of the model. The per-topic research behind the amendments below is in `docs/superpowers/research/2026-10-13-cross-node-sync/` (01 prior art … 09 failure modes); the detailed design builds on both. It amends two earlier positions: the original design's non-goal "No cross-machine federation" (`docs/design/herdr-threads/2026-09-27-herdr-threads-design.md:24`) and TRUST-POLICY's "same local user, same machine" assumption.
 
-## Context: what assumes a single writer today
+## Context: what changes from today
 
-- `host_instances.decision_seq` is the instance-wide monotonic clock; `threads.next_sequence` allocates a dense, unique per-thread message `sequence`; `*_revision` counters, AUTOINCREMENT ordinals, `binding_cursors.seq`, `membership_intervals.joined_seq/left_seq` and `warning_offer.offered_through_seq` are positions in those orders.
-- Public IDs are `<prefix><8 base62>` from CSPRNG bits (~2^47.6), collision-checked only against local tables (`src/protocol/ids.rs`, `src/store/public_ids.rs`).
-- An instance is one Herdr server (`instance_dir = sha256(host_endpoint)`); a seat is bound to a local pane.
-- Messages, receipts and threads are never deleted; archival only flips a flag.
+- Today an instance is one Herdr server (`instance_dir = sha256(host_endpoint)`), and its daemon cannot serve without that server; a seat is bound to a local pane.
+- `host_instances.decision_seq`, `threads.next_sequence`, `*_revision` counters, AUTOINCREMENT ordinals, cursors and `offered_through` all assume a single writer. They stay as local positions, assigned at apply time and never replicated.
+- Public IDs are `<prefix><8 base62>`, unique only by probability and only checked locally.
+- **Clean start:** cross-node herdr-threads starts from a fresh store; the existing database is wiped. No migration, backfill, legacy IDs or aliases.
 
 ## Decisions
 
 ### Node
 
-A node is a herdr-threads instance (one store, one Herdr server), not a machine. It has a 2-4 character node ID derived from its SSH host key fingerprint; a collision is detected and refused at link handshake.
+- A node is one herdr-threads daemon and store per machine and OS user. It serves every Herdr server of that user on the machine and runs (and syncs) with no Herdr server up. Seats record which Herdr server (host endpoint) their pane belongs to.
+- Identity is an Ed25519 keypair minted with the store. `node_uuid` = hash of the public key. A 3-character base62 `node_tag` (collision odds ~2e-4 at 10 nodes) prefixes public IDs; it is display/ID material only, never the replication key. On a tag collision the node with the higher `node_uuid` picks a new tag; IDs already minted stay valid.
+- Not derived from the SSH host key: it is ambiguous (several key types), rotates, is shared by cloned VMs, and absent on some machines.
 
 ### Replication scope
 
-Full mesh: every node holds every thread, seat directory entry and message (including archived and pre-link history). Partial replication (directory everywhere, bodies only to nodes with a participant) is a later scaling path, not v1.
+Full mesh: every node holds every thread, seat directory entry and message, including archived threads. Partial replication (directory everywhere, bodies only to nodes with a participant) is a later scaling path.
 
 ### Journal sharded by origin
 
-- Every replicated mutation is a journal entry `(origin_node, counter, hlc, kind, kind_version, payload)`.
-- Each node appends only to its own log; `counter` is monotonic per origin. A fact's global identity is `(origin_node, counter)`.
-- Every fact has exactly one authoring node: the acting seat's home node (sender for a message, recipient for an ACK, actor for join/leave/accept/reject, inviter for an invitation, home node for seat existence/retirement). Replicated facts therefore never conflict; partitions cause only staleness and late arrival.
-- The journal is the source of truth for replicated facts; today's tables become a materialized view of it.
-- A node stores and relays every entry, including kinds it does not understand; unknown kinds stay unapplied until an upgrade can replay them.
-- Nothing replicated is deleted.
+- Every replicated mutation is a signed journal entry: `origin (node_uuid), incarnation, counter, prev_hash, hlc, deps (author's applied version vector at write time), kind, kind_version, payload, signature`.
+- Each node appends only to its own log; `counter` is gapless and monotonic per `(origin, incarnation)`. `prev_hash` chains each origin's log.
+- Every fact has exactly one authoring node: the acting seat's home node (sender for a message, recipient for an ACK, actor for join/leave/accept/reject, inviter for an invitation, home node for seat existence/retirement). Replicated facts never conflict; partitions cause only staleness and late arrival.
+- The journal is the source of truth for replicated facts; the existing tables become a materialized view of it.
+- Nothing replicated is deleted. Storage is sized for bursty agent traffic; a sustained 10 msg/s for a year would be ~0.3-0.9 TB per node, which is outside the expected load.
 
-| Replicated (journal) | Node-local (unchanged) |
+| Replicated (journal) | Node-local |
 |---|---|
 | thread create, topic, name, archive/reopen | pane bindings, liveness, host observations |
-| messages and info/warn timeline events | wake work, delivery ledgers, `offered_through` |
+| messages and info/warn timeline events, each with its recipient set | wake work, delivery ledgers, `offered_through` |
 | invitations, accept/reject, join/leave | read cursors, catch-up |
 | ACKs and receipt settlement | archival composer sampling |
 | seat existence and retirement (not its pane mapping) | handoff/launch topology |
 
+### Ingest and apply
+
+- **Ingest** verifies only the signature and the chain (`prev_hash` matches the held head of that origin), then stores and relays the entry. It never checks references, so relay never waits on apply.
+- **Apply** is causal: an entry is applied once the node's applied vector covers the entry's `deps` vector. An entry from B that references a thread A created waits until A's log is applied up to the create, without stalling B's relay.
+- An entry of an unknown kind, or one that fails to apply, is parked (counts as processed for causal purposes, its effects absent) and replayed after an upgrade.
+- Apply is idempotent by fact ID, and the vector advances in the same transaction that commits the entries.
+- The author's node fixes each message's recipient set in the payload; receiving nodes do not recompute it from their own membership view.
+
 ### Multi-writer state
 
-Only thread topic, name and archived flag are written by more than one node; they are last-writer-wins registers on `(hlc, node)`.
+Only thread topic, name and archived flag are written by more than one node: last-writer-wins registers on `(hlc, node_uuid)`. A local write takes `max(clock, register.hlc + 1)`, so a far-future value cannot block later edits.
+
+### Clock
+
+An in-tree HLC packed into a u64 (48-bit Unix ms + 16-bit counter). A replicated entry is never rejected for a far-ahead HLC; the local clock follows a remote HLC only within a bounded skew (e.g. 60 s), larger skew is measured at handshake and warned about. On startup the clock resumes from the journal's maximum HLC.
 
 ### IDs
 
-- Seat, thread, message and invitation IDs embed the origin node ID, so they are unique by construction. Agents read IDs constantly, so the added length stays minimal (2-4 chars).
-- A 1:1 thread's ID is deterministic from its sorted node IDs and sorted seat IDs (possibly a fixed-length hash of that tuple). Two sides of a split that each open the pair's thread create the same thread, and on heal both sides' messages simply merge.
-- Same ID means same thread, whenever created; different IDs are different threads. Names are labels and may repeat (as today).
-- Existing seat IDs are re-keyed with the local node prefix on upgrade; the old IDs remain as aliases that resolve to the new ones.
+- Public IDs: kind letter + `node_tag` + 8 base62 (12 chars), unique by construction.
+- A 1:1 thread's ID is `d` + 10 base62 of SHA-256 over the domain-tagged, sorted pair of seat IDs (11 chars). Both sides of a split that open the pair's thread create the same thread; on heal their messages merge. Concurrent creates are idempotent: the earliest `(hlc, node_uuid)` is the creator, a default topic does not write the LWW register, crossed invites settle as already joined without a nudge.
+- Same ID means same thread; different IDs are different threads. Names are labels and may repeat.
 
 ### Ordering
 
-- Each node shows a thread in local arrival order: the existing dense per-thread `sequence` becomes local ingest order, interleaved by ingest time. A message that arrives late after a partition appears at the bottom, new and unread, with its original send time.
-- Entries from one origin are always ingested in counter order (per-origin FIFO). Within an origin nothing is silently lost, only delayed; loss is possible only for facts that never left a node that is gone.
+- Each node shows a thread in local arrival order (the dense per-thread `sequence`, assigned at apply), interleaved by ingest time. A late message appears at the bottom, new and unread, with its original send time.
+- Entries from one origin are ingested in counter order. Within an origin nothing is silently lost, only delayed.
 - Different nodes may order the same thread differently. No global order is promised.
-
-### Links
-
-- When herdr-threads observes a Herdr client attaching to a remote server, the local daemon records that SSH destination as a peer; `peer add <ssh-dest>` does the same explicitly (any node may dial any destination it can reach).
-- The daemon owns the link: `ssh <dest> herdr-threads peer --stdio`, using the user's ssh config, agent and keys. Herdr clients and servers can come and go.
-- Only the dialing side reconnects, with backoff, indefinitely. The dialed side only accepts.
-- `peer forget <node>` stops dialing; it deletes nothing. The forgotten node's seats show as remote and unreachable; ACK-required messages to them go overdue normally.
 
 ### Sync
 
-- Each node keeps a version vector `{origin -> highest contiguous counter}`.
-- Peers exchange vectors on connect and on change; a node behind on an origin pulls the missing range from any linked peer that has it.
-- Relay is transitive (store-and-forward): any node serves every origin's log it holds, so any surviving path heals everyone (laptop linking `box1` and `box2` relays between them).
-- First contact exchanges full history. Upgrading an existing install backfills its local threads, messages, memberships, invitations and receipts as journal entries authored by the local node.
+- A sync exchange carries each side's full version vector with head hashes: `{(origin, incarnation) -> (counter, head_hash)}`. "Here is my vector; send what you have newer, and I'll send what I have newer than yours."
+- Relay is transitive (store-and-forward): any node serves every origin's log it holds, so any surviving path heals everyone.
+- Each origin is pulled from one peer at a time, in bounded batches; caught-up links stay subscribed for live entries. Duplicates are dropped by `(origin, incarnation, counter)`, so relay loops cannot amplify.
+- First contact exchanges full history, chunked and resumable.
+
+### Forks (restore from backup)
+
+- Detection: for each origin in an exchange, compare hashes at the lower of the two counters; a mismatch, or an ingested entry whose `prev_hash` is not the held head, is a fork. Two validly signed different entries at one `(origin, incarnation, counter)` prove that the key holder forked its log.
+- Resolution belongs to the forking node, which sees on contact a branch of its own log it does not hold: it adopts the peers' branch (recovering entries lost in the restore), bumps its incarnation, and re-signs and republishes its divergent entries under the new incarnation. Dedupe by fact ID prevents duplicates. Other nodes keep the branch they already had and hold the conflicting one until the owner republishes.
+- Operators get inspect/verify/resync/quarantine commands for an origin.
+
+### Links
+
+- Peers are discovered by polling `herdr machine list --json` (Herdr has no attach hook or event) and added explicitly with `peer add <ssh-dest>`.
+- The daemon owns the link: `ssh <dest> herdr-threads peer --stdio`, using the user's ssh config, agent and keys, non-interactive, without connection sharing, with keepalives. The remote `peer --stdio` is a stateless pump into the remote daemon, starting it if needed; the daemon stays the only SQLite writer.
+- Handshake: mutual challenge-response with node keys, envelope version, capabilities (unknown ones ignored), typed refusals (envelope, tag/uuid collision, self-link, busy). Duplicate links to one node are deduplicated by `node_uuid`.
+- Only the dialing side reconnects, with jittered backoff, indefinitely. `peer forget <node>` stops dialing and deletes nothing; that node's seats show as remote and unreachable.
 
 ### Version skew
 
-Peer links negotiate capabilities, never an exact version, and refuse only an incompatible envelope version. Together with relaying unknown kinds, a mixed-version cluster keeps relaying and FIFO intact; an older node just cannot show newer features. This follows the versionless rule in AGENTS.md.
+Peer links negotiate capabilities, never an exact version, and refuse only an incompatible envelope version. Unknown kinds are relayed and parked, so a mixed-version mesh keeps relaying and per-origin order intact. This follows the versionless rule in AGENTS.md.
 
 ### Trust
 
-- SSH is the only boundary: the same user across SSH-linked nodes, cooperative. No extra admission step.
-- TRUST-POLICY.md is amended in the implementing change: remote facts carry a new provenance value (e.g. `replicated_from:<node>`); A2 (decide in the daemon against the canonical view) applies on the authoring node, and receiving nodes apply its facts as given. No adversarial node verification.
+- SSH is the link boundary: the same user across SSH-linked nodes, cooperative. No adversarial verification of local callers.
+- Node-level authenticity is new: every entry is signed by its origin node and verified by every receiver, however it was relayed, so a link into the mesh cannot forge another node's facts. Root on a machine can steal its key; that is out of scope.
+- TRUST-POLICY.md is amended in the implementing change: origin signatures as an invariant, a provenance value for replicated facts (e.g. `replicated_from:<node>`), and A2 applied on the authoring node, with receivers applying its signed facts as given.
 
 ### Delivery
 
-- The recipient seat's home node runs the existing delivery policy when a fact is ingested, local or replicated. The delivery contract is unchanged.
-- Nudges always deliver, however late; pending nudges for a session coalesce into one wake (e.g. after a reconnect).
-- The ACK clock starts at send time on the sender's node. Overdue means overdue regardless of cause: the requested work has not started either way, and the sender must find a workaround.
+- The recipient seat's home node runs the existing delivery policy when a fact is applied, local or replicated. The delivery contract is unchanged.
+- Nudges always deliver, however late; pending nudges for a session coalesce into one wake, including during bulk catch-up.
+- The ACK clock starts at send time on the sender's node, and the sender's node decides overdue. Overdue means overdue regardless of cause. A node waking from sleep holds overdue checks until its first sync.
 
 ## Future work (not v1)
 
-- Thread union: a node-authored "t_x merged into t_y" fact (lower ID survives, so concurrent unions converge), e.g. to merge two nodes' separately created `psa-global` after first link.
+- Thread union: a node-authored "t_x merged into t_y" fact (lower ID survives, so concurrent unions converge), e.g. to merge two separately created `psa-global` threads.
 - Partial replication of message bodies if traffic grows.
 
 ## Non-goals
 
-- Consistency stronger than causal-per-origin; global message order.
-- Adversarial or untrusted nodes.
+- Consistency stronger than causal; global message order.
+- Protection against a compromised node's own key or root on a node.
 - Deleting or compacting replicated data.
+- Migrating pre-existing stores.
 - Herdr-level cross-node pane control.
-
-## Research questions (for `/deep-research`)
-
-1. Prior art and pitfalls for per-origin append-only logs with version-vector anti-entropy: Secure Scuttlebutt, Matrix event DAG, CouchDB/PouchDB sequences, cr-sqlite, Automerge sync, Bayou, Dynamo-style anti-entropy, NATS JetStream mirrors, SQLite session extension/changesets, Litestream/LiteFS, Corrosion.
-2. SQLite table shapes: journal, per-origin high-water marks, unapplied entries, materialization (triggers vs. apply loop), dual identity (local `sequence` plus `(origin, counter)`).
-3. Wire protocol over SSH stdio: framing, vector exchange, range pull, batching, backpressure, resume mid-range.
-4. HLC choice and clock-skew bounds for the LWW fields.
-5. Node ID derivation and length from the SSH host key; collision detection.
-6. Fixed-length encoding of the deterministic 1:1 thread ID.
-7. Detecting a Herdr remote attach (hook, event or observation).
-8. Migration and backfill of existing data; seat ID aliasing.
-9. Failure modes: node restored from backup reusing counters (per-log epoch?), lost journal, corrupt entry.
 
 ## Post-Implementation Notes
 
