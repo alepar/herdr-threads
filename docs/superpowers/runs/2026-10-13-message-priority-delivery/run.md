@@ -2,12 +2,12 @@
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
 resumeChange: 2026-10-13 · "design APPROVED (A-E) ... Move to autonomous stage now (both roasts on). Nudge dev-herdr-threads when merge-ready." (relayed by seePN0MKW, mpqluOeQD) · autonomous=f→t after the interactive root design; nested brainstorms and later gates run Mode B
-phase: roast-code
+phase: fix-loop
 codeMechanism: Workflow
 
 idea: Feature: message PRIORITY replaces lazy/nudge delivery modes in herdr-threads. Interactive design stage first (user reachable only via seat seePN0MKW in 1:1 thread tXPkAdb0O with --nudge; batch questions), then autonomous after design approval; both roasts ON (design + code). When integration branch is merge-ready, nudge dev-herdr-threads (taQXwBH7X). Details: priority = non-negative integer chosen by sender; 0 highest, always nudges. Recipient nudge threshold T: priority <= T nudges; negative T means everything nudges. Lazy mode removed. Default T=0, default send priority=1. Inbox listing and hook/mod injection sort by priority ascending then timestamp oldest first. Needs design: CLI flags and migration of --lazy/--nudge/--require-ack (ACK requests implied nudge today), per-seat vs per-thread threshold, existing recipient wake-on mode, wire/storage compat, docs/skill text, mod/hook surfaces.
 roast-design: 2026-10-13-message-priority-delivery-roast-design-1.md, 2026-10-13-message-priority-delivery-roast-design-2.md
-roast-code: 2026-10-14-message-priority-delivery-roast-pr-1.md
+roast-code: 2026-10-14-message-priority-delivery-roast-pr-1.md, 2026-10-14-message-priority-delivery-roast-pr-2.md
 spec: 2026-10-13-message-priority-delivery-design.md
 epic: ht-yha
 branch: super-auto/message-priority-delivery
@@ -15,6 +15,7 @@ base: main
 
 roastDesignRound: 2
 roastCodeRound: 2
+roastCodeExit: converged
 
 graph-pass: depth 8→7 · width 2.4→2.7 · applied 2 · parked 5
 
@@ -63,4 +64,5 @@ codeBuckets:
 - scopeFilter-round-1: [FYI] src/store/schema.rs:835; src/store/schema.rs:836 punch-list — A forward-only migration is the project norm, it exists on base, and the goal names no rollback path. This is an optional operational note.
 - scope-filter: 8 in-scope · 7 punch-listed
 - fix-round-1 beads · ht-yha.31 drain-halt · ht-yha.32 seat-pending-predicate (completion.rs) · ht-yha.33 old-client cursor format · ht-yha.34 merge-readiness (failing tests, guidance, doc drift) · ht-yha.35 v46→v47 replay test · ht-yha.36 probe-failure downgrade · ht-yha.37 batch-order-key · ServiceSend Must-fix not filed (parked for the user)
+- regressionPass-round-2: 3 filed · [Should-fix] src/store/lazy_delivery/mod.rs:112; src/store/lazy_delivery/wake.rs:13; src/store/lazy_delivery/mod.rs:109, [Should-fix] src/store/lazy_delivery/mod.rs:110; src/store/lazy_delivery/completion.rs:68, [Should-fix] integrations/skill/SKILL.md:17 · no re-roast (beads ht-yha.38, ht-yha.39; the amended ht-yha.33 rides the same re-entry)
 - root-design · human · D1-D11 and sections A-E approved via seePN0MKW (mwRZ1YxXs, myas79LQ8, mXmhe1P2d, mpqluOeQD)
