@@ -26,7 +26,7 @@ invitation and every ACK request is priority 0. Inbox, hook pages and the Claude
 | D8 | Model-visible framing: the header kind word is always `message` (the `lazy` kind word goes away); a `[p<N>]` marker is added only when N != 1. |
 | D9 | Priority governs **notification only**. Receipts, deadlines and overdue warnings exist only for explicit `--require-ack` recipients. A priority-0 message without `--require-ack` wakes but creates no receipt, deadline or overdue warning (user, `mXmhe1P2d`: "receipts/deadlines/overdue warnings exist only for explicit --require-ack recipients"); the send-time unavailable-recipient warning is a separate sender-feedback path (§Receipt-path side effects). Service-authored sends (`ServiceSend`) follow it too: only their explicit `recipients` get receipts; the joined snapshot gets priority-0 delivery rows (user, 2026-10-14, ht-yha.47). |
 | D11 | Ordering key: (priority asc, deadline asc with no deadline last, created asc), approved with the design (`mpqluOeQD`). |
-| D10 | Compatibility: old clients and daemons map `ordinary` ↔ p0 and `lazy` ↔ p1, capability-gated in both directions; stored rows migrate the same way. |
+| D10 | Compatibility (amended 2026-10-14, ht-yha.49, user decision): protocol 8; a CLI and a daemon of different protocol versions refuse each other before any request. Stored data migrates in place (v47): `ordinary` → p0, `lazy` → p1, `wake_on` all/nudge → T -1/0; a journaled pre-v47 send intent retries in its recorded shape and derives its priority the same way. |
 
 Consequences of D6 for flags: `invite --lazy` / `--require-ack` and `handoff --require-invite-ack` are removed;
 `invite --deadline` and `handoff --invite-deadline` stay (default: the instance `invitation_default_ms`, 5 min); a
@@ -98,6 +98,8 @@ fast-forward leaves no row that wakes the seat. The watch stream and mod carry `
 item and sort every batch they frame by the same key (arrival order breaks the final tie); separate batches stay
 in arrival order.
 
+**Per-session views.** Each open binding (session) keeps its own pending view, `binding_pending` (per binding: priority, decision_seq, ordinal; a thread-ordered twin), seeded from the binding's unread rows and kept by the v47 triggers (publish, legacy set/clear, cursor insert/advance, row display, binding end) (ht-yha.44). A binding's own reads (inbox, hook, accept, presentation) seek only its view, so a sibling's display never changes what it is offered and a sibling's backlog costs it nothing; seat-level readers merge the connected top-level views plus the legacy seat-pending rows. A view is held only by a connected or process-exited binding, dropped on any other disconnect and re-seeded on reconnect (ht-yha.54). No delivery or wake decision reads `lazy_recipients.state`, which survives only as the join frontier's fact and the binding-less completion state (ht-yha.44, ht-yha.54). The deadline-class walks (invitations, receipts) seek only pending, published items (ht-yha.52). TRUST-POLICY A8 is the normative wording, including the accepted limits.
+
 Merge note (v0.11.0, ht-327): a wake whose reason is a threshold-admitted delivery row (`lazy`) counts as seat attention for the one-process composer wake (`WakeReservation::for_seat_attention`) exactly like `pending_receipt`, because a bare `--nudge` (p0, no `--require-ack`) makes no receipt under D9 and must keep waking a one-process multi-binding seat.
 
 ## Surfaces
@@ -136,7 +138,7 @@ Merge note (v0.11.0, ht-327): a wake whose reason is a threshold-admitted delive
   recipients (keeping the existing CHECK and audit valid). Existing pending receipts stay owed; existing pending
   lazy invitations keep their recorded no-deadline, non-waking behaviour; new invitations are written
   `require_ack`.
-- **Wire**: `SendMessage.priority: Option<u8>`. A request without it (a journaled pre-v47 intent retried in its
+- **Wire**: protocol 8; mixed versions are refused, so there are no old-peer fallbacks. `SendMessage.priority: Option<u8>`. A request without it (a journaled pre-v47 intent retried in its
   recorded shape) derives it from `delivery_mode`: ordinary → 0, lazy → 1. The daemon advertises
   `send.priority_v1`, `seat.nudge_threshold_v1` and `direct.auto_join_v1`, and clients do not probe them. It
   records `require_ack` for any `Invite.confirmation`, and it validates only the shape of a pair
@@ -145,7 +147,7 @@ Merge note (v0.11.0, ht-327): a wake whose reason is a threshold-admitted delive
   message never produces one; pre-v47 receipts stay owed as recorded.
 - **Person-authored "priority"** (summaries/catch-up `is_priority`, the wake-e2e note) is a separate, unchanged
   axis; it is not a delivery priority and does not enter `DeliveryOrderKey`.
-- Protocol 8; mixed versions are refused: an older CLI or daemon fails the version check before any request (user decision 2026-10-14, ht-yha.49).
+- **Protocol 8** (user decision 2026-10-14, ht-yha.49): a CLI and a daemon of different protocol versions refuse each other before any request; stored data migrates in place (v47, above).
 
 ## Legacy readers, wire validators and receipt-side effects (design roast round 1)
 
@@ -175,25 +177,23 @@ The integration sweep greps `src`, `integrations` and `migrations`. Tests: a mix
 recipient, delivery rows for the rest; display, completion and wake all work); one p0 row behind more than 1000
 pending p1 rows wakes a T=0 seat (candidate and query plan asserted).
 
-**Wire validators, both mixed-version directions** (cluster C3):
+**Wire validators** (cluster C3):
 
 - `MessageDeliveryModes`: the reply struct is `deny_unknown_fields`, so `priority` is returned only when the request
-  sets a new `with_priority` flag (omitted when false); only a client that sees `send.priority_v1` sets it. Old
-  CLIs get the old shape.
+  sets `with_priority` (omitted when false); every current client sets it.
 - Send digest: the payload digest covers the request as sent — `priority` is included iff the request carries it.
   A journaled pre-v47 intent is retried in its original shape (no priority) and the daemon derives priority from its
   `delivery_mode`. The new client sends `priority` and omits `delivery_mode`; an explicit `delivery_mode: lazy`
   together with `priority: 0` is refused (`InvalidRequest`). Test: v46-prepared, v47-retried send for both shapes.
 - `--deadline`: the daemon refuses a deadline without explicit ACK recipients from any client (`InvalidRequest`,
-  detail naming `--require-ack`), including an old client's `--nudge --deadline`; the new CLI refuses it before
+  detail naming `--require-ack`); the new CLI refuses it before
   reading the body; help text updated.
 - `DirectThreadEnsured`: an auto-joined pair reports `(AlreadyJoined, no invitation)`, the one no-invitation shape
   the existing validator accepts, for both new and existing pairs. A journaled pre-upgrade selection that carried an
   invitation meets a pair created before the upgrade and still reports `ExistingPending` as before.
 - Invitations from human and operator callers: the human-`RequireAck` refusal is dropped for thread invitations;
   human and operator invitations are recorded confirming with the deadline (they already had deadline and wake as
-  legacy timed invitations). New client, old daemon: `human invite` and `--operator` keep sending today's
-  `confirmation: None`.
+  legacy timed invitations). `human invite` and `--operator` send `confirmation: None`, which the daemon records as confirming.
 
 **Receipt-path side effects** (cluster C4), assigned explicitly: a human seat named as an explicit ACK recipient gets a
 priority-0 delivery row, not a receipt (humans owe no ACK); the unavailable-recipient warning is kept for priority-0
@@ -224,7 +224,7 @@ stays receipt-side.
   tiebreaks (same priority with and without deadlines, equal deadlines, equal decision_seq across sources) and
   stable continuation across pages that split equal-priority runs.
 - CLI: flag matrix (`-p`, `--nudge`, removed `--lazy`, ACK + p>0 refused, deadline rules), `nudge-threshold`,
-  `wake-on` alias, old-daemon fallbacks.
+  `wake-on` alias, the protocol-8 version check has its own tests (`tests/daemon/skew.rs`).
 - Direct pairs: auto-join on first send and on handoff; pre-upgrade pending pair invitations still accept.
 - Mod: priority-sorted framing; agy header parsing of `message` with `[pN]`.
 - `scripts/wake-e2e.py`: cases send-p1 / send-p0 / send-p3 / send-ack × group/1:1, invite, with recipients at
@@ -238,19 +238,19 @@ person-authored "priority"; any version gating.
 ## Key abstractions
 
 **DeliveryPriority** — new value type (newtype over u8, 0..=9), a message's immutable notification priority
-- Owns: the range check, the default (1), the fixed p0 for invitations, ACK requests and actionable warnings, the legacy mapping both ways (`ordinary` ↔ 0, `lazy` ↔ 1; p >= 1 → `lazy` with the lossy-downgrade flag for an old daemon), and the `[p<N>]` marker (only when N != 1).
-- Hides: the numeric encoding and the D10 legacy derivation; old-wire derivation, client fallback and the v47 backfill all use this one mapping, so `DeliveryMode` is never matched to decide anything.
+- Owns: the range check, the default (1), the fixed p0 for invitations, ACK requests and actionable warnings, the stored-data mapping (`ordinary` → 0, `lazy` → 1, `from_mode`), used by the v47 migration and by journaled pre-v47 intents, and the `[p<N>]` marker (only when N != 1).
+- Hides: the numeric encoding and the D10 legacy derivation; the journaled-intent derivation and the v47 backfill both use this one mapping, so `DeliveryMode` is never matched to decide anything.
 - Must not: decide wake (NudgeThreshold does), or create receipts/deadlines (D9: send preparation does, for explicit ACK recipients only).
 - Relationships: leaf in `src/protocol`; store, CLI, delivery and watch depend on it; the digest and frozen intent serialize it.
 - Lifecycle: plain `Copy` value, parsed at the CLI/wire boundary, read from `messages.priority`.
 - Errors: out of range → `InvalidRequest` before any body is read; an out-of-range stored value → `StoreCorrupt`.
 
 **NudgeThreshold** — new value type (-1..=9, default 0), the per-seat T (D1)
-- Owns: the single wake predicate "this priority wakes this seat" (`p <= T`; -1 admits all), clamping negative input to -1, and the `wake-on` alias mapping (`all` ↔ -1, `nudge` ↔ 0; other values are not expressible to an old daemon).
+- Owns: the single wake predicate "this priority wakes this seat" (`p <= T`; -1 admits all), clamping negative input to -1, and the `wake-on` alias mapping (`all` ↔ -1, `nudge` ↔ 0).
 - Hides: the threshold rule; every wake decision calls this predicate, the threshold-aware frontier, or (for set-based SQL such as `note_published`'s `wake_work` insert, `has_wake_rows`, `oldest_pending_at`) the store-side SQL fragment owned with the seat threshold store API — the full reader list is in §Legacy readers.
 - Must not: be cached or frozen at send (D2); every wake/`wakes` decision reads the seat's current value.
 - Relationships: `src/protocol` leaf; `store::seats` reads/writes it; `lazy_delivery::wake_frontier` takes it as input.
-- Errors: an old-daemon-inexpressible value → client error with an upgrade hint; out of range → `InvalidRequest`.
+- Errors: out of range → `InvalidRequest`.
 
 **DeliveryOrderKey** — new value type with a total `Ord`, the presentation order of one pending item
 - Owns: the tuple (priority asc, deadline asc with none last, publication `decision_seq` asc, source rank, per-source ordinal), the source-rank table (invitations 0, warnings 1, receipts and pre-upgrade binding-unread ordinary rows 2, delivery rows 3), and its continuation encoding.
@@ -272,7 +272,7 @@ person-authored "priority"; any version gating.
 **FrameItem / frame() (Rust and JS)** — extended: carries priority; kind word always `message`; `[p<N>]` from `DeliveryPriority` (D8).
 **WatchMessage** — extended: gains `priority` and `deadline_at`; the daemon computes `wakes` via `NudgeThreshold`.
 **resolve_direct_pair** — extended: writes the peer's join (membership, interval, cursor init, event) through one join-recording helper shared with the caller's join (the same inserts are duplicated at 5 sites in `store/control.rs` today); `EnsureCreationPolicy` is ignored (D7).
-**Send-priority resolution (CLI)** — extended into one function shared by `send`, `send --seat`, `human send` and handoff: `-p`/`--nudge` conflict, `--require-ack` forces p0 and refuses explicit p > 0 (D3), `--deadline` needs ACK recipients, old-daemon downgrade.
+**Send-priority resolution (CLI)** — extended into one function shared by `send`, `send --seat`, `human send` and handoff: `-p`/`--nudge` conflict, `--require-ack` forces p0 and refuses explicit p > 0 (D3), `--deadline` needs ACK recipients.
 
 Variation: fixed source kinds with growing operations → closed `Source` enum in `mod inbox_v2`; legacy wire/storage spellings → mapping functions on `DeliveryPriority` and `NudgeThreshold` (the one place D10 lives); who performs the wake stays `HarnessAdapter`/`DeliveryPolicy` (contract rule 6), nothing per-harness added.
 Walk-through: `send -p 3` → `DeliveryPriority(3)` frozen in the intent → audience delivery rows with priority 3 and copied `decision_seq` → `wake_seat_attention` → `wake_frontier` filtered by `NudgeThreshold` (T=0: no wake; T=3: one reserved wake) → hook page via the merge in `DeliveryOrderKey` order, framed `[p3]` → mod sorts the batch by the same key. Per-thread thresholds (out of scope) would touch one effective-threshold lookup and the two call sites that read it; predicate, merge and framing unchanged.
@@ -280,7 +280,7 @@ Per spec §Compatibility: `delivery_mode`, `wake_on` and `confirmation` stay wri
 Per spec §Delivery model (Wake): invitations, explicit ACK receipts and actionable warnings stay unconditional wake sources rather than calling `NudgeThreshold`; equivalent because they are p0.
 
 Digest:
-- DeliveryPriority: owns range, default, fixed-p0 classes, legacy mode mapping and the `[pN]` marker;
+- DeliveryPriority: owns range, default, fixed-p0 classes, stored-data mode mapping and the `[pN]` marker;
   new legacy spellings are added only here; callers never match on `DeliveryMode` to decide anything.
 - NudgeThreshold: owns the `p <= T` wake predicate and the `wake-on` alias mapping;
   per-thread overrides go into the code that looks it up; callers never compare priority against T inline.
@@ -292,3 +292,23 @@ Digest:
 ## Post-Implementation Notes
 
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
+
+### 2026-10-14, protocol 8 and crate 1.0.0 (ht-yha.49 b693c695, ht-yha.53 1322c86b)
+
+User decision: the wire breaks. Protocol 8, crate 1.0.0; a CLI and a daemon of different protocol versions refuse each other before any request, and stored data migrates in place (v47). Every old-daemon/old-client fallback and client capability probe is removed; the capabilities stay advertised, and a journaled pre-v47 send intent still retries in its recorded shape. D10 and §Compatibility are amended to match.
+
+### 2026-10-14, ServiceSend follows D9 (ht-yha.47 43dc5e66)
+
+User decision: a service send creates receipts only for explicit non-human `recipients`; the rest of the joined snapshot gets priority-0 delivery rows.
+
+### 2026-10-14, per-session pending views (ht-yha.44 ca4c597f, ht-yha.54)
+
+User decision: "each session has its own cursor so that other siblings cant affect it". `binding_pending` per-binding views replace the seat-wide `lazy_recipients.state` as the pending fact for every delivery and wake decision (see §Delivery model, Per-session views). ht-yha.54 fixed the held set: views exist only for connected or process-exited bindings and are re-seeded on reconnect; the wake-owed recheck and the mod stall rule no longer read `state`.
+
+### 2026-10-14, deadline-class walks (ht-yha.52 cca5aa15)
+
+The invitation and receipt walks seek only pending, published items (`digest_pending_invitations`, `receipts` with `state='pending'`, `digest_pending_manifest_receipts` joined to `send_manifests`), so settled and unpublished history costs no window visit; config5 is fixed.
+
+### 2026-10-14, main-merge wake rule and its served-in-turn check (ht-327 merge seam, ht-yha.45 de8d9f57, ht-yha.54)
+
+From v0.11.0: reason `lazy` counts as seat attention for the one-process composer wake (`WakeReservation::for_seat_attention`), like `pending_receipt` (see the Merge note in §Delivery model). `wake_owed_to_binding` refuses a `lazy` wake to a binding whose own cursor or display mark already covers the frontier row; after ht-yha.54 it decides without the seat-wide `state`.
