@@ -34,7 +34,7 @@ use herdr_threads::{
         commands::DeliveryMode,
         ids::{MessageId, SeatId},
     },
-    store::lazy_delivery::{self, HighWater},
+    store::lazy_delivery::{self, RowFilter, seek_pending},
 };
 use rusqlite::params;
 
@@ -54,6 +54,12 @@ fn publish(db: &Connection, n: i64) {
 fn publish_at(db: &Connection, n: i64, decision: i64) {
     db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES(?1,'i','t',?2,'ordinary',?3,'passive',0,'lazy')",params![format!("msg-{n}"),n,decision]).unwrap();
     db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'i','t',?4,0,?3,0,1,0)",params![format!("prep-{n}"),format!("msg-{n}"),n,decision]).unwrap();
+    // note_published: the decision is copied onto the delivery row exactly once.
+    db.execute(
+        "UPDATE lazy_recipients SET decision_seq=?2 WHERE preparation_id=?1 AND decision_seq IS NULL",
+        params![format!("prep-{n}"), decision],
+    )
+    .unwrap();
     db.execute(
         "UPDATE host_instances SET decision_seq=max(decision_seq,?1) WHERE id='i'",
         [decision],
@@ -97,61 +103,48 @@ fn lazy_schema_rejects_identity_and_mode_rewrites() {
     assert!(db.execute("DELETE FROM lazy_recipients", []).is_err());
 }
 
+/// Every message the seat-level seek returns up to publication bound `dh`, and the index rows it
+/// visited.
+fn drain(db: &Connection, seat: &SeatId, dh: u64) -> (Vec<MessageId>, usize) {
+    let (mut after, mut seen, mut work) = (None, Vec::new(), 0);
+    loop {
+        let seek = seek_pending(db, "i", seat, RowFilter::Seat, after, dh, 37).unwrap();
+        work += seek.visited;
+        seen.extend(seek.row.map(|(_, recipient)| recipient.message));
+        after = seek.position;
+        if seek.exhausted {
+            return (seen, work);
+        }
+    }
+}
+
 #[test]
 fn lazy_pending_scan_bounds_unpublished_work() {
     let db = fixture();
     for n in 1..=1200 {
         stage(&db, n);
     }
-    publish(&db, 1200);
     let seat = SeatId::new("s");
-    let high = lazy_delivery::capture_high_water(&db, "i", &seat, None).unwrap();
+    // Staged rows carry no decision_seq: the seek never visits one.
+    assert_eq!(drain(&db, &seat, 1_000_000), (vec![], 0));
+    publish(&db, 1200);
+    let dh = lazy_delivery::capture_high_water(&db, "i", &seat, None)
+        .unwrap()
+        .publication_decision as u64;
     stage(&db, 1201);
     publish(&db, 1201);
-    // A row published after capture stays outside the publication fence even
-    // though its ordinal was captured.
+    // A row published after capture stays outside the publication fence.
     publish_at(&db, 1100, 1202);
-    let mut after = 0;
-    let mut work = 0;
-    let mut seen = Vec::new();
-    loop {
-        let page = lazy_delivery::pending_page(&db, "i", &seat, None, after, high, 37).unwrap();
-        assert!(page.inspected <= 37);
-        if page.inspected > 0 {
-            assert!(page.last_inspected > after);
-        }
-        if after == 0 {
-            assert!(page.recipients.is_empty());
-            assert!(page.has_more);
-        }
-        work += page.inspected;
-        seen.extend(page.recipients.into_iter().map(|r| r.message));
-        after = page.last_inspected;
-        if !page.has_more {
-            break;
-        }
-    }
-    // A lower publication fence also excludes the same candidate.
-    let old = HighWater {
-        publication_decision: 1000,
-        ..high
-    };
-    assert!(
-        lazy_delivery::pending_page(&db, "i", &seat, None, 1099, old, 1)
-            .unwrap()
-            .recipients
-            .is_empty()
-    );
-    assert_eq!(work, 1200);
-    assert_eq!(after, high.recipient_ordinal);
+    let (seen, work) = drain(&db, &seat, dh);
     assert_eq!(seen, vec![MessageId::new("msg-1200")]);
-    assert!(lazy_delivery::pending_page(&db, "i", &seat, None, 0, high, 0).is_err());
-    assert_index(
-        &db,
-        lazy_delivery::PENDING_CANDIDATES_SQL,
-        "lazy_recipients_seat_ordinal",
+    assert_eq!(
+        work, 1,
+        "only the one published row inside the fence is visited"
     );
+    // A lower publication fence excludes the same row.
+    assert_eq!(drain(&db, &seat, 1000), (vec![], 0));
 }
+
 fn assert_index(db: &Connection, sql: &str, index: &str) {
     let mut stmt = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
     let plans = stmt
@@ -178,10 +171,16 @@ fn lazy_pending_scan_skips_large_displayed_history() {
         stage(&db, n);
         publish(&db, n);
     }
-    // The binding's cursor has passed all but the last message (V34: display state is the
-    // cursor, not the recipient row's state).
+    // The binding's cursor has passed all but the last message and completion marked the rows
+    // displayed (V34: the cursor, not the row state, is the binding's display state); the partial
+    // index then no longer holds the displayed rows.
     db.execute(
         "INSERT INTO binding_cursors(binding_id,thread_id,seq) SELECT binding_id,'t',1199 FROM occupant_bindings WHERE seat_id='s'",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE lazy_recipients SET state='displayed' WHERE ordinal<1200",
         [],
     )
     .unwrap();
@@ -189,28 +188,16 @@ fn lazy_pending_scan_skips_large_displayed_history() {
     // retirement/archive; scanning must not consult those lifecycle filters.
     db.execute_batch("UPDATE memberships SET state='left' WHERE seat_id='s'; UPDATE seats SET state='retired',retired_at=0 WHERE id='s'; UPDATE threads SET archived=1 WHERE id='t'").unwrap();
     let seat = SeatId::new("s");
-    let high = lazy_delivery::capture_high_water(&db, "i", &seat, None).unwrap();
-    let page = lazy_delivery::pending_page(&db, "i", &seat, None, 0, high, 2).unwrap();
-    assert_eq!(page.inspected, 1);
-    assert_eq!(page.recipients[0].message, MessageId::new("msg-1200"));
-    assert!(!page.has_more);
+    let (seen, work) = drain(&db, &seat, 1200);
+    assert_eq!(seen, vec![MessageId::new("msg-1200")]);
+    assert_eq!(work, 1);
     let tx = db.transaction().unwrap();
     for _ in 0..2 {
         lazy_delivery::complete_for_binding(&tx, "i", &seat, None, &[MessageId::new("msg-1200")])
             .unwrap();
     }
     tx.commit().unwrap();
-    assert_eq!(
-        lazy_delivery::pending_page(&db, "i", &seat, None, 0, high, 2)
-            .unwrap()
-            .inspected,
-        0
-    );
-    assert_index(
-        &db,
-        lazy_delivery::PENDING_CANDIDATES_SQL,
-        "lazy_recipients_seat_ordinal",
-    );
+    assert_eq!(drain(&db, &seat, 1200), (vec![], 0));
 }
 
 #[test]
@@ -231,20 +218,21 @@ fn lazy_mode_lookup_is_exact_and_instance_scoped() {
         None
     );
     assert!(lazy_delivery::capture_high_water(&db, "other", &SeatId::new("s"), None).is_err());
-    assert!(
-        lazy_delivery::pending_page(
-            &db,
-            "other",
-            &SeatId::new("s"),
-            None,
-            0,
-            HighWater {
-                recipient_ordinal: 1,
-                publication_decision: 1
-            },
-            1
-        )
-        .is_err()
+    // The seek is instance-scoped: another instance sees no row of this one.
+    let other = seek_pending(
+        &db,
+        "other",
+        &SeatId::new("s"),
+        RowFilter::Seat,
+        None,
+        1,
+        10,
+    )
+    .unwrap();
+    assert!(other.row.is_none());
+    assert_eq!(
+        other.visited, 1,
+        "the row is examined and rejected, not returned"
     );
 }
 

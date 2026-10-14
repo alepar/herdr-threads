@@ -105,6 +105,7 @@ fn seeded_body(
         )
         .unwrap();
         rows.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,?3,?4,0,100000,0,1,0)", params![prep,message,thread,decision]).unwrap();
+        rows.execute("UPDATE lazy_recipients SET decision_seq=?2 WHERE preparation_id=?1 AND decision_seq IS NULL", params![prep,decision]).unwrap();
     }
     for n in 0..retained {
         let sender = format!("a-noise-{n}");
@@ -149,6 +150,7 @@ fn seeded_body(
         )
         .unwrap();
         rows.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,?3,?4,0,1,0,?5,0)",params![prep,message,thread,600000+n,if same_seat_recipients {2} else {1}]).unwrap();
+        rows.execute("UPDATE lazy_recipients SET decision_seq=?2 WHERE preparation_id=?1 AND decision_seq IS NULL", params![prep,600000+n]).unwrap();
         // Exact current episode is fixed at10000 in both populations. Older
         // retained episodes and event history grow without moving that boundary.
         rows.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,retired_at) VALUES (?1,'q4-t0','s',?2,'recipient_retired',0,?2,300,300,1)", params![format!("old-inv{n}"),n+1]).unwrap();
@@ -639,11 +641,10 @@ fn q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers() {
                 if let Some(raw) = &cursor {
                     let captured =
                         crate::protocol::pagination::InboxBatchV2CursorState::decode(raw).unwrap();
-                    assert_eq!(
-                        captured.lazy_after_ordinal, visited as u64,
-                        "actual cursor tracks all inspected ordinals from0"
+                    assert!(
+                        captured.rows.after.is_some() && !captured.rows.done,
+                        "actual cursor carries the last inspected delivery-row position"
                     );
-                    assert_eq!(captured.lazy_high_water_ordinal, 100);
                     assert!(captured.body.is_none(), "raw scan has no body tail");
                     assert!(
                         pages < 2,
@@ -805,6 +806,7 @@ fn public_warning_page(
         store,
         "i",
         &crate::protocol::commands::InboxQuery {
+            pushed: false,
             thread: None,
             seat: Some(SeatId::new("s")),
             claim: Some(claim()),
@@ -879,15 +881,22 @@ fn q4_private_resumed_excludes_warning_history() {
     for retained in [128, 8192] {
         let (store, mut db) = seeded_warning_history(retained);
         let tx = db.transaction().unwrap();
+        // The merged order puts the seat's pending priority-0 invitation first; the one-item
+        // public page leaves every lazy row and the warning phase unfinished.
         let first = public_warning_page(&tx, &store, None, 1);
         assert!(
-            matches!(first.items.as_slice(), [crate::protocol::results::InboxBatchV2Item::LazyMessage {message,..}] if message.as_str()=="msg-q4-0")
+            matches!(
+                first.items.as_slice(),
+                [crate::protocol::results::InboxBatchV2Item::Invitation { .. }]
+            ),
+            "{:?}",
+            first.items
         );
         let cursor = first.next_cursor.expect("actual public continuation");
         let captured =
             crate::protocol::pagination::InboxBatchV2CursorState::decode(&cursor).unwrap();
         assert!(
-            !captured.attention.next_manifest_warning,
+            !captured.warnings.done,
             "public cursor retains warning discovery"
         );
         let trace = ScopeTrace::install(&tx);
@@ -901,16 +910,17 @@ fn q4_private_resumed_excludes_warning_history() {
             0,
             "private resumed read skips warning audience SQL"
         );
-        assert_eq!(trace.counts(), [1, 0]);
+        assert_eq!(trace.counts(), [2, 0]);
         drop(trace);
-        assert_eq!((page.visited, page.lazy_scope_probes), (1, 3));
+        assert_eq!((page.visited, page.lazy_scope_probes), (2, 6));
         assert!(
             page.page.next_cursor.is_none(),
             "resumed private capture exhausts ordinary sources"
         );
-        assert!(
-            matches!(page.page.items.as_slice(), [crate::protocol::results::InboxBatchV2Item::LazyMessage {message,..}] if message.as_str()=="msg-q4-1")
-        );
+        assert!(matches!(page.page.items.as_slice(), [
+            crate::protocol::results::InboxBatchV2Item::LazyMessage {message: first,..},
+            crate::protocol::results::InboxBatchV2Item::LazyMessage {message: second,..}
+        ] if first.as_str()=="msg-q4-0" && second.as_str()=="msg-q4-1"));
         measured.push(counter.units());
         eprintln!(
             "Q4 warning_history={retained} private_resumed_VM_units={}",
@@ -989,7 +999,7 @@ fn q4_actual_continued_tail_checks_scope_once_and_charges_retirement() {
             .next_cursor
             .expect("a real long body pins a tail");
         let captured = InboxBatchV2CursorState::decode(&cursor).unwrap();
-        let body = captured.body.expect("captured body");
+        let (_, body) = captured.body.expect("captured body");
         assert_eq!(body.message.as_str(), "msg-q4-0");
         assert!(body.offset > 0 && body.offset < body.body_len);
         if lose_scope {

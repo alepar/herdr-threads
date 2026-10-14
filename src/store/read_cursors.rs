@@ -278,14 +278,13 @@ pub fn copy_lineage(tx: &Connection, from: &BindingId, to: &BindingId) -> Result
 }
 
 /// The rows a seat's ordinary inbox delivers, as one query fragment (the single copy; the unread
-/// walk, `has_unread` and `advance_through_displayed` all use it). Ordinary-mode messages reach a
+/// walk, `has_unread` and `advance_through_displayed` all use it). Messages with a receipt reach a
 /// seat through `prepared_recipients` (a message the seat sent itself, or any other kind, never
 /// does). Bind `?1` = the seat. Aliases: `pr` recipient row, `sm` manifest (published), `m` message.
 pub const RECEIVABLE_FROM: &str = "prepared_recipients pr \
     JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id \
     JOIN messages m ON m.id=sm.message_id";
-pub const RECEIVABLE_WHERE: &str =
-    "pr.seat_id=?1 AND m.kind='ordinary' AND m.delivery_mode='ordinary'";
+pub const RECEIVABLE_WHERE: &str = "pr.seat_id=?1 AND m.kind='ordinary'";
 /// Appended to `RECEIVABLE_WHERE`: unread by a binding, i.e. in a thread the seat has joined, past the binding's cursor
 /// (a missing cursor row counts as 0). Bind `?2` = the binding.
 pub const UNREAD_EXTRA: &str = "AND EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=m.thread_id AND mb.seat_id=pr.seat_id AND mb.state='joined') \

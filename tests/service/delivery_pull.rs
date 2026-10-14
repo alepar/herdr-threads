@@ -605,7 +605,7 @@ fn presentation_q3_shared_ack_rechecks_read_captured_body_but_keeps_unread_sibli
             &q.window.recipient.seat,
         )
         .unwrap();
-        let position = cursor.body.expect("SETUP: actual captured continuation");
+        let (_, position) = cursor.body.expect("SETUP: actual captured continuation");
         assert_eq!(position.message, captured);
         assert!(
             position.offset >= WATCH_BODY_LIMIT_BYTES as u64 && position.offset < body.len() as u64
@@ -1153,7 +1153,8 @@ fn presentation_q3_complete_inbox_delivery_coalesces_many_real_thread_gaps() {
                 |row| row.get(0)
             )
             .unwrap(),
-            "displayed"
+            // Sibling binding b has not displayed the rows: the seat-wide state stays pending.
+            "pending"
         );
     }
     for thread in threads {
@@ -14420,7 +14421,7 @@ fn presentation_owner_replay_mid_work_budget_keeps_first_capture_uninstalled() {
             && unsafe { std::ffi::CStr::from_ptr(sql) }
                 .to_bytes()
                 .starts_with(
-                b"SELECT delivery_mode,thread_id,COALESCE(decision_seq,0) FROM messages WHERE id=",
+                b"SELECT EXISTS(SELECT 1 FROM lazy_recipients r WHERE r.seat_id=?3 AND r.message_id=m.id),thread_id,COALESCE(decision_seq,0) FROM messages m WHERE id=",
             )
         {
             state.completed.fetch_add(1, Ordering::SeqCst);

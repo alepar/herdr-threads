@@ -4,133 +4,16 @@ use herdr_threads::protocol::{
     pagination::{
         CURSOR_FROM_OLDER_DAEMON, Cursor, CursorDirection, CursorScope, DeadlineCursor,
         DeadlineHighWaters, DeadlineWalks, DeliveryRowsCursor, DeliveryRowsPosition,
-        InboxBatchV2BodyPosition, InboxBatchV2CursorState as State,
-        InboxBatchV2CursorStateV2 as StateV2, InboxBatchV2Source as Source, MAX_CURSOR_BYTES,
-        PageRequest, ReceiptAttentionCursorState, SeatAttentionCursorState, WarningsCursor,
+        InboxBatchV2BodyPosition, InboxBatchV2CursorState as State, InboxBatchV2Source as Source,
+        MAX_CURSOR_BYTES, PageRequest, WarningsCursor,
     },
     priority::{DeliveryOrderKey, DeliveryPriority, SourceRank},
     time::UtcMillis,
 };
-fn state() -> State {
-    State {
-        seat: SeatId::new("s"),
-        binding_generation: Some(1),
-        execution: Some(ExecutionId::new("execution")),
-        source: Source::Lazy,
-        lazy_after_ordinal: 0,
-        lazy_high_water_ordinal: 2,
-        publication_decision_high_water: 4,
-        body: Some(InboxBatchV2BodyPosition {
-            message: MessageId::new("m"),
-            offset: 2,
-            body_len: 10,
-        }),
-        unread: None,
-        attention: SeatAttentionCursorState {
-            invitation_after_seq: 0,
-            invitation_after_ordinal: 0,
-            invitations_done: false,
-            has_pending_invitation: false,
-            invitation_frontier: Some((0, 2)),
-            receipts: Some(ReceiptAttentionCursorState {
-                physical_after: 0,
-                manifest_after: 0,
-                physical_high_water: 2,
-                manifest_high_water: 2,
-                next_manifest: false,
-            }),
-            receipts_done: false,
-            has_pending_receipt: false,
-            receipt_frontier_seq: Some(4),
-            physical_warning_after: 0,
-            physical_warning_high_water: 4,
-            manifest_warning_after: 0,
-            manifest_warning_high_water: 4,
-            next_manifest_warning: false,
-            latest_warning_seq: None,
-            latest_warning_offset: Some(0),
-        },
-    }
-}
-#[test]
-fn lazy_inbox_v2_codec_round_trip_binding_and_bounds() {
-    for source in [
-        Source::Lazy,
-        Source::Receipts,
-        Source::Invitations,
-        Source::Warnings,
-    ] {
-        let mut value = state();
-        value.source = source;
-        if matches!(source, Source::Invitations | Source::Warnings) {
-            value.body = None;
-        }
-        let raw = value.encode("instance").unwrap();
-        assert!(raw.starts_with("ib2:"));
-        assert!(raw.len() <= MAX_CURSOR_BYTES);
-        assert_eq!(
-            State::decode_for(&raw, "instance", &value.seat).unwrap(),
-            value
-        );
-        assert!(State::decode_for(&raw, "other", &value.seat).is_err());
-        assert!(State::decode_for(&raw, "instance", &SeatId::new("foreign")).is_err());
-        assert!(Cursor::decode(&raw).is_err());
-        let mut corrupt = raw.into_bytes();
-        corrupt[5] = if corrupt[5] == b'A' { b'B' } else { b'A' };
-        assert!(
-            State::decode_for(
-                &String::from_utf8(corrupt).unwrap(),
-                "instance",
-                &value.seat
-            )
-            .is_err()
-        );
-    }
-    let mut extreme = state();
-    extreme.seat = SeatId::new("s".repeat(128));
-    extreme.execution = Some(ExecutionId::new("e".repeat(128)));
-    extreme.binding_generation = Some(i64::MAX as u64);
-    extreme.lazy_high_water_ordinal = i64::MAX as u64;
-    extreme.publication_decision_high_water = i64::MAX as u64;
-    extreme.attention.receipt_frontier_seq = Some(i64::MAX);
-    extreme.attention.physical_warning_high_water = i64::MAX;
-    extreme.attention.manifest_warning_high_water = i64::MAX;
-    extreme.attention.invitation_frontier = Some((0, i64::MAX));
-    let r = extreme.attention.receipts.as_mut().unwrap();
-    r.physical_high_water = i64::MAX;
-    r.manifest_high_water = i64::MAX;
-    extreme.body = Some(InboxBatchV2BodyPosition {
-        message: MessageId::new("m".repeat(128)),
-        offset: 1,
-        body_len: u64::MAX,
-    });
-    let raw = extreme.encode("instance").unwrap();
-    assert!(raw.len() <= MAX_CURSOR_BYTES);
-    assert_eq!(
-        State::decode_for(&raw, "instance", &extreme.seat).unwrap(),
-        extreme
-    );
-    for bad in 0..6 {
-        let mut value = state();
-        match bad {
-            0 => value.lazy_after_ordinal = 3,
-            1 => value.body.as_mut().unwrap().offset = 11,
-            2 => value.binding_generation = None,
-            3 => value.attention.receipts = None,
-            4 => value.source = Source::Warnings,
-            _ => {
-                value.source = Source::Receipts;
-                value.attention.receipts_done = true;
-            }
-        }
-        assert!(value.encode("instance").is_err());
-    }
-    assert!(State::decode(&"ib2:A".repeat(300)).is_err());
-}
 #[test]
 fn lazy_inbox_v2_codec_is_rejected_by_every_legacy_page_route() {
     use serde_json::json;
-    let raw = state().encode("i").unwrap();
+    let raw = base_v2().encode("i").unwrap();
     let args = [
         (
             "directory",
@@ -216,8 +99,8 @@ fn walks(i: i64, u: Option<u64>, p: i64, m: i64, next: bool) -> DeadlineWalks {
     }
 }
 
-fn base_v2() -> StateV2 {
-    StateV2 {
+fn base_v2() -> State {
+    State {
         seat: SeatId::new("s"),
         binding_generation: Some(1),
         execution: Some(ExecutionId::new("execution")),
@@ -273,7 +156,7 @@ fn triple(k: &DeliveryOrderKey) -> DeliveryRowsPosition {
 }
 
 /// Deterministic generator over every class/position/done-flag combination.
-fn generated_states() -> Vec<StateV2> {
+fn generated_states() -> Vec<State> {
     let mut out = Vec::new();
     let mut lcg = 0x2545_f491_4f6c_dd1du64;
     let mut next = move |modulus: u64| {
@@ -429,9 +312,8 @@ fn cursor_v2_round_trips_every_combination() {
             .encode("instance")
             .unwrap_or_else(|e| panic!("{e}: {s:?}"));
         assert!(raw.starts_with("ib2:") && raw.len() <= MAX_CURSOR_BYTES);
-        assert_eq!(&StateV2::decode_for(&raw, "instance", &s.seat).unwrap(), s);
-        assert_eq!(&StateV2::decode(&raw).unwrap(), s);
-        assert!(State::decode(&raw).is_err());
+        assert_eq!(&State::decode_for(&raw, "instance", &s.seat).unwrap(), s);
+        assert_eq!(&State::decode(&raw).unwrap(), s);
     }
     // worst case: 128-byte ids, huge values, window end, body
     let mut w = states.last().unwrap().clone();
@@ -452,7 +334,7 @@ fn cursor_v2_round_trips_every_combination() {
         "worst case {} bytes",
         raw.len()
     );
-    assert_eq!(StateV2::decode_for(&raw, "instance", &w.seat).unwrap(), w);
+    assert_eq!(State::decode_for(&raw, "instance", &w.seat).unwrap(), w);
 }
 
 #[test]
@@ -466,15 +348,15 @@ fn cursor_v2_elides_the_row_position_after_a_delivery_row() {
     let a = elided.encode("i").unwrap();
     let b = receipt_last.encode("i").unwrap();
     assert!(a.len() < b.len(), "{} !< {}", a.len(), b.len());
-    assert_eq!(StateV2::decode(&a).unwrap().rows.after, Some(triple(&last)));
-    assert_eq!(StateV2::decode(&b).unwrap().rows.after, Some(triple(&last)));
+    assert_eq!(State::decode(&a).unwrap().rows.after, Some(triple(&last)));
+    assert_eq!(State::decode(&b).unwrap().rows.after, Some(triple(&last)));
     // a different position on a delivery-row last is not elided and survives
     let mut other = elided.clone();
     other.rows.after = Some(DeliveryRowsPosition {
         ordinal: 23,
         ..triple(&last)
     });
-    assert_eq!(StateV2::decode(&other.encode("i").unwrap()).unwrap(), other);
+    assert_eq!(State::decode(&other.encode("i").unwrap()).unwrap(), other);
 }
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -544,21 +426,21 @@ fn cursor_v2_rejects_noncanonical_and_out_of_bounds() {
     let mut windowed = base_v2();
     windowed.deadline.window_end = Some(walks(2, Some(3), 4, 5, true));
     let good_raw = windowed.encode("i").unwrap();
-    assert!(StateV2::decode_for(&good_raw, "i", &windowed.seat).is_ok());
+    assert!(State::decode_for(&good_raw, "i", &windowed.seat).is_ok());
     let seat = windowed.seat.clone();
     let check = |payload: Vec<u8>, why: &str| {
         let raw = retag(&payload, "i", "s");
-        assert!(StateV2::decode_for(&raw, "i", &seat).is_err(), "{why}");
+        assert!(State::decode_for(&raw, "i", &seat).is_err(), "{why}");
     };
     let good = payload_of(&good_raw);
     // sanity: an untouched re-tag decodes
-    assert!(StateV2::decode_for(&retag(&good, "i", "s"), "i", &seat).is_ok());
+    assert!(State::decode_for(&retag(&good, "i", "s"), "i", &seat).is_ok());
     // flipped flag bits: each single-bit flip of the flag bytes either is rejected or changes nothing legal
     for bit in 0..16 {
         let mut p = good.clone();
         p[1 + bit / 8] ^= 1 << (bit % 8);
         let raw = retag(&p, "i", "s");
-        if let Ok(s) = StateV2::decode_for(&raw, "i", &seat) {
+        if let Ok(s) = State::decode_for(&raw, "i", &seat) {
             assert_ne!(
                 s, windowed,
                 "flipping flag bit {bit} must not decode to the same state"
@@ -655,18 +537,19 @@ fn cursor_v2_rejects_noncanonical_and_out_of_bounds() {
 
 #[test]
 fn cursor_v2_rejects_a_format_1_token_with_the_older_daemon_detail() {
-    let v1 = state().encode("instance").unwrap();
-    assert_eq!(StateV2::decode(&v1), Err(CURSOR_FROM_OLDER_DAEMON));
+    // A format-1 payload starts with version byte 1; the codec rejects it before reading further.
+    let v1 = retag(&[1, 0, 1, 1, b's', 0, 0, 0, 0], "instance", "s");
+    assert_eq!(State::decode(&v1), Err(CURSOR_FROM_OLDER_DAEMON));
     assert_eq!(
-        StateV2::decode_for(&v1, "instance", &SeatId::new("s")),
+        State::decode_for(&v1, "instance", &SeatId::new("s")),
         Err(CURSOR_FROM_OLDER_DAEMON)
     );
     assert_eq!(
         CURSOR_FROM_OLDER_DAEMON,
         "cursor from an older daemon; run inbox again"
     );
-    let v2 = base_v2().encode("instance").unwrap();
-    assert_eq!(State::decode(&v2), Err("unknown v2 cursor version"));
+    let unknown = retag(&[3, 0, 0], "instance", "s");
+    assert_eq!(State::decode(&unknown), Err("unknown v2 cursor version"));
 }
 
 #[test]
@@ -674,12 +557,12 @@ fn cursor_v2_binding_mismatch_is_unchanged() {
     let s = base_v2();
     let raw = s.encode("instance").unwrap();
     assert_eq!(
-        StateV2::decode_for(&raw, "other", &s.seat),
+        State::decode_for(&raw, "other", &s.seat),
         Err("v2 cursor binding mismatch")
     );
     assert_eq!(
-        StateV2::decode_for(&raw, "instance", &SeatId::new("foreign")),
+        State::decode_for(&raw, "instance", &SeatId::new("foreign")),
         Err("v2 cursor binding mismatch")
     );
-    assert!(StateV2::decode_for(&raw, "instance", &s.seat).is_ok());
+    assert!(State::decode_for(&raw, "instance", &s.seat).is_ok());
 }

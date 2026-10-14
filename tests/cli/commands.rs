@@ -3033,48 +3033,52 @@ fn inbox_v2_continuation_validates_without_changing_own_text_action() {
     use crate::protocol::{
         ids::{ExecutionId, MessageId, SeatId},
         pagination::{
+            DeadlineCursor, DeadlineHighWaters, DeadlineWalks, DeliveryRowsCursor,
             InboxBatchV2BodyPosition, InboxBatchV2CursorState as State,
-            InboxBatchV2Source as Source, ReceiptAttentionCursorState, SeatAttentionCursorState,
+            InboxBatchV2Source as Source, WarningsCursor,
         },
     };
     let state = State {
         seat: SeatId::new("s"),
         binding_generation: Some(1),
         execution: Some(ExecutionId::new("execution")),
-        source: Source::Lazy,
-        lazy_after_ordinal: 0,
-        lazy_high_water_ordinal: 2,
         publication_decision_high_water: 4,
-        body: Some(InboxBatchV2BodyPosition {
-            message: MessageId::new("m"),
-            offset: 2,
-            body_len: 10,
-        }),
-        unread: None,
-        attention: SeatAttentionCursorState {
-            invitation_after_seq: 0,
-            invitation_after_ordinal: 0,
-            invitations_done: false,
-            has_pending_invitation: false,
-            invitation_frontier: Some((0, 2)),
-            receipts: Some(ReceiptAttentionCursorState {
+        last: None,
+        rows: DeliveryRowsCursor {
+            after: None,
+            done: false,
+        },
+        deadline: DeadlineCursor {
+            high: DeadlineHighWaters {
+                invitation: 2,
+                unread: None,
+                physical: 2,
+                manifest: 2,
+            },
+            window_start: DeadlineWalks {
+                invitation_after: 0,
+                unread_after: None,
                 physical_after: 0,
                 manifest_after: 0,
-                physical_high_water: 2,
-                manifest_high_water: 2,
                 next_manifest: false,
-            }),
-            receipts_done: false,
-            has_pending_receipt: false,
-            receipt_frontier_seq: Some(4),
-            physical_warning_after: 0,
-            physical_warning_high_water: 4,
-            manifest_warning_after: 0,
-            manifest_warning_high_water: 4,
-            next_manifest_warning: false,
-            latest_warning_seq: None,
-            latest_warning_offset: Some(0),
+            },
+            window_end: None,
+            done: false,
         },
+        warnings: WarningsCursor {
+            physical_after: 0,
+            manifest_after: 0,
+            offered: 0,
+            done: false,
+        },
+        body: Some((
+            Source::Lazy,
+            InboxBatchV2BodyPosition {
+                message: MessageId::new("m"),
+                offset: 2,
+                body_len: 10,
+            },
+        )),
     };
     let raw = state.encode("fixture-instance").unwrap();
     let parsed = parse_argv(["ht", "inbox", "--cursor", &raw]).unwrap();

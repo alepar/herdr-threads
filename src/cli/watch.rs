@@ -770,6 +770,7 @@ impl PageSource for ClientPageSource<'_> {
             .client
             .call(
                 Command::InboxBatchV2(InboxQuery {
+                    pushed: false,
                     thread: None,
                     claim: self.claim.cloned(),
                     seat: Some(self.seat.clone()),

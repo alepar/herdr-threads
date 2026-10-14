@@ -17,7 +17,9 @@ use crate::{
     ports::LocalClient,
     protocol::{
         authority::{CallerClaim, CallerRole},
-        capabilities::{BINDING_CURSORS, IN_TURN_OFFER, INBOX_BATCH_V2, LAZY_HOOK_DELIVERY},
+        capabilities::{
+            BINDING_CURSORS, IN_TURN_OFFER, INBOX_BATCH_V2, INBOX_PUSHED_HOLD, LAZY_HOOK_DELIVERY,
+        },
         commands::{AdvanceCursors, Command, CompleteInboxDelivery, InboxQuery, LazyCompletionVia},
         ids::{InvitationId, MessageId, OperationId},
         output::{ContinuationContext, OutputFormat, OutputSpec, encode_selected},
@@ -73,6 +75,8 @@ pub fn read_page<C: LocalClient + ?Sized>(
         context: ContinuationContext::default(),
     };
     let cursors = client.supports_capability(BINDING_CURSORS, budget);
+    // This page is a push: the catch-up hold applies to it as to the digest (spec section 7).
+    let pushed = client.supports_capability(INBOX_PUSHED_HOLD, budget);
     let CommandResult::InboxBatchV2(page) = client
         .call_with_output(
             Command::InboxBatchV2(InboxQuery {
@@ -84,6 +88,7 @@ pub fn read_page<C: LocalClient + ?Sized>(
                     limit: PAGE_ROWS,
                     max_bytes: PAGE_READ_BYTES,
                 },
+                pushed,
             }),
             &output,
             budget,

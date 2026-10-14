@@ -647,10 +647,10 @@ fn private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display(
     let cursor: String = f.db.query_row("SELECT ordinary_cursor FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='watch'",[f.binding(&f.b).as_str()],|r|r.get(0)).unwrap();
     let captured =
         InboxBatchV2CursorState::decode_for(&cursor, &f.instance.to_string(), &f.b.seat).unwrap();
-    assert_eq!(captured.source, InboxBatchV2Source::Lazy);
-    let tail = captured
+    let (source, tail) = captured
         .body
         .expect("real producer must retain the long Lazy continuation");
+    assert_eq!(source, InboxBatchV2Source::Lazy);
     assert_eq!(tail.message, message);
     assert!(tail.offset > 0);
     assert!(long_utf8_body().is_char_boundary(tail.offset as usize));
@@ -755,8 +755,8 @@ fn private_old_episode_lazy_tail_retires_and_reaches_fresh_preaccept_body() {
     let cursor: String = f.db.query_row("SELECT ordinary_cursor FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='watch'", [f.binding(&f.b).as_str()], |r| r.get(0)).unwrap();
     let captured =
         InboxBatchV2CursorState::decode_for(&cursor, &f.instance.to_string(), &f.b.seat).unwrap();
-    assert_eq!(captured.source, InboxBatchV2Source::Lazy);
-    let tail = captured.body.expect("real canonical long-body capture");
+    let (source, tail) = captured.body.expect("real canonical long-body capture");
+    assert_eq!(source, InboxBatchV2Source::Lazy);
     assert_eq!(tail.message, old);
     assert!(tail.offset > 0 && long_utf8_body().is_char_boundary(tail.offset as usize));
     let confirm_output = |page: &crate::protocol::delivery::DeliveryPageV2| {

@@ -1,10 +1,9 @@
-// Separate passive traversal: source positions and completion never enter v1
-// attention. Start with Lazy, then rotate after each inspected candidate.
+// Separate passive traversal: a min-head merge over the ordering classes (`order::OrderClass`), each
+// walked by its own persisted position; completion never enters v1 attention.
 mod capture;
-// Wired by ht-yha.5.4 (inbox v2 merge).
-#[cfg_attr(not(test), allow(dead_code))]
 mod deadline_window;
 mod hydrate;
+mod order;
 mod sources;
 
 use super::*;
@@ -12,15 +11,17 @@ use crate::protocol::{
     authority::CallerClaim,
     ids::BindingId,
     pagination::{
+        DeadlineCursor, DeadlineHighWaters, DeadlineWalks, DeliveryRowsCursor,
         InboxBatchV2BodyPosition, InboxBatchV2CursorState as State, InboxBatchV2Source as Source,
-        InboxBatchV2UnreadPosition,
+        WarningsCursor,
     },
     results::InboxBatchV2Item as Item,
 };
 
 #[cfg(test)]
 pub(super) use self::capture::{binding, fence_holds};
-use self::hydrate::{chunk, message};
+use self::hydrate::chunk;
+use self::order::{Merge, OrderClass, PageSubset, row_filter, row_key};
 use self::{capture::*, sources::*};
 pub(super) use self::{hydrate::hydrate_message, sources::unread_ordinal};
 
@@ -34,36 +35,8 @@ pub(super) struct QueryModePage {
     pub continuation_probes: usize,
     pub lazy_scope_probes: usize,
 }
-fn source_done(state: &State, source: Source) -> bool {
-    match source {
-        Source::Lazy => state.lazy_after_ordinal >= state.lazy_high_water_ordinal,
-        Source::Invitations => state.attention.invitations_done,
-        Source::Receipts => state.attention.receipts_done,
-        Source::Warnings => state.attention.next_manifest_warning,
-        Source::Unread => state
-            .unread
-            .is_none_or(|u| u.after_ordinal >= u.high_water_ordinal),
-    }
-}
 fn done(state: &State) -> bool {
-    [
-        Source::Lazy,
-        Source::Unread,
-        Source::Invitations,
-        Source::Receipts,
-        Source::Warnings,
-    ]
-    .into_iter()
-    .all(|s| source_done(state, s))
-}
-fn rotate(state: &mut State) {
-    state.source = match state.source {
-        Source::Lazy if state.unread.is_some() => Source::Unread,
-        Source::Lazy | Source::Unread => Source::Invitations,
-        Source::Invitations => Source::Receipts,
-        Source::Receipts => Source::Warnings,
-        Source::Warnings => Source::Lazy,
-    };
+    OrderClass::ALL.into_iter().all(|class| class.done(state)) && state.body.is_none()
 }
 fn page_v2(
     items: Vec<Item>,
@@ -171,24 +144,24 @@ pub(super) fn query_mode(
     if ordinary_only && q.thread.is_some() {
         return Err(invalid("presentation page has no thread scope"));
     }
+    let subset = match (ordinary_only, q.thread.as_ref()) {
+        (true, _) => PageSubset::Presentation,
+        (false, Some(thread)) => PageSubset::ThreadScoped(thread),
+        (false, None) if q.pushed => PageSubset::Pushed,
+        (false, None) => PageSubset::All,
+    };
     let mut state = match q.page.cursor.as_ref() {
         Some(raw) => State::decode_for(raw, instance, seat).map_err(invalid)?,
-        None => capture(db, instance, seat, &reader, ordinary_only)?,
+        None => capture(db, instance, seat, &reader, &subset)?,
     };
-    if ordinary_only {
-        state.attention.invitations_done = true;
-        state.attention.invitation_frontier = Some((0, 0));
-        // Warnings have their own presentation source. Normalize older or
-        // public cursors as well as fresh captures before source rotation.
-        state.attention.next_manifest_warning = true;
-    }
+    subset.apply(&mut state, &reader);
     let fence = match reading {
         Some(_) => {
             identity(db, seat, &reader)? == state.binding_generation.zip(state.execution.clone())
         }
         None => fence_holds(db, seat, state.binding_generation, state.execution.as_ref())?,
     };
-    if !fence || state.unread.is_some() != reading.is_some() {
+    if !fence || state.deadline.high.unread.is_some() != reading.is_some() {
         return Err(invalid("inbox binding changed"));
     }
     let decision: i64 = db
@@ -206,36 +179,26 @@ pub(super) fn query_mode(
     // settlement), never a fixed harness list:
     // a Hermes binding's pending receipts are ACK candidates too.
     let current_agent = current_agent(db, seat, reading)?;
-    // Thread scope (ht-br0): only the reader's unread lazy rows of that thread, under the
-    // unchanged per-binding (or seat) lazy eligibility. Every other source starts done, so the
-    // page shows (and a display settles) nothing else: no ordinary, receipt, invitation or
-    // warning rows and no first-contact stats. A scoped page is a first page, so there is no
-    // continued body to validate here.
-    if q.thread.is_some() {
-        state.attention.invitations_done = true;
-        state.attention.receipts_done = true;
-        state.attention.next_manifest_warning = true;
-        if let Some(unread) = &mut state.unread {
-            unread.after_ordinal = unread.high_water_ordinal;
-        }
-        // A claim that names no binding of the seat would complete in the pre-binding
-        // seat-wide form, whose cursor walks this page cannot bound: it shows no row.
-        if matches!(reader, Reader::Unknown) {
-            state.lazy_after_ordinal = state.lazy_high_water_ordinal;
-        }
-    }
     // Progress is compared to the original capture, before retirement.
     let initial = state.clone();
-    let mut continuation = None;
+    let dh = state.publication_decision_high_water;
     let mut retired_body = None;
     let mut continuation_probes = 0;
-    let mut lazy_scope_probes = 0;
-    if let Some(body) = state.body.clone() {
-        let lazy = state.source == Source::Lazy;
-        if message(db, body.message.as_str(), lazy, current_agent, &state)?.is_none() {
+    if let Some((source, body)) = state.body.clone() {
+        let lazy = source == Source::Lazy;
+        if hydrate_message(
+            db,
+            body.message.as_str(),
+            lazy,
+            current_agent,
+            seat,
+            Some(&body),
+        )?
+        .is_none()
+        {
             return Err(invalid("continued body is absent"));
         }
-        let addressed = if ordinary_only && state.source == Source::Unread {
+        let addressed = if ordinary_only && source == Source::Unread {
             let validated = continued_ordinary(
                 db,
                 instance,
@@ -244,40 +207,34 @@ pub(super) fn query_mode(
                 &mut continuation_probes,
             )?;
             if validated.retire {
-                state
-                    .unread
-                    .as_mut()
-                    .expect("captured unread position")
-                    .after_ordinal = validated.ordinal as u64;
+                // The settled body is no longer unread or pending, so the re-collected window
+                // does not list it again.
                 state.body = None;
                 retired_body = Some(validated.message);
-            } else {
-                continuation = Some(validated);
             }
             true
-        } else if state.source == Source::Unread {
+        } else if source == Source::Unread {
             reading.is_some_and(|binding| {
-                unread_ordinal(
-                    db,
-                    seat,
-                    binding,
-                    body.message.as_str(),
-                    state.publication_decision_high_water,
-                )
-                .ok()
-                .flatten()
-                .zip(state.unread)
-                .is_some_and(|(ordinal, u)| {
-                    ordinal as u64 > u.after_ordinal && ordinal as u64 <= u.high_water_ordinal
-                })
+                unread_ordinal(db, seat, binding, body.message.as_str(), dh)
+                    .ok()
+                    .flatten()
+                    .zip(
+                        state
+                            .deadline
+                            .window_start
+                            .unread_after
+                            .zip(state.deadline.high.unread),
+                    )
+                    .is_some_and(|(ordinal, (after, high))| {
+                        ordinal as u64 > after && ordinal as u64 <= high
+                    })
             })
         } else if lazy {
-            db.query_row("SELECT EXISTS(SELECT 1 FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id AND sm.thread_id=r.thread_id JOIN messages m ON m.id=r.message_id AND m.instance_id=sm.instance_id AND m.thread_id=r.thread_id AND m.decision_seq=sm.decision_seq WHERE r.seat_id=?1 AND r.message_id=?2 AND sm.instance_id=?3 AND sm.decision_seq<=?4 AND r.ordinal>?5 AND r.ordinal<=?6 AND m.kind='ordinary')",params![seat.as_str(),body.message.as_str(),instance,state.publication_decision_high_water as i64,state.lazy_after_ordinal as i64,state.lazy_high_water_ordinal as i64],|r|r.get::<_,bool>(0)).map_err(store_error)?
+            lazy_body_position(db, instance, seat, body.message.as_str(), dh)?
+                .is_some_and(|position| state.rows.after.is_none_or(|after| position > after))
         } else {
             crate::store::effective::effective_receipt(db, body.message.as_str(), seat.as_str())?
-                .is_some_and(|r| {
-                    r.decision_seq.unwrap_or(0) <= state.publication_decision_high_water as i64
-                })
+                .is_some_and(|r| r.decision_seq.unwrap_or(0) <= dh as i64)
         };
         if !addressed {
             return Err(invalid("continued body is not captured addressed content"));
@@ -313,113 +270,212 @@ pub(super) fn query_mode(
             }
         }
     }
+    let filter = row_filter(db, &subset, &reader, seat)?;
     // A retired body consumes one of the existing candidate visits.
-    let mut visited = usize::from(retired_body.is_some());
-    let mut stop = StopReason::Complete;
-    while !done(&state) {
+    let mut merge = Merge::new(
+        db,
+        instance,
+        seat,
+        reading,
+        current_agent,
+        filter,
+        &subset,
+        usize::from(retired_body.is_some()),
+    );
+    let stop;
+    loop {
         if budget.is_exhausted(store.clock()) {
             return Err(api_error(
                 ErrorCode::ReadBudgetExhausted,
                 "inbox v2 budget exhausted",
             ));
         }
-        if items.len() >= q.page.limit as usize {
-            stop = StopReason::Rows;
-            break;
-        }
-        if visited >= CANDIDATE_LIMIT
-            || (!ordinary_only && state.source == Source::Warnings && CANDIDATE_LIMIT - visited < 2)
-        {
-            stop = StopReason::Work;
-            break;
-        }
-        if source_done(&state, state.source) {
-            rotate(&mut state);
-            continue;
-        }
-        let before = state.clone();
-        let (item, work) = scan(
-            db,
-            instance,
-            &mut state,
-            current_agent,
-            reading,
-            ordinary_only,
-            continuation.as_ref(),
-            &mut lazy_scope_probes,
-            &mut retired_body,
-            q.thread.as_ref(),
-        )?;
-        visited += work;
-        state.body = None;
-        rotate(&mut state);
-        if let Some(mut item) = item {
-            if matches!(
-                &item,
-                Item::Invitation {
-                    goal_data: Some(_),
-                    ..
+        // A partly shown body resumes first; otherwise the smallest head of the unfinished
+        // classes is next.
+        let resumed = state.body.clone();
+        let before;
+        let (class, emitted) = match &resumed {
+            None => {
+                if !merge.ensure(&mut state)? {
+                    stop = StopReason::Work;
+                    break;
                 }
-            ) && !fits(
-                std::slice::from_ref(&item),
-                &state,
-                instance,
-                &q.page,
-                output,
-            )? && let Item::Invitation { goal_data, .. } = &mut item
-            {
-                *goal_data = None;
+                let Some((class, key)) = merge.pick() else {
+                    stop = StopReason::Complete;
+                    break;
+                };
+                if items.len() >= q.page.limit as usize {
+                    stop = StopReason::Rows;
+                    break;
+                }
+                before = state.clone();
+                let emitted = merge.item(class, &state, None)?;
+                merge.advance(class, &mut state, key);
+                state.last = Some(key);
+                (class, emitted)
             }
-            let mut trial = items.clone();
-            trial.push(item.clone());
-            if fits(&trial, &state, instance, &q.page, output)? {
-                items.push(item);
-                continue;
-            }
-            let len = match &item {
-                Item::Message { body, .. } | Item::LazyMessage { body, .. } => Some(body.len()),
-                _ => None,
-            };
-            let mut chosen = None;
-            if let Some(len) = len {
-                let (mut lo, mut hi) = (1, len);
-                while lo <= hi {
-                    let mid = lo + (hi - lo) / 2;
-                    let end = match &item {
-                        Item::Message { body, .. } | Item::LazyMessage { body, .. } => (mid..=len)
-                            .find(|&n| body.is_char_boundary(n))
-                            .unwrap_or(len),
-                        _ => unreachable!(),
-                    };
-                    let (chunk, position) = chunk(&item, end).expect("positive UTF8 chunk");
-                    let mut next = before.clone();
-                    next.body = Some(position);
-                    let mut trial = items.clone();
-                    trial.push(chunk.clone());
-                    if fits(&trial, &next, instance, &q.page, output)? {
-                        chosen = Some((chunk, next));
-                        lo = end.saturating_add(1)
-                    } else {
-                        hi = mid - 1
+            Some((source, body)) => {
+                if items.len() >= q.page.limit as usize {
+                    stop = StopReason::Rows;
+                    break;
+                }
+                if merge.visited >= CANDIDATE_LIMIT {
+                    stop = StopReason::Work;
+                    break;
+                }
+                match OrderClass::of(*source) {
+                    OrderClass::DeliveryRows => {
+                        // The one physical visit of the resumed row.
+                        merge.visited += 1;
+                        let position =
+                            lazy_body_position(db, instance, seat, body.message.as_str(), dh)?
+                                .ok_or_else(|| {
+                                    invalid("continued body is not captured addressed content")
+                                })?;
+                        // Recheck only scope. A captured tail must survive its own cursor
+                        // progress, but a cursorless reader cannot borrow a later invitation
+                        // episode for an older publication.
+                        if let Some(binding) = reading {
+                            if ordinary_only {
+                                merge.lazy_scope_probes += 3;
+                            }
+                            let visible: bool = db
+                                .query_row(
+                                    super::LAZY_CONTINUATION_SCOPE_SQL,
+                                    params![
+                                        seat.as_str(),
+                                        body.message.as_str(),
+                                        binding.as_str(),
+                                        instance
+                                    ],
+                                    |r| r.get(0),
+                                )
+                                .map_err(store_error)?;
+                            if !visible {
+                                let legacy_pending: i64 = db
+                                    .query_row(
+                                        "SELECT legacy_pending FROM lazy_recipients WHERE seat_id=?1 AND message_id=?2",
+                                        params![seat.as_str(), body.message.as_str()],
+                                        |r| r.get(0),
+                                    )
+                                    .map_err(store_error)?;
+                                // Positive captured publication/address and accumulator
+                                // validation preceded this. Only modern private tails may
+                                // retire on scope loss; public and legacy continuations
+                                // remain strict.
+                                if ordinary_only && legacy_pending == 0 {
+                                    state.rows.after = Some(position);
+                                    state.body = None;
+                                    retired_body = Some(body.message.clone());
+                                    continue;
+                                }
+                                return Err(invalid(
+                                    "continued body is not captured unread content",
+                                ));
+                            }
+                        }
+                        before = state.clone();
+                        let key = row_key(position);
+                        let emitted = merge.item(OrderClass::DeliveryRows, &state, Some(body))?;
+                        merge.advance(OrderClass::DeliveryRows, &mut state, key);
+                        state.last = Some(key);
+                        (OrderClass::DeliveryRows, emitted)
+                    }
+                    OrderClass::Deadline => {
+                        // The body is emitted straight from its message, whether or not the walks
+                        // still list it; the window only drops its item so it is not shown twice.
+                        if !merge.ensure_class(OrderClass::Deadline, &mut state)? {
+                            stop = StopReason::Work;
+                            break;
+                        }
+                        before = state.clone();
+                        let ack = merge.body_ack(&body.message, dh)?;
+                        let emitted = merge
+                            .body_item(&body.message, ack, body)?
+                            .map(|item| (item, *source));
+                        if let Some(key) = merge.settle_body(&mut state, &body.message) {
+                            state.last = Some(key);
+                        }
+                        (OrderClass::Deadline, emitted)
+                    }
+                    OrderClass::Warnings => {
+                        return Err(invalid("continued body is not captured addressed content"));
                     }
                 }
             }
-            if let Some((chunk, next)) = chosen {
-                items.push(chunk);
-                state = next;
-                stop = StopReason::Bytes;
-                break;
+        };
+        state.body = None;
+        let Some((mut item, source)) = emitted else {
+            continue;
+        };
+        if matches!(
+            &item,
+            Item::Invitation {
+                goal_data: Some(_),
+                ..
             }
-            state = before;
-            if items.is_empty() {
-                return Err(ApiError::invalid_budget(
-                    "inbox v2 item or body chunk cannot fit",
-                ));
+        ) && !fits(
+            std::slice::from_ref(&item),
+            &state,
+            instance,
+            &q.page,
+            output,
+        )? && let Item::Invitation { goal_data, .. } = &mut item
+        {
+            *goal_data = None;
+        }
+        let mut trial = items.clone();
+        trial.push(item.clone());
+        if fits(&trial, &state, instance, &q.page, output)? {
+            items.push(item);
+            continue;
+        }
+        let len = match &item {
+            Item::Message { body, .. } | Item::LazyMessage { body, .. } => Some(body.len()),
+            _ => None,
+        };
+        let mut chosen = None;
+        if let Some(len) = len {
+            let (mut lo, mut hi) = (1, len);
+            while lo <= hi {
+                let mid = lo + (hi - lo) / 2;
+                let end = match &item {
+                    Item::Message { body, .. } | Item::LazyMessage { body, .. } => (mid..=len)
+                        .find(|&n| body.is_char_boundary(n))
+                        .unwrap_or(len),
+                    _ => unreachable!(),
+                };
+                let (chunk, position) = chunk(&item, end).expect("positive UTF8 chunk");
+                let mut next = before.clone();
+                next.body = Some((source, position));
+                merge.pin_partial(class, &mut next);
+                let mut trial = items.clone();
+                trial.push(chunk.clone());
+                if fits(&trial, &next, instance, &q.page, output)? {
+                    chosen = Some((chunk, next));
+                    lo = end.saturating_add(1)
+                } else {
+                    hi = mid - 1
+                }
             }
+        }
+        if let Some((chunk, next)) = chosen {
+            items.push(chunk);
+            state = next;
             stop = StopReason::Bytes;
             break;
         }
+        state = before;
+        if items.is_empty() {
+            return Err(ApiError::invalid_budget(
+                "inbox v2 item or body chunk cannot fit",
+            ));
+        }
+        stop = StopReason::Bytes;
+        break;
     }
+    let visited = merge.visited;
+    let lazy_scope_probes = merge.lazy_scope_probes;
     if !done(&state) && state == initial {
         return Err(ApiError::invalid_budget(
             "inbox v2 continuation cannot advance",

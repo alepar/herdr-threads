@@ -2417,7 +2417,9 @@ pub(super) fn pull(
             })
             .transpose()
             .map_err(corrupt)?;
-        let old_body = current.as_ref().and_then(|cursor| cursor.body.as_ref());
+        let old_body = current
+            .as_ref()
+            .and_then(|cursor| cursor.body.as_ref().map(|(_, body)| body));
         match (&state.ordinary_skip_body, old_body) {
             (Some(id), Some(body)) => {
                 MessageId::parse(id)
@@ -2479,7 +2481,7 @@ pub(super) fn pull(
             .transpose()
             .map_err(corrupt)?;
         state.ordinary_skip_body = continued
-            .and_then(|v| v.body)
+            .and_then(|v| v.body.map(|(_, body)| body))
             .map(|v| v.message.as_str().to_owned())
             .filter(|id| assembler.emitted.contains(id));
         state.ordinary_cursor = ordinary.next_cursor;

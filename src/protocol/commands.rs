@@ -429,6 +429,11 @@ pub struct InboxQuery {
     /// joined thread's opening lazy mail in its own output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread: Option<ThreadId>,
+    /// A pushed offer (`inbox.pushed_hold_v1`; `InboxBatchV2` first page only): a hook's inbox
+    /// check-in page. The catch-up hold applies to it as to the attention digest: ordinary
+    /// messages above an active row's frontier are not offered. An explicit read leaves it unset.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pushed: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1279,11 +1284,22 @@ impl Command {
         {
             return Err("a thread-scoped inbox page has no continuation");
         }
+        if let Self::Inbox(v) | Self::InboxBatch(v) = self
+            && v.pushed
+        {
+            return Err("a pushed inbox page is a v2 batch read only");
+        }
+        if let Self::InboxBatchV2(v) = self
+            && v.pushed
+            && (v.page.cursor.is_some() || v.thread.is_some())
+        {
+            return Err("a pushed inbox page is a first, unscoped page");
+        }
         if let Some(page) = self.page() {
             page.validate()?;
             if let Some(raw) = &page.cursor {
                 if matches!(self, Self::InboxBatchV2(_)) {
-                    crate::protocol::pagination::InboxBatchV2CursorState::decode(raw)?;
+                    crate::protocol::pagination::InboxBatchV2CursorState::validate_decodable(raw)?;
                 } else {
                     Cursor::decode(raw)?;
                 }

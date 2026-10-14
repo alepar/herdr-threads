@@ -15,7 +15,7 @@ use crate::protocol::{
     pagination::{DeadlineCursor, DeadlineHighWaters, DeadlineWalks},
     priority::{DeliveryOrderKey, DeliveryPriority, SourceRank},
 };
-use crate::store::effective::ReceiptScanPosition;
+use crate::store::{catch_up::HoldCache, effective::ReceiptScanPosition};
 
 /// Items per window.
 pub(super) const DEADLINE_WINDOW: usize = 64;
@@ -63,6 +63,24 @@ fn exhausted(walks: &DeadlineWalks, high: &DeadlineHighWaters) -> bool {
         && walks.manifest_after >= high.manifest
 }
 
+/// Whether a pushed page holds this ordinary message back (catch-up hold, spec section 7): the
+/// attention digest's rule, through the same `HoldCache`. An unpushed page holds nothing.
+fn held(
+    hold: &mut Option<HoldCache<'_>>,
+    db: &Connection,
+    thread: &str,
+    message: &str,
+    sequence: i64,
+    decision_seq: i64,
+) -> Result<bool, ApiError> {
+    match hold {
+        Some(hold) => Ok(hold
+            .attention_key(db, thread, message, sequence, (decision_seq, 0))?
+            .is_none()),
+        None => Ok(false),
+    }
+}
+
 fn unavailable(detail: &str) -> ApiError {
     invalid(detail)
 }
@@ -81,6 +99,7 @@ impl DeadlineWindow {
         decision: u64,
         last: Option<&DeliveryOrderKey>,
         visits: &mut usize,
+        hold: &mut Option<HoldCache<'_>>,
     ) -> Result<Self, ApiError> {
         let high = &cursor.high;
         let mut at = cursor.window_start;
@@ -92,7 +111,10 @@ impl DeadlineWindow {
         };
 
         // Invitations.
-        while more(&items, spent) && stop.is_none_or(|e| at.invitation_after < e.invitation_after) {
+        while more(&items, spent)
+            && at.invitation_after < high.invitation
+            && stop.is_none_or(|e| at.invitation_after < e.invitation_after)
+        {
             let Some(step) =
                 next_invitation(db, seat, at.invitation_after, high.invitation, decision)?
             else {
@@ -135,7 +157,10 @@ impl DeadlineWindow {
                 ),
                 None => None,
             };
-            while more(&items, spent) && stop_unread.is_none_or(|e| after < e) {
+            while more(&items, spent)
+                && after < high_unread
+                && stop_unread.is_none_or(|e| after < e)
+            {
                 let Some((ordinal, id, decision_seq)) = next_unread(
                     db,
                     seat,
@@ -150,6 +175,18 @@ impl DeadlineWindow {
                 };
                 spent += 1;
                 after = ordinal as u64;
+                if hold.is_some() {
+                    let (thread, sequence): (String, i64) = db
+                        .query_row(
+                            "SELECT thread_id,sequence FROM messages WHERE id=?1",
+                            [&id],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .map_err(store_error)?;
+                    if held(hold, db, &thread, &id, sequence, decision_seq)? {
+                        continue;
+                    }
+                }
                 let receipt = crate::store::effective::effective_receipt(db, &id, seat.as_str())?
                     .filter(|r| {
                         r.state == EffectiveReceiptState::Pending
@@ -175,6 +212,7 @@ impl DeadlineWindow {
 
         // Receipts.
         while more(&items, spent)
+            && (at.physical_after < high.physical || at.manifest_after < high.manifest)
             && stop.is_none_or(|e| {
                 at.physical_after < e.physical_after || at.manifest_after < e.manifest_after
             })
@@ -202,6 +240,16 @@ impl DeadlineWindow {
             }
             spent += step.visited;
             if let Some(receipt) = step.receipt {
+                if held(
+                    hold,
+                    db,
+                    &receipt.thread_id,
+                    &receipt.message_id,
+                    receipt.sequence,
+                    receipt.decision_seq.unwrap_or(0),
+                )? {
+                    continue;
+                }
                 items.push(DeadlineItem {
                     key: DeliveryOrderKey {
                         priority: DeliveryPriority::p0(),
@@ -245,7 +293,28 @@ impl DeadlineWindow {
         }
     }
 
+    /// Remove the first remaining item for `message` (a body continuation emitted it directly).
+    /// The head is advanced past like any emitted item; a deeper item is only dropped. Returns the
+    /// head's key when it was the head.
+    pub(super) fn take_message(&mut self, message: &MessageId) -> Option<DeliveryOrderKey> {
+        let at = (self.next..self.items.len()).find(|&n| match &self.items[n].item {
+            DeadlineRef::Unread { message: m, .. } | DeadlineRef::Receipt { message: m, .. } => {
+                m == message
+            }
+            DeadlineRef::Invitation { .. } => false,
+        })?;
+        if at == self.next {
+            let key = self.items[at].key;
+            self.next += 1;
+            Some(key)
+        } else {
+            self.items.remove(at);
+            None
+        }
+    }
+
     /// No item left in this window and the walks are exhausted.
+    #[cfg(test)]
     pub(super) fn done(&self) -> bool {
         self.next >= self.items.len() && self.walks_exhausted
     }
@@ -261,6 +330,12 @@ impl DeadlineWindow {
         } else {
             cursor.window_end = Some(self.end);
         }
+    }
+
+    /// Write back a window whose head is only partly shown: re-collect exactly this window, even
+    /// when the head is its last item.
+    pub(super) fn persist_partial(&self, cursor: &mut DeadlineCursor) {
+        cursor.window_end = Some(self.end);
     }
 }
 

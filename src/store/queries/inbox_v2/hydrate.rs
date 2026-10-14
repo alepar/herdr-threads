@@ -1,21 +1,5 @@
 use super::*;
 
-pub(super) fn message(
-    db: &Connection,
-    id: &str,
-    lazy: bool,
-    current_agent: bool,
-    state: &State,
-) -> Result<Option<Item>, ApiError> {
-    hydrate_message(
-        db,
-        id,
-        lazy,
-        current_agent,
-        &state.seat,
-        state.body.as_ref(),
-    )
-}
 pub(in crate::store::queries) fn hydrate_message(
     db: &Connection,
     id: &str,
