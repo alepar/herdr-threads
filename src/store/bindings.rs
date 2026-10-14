@@ -502,6 +502,16 @@ pub(crate) fn disconnect_with_hooks(
     if !changed {
         return Ok(false);
     }
+    // Only a process exit keeps the pending view (the binding reconnects on its next call). Any other
+    // disconnect leaves a binding that can no longer be offered rows until a lifecycle check-in
+    // reconnects it, which re-seeds the view (TRUST-POLICY A8).
+    if reason != DisconnectReason::ProcessExit {
+        tx.execute(
+            "DELETE FROM binding_pending WHERE binding_id=?1",
+            [binding.as_str()],
+        )
+        .map_err(store_error)?;
+    }
     if !hooks.is_empty() {
         let row = get(tx, binding)?.ok_or_else(|| corrupt("disconnected binding vanished"))?;
         let event = DisconnectEvent {
@@ -531,7 +541,9 @@ pub enum ConnectTrigger {
 /// The only connected transition: disconnected -> connected on an open binding (clears
 /// disconnected_at/reason); the fingerprint is recorded or refreshed (None clears a stale one: an
 /// old process is not evidence about the new one). Enrollment inserts rows already connected, so
-/// this serves existing rows. Returns whether liveness changed.
+/// this serves existing rows. Returns whether liveness changed. A change re-seeds the binding's
+/// pending view (`INSERT OR IGNORE` of its unread rows; a no-op on a process-exit binding that kept its
+/// view), since a binding disconnected any other way dropped it.
 pub fn connect(
     tx: &Connection,
     binding: &BindingId,
@@ -550,7 +562,7 @@ pub fn connect(
         return Ok(false);
     };
     // Every reconnect (check-in or plain call) can restore availability: fence it.
-    super::schema::fence_seat_availability(tx, &seat, || {
+    let connected = super::schema::fence_seat_availability(tx, &seat, || {
         let rows = tx
             .execute(
                 "UPDATE occupant_bindings SET liveness='connected', disconnected_at=NULL, disconnect_reason=NULL, liveness_pid=?2, liveness_start=?3 \
@@ -559,7 +571,11 @@ pub fn connect(
             )
             .map_err(store_error)?;
         Ok((rows != 0, rows != 0))
-    })
+    })?;
+    if connected {
+        super::lazy_delivery::seed_binding_pending(tx, binding)?;
+    }
+    Ok(connected)
 }
 
 /// The seat a binding belongs to (None for an unknown binding).

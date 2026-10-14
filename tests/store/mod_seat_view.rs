@@ -672,6 +672,62 @@ fn stall_oldest_counts_threshold_admitted_delivery_rows() {
     assert_eq!(oldest(10_000), None);
 }
 
+/// ht-yha.54 (S1): the stall rule reads each connected binding's own pending view, never the seat-wide
+/// `state`. `resumed` was away (end event) while `live` displayed the p0 row; once it reconnects its
+/// re-seeded view makes the row unread again. Kills: `r.state='pending'` in the stall query.
+#[test]
+fn stall_oldest_sees_a_reconnected_bindings_pending_row() {
+    use crate::store::bindings::{ConnectTrigger, DisconnectReason};
+    let (store, conn, _) = fixture();
+    base(&conn);
+    conn.execute_batch(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation,binding_id) VALUES ('s',0,'p','b',0,'claude','stall-live','e','cooperative_top_level',0,'tm','inc','live');\
+         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation,binding_id) VALUES ('s',0,'p','b',0,'claude','stall-resumed','e','cooperative_top_level',0,'tm','inc','resumed');\
+         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t2','s','joined');\
+         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t2','s',1,1);",
+    )
+    .unwrap();
+    let oldest = |bound: i64| {
+        store
+            .mod_stall_oldest(
+                &seat_s(),
+                UtcMillis(bound),
+                WATCH_BODY_LIMIT_BYTES,
+                &budget(),
+            )
+            .unwrap()
+    };
+    seed_stall_row(&conn, 2, 0, 6, 400, 10);
+    assert_eq!(oldest(10_000), Some(UtcMillis(400)));
+    assert!(
+        crate::store::bindings::disconnect_with_hooks(
+            &conn,
+            &BindingId::new("resumed"),
+            DisconnectReason::EndEvent,
+            UtcMillis(5),
+            &[]
+        )
+        .unwrap()
+    );
+    conn.execute_batch(
+        "INSERT OR REPLACE INTO binding_cursors(binding_id,thread_id,seq) VALUES ('live','t2',100);\
+         UPDATE lazy_recipients SET state='displayed' WHERE message_id='msg-2';",
+    )
+    .unwrap();
+    assert_eq!(oldest(10_000), None, "no connected binding finds it unread");
+    assert!(
+        crate::store::bindings::connect(
+            &conn,
+            &BindingId::new("resumed"),
+            None,
+            ConnectTrigger::Lifecycle,
+            UtcMillis(6)
+        )
+        .unwrap()
+    );
+    assert_eq!(oldest(10_000), Some(UtcMillis(400)));
+}
+
 fn counting_observer(store: &SqliteStore) -> Arc<AtomicUsize> {
     let count = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&count);

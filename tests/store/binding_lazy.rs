@@ -34,13 +34,18 @@ fn enroll_binding(db: &Connection, session: &str, subagent_of: Option<&BindingId
 /// Seat `a` (the sender) and a lazy message `msg-<n>` at thread sequence `n` for seat `s`,
 /// published. Sequences 1 and 2 are taken by the fixture's ordinary messages, so use n >= 3.
 fn lazy(db: &Connection, n: i64) {
+    lazy_with_priority(db, n, 1);
+}
+
+/// `lazy`, with the delivery row's priority set at insert (a later `UPDATE` is refused).
+fn lazy_with_priority(db: &Connection, n: i64, priority: i64) {
     db.execute(
         "INSERT OR IGNORE INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('a','i','resolved','native',1,0)",
         [],
     )
     .unwrap();
     db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES(?1,'i','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy')",[format!("prep-{n}")]).unwrap();
-    db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES(?1,?2,'t','s')",params![format!("prep-{n}"),format!("msg-{n}")]).unwrap();
+    db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES(?1,?2,'t','s',?3)",params![format!("prep-{n}"),format!("msg-{n}"),priority]).unwrap();
     db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,actor_seat_id) VALUES(?1,'i','t',?2,'ordinary',?2,'passive',0,'lazy','a')",params![format!("msg-{n}"),n]).unwrap();
     db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'i','t',?3,0,?3,0,1,0)",params![format!("prep-{n}"),format!("msg-{n}"),n]).unwrap();
 }
@@ -721,4 +726,233 @@ fn the_backfill_seeds_every_open_binding_from_the_predicate() {
         assert_eq!(rows, unread(&db, binding));
     }
     assert_eq!(view(&db, &c), 0);
+}
+
+// ht-yha.54: a view is held only by a binding that can still be offered rows.
+
+/// The real disconnect transition (no side-effect hooks).
+fn disconnect_now(db: &Connection, binding: &BindingId, reason: DisconnectReason) {
+    assert!(
+        crate::store::bindings::disconnect_with_hooks(db, binding, reason, UtcMillis(5), &[])
+            .unwrap()
+    );
+}
+
+/// The real connected transition (a lifecycle check-in such as a resume).
+fn connect_now(db: &Connection, binding: &BindingId) {
+    assert!(
+        crate::store::bindings::connect(
+            db,
+            binding,
+            None,
+            crate::store::bindings::ConnectTrigger::Lifecycle,
+            UtcMillis(7)
+        )
+        .unwrap()
+    );
+}
+
+/// A p0 delivery row, published (the row's priority cannot change after insert).
+fn publish_p0(db: &mut Connection, n: i64) {
+    lazy_with_priority(db, n, 0);
+    let tx = db.transaction().unwrap();
+    note_published(&tx, &format!("prep-{n}")).unwrap();
+    tx.commit().unwrap();
+}
+
+/// The message ids of a binding's view, in ordinal order.
+fn view_messages(db: &Connection, binding: &BindingId) -> Vec<MessageId> {
+    db.prepare("SELECT r.message_id FROM binding_pending p JOIN lazy_recipients r ON r.ordinal=p.ordinal WHERE p.binding_id=?1 ORDER BY p.ordinal")
+        .unwrap()
+        .query_map([binding.as_str()], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|id| MessageId::new(id.unwrap()))
+        .collect()
+}
+
+#[test]
+fn publication_writes_views_only_for_bindings_that_can_still_be_offered_rows() {
+    let mut db = db();
+    let live = enroll_binding(&db, "sess-live", None);
+    let px = enroll_binding(&db, "sess-px", None);
+    disconnect_now(&db, &px, DisconnectReason::ProcessExit);
+    let mut away = Vec::new();
+    for i in 0..10 {
+        let sibling = enroll_binding(&db, &format!("sess-sib-{i}"), None);
+        let reason = if i < 5 {
+            DisconnectReason::EndEvent
+        } else {
+            DisconnectReason::Superseded
+        };
+        disconnect_now(&db, &sibling, reason);
+        away.push(sibling);
+    }
+    for i in 0..8 {
+        let sub = enroll_binding(&db, &format!("sess-sub-{i}"), Some(&live));
+        disconnect_now(&db, &sub, DisconnectReason::EndEvent);
+        away.push(sub);
+    }
+    let sub_live = enroll_binding(&db, "sess-sub-live", Some(&live));
+    publish(&mut db, 3);
+    publish(&mut db, 4);
+    publish(&mut db, 5);
+    for held in [&live, &px, &sub_live] {
+        assert_eq!(view(&db, held), 3);
+    }
+    for binding in &away {
+        assert_eq!(view(&db, binding), 0);
+    }
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM binding_pending", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        9
+    );
+}
+
+#[test]
+fn a_disconnect_other_than_process_exit_drops_the_view() {
+    let mut db = db();
+    let a = enroll_binding(&db, "sess-A", None);
+    let b = enroll_binding(&db, "sess-B", None);
+    let c = enroll_binding(&db, "sess-C", None);
+    publish(&mut db, 3);
+    publish(&mut db, 4);
+    assert_eq!((view(&db, &a), view(&db, &b), view(&db, &c)), (2, 2, 2));
+    disconnect_now(&db, &b, DisconnectReason::EndEvent);
+    disconnect_now(&db, &c, DisconnectReason::ProcessExit);
+    assert_eq!(view(&db, &b), 0);
+    assert_eq!(view(&db, &c), 2, "a process-exited binding reconnects");
+    assert_eq!(
+        first(&db, RowFilter::Binding(&b)),
+        (None, 0),
+        "accepted limit: no rows until a lifecycle check-in reconnects it"
+    );
+}
+
+#[test]
+fn a_resumed_binding_is_offered_what_a_sibling_displayed_while_it_was_away() {
+    let mut db = db();
+    let a = enroll_binding(&db, "sess-A", None);
+    let b = enroll_binding(&db, "sess-B", None);
+    publish_p0(&mut db, 3);
+    disconnect_now(&db, &b, DisconnectReason::EndEvent);
+    complete(&mut db, Some(&a), &[msg(3)]);
+    assert_eq!(
+        wake_frontier(&db, "s", NudgeThreshold::DEFAULT).unwrap(),
+        None
+    );
+    assert_eq!(view(&db, &b), 0);
+    connect_now(&db, &b);
+    assert_eq!(view(&db, &b), 1);
+    assert_eq!(view_messages(&db, &b), unread(&db, &b));
+    assert_eq!(drain_binding(&db, &b), [msg(3)]);
+    assert_eq!(
+        wake_frontier(&db, "s", NudgeThreshold::DEFAULT).unwrap(),
+        Some(3)
+    );
+    assert!(has_wake_rows(&db, "s").unwrap());
+}
+
+#[test]
+fn reconnect_reseeds_exactly_the_unread_rows() {
+    let mut db = db();
+    let a = enroll_binding(&db, "sess-A", None);
+    let b = enroll_binding(&db, "sess-B", None);
+    for n in 3..=6 {
+        publish(&mut db, n);
+    }
+    disconnect_now(&db, &b, DisconnectReason::Superseded);
+    let t = ThreadId::new("t");
+    let tx = db.transaction().unwrap();
+    read_cursors::advance_through_displayed(&tx, &b, &t, &[4]).unwrap();
+    read_cursors::advance_through_displayed(&tx, &b, &t, &[6]).unwrap();
+    tx.commit().unwrap();
+    publish(&mut db, 7);
+    assert_eq!(view(&db, &b), 0);
+    assert_eq!(view(&db, &a), 5);
+    connect_now(&db, &b);
+    let expected = unread(&db, &b);
+    assert!(!expected.is_empty());
+    assert_eq!(view_messages(&db, &b), expected);
+    assert!(expected.contains(&msg(7)) && !expected.contains(&msg(6)));
+}
+
+#[test]
+fn the_view_triggers_spell_the_held_predicate() {
+    let v47 = include_str!("../../migrations/0047_message_priority.sql");
+    for name in ["binding_pending_publish", "binding_pending_legacy_set"] {
+        let statement = v47
+            .split("\n\n")
+            .map(str::trim)
+            .find(|s| s.starts_with(&format!("CREATE TRIGGER {name} ")))
+            .unwrap();
+        assert!(
+            statement.contains(view_held_sql!("b")),
+            "{name} must spell view_held_sql!(\"b\")"
+        );
+    }
+}
+
+/// The two view triggers as the first-amendment v47 (ht-yha.44) wrote them: every open binding.
+const OLD_PUBLISH_TRIGGER: &str = "CREATE TRIGGER binding_pending_publish AFTER UPDATE OF decision_seq ON lazy_recipients
+WHEN OLD.decision_seq IS NULL AND NEW.decision_seq IS NOT NULL
+BEGIN
+    INSERT OR IGNORE INTO binding_pending(binding_id,ordinal,thread_id,priority,decision_seq)
+    SELECT b.binding_id,NEW.ordinal,NEW.thread_id,NEW.priority,NEW.decision_seq FROM occupant_bindings b
+    WHERE b.seat_id=NEW.seat_id AND b.ended_at IS NULL
+      AND (EXISTS(SELECT 1 FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=NEW.thread_id)
+        OR EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=NEW.thread_id AND mb.seat_id=NEW.seat_id AND mb.state IN ('joined','invited')));
+END";
+const OLD_LEGACY_SET_TRIGGER: &str = "CREATE TRIGGER binding_pending_legacy_set AFTER UPDATE OF legacy_pending ON lazy_recipients
+WHEN OLD.legacy_pending=0 AND NEW.legacy_pending=1 AND NEW.decision_seq IS NOT NULL
+BEGIN
+    INSERT OR IGNORE INTO binding_pending(binding_id,ordinal,thread_id,priority,decision_seq)
+    SELECT b.binding_id,NEW.ordinal,NEW.thread_id,NEW.priority,NEW.decision_seq FROM occupant_bindings b
+    WHERE b.seat_id=NEW.seat_id AND b.ended_at IS NULL AND b.role='top_level';
+END";
+
+#[test]
+fn a_first_amendment_v47_store_is_repaired_on_open() {
+    let mut db = db();
+    db.execute_batch(
+        "DROP TRIGGER binding_pending_publish; DROP TRIGGER binding_pending_legacy_set;",
+    )
+    .unwrap();
+    db.execute_batch(OLD_PUBLISH_TRIGGER).unwrap();
+    db.execute_batch(OLD_LEGACY_SET_TRIGGER).unwrap();
+    let a = enroll_binding(&db, "sess-A", None);
+    let b = enroll_binding(&db, "sess-B", None);
+    publish(&mut db, 3);
+    assert_eq!((view(&db, &a), view(&db, &b)), (1, 1));
+    disconnect(&db, &b, DisconnectReason::Superseded);
+    assert_eq!(view(&db, &b), 1, "the raw helper leaves the old view");
+    crate::store::schema::initialize(&db, || UtcMillis(0)).unwrap();
+    let sql: String = db
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='binding_pending_publish'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(sql.contains(view_held_sql!("b")));
+    assert_eq!(view(&db, &b), 0);
+    assert_eq!(view(&db, &a), 1);
+    publish(&mut db, 4);
+    assert_eq!((view(&db, &a), view(&db, &b)), (2, 0));
+}
+
+#[test]
+fn the_backfill_skips_bindings_outside_the_held_set() {
+    let mut db = db();
+    let a = enroll_binding(&db, "sess-A", None);
+    let b = enroll_binding(&db, "sess-B", None);
+    let c = enroll_binding(&db, "sess-C", None);
+    disconnect(&db, &b, DisconnectReason::EndEvent);
+    disconnect(&db, &c, DisconnectReason::ProcessExit);
+    publish(&mut db, 3);
+    publish(&mut db, 4);
+    db.execute("DELETE FROM binding_pending", []).unwrap();
+    seed_all_binding_pending(&db).unwrap();
+    assert_eq!((view(&db, &a), view(&db, &b), view(&db, &c)), (2, 0, 2));
 }
