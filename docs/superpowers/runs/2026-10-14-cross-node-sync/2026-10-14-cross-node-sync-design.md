@@ -142,7 +142,7 @@ Every replicated mutation is one of these kinds. Derived timeline events (info: 
 **Decision.**
 - `seats` gains `home_node` (node_uuid; equal to self for local seats) and a `remote` state. Remote seat rows have `host_id`, `target_id`, structural columns and bindings NULL; observation, reconciliation, liveness and retirement-by-observation skip them. Only `seat.retired` from the home node retires a remote seat.
 - Thread and message rows are node-scoped (the node row), not host-scoped.
-- **Automatic archival** decides only for threads whose every non-retired member is a local seat; threads with a remote member are archived only explicitly (`thread.register archived`). Explicit archive/reopen replicate as LWW.
+- **Automatic archival** decides only for threads whose every non-retired member is a local seat; threads with a remote member are archived only explicitly (`thread.register archived`). A decommissioned node (forgotten or gone) never sends `seat.retired`, so its seats stay remote members and its threads stay until archived explicitly (accepted limit, §12). Explicit archive/reopen replicate as LWW.
 - Agent-visible output stays ID-based: seat IDs embed the tag, so no extra marker is printed per row. `thread participants` and `thread show` add one compact `node <tag> unreachable since <time>` line per unreachable home node (not per seat).
 
 **Considered.** Sampling remote members' idleness via replicated activity (rejected for v1: needs a new replicated signal; explicit archive suffices).
@@ -183,7 +183,7 @@ Every replicated mutation is one of these kinds. Derived timeline events (info: 
 
 ### 12. Trust policy
 
-TRUST-POLICY.md is amended in the trust bead (same commit as the first code that relies on it): node identity and key custody; origin signatures verified by every receiver as an invariant; provenance `replicated_from:<node_uuid>` for materialized remote facts; A2 applies on the authoring node and receivers apply signed facts as given; a remote seat is never moved, merged or retired except by its home node's `seat.retired`; fork quarantine and re-issue as defined repairs; accepted limits (root on a node can steal its key; clock skew affects LWW and shown times only).
+TRUST-POLICY.md is amended in the trust bead (same commit as the first code that relies on it): node identity and key custody; origin signatures verified by every receiver as an invariant; provenance `replicated_from:<node_uuid>` for materialized remote facts; A2 applies on the authoring node and receivers apply signed facts as given; a remote seat is never moved, merged or retired except by its home node's `seat.retired`; fork quarantine and re-issue as defined repairs; accepted limits (root on a node can steal its key; clock skew affects LWW and shown times only; node decommission: a forgotten or gone node's seats stay remote members, threads with them are not auto-archived and are archived explicitly, and only the home node can retire its seats).
 
 ### 13. Testing and configurations
 
