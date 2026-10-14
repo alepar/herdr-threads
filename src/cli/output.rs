@@ -311,7 +311,8 @@ pub fn write_selected<W: Write>(
 /// the v1 result, saved summary content, or delivery progress.
 #[derive(Default)]
 pub(crate) struct ReadModes {
-    lazy: Vec<crate::protocol::ids::MessageId>,
+    /// `(id, marker)` rows to print: `[pN]` from a `send.priority_v1` daemon, else `[lazy]`.
+    marked: Vec<(crate::protocol::ids::MessageId, &'static str)>,
     // An actual refit must retain its invocation bound through final decorations,
     // including when the newly selected page has no Lazy rows.
     enforce_final_bound: bool,
@@ -364,7 +365,9 @@ impl ReadModes {
         if ids.is_empty() || !client.supports_capability(MESSAGE_DELIVERY_MODES, budget) {
             return Ok(Self::default());
         }
-        let mut lazy = Vec::new();
+        let with_priority =
+            client.supports_capability(crate::protocol::capabilities::SEND_PRIORITY_V1, budget);
+        let mut marked = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let ids: Vec<_> = ids
             .into_iter()
@@ -373,7 +376,7 @@ impl ReadModes {
         for batch in ids.chunks(100) {
             let result = match client.call(
                 Command::MessageDeliveryModes(MessageDeliveryModesQuery {
-                    with_priority: false,
+                    with_priority,
                     messages: batch.to_vec(),
                 }),
                 budget,
@@ -399,21 +402,22 @@ impl ReadModes {
                     "daemon returned mismatched message modes",
                 ));
             }
-            lazy.extend(
-                modes
-                    .into_iter()
-                    .filter(|mode| mode.delivery_mode == DeliveryMode::Lazy)
-                    .map(|mode| mode.message),
-            );
+            marked.extend(modes.into_iter().filter_map(|mode| {
+                let marker = match mode.priority {
+                    Some(priority) => priority.marker(),
+                    None => (mode.delivery_mode == DeliveryMode::Lazy).then_some("[lazy]"),
+                };
+                marker.map(|marker| (mode.message, marker))
+            }));
         }
         Ok(Self {
-            lazy,
+            marked,
             ..Self::default()
         })
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.lazy.is_empty()
+        self.marked.is_empty()
     }
 
     pub(crate) fn require_final_bound(&mut self) {
@@ -428,8 +432,8 @@ impl ReadModes {
             return bytes;
         }
         let mut out = Vec::new();
-        for id in &self.lazy {
-            out.extend_from_slice(format!("[lazy] {}\n", id.as_str()).as_bytes());
+        for (id, marker) in &self.marked {
+            out.extend_from_slice(format!("{marker} {}\n", id.as_str()).as_bytes());
         }
         out.extend_from_slice(&bytes);
         out

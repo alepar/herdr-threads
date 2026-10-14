@@ -753,7 +753,15 @@ fn lazy_inbox_v2_small_budget_and_read_only_queries() {
         let page = query(&context, PageRequest::default(), &spec);
         let encoded = encode_selected(&CommandResult::InboxBatchV2(page), &spec).unwrap();
         if format == OutputFormat::Text {
-            assert!(String::from_utf8(encoded).unwrap().contains("[lazy]"));
+            let text = String::from_utf8(encoded).unwrap();
+            // A default-priority (p1) delivery row is silent; the old `[lazy]` marker is gone.
+            assert!(
+                text.contains("message ") && !text.contains("[lazy]"),
+                "{text}"
+            );
+        } else {
+            let json = String::from_utf8(encoded).unwrap();
+            assert!(json.contains("\"priority\":1"), "{json}");
         }
         assert_eq!(
             conn.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0))

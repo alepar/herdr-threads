@@ -62,7 +62,7 @@ fn lazy_sweep_full_body_mixed_page_then_independent_retry() {
         let out = w.raw(Some(1), false, &refs);
         let text = String::from_utf8(out.stdout).unwrap();
         assert!(text.len() <= 4096);
-        mixed_page |= text.contains("[lazy]") && text.contains(ordinary_body);
+        mixed_page |= text.contains(&format!("message {lazy} ")) && text.contains(ordinary_body);
         content.push_str(&body_lines(&text));
         if content.len() < body.len() {
             assert_eq!(w.state(&lazy, 1), "pending", "partial body cannot settle");
@@ -184,7 +184,7 @@ fn cache(w: &World) -> Vec<Vec<String>> {
 #[test]
 fn lazy_sweep_canonical_markers_summary_cache_and_legacy_reads() {
     let w = World::agents_only();
-    let lazy = w.send("canonical sweep needle", &[]);
+    let lazy = w.send("canonical sweep needle", &["--nudge"]);
     let ordinary = w.send(
         "ordinary sweep needle",
         &["--nudge", "--require-ack", &w.seats[1]],
@@ -203,7 +203,7 @@ fn lazy_sweep_canonical_markers_summary_cache_and_legacy_reads() {
     ] {
         let out = w.text(1, false, &args);
         assert!(
-            out.contains("[lazy]") && out.contains("canonical sweep needle"),
+            out.contains(&format!("[p0] {lazy}")) && out.contains("canonical sweep needle"),
             "{out}"
         );
         assert_eq!(w.state(&lazy, 1), "pending");
@@ -211,11 +211,15 @@ fn lazy_sweep_canonical_markers_summary_cache_and_legacy_reads() {
         assert_eq!(w.intents(), before);
     }
     let json: Value = serde_json::from_str(&w.text(1, false, &["body", &lazy, "--json"])).unwrap();
-    assert!(!json.to_string().contains("[lazy]"));
+    assert!(!json.to_string().contains("[p0]"));
     let proxy = Proxy::new(w.paths(), &w.root);
     proxy.mode.store(1, Ordering::SeqCst); // pre-lazy capabilities, supported wire6
     let legacy = w.text(1, false, &["body", &lazy]);
-    assert!(legacy.contains("canonical sweep needle") && !legacy.contains("[lazy]"));
+    assert!(
+        legacy.contains("canonical sweep needle")
+            && !legacy.contains("[lazy]")
+            && !legacy.contains("[p0]")
+    );
     let inbox = w.text(1, false, &["inbox", "--machine"]);
     assert!(inbox.contains(&ordinary) || inbox.contains(&w.thread));
     assert!(!inbox.contains(&lazy));

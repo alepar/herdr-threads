@@ -1,0 +1,30 @@
+[
+  {
+    "kind": "lazy_message",
+    "thread": "t1",
+    "topic_data": "plans",
+    "message": "m1",
+    "sequence": 1,
+    "sender": "s1",
+    "body": "delivery row",
+    "body_start": 0,
+    "body_end": 12,
+    "body_len": 12,
+    "wakes": true,
+    "priority": 0
+  },
+  {
+    "kind": "message",
+    "thread": "t1",
+    "topic_data": "plans",
+    "message": "m2",
+    "sequence": 2,
+    "sender": "s1",
+    "body": "receipt row",
+    "body_start": 0,
+    "body_end": 11,
+    "body_len": 11,
+    "ack_candidate": "m2",
+    "priority": 5
+  }
+]

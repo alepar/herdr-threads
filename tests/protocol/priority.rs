@@ -478,3 +478,62 @@ fn new_capabilities_are_defined_and_only_direct_auto_join_is_unadvertised() {
     assert_eq!(SEAT_NUDGE_THRESHOLD_V1, "seat.nudge_threshold_v1");
     assert_eq!(DIRECT_AUTO_JOIN_V1, "direct.auto_join_v1");
 }
+
+/// The inbox v2 message variants exactly as the last pre-priority client declared them
+/// (`git show 864e67dc~1:src/protocol/results.rs`), kept here to prove an old client ignores
+/// the new `priority` key: no `deny_unknown_fields`, the same tags and required fields.
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(dead_code)]
+enum OldInboxBatchV2Item {
+    Message {
+        thread: crate::protocol::ids::ThreadId,
+        topic_data: String,
+        message: crate::protocol::ids::MessageId,
+        sequence: u64,
+        sender: Option<crate::protocol::ids::SeatId>,
+        body: String,
+        body_start: u64,
+        body_end: u64,
+        body_len: u64,
+        ack_candidate: Option<crate::protocol::ids::MessageId>,
+    },
+    LazyMessage {
+        thread: crate::protocol::ids::ThreadId,
+        topic_data: String,
+        message: crate::protocol::ids::MessageId,
+        sequence: u64,
+        sender: Option<crate::protocol::ids::SeatId>,
+        body: String,
+        body_start: u64,
+        body_end: u64,
+        body_len: u64,
+        #[serde(default)]
+        wakes: bool,
+    },
+}
+
+// Kills: a priority-bearing item an old client cannot read (a renamed variant, a new required
+// field, `deny_unknown_fields`), and a new reader that drops the key.
+#[test]
+fn old_clients_read_inbox_v2_items_that_carry_priority() {
+    use crate::protocol::results::InboxBatchV2Item;
+    let text = include_str!("../fixtures/old_wire/inbox_v2_priority_items.json");
+    let old: Vec<OldInboxBatchV2Item> = serde_json::from_str(text).unwrap();
+    assert!(matches!(
+        old.as_slice(),
+        [
+            OldInboxBatchV2Item::LazyMessage { wakes: true, .. },
+            OldInboxBatchV2Item::Message {
+                ack_candidate: Some(_),
+                ..
+            }
+        ]
+    ));
+    let new: Vec<InboxBatchV2Item> = serde_json::from_str(text).unwrap();
+    let values = serde_json::to_value(&new).unwrap();
+    assert_eq!(values[0]["kind"], "lazy_message");
+    assert_eq!(values[0]["priority"], 0);
+    assert_eq!(values[1]["kind"], "message");
+    assert_eq!(values[1]["priority"], 5);
+}

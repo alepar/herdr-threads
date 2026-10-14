@@ -435,7 +435,7 @@ fn lazy_config_default_text_settles() {
     let ordinary = w.send("ordinary independent body", &["--require-ack", &w.seats[1]]);
     let out = w.text(1, false, &["inbox"]);
     assert!(
-        out.contains("complete passive body") && out.contains(&lazy) && out.contains("[lazy]"),
+        out.contains("complete passive body") && out.contains(&lazy) && !out.contains("[lazy]"),
         "{out}"
     );
     assert!(out.contains("ordinary independent body"), "{out}");

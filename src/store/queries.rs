@@ -292,8 +292,22 @@ fn query_inner(
                 db.check_budget()?;
                 let delivery_mode = super::lazy_delivery::recorded_mode(&db, instance, message)?
                     .ok_or_else(|| api_error(ErrorCode::NotFound, "message not found"))?;
+                let priority = if q.with_priority {
+                    let stored: i64 = db
+                        .query_row(
+                            "SELECT priority FROM messages WHERE instance_id=?1 AND id=?2",
+                            params![instance, message.as_str()],
+                            |r| r.get(0),
+                        )
+                        .map_err(store_error)?;
+                    Some(crate::protocol::priority::DeliveryPriority::from_stored(
+                        stored,
+                    )?)
+                } else {
+                    None
+                };
                 modes.push(crate::protocol::results::MessageDeliveryMode {
-                    priority: None,
+                    priority,
                     message: message.clone(),
                     delivery_mode,
                 });

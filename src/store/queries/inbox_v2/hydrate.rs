@@ -63,13 +63,11 @@ pub(in crate::store::queries) fn hydrate_message(
     let body = body[offset as usize..].to_owned();
     // Computed once, here, against the seat's current threshold (D1); an item staged before a
     // threshold change reads the new value without a re-send.
-    let wakes = lazy
-        && crate::store::seats::nudge_threshold(db, seat)?.admits(
-            crate::protocol::priority::DeliveryPriority::from_stored(priority)?,
-        );
+    let priority = crate::protocol::priority::DeliveryPriority::from_stored(priority)?;
+    let wakes = lazy && crate::store::seats::nudge_threshold(db, seat)?.admits(priority);
     Ok(Some(if lazy {
         Item::LazyMessage {
-            priority: None,
+            priority: Some(priority),
             thread: thread_id,
             topic_data,
             message,
@@ -87,7 +85,7 @@ pub(in crate::store::queries) fn hydrate_message(
         }
     } else {
         Item::Message {
-            priority: None,
+            priority: Some(priority),
             thread: thread_id,
             topic_data,
             message: message.clone(),

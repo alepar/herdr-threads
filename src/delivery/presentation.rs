@@ -152,12 +152,9 @@ pub fn presentation_hook_text(items: &[Item]) -> String {
     let frames = items
         .iter()
         .map(|item| match item {
-            Item::Message {
-                id,
-                lazy,
-                content: m,
-            } => FrameItem {
-                kind: if *lazy { "lazy" } else { "message" }.into(),
+            Item::Message { id, content: m, .. } => FrameItem {
+                kind: "message".into(),
+                priority: m.priority.map(|p| p.get()),
                 id: id.as_str().into(),
                 thread: Some(m.thread.as_str().into()),
                 thread_name: m.thread_name.clone(),

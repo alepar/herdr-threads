@@ -373,10 +373,16 @@ fn lazy_display_json_machine_explicit_selector_readonly() {
 #[test]
 fn lazy_display_default_text_routes_v2_settles_complete_body() {
     let f = Fixture::new();
+    let mut result = page(0, 10);
+    if let CommandResult::InboxBatchV2(p) = &mut result
+        && let InboxBatchV2Item::LazyMessage { priority, .. } = &mut p.items[0]
+    {
+        *priority = Some(herdr_threads::protocol::priority::DeliveryPriority::new(2).unwrap());
+    }
     let c = Client {
         calls: std::sync::Mutex::new(vec![]),
         v2: true,
-        result: page(0, 10),
+        result,
     };
     let out = run(
         &f,
@@ -384,7 +390,11 @@ fn lazy_display_default_text_routes_v2_settles_complete_body() {
         &c,
         herdr_threads::harness::context::Role::TopLevel,
     );
-    assert!(String::from_utf8(out).unwrap().contains("[lazy]"));
+    assert!(
+        String::from_utf8(out)
+            .unwrap()
+            .contains("from service [p2]")
+    );
     assert!(
         !has_lazy_progress(&f),
         "successful settlement clears its proof"

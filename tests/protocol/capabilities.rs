@@ -1881,7 +1881,7 @@ fn probe_message_delivery_modes() {
     };
     let iso = TestIsolation::new("cap-message-delivery-modes");
     let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
-    context.open_writer().unwrap().execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('m','i','t',1,'ordinary',1,'ordinary body',0,'lazy');").unwrap();
+    context.open_writer().unwrap().execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('m','i','t',1,'ordinary',1,'ordinary body',0,'lazy'); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES('m3','i','t',2,'ordinary',2,'urgent body',0,'ordinary',3);").unwrap();
     let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let command = Command::MessageDeliveryModes(MessageDeliveryModesQuery {
         with_priority: false,
@@ -1911,6 +1911,33 @@ fn probe_message_delivery_modes() {
             priority: None,
             message: MessageId::new("m"),
             delivery_mode: DeliveryMode::Lazy
+        }]
+    );
+    // `with_priority` adds the stored priority and leaves the legacy mode column alone.
+    let asked = Command::MessageDeliveryModes(MessageDeliveryModesQuery {
+        with_priority: true,
+        messages: vec![MessageId::new("m3")],
+    });
+    let CommandResult::MessageDeliveryModes(modes) = store
+        .query(
+            &asked,
+            &ReadContext {
+                instance: "i".into(),
+                output: OutputSpec::default(),
+                operation_scope: None,
+            },
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("wrong metadata route")
+    };
+    assert_eq!(
+        modes,
+        vec![crate::protocol::results::MessageDeliveryMode {
+            priority: Some(crate::protocol::priority::DeliveryPriority::new(3).unwrap()),
+            message: MessageId::new("m3"),
+            delivery_mode: DeliveryMode::Ordinary
         }]
     );
 }
