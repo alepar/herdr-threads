@@ -4572,6 +4572,7 @@ fn hook_adapter_dispatch_keeps_native_output_and_observer_nonconsumption() {
         },
         input: None,
         runtime_candidate: None,
+        admitted_at: None,
     };
     let admitted = registration
         .admit(
@@ -6112,6 +6113,7 @@ fn hermes_codec_keeps_canonical_routing_and_immutable_prepared_kind() {
                     registered_event: None,
                 }),
                 runtime_candidate: None,
+                admitted_at: None,
             },
             &budget,
         )
@@ -6209,6 +6211,7 @@ fn hermes_structural_success_never_grants_callback_delivery_or_qualification() {
                     registered_event: input.registered_event.clone(),
                 }),
                 runtime_candidate: None,
+                admitted_at: None,
             },
             &budget,
         )
@@ -6699,7 +6702,8 @@ mod enum_callback {
                     bytes: payload(),
                     registered_event: args.event.clone(),
                 };
-                let request = hook_admission_request(registration, observation, &input);
+                let request =
+                    hook_admission_request(registration, observation, &input, &SystemClock::new());
                 let handle = registration
                     .admit(
                         &request,
@@ -6776,6 +6780,7 @@ mod enum_callback {
                 bytes: payload(),
                 registered_event: Some("SyntheticStart".into()),
             },
+            &SystemClock::new(),
         );
         assert_eq!(
             registration.admit(&request, &budget).unwrap().kind(),
@@ -6797,9 +6802,93 @@ mod registered_resume {
     use crate::harness::evidence::{AttributionHolding, EvidenceEvent, EvidenceOrigin};
     use crate::harness::registry::{OccupantHarness, Registry};
     use crate::protocol::results::*;
+    use crate::protocol::time::UtcMillis;
     use crate::test_support::spawn::{OwnedChild, SpawnOwned};
     use crate::test_support::synthetic_fourth::ADAPTER;
     use std::sync::OnceLock;
+
+    /// The registered fixture's clock. It follows the host until a simulated Hermes callback
+    /// pins it (`hermes_input` stamps the callback's observation from the pin), then holds
+    /// that present: the hook measures the callback's budget on it, so host load and a slow
+    /// fixture child spend none of it. Each IPC call still waits at most the remaining
+    /// budget in real time (the client turns it into a real timeout), so a single call
+    /// slower than the budget still fails. Negative controls spend the budget on this clock
+    /// (`advance`), or let it follow the host from the pin (`run`).
+    pub(super) struct FixtureClock {
+        base: Instant,
+        held: Mutex<Option<Held>>,
+    }
+    #[derive(Clone, Copy)]
+    struct Held {
+        utc: UtcMillis,
+        at: Instant,
+        running: bool,
+    }
+    impl FixtureClock {
+        fn pin(&self) -> UtcMillis {
+            let mut held = self.held.lock().unwrap();
+            let utc = SystemClock::new()
+                .utc_now()
+                .max(held.map_or(UtcMillis(0), |h| h.utc));
+            *held = Some(Held {
+                utc,
+                at: Instant::now(),
+                running: false,
+            });
+            utc
+        }
+        /// Move the held present forward: the callback's budget is spent on this clock.
+        pub(super) fn advance(&self, by: Duration) {
+            let mut held = self.held.lock().unwrap();
+            let h = held.as_mut().expect("advance a held fixture clock");
+            assert!(!h.running, "advance a held fixture clock");
+            h.utc = UtcMillis(h.utc.0 + by.as_millis() as i64);
+            h.at += by;
+        }
+        /// Follow the host from the pin on: every real millisecond, the fixture child's
+        /// included, spends the callback's budget, as the host clock does in production.
+        pub(super) fn run(&self) {
+            let mut held = self.held.lock().unwrap();
+            held.as_mut().expect("run a pinned fixture clock").running = true;
+        }
+        fn held(&self) -> Option<Held> {
+            *self.held.lock().unwrap()
+        }
+    }
+    impl Clock for FixtureClock {
+        fn utc_now(&self) -> UtcMillis {
+            match self.held() {
+                None => SystemClock::new().utc_now(),
+                Some(h) if h.running => UtcMillis(h.utc.0 + h.at.elapsed().as_millis() as i64),
+                Some(h) => h.utc,
+            }
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(self.instant_now().duration_since(self.base).as_millis() as u64)
+        }
+        fn instant_now(&self) -> Instant {
+            match self.held() {
+                Some(h) if !h.running => h.at,
+                _ => Instant::now(),
+            }
+        }
+    }
+    thread_local! {
+        static FIXTURE_CLOCK: std::cell::RefCell<Arc<FixtureClock>> =
+            std::cell::RefCell::new(Arc::new(FixtureClock {
+                base: Instant::now(),
+                held: Mutex::new(None),
+            }));
+    }
+    /// This test's fixture clock (one per test thread; a test's worker thread adopts it).
+    pub(super) fn fixture_clock() -> Arc<FixtureClock> {
+        FIXTURE_CLOCK.with(|clock| Arc::clone(&clock.borrow()))
+    }
+    /// Run `f` on this thread with the test's fixture clock `clock`.
+    fn on_fixture_clock<T>(clock: &Arc<FixtureClock>, f: impl FnOnce() -> T) -> T {
+        FIXTURE_CLOCK.with(|own| *own.borrow_mut() = Arc::clone(clock));
+        f()
+    }
 
     const FIELDS: &[FieldSpec] = &[
         field("session_id", JsonType::StringOrNull, false),
@@ -7047,7 +7136,12 @@ mod registered_resume {
     fn decode(r: &'static Registration, i: &HookInput) -> (AdmittedHandle, DecodedEvent) {
         let h = r
             .admit(
-                &hook_admission_request(r, InstallObservation::NotRequested, i),
+                &hook_admission_request(
+                    r,
+                    InstallObservation::NotRequested,
+                    i,
+                    &SystemClock::new(),
+                ),
                 &budget(Instant::now() + LIFECYCLE_BUDGET, clock().as_ref()),
             )
             .unwrap();
@@ -7099,6 +7193,30 @@ mod registered_resume {
             self.transcript
                 .as_ref()
                 .is_some_and(|path| path.with_file_name(name).exists())
+        }
+        /// A slow service: `slow.json` maps a command kind (`AttentionDigest`, `CheckIn`) to
+        /// the real milliseconds the child takes before it answers.
+        fn delay(&self, c: &Command) {
+            let Some(path) = self
+                .transcript
+                .as_ref()
+                .map(|p| p.with_file_name("slow.json"))
+            else {
+                return;
+            };
+            let Ok(slow) =
+                read_fixture_json::<std::collections::BTreeMap<String, u64>>(&path, 4096)
+            else {
+                return;
+            };
+            let kind = match c {
+                Command::AttentionDigest(_) => "AttentionDigest",
+                Command::CheckIn(_) => "CheckIn",
+                _ => return,
+            };
+            if let Some(ms) = slow.get(kind) {
+                std::thread::sleep(Duration::from_millis(*ms));
+            }
         }
         fn summary(&self) -> SeatSummary {
             SeatSummary {
@@ -7171,6 +7289,7 @@ mod registered_resume {
                     write_fixture_json(path, &*seen).unwrap();
                 }
             }
+            self.delay(&c);
             match c {
                 Command::Seats(_) => {
                     let mut page = empty();
@@ -7586,6 +7705,7 @@ mod registered_resume {
             let mut a = args(&self.root);
             a.harness = OccupantHarness::Agent(builtins().agent(r.metadata().id).unwrap()).into();
             a.event = i.registered_event.clone();
+            let clock = fixture_clock();
             let outcome = run_hook_registered(
                 r,
                 &a,
@@ -7596,9 +7716,10 @@ mod registered_resume {
                 // it can miss the 5 s production lifecycle budget and the
                 // hook (correctly) reports UnknownOutcome. These tests assert
                 // eligibility and replay, not that budget, so the fixture
-                // grants four times it.
-                Instant::now() + LIFECYCLE_BUDGET * 4,
-                Arc::new(SystemClock::new()),
+                // grants four times it. Every bound is measured on the
+                // fixture clock (see `FixtureClock`).
+                clock.instant_now() + LIFECYCLE_BUDGET * 4,
+                clock,
                 None,
             );
             *self.service.seen.lock().unwrap() =
@@ -7968,7 +8089,12 @@ mod registered_resume {
             let i = hermes_input(callback, "unowned-native-session", "turn", 1, role);
             let handle = r
                 .admit(
-                    &hook_admission_request(r, callback_install_observation(r), &i),
+                    &hook_admission_request(
+                        r,
+                        callback_install_observation(r),
+                        &i,
+                        fixture_clock().as_ref(),
+                    ),
                     &budget(Instant::now() + LIFECYCLE_BUDGET, clock().as_ref()),
                 )
                 .unwrap();
@@ -8209,7 +8335,12 @@ mod registered_resume {
             let i = input("SyntheticResume", "top_level", session);
             let h = r
                 .admit(
-                    &hook_admission_request(r, InstallObservation::NotRequested, &i),
+                    &hook_admission_request(
+                        r,
+                        InstallObservation::NotRequested,
+                        &i,
+                        &SystemClock::new(),
+                    ),
                     &budget(Instant::now() + LIFECYCLE_BUDGET, clock().as_ref()),
                 )
                 .unwrap();
@@ -8361,7 +8492,12 @@ mod registered_resume {
         assert!(
             unvalidated
                 .admit(
-                    &hook_admission_request(unvalidated, InstallObservation::NotRequested, &i),
+                    &hook_admission_request(
+                        unvalidated,
+                        InstallObservation::NotRequested,
+                        &i,
+                        &SystemClock::new()
+                    ),
                     &budget(Instant::now() + TOOL_BUDGET, clock().as_ref())
                 )
                 .is_err()
@@ -8457,7 +8593,9 @@ mod registered_resume {
     ) -> HookInput {
         let mut p: serde_json::Value =
             serde_json::from_slice(include_bytes!("../fixtures/hermes/envelopes.json")).unwrap();
-        let now = SystemClock::new().utc_now().0;
+        // Observed at the fixture clock's pinned present: the budget is spent only as
+        // that clock moves, never by host load.
+        let now = fixture_clock().pin().0;
         p["started_at"] = now.into();
         p["deadline_at"] = (now + 1200).into();
         p["observation_order"]["observed_at_millis"] = now.into();
@@ -8877,7 +9015,12 @@ mod registered_resume {
         let hdecode = |i: &HookInput| {
             let h = r
                 .admit(
-                    &hook_admission_request(r, callback_install_observation(r), i),
+                    &hook_admission_request(
+                        r,
+                        callback_install_observation(r),
+                        i,
+                        fixture_clock().as_ref(),
+                    ),
                     &budget(Instant::now() + TOOL_BUDGET, clock().as_ref()),
                 )
                 .unwrap();
@@ -8944,7 +9087,12 @@ mod registered_resume {
                 role,
             );
             let handle = r.admit(
-                &hook_admission_request(r, callback_install_observation(r), &i),
+                &hook_admission_request(
+                    r,
+                    callback_install_observation(r),
+                    &i,
+                    fixture_clock().as_ref(),
+                ),
                 &budget(Instant::now() + TOOL_BUDGET, clock().as_ref()),
             );
             if callback == "pre_llm_call" && role == "unknown" {
@@ -8965,6 +9113,117 @@ mod registered_resume {
                     .any(|c| matches!(c, Command::CheckIn(_) | Command::AttentionDigest(_)))
             );
         }
+    }
+    /// The commands a hermes run sent the fixture child after `before`.
+    fn hermes_sent(f: &Fixture, before: usize) -> Vec<&'static str> {
+        f.service.seen.lock().unwrap()[before..]
+            .iter()
+            .filter_map(|c| match c {
+                Command::CheckIn(_) => Some("CheckIn"),
+                Command::AttentionDigest(_) => Some("AttentionDigest"),
+                _ => None,
+            })
+            .collect()
+    }
+    // Negative control for the fixture clock (expired budget): a callback whose budget is
+    // spent on the fixture clock is refused at admission, before any canonical call, exactly
+    // as an expired callback is on the host clock. Kills: admission (or the hook's own
+    // budget check) reading the host clock instead of the injected one.
+    #[test]
+    fn hermes_budget_expired_on_fixture_clock_is_refused() {
+        let r = task52_registration();
+        let f = Fixture::new(true);
+        let i = hermes_input("pre_llm_call", "fixture-session", "turn-1", 1, "top");
+        fixture_clock().advance(Duration::from_millis(1200));
+        let outcome = f.run(r, &i);
+        assert!(outcome.stdout.is_empty());
+        assert!(outcome.attention.is_none());
+        assert_eq!(
+            outcome.diagnostic.as_deref(),
+            Some("adapter admission refused: Hermes startup callback qualification unavailable")
+        );
+        assert_eq!(f.saved(), None);
+        assert_eq!(hermes_sent(&f, 0), Vec::<&str>::new());
+        // One millisecond earlier the same callback is admitted and checks in.
+        let i = hermes_input("pre_llm_call", "fixture-session", "turn-2", 2, "top");
+        fixture_clock().advance(Duration::from_millis(1199));
+        assert!(
+            r.admit(
+                &hook_admission_request(
+                    r,
+                    callback_install_observation(r),
+                    &i,
+                    fixture_clock().as_ref(),
+                ),
+                &budget(Instant::now() + TOOL_BUDGET, clock().as_ref()),
+            )
+            .is_ok()
+        );
+    }
+    // Negative controls for the fixture clock (slow service): the held clock never lifts the
+    // per-call bound, and a fixture clock that runs is spent by a slow child exactly as the
+    // host clock is (today's `UnknownOutcome` and `Conflict`). Kills: a held fixture clock
+    // masking a call slower than the callback's whole budget.
+    #[test]
+    fn hermes_slow_service_still_spends_the_callback_budget() {
+        let r = task52_registration();
+        let slow = |f: &Fixture, kind: &str| {
+            write_fixture_json(
+                &f.root.join("slow.json"),
+                &std::collections::BTreeMap::from([(kind.to_string(), 1300u64)]),
+            )
+            .unwrap();
+        };
+        // Held clock: one CheckIn slower than the whole budget times out in real time.
+        let f = Fixture::new(true);
+        slow(&f, "CheckIn");
+        let i = hermes_input("pre_llm_call", "fixture-session", "turn-1", 1, "top");
+        let outcome = f.run(r, &i);
+        assert!(outcome.attention.is_none());
+        assert_eq!(
+            outcome.diagnostic.as_deref(),
+            Some("check-in: UnknownOutcome: unknown outcome after request submission")
+        );
+        assert_eq!(hermes_sent(&f, 0), ["AttentionDigest", "CheckIn"]);
+        // Running clock: a slow attention digest spends the budget before the check-in.
+        let f = Fixture::new(true);
+        slow(&f, "AttentionDigest");
+        let i = hermes_input("pre_llm_call", "fixture-session", "turn-1", 1, "top");
+        fixture_clock().run();
+        let outcome = f.run(r, &i);
+        assert!(outcome.attention.is_none());
+        assert_eq!(
+            outcome.diagnostic.as_deref(),
+            Some("check-in context: Conflict")
+        );
+        assert_eq!(hermes_sent(&f, 0), ["AttentionDigest"]);
+        assert_eq!(f.saved(), None);
+    }
+    // The fixture clock's purpose: on a held clock, a host stall and calls that each fit the
+    // per-call bound but together take longer than the callback's whole budget (host load, a
+    // slow child) still serve the turn. Kills: admission, the hook's budget check or its call
+    // budget measured on the host clock again.
+    #[test]
+    fn hermes_held_clock_slow_calls_within_bound_serve_the_turn() {
+        let r = task52_registration();
+        let f = Fixture::new(true);
+        write_fixture_json(
+            &f.root.join("slow.json"),
+            &std::collections::BTreeMap::from([
+                ("AttentionDigest".to_string(), 650u64),
+                ("CheckIn".to_string(), 650u64),
+            ]),
+        )
+        .unwrap();
+        let i = hermes_input("pre_llm_call", "fixture-session", "turn-1", 1, "top");
+        // A host stall between the callback's entry and the hook's start, longer than the
+        // whole budget, spends none of it either.
+        std::thread::sleep(Duration::from_millis(1300));
+        let outcome = f.run(r, &i);
+        assert_eq!(outcome.diagnostic, None);
+        let v: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+        assert_eq!(v["lifecycle_ack"]["mode"], "startup");
+        assert_eq!(hermes_sent(&f, 0), ["AttentionDigest", "CheckIn"]);
     }
     // ---- Hermes global enrollment (ht-4ne.4) ----
     fn hermes_cli_start(session: &str, sequence: u64) -> HookInput {
@@ -9801,9 +10060,11 @@ mod registered_resume {
             let f = unowned_fixture();
             let start = hermes_cli_start("cli-a", 1 + round * 10);
             let turn = hermes_cli_turn("cli-a", "t1", 2 + round * 10);
+            let clock = fixture_clock();
             let (started, turned) = std::thread::scope(|scope| {
-                let a = scope.spawn(|| f.run(r, &start));
+                let a = scope.spawn(|| on_fixture_clock(&clock, || f.run(r, &start)));
                 let b = scope.spawn(|| {
+                    on_fixture_clock(&clock, || ());
                     let began = Instant::now();
                     let mut outcome = f.run(r, &turn);
                     // A debug hook on a loaded machine can overrun the 1.2 s

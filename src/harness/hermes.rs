@@ -13,7 +13,7 @@ use serde::Deserialize;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 pub struct HermesAdapter;
 pub const BRIDGE_SCHEMA: &str = "78669955a7b170ed";
@@ -324,7 +324,8 @@ fn admit_candidate(
             diagnostic: "Hermes requires actual callback input captured at startup".into(),
         };
     };
-    match parse(input) {
+    let admitted_at = request.admitted_at.map_or_else(now, |at| at.0);
+    match parse_at(input, admitted_at) {
         Ok(envelope) => {
             if request
                 .runtime_candidate
@@ -348,6 +349,7 @@ fn admit_candidate(
                 state: HermesAdmission {
                     envelope,
                     bytes: input.bytes.clone(),
+                    admitted_at,
                 },
                 recipe: "initialized-hermes-bridge-schema1",
                 diagnostic: "API candidate captured at startup; native/model acceptance unmeasured"
@@ -363,6 +365,8 @@ fn admit_candidate(
 pub struct HermesAdmission {
     envelope: Envelope,
     bytes: Vec<u8>,
+    /// The clock reading the callback window was admitted at; decode re-parses at it.
+    admitted_at: i64,
 }
 fn text(s: &str, max: usize, empty: bool) -> bool {
     (empty || !s.is_empty()) && s.len() <= max && !s.chars().any(char::is_control)
@@ -398,7 +402,13 @@ fn witness(a: &Association) -> Result<Option<EnrollmentWitness>, ()> {
         Some(_) => Err(()),
     }
 }
+/// Strict parse with the callback window measured at the host's present (diagnostic
+/// paths with no admitting clock).
 fn parse(input: &HookInput) -> Result<Envelope, DecodeFailure> {
+    parse_at(input, now())
+}
+/// Strict parse, the callback window measured at `now` (UTC epoch milliseconds).
+fn parse_at(input: &HookInput, now: i64) -> Result<Envelope, DecodeFailure> {
     let invalid = || DecodeFailure::Invalid("invalid Hermes bridge envelope".into());
     if input.bytes.len() > 65536 {
         return Err(invalid());
@@ -577,7 +587,7 @@ fn parse(input: &HookInput) -> Result<Envelope, DecodeFailure> {
             != Some(e.deadline_at)
         || e.observation_order
             .generic()
-            .validate_deadline(now())
+            .validate_deadline(now)
             .is_err()
     {
         return Err(invalid());
@@ -897,7 +907,7 @@ impl HarnessAdapter for HermesAdapter {
         state: &HermesAdmission,
         input: &HookInput,
     ) -> Result<DecodedEvent, DecodeFailure> {
-        let e = parse(input)?;
+        let e = parse_at(input, state.admitted_at)?;
         if state.bytes != input.bytes || e != state.envelope {
             return Err(DecodeFailure::RegistrationMismatch);
         }
@@ -990,9 +1000,7 @@ impl HarnessAdapter for HermesAdapter {
                 context_source: e.callback.clone(),
                 native_event: e.callback,
                 shape_fields: e.shape.keys().cloned().collect(),
-                callback_deadline: Some(
-                    Instant::now() + Duration::from_millis((e.deadline_at - now()).max(0) as u64),
-                ),
+                callback_deadline: Some(crate::protocol::time::UtcMillis(e.deadline_at)),
                 skill_pointer: false,
                 capability: super::Capability::ObservedInput,
                 domain: ContractDomain::Bridge,
@@ -1440,6 +1448,7 @@ fn inspect_scope(
 mod adapter_tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
     fn fixture(callback: &str) -> HookInput {
         let mut v: serde_json::Value =
             serde_json::from_slice(include_bytes!("../../tests/fixtures/hermes/envelopes.json"))
@@ -1535,6 +1544,7 @@ mod adapter_tests {
                         registered_event: None,
                     }),
                     runtime_candidate: None,
+                    admitted_at: None,
                 },
                 &budget,
             )
@@ -1942,6 +1952,7 @@ mod adapter_tests {
                         registered_event: None,
                     }),
                     runtime_candidate: None,
+                    admitted_at: None,
                 },
                 &budget,
             )
@@ -1980,6 +1991,7 @@ mod adapter_tests {
                             registered_event: None,
                         }),
                         runtime_candidate: None,
+                        admitted_at: None,
                     },
                     &budget,
                 )
@@ -2193,6 +2205,7 @@ mod adapter_tests {
                         registered_event: None,
                     }),
                     runtime_candidate: None,
+                    admitted_at: None,
                 },
                 &budget,
             )
@@ -2693,6 +2706,7 @@ mod adapter_tests {
                         registered_event: None,
                     }),
                     runtime_candidate: None,
+                    admitted_at: None,
                 },
                 &budget,
             )
@@ -2895,6 +2909,7 @@ mod adapter_tests {
                     registered_event: None,
                 }),
                 runtime_candidate: None,
+                admitted_at: None,
             };
             assert!(
                 matches!(

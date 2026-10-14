@@ -36,6 +36,7 @@ fn agy_admission() -> (
                 installed: crate::harness::adapter::InstallObservation::NotRequested,
                 input: None,
                 runtime_candidate: None,
+                admitted_at: None,
             },
             &budget(),
         )

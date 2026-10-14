@@ -2271,6 +2271,7 @@ fn adapter_launch_preparation_rejects_stale_native_setup_status() {
                     ),
                     input: None,
                     runtime_candidate: None,
+                    admitted_at: None,
                 },
                 &budget,
             )

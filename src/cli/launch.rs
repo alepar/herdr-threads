@@ -860,6 +860,7 @@ fn execute_guarded_inner(
                     installed,
                     input: None,
                     runtime_candidate: None,
+                    admitted_at: None,
                 },
                 &local_budget,
             )

@@ -547,7 +547,12 @@ fn lifecycle_evidence_raises_the_event_bound_to_the_lifecycle_budget() {
         let registration = registration(adapter);
         let admitted = registration
             .admit(
-                &hook_admission_request(registration, InstallObservation::NotRequested, &input),
+                &hook_admission_request(
+                    registration,
+                    InstallObservation::NotRequested,
+                    &input,
+                    &SystemClock::new(),
+                ),
                 &budget(Instant::now() + TOOL_BUDGET, &SystemClock::new()),
             )
             .unwrap();
@@ -558,6 +563,7 @@ fn lifecycle_evidence_raises_the_event_bound_to_the_lifecycle_budget() {
             &args,
             &herdr(),
             Instant::now(),
+            &SystemClock::new(),
         )
         .unwrap();
         (event_bound(registration, &decoded), decoded)
@@ -609,12 +615,26 @@ fn local_evidence_request_carries_a_half_bound_deadline_home_and_state_dir() {
     let registration = registration(adapter);
     let admitted = registration
         .admit(
-            &hook_admission_request(registration, InstallObservation::NotRequested, &input),
+            &hook_admission_request(
+                registration,
+                InstallObservation::NotRequested,
+                &input,
+                &SystemClock::new(),
+            ),
             &budget(Instant::now() + TOOL_BUDGET, &SystemClock::new()),
         )
         .unwrap();
     let started = Instant::now();
-    decode_refined(registration, &admitted, &input, &args, &herdr(), started).unwrap();
+    decode_refined(
+        registration,
+        &admitted,
+        &input,
+        &args,
+        &herdr(),
+        started,
+        &SystemClock::new(),
+    )
+    .unwrap();
     let seen = adapter.seen.lock().unwrap();
     assert_eq!(seen.len(), 1);
     let observer = crate::protocol::time::external_bound(Duration::from_millis(

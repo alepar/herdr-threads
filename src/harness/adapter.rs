@@ -523,6 +523,10 @@ pub struct AdmissionRequest {
     pub installed: InstallObservation,
     pub input: Option<HookInput>,
     pub runtime_candidate: Option<RuntimeIdentity>,
+    /// The admitting caller's clock reading (a hook passes its injected clock's), against
+    /// which an adapter measures a callback window the input carries. `None`: the caller
+    /// has no run clock, and the adapter reads the host's.
+    pub admitted_at: Option<crate::protocol::time::UtcMillis>,
 }
 pub enum AdmissionDecision<A> {
     ContractDeclared {
@@ -633,8 +637,10 @@ pub enum EnrollmentWitness {
 pub struct EventMetadata {
     pub enrollment_witness: Option<EnrollmentWitness>,
     pub skill_pointer: bool,
-    /// An adapter callback can shorten the core end-to-end limit.
-    pub callback_deadline: Option<std::time::Instant>,
+    /// An adapter callback can shorten the core end-to-end limit: the native callback's
+    /// own deadline, in UTC epoch milliseconds as the harness stated it. The core measures
+    /// it on the hook's injected clock.
+    pub callback_deadline: Option<crate::protocol::time::UtcMillis>,
     pub context_source: String,
     pub capability: super::Capability,
     pub domain: ContractDomain,
@@ -1451,6 +1457,7 @@ pub fn observe_daemon_default<A: HarnessAdapter + ?Sized>(
                 installed,
                 input: None,
                 runtime_candidate: None,
+                admitted_at: None,
             },
             budget,
         ) {
@@ -1792,6 +1799,7 @@ mod tests {
                 },
                 input: None,
                 runtime_candidate: None,
+                admitted_at: None,
             };
             assert!(registration.admit(&request, &budget).is_err());
             let status = registration.status(

@@ -433,6 +433,7 @@ fn admission_declares_the_contract_only_for_a_declared_or_available_hook() {
                 installed,
                 input: None,
                 runtime_candidate: None,
+                admitted_at: None,
             },
             &budget(),
         )

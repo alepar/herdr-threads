@@ -38,6 +38,14 @@ pub struct MonoInstant(pub u64);
 pub trait Clock: Send + Sync {
     fn utc_now(&self) -> UtcMillis;
     fn monotonic_now(&self) -> MonoInstant;
+    /// This clock's present as a `std::time::Instant`, for code that bounds one
+    /// run with `Instant` deadlines (a hook invocation) and must measure them on
+    /// this clock rather than on the host's. It advances with `monotonic_now`: a
+    /// real clock keeps the default, the host's `Instant::now()`; a test clock
+    /// that holds time still returns the instant it holds.
+    fn instant_now(&self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
 }
 
 type Waker = Arc<dyn Fn() + Send + Sync>;

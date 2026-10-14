@@ -639,6 +639,7 @@ fn registry_admission_refuses_mismatched_runtime_identity_before_adapter() {
         },
         input: None,
         runtime_candidate: None,
+        admitted_at: None,
     };
     let budget = crate::protocol::time::CallBudget {
         deadline: crate::protocol::time::MonoInstant(100),
