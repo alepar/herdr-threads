@@ -385,8 +385,9 @@ pub const PENDING_SUMMARY_CAP: i64 = 1000;
 /// to the mod and to wake, and its publication (manifest + message) must change
 /// both. Shared by `mod_seat_view` and `wake_seat_attention`.
 pub fn pending_summary(conn: &Connection, seat: &SeatId) -> Result<(i64, i64), ApiError> {
-    // Pending means unread at seat level (`seat_unread_sql!`): post-V34 delivery predicates never
-    // read `lazy_recipients.state` (only `init_for_join` does, to skip displayed rows).
+    // Pending means unread for some connected top-level binding (`seat_unread_sql!`); the ordered
+    // seeks also read `state='pending'`, which `MARK_DISPLAYED_SQL` clears once no binding still
+    // owes the display.
     let (count, max) = seat_lazy_pending(conn, seat, PENDING_SUMMARY_CAP)?;
     Ok((i64::try_from(count).unwrap_or(i64::MAX), max))
 }
