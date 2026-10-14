@@ -1722,6 +1722,12 @@ fn fixture(ordinary: usize) -> Fixture {
     let shared: Arc<dyn Clock> = clock.clone();
     let context = StoreContext::new(directory.join("store.db"), shared.clone());
     let db = context.open_writer().unwrap();
+    db.pragma_update(
+        None,
+        "application_id",
+        crate::store::control::LEGACY_PAIR_MARKER,
+    )
+    .unwrap();
     db.execute(
         "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,3)",
         [],

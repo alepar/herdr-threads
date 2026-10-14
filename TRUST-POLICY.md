@@ -552,7 +552,15 @@ Declared subagents cannot reject. Required invitations remain service-owner cont
 ask that owner to release the requirement and reread its current state before attempting rejection.
 Reinvitation creates a fresh episode; replay of an old rejection cannot reject that new invitation.
 
-Ordinary agent invitation confirmation is an immutable episode policy. Modern Lazy invitations remain
+Every newly recorded invitation (agent, human or operator; ht-yha.6, D6) is confirming: it stores
+confirmation `require_ack` with the explicit or instance-default deadline, is a wake source and has an
+inviter-overdue warning (an operator invitation has no inviter seat, so it stores the absent policy, which
+is the effective RequireAck; unchanged). A request's `confirmation` (Lazy, RequireAck or absent, from any client version) is
+accepted and ignored for the recorded policy; the earlier refusal of an explicit human RequireAck is gone.
+The Lazy and absent-policy rules in the rest of this section describe stored pre-upgrade rows only, which are
+never rewritten.
+
+Ordinary agent invitation confirmation is an immutable episode policy. Stored pre-upgrade Lazy invitations remain
 pending and discoverable at ordinary inbox/hook opportunities, with no acceptance timer or native/mod
 wake. Their inherited physical duration/deadline columns retain legacy storage timing only; no canonical
 deadline, event, diagnostic or wake projection interprets that timing as a confirmation obligation.
@@ -568,8 +576,15 @@ Explicit human/operator invitation semantics remain separate and unchanged.
 
 **Automatic pair reservation.** `EnsureDirectThread` resolves one immutable canonical channel for
 exactly the caller and recipient seats, under the caller's ordinary `cooperative_top_level` or
-`operator_human` claim and the A2 deciding transaction. Initial creation joins only the caller and
-creates an ordinary invitation for the recipient; reservation is never acceptance, check-in or ACK.
+`operator_human` claim and the A2 deciding transaction. Initial creation joins both reserved seats in that
+one transaction and records no invitation (the user's explicit decision D7, advertised as
+`direct.auto_join_v1`): a pair is a reserved two-seat channel, so the consent an invitation would collect is
+given by pair creation itself. The peer's membership interval starts at its own join event, and a creation
+policy is validated for shape and otherwise ignored. A pair seat with no cursor for the pair starts at the
+thread head as of that join (the auto-joined pair floor), not at its first session's head, so its first
+session is offered the opener and every later send; any seat that already holds a cursor keeps it. Joining
+is never ACK or check-in. A pair created before the upgrade with a pending invitation keeps it: it reports
+`ExistingPending` and still needs `accept`.
 All ordinary, operator and service enrollment paths preserve the two-seat participant universe;
 services cannot adopt or own these channels. Invited seats remain reserved even before acceptance.
 Explicit leave, rejection and archival require ordinary join/accept/reinvite/reopen repair, never
@@ -584,15 +599,13 @@ invitation's ID, episode, confirmation, effective deadline and inviter. This is 
 canonical selection at the original keyed decision; replay never refreshes the
 policy or deadline, and local copies remain hints. Historical NULL confirmation is
 presented as effective RequireAck while preserving its original deadline and NULL
-inviter. A new explicit RequireAck from a Human issuer is refused, matching ordinary
-Invite; existing episodes and historical absent-policy creation remain unchanged.
+inviter. Existing episodes and historical absent-policy creation remain unchanged.
 The additive `direct_threads.ensure_creation_policy_v1`
 capability admits an explicit frozen initial Lazy or RequireAck policy and optional
 positive duration. Only creation of a new pair applies it; existing pending or joined
 participation keeps its original policy, inviter and deadline, and left/rejected
 participation still requires explicit repair. Modern direct sends and automatic
-handoffs freeze Lazy by default and require this capability before publication or
-canonical/native effects. A requested body ACK has its own send-time deadline and
+handoffs send the policy with the pair ensure (an auto-joining daemon ignores it). A requested body ACK has its own send-time deadline and
 cannot accept an invitation or settle participation. Pair identity remains with its channel history;
 there is no seat merge, remapping or generation rollover and no new provenance value.
 
@@ -786,7 +799,7 @@ and confer no receipt, ACK or wake authority; a bookkeeping failure still leaves
 A top-level agent's text `accept` (and `accept-required`) output is that same default text inbox
 display, thread-scoped (ht-br0): after the accept result was written and flushed (with a live mod channel,
 only after the channel grace below has run out), it reads one `InboxBatchV2` page of the caller's own stream restricted to the
-accepted thread's unread lazy rows (`InboxQuery.thread`, `inbox.thread_scope_v1`; no ordinary, receipt,
+accepted thread's unread delivery rows of every priority (`InboxQuery.thread`, `inbox.thread_scope_v1`; no ordinary, receipt,
 invitation or warning row). The thread scope only narrows the unchanged lazy eligibility (the binding's own
 cursor/scope branch and the top-level legacy-pending branch); it never admits a row the unscoped text inbox
 would not show that binding. It narrows it further to rows below the binding's first ordinary walk stop in
@@ -950,7 +963,7 @@ parked progress. No consumer-history scan or sibling substitution is allowed. Ch
 failure rolls back invitation, membership/interval, cursor and all tentative private writes together.
 Historical accept replay neither reseeds nor invalidates again. General Join and nonpair acceptance
 retain their head policy; no new binding fanout occurs at publication or reading.
-The accepting top-level binding's own text `accept` then shows its own unread Lazy rows of the pair
+The accepting top-level binding's own text `accept` then shows its own unread delivery rows (any priority) of the pair
 above that floor in its output (A8, ht-br0) and completes them as its text inbox would: only that
 binding's cursors advance, and each sibling binding keeps its independent own stream (no seat-wide
 settlement, no legacy-pending marking). Lazy and ordinary rows share that one cursor and the page carries

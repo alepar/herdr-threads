@@ -4769,7 +4769,8 @@ mod main539_composition {
             db.query_row("SELECT confirmation FROM invitations", [], |r| r
                 .get::<_, Option<String>>(0))
                 .unwrap(),
-            None
+            // Every new invitation is recorded confirming (ht-yha.6), also for a legacy retry.
+            Some("require_ack".to_owned())
         );
     }
 

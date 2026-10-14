@@ -1354,12 +1354,6 @@ impl Command {
             {
                 Err("lazy invitation conflicts with deadline")
             }
-            Self::Invite(invite)
-                if invite.confirmation == Some(InvitationConfirmation::RequireAck)
-                    && invite.claim.harness == crate::protocol::authority::Harness::Human =>
-            {
-                Err("human invitation cannot require agent confirmation")
-            }
             Self::Invite(invite) if invite.deadline_millis == Some(0) => {
                 Err("deadline must be positive")
             }

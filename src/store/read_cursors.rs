@@ -84,8 +84,39 @@ pub fn advance(
     Ok(changed > 0)
 }
 
+/// The cursor a seat with no cursor of its own starts a thread at, as one SQL expression over
+/// the thread id `$thread` and seat id `$seat` (column or parameter expressions): the thread
+/// head, except in a direct-pair thread where the seat has a membership interval. There it is the
+/// head at the seat's join (the auto-joined pair floor, ht-yha.6): a peer joined by pair creation
+/// whose first session starts later is offered the opener and every later send, not only what
+/// follows its first session.
+macro_rules! first_cursor_sql {
+    ($thread:literal, $seat:literal) => {
+        concat!(
+            "CASE WHEN EXISTS(SELECT 1 FROM direct_threads dt WHERE dt.thread_id=",
+            $thread,
+            ") AND EXISTS(SELECT 1 FROM membership_intervals mi WHERE mi.thread_id=",
+            $thread,
+            " AND mi.seat_id=",
+            $seat,
+            " AND mi.left_seq IS NULL) \
+             THEN COALESCE((SELECT MAX(x.sequence) FROM messages x WHERE x.thread_id=",
+            $thread,
+            " AND x.decision_seq<(SELECT mi.joined_seq FROM membership_intervals mi WHERE mi.thread_id=",
+            $thread,
+            " AND mi.seat_id=",
+            $seat,
+            " AND mi.left_seq IS NULL ORDER BY mi.episode DESC LIMIT 1)),0) \
+             ELSE (SELECT MAX(x.sequence) FROM messages x WHERE x.thread_id=",
+            $thread,
+            ") END"
+        )
+    };
+}
+
 /// Give `binding` a cursor for every thread its seat has joined and it lacks: the seat's
-/// highest existing cursor for the thread, else the thread head, else 0. Existing cursors of the
+/// highest existing cursor for the thread, else the thread head (the join-time head in a direct
+/// pair, see `first_cursor_sql!`), else 0. Existing cursors of the
 /// binding are kept. Returns the number of cursors written.
 pub fn init_for_new_binding(tx: &Connection, binding: &BindingId) -> Result<usize, ApiError> {
     // Before the cursors are written, while "no cursor yet" still identifies the threads this call
@@ -108,13 +139,16 @@ pub fn init_for_new_binding(tx: &Connection, binding: &BindingId) -> Result<usiz
     )
     .map_err(store_error)?;
     tx.execute(
-        "INSERT OR IGNORE INTO binding_cursors(binding_id,thread_id,seq) \
-         SELECT ?1, m.thread_id, COALESCE(\
-             (SELECT MAX(c.seq) FROM binding_cursors c JOIN occupant_bindings o ON o.binding_id=c.binding_id \
-               WHERE o.seat_id=b.seat_id AND c.thread_id=m.thread_id AND c.binding_id<>?1),\
-             (SELECT MAX(x.sequence) FROM messages x WHERE x.thread_id=m.thread_id),0) \
-         FROM occupant_bindings b JOIN memberships m ON m.seat_id=b.seat_id AND m.state='joined' \
-         WHERE b.binding_id=?1",
+        concat!(
+            "INSERT OR IGNORE INTO binding_cursors(binding_id,thread_id,seq) \
+             SELECT ?1, m.thread_id, COALESCE(\
+                 (SELECT MAX(c.seq) FROM binding_cursors c JOIN occupant_bindings o ON o.binding_id=c.binding_id \
+                   WHERE o.seat_id=b.seat_id AND c.thread_id=m.thread_id AND c.binding_id<>?1),",
+            first_cursor_sql!("m.thread_id", "b.seat_id"),
+            ",0) \
+             FROM occupant_bindings b JOIN memberships m ON m.seat_id=b.seat_id AND m.state='joined' \
+             WHERE b.binding_id=?1"
+        ),
         params![binding.as_str()],
     )
     .map_err(store_error)
@@ -134,7 +168,7 @@ pub fn thread_head(db: &Connection, thread: &ThreadId) -> Result<u64, ApiError> 
 }
 
 /// Where a binding enrolled now would start in `thread`: the highest cursor any open or closed
-/// binding of `seat` holds there, else the thread head (the rule of [`init_for_new_binding`], for
+/// binding of `seat` holds there, else the first-cursor rule (the rule of [`init_for_new_binding`], for
 /// a read that must not enroll).
 pub fn seed_preview(db: &Connection, seat: &SeatId, thread: &ThreadId) -> Result<u64, ApiError> {
     let max: Option<i64> = db
@@ -148,7 +182,17 @@ pub fn seed_preview(db: &Connection, seat: &SeatId, thread: &ThreadId) -> Result
     match max {
         Some(seq) => u64::try_from(seq)
             .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative read cursor")),
-        None => thread_head(db, thread),
+        None => {
+            let first: Option<i64> = db
+                .query_row(
+                    concat!("SELECT ", first_cursor_sql!("?2", "?1")),
+                    params![seat.as_str(), thread.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            u64::try_from(first.unwrap_or(0))
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative message sequence"))
+        }
     }
 }
 
@@ -309,10 +353,10 @@ const WALK_DISPLAY_ACKED: &str = "(EXISTS(SELECT 1 FROM receipt_state rs WHERE r
     AND rc.ack_binding_id=?4 AND json_extract(rc.ack_observation,'$.action_provenance') IS NOT NULL))";
 
 /// The first ordinary message of `thread` past `binding`'s cursor at which the
-/// display walk ([`advance_through_displayed`]) stops when a display shows only lazy rows: a
-/// receivable ordinary message the binding has not display-ACKed. `None` when there is none.
-/// A display of lazy rows below it can be passed whole by the walk; a lazy row above it cannot
-/// (ht-br0: the text accept's thread-scoped page shows only rows below this stop, so its
+/// display walk ([`advance_through_displayed`]) stops when a display shows only delivery rows (any
+/// priority): a receipt-bearing message the binding has not display-ACKed. `None` when there is none.
+/// A display of delivery rows below it can be passed whole by the walk; a row above it cannot
+/// (ht-br0, ht-yha.6: the text accept's thread-scoped page shows only rows below this stop, so its
 /// completion never leaves a shown row unread in the binding's own stream). Without a cursor it
 /// starts at 0, not at the walk's displayed-episode floor: never higher than the walk's real stop,
 /// so the page can only show fewer rows (an accept normally creates the cursor first).

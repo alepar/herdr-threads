@@ -311,7 +311,8 @@ fn capability_constants_are_stable() {
             "inbox.in_turn_offer_v1",
             "inbox.thread_scope_v1",
             "send.priority_v1",
-            "seat.nudge_threshold_v1"
+            "seat.nudge_threshold_v1",
+            "direct.auto_join_v1"
         ]
     );
 }
@@ -387,7 +388,9 @@ fn every_advertised_capability_has_a_handler() {
             }
             INVITATION_REJECT => probe_invitation_reject(),
             THREAD_JOIN => probe_thread_join(),
-            DIRECT_THREADS_V1 | ENSURE_CREATION_POLICY_V1 => {
+            // `DIRECT_AUTO_JOIN_V1` shares the Ensure wire probe; the handler's auto-join itself is
+            // driven through the store in `tests/store/pair_auto_join.rs`.
+            DIRECT_THREADS_V1 | ENSURE_CREATION_POLICY_V1 | DIRECT_AUTO_JOIN_V1 => {
                 let command =
                     Command::EnsureDirectThread(crate::protocol::commands::EnsureDirectThread {
                         creation_policy: (*name == ENSURE_CREATION_POLICY_V1).then_some(
@@ -784,6 +787,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "inbox.thread_scope_v1",
             "send.priority_v1",
             "seat.nudge_threshold_v1",
+            "direct.auto_join_v1",
             "invitation.confirmation_v1"
         ]
     );
@@ -2006,7 +2010,8 @@ fn invitation_confirmation_wire_preserves_legacy_and_distinguishes_modern_reques
             assert!(timed.validate().is_ok());
             modern["args"]["claim"]["harness"] = serde_json::json!("human");
             let human: Command = serde_json::from_value(modern).unwrap();
-            assert!(human.validate().is_err());
+            // A person's RequireAck invitation is valid since ht-yha.6: every invitation is confirming.
+            assert!(human.validate().is_ok());
         } else {
             modern["args"]["deadline_millis"] = serde_json::json!(10);
             let conflict: Command = serde_json::from_value(modern).unwrap();

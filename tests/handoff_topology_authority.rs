@@ -36,6 +36,13 @@ impl Fixture {
         super::channel_archival::joined_agent(&db);
         drop(db);
         let db = context.open_writer().unwrap();
+        // Pre-upgrade pairs (peer invited): these tests exercise reject/leave/reinvite of the invitation.
+        db.pragma_update(
+            None,
+            "application_id",
+            herdr_threads::store::control::LEGACY_PAIR_MARKER,
+        )
+        .unwrap();
         let concrete = Arc::new(SqliteStore::new(context, "i", StoreSettings::default()).unwrap());
         let store: Arc<dyn StorePort> = concrete.clone();
         let host = Arc::new(herdr_threads::host::native::NativeCli::new(

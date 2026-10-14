@@ -317,8 +317,8 @@ pub(crate) fn published_send(
         return Err(corrupt());
     };
     let valid: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM send_preparations p JOIN send_manifests s ON s.preparation_id=p.id AND s.instance_id=p.instance_id AND s.thread_id=p.thread_id JOIN messages m ON m.id=s.message_id AND m.instance_id=p.instance_id AND m.thread_id=p.thread_id WHERE p.instance_id=?1 AND p.operation_scope=?2 AND p.operation_key=?3 AND p.digest=?4 AND p.thread_id=?5 AND s.message_id=?6 AND m.kind='ordinary' AND m.delivery_mode='ordinary')",
-        params![request.claim.instance, actor, send.operation.as_str(), expected.as_slice(), thread.as_str(), message.as_str()], |r| r.get(0),
+        "SELECT EXISTS(SELECT 1 FROM send_preparations p JOIN send_manifests s ON s.preparation_id=p.id AND s.instance_id=p.instance_id AND s.thread_id=p.thread_id JOIN messages m ON m.id=s.message_id AND m.instance_id=p.instance_id AND m.thread_id=p.thread_id WHERE p.instance_id=?1 AND p.operation_scope=?2 AND p.operation_key=?3 AND p.digest=?4 AND p.thread_id=?5 AND s.message_id=?6 AND m.kind='ordinary' AND EXISTS(SELECT 1 FROM prepared_recipients pr WHERE pr.preparation_id=p.id AND pr.seat_id=?7))",
+        params![request.claim.instance, actor, send.operation.as_str(), expected.as_slice(), thread.as_str(), message.as_str(), request.plan().recipient.as_str()], |r| r.get(0),
     ).map_err(store_error)?;
     if !valid {
         return Err(corrupt());

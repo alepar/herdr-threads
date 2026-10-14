@@ -1737,6 +1737,15 @@ mod daemon {
         // old scripted1024NUL fixture, the released4096byte event admission fits.
         let topic = "\0".repeat(300);
         let goal = "\0".repeat(300);
+        // These are pre-upgrade Lazy invitations: new invitations are always confirming.
+        world
+            .db
+            .pragma_update(
+                None,
+                "application_id",
+                crate::store::control::LEGACY_PAIR_MARKER,
+            )
+            .unwrap();
         for n in 0..24 {
             let CommandResult::ThreadCreated(thread) = world
                 .service

@@ -11,7 +11,24 @@ fn budget() -> CallBudget {
         cancellation: Default::default(),
     }
 }
+/// A store whose pairs are created the pre-upgrade way (the peer invited): the fixture of the
+/// pending-pair-invitation behaviour that the upgrade keeps. Auto-joined pairs use
+/// `auto_join_fixture`.
 fn store_fixture() -> (SqliteStore, Connection, PathBuf) {
+    let (context, conn, path, _) = bound_fixture(100);
+    conn.pragma_update(
+        None,
+        "application_id",
+        crate::store::control::LEGACY_PAIR_MARKER,
+    )
+    .unwrap();
+    (
+        SqliteStore::new(context, "i", StoreSettings::default()).unwrap(),
+        conn,
+        path,
+    )
+}
+fn auto_join_fixture() -> (SqliteStore, Connection, PathBuf) {
     let (context, conn, path, _) = bound_fixture(100);
     (
         SqliteStore::new(context, "i", StoreSettings::default()).unwrap(),
@@ -1232,3 +1249,6 @@ fn rejoin_never_reshows_a_lazy_row_displayed_out_of_order() {
     drop(db);
     let _ = std::fs::remove_file(path);
 }
+
+#[path = "pair_auto_join.rs"]
+mod pair_auto_join;

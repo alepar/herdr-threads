@@ -93,7 +93,7 @@ pub fn send_payload(request: &SendMessage) -> Value {
 
 /// The message's delivery priority: the request's own, else derived from its legacy mode (D10).
 /// The one place a send's `delivery_mode` is read to decide anything.
-pub(super) fn resolved_priority(request: &SendMessage) -> DeliveryPriority {
+pub(crate) fn resolved_priority(request: &SendMessage) -> DeliveryPriority {
     request
         .priority
         .unwrap_or_else(|| DeliveryPriority::from_mode(request.delivery_mode))

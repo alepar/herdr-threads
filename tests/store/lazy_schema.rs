@@ -792,3 +792,38 @@ fn priority_schema_guards() {
     db.execute_batch("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('prep-2','t','s',1,300000,1)").unwrap();
     db.execute(&manifest(2, 1), []).unwrap();
 }
+
+// ht-yha.6: invitations written before the upgrade keep their stored behaviour.
+#[test]
+fn priority_schema_upgrade46_keeps_pending_lazy_and_pair_invitations() {
+    // The ht-yha.2 fixture: a v46 database with a pending lazy invitation and a pending pair
+    // invitation. The upgrade never rewrites them; they keep their stored (no-deadline, no-wake)
+    // behaviour and are still accepted by `accept`.
+    let db = v46_database();
+    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0);
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s1','i','resolved','native','s1',1,0,0),('s2','i','resolved','native','s2',1,0,0);
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('ord','i','t','g',0,0),('pair','i','p','p',0,0);
+        INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES('i','s1','s2','pair');
+        INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES('ord','s1','joined','joined',0),('pair','s1','joined','joined',0);
+        INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES('ord','s2',1,'invited','invited'),('pair','s2',1,'invited','invited');
+        INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('ord','s1',1,1),('pair','s1',1,1);
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES('inv-lazy','ord','s2',1,'pending',0,2,1,1,'lazy','s1'),('inv-pair','pair','s2',1,'pending',0,2,300000,300000,'lazy','s1');").unwrap();
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    let rows: Vec<(String, String, i64, i64)> = db
+        .prepare(
+            "SELECT id,confirmation,deadline_at,frozen_duration_ms FROM invitations ORDER BY id",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        [
+            ("inv-lazy".into(), "lazy".into(), 1, 1),
+            ("inv-pair".into(), "lazy".into(), 300_000, 300_000)
+        ]
+    );
+    assert_eq!(scalar(&db, "SELECT count(*) FROM wake_work"), 0);
+}

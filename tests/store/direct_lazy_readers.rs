@@ -34,6 +34,12 @@ impl Drop for Q4Readers {
 impl Q4Readers {
     fn new() -> Self {
         let (context, db, path, clock) = fixture(100);
+        db.pragma_update(
+            None,
+            "application_id",
+            crate::store::control::LEGACY_PAIR_MARKER,
+        )
+        .unwrap();
         let store: Arc<dyn StorePort> =
             Arc::new(SqliteStore::new(context, "i", StoreSettings::default()).unwrap());
         let service = DomainService::new("i".into(), store, clock)

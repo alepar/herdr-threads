@@ -714,6 +714,13 @@ fn seed(paths: &InstancePaths) -> Uuid {
     drop(owner);
     let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()));
     let db = setup.open_writer().unwrap();
+    // The pair suites here cover the pre-upgrade pending pair invitation and its accept display.
+    db.pragma_update(
+        None,
+        "application_id",
+        herdr_threads::store::control::LEGACY_PAIR_MARKER,
+    )
+    .unwrap();
     db.execute(
         "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)",
         [instance.to_string()],
@@ -5649,6 +5656,13 @@ mod continuity {
             let setup =
                 StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()));
             let db = setup.open_writer().unwrap();
+            // Pre-upgrade pair and lazy-invitation fixtures (see `seed`).
+            db.pragma_update(
+                None,
+                "application_id",
+                herdr_threads::store::control::LEGACY_PAIR_MARKER,
+            )
+            .unwrap();
             db.execute(
                 "INSERT INTO host_instances(id,created_at) VALUES (?1,0)",
                 [instance.to_string()],

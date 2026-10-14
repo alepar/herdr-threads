@@ -301,7 +301,9 @@ pub(crate) fn validate_selected_child_phase(
                         .map(|p| p.invitation_confirmation)
         }
         PermitMutation::SendMessage(v) => {
-            v.delivery_mode.is_ordinary()
+            !v.invited_recipients.is_empty()
+                && crate::store::messages::resolved_priority(v)
+                    == crate::protocol::priority::DeliveryPriority::p0()
                 && v.direct_recipient.is_none()
                 && v.body == identity.payload.handoff.body
                 && v.invited_recipients == [attachment.resolved_seat.clone()]

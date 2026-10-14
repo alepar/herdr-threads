@@ -106,6 +106,13 @@ impl Fixture {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let context = StoreContext::new(root.join("store.db"), clock.clone());
         let db = context.open_writer().unwrap();
+        // Pairs are created the pre-upgrade way (peer invited) unless a test calls `auto_join`.
+        db.pragma_update(
+            None,
+            "application_id",
+            herdr_threads::store::control::LEGACY_PAIR_MARKER,
+        )
+        .unwrap();
         let instance = uuid::Uuid::from_u128(1);
         db.execute(
             "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES(?1,0,'b',1)",
@@ -160,6 +167,10 @@ impl Fixture {
                 calls: Mutex::new(vec![]),
             },
         }
+    }
+    /// Pairs created from now on auto-join both seats (the current behaviour).
+    fn auto_join(&self) {
+        self.db.pragma_update(None, "application_id", 0).unwrap();
     }
     fn run(&self, args: &[&str], writer: &mut impl Write) -> Result<(), RunError> {
         self.run_with_journal(args, writer, &self.journal)
@@ -1733,6 +1744,33 @@ fn modern_direct_send_creates_lazy_pending_invitation_without_invitation_wake() 
         .unwrap(),
         0
     );
+}
+
+// ht-yha.6: with an auto-joining daemon (direct.auto_join_v1) a direct send needs no invitation:
+// both pair seats are joined at creation, the message is sent, and no accept step is printed.
+#[test]
+fn direct_send_to_an_auto_joining_daemon_records_no_invitation() {
+    let f = Fixture::new(false);
+    f.auto_join();
+    let mut out = vec![];
+    f.run(&["send", "--seat", "seat-b", "--body", "hello"], &mut out)
+        .unwrap();
+    let scalar = |sql: &str| -> i64 { f.db.query_row(sql, [], |r| r.get(0)).unwrap() };
+    assert_eq!(scalar("SELECT count(*) FROM invitations"), 0);
+    assert_eq!(
+        scalar("SELECT count(*) FROM memberships WHERE state='joined'"),
+        2
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM messages WHERE kind='ordinary'"),
+        1
+    );
+    assert_eq!(
+        scalar("SELECT count(*) FROM wake_work WHERE seat_id='seat-b' AND reason_bits&1!=0"),
+        0
+    );
+    let text = String::from_utf8(out).unwrap();
+    assert!(!text.contains("accept"), "{text}");
 }
 
 fn ensure_command(

@@ -58,6 +58,13 @@ impl Fixture {
         let clock = Arc::new(FixedClock(AtomicI64::new(1000)));
         let context = StoreContext::new(iso.path("store.db"), clock.clone());
         let db = context.open_writer().unwrap();
+        // Pre-upgrade Lazy invitations are fixtures of this suite.
+        db.pragma_update(
+            None,
+            "application_id",
+            herdr_threads::store::control::LEGACY_PAIR_MARKER,
+        )
+        .unwrap();
         db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES('i',0,'b',1,1);
             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0);").unwrap();
         let store = SqliteStore::new(

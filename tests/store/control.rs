@@ -9695,6 +9695,15 @@ fn rejection_offer_with_policy(
     InvitationId,
 ) {
     let (context, mut conn, path, clock) = bound_fixture_recipient_harness(100, recipient);
+    if confirmation == Some(crate::protocol::commands::InvitationConfirmation::Lazy) {
+        // A pre-upgrade Lazy invitation.
+        conn.pragma_update(
+            None,
+            "application_id",
+            crate::store::control::LEGACY_PAIR_MARKER,
+        )
+        .unwrap();
+    }
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(u64::MAX),
         cancellation: Default::default(),
@@ -11281,6 +11290,12 @@ fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not() 
 #[test]
 fn invitation_confirmation_creates_frozen_policy_and_only_timed_wake() {
     let (context, mut conn, path, _) = bound_fixture(100);
+    conn.pragma_update(
+        None,
+        "application_id",
+        crate::store::control::LEGACY_PAIR_MARKER,
+    )
+    .unwrap(); // a pre-upgrade Lazy invitation
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(u64::MAX),
         cancellation: Default::default(),
@@ -11383,6 +11398,12 @@ fn invitation_confirmation_required_service_gets_fresh_timed_episode_without_mut
     };
     use sha2::Digest;
     let (context, mut conn, path, clock) = bound_fixture(100);
+    conn.pragma_update(
+        None,
+        "application_id",
+        crate::store::control::LEGACY_PAIR_MARKER,
+    )
+    .unwrap(); // a pre-upgrade Lazy invitation
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(u64::MAX),
         cancellation: Default::default(),
@@ -12464,6 +12485,12 @@ fn service_requirement_uses_an_independent_episode_without_mutating_native_lazy_
     };
     use sha2::Digest;
     let (context, mut conn, path, _) = bound_fixture(100);
+    conn.pragma_update(
+        None,
+        "application_id",
+        crate::store::control::LEGACY_PAIR_MARKER,
+    )
+    .unwrap(); // a pre-upgrade Lazy invitation
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
