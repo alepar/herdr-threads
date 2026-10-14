@@ -2653,6 +2653,105 @@ fn in_turn_service_is_decided_for_the_binding_the_composer_reaches() {
     }
 }
 
+/// A one-process (`ComposerChoice::Process`) group whose only wake reason is a threshold-admitted
+/// delivery row (`lazy`): once any binding displayed the frontier row (its cursor passed it, or
+/// its displayed mark holds it) that binding is owed no wake, so the process's composer wake is
+/// refused; an unserved sibling stays owed. Kills: treating `lazy` as always owed, which types a
+/// nudge after the row was served in a turn (Delivery contract rule 4).
+#[test]
+fn a_one_process_lazy_wake_is_refused_once_a_binding_displayed_the_frontier_row() {
+    use crate::ports::RefusalCause;
+    let (store, path) = multi_store(&[row("main", "codex", 10), row("side1", "codex", 10)]);
+    serve_in_turn(&store, "main", "inv");
+    serve_in_turn(&store, "side1", "inv");
+    {
+        let db = store.context.open_writer().unwrap();
+        db.execute(
+            "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-1','i','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES('prep-1','msg-1','t','s',0)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('msg-1','i','t',1,'ordinary',2,'passive',0,'lazy')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('prep-1','msg-1','i','t',2,0,2,0,1,0)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE lazy_recipients SET decision_seq=2 WHERE preparation_id='prep-1'",
+            [],
+        )
+        .unwrap();
+        db.execute("UPDATE host_instances SET decision_seq=2", [])
+            .unwrap();
+        db.execute(
+            "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES ('main','t',0),('side1','t',0)",
+            [],
+        )
+        .unwrap();
+    }
+    let reservation = StorePort::reserve_wake(&store, &owed_candidate(&store).unwrap(), &budget())
+        .unwrap()
+        .expect("an unserved admitted delivery row reserves a wake");
+    assert_eq!(reservation.reasons, ["lazy"]);
+    assert_eq!(target_ids(&reservation), ["main", "side1"]);
+    assert_eq!(
+        dispatch_to(&store, &reservation, FOREGROUND_A).1.len(),
+        1,
+        "control: nobody displayed the row, the process is typed to once"
+    );
+
+    let owed = |binding: &str| {
+        StorePort::wake_owed_to_binding(
+            &store,
+            &reservation,
+            Some(&crate::protocol::ids::BindingId::new(binding)),
+            &budget(),
+        )
+        .unwrap()
+    };
+    let writer = || store.context.open_writer().unwrap();
+    writer()
+        .execute(
+            "UPDATE binding_cursors SET seq=1 WHERE binding_id='main'",
+            [],
+        )
+        .unwrap();
+    let (outcome, typed) = dispatch_to(&store, &reservation, FOREGROUND_A);
+    assert_eq!(outcome, WakeOutcome::Refused(RefusalCause::Unavailable));
+    assert!(typed.is_empty(), "main's cursor passed the row: {typed:?}");
+    assert!(!owed("main"));
+    assert!(owed("side1"), "an unserved sibling's wake stays owed");
+
+    writer()
+        .execute(
+            "UPDATE binding_cursors SET seq=0 WHERE binding_id='main'",
+            [],
+        )
+        .unwrap();
+    assert!(owed("main"), "cursor reset: owed again");
+    writer()
+        .execute(
+            "INSERT INTO binding_row_displays(binding_id,message_id) VALUES ('main','msg-1')",
+            [],
+        )
+        .unwrap();
+    let (outcome, typed) = dispatch_to(&store, &reservation, FOREGROUND_A);
+    assert_eq!(outcome, WakeOutcome::Refused(RefusalCause::Unavailable));
+    assert!(typed.is_empty(), "main's displayed mark holds the row");
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
 /// ht-705: an in-turn offer recorded after the wake was reserved (the binding's turn served the
 /// item while the wake was in flight) is honoured at dispatch, rechecked after the reservation
 /// fence. Kills: deciding only at discovery or reservation time.
