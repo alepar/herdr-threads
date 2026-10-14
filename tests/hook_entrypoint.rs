@@ -1787,6 +1787,18 @@ fn pair_accept_delivers_mixed_opening_mail_once() {
         lazy_open,
         "unjoined ordinary display does not pass its cursor gap"
     );
+    // The display above the cursor gap is remembered per binding (binding_row_displays).
+    let marked = |body: &str| {
+        fx.count(&format!(
+            "SELECT count(*) FROM binding_row_displays d JOIN messages m ON m.id=d.message_id JOIN occupant_bindings b ON b.binding_id=d.binding_id WHERE m.body='{body}' AND b.seat_id='seat' AND b.native_session='sess-1'"
+        ))
+    };
+    assert_eq!(
+        marked("lazy-middle"),
+        1,
+        "the first display marked lazy-middle"
+    );
+    assert_eq!(marked("lazy-last"), 1, "the first display marked lazy-last");
     fx.cooperative("seat", "w9:p1", &["ack", &acked]);
     fx.cooperative("seat", "w9:p1", &["accept", &thread]);
     assert_eq!(
@@ -1795,12 +1807,14 @@ fn pair_accept_delivers_mixed_opening_mail_once() {
         "acceptance preserves the existing reader cursor"
     );
     let after = hook("after accept");
+    // Shown once in total: the before-accept display marked lazy-middle and lazy-last
+    // (binding_row_displays), so accept does not offer them again.
     for (body, n) in [
         ("ordinary-acked", 1),
         ("ordinary-pending", 1),
         ("lazy-open", 0),
-        ("lazy-middle", 1),
-        ("lazy-last", 1),
+        ("lazy-middle", 0),
+        ("lazy-last", 0),
     ] {
         assert_eq!(times(&after, body), n, "after accept, {body}: {after}");
     }

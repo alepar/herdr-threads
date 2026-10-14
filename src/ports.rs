@@ -2291,8 +2291,8 @@ pub struct LogicalAttentionFrontier {
     pub addressed_receipt: Option<LogicalPublicationKey>,
     pub actionable_warning: Option<LogicalPublicationKey>,
     /// Greatest publication decision sequence (`send_manifests.decision_seq`)
-    /// of the seat's pending lazy rows, set only for a `wake_on: all` seat
-    /// (delivery-policy DP8). Publication order only grows, so a larger value
+    /// of the seat's pending delivery rows whose priority its nudge threshold admits
+    /// (p <= T; every priority when T < 0), None otherwise (delivery-policy DP8). Publication order only grows, so a larger value
     /// is a lazy row published after the last reservation, even one staged
     /// earlier.
     pub lazy: Option<i64>,
@@ -2462,8 +2462,8 @@ impl WakeCandidate {
                 || (self.actionable_warning_seq.is_some()
                     && !self.warning_offered_for_current_occupant()))
     }
-    /// The lazy frontier a `wake_on: all` seat has pending (None for a `nudge`
-    /// seat, whose lazy rows never wake it).
+    /// The delivery-row frontier the seat's nudge threshold admits (p <= T; every priority
+    /// when T < 0) has pending (None when no pending row can wake it).
     pub fn pending_lazy(&self) -> Option<i64> {
         self.attention_witness
             .as_ref()

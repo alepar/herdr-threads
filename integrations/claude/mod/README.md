@@ -119,8 +119,8 @@ builds `io` from `$`. Rules (spec D5, D6):
   append in flight at the loss that succeeds counts as delivered and is acked. One that is
   dropped or denied is discarded, unless the new run re-streamed it. The delivered-but-unacked
   set is kept and re-acked after the next `connected`.
-- **Acks.** After a resolved delivery the mod runs `watch ack --via <path> <ids>` for messages
-  and lazy rows only; never attention items, never truncated items. Per-id results: `settled`,
+- **Acks.** After a resolved delivery the mod runs `watch ack --via <path> <ids>` for message
+  items (any priority) only; never attention items, never truncated items. Per-id results: `settled`,
   `already_settled`, `refused_terminal` and `stale_generation` leave the set (the last also
   forgets the delivery so a re-stream is delivered); `retryable`, a non-zero exit or a missing
   line stay and are retried on every new stream line, after `status connected` and every 30 s

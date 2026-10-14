@@ -2445,7 +2445,7 @@ pub(crate) fn validate_automatic_presentation_admission(
     Ok(())
 }
 
-pub(crate) const AUTOMATIC_PENDING_GUIDANCE: &str = "Retry the exact original reference after inspecting the pair lifecycle. Ensure creates the initial invitation once; a reject or leave needs explicit repair on the same pair. A possible native start must be inspected before any manual launch. No automatic invitation acceptance, ACK or topology cleanup occurs.";
+pub(crate) const AUTOMATIC_PENDING_GUIDANCE: &str = "Retry the exact original reference after inspecting the pair lifecycle. Ensure auto-joins both seats of a new pair (no invitation); a seat that left or rejected needs explicit repair on the same pair. A possible native start must be inspected before any manual launch. No automatic invitation acceptance, ACK or topology cleanup occurs.";
 pub(crate) const AUTOMATIC_BOOTSTRAP_GUIDANCE: &str = "Inspect the exact original namespace and attempt. Retry retains original body and keys; unknown native creation or start never grants another automatic submission. No topology cleanup, invitation acceptance or ACK.";
 
 /// Output projection only; the retained canonical/local argv remains exact.

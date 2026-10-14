@@ -27,7 +27,7 @@
 //! After an `attention` line, a drain that finds no invitation or warning
 //! prints `attention_cleared`.
 //!
-//! A `message` line with `wakes: true` is a promoted `wake_on: all` lazy row; a `message` line
+//! A `message` line with `wakes: true` is a promoted delivery row (its priority is admitted by the seat's nudge threshold, p <= T; an older daemon's `wake_on: all` promotion); a `message` line
 //! with `ack_required: false` and no `wakes` is mail another binding already settled.
 //!
 //! Every line carries `schema` (1, [`WATCH_LINE_SCHEMA`]), `id`, `kind`, and
@@ -529,7 +529,8 @@ pub struct WatchMessage {
     pub body_len: u64,
     pub truncated: bool,
     pub ack_required: bool,
-    /// A lazy row of a `wake_on: all` seat promoted to a `message` line (delivery-policy DP8):
+    /// A delivery row whose priority the seat's nudge threshold admits (p <= T; every priority
+    /// when T < 0; an older daemon's `wake_on: all`) promoted to a `message` line (delivery-policy DP8):
     /// it wakes an idle session although it has no ACK to run. Absent (false) on every other
     /// line, so an ordinary message another binding already settled (also `ack_required:
     /// false`) is told apart. Wire-compatible: added after schema 1 without a bump; an older

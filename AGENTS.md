@@ -109,7 +109,7 @@ Optional, Linux (not a release gate): the same matrix in the Docker runner (`scr
 ```sh
 scripts/linux-e2e/run self-test     # driver self-test in the container, no agents
 scripts/linux-e2e/run wake-e2e --live --codex-auth-file CODEX_AUTH_JSON --claude-oauth-token-file CLAUDE_TOKEN_FILE
-#   narrow it by appending driver arguments after --, e.g.  -- --harness codex --cases send-nudge/group
+#   narrow it by appending driver arguments after --, e.g.  -- --harness codex --cases send-p0/group
 ```
 
 ## Speed budgets

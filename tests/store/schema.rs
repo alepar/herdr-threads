@@ -7233,18 +7233,23 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         // lazy_recipients_seat_ordinal); catch_up and its triggers are rebuilt one for one.
         // V35 deltas: +2 indexes (warning_offer_seat, digest_notice_offer_seat); the two
         // frontier tables are rebuilt one for one. V36 deltas: +1 table (in_turn_offer), +1 index
-        // (in_turn_offer_seat).
+        // (in_turn_offer_seat). V47 deltas: +1 table (binding_row_displays), +2 indexes
+        // (lazy_recipients_pending_order, lazy_recipients_pending_thread_order), +4 triggers
+        // (message_priority_immutable, preparation_priority_immutable,
+        // lazy_recipient_priority_immutable, lazy_recipient_decision_seq_once); messages_immutable,
+        // lazy_recipient_source, lazy_recipient_display_published and lazy_manifest_source are
+        // recreated one for one.
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
-            96
+            97
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
-            168
+            170
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
-            307
+            311
         );
     }
 }
@@ -8317,6 +8322,21 @@ fn published_binding_upgrade_preserves_exact_ack_bindings_and_delivery_history(v
             .iter()
             .map(|name| presentation_query_rows(&db, &row_sql(name)))
             .collect();
+        // The rows after the full upgrade: V47 appends `messages.priority` (1 for a lazy
+        // message, else 0) and `lazy_recipients.priority` (default 1) plus
+        // `lazy_recipients.decision_seq` (its published manifest's, else NULL), derived here from
+        // the pre-upgrade rows.
+        let row_sql_v47 = |name: &str| {
+            match name {
+            "messages" => "SELECT rowid,*,CASE WHEN delivery_mode='lazy' THEN 1 ELSE 0 END FROM messages ORDER BY rowid".to_string(),
+            "lazy_recipients" => "SELECT rowid,*,1,(SELECT sm.decision_seq FROM send_manifests sm WHERE sm.preparation_id=lazy_recipients.preparation_id AND sm.message_id=lazy_recipients.message_id) FROM lazy_recipients ORDER BY rowid".to_string(),
+            _ => row_sql(name),
+        }
+        };
+        let captured_v47: Vec<_> = tables
+            .iter()
+            .map(|name| presentation_query_rows(&db, &row_sql_v47(name)))
+            .collect();
         let receipt_catalog_sql = "SELECT type,name,tbl_name,rootpage,sql FROM sqlite_schema WHERE tbl_name IN ('receipts','receipt_state') ORDER BY type,name";
         let receipt_catalog = presentation_query_rows(&db, receipt_catalog_sql);
         // Force the new38 full receipt rebuild to fail its post-copy FK check.
@@ -8387,7 +8407,7 @@ fn published_binding_upgrade_preserves_exact_ack_bindings_and_delivery_history(v
                     in_turn_catalog
                 );
             }
-            for (name, expected) in tables.iter().zip(&captured) {
+            for (name, expected) in tables.iter().zip(&captured_v47) {
                 let rows = presentation_query_rows(db, &row_sql(name));
                 assert_eq!(&rows, expected, "published35 retained {name}");
             }
