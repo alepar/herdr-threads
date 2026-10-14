@@ -151,6 +151,7 @@ fn watch_line_marks_a_promoted_row_waking_and_omits_it_otherwise() {
         body_end: 2,
         body_len: 2,
         ack_candidate: None,
+        deadline_at: None,
     }]));
     assert_eq!(settled["kind"], "message", "{settled}");
     assert_eq!(settled["ack_required"], false, "{settled}");

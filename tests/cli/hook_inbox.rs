@@ -55,6 +55,7 @@ fn ordinary(id: &str, body: &str, ack: bool) -> InboxBatchV2Item {
         body_end: body.len() as u64,
         body_len: body.len() as u64,
         ack_candidate: ack.then(|| MessageId::new(id)),
+        deadline_at: None,
     }
 }
 fn page_offer(items: Vec<InboxBatchV2Item>, has_more: bool) -> InboxOffer {

@@ -11,18 +11,15 @@ macro_rules! golden {
     };
 }
 
-const GOLDENS: [(&str, &str, &str); 6] = [
+const GOLDENS: [(&str, &str, &str); 7] = [
     golden!("empty"),
     golden!("multiline"),
     golden!("controls"),
     golden!("name-equals-id"),
     golden!("markers"),
     golden!("attention"),
+    golden!("priority"),
 ];
-
-// Hand-written in the generator format; the mod's copy (`frame-goldens.ts`) gains this case when
-// the JS `frame()` learns the `[pN]` marker (the mod-side task), which then moves it into GOLDENS.
-const PRIORITY_GOLDEN: (&str, &str, &str) = golden!("priority");
 
 fn items(json: &str) -> Vec<FrameItem> {
     serde_json::from_str(json).unwrap()
@@ -30,7 +27,7 @@ fn items(json: &str) -> Vec<FrameItem> {
 
 #[test]
 fn frame_matches_the_js_golden_byte_for_byte() {
-    for (name, json, txt) in GOLDENS.into_iter().chain([PRIORITY_GOLDEN]) {
+    for (name, json, txt) in GOLDENS {
         let got = frame(&items(json));
         assert_eq!(got, txt, "case {name}");
         assert!(!got.starts_with('/'), "case {name}");
@@ -73,7 +70,11 @@ fn goldens_exercise_the_cases_they_name() {
 
 #[test]
 fn priority_marker_leads_the_markers_and_p1_or_absent_is_silent() {
-    let text = PRIORITY_GOLDEN.2;
+    let text = GOLDENS
+        .iter()
+        .find(|(name, ..)| *name == "priority")
+        .unwrap()
+        .2;
     assert!(text.contains("from S1 \"alice\" [p0]:\n  body of m1"));
     assert!(text.contains("from S1 \"alice\":\n  body of m2"));
     assert!(text.contains("from S1 \"alice\" [p5]:\n  body of m3"));

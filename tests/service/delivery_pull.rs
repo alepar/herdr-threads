@@ -6300,6 +6300,7 @@ fn presentation_raw_carry_serializer_accounting_witness() {
                     body_end: 8192,
                     body_len: 8193,
                     ack_candidate: None,
+                    deadline_at: None,
                 }
             };
             let source_len = serde_json::to_vec(&item).unwrap().len();

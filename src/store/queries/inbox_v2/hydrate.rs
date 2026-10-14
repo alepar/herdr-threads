@@ -100,6 +100,10 @@ pub(in crate::store::queries) fn hydrate_message(
             body_end: body_len,
             body_len,
             ack_candidate: current_agent.then_some(message),
+            deadline_at: crate::store::effective::effective_receipt(db, id, seat.as_str())?
+                .filter(|r| r.state == crate::store::effective::EffectiveReceiptState::Pending)
+                .and_then(|r| r.deadline_at)
+                .map(crate::protocol::time::UtcMillis),
         }
     }))
 }

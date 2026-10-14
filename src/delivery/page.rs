@@ -2,7 +2,10 @@
 //! spec DP2): page `InboxBatchV2` for a seat until exhausted, feed every item
 //! to an [`Assembler`] and report what came out as [`DrainEvent`]s.
 
-use super::assemble::{AssembleError, Assembled, Assembler, DeliveryInvitation, DeliveryItem};
+use super::assemble::{
+    AssembleError, Assembled, Assembler, DeliveryInvitation, DeliveryItem, batch_order,
+    item_order_key,
+};
 use crate::protocol::{pagination::Page, results::InboxBatchV2Item};
 
 pub use crate::protocol::watch::{
@@ -86,11 +89,13 @@ pub fn drain_pages<E>(
     // Chunks buffered by an earlier, failed drain do not carry over.
     assembler.partial.clear();
     let mut saw_attention = false;
+    // One drain may combine several pages: its items go out as one batch in order-key order.
+    let mut batch: Vec<DeliveryItem> = Vec::new();
     for _ in 0..max_pages {
         let page = source.page(cursor.take()).map_err(DrainPagesError::Page)?;
         for item in page.items {
             match assembler.push(item).map_err(DrainPagesError::Assemble)? {
-                Assembled::Item(item) => emit!(DrainEvent::Item(item)),
+                Assembled::Item(item) => batch.push(item),
                 Assembled::Invitation(item) => {
                     saw_attention |= item.content.wakes;
                     emit!(DrainEvent::Invitation(item));
@@ -102,6 +107,10 @@ pub fn drain_pages<E>(
         match page.next_cursor {
             Some(next) => cursor = Some(next),
             None => {
+                batch_order(&mut batch, item_order_key);
+                for item in batch.drain(..) {
+                    emit!(DrainEvent::Item(item));
+                }
                 if saw_attention {
                     let id = format!("attention:{frame_version}");
                     if assembler.emitted.insert(id) {

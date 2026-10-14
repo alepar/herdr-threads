@@ -1272,6 +1272,10 @@ pub enum InboxBatchV2Item {
         /// The message's delivery priority; absent from an older daemon.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         priority: Option<crate::protocol::priority::DeliveryPriority>,
+        /// The seat's pending explicit-ACK receipt deadline; absent without one and from an
+        /// older daemon.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deadline_at: Option<crate::protocol::time::UtcMillis>,
     },
     LazyMessage {
         thread: ThreadId,
