@@ -553,12 +553,14 @@ fn lazy_config_current_cli_inbox_v1_daemon_refuses_lazy_before_intent() {
     assert_eq!(
         w.db()
             .query_row(
-                "SELECT delivery_mode FROM messages WHERE id=?1",
+                "SELECT delivery_mode||priority FROM messages WHERE id=?1",
                 [&compatible],
                 |r| r.get::<_, String>(0)
             )
             .unwrap(),
-        "ordinary"
+        // `--nudge` without `--require-ack` recipients is a priority-0 delivery row; the audit
+        // column says `ordinary` only for explicit ACK recipients.
+        "lazy0"
     );
     let wire = p
         .requests()

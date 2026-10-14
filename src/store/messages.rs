@@ -3,8 +3,9 @@
 use crate::ports::{DurableWorkAdmission, SendPreparationProgress};
 use crate::protocol::{
     authority::{MutationPermit, ObligationRef},
-    commands::{DeliveryMode, SendMessage},
+    commands::SendMessage,
     ids::{MessageId, SeatId, ServiceAuthorId, ThreadId, prefix, send_message_id_for_preparation},
+    priority::DeliveryPriority,
     results::{ApiError, CommandResult, ErrorCode},
     time::CallBudget,
 };
@@ -78,6 +79,9 @@ pub fn send_payload(request: &SendMessage) -> Value {
     if !request.delivery_mode.is_ordinary() {
         payload["delivery_mode"] = json!(request.delivery_mode);
     }
+    if let Some(priority) = request.priority {
+        payload["priority"] = json!(priority);
+    }
     if request.relays_user {
         payload["relays_user"] = json!(true);
     }
@@ -87,16 +91,19 @@ pub fn send_payload(request: &SendMessage) -> Value {
     payload
 }
 
+/// The message's delivery priority: the request's own, else derived from its legacy mode (D10).
+/// The one place a send's `delivery_mode` is read to decide anything.
+pub(super) fn resolved_priority(request: &SendMessage) -> DeliveryPriority {
+    request
+        .priority
+        .unwrap_or_else(|| DeliveryPriority::from_mode(request.delivery_mode))
+}
+
+/// Daemon-side send rules, checked before any staging. Same rules as `Command::validate`.
 fn validate_delivery_options(request: &SendMessage) -> Result<(), ApiError> {
-    if request.delivery_mode == DeliveryMode::Lazy
-        && (!request.invited_recipients.is_empty() || request.deadline_millis.is_some())
-    {
-        return Err(api_error(
-            ErrorCode::InvalidRequest,
-            "lazy delivery cannot require ACKs or a deadline",
-        ));
-    }
-    Ok(())
+    request
+        .validate_delivery_options()
+        .map_err(|detail| api_error(ErrorCode::InvalidRequest, detail))
 }
 
 /// One hidden preparation quantum. The caller yields the writer between steps.
@@ -256,7 +263,8 @@ fn prepare_send_step_impl(
             "message body byte limit",
         ));
     }
-    let duration = if request.delivery_mode == DeliveryMode::Lazy {
+    // Only explicit ACK recipients get receipts, so only they have a duration (D9).
+    let duration = if request.invited_recipients.is_empty() {
         0
     } else {
         frozen_duration(request, limits)?
@@ -389,8 +397,8 @@ fn prepare_send_step_impl(
                 |r| r.get(0),
             )
             .map_err(store_error)?;
-        tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12,'building',?13)",
-            params![id,instance,scope,request.operation.as_str(),digest.as_slice(),request.thread.as_str(),membership_revision,lifecycle_revision,eligibility_revision,timeline_revision,config_revision,high_water,if request.delivery_mode.is_ordinary() {"ordinary"} else {"lazy"}]).map_err(store_error)?;
+        tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12,'building',?13,?14)",
+            params![id,instance,scope,request.operation.as_str(),digest.as_slice(),request.thread.as_str(),membership_revision,lifecycle_revision,eligibility_revision,timeline_revision,config_revision,high_water,if request.invited_recipients.is_empty() {"lazy"} else {"ordinary"},resolved_priority(request).get()]).map_err(store_error)?;
         (id, high_water, 0, 0, 0, "building".to_owned())
     };
     if count > 0 {
@@ -424,12 +432,20 @@ fn prepare_send_step_impl(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
+    let ack: Vec<_> = request
+        .invited_recipients
+        .iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let walk = AudienceWalk {
         prep_id: &prep_id,
         instance: &instance,
         thread: &request.thread,
         high_water,
         explicit: &explicit,
+        ack: AckAudience::Only(&ack),
+        priority: resolved_priority(request),
         exclude: Some(&seat),
         duration,
     };
@@ -501,9 +517,43 @@ pub(super) struct AudienceWalk<'a> {
     pub thread: &'a ThreadId,
     pub high_water: i64,
     pub explicit: &'a [&'a SeatId],
+    /// The audience members that get receipts. Everyone else, human seats included, gets a delivery
+    /// row at `priority`.
+    pub ack: AckAudience<'a>,
+    pub priority: DeliveryPriority,
     /// The sender, never its own recipient. `None` for a service author.
     pub exclude: Option<&'a SeatId>,
     pub duration: i64,
+}
+
+/// Who owes an ACK in one send (D9).
+#[derive(Clone, Copy)]
+pub(super) enum AckAudience<'a> {
+    /// A service send is receipt-bearing for its whole audience.
+    Everyone,
+    /// A native send: only the explicit `--require-ack` recipients.
+    Only(&'a [&'a SeatId]),
+}
+
+impl AudienceWalk<'_> {
+    fn staging(&self, recipient: &str) -> Staging {
+        Staging {
+            duration: self.duration,
+            priority: self.priority,
+            ack: match self.ack {
+                AckAudience::Everyone => true,
+                AckAudience::Only(seats) => seats.iter().any(|seat| seat.as_str() == recipient),
+            },
+        }
+    }
+}
+
+/// How one audience member is staged: a receipt (`ack`) or a delivery row at `priority`.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Staging {
+    pub duration: i64,
+    pub priority: DeliveryPriority,
+    pub ack: bool,
 }
 
 /// Stages at most `max_units` audience candidates: the joined snapshot up to the
@@ -537,10 +587,12 @@ pub(super) fn walk_audience(
             if let Some((ordinal, recipient, joined)) = row {
                 *cursor = ordinal;
                 visited += 1;
+                // An explicit recipient is staged by the explicit pass, once.
                 if joined
                     && walk
                         .exclude
                         .is_none_or(|sender| recipient != sender.as_str())
+                    && !walk.explicit.iter().any(|seat| seat.as_str() == recipient)
                 {
                     stage_recipient(
                         tx,
@@ -548,7 +600,7 @@ pub(super) fn walk_audience(
                         walk.instance,
                         walk.thread,
                         &recipient,
-                        walk.duration,
+                        walk.staging(&recipient),
                         count,
                         warning_count,
                     )?;
@@ -604,7 +656,7 @@ pub(super) fn walk_audience(
                 walk.instance,
                 walk.thread,
                 recipient.as_str(),
-                walk.duration,
+                walk.staging(recipient.as_str()),
                 count,
                 warning_count,
             )?;
@@ -658,46 +710,42 @@ pub(super) fn stage_recipient(
     instance: &str,
     thread: &ThreadId,
     recipient: &str,
-    duration: i64,
+    staging: Staging,
     count: &mut i64,
     warning_count: &mut i64,
 ) -> Result<(), ApiError> {
-    let lazy: bool = tx
-        .query_row(
-            "SELECT delivery_mode='lazy' FROM send_preparations WHERE id=?1",
-            [prep_id],
-            |r| r.get(0),
-        )
-        .map_err(store_error)?;
-    if lazy {
-        let already: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM lazy_recipients WHERE preparation_id=?1 AND seat_id=?2)",params![prep_id,recipient],|r|r.get(0)).map_err(store_error)?;
-        if already {
-            return Ok(());
-        }
+    let duration = staging.duration;
+    let already:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM prepared_recipients WHERE preparation_id=?1 AND seat_id=?2) OR EXISTS(SELECT 1 FROM lazy_recipients WHERE preparation_id=?1 AND seat_id=?2)",params![prep_id,recipient],|r|r.get(0)).map_err(store_error)?;
+    if already {
+        return Ok(());
+    }
+    // The daemon's open binding is the canonical role. Only an explicit ACK recipient that is not
+    // a human gets a receipt (D9); everyone else, a human seat included, gets a delivery row at
+    // the message priority. The separate unavailable-recipient warning below stays for receipts
+    // and priority-0 rows.
+    let receipt =
+        staging.ack && schema::open_binding_role(tx, &SeatId::new(recipient))? != Some("human");
+    if !receipt {
         let message =
             MessageId::new(send_message_id_for_preparation(prep_id).ok_or_else(|| {
                 api_error(ErrorCode::StoreCorrupt, "invalid send preparation ID")
             })?);
-        return super::lazy_delivery::stage_recipient(
+        super::lazy_delivery::stage_recipient(
             tx,
             prep_id,
             &message,
             thread,
             &SeatId::new(recipient),
-        );
-    }
-    // The daemon's open binding is the canonical role. A human still sees the
-    // thread's message through membership; no ACK expectation is staged.
-    // Keep the separate unavailable-recipient warning below.
-    let expects_ack = schema::open_binding_role(tx, &SeatId::new(recipient))? != Some("human");
-    let already:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM prepared_recipients WHERE preparation_id=?1 AND seat_id=?2)",params![prep_id,recipient],|r|r.get(0)).map_err(store_error)?;
-    if already {
-        return Ok(());
+            staging.priority,
+        )?;
+        if staging.priority != DeliveryPriority::p0() {
+            return Ok(());
+        }
     }
     // One availability projection with `ensure_unavailability_episode`.
     let provenance = schema::effective_registered_availability(tx, recipient, Some(instance))?;
     let available = provenance.is_some();
-    if expects_ack {
+    if receipt {
         *count = count.checked_add(1).ok_or_else(|| {
             api_error(ErrorCode::SequenceExhausted, "recipient ordinal exhausted")
         })?;
@@ -813,9 +861,9 @@ pub(super) fn insert_publication(
         }
         PublicationAuthor::Programmatic(_) => None,
     };
-    let (prep_id,instance,high_water,recipient_count,warning_count,mode):(String,String,i64,i64,i64,String)=tx.query_row(
-        "SELECT id,instance_id,interval_high_water,recipient_count,warning_count,delivery_mode FROM send_preparations WHERE operation_scope=?1 AND operation_key=?2 AND digest=?3",
-        params![scope,key,digest.as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)),
+    let (prep_id,instance,high_water,recipient_count,warning_count,mode,priority):(String,String,i64,i64,i64,String,i64)=tx.query_row(
+        "SELECT id,instance_id,interval_high_water,recipient_count,warning_count,delivery_mode,priority FROM send_preparations WHERE operation_scope=?1 AND operation_key=?2 AND digest=?3",
+        params![scope,key,digest.as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)),
     ).map_err(store_error)?;
     let mut duration_ms = 0;
     if recipient_count > 0 {
@@ -857,10 +905,10 @@ pub(super) fn insert_publication(
             relays_user,
             user_intent,
         } => {
-            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user,user_intent,delivery_mode,sender_binding_id) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![id.as_str(),instance,thread.as_str(),base,seat.as_str(),observation,body,utc,decision_seq as i64,author_role,relays_user as i64,user_intent.map(crate::protocol::summary::UserIntent::as_str),mode,binding.as_str()]).map_err(store_error)?;
+            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user,user_intent,delivery_mode,sender_binding_id,priority) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",params![id.as_str(),instance,thread.as_str(),base,seat.as_str(),observation,body,utc,decision_seq as i64,author_role,relays_user as i64,user_intent.map(crate::protocol::summary::UserIntent::as_str),mode,binding.as_str(),priority]).map_err(store_error)?;
         }
         PublicationAuthor::Programmatic(author) => {
-            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_label,body,decision_at,decision_seq,author_kind,author_service_id,author_role) VALUES (?1,?2,?3,?4,'ordinary','herdr-graph',?5,?6,?7,'programmatic',?8,'service')",params![id.as_str(),instance,thread.as_str(),base,body,utc,decision_seq as i64,author.as_str()]).map_err(store_error)?;
+            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_label,body,decision_at,decision_seq,author_kind,author_service_id,author_role,delivery_mode,priority) VALUES (?1,?2,?3,?4,'ordinary','herdr-graph',?5,?6,?7,'programmatic',?8,'service',?9,?10)",params![id.as_str(),instance,thread.as_str(),base,body,utc,decision_seq as i64,author.as_str(),mode,priority]).map_err(store_error)?;
         }
     }
     tx.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![prep_id,id.as_str(),instance,thread.as_str(),decision_seq as i64,utc,base,high_water,recipient_count,warning_count]).map_err(store_error)?;
@@ -881,7 +929,8 @@ pub(super) fn insert_publication(
     .map_err(store_error)?;
     schema::bump_timeline_revision(tx, thread)?;
     schema::bump_filter_revision(tx, &instance, "directory", thread.as_str())?;
-    if mode == "ordinary" {
+    // Receipts or warnings exist iff the send has explicit ACK recipients or an unavailable-recipient warning.
+    if recipient_count > 0 || warning_count > 0 {
         let work_high_water = recipient_count
             .checked_add(warning_count)
             .and_then(|v| v.checked_add(1))
@@ -898,7 +947,14 @@ pub(super) fn insert_publication(
     )
     .map_err(store_error)?;
     }
-    if mode == "lazy" {
+    let has_rows: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM lazy_recipients WHERE preparation_id=?1)",
+            [prep_id.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if has_rows {
         super::lazy_delivery::note_published(tx, &prep_id)?;
     }
     Ok(Publication {
@@ -1056,3 +1112,7 @@ mod messages_tests;
 #[cfg(test)]
 #[path = "../../tests/store/author_role.rs"]
 mod author_role_tests;
+
+#[cfg(test)]
+#[path = "../../tests/store/priority_send.rs"]
+mod priority_send_tests;

@@ -636,7 +636,9 @@ fn resolved_unbound_and_human_ordinary_direct_smoke() {
         let binding_count = count(&db, "occupant_bindings");
         let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
         let t = thread(ensure(&store, "s1", "s2", "smoke").unwrap());
-        let v = send_request_to(&t, "s1", "s2", "ordinary", DeliveryMode::Ordinary);
+        let mut v = send_request_to(&t, "s1", "s2", "ordinary", DeliveryMode::Ordinary);
+        // Only an explicit ACK recipient gets a receipt (D9); a human gets a priority-0 row.
+        v.invited_recipients = vec![SeatId::new("s2")];
         prepare(&store, &v).unwrap();
         assert_eq!(count(&db, "prepared_recipients"), i64::from(!human));
         if !human {
@@ -728,7 +730,8 @@ fn reversed_concurrent_ensures_converge_then_explicit_accept_reuses() {
     accept_pair(&store, &db, &t, invitee, "accept-race");
     assert_eq!(thread(ensure(&store, "s1", "s2", "fresh-a").unwrap()), t);
     assert_eq!(thread(ensure(&second, "s2", "s1", "fresh-b").unwrap()), t);
-    let v = send_request_to(&t, "s1", "s2", "dedup", DeliveryMode::Ordinary);
+    let mut v = send_request_to(&t, "s1", "s2", "dedup", DeliveryMode::Ordinary);
+    v.invited_recipients = vec![SeatId::new("s2")];
     prepare(&store, &v).unwrap();
     assert_eq!(count(&db, "prepared_recipients"), 1);
     let query:String=db.query_row("EXPLAIN QUERY PLAN SELECT thread_id FROM direct_threads WHERE instance_id='i' AND seat_a='s1' AND seat_b='s2'",[],|r|r.get(3)).unwrap();

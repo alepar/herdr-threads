@@ -467,13 +467,11 @@ fn nudge_threshold_commands_serialize_with_deny_unknown_fields() {
 }
 
 #[test]
-fn new_capabilities_are_defined_but_not_advertised() {
+fn new_capabilities_are_defined_and_only_send_priority_is_advertised() {
     use crate::protocol::capabilities::*;
-    for name in [
-        SEND_PRIORITY_V1,
-        SEAT_NUDGE_THRESHOLD_V1,
-        DIRECT_AUTO_JOIN_V1,
-    ] {
+    // `send.priority_v1` is advertised with its handler (ht-yha.3).
+    assert!(ADVERTISED.contains(&SEND_PRIORITY_V1));
+    for name in [SEAT_NUDGE_THRESHOLD_V1, DIRECT_AUTO_JOIN_V1] {
         assert!(!ADVERTISED.contains(&name), "{name}");
     }
     assert_eq!(SEND_PRIORITY_V1, "send.priority_v1");

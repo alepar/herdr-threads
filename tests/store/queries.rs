@@ -6402,7 +6402,11 @@ fn presentation_publication_observes_old_staging_only_after_late_manifest() {
         "i",
         &thread,
         "s",
-        100,
+        crate::store::messages::Staging {
+            duration: 100,
+            priority: crate::protocol::priority::DeliveryPriority::DEFAULT,
+            ack: false,
+        },
         &mut recipients,
         &mut warnings,
     )

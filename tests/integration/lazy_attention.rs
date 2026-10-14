@@ -130,7 +130,12 @@ impl Fixture {
             thread: ThreadId::new("t"),
             body: format!("announcement {op}"),
             direct_recipient: None,
-            invited_recipients: vec![],
+            // Only an explicit ACK recipient owes a receipt (D9): an ordinary send names `agent`.
+            invited_recipients: if mode == DeliveryMode::Ordinary && seat != "agent" {
+                vec![SeatId::new("agent")]
+            } else {
+                vec![]
+            },
             deadline_millis: None,
             operation: OperationId::new(op),
             claim: self.claim(seat),
@@ -312,12 +317,17 @@ fn parsed_send(f: &Fixture, words: Vec<String>, operation: &str) -> SendMessage 
     let CliAction::Mutation(spec) = parsed.action else {
         panic!("expected send mutation")
     };
-    let Command::SendMessage(send) = spec
+    let Command::SendMessage(mut send) = spec
         .into_command(Some(f.claim("author")), OperationId::new(operation))
         .unwrap()
     else {
         panic!("expected send command")
     };
+    // `--nudge` alone is a priority-0 delivery row now; the receipt-bearing shape these controls
+    // exercise names its recipient (D9). The CLI/guide wording is a later task's.
+    if send.delivery_mode == DeliveryMode::Ordinary && send.invited_recipients.is_empty() {
+        send.invited_recipients = vec![SeatId::new("agent")];
+    }
     send
 }
 

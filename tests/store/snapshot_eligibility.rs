@@ -687,7 +687,7 @@ fn send_request() -> SendMessage {
         thread: ThreadId::new("t"),
         body: "hello".into(),
         direct_recipient: None,
-        invited_recipients: vec![],
+        invited_recipients: vec![SeatId::new("r")],
         deadline_millis: None,
         operation: OperationId::new("op"),
         claim: CallerClaim {

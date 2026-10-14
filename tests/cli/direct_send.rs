@@ -293,7 +293,8 @@ fn modern_ordinary_direct_send_with_receipt_capability_commits_exact_ordinary_bo
             "seat-b",
             "--body",
             "modern ordinary",
-            "--nudge",
+            "--require-ack",
+            "seat-b",
         ],
         &mut output,
     )
@@ -1058,8 +1059,16 @@ fn nudge_and_explicit_target_ack_use_ordinary_delivery() {
     ] {
         let f = Fixture::new(false);
         let mut args = vec!["send", "--seat", "seat-b", "--body", "hello"];
+        let nudge_only = flags == ["--nudge"];
         args.extend(flags);
         f.run(&args, &mut vec![]).unwrap();
+        if nudge_only {
+            // Only an explicit ACK recipient owes a receipt (D9): a bare nudge is a priority-0 row.
+            assert_eq!(f.count("lazy_recipients"), 1);
+            assert_eq!(f.count("receipts"), 0);
+            assert_eq!(f.count("invitations"), 1);
+            continue;
+        }
         assert_eq!(f.count("lazy_recipients"), 0);
         let message: String =
             f.db.query_row("SELECT id FROM messages WHERE body='hello'", [], |r| {

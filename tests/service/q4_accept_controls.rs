@@ -46,7 +46,12 @@ fn send_direct(
                 body: body.into(),
                 delivery_mode: mode,
                 direct_recipient: Some(q.window.recipient.seat.clone()),
-                invited_recipients: vec![],
+                // Only an explicit ACK recipient owes a receipt (D9).
+                invited_recipients: if mode == DeliveryMode::Ordinary {
+                    vec![q.window.recipient.seat.clone()]
+                } else {
+                    vec![]
+                },
                 deadline_millis: None,
                 user_intent: None,
                 relays_user: false,

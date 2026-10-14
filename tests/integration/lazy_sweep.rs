@@ -185,7 +185,10 @@ fn cache(w: &World) -> Vec<Vec<String>> {
 fn lazy_sweep_canonical_markers_summary_cache_and_legacy_reads() {
     let w = World::agents_only();
     let lazy = w.send("canonical sweep needle", &[]);
-    let ordinary = w.send("ordinary sweep needle", &["--nudge"]);
+    let ordinary = w.send(
+        "ordinary sweep needle",
+        &["--nudge", "--require-ack", &w.seats[1]],
+    );
     // A retained immutable derived-summary fixture makes cache equality nonvacuous.
     let writer = rusqlite::Connection::open(w.paths().database_path).unwrap();
     writer.execute("INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at) SELECT 'sweep-cache',instance_id,thread_id,'sweep-v1',0,0,sequence,sequence,'fixture-hash','retained canonical narrative',actor_seat_id,'fixture','fixture',decision_at FROM messages WHERE id=?1", [&lazy]).unwrap();

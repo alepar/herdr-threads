@@ -175,13 +175,25 @@ fn send_in(
     delivery_mode: crate::protocol::commands::DeliveryMode,
 ) -> MessageId {
     fx.sends += 1;
+    // Only explicit ACK recipients owe receipts (D9): an ordinary send names every other member.
+    let acks: Vec<SeatId> = if delivery_mode.is_ordinary() {
+        fx.conn
+            .prepare("SELECT seat_id FROM memberships WHERE thread_id=?1 AND state='joined' AND seat_id<>'a' ORDER BY seat_id")
+            .unwrap()
+            .query_map([thread], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|seat| SeatId::new(seat.unwrap()))
+            .collect()
+    } else {
+        vec![]
+    };
     let request = SendMessage {
         priority: None,
         delivery_mode,
         user_intent: None,
         thread: ThreadId::new(thread),
         body: body.into(),
-        invited_recipients: vec![],
+        invited_recipients: acks,
         deadline_millis: None,
         operation: OperationId::new(format!("send-{}", fx.sends)),
         claim: claim_a(),

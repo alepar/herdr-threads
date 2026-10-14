@@ -350,6 +350,10 @@ pub(crate) fn prepare_service_send_step(
         thread: &request.thread,
         high_water,
         explicit: &explicit,
+        // A service send is receipt-bearing by contract (`ServiceSend`): its whole audience owes an
+        // ACK, so it keeps receipts and the default priority-0 ordinary preparation.
+        ack: messages::AckAudience::Everyone,
+        priority: crate::protocol::priority::DeliveryPriority::p0(),
         exclude: None,
         duration,
     };

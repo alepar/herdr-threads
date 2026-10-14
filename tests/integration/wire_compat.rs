@@ -339,7 +339,15 @@ impl World {
             Some(alice),
             // This fixture compares ordinary legacy/current renderer bytes;
             // explicitly retain attention delivery after native send became lazy.
-            &["send", &thread, "--body", "a short opening line", "--nudge"],
+            &[
+                "send",
+                &thread,
+                "--body",
+                "a short opening line",
+                "--nudge",
+                "--require-ack",
+                &hatter_seat,
+            ],
         );
         for (agent, word) in [(hatter, "tea"), (alice, "jam"), (hatter, "bat")] {
             let long = format!(
@@ -347,7 +355,23 @@ impl World {
                 format!("{word} and more {word}. ").repeat(30)
             );
             assert!(long.chars().count() > 256 && long.len() < 4000);
-            plugin.ok(Some(agent), &["send", &thread, "--body", &long, "--nudge"]);
+            let other = if agent == hatter {
+                &alice_seat
+            } else {
+                &hatter_seat
+            };
+            plugin.ok(
+                Some(agent),
+                &[
+                    "send",
+                    &thread,
+                    "--body",
+                    &long,
+                    "--nudge",
+                    "--require-ack",
+                    other,
+                ],
+            );
         }
         Self {
             _scratch: scratch,

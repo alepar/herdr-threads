@@ -580,7 +580,9 @@ fn partial_send_preparation_survives_budget_expiry_and_resumes_exact_intent() {
         thread,
         body: "bounded preparation".into(),
         direct_recipient: None,
-        invited_recipients: vec![],
+        invited_recipients: (0..40)
+            .map(|index| SeatId::new(format!("recipient-{index}")))
+            .collect(),
         deadline_millis: None,
         operation: OperationId::new("send"),
         claim: sender,
@@ -1165,7 +1167,7 @@ fn sends_succeed_after_host_outage_epoch_advance_and_reconfirmation() {
         vec![SeatId::new("recipient")],
         "a-to-b-require-ack",
     );
-    let plain = send(&sender, vec![], "a-plain");
+    let plain = send(&sender, vec![SeatId::new("recipient")], "a-plain");
     let reverse = send(&recipient, vec![SeatId::new("s")], "b-to-a-require-ack");
 
     // Every receipt to a reconfirmed, available seat starts its timer and no
@@ -1623,7 +1625,7 @@ impl SendScenario {
             thread: self.thread.clone(),
             body: "staged before, decided after".into(),
             direct_recipient: None,
-            invited_recipients: vec![],
+            invited_recipients: vec![SeatId::new("recipient")],
             deadline_millis: None,
             operation: OperationId::new(operation),
             claim: self.sender.clone(),

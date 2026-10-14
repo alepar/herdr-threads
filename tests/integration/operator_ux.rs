@@ -396,10 +396,11 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
         .as_str()
         .unwrap()
         .to_owned();
+    // The human gets the message as a priority-0 delivery row, never a receipt (A5a, D9).
     let inbox = plugin.ok(Some("w1:p1"), None, &["human", "inbox"]);
     assert!(
-        !inbox.to_string().contains(&thread),
-        "no human receipt expectation: {inbox}"
+        inbox.to_string().contains(&reply) && inbox.to_string().contains("lazy_message"),
+        "the human sees a delivery row: {inbox}"
     );
     let history = plugin.ok(Some("w1:p1"), None, &["human", "read", &thread]);
     assert!(history.to_string().contains(&reply), "{history}");

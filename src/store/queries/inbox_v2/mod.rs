@@ -272,7 +272,7 @@ pub(super) fn query_mode(
                 })
             })
         } else if lazy {
-            db.query_row("SELECT EXISTS(SELECT 1 FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id AND sm.thread_id=r.thread_id JOIN messages m ON m.id=r.message_id AND m.instance_id=sm.instance_id AND m.thread_id=r.thread_id AND m.decision_seq=sm.decision_seq WHERE r.seat_id=?1 AND r.message_id=?2 AND sm.instance_id=?3 AND sm.decision_seq<=?4 AND r.ordinal>?5 AND r.ordinal<=?6 AND m.kind='ordinary' AND m.delivery_mode='lazy')",params![seat.as_str(),body.message.as_str(),instance,state.publication_decision_high_water as i64,state.lazy_after_ordinal as i64,state.lazy_high_water_ordinal as i64],|r|r.get::<_,bool>(0)).map_err(store_error)?
+            db.query_row("SELECT EXISTS(SELECT 1 FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id AND sm.thread_id=r.thread_id JOIN messages m ON m.id=r.message_id AND m.instance_id=sm.instance_id AND m.thread_id=r.thread_id AND m.decision_seq=sm.decision_seq WHERE r.seat_id=?1 AND r.message_id=?2 AND sm.instance_id=?3 AND sm.decision_seq<=?4 AND r.ordinal>?5 AND r.ordinal<=?6 AND m.kind='ordinary')",params![seat.as_str(),body.message.as_str(),instance,state.publication_decision_high_water as i64,state.lazy_after_ordinal as i64,state.lazy_high_water_ordinal as i64],|r|r.get::<_,bool>(0)).map_err(store_error)?
         } else {
             crate::store::effective::effective_receipt(db, body.message.as_str(), seat.as_str())?
                 .is_some_and(|r| {

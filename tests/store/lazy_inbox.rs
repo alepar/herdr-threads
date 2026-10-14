@@ -165,6 +165,10 @@ fn send(
     request.operation = OperationId::new(op);
     request.body = body.into();
     request.delivery_mode = mode;
+    // An ordinary send is the explicit-ACK shape: only the named recipient owes a receipt (D9).
+    if mode == DeliveryMode::Ordinary {
+        request.invited_recipients = vec![SeatId::new("b")];
+    }
     ready(context, conn, &request);
     let CommandResult::MessageSent(result) = messages::publish_send(
         context,
