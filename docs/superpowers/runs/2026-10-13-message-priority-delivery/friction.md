@@ -9,3 +9,4 @@
 - [2026-10-14T04:50:25Z] base drift: main moved past 3a1203e0 (6334b322); ht-327 wake-e2e side cases touch AGENTS.md / scripts/wake-e2e.py, which ht-yha.10/.11 also edit — absorb once after phase 5 per base-drift rule
 - [2026-10-14T04:50:35Z] base drift is material (40 files,  17 files changed, 1166 insertions(+), 303 deletions(-)); includes src/store/wake.rs + attention/effective paths that ht-yha.4 rewrites → expect a conflict pass at absorption
 - [2026-10-14T07:48:38Z] super-roast PR round 1 rung: Workflow
+- [2026-10-14T08:44:48Z] ht-yha.33 escalated (blocker ht-xot: no compat mechanism decided for old-CLI format-2 continuation); orchestrator decided option (c) accept+record limitation (one-binary distribution, transient upgrade window), amended bead, closed blocker
