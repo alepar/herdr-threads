@@ -752,60 +752,6 @@ fn priority_schema_ordered_pending_seek_uses_the_new_indexes() {
 }
 
 #[test]
-fn priority_schema_repairs_a_pre_amendment_v47_store() {
-    const MARKER: &str = "-- ht-yha.44 per-binding pending views (also the repair tail of a pre-amendment v47 store).";
-    let (head, _) = include_str!("../../migrations/0047_message_priority.sql")
-        .split_once(MARKER)
-        .unwrap();
-    let db = v46_database();
-    db.execute_batch(head).unwrap();
-    db.execute_batch(
-        "CREATE INDEX lazy_recipients_pending_order ON lazy_recipients(seat_id,priority,decision_seq,ordinal) WHERE state='pending' AND decision_seq IS NOT NULL;
-         CREATE INDEX lazy_recipients_pending_thread_order ON lazy_recipients(seat_id,thread_id,priority,decision_seq,ordinal) WHERE state='pending' AND decision_seq IS NOT NULL;
-         PRAGMA user_version=47",
-    )
-    .unwrap();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
-    for (kind, name) in [
-        ("table", "binding_pending"),
-        ("index", "binding_pending_order"),
-        ("index", "binding_pending_thread_order"),
-        ("index", "lazy_recipients_legacy_order"),
-        ("trigger", "binding_pending_publish"),
-        ("trigger", "binding_pending_legacy_set"),
-        ("trigger", "binding_pending_legacy_clear"),
-        ("trigger", "binding_pending_cursor_insert"),
-        ("trigger", "binding_pending_cursor_advance"),
-        ("trigger", "binding_pending_row_display"),
-        ("trigger", "binding_pending_binding_end"),
-    ] {
-        assert_eq!(
-            db.query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type=?1 AND name=?2",
-                [kind, name],
-                |r| r.get::<_, i64>(0)
-            )
-            .unwrap(),
-            1,
-            "{name}"
-        );
-    }
-    for gone in [
-        "lazy_recipients_pending_order",
-        "lazy_recipients_pending_thread_order",
-    ] {
-        assert_eq!(
-            scalar(
-                &db,
-                &format!("SELECT count(*) FROM sqlite_master WHERE name='{gone}'")
-            ),
-            0,
-            "{gone}"
-        );
-    }
-}
-
-#[test]
 fn priority_schema_mixed_ack_preparation_stages_and_completes() {
     let db = fixture();
     db.execute_batch(&format!("INSERT INTO send_preparations({PREPARATION_COLUMNS},priority) VALUES('prep-1','i','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','ordinary',0)")).unwrap();

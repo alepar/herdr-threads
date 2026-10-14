@@ -894,54 +894,6 @@ fn the_view_triggers_spell_the_held_predicate() {
     }
 }
 
-/// The two view triggers as the first-amendment v47 (ht-yha.44) wrote them: every open binding.
-const OLD_PUBLISH_TRIGGER: &str = "CREATE TRIGGER binding_pending_publish AFTER UPDATE OF decision_seq ON lazy_recipients
-WHEN OLD.decision_seq IS NULL AND NEW.decision_seq IS NOT NULL
-BEGIN
-    INSERT OR IGNORE INTO binding_pending(binding_id,ordinal,thread_id,priority,decision_seq)
-    SELECT b.binding_id,NEW.ordinal,NEW.thread_id,NEW.priority,NEW.decision_seq FROM occupant_bindings b
-    WHERE b.seat_id=NEW.seat_id AND b.ended_at IS NULL
-      AND (EXISTS(SELECT 1 FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=NEW.thread_id)
-        OR EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=NEW.thread_id AND mb.seat_id=NEW.seat_id AND mb.state IN ('joined','invited')));
-END";
-const OLD_LEGACY_SET_TRIGGER: &str = "CREATE TRIGGER binding_pending_legacy_set AFTER UPDATE OF legacy_pending ON lazy_recipients
-WHEN OLD.legacy_pending=0 AND NEW.legacy_pending=1 AND NEW.decision_seq IS NOT NULL
-BEGIN
-    INSERT OR IGNORE INTO binding_pending(binding_id,ordinal,thread_id,priority,decision_seq)
-    SELECT b.binding_id,NEW.ordinal,NEW.thread_id,NEW.priority,NEW.decision_seq FROM occupant_bindings b
-    WHERE b.seat_id=NEW.seat_id AND b.ended_at IS NULL AND b.role='top_level';
-END";
-
-#[test]
-fn a_first_amendment_v47_store_is_repaired_on_open() {
-    let mut db = db();
-    db.execute_batch(
-        "DROP TRIGGER binding_pending_publish; DROP TRIGGER binding_pending_legacy_set;",
-    )
-    .unwrap();
-    db.execute_batch(OLD_PUBLISH_TRIGGER).unwrap();
-    db.execute_batch(OLD_LEGACY_SET_TRIGGER).unwrap();
-    let a = enroll_binding(&db, "sess-A", None);
-    let b = enroll_binding(&db, "sess-B", None);
-    publish(&mut db, 3);
-    assert_eq!((view(&db, &a), view(&db, &b)), (1, 1));
-    disconnect(&db, &b, DisconnectReason::Superseded);
-    assert_eq!(view(&db, &b), 1, "the raw helper leaves the old view");
-    crate::store::schema::initialize(&db, || UtcMillis(0)).unwrap();
-    let sql: String = db
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='binding_pending_publish'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(sql.contains(view_held_sql!("b")));
-    assert_eq!(view(&db, &b), 0);
-    assert_eq!(view(&db, &a), 1);
-    publish(&mut db, 4);
-    assert_eq!((view(&db, &a), view(&db, &b)), (2, 0));
-}
-
 #[test]
 fn the_backfill_skips_bindings_outside_the_held_set() {
     let mut db = db();

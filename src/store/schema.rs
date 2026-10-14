@@ -852,90 +852,11 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    if version == 47 {
-        let has_views: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='binding_pending'",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(store_error)?;
-        if has_views == 0 {
-            let (_, tail) = V47.split_once(V47_PENDING_VIEWS_MARKER).ok_or_else(|| {
-                api_error(ErrorCode::StoreCorrupt, "v47 pending views tail missing")
-            })?;
-            conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
-            let result = conn
-                .execute_batch(tail)
-                .map_err(store_error)
-                .and_then(|_| super::lazy_delivery::seed_all_binding_pending(conn));
-            match result {
-                Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
-                Err(error) => {
-                    let _ = conn.execute_batch("ROLLBACK");
-                    return Err(error);
-                }
-            }
-        }
-    }
-    repair_v47_view_triggers(conn)?;
     verify_message_priority_schema(conn)
 }
 
-/// Second v47 amendment (ht-yha.54): the view triggers write held bindings only
-/// (`lazy_delivery::view_held_sql!`). A store created at the first-amendment v47 holds the old trigger text
-/// (every open binding) and gets both triggers re-created from V47, with the views of non-held bindings
-/// pruned, in one transaction.
-fn repair_v47_view_triggers(conn: &Connection) -> Result<(), ApiError> {
-    let stored: Option<String> = conn
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='binding_pending_publish'",
-            [],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(store_error)?;
-    let triggers: Vec<_> = v47_creates()
-        .filter(|(kind, name, _)| {
-            kind == "trigger"
-                && (*name == "binding_pending_publish" || *name == "binding_pending_legacy_set")
-        })
-        .collect();
-    let current = triggers
-        .iter()
-        .find(|(_, name, _)| *name == "binding_pending_publish")
-        .map(|(_, _, sql)| *sql);
-    if stored.is_none() || stored.as_deref().map(str::trim) == current {
-        return Ok(());
-    }
-    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
-    let result = (|| {
-        for (_, name, _) in &triggers {
-            conn.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}"))
-                .map_err(store_error)?;
-        }
-        for (_, _, sql) in &triggers {
-            conn.execute_batch(&format!("{sql};"))
-                .map_err(store_error)?;
-        }
-        conn.execute_batch(concat!(
-            "DELETE FROM binding_pending WHERE binding_id IN (SELECT b.binding_id FROM occupant_bindings b WHERE NOT COALESCE(",
-            crate::store::lazy_delivery::view_held_sql!("b"),
-            ", 0))"
-        ))
-        .map_err(store_error)
-    })();
-    match result {
-        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
-        Err(error) => {
-            let _ = conn.execute_batch("ROLLBACK");
-            Err(error)
-        }
-    }
-}
-
 /// Every `CREATE` statement of V47 as `(kind, name, sql without the trailing ';')`, the shape
-/// `sqlite_master` stores. Shared by the schema audit and the trigger repair.
+/// `sqlite_master` stores. Used by the schema audit.
 fn v47_creates() -> impl Iterator<Item = (String, &'static str, &'static str)> {
     static DDL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     DDL.get_or_init(|| {
@@ -953,11 +874,6 @@ fn v47_creates() -> impl Iterator<Item = (String, &'static str, &'static str)> {
         (words[1].to_ascii_lowercase(), words[2], sql)
     })
 }
-
-/// The appended tail of V47 (ht-yha.44 per-binding pending views): a store created at v47 before the
-/// amendment lacks it and gets it, with the backfill, in one transaction.
-const V47_PENDING_VIEWS_MARKER: &str =
-    "-- ht-yha.44 per-binding pending views (also the repair tail of a pre-amendment v47 store).";
 
 /// V47 (ht-yha.2): message delivery priority. Every `CREATE` statement of the migration is compared
 /// with `sqlite_master` exactly (as `verify_existing_v26` does), then the five added columns are
