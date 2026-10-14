@@ -3558,6 +3558,18 @@ const ACCEPT_GRACE_ENV: &str = "HT_TEST_ACCEPT_CHANNEL_GRACE_MS";
 
 /// A pair opener from A to B, streamed to B's live watch before B accepts: (pair, id).
 fn pair_opener_streamed(rig: &Rig, watch: &mut Watch, body: &str) -> (String, String) {
+    // These tests cover `accept` of a pre-upgrade pending pair invitation (a new pair auto-joins
+    // and has nothing to accept): create the pair the pre-upgrade way.
+    let writer = rusqlite::Connection::open(&rig.paths.database_path).unwrap();
+    writer.busy_timeout(Duration::from_secs(5)).unwrap();
+    writer
+        .pragma_update(
+            None,
+            "application_id",
+            herdr_threads::store::control::LEGACY_PAIR_MARKER,
+        )
+        .unwrap();
+    drop(writer);
     rig.cli(
         Some((&rig.a, PANE_A)),
         &["send", "--seat", &rig.b, "--body", body],

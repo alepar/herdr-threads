@@ -59,6 +59,12 @@ impl BodyFixture {
         let shared: Arc<dyn Clock> = clock.clone();
         let context = StoreContext::new(directory.join("store.db"), shared.clone());
         let db = context.open_writer().unwrap();
+        db.pragma_update(
+            None,
+            "application_id",
+            crate::store::control::LEGACY_PAIR_MARKER,
+        )
+        .unwrap();
         db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES(?1,0,'b',1,3)", [instance.to_string()]).unwrap();
         for (seat, target) in [("sender", "px"), ("reader", "pc")] {
             db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES(?1,?2,'resolved','native',?3,1,0,0)", params![seat,instance.to_string(),target]).unwrap();

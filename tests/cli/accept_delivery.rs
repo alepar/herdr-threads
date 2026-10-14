@@ -322,6 +322,60 @@ fn a_page_with_more_prints_one_plain_inbox_next_line_with_the_callers_presentati
     }
 }
 
+/// ht-yha.6: the accepted thread's page lists delivery rows of every priority, not only the lazy
+/// default: a p0 and a p5 row both print and both complete.
+#[test]
+fn accept_prints_pending_rows_of_every_priority() {
+    use crate::protocol::priority::DeliveryPriority;
+    let with_priority = |id: &str, body: &str, p: u8, seq: u64| match lazy(id, body) {
+        InboxBatchV2Item::LazyMessage {
+            thread,
+            topic_data,
+            message,
+            sender,
+            author_role,
+            relays_user,
+            user_intent,
+            author_role_backfilled,
+            body,
+            body_start,
+            body_end,
+            body_len,
+            wakes,
+            ..
+        } => InboxBatchV2Item::LazyMessage {
+            priority: Some(DeliveryPriority::new(p).unwrap()),
+            thread,
+            topic_data,
+            message,
+            sequence: seq,
+            sender,
+            author_role,
+            relays_user,
+            user_intent,
+            author_role_backfilled,
+            body,
+            body_start,
+            body_end,
+            body_len,
+            wakes,
+        },
+        _ => unreachable!(),
+    };
+    let script = Script::new(vec![page(
+        vec![
+            with_priority("m-p0", "urgent opener", 0, 1),
+            with_priority("m-p5", "background note", 5, 2),
+        ],
+        false,
+    )]);
+    let run = run(&script);
+    assert!(run.out.contains("urgent opener"), "{}", run.out);
+    assert!(run.out.contains("background note"), "{}", run.out);
+    assert_eq!(script.count("complete"), 1);
+    assert_eq!(run.diagnostics, "");
+}
+
 #[test]
 fn a_bookkeeping_failure_after_display_is_one_diagnostics_line() {
     let mut script = Script::new(vec![page(vec![lazy("m1", "opener body")], false)]);

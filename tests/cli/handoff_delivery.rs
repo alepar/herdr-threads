@@ -2952,7 +2952,8 @@ fn handoff_policy_lazy_invitation_still_warns_sender_for_unregistered_ack_requir
     let client = GuardedCanonical::new(&tmp.0);
     guarded_retry(&journal, &reference, &p, &client, true, &mut vec![]).unwrap();
     let (mode, _, _, receipt) = handoff_policy_canonical_values(&client);
-    assert_eq!(mode, "lazy");
+    // A Lazy request is recorded as a confirming invitation (ht-yha.6).
+    assert_eq!(mode, "require_ack");
     assert_eq!(
         receipt.state,
         crate::store::effective::EffectiveReceiptState::Pending
@@ -3168,7 +3169,7 @@ fn handoff_policy_missing_readiness_guarded_launch_stages_unregistered_body_and_
             |r| r.get::<_, String>(0)
         )
         .unwrap(),
-        "lazy:pending"
+        "require_ack:pending"
     );
     // Fixture already has a cooperative binding but no registration; an actual
     // accountable ACK is independently authorized and clears the warning normally.

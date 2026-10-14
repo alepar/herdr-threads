@@ -627,7 +627,7 @@ pub(crate) fn resolve_direct_pair(
     claim: &crate::protocol::authority::CallerClaim,
     recipient: &SeatId,
     creation_policy: Option<&crate::protocol::commands::EnsureCreationPolicy>,
-    installation_default_ms: Option<u64>,
+    _installation_default_ms: Option<u64>,
 ) -> Result<(ThreadId, bool), ApiError> {
     let instance = claim.instance.as_str();
     let caller = &claim.seat;
@@ -657,11 +657,135 @@ pub(crate) fn resolve_direct_pair(
         require_pair_lifecycle(tx, &thread, caller, recipient)?;
         return Ok((thread, false));
     }
+    #[cfg(any(test, feature = "test-support"))]
+    if legacy_pair_requested(tx)? {
+        return legacy_pending_pair(
+            tx,
+            decision,
+            claim,
+            recipient,
+            creation_policy,
+            _installation_default_ms,
+        );
+    }
+    // The creation policy is validated for shape only: a pair auto-joins both reserved seats and
+    // records no invitation, so confirmation and deadline have nothing to apply to (D7).
     if let Some(policy) = creation_policy {
         policy
             .validate()
             .map_err(|e| api_error(ErrorCode::InvalidRequest, e))?;
     }
+    let thread = ThreadId::new(crate::store::public_ids::fresh(
+        tx,
+        prefix::THREAD,
+        &[("threads", "id", prefix::THREAD)],
+    )?);
+    let label = format!("1:1 {} {}", a.as_str(), b.as_str());
+    let joined_seq = schema::next_decision_seq(tx, instance)?;
+    tx.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES(?1,?2,?3,?3,?4,?4)",params![thread.as_str(),instance,label,decision.utc.0]).map_err(store_error)?;
+    record_join(
+        tx,
+        &thread,
+        caller,
+        1,
+        decision.utc,
+        joined_seq,
+        MembershipWrite::Insert,
+        None,
+    )?;
+    let payload =
+        serde_json::json!({"action":"create_thread","goal":label,"actor_seat":caller.as_str()})
+            .to_string();
+    schema::append_event_once_with_decision_seq(
+        tx,
+        EventInput {
+            thread: &thread,
+            key: &format!("create:{}", thread.as_str()),
+            kind: "info",
+            payload_json: &payload,
+            decision_at: decision.utc,
+            source_message: None,
+            source_invitation: None,
+        },
+        joined_seq,
+    )?;
+    // Auto-join (ht-yha.6, D7): the peer's membership is recorded now, through the same helper as
+    // every other join, with its own join event; no invitation row and no wake.
+    let peer_seq = schema::next_decision_seq(tx, instance)?;
+    record_join(
+        tx,
+        &thread,
+        recipient,
+        1,
+        decision.utc,
+        peer_seq,
+        MembershipWrite::Insert,
+        None,
+    )?;
+    let payload =
+        serde_json::json!({"action":"join","seat":recipient.as_str(),"actor_seat":caller.as_str()})
+            .to_string();
+    schema::append_event_once_with_decision_seq(
+        tx,
+        EventInput {
+            thread: &thread,
+            key: &format!("join:{}:{}", thread.as_str(), recipient.as_str()),
+            kind: "info",
+            payload_json: &payload,
+            decision_at: decision.utc,
+            source_message: None,
+            source_invitation: None,
+        },
+        peer_seq,
+    )?;
+    tx.execute(
+        "INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES(?1,?2,?3,?4)",
+        params![instance, a.as_str(), b.as_str(), thread.as_str()],
+    )
+    .map_err(store_error)?;
+    for seat in [caller, recipient] {
+        // Preserve each ordinary membership transition's revision/projection bump.
+        schema::bump_membership_revision(tx, &thread)?;
+        schema::bump_filter_revision(tx, instance, "directory", "all")?;
+        bump_member_directory(tx, instance, seat)?;
+        schema::bump_filter_revision(tx, instance, "inbox", seat.as_str())?;
+    }
+    Ok((thread, true))
+}
+
+/// Test builds only: a database whose `application_id` is this value creates pairs the way the
+/// code before ht-yha.6 did (the peer invited, one pending invitation), because a pre-upgrade
+/// pending pair cannot otherwise be produced after the upgrade. A fixture sets it with
+/// `PRAGMA application_id` before the Ensure. Production builds contain none of this.
+#[cfg(any(test, feature = "test-support"))]
+pub const LEGACY_PAIR_MARKER: i64 = 0x6874_6c70;
+
+#[cfg(any(test, feature = "test-support"))]
+fn legacy_pair_requested(tx: &Transaction<'_>) -> Result<bool, ApiError> {
+    let id: i64 = tx
+        .query_row("PRAGMA application_id", [], |r| r.get(0))
+        .map_err(store_error)?;
+    Ok(id == LEGACY_PAIR_MARKER)
+}
+
+/// The pair creation of the pre-upgrade code, kept verbatim as a test fixture for the
+/// pre-upgrade pending pair invitation (ht-yha.6).
+#[cfg(any(test, feature = "test-support"))]
+fn legacy_pending_pair(
+    tx: &Transaction<'_>,
+    decision: DecisionInstant,
+    claim: &crate::protocol::authority::CallerClaim,
+    recipient: &SeatId,
+    creation_policy: Option<&crate::protocol::commands::EnsureCreationPolicy>,
+    installation_default_ms: Option<u64>,
+) -> Result<(ThreadId, bool), ApiError> {
+    let instance = claim.instance.as_str();
+    let caller = &claim.seat;
+    let (a, b) = if caller < recipient {
+        (caller, recipient)
+    } else {
+        (recipient, caller)
+    };
     if creation_policy.is_some_and(|p| {
         p.confirmation == crate::protocol::commands::InvitationConfirmation::RequireAck
     }) && claim.harness == crate::protocol::authority::Harness::Human
@@ -765,6 +889,64 @@ pub(crate) fn resolve_direct_pair(
         tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES(?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",[recipient.as_str()]).map_err(store_error)?;
     }
     Ok((thread, true))
+}
+
+/// How [`record_join`] writes the membership row.
+#[derive(Clone, Copy)]
+pub(crate) enum MembershipWrite {
+    /// A new membership row (thread creation, pair creation).
+    Insert,
+    /// Self-enrollment: insert, or rejoin over a left/invited row.
+    Upsert,
+    /// An invited row becomes joined (invitation or requirement acceptance).
+    Promote,
+}
+
+/// Record one joined membership: the membership row, its interval at `joined_seq` and the cursor
+/// init. `direct_floor` is the captured direct-invitation floor of an acceptance, which seeds the
+/// open bindings instead of the thread head. The one copy of these writes for join, accept,
+/// accept-required, thread creation and pair creation; each caller appends its own join event
+/// and bumps its own revisions.
+#[allow(clippy::too_many_arguments)]
+fn record_join(
+    tx: &Transaction<'_>,
+    thread: &ThreadId,
+    seat: &SeatId,
+    episode: i64,
+    joined_at: UtcMillis,
+    joined_seq: u64,
+    write: MembershipWrite,
+    direct_floor: Option<u64>,
+) -> Result<(), ApiError> {
+    match write {
+        MembershipWrite::Insert => tx.execute(
+            "INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state,joined_at) VALUES(?1,?2,?3,'joined','joined',?4)",
+            params![thread.as_str(), seat.as_str(), episode, joined_at.0],
+        ),
+        MembershipWrite::Upsert => tx.execute(
+            "INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state,joined_at) VALUES (?1,?2,?3,'joined','joined',?4) ON CONFLICT(thread_id,seat_id) DO UPDATE SET episode=excluded.episode,state='joined',voluntary_state='joined',joined_at=excluded.joined_at,left_at=NULL",
+            params![thread.as_str(), seat.as_str(), episode, joined_at.0],
+        ),
+        MembershipWrite::Promote => tx.execute(
+            "UPDATE memberships SET state='joined',voluntary_state='joined',episode=?1,joined_at=?2,left_at=NULL WHERE thread_id=?3 AND seat_id=?4",
+            params![episode, joined_at.0, thread.as_str(), seat.as_str()],
+        ),
+    }
+    .map_err(store_error)?;
+    tx.execute(
+        "INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,?3,?4)",
+        params![thread.as_str(), seat.as_str(), episode, joined_seq as i64],
+    )
+    .map_err(store_error)?;
+    match direct_floor {
+        Some(floor) => {
+            super::read_cursors::init_for_direct_accept(tx, seat, thread, floor)?;
+        }
+        None => {
+            super::read_cursors::init_for_join(tx, seat, thread)?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn direct_pair_selection(
@@ -918,11 +1100,16 @@ pub fn join(
                 super::service_controls::next_invitation_episode(tx, &command.thread, &caller)?;
             let instance = &command.claim.instance;
             let seq = schema::next_decision_seq(tx, instance)?;
-            tx.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state,joined_at) VALUES (?1,?2,?3,'joined','joined',?4) ON CONFLICT(thread_id,seat_id) DO UPDATE SET episode=excluded.episode,state='joined',voluntary_state='joined',joined_at=excluded.joined_at,left_at=NULL",
-                params![command.thread.as_str(),caller.as_str(),episode,decision.utc.0]).map_err(store_error)?;
-            tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,?3,?4)",
-                params![command.thread.as_str(),caller.as_str(),episode,seq as i64]).map_err(store_error)?;
-            super::read_cursors::init_for_join(tx, &caller, &command.thread)?;
+            record_join(
+                tx,
+                &command.thread,
+                &caller,
+                episode,
+                decision.utc,
+                seq,
+                MembershipWrite::Upsert,
+                None,
+            )?;
             let payload = serde_json::json!({"action":"join", "seat":caller.as_str(),
                 "generation":actor.binding_generation,"observation":actor.provenance})
             .to_string();
@@ -1129,18 +1316,16 @@ pub fn accept(
                         |r| r.get(0),
                     )
                     .map_err(store_error)?;
-                tx.execute("UPDATE memberships SET state='joined',voluntary_state='joined',episode=?1,joined_at=?2,left_at=NULL WHERE thread_id=?3 AND seat_id=?4",
-                    params![episode,decision.utc.0,thread.as_str(),caller.as_str()]).map_err(store_error)?;
-                tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,?3,?4)",
-                    params![thread.as_str(),caller.as_str(),episode,event_seq as i64]).map_err(store_error)?;
-                match direct_floor {
-                    Some(floor) => {
-                        super::read_cursors::init_for_direct_accept(tx, &caller, &thread, floor)?;
-                    }
-                    None => {
-                        super::read_cursors::init_for_join(tx, &caller, &thread)?;
-                    }
-                }
+                record_join(
+                    tx,
+                    &thread,
+                    &caller,
+                    episode,
+                    decision.utc,
+                    event_seq,
+                    MembershipWrite::Promote,
+                    direct_floor,
+                )?;
             }
             let payload = serde_json::json!({"action":"accept", "seat":caller.as_str(), "invitation":invitation.as_str()}).to_string();
             schema::append_event_once_with_decision_seq(
@@ -1439,11 +1624,16 @@ pub fn accept_required(
                         |r| r.get(0),
                     )
                     .map_err(store_error)?;
-                tx.execute("UPDATE memberships SET state='joined',voluntary_state='joined',episode=?1,joined_at=?2,left_at=NULL WHERE thread_id=?3 AND seat_id=?4",
-                    params![episode,decision.utc.0,command.thread.as_str(),caller.as_str()]).map_err(store_error)?;
-                tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,?3,?4)",
-                    params![command.thread.as_str(),caller.as_str(),episode,seq as i64]).map_err(store_error)?;
-                super::read_cursors::init_for_join(tx, &caller, &command.thread)?;
+                record_join(
+                    tx,
+                    &command.thread,
+                    &caller,
+                    episode,
+                    decision.utc,
+                    seq,
+                    MembershipWrite::Promote,
+                    None,
+                )?;
             }
             let payload = serde_json::json!({"action":"accept_required","seat":caller.as_str(),
                 "requirement":command.requirement.as_str(),"invitation":command.invitation.as_str()}).to_string();
@@ -2006,11 +2196,16 @@ fn create_thread_impl(
                     )?;
                 }
             }
-            tx.execute("INSERT INTO memberships(thread_id, seat_id, state, joined_at) VALUES (?1,?2,'joined',?3)",
-                params![thread.as_str(), seat.as_str(), decision.utc.0]).map_err(store_error)?;
-            tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,1,?3)",
-                params![thread.as_str(),seat.as_str(),joined_seq as i64]).map_err(store_error)?;
-            super::read_cursors::init_for_join(tx, &seat, &thread)?;
+            record_join(
+                tx,
+                &thread,
+                &seat,
+                1,
+                decision.utc,
+                joined_seq,
+                MembershipWrite::Insert,
+                None,
+            )?;
             let payload = serde_json::json!({"action":"create_thread", "goal":command.goal,
                 "actor_seat":seat.as_str()})
             .to_string();
@@ -2036,6 +2231,25 @@ fn create_thread_impl(
     )
 }
 
+/// The recorded policy of a new invitation: always confirming, with a deadline (ht-yha.6, D6). The
+/// request's `confirmation` is accepted for old clients and ignored. Returns the stored
+/// `confirmation` and whether the invitation is timed (deadline event field and recipient wake).
+fn invitation_policy(
+    _tx: &Transaction<'_>,
+    _requested: Option<crate::protocol::commands::InvitationConfirmation>,
+) -> Result<(Option<&'static str>, bool), ApiError> {
+    #[cfg(any(test, feature = "test-support"))]
+    if legacy_pair_requested(_tx)? {
+        // The pre-upgrade mapping, for fixtures of pre-upgrade lazy invitations.
+        let confirmation = _requested.map(|mode| match mode {
+            crate::protocol::commands::InvitationConfirmation::Lazy => "lazy",
+            crate::protocol::commands::InvitationConfirmation::RequireAck => "require_ack",
+        });
+        return Ok((confirmation, confirmation != Some("lazy")));
+    }
+    Ok((Some("require_ack"), true))
+}
+
 /// Invite a nonretired seat. A pending episode is immutable, including its
 /// deadline, even when the caller requests a different duration later.
 pub fn invite(
@@ -2046,27 +2260,6 @@ pub fn invite(
     mut permit: MutationPermit,
     installation_default_ms: Option<u64>,
 ) -> Result<CommandResult, ApiError> {
-    if command.confirmation == Some(crate::protocol::commands::InvitationConfirmation::Lazy)
-        && command.deadline_millis.is_some()
-    {
-        return Err(api_error(
-            ErrorCode::InvalidRequest,
-            "lazy invitation conflicts with deadline",
-        ));
-    }
-    if command.confirmation == Some(crate::protocol::commands::InvitationConfirmation::RequireAck)
-        && command.claim.harness == crate::protocol::authority::Harness::Human
-    {
-        return Err(api_error(
-            ErrorCode::InvalidRequest,
-            "human invitation cannot require agent confirmation",
-        ));
-    }
-    let confirmation = command.confirmation.map(|mode| match mode {
-        crate::protocol::commands::InvitationConfirmation::Lazy => "lazy",
-        crate::protocol::commands::InvitationConfirmation::RequireAck => "require_ack",
-    });
-    let timed = confirmation != Some("lazy");
     let duration = command
         .deadline_millis
         .or(installation_default_ms)
@@ -2156,6 +2349,7 @@ pub fn invite(
             if let Some(id) = pending {
                 return Ok(CommandResult::Invitation(InvitationId::new(id)));
             }
+            let (confirmation, timed) = invitation_policy(tx, command.confirmation)?;
             let deadline = schema::checked_deadline(decision.utc, duration)?;
             let episode = super::service_controls::next_invitation_episode(
                 tx,
@@ -2230,6 +2424,9 @@ pub fn invite(
     )
 }
 
+/// An operator invitation has no inviter seat, so it stores no `confirmation` (a stored policy
+/// requires one): the absent policy is the effective RequireAck, timed with the deadline and
+/// waking the recipient, as before (ht-yha.6 changes nothing here).
 pub fn operator_orphan_invite(
     context: &StoreContext,
     conn: &mut Connection,
