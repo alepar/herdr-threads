@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Breaking: protocol 8, upgrade the CLI and daemon together.** Version 1.0.0 speaks wire protocol 8; a mixed older CLI or daemon is refused with the stop-then-ensure remedy. Message priority (`--priority`/`-p` 0-9, `--nudge` = `-p 0`) replaces lazy and ordinary delivery (`--lazy` is removed); the per-seat `nudge-threshold` replaces `wake-on` (kept as an alias); new 1:1 pairs auto-join both seats without an invitation; programmatic service sends create receipts only for their explicit recipients.
+
 ## v0.11.0
 
 - **Tested with Herdr 0.9.4.** The release smoke list and the tested range include official Herdr 0.9.4 (checksum-verified; release smoke PASS locally on macOS arm64, Linux runs in the hosted jobs), so `daemon health` no longer reports it as untested.
