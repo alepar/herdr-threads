@@ -248,6 +248,7 @@ The local-seat predicate is `is_local = 1`. It is published once as `pub(crate) 
 
   Nothing in this subepic makes the daemon exit because no host exists. The idle-exit rule (no clients, no host, no peer links, no dial targets) belongs to ht-5fr.5. Until then a store-only daemon keeps today's lifetime (explicit stop).
 - `host_id` values are never shown to agents.
+- **Service host seam.** In the service, the host is held only through `DomainService.current_target: Option<Arc<OrdinaryIdentity>>` (`OrdinaryIdentity` wraps the `Arc<dyn HostPort>`). A store-only daemon composes `DomainService` with `current_target = None`, does not call `with_bootstrap_runtime`, and gives health a default `HostReleaseSource` (none). One helper, `DomainService::attached_host(&self) -> Result<&Arc<OrdinaryIdentity>, ApiError>`, returns the attached session or `HostUnavailable` ("no Herdr server attached"). Every handler that needs a host goes through it: `ResolveSeat`, the operator actions, `ContinuityCheckIn` and the automatic bootstrap paths, replacing today's five inline `ok_or_else(Unsupported, …)` checks. Every other command is store-only and runs unchanged; a store write that touches a Herdr-scope column reaches `HostUnavailable` through the `StoreContext` primary-host accessor (§5). ht-5fr.2 turns `attached_host` into a per-seat lookup by `host_id` without changing its callers.
 
 **Considered.**
 - Starting the host workers against a stub `HostPort` that fails every call: the workers would spin on errors and report a degraded health that is really an expected state.
