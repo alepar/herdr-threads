@@ -8,3 +8,4 @@
 - [2026-10-14T03:52:31Z] carry to phase 6: final review must-resolve — ht-yha.14 minor [unverified-flake] lazy_markers q5_history_public_refits ReadBudgetExhausted: re-run at base 3a1203e0 and at HEAD; if it reproduces at base, report to the flakiness tab (ht-zo4).
 - [2026-10-14T04:50:25Z] base drift: main moved past 3a1203e0 (6334b322); ht-327 wake-e2e side cases touch AGENTS.md / scripts/wake-e2e.py, which ht-yha.10/.11 also edit — absorb once after phase 5 per base-drift rule
 - [2026-10-14T04:50:35Z] base drift is material (40 files,  17 files changed, 1166 insertions(+), 303 deletions(-)); includes src/store/wake.rs + attention/effective paths that ht-yha.4 rewrites → expect a conflict pass at absorption
+- [2026-10-14T07:48:38Z] super-roast PR round 1 rung: Workflow
