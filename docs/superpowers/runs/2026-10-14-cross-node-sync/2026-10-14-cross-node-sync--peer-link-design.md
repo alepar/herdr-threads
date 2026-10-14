@@ -172,7 +172,9 @@ PeerLink is generic over `AsyncRead + AsyncWrite + Unpin + Send`. The dialer pas
 - `writer: Arc<FairWriter>`, `clock: Arc<dyn Clock>`, `pacer: Arc<Pacer>` (the `Lane::Sync` pacer), `status: Arc<LaneStatus>`, `log: Arc<dyn Fn(&str)>`;
 - `fork_sink: Arc<dyn ForkSink>` (§10), `dial: DialConfig`, `cancel: Cancellation`.
 
-It runs one actor task on the daemon's tokio runtime and owns all state. Inputs are an `mpsc` of `LinkEvent`s, `PeerIntake` offers, Dialer hand-offs (`DialedStream { target_id, dest, stdout, stdin }`), ingest-worker results, `pacer.wait(1 s)` (kicks), and a 1 s housekeeping tick.
+It runs one actor task on the daemon's tokio runtime and owns all state. Inputs are an `mpsc` of `LinkEvent`s, `PeerIntake` offers, Dialer hand-offs (`DialedStream { target_id, dest, stdout, stdin, report }`), ingest-worker results, `pacer.wait(1 s)` (kicks), and a 1 s housekeeping tick.
+
+**Dialed-link reports.** `report` is the per-dial channel back to the DialTask: a bounded `mpsc::Sender<DialReport>` (capacity 2), `enum DialReport { Established{ node_uuid: NodeUuid }, LinkEnded{ target_id, why: LinkError, up_for, peer_node: Option<NodeUuid> } }`. The actor sends `Established` once, right after the handshake completes (before the link is ranked active or standby), and `LinkEnded` exactly once, last, whether the handshake failed or the established link ended; a handshake failure sends only `LinkEnded` with `peer_node = None`. A dropped sender without `LinkEnded` (actor stopped) reads as `LinkEnded{why: Shutdown}`. The DialTask records `Linked` on `Established` (§13) and classifies on `LinkEnded`.
 
 State:
 - `links: BTreeMap<LinkId, LinkState>`. `LinkState` holds `{ handle, peer: PeerInfo, origin: Inbound | Dialed{target_id}, mode: Active | Standby, peer_vector: Vector, subs_out: BTreeMap<LogKey, u64 /*next counter to push*/>, errors: BTreeMap<LogKey, PenaltyUntil>, round: RoundState, last_have_sent: Vector }`.
@@ -350,7 +352,7 @@ More than `MAX_DIAL_TARGETS = 64` enabled rows makes `add_explicit` return `Inva
 `DialTask` loop:
 1. Wait until `next_attempt_at` (immediately if NULL or past), unless the state is `stopped`. A stopped task idles until a reload changes the row.
 2. `record_transition(Dialing)`. Build the `TransportCommand` and spawn it with `tokio::process::Command`: `stdin`/`stdout` piped, `stderr` piped into a 4 KiB ring buffer task, `process_group(0)`, `kill_on_drop(true)`, environment inherited from the daemon.
-3. Read the preamble (§4) and hand `DialedStream` to the coordinator, which runs the handshake with `role = dialer`. The coordinator reports `LinkEnded{target_id, why, up_for, peer_node}` back through a oneshot. An established link records `Linked` and sets `learned_node_uuid`. A changed uuid logs `sync peer <dest>: node changed <old8> -> <new8>`.
+3. Read the preamble (§4) and hand `DialedStream` to the coordinator, which runs the handshake with `role = dialer`. The coordinator reports back over the same per-dial `report` channel (§8): first `Established{node_uuid}` once the handshake completes, then `LinkEnded{target_id, why, up_for, peer_node}` when the link ends. On `Established` the DialTask records `Linked{node}` (setting `learned_node_uuid`) at once, so `sync status` and `peer list` show the target linked while the link is up, not only after it ends. A changed uuid logs `sync peer <dest>: node changed <old8> -> <new8>`. A handshake failure delivers only `LinkEnded`, so no `Linked` is recorded.
 4. **Teardown:** `killpg(pgid, SIGTERM)`, wait up to 2 s, `killpg(SIGKILL)`, then `child.wait()` to reap. This also runs on cancellation and daemon shutdown.
 5. **Classify:**
 
