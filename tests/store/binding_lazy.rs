@@ -1,10 +1,10 @@
 //! Lazy delivery state per binding (ht-54r.22). Included from `src/store/lazy_delivery/mod.rs` as
 //! `binding_lazy_tests`. A lazy message is unread for a binding until its cursor passes it.
 use super::*;
-use crate::protocol::{ids::*, time::UtcMillis};
+use crate::protocol::{ids::*, priority::NudgeThreshold, time::UtcMillis};
 use crate::store::{
     bindings::{
-        BindingRole, EnrollOutcome, EnrollRequest, EnrollTrigger, enroll,
+        BindingRole, DisconnectReason, EnrollOutcome, EnrollRequest, EnrollTrigger, enroll,
         tests::{db, key, placement},
     },
     read_cursors,
@@ -61,6 +61,14 @@ fn complete(db: &mut Connection, binding: Option<&BindingId>, ids: &[MessageId])
     let tx = db.transaction().unwrap();
     complete_for_binding(&tx, "i", &SeatId::new("s"), binding, ids).unwrap();
     tx.commit().unwrap();
+}
+
+fn disconnect(db: &Connection, binding: &BindingId, reason: DisconnectReason) {
+    db.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=5,disconnect_reason=?2 WHERE binding_id=?1",
+        params![binding.as_str(), reason.as_str()],
+    )
+    .unwrap();
 }
 
 #[test]
@@ -169,31 +177,17 @@ fn legacy_pending_survives_a_subagent_display_attempt() {
 }
 
 #[test]
-fn a_seat_whose_bindings_ended_counts_only_legacy_rows() {
+fn a_seat_without_a_connected_top_level_binding_counts_only_legacy_rows() {
     let db = db();
     let a = enroll_binding(&db, "sess-A", None);
     lazy(&db, 3);
     db.execute("UPDATE binding_cursors SET seq=0", []).unwrap();
     assert_eq!(seat_lazy_pending(&db, &SeatId::new("s"), 100).unwrap().0, 1);
-    db.execute(
-        "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=5,disconnect_reason='process_exited' WHERE binding_id=?1",
-        [a.as_str()],
-    )
-    .unwrap();
-    assert_eq!(
-        seat_lazy_pending(&db, &SeatId::new("s"), 100).unwrap().0,
-        1,
-        "a disconnected but open binding still owes the row"
-    );
-    db.execute(
-        "UPDATE occupant_bindings SET ended_at=6 WHERE binding_id=?1",
-        [a.as_str()],
-    )
-    .unwrap();
+    disconnect(&db, &a, DisconnectReason::ProcessExit);
     assert_eq!(
         seat_lazy_pending(&db, &SeatId::new("s"), 100).unwrap(),
         (0, 0),
-        "an ended binding is not a reader"
+        "a disconnected binding is not a reader"
     );
     db.execute("UPDATE lazy_recipients SET legacy_pending=1", [])
         .unwrap();
@@ -236,16 +230,17 @@ fn a_disconnected_sibling_still_owes_its_display_and_sees_it_after_reconnecting(
         .row
         .map(|(_, recipient)| recipient.message)
     };
-    db.execute(
-        "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=5,disconnect_reason='process_exited' WHERE binding_id=?1",
-        [b.as_str()],
-    )
-    .unwrap();
+    disconnect(&db, &b, DisconnectReason::ProcessExit);
     complete(&mut db, Some(&a), &[msg(3)]);
     assert_eq!(
         state(&db),
         "pending",
         "the open disconnected sibling still owes it"
+    );
+    assert_eq!(
+        wake_frontier(&db, "s", NudgeThreshold::ALL).unwrap(),
+        None,
+        "a disconnected sibling holds no wake frontier"
     );
     db.execute(
         "UPDATE occupant_bindings SET liveness='connected',disconnected_at=NULL,disconnect_reason=NULL WHERE binding_id=?1",
@@ -269,7 +264,7 @@ fn an_ended_sibling_owes_nothing_to_the_displayed_mark() {
     let b = enroll_binding(&db, "sess-B", None);
     lazy(&db, 3);
     db.execute(
-        "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=5,disconnect_reason='process_exited',ended_at=6 WHERE binding_id=?1",
+        "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=5,disconnect_reason='liveness_process_exit',ended_at=6 WHERE binding_id=?1",
         [b.as_str()],
     )
     .unwrap();
@@ -282,6 +277,57 @@ fn an_ended_sibling_owes_nothing_to_the_displayed_mark() {
         )
         .unwrap(),
         "displayed"
+    );
+}
+
+#[test]
+fn stale_superseded_and_end_event_siblings_owe_nothing_and_hold_no_wake_frontier() {
+    let mut db = db();
+    let live = enroll_binding(&db, "sess-A", None);
+    let superseded = enroll_binding(&db, "sess-B", None);
+    let ended_by_event = enroll_binding(&db, "sess-C", None);
+    lazy(&db, 3);
+    let tx = db.transaction().unwrap();
+    note_published(&tx, "prep-3").unwrap();
+    tx.commit().unwrap();
+    disconnect(&db, &superseded, DisconnectReason::Superseded);
+    disconnect(&db, &ended_by_event, DisconnectReason::EndEvent);
+    assert_eq!(
+        wake_frontier(&db, "s", NudgeThreshold::ALL).unwrap(),
+        Some(3),
+        "the live binding has it unread"
+    );
+    complete(&mut db, Some(&live), &[msg(3)]);
+    let state: String = db
+        .query_row(
+            "SELECT state FROM lazy_recipients WHERE message_id='msg-3'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        state, "displayed",
+        "stale open bindings never pin the row pending"
+    );
+    assert_eq!(
+        wake_frontier(&db, "s", NudgeThreshold::ALL).unwrap(),
+        None,
+        "served in-turn: no idle re-nudge"
+    );
+    assert_eq!(
+        seat_lazy_pending(&db, &SeatId::new("s"), 100).unwrap(),
+        (0, 0)
+    );
+    // The stale bindings still see their own unread view (cursor semantics unchanged).
+    assert_eq!(unread(&db, &superseded), [msg(3)]);
+}
+
+#[test]
+fn the_display_owing_reason_literal_is_the_process_exit_reason() {
+    // `seat_owes_display_sql!` spells this reason in SQL.
+    assert_eq!(
+        DisconnectReason::ProcessExit.as_str(),
+        "liveness_process_exit"
     );
 }
 

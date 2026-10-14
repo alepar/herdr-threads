@@ -1554,7 +1554,7 @@ pub const WAKE_PROBES: [WakeProbe; 8] = [
 
 /// Does any pending access path hold a row for the seat? At most eight O(1)
 /// probes, then the delivery-row wake seeks of `has_wake_rows` (whose rows pass the seat-level
-/// unread post-filter, open top-level bindings connected or not), stopping at the first hit. A hit is only a reason to examine the
+/// unread post-filter, connected top-level bindings), stopping at the first hit. A hit is only a reason to examine the
 /// seat: the canonical judges still decide whether the work is actionable.
 pub fn seat_has_pending_rows(db: &Connection, seat_id: &str) -> Result<bool, ApiError> {
     for probe in &WAKE_PROBES {

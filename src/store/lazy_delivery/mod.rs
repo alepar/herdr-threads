@@ -102,20 +102,38 @@ macro_rules! binding_lazy_unread_sql {
 pub(crate) use binding_lazy_unread_sql;
 
 /// A lazy recipient row `r` (with its message `m`, possibly absent) is unread at seat level when
-/// it is legacy pending (carried from before V34) or some open (not ended) top-level binding of
-/// the seat, connected or not, finds it unread (`binding_lazy_unread_sql!`). The ordered seeks
-/// run over `state='pending'`, and `MARK_DISPLAYED_SQL` flips `state` only when no such binding
-/// still finds the row unread, so a disconnected sibling that reconnects is still offered it.
+/// it is legacy pending (carried from before V34) or some connected top-level binding of the seat
+/// finds it unread (`binding_lazy_unread_sql!`). Every seat-level view uses it: the wake seeks
+/// (`wake_frontier`, `has_wake_rows`, `oldest_pending_at`), `pending_lazy`, `seat_lazy_pending`
+/// (mod fingerprint, kick count) and the seat inbox filter. Display marking uses
+/// `seat_owes_display_sql!` instead.
 macro_rules! seat_unread_sql {
     () => {
         concat!(
-            "(r.legacy_pending=1 OR EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=r.seat_id AND b.ended_at IS NULL AND b.role='top_level' AND ",
+            "(r.legacy_pending=1 OR EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=r.seat_id AND b.ended_at IS NULL AND b.role='top_level' AND b.liveness='connected' AND ",
             $crate::store::lazy_delivery::binding_lazy_unread_sql!(),
             "))"
         )
     };
 }
 pub(crate) use seat_unread_sql;
+
+/// A lazy recipient row `r` (with its message `m`) is still owed a display at seat level when it is
+/// legacy pending or some open top-level binding of the seat that can still read it finds it
+/// unread: a connected one, or one disconnected because its process exited (`liveness_process_exit`,
+/// which reconnects on its next call). A binding disconnected as superseded, by an end event,
+/// retirement, unresolve, replacement or migration owes nothing, so it neither pins the row in the
+/// `state='pending'` indexes nor (through `seat_unread_sql!`, which counts connected bindings
+/// only) holds the wake frontier open. Used only by `MARK_DISPLAYED_SQL`.
+macro_rules! seat_owes_display_sql {
+    () => {
+        concat!(
+            "(r.legacy_pending=1 OR EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=r.seat_id AND b.ended_at IS NULL AND b.role='top_level' AND (b.liveness='connected' OR b.disconnect_reason='liveness_process_exit') AND ",
+            $crate::store::lazy_delivery::binding_lazy_unread_sql!(),
+            "))"
+        )
+    };
+}
 
 mod completion;
 mod direct;
