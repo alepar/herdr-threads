@@ -331,6 +331,76 @@ Digest:
 - cooperative_claim: owns claim-to-seat-to-host acceptance. New claim checks go here. Store entry points never compare `claim.instance` or `claim.host` inline.
 - Archival per-host evidence: owns per-host coherence and epochs. Host outages change only their own `archival_hosts` row. The lane never treats one host's outage as global.
 
+## Key abstractions
+
+**HostLocator** — new value struct (`src/protocol/ids.rs`), the wire name of one Herdr server: its canonical socket path.
+- Owns: the parse rules (absolute, 1..=4096 bytes, no NUL, no empty, `.` or `..` component, no trailing `/`), string serde, and conversion to a path for attach and handoff-namespace comparison.
+- Hides: that a server is identified by a filesystem path.
+- Must not: canonicalize through the filesystem (the CLI's `RuntimeContext::require_host` and the attach check do that), or be compared as a raw string anywhere outside its own equality.
+- Relationships: leaf type. `CallerClaim.host`, the target-bearing commands, `CooperativeDecisionFence`, `IntentScope::Cooperative`, HostIndex and HostSessions depend on it. `Command::host_locator()` is the one accessor dispatch reads.
+- Errors: `parse` returns `InvalidRequest` with one fixed message.
+
+**HostId** — new value struct (`src/ports.rs`, `Copy + Ord`), the node-local key of one attached server (`herdr_hosts.host_id`).
+- Owns: the one key every per-host row, worker scope and session lookup uses.
+- Must not: be serialized to a client, printed to an agent, or put in a replicated payload (remote seats have no host).
+- Relationships: produced only by `StorePort::attach_host` and returned by `cooperative_claim`. Observation, wake scope, archival evidence and HostSessions are keyed by it.
+
+**HostIndex** — new struct (`src/store/hosts.rs`), the store's read view of which servers are attached; it replaces the node-identity `StoreContext.primary_host` seam.
+- Owns: the `HostLocator → HostId` map of attached hosts and `attached_id` (miss → `HostUnavailable`).
+- Hides: the lock behind the map.
+- Must not: be written by anything except HostSessions, hold a host whose workers are not yet running, or be consulted for reachability.
+- Relationships: held by `StoreContext` as `Arc`, shared with HostSessions. The store depends on it; it depends on nothing in `service`, so the store never reaches up to the registry. Per spec §4, this is how the root's "`cooperative_instance` checks `claim.host` against HostSessions" is realized without a store → service dependency.
+- Lifecycle: created before `StoreContext`, lives for the daemon. Entries are only added (no detach, §3).
+
+**HostFactory / HostAttachPlan** — new structs (`src/service/host_sessions.rs`), how a server's port and observer are built and whether its socket exists, plus the startup hint. They replace node-identity's `HostChoice`.
+- Owns: two closures, `build(locator) → (port, observer)` and `exists(path)`, and the optional `--host-endpoint` hint.
+- Hides: `NativeCli` construction and the socket test (production) versus the fake-locator map (tests, ht-5fr.10).
+- Must not: attach, write the store or spawn workers (HostSessions does all three).
+- Relationships: built in `main.rs` or a test, passed into `run_elected_impl`, consumed by HostSessions. Two closures, not a trait: one production implementation, and the fake is data.
+
+**HostArchivalEvidence** — new struct (`store::archival::Runtime.hosts`) plus the `archival_hosts` table, per-host coherence for the node-wide archival lane.
+- Owns: per host the generation, coherence, `valid_until_mono`, `evidence_epoch` and `coherent_since`, and the rule that a host's discontinuity bumps only its own epoch (plus the node `mutation_revision`).
+- Hides: which hosts are attached; an absent host counts as incoherent.
+- Must not: reset a thread's quiet period for a host none of its members sit on, or decide archival (the node-wide lane does, in `scan_members`).
+- Relationships: built each pass from `HostSessions::attached()` and each session's `HostReachability::archival_state`. `seat_archival.host_id`/`host_evidence_epoch` validate a member's sample against its own host's row.
+- Errors: none of its own. A missing session or a failed sample marks only that session's reachability uncertain.
+
+**HostSession / HostSessions** — extended from the root (registry) and node-identity (`Option` single session): up to 16 sessions keyed by `HostId`, attached at startup, lazily through `resolve` on the request path (one attach under concurrent first claims, bounded by the request budget, `StoreBusy` past it) and by a 30 s sweep; never detached. Each session owns its port, reachability, `OrdinaryIdentity`, bootstrap runtime with its `HandoffNamespace`, evidence status, and its own observation and wake workers; publication into HostIndex happens only after those workers run. A failed attach unregisters its pacer and publishes nothing. `stop_all` cancels every session; handles join through the daemon worker slot. Errors kept apart: `HostUnavailable` (no socket, cap, spawn failure), `InvalidRequest` (non-canonical), `StoreBusy` (lock wait past deadline). It replaces `DomainService.current_target` and `DomainService.bootstrap`.
+
+**CallerClaim / Command** — extended: `CallerClaim.host` and `host` on `ResolveSeat`, `ContinuityCheckIn` and the targeted operator actions; `Command::host_locator()` is the single accessor; fences and every handoff-namespace comparison also compare the host.
+
+**`seats::cooperative_claim`** — extended from `cooperative_instance`: the one store entry check (node, role, attached host via HostIndex, local seat, seat on that host) returning the `HostId` the transaction uses. `CallerUnverified` (mismatch, not local, other server) stays apart from `HostUnavailable` (not attached).
+
+**StoreContext** — extended: holds `Arc<HostIndex>`; `primary_host` and its accessor are removed. Every former primary-host read takes its host from the claim, the seat row, or the owning worker's `HostId`.
+
+**CommitKicks (`service/kicks.rs`)** — extended: a lane slot is a list of pacers and a kick reaches all of them; `unregister` exists only for a failed attach. The `Lane` enum stays closed (spec §7: hosts are dynamic, lanes are not).
+
+**ScheduledStore / wake store calls** — extended: `for_host(HostId)` scopes every seat-selecting wake query, and per-seat wake writes re-check the scope, returning `Conflict` (skip) on a seat rebound mid-pass.
+
+**Observation store / OrdinaryIdentity** — extended: constructed with, and every reconciliation query filtered by, a `HostId`, so a snapshot of one host never touches another host's seats.
+
+**Schema (`0001_node_baseline.sql`) / seats** — extended: Herdr-scope child tables keyed by `host_id`; `CHECK((is_local=1) = (host_id IS NOT NULL))`; a seat's `host_id` changes only together with `target_id` in an explicit rebind.
+
+**Health / HealthInputs** — extended: `hosts: Vec<AttachedHostHealth>` from `HostSessions::health_entries()`, `host` as the aggregate, one folded limitation per unreachable host.
+
+**HostChoice, the interim client guard, `EndpointDescriptor.primary_host`, `StoreContext.primary_host`** — removed, replaced by HostAttachPlan, daemon-side lazy attach and HostIndex.
+
+Variation: the set of Herdr servers varies at runtime, so HostSessions is the one routing point and `HostId` the one key; nothing else maps a host to a port. Which workers run per host is fixed in code (observation and wakes per session; archival node-wide with per-host evidence; everything else node-wide), so there is no worker trait. How a server is built varies only between production and tests, so `HostFactory` is two closures. Attach errors, wake-scope outcomes and Health reachability are fixed sets handled with `match`. Per spec §7, wake kicks fan out to every host's worker instead of routing by seat, trading N−1 empty scans (N ≤ 16) for no per-seat routing table.
+
+Walk-through: an agent in a pane on server B sends while only A is attached. The CLI claim carries `host = B`. Dispatch reads `Command::host_locator()` and calls `HostSessions::resolve(B)`: a read-lock miss, then `attach_lock`, `HostFactory.exists`, `attach_host` (row and epoch), `HostFactory.build`, B's workers spawn, B's pacer registers with CommitKicks, then B enters HostIndex. The send's transaction runs `cooperative_claim`: HostIndex gives B's `HostId`, and the seat is local and on B. The commit kicks `Lane::Wakes`; both wake workers scan their own scope, and A's worker wakes the idle recipient on A. When A dies, only A's wake worker freezes, only A's `archival_hosts` epoch moves, and Health lists A unreachable. Likely future change: a per-server discovery poll (ht-5fr.7 could move there). It is one new worker field and one spawn in the session's attach step, plus one Health line; HostIndex, `cooperative_claim`, CommitKicks and the store are untouched.
+
+Digest:
+- HostLocator: owns the canonical wire form of a server; new host addressing rules go in its `parse`;
+  callers never compare raw socket-path strings or canonicalize ad hoc.
+- HostId: owns the node-local host key; new per-host rows and scopes key on it;
+  callers never send it to clients, agents or peers.
+- HostIndex: owns the store's attached-host view; only HostSessions publishes into it, after workers run;
+  store code never reads `herdr_hosts` or HostSessions to decide whether a host is attached.
+- HostFactory/HostAttachPlan: own how a server's port and observer are built and the startup hint; a new way to build a host is a new closure pair, not a trait;
+  nothing else constructs a `HostPort`.
+- HostArchivalEvidence: owns per-host archival coherence and epochs; a new host-scoped archival condition goes here and in `scan_members`;
+  the lane never treats one host's outage as node-wide.
+
 ## Post-Implementation Notes
 
 > *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
