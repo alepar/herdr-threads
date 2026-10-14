@@ -17,7 +17,8 @@ use crate::{
         results::{CommandResult, ReceiptStatus},
         service::{
             EnsureManagedThread, EventAuthor, InvitationConstraint, NotificationSeverity,
-            ServiceInvite, ServiceNotify, ServiceOperation, ServiceThreadMutation,
+            ServiceInvite, ServiceNotify, ServiceOperation, ServiceReceiptsQuery,
+            ServiceThreadMutation,
         },
         time::{Cancellation, Clock, MonoInstant},
     },
@@ -298,7 +299,7 @@ impl Fixture {
 #[test]
 fn service_send_writes_programmatic_ordinary_row() {
     let f = Fixture::with_joined(&["s1", "s2"]);
-    let sent = f.sent("k1", "hello there", &[]);
+    let sent = f.sent("k1", "hello there", &["s1", "s2"]);
     let id = sent.summary.message.clone();
     let db = f.db();
     let row: (String, String, String, Option<String>, String, Option<String>) = db
@@ -358,12 +359,130 @@ fn service_send_writes_programmatic_ordinary_row() {
         panic!()
     };
     assert_eq!(explicit.receipt_duration_millis, 777);
-    // An explicit recipient that is also joined is one obligation.
-    assert_eq!(explicit.recipient_count, 2);
+    // Only the explicit recipient owes an ACK; joined `s2` gets a p0 delivery row.
+    assert_eq!(explicit.recipient_count, 1);
 }
 
 #[test]
-fn obligations_are_joined_snapshot_plus_explicit_invitees() {
+fn service_send_follows_d9_receipts_only_for_explicit_recipients() {
+    let f = Fixture::with_joined(&["s1", "s2", "s3"]);
+    f.db()
+        .execute(
+            "UPDATE occupant_bindings SET harness='human',observation_provenance='operator_human' WHERE seat_id='s3'",
+            [],
+        )
+        .unwrap();
+    let sent = f.sent("d9", "do X", &["s2", "s3"]);
+    assert_eq!(sent.recipient_count, 1);
+    let id = sent.summary.message;
+    let strings = |sql: &str| -> Vec<String> {
+        f.db()
+            .prepare(sql)
+            .unwrap()
+            .query_map([id.as_str()], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(
+        strings(
+            "SELECT pr.seat_id FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE sm.message_id=?1 ORDER BY pr.seat_id"
+        ),
+        ["s2"]
+    );
+    assert_eq!(
+        strings(
+            "SELECT seat_id FROM lazy_recipients WHERE message_id=?1 AND priority=0 AND decision_seq IS NOT NULL ORDER BY seat_id"
+        ),
+        ["s1", "s3"]
+    );
+    assert_eq!(
+        strings("SELECT seat_id FROM lazy_recipients WHERE message_id=?1 ORDER BY seat_id"),
+        ["s1", "s3"]
+    );
+    assert_eq!(
+        strings("SELECT priority||delivery_mode FROM messages WHERE id=?1"),
+        ["0ordinary"]
+    );
+    assert_eq!(
+        strings("SELECT DISTINCT seat_id FROM wake_work WHERE ?1 IS NOT NULL ORDER BY seat_id"),
+        ["s1", "s3"]
+    );
+    f.drain(&id);
+    assert_eq!(
+        strings("SELECT seat_id||state FROM receipt_state WHERE message_id=?1"),
+        ["s2pending"]
+    );
+    assert_eq!(
+        strings(
+            "SELECT CAST(deadline_at IS NOT NULL AS TEXT) FROM receipt_state WHERE message_id=?1"
+        ),
+        ["1"]
+    );
+    let ServiceResult::Receipts(inspection) = f
+        .op(ServiceOperation::Receipts(ServiceReceiptsQuery {
+            message: id.clone(),
+            page: PageRequest::default(),
+        }))
+        .unwrap()
+    else {
+        panic!("not a receipts result")
+    };
+    assert_eq!(inspection.recipients.items.len(), 1);
+    assert_eq!(inspection.recipients.items[0].seat, SeatId::new("s2"));
+    assert_eq!(
+        inspection.recipients.items[0].status,
+        ReceiptStatus::Pending
+    );
+
+    // No explicit recipients: priority-0 rows for the whole snapshot, no receipts or job.
+    let bare = f.sent("d9-bare", "fyi", &[]);
+    assert_eq!(bare.recipient_count, 0);
+    assert_eq!(bare.receipt_duration_millis, 0);
+    let bare_id = bare.summary.message;
+    let db = f.db();
+    let bare_sql = |sql: &str| count(&db, &sql.replace("ID", bare_id.as_str()));
+    assert_eq!(
+        bare_sql(
+            "SELECT count(*) FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE sm.message_id='ID'"
+        ),
+        0
+    );
+    assert_eq!(
+        bare_sql("SELECT count(*) FROM work_jobs WHERE id='work:send:ID'"),
+        0
+    );
+    assert_eq!(
+        bare_sql("SELECT count(*) FROM lazy_recipients WHERE message_id='ID' AND priority=0"),
+        3
+    );
+    assert_eq!(
+        bare_sql(
+            "SELECT count(*) FROM messages WHERE id='ID' AND delivery_mode='lazy' AND priority=0"
+        ),
+        1
+    );
+    drop(db);
+
+    // A deadline without explicit recipients is accepted and creates no receipt.
+    let ServiceResult::MessageSent(soon) = f.send("d9-deadline", "soon", &[], Some(50)).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(
+        count(
+            &f.db(),
+            &format!(
+                "SELECT count(*) FROM receipt_state WHERE message_id='{}'",
+                soon.summary.message.as_str()
+            )
+        ),
+        0
+    );
+}
+
+#[test]
+fn receipts_are_the_explicit_recipients_and_the_joined_snapshot_gets_p0_rows() {
     let f = Fixture::with_joined(&["s1", "s2"]);
     {
         let db = f.db();
@@ -396,7 +515,7 @@ fn obligations_are_joined_snapshot_plus_explicit_invitees() {
         .unwrap();
     }
     let sent = f.sent("k", "to everyone", &["s3", "s4"]);
-    assert_eq!(sent.recipient_count, 4);
+    assert_eq!(sent.recipient_count, 2);
     let id = sent.summary.message;
     let db = f.db();
     let mut prepared: Vec<String> = db
@@ -407,7 +526,7 @@ fn obligations_are_joined_snapshot_plus_explicit_invitees() {
         .map(Result::unwrap)
         .collect();
     prepared.sort();
-    assert_eq!(prepared, ["s1", "s2", "s3", "s4"]);
+    assert_eq!(prepared, ["s3", "s4"]);
     assert_eq!(
         count(
             &db,
@@ -416,7 +535,7 @@ fn obligations_are_joined_snapshot_plus_explicit_invitees() {
                 id.as_str()
             )
         ),
-        4
+        2
     );
     assert_eq!(
         count(
@@ -435,13 +554,30 @@ fn obligations_are_joined_snapshot_plus_explicit_invitees() {
         .unwrap()
         .map(Result::unwrap)
         .collect();
-    assert_eq!(pending, ["s1", "s2", "s3", "s4"]);
+    assert_eq!(pending, ["s3", "s4"]);
+    let lazy: Vec<(String, i64)> = db
+        .prepare(
+            "SELECT seat_id,priority FROM lazy_recipients WHERE message_id=?1 ORDER BY seat_id",
+        )
+        .unwrap()
+        .query_map([id.as_str()], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(lazy, [("s1".to_owned(), 0), ("s2".to_owned(), 0)]);
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM lazy_recipients WHERE seat_id='s5'"
+        ),
+        0
+    );
 }
 
 #[test]
 fn native_ack_by_exact_id_settles_and_repeat_is_idempotent() {
     let f = Fixture::with_joined(&["s1", "s2"]);
-    let sent = f.sent("k", "please ack", &[]);
+    let sent = f.sent("k", "please ack", &["s1", "s2"]);
     let id = sent.summary.message;
     f.drain(&id);
     let mut db = f.db();
@@ -518,7 +654,7 @@ fn native_ack_by_exact_id_settles_and_repeat_is_idempotent() {
 #[test]
 fn reads_and_notify_create_no_acks() {
     let f = Fixture::with_joined(&["s1", "s2"]);
-    let sent = f.sent("k", "read me", &[]);
+    let sent = f.sent("k", "read me", &["s1", "s2"]);
     let id = sent.summary.message;
     f.drain(&id);
     f.read(Command::History(HistoryQuery {
@@ -639,7 +775,7 @@ fn reads_and_notify_create_no_acks() {
 #[test]
 fn retirement_settles_service_obligation_to_recipient_retired() {
     let f = Fixture::with_joined(&["s1", "s2"]);
-    let id = f.sent("k", "retire me", &[]).summary.message;
+    let id = f.sent("k", "retire me", &["s1", "s2"]).summary.message;
     f.drain(&id);
     let job = StorePort::begin_retirement(
         &f.store,
@@ -696,7 +832,8 @@ fn retirement_settles_service_obligation_to_recipient_retired() {
 #[test]
 fn deadline_and_overdue_warning_use_frozen_duration() {
     let f = Fixture::with_joined(&["s1"]);
-    let ServiceResult::MessageSent(sent) = f.send("k", "be quick", &[], Some(50)).unwrap() else {
+    let ServiceResult::MessageSent(sent) = f.send("k", "be quick", &["s1"], Some(50)).unwrap()
+    else {
         panic!()
     };
     assert_eq!(sent.receipt_duration_millis, 50);
@@ -743,7 +880,7 @@ fn deadline_and_overdue_warning_use_frozen_duration() {
 #[test]
 fn send_attention_job_and_pending_receipts_attribution() {
     let f = Fixture::with_joined(&["s1", "s2"]);
-    let id = f.sent("k", "attention", &[]).summary.message;
+    let id = f.sent("k", "attention", &["s1", "s2"]).summary.message;
     {
         let db = f.db();
         let jobs: Vec<String> = db
@@ -921,7 +1058,7 @@ fn error_cases_map_to_section_2_codes() {
         &f,
         to("empty", "e9", "b-empty", &[]),
         ErrorCode::InvalidRequest,
-        "no receipt recipients",
+        "no recipients",
         "b-empty",
     );
     // A refused preparation leaves nothing live: the same key retried with a
@@ -1083,13 +1220,13 @@ fn audience_drift_restarts_then_conflicts_when_exhausted() {
     let ServiceResult::MessageSent(sent) = result else {
         panic!()
     };
-    assert_eq!(sent.recipient_count, 2);
+    assert_eq!(sent.recipient_count, 0);
     let db = f.db();
     assert_eq!(
         count(
             &db,
             &format!(
-                "SELECT count(*) FROM prepared_recipients WHERE seat_id='late' AND preparation_id IN (SELECT preparation_id FROM send_manifests WHERE message_id='{}')",
+                "SELECT count(*) FROM lazy_recipients WHERE seat_id='late' AND message_id='{}'",
                 sent.summary.message.as_str()
             )
         ),
@@ -1225,16 +1362,15 @@ fn audience_larger_than_one_quantum() {
     let ServiceResult::MessageSent(sent) = result else {
         panic!()
     };
-    assert_eq!(sent.recipient_count, 40);
+    assert_eq!(sent.recipient_count, 0);
     assert!(more >= 1, "40 seats exceed one 16-unit quantum");
     let id = sent.summary.message;
-    f.drain(&id);
     let db = f.db();
     assert_eq!(
         count(
             &db,
             &format!(
-                "SELECT count(*) FROM receipt_state WHERE message_id='{}' AND state='pending'",
+                "SELECT count(*) FROM lazy_recipients WHERE message_id='{}' AND priority=0",
                 id.as_str()
             )
         ),
@@ -1245,7 +1381,10 @@ fn audience_larger_than_one_quantum() {
 #[test]
 fn service_author_never_in_receipt_tables() {
     let f = Fixture::with_joined(&["s1", "s2"]);
-    let id = f.sent("k", "never a recipient", &[]).summary.message;
+    let id = f
+        .sent("k", "never a recipient", &["s1", "s2"])
+        .summary
+        .message;
     f.drain(&id);
     let mut db = f.db();
     history::ack_as(
@@ -1256,7 +1395,12 @@ fn service_author_never_in_receipt_tables() {
         "ack",
     )
     .unwrap();
-    for table in ["receipts", "receipt_state", "prepared_recipients"] {
+    for table in [
+        "receipts",
+        "receipt_state",
+        "prepared_recipients",
+        "lazy_recipients",
+    ] {
         assert_eq!(
             db.query_row(
                 &format!("SELECT count(*) FROM {table} WHERE seat_id=?1"),
@@ -1464,11 +1608,7 @@ fn new_service_sends_anchor_all_unavailable_audiences_to_send_time() {
                 _ => unreachable!(),
             }
         }
-        let explicit = if state == "invited" {
-            vec!["s1"]
-        } else {
-            vec![]
-        };
+        let explicit = vec!["s1"];
         let ServiceResult::MessageSent(sent) = f.send("k", "body", &explicit, Some(50)).unwrap()
         else {
             panic!()

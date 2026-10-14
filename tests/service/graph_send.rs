@@ -1,7 +1,8 @@
 //! One real-daemon flow for the service-authored, ACK-required request queue
 //! (ht-5nb.4): register v2, managed thread, required invite and accept, a
-//! deadline send that wakes an idle recipient, an exact-id native ACK read back
-//! through Receipts, a native reply read back through History, retirement
+//! deadline send to an explicit ACK recipient that wakes an idle recipient, an
+//! exact-id native ACK read back through Receipts, a native reply read back
+//! through History, retirement
 //! settlement, response-loss replay without a duplicate, and a v1 session that
 //! cannot send.
 
@@ -481,7 +482,7 @@ fn user_intent_service_send_stays_unclassified() {
                 ServiceSend {
                     thread: thread.clone(),
                     body: "do X".into(),
-                    recipients: vec![],
+                    recipients: vec![SeatId::new("worker")],
                     deadline_millis: Some(600_000),
                     operation: OperationId::new("req-1"),
                 },
@@ -617,7 +618,7 @@ fn user_intent_service_send_stays_unclassified() {
             "After{{seq}} excludes the request itself"
         );
 
-        // 6. A second send reaches `worker` and `retiree`; retiring `retiree`
+        // 6. A second send asks `worker` and `retiree` for an ACK; retiring `retiree`
         // settles its obligation as recipient_retired.
         seed_seat("retiree", None);
         db.execute("INSERT INTO memberships(thread_id,seat_id,state,voluntary_state) VALUES (?1,'retiree','joined','joined')", [thread.as_str()]).unwrap();
@@ -627,7 +628,7 @@ fn user_intent_service_send_stays_unclassified() {
                 ServiceSend {
                     thread: thread.clone(),
                     body: "do Y".into(),
-                    recipients: vec![],
+                    recipients: vec![SeatId::new("worker"), SeatId::new("retiree")],
                     deadline_millis: Some(600_000),
                     operation: OperationId::new("req-2"),
                 },
@@ -738,7 +739,7 @@ fn user_intent_service_send_stays_unclassified() {
                 ServiceOperation::Send(ServiceSend {
                     thread: thread.clone(),
                     body: "do Z once".into(),
-                    recipients: vec![],
+                    recipients: vec![SeatId::new("worker")],
                     deadline_millis: Some(600_000),
                     operation: lost.clone(),
                 }),
@@ -785,7 +786,7 @@ fn user_intent_service_send_stays_unclassified() {
             panic!("replay did not return MessageSent");
         };
         assert_eq!(replayed.summary.user_intent, None);
-        assert_eq!(replayed.recipient_count, 1, "worker only; retiree is retired");
+        assert_eq!(replayed.recipient_count, 1, "worker only");
         assert_eq!(
             count("SELECT count(*) FROM messages WHERE body=?1", "do Z once"),
             1,

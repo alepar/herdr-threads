@@ -1,10 +1,11 @@
-//! Service-authored ordinary messages with native receipt obligations.
+//! Service-authored ordinary messages under the native D9 rule.
 //!
-//! The registered service author posts into a thread it manages. Obligations,
-//! deadlines, wake and retirement settlement are the native ones: the audience
-//! is the joined snapshot plus explicit invited or joined recipients, staged in
-//! bounded quanta and published under the service decision fence. The service
-//! itself never appears in a receipt table.
+//! The registered service author posts into a thread it manages; the audience
+//! is the joined snapshot plus explicit invited or joined `recipients`. Only the
+//! explicit (non-human) recipients get receipts (deadline, overdue warning,
+//! display ACK); everyone else gets a priority-0 delivery row that wakes.
+//! Staged in bounded quanta and published under the service decision fence.
+//! The service itself never appears in a receipt or delivery-row table.
 use super::{
     connection::{StoreContext, api_error, store_error},
     materialization,
@@ -314,8 +315,8 @@ pub(crate) fn prepare_service_send_step(
             crate::store::public_ids::SEND_PREPARATION_SLOTS,
         )?;
         let high_water = new_high_water(tx)?;
-        tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12,'building')",
-            params![id,instance,op_scope,request.operation.as_str(),digest.as_slice(),request.thread.as_str(),live[0],live[1],live[2],live[3],live[4],high_water]).map_err(store_error)?;
+        tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,delivery_mode,priority,status) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12,?13,0,'building')",
+            params![id,instance,op_scope,request.operation.as_str(),digest.as_slice(),request.thread.as_str(),live[0],live[1],live[2],live[3],live[4],high_water,if request.recipients.is_empty() {"lazy"} else {"ordinary"}]).map_err(store_error)?;
         (id, high_water, 0, 0, 0, "building".to_owned())
     };
     if count > 0 {
@@ -350,9 +351,9 @@ pub(crate) fn prepare_service_send_step(
         thread: &request.thread,
         high_water,
         explicit: &explicit,
-        // A service send is receipt-bearing by contract (`ServiceSend`): its whole audience owes an
-        // ACK, so it keeps receipts and the default priority-0 ordinary preparation.
-        ack: messages::AckAudience::Everyone,
+        // D9: only the explicit `recipients` owe an ACK (receipts, deadline, overdue warning); the
+        // joined snapshot, and a human explicit recipient, get priority-0 delivery rows (wake, no receipt).
+        ack: &explicit,
         priority: crate::protocol::priority::DeliveryPriority::p0(),
         exclude: None,
         duration,
@@ -389,13 +390,19 @@ pub(crate) fn prepare_service_send_step(
         WalkEnd::Complete { visited } => (visited, true),
         WalkEnd::More { visited } => (visited, false),
     };
-    if complete && count == 0 {
+    if complete
+        && count == 0
+        && !tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM lazy_recipients WHERE preparation_id=?1)",
+                [prep_id.as_str()],
+                |r| r.get::<_, bool>(0),
+            )
+            .map_err(store_error)?
+    {
         messages::discard_preparation(tx, &prep_id)?;
         decision.commit().map_err(store_error)?;
-        return Err(api_error(
-            ErrorCode::InvalidRequest,
-            "no receipt recipients",
-        ));
+        return Err(api_error(ErrorCode::InvalidRequest, "no recipients"));
     }
     tx.execute("UPDATE send_preparations SET recipient_cursor=?1,recipient_count=?2,warning_count=?3,status=?4,prepared_at=?6 WHERE id=?5",
         params![cursor,count,warning_count,if complete {"sealed"} else {"building"},prep_id,context.clock().utc_now().0]).map_err(store_error)?;
