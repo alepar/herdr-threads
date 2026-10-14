@@ -526,7 +526,14 @@ pub struct AdmissionRequest {
     /// The admitting caller's clock reading (a hook passes its injected clock's), against
     /// which an adapter measures a callback window the input carries. `None`: the caller
     /// has no run clock, and the adapter reads the host's.
-    pub admitted_at: Option<crate::protocol::time::UtcMillis>,
+    pub admitted_at: Option<AdmissionInstant>,
+}
+/// One reading of the admitting caller's clock, both domains at the same present: an
+/// adapter validates a callback window in UTC and anchors what remains of it on `instant`.
+#[derive(Clone, Copy, Debug)]
+pub struct AdmissionInstant {
+    pub utc: crate::protocol::time::UtcMillis,
+    pub instant: std::time::Instant,
 }
 pub enum AdmissionDecision<A> {
     ContractDeclared {
@@ -638,9 +645,9 @@ pub struct EventMetadata {
     pub enrollment_witness: Option<EnrollmentWitness>,
     pub skill_pointer: bool,
     /// An adapter callback can shorten the core end-to-end limit: the native callback's
-    /// own deadline, in UTC epoch milliseconds as the harness stated it. The core measures
-    /// it on the hook's injected clock.
-    pub callback_deadline: Option<crate::protocol::time::UtcMillis>,
+    /// deadline on the admitting clock's monotonic domain, anchored at admission, so a later
+    /// wall-clock step never grows it.
+    pub callback_deadline: Option<std::time::Instant>,
     pub context_source: String,
     pub capability: super::Capability,
     pub domain: ContractDomain,

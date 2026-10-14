@@ -2786,9 +2786,8 @@ mod tests {
             }
         }
         let mut decoded = registration.decode(&admitted, &input()).unwrap();
-        decoded.metadata.callback_deadline = Some(crate::protocol::time::UtcMillis(
-            crate::protocol::time::Clock::utc_now(&crate::app::SystemClock::new()).0 - 1,
-        ));
+        decoded.metadata.callback_deadline =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
         a.calls.store(0, Ordering::SeqCst);
         let outcome = crate::cli::hook::run_admitted_hook(
             &args,

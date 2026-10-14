@@ -13,7 +13,7 @@ use serde::Deserialize;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 pub struct HermesAdapter;
 pub const BRIDGE_SCHEMA: &str = "78669955a7b170ed";
@@ -324,7 +324,9 @@ fn admit_candidate(
             diagnostic: "Hermes requires actual callback input captured at startup".into(),
         };
     };
-    let admitted_at = request.admitted_at.map_or_else(now, |at| at.0);
+    let (admitted_at, anchor) = request
+        .admitted_at
+        .map_or_else(|| (now(), Instant::now()), |at| (at.utc.0, at.instant));
     match parse_at(input, admitted_at) {
         Ok(envelope) => {
             if request
@@ -350,6 +352,7 @@ fn admit_candidate(
                     envelope,
                     bytes: input.bytes.clone(),
                     admitted_at,
+                    anchor,
                 },
                 recipe: "initialized-hermes-bridge-schema1",
                 diagnostic: "API candidate captured at startup; native/model acceptance unmeasured"
@@ -367,6 +370,8 @@ pub struct HermesAdmission {
     bytes: Vec<u8>,
     /// The clock reading the callback window was admitted at; decode re-parses at it.
     admitted_at: i64,
+    /// `admitted_at` on the admitting clock's monotonic domain: the callback deadline's anchor.
+    anchor: Instant,
 }
 fn text(s: &str, max: usize, empty: bool) -> bool {
     (empty || !s.is_empty()) && s.len() <= max && !s.chars().any(char::is_control)
@@ -1000,7 +1005,10 @@ impl HarnessAdapter for HermesAdapter {
                 context_source: e.callback.clone(),
                 native_event: e.callback,
                 shape_fields: e.shape.keys().cloned().collect(),
-                callback_deadline: Some(crate::protocol::time::UtcMillis(e.deadline_at)),
+                callback_deadline: Some(
+                    state.anchor
+                        + Duration::from_millis((e.deadline_at - state.admitted_at).max(0) as u64),
+                ),
                 skill_pointer: false,
                 capability: super::Capability::ObservedInput,
                 domain: ContractDomain::Bridge,

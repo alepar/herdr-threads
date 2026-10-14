@@ -3013,7 +3013,10 @@ fn hook_admission_request(
             registered_event: input.registered_event.clone(),
         }),
         runtime_candidate: None,
-        admitted_at: Some(clock.utc_now()),
+        admitted_at: Some(crate::harness::adapter::AdmissionInstant {
+            utc: clock.utc_now(),
+            instant: clock.instant_now(),
+        }),
     }
 }
 fn callback_install_observation(registration: &Registration) -> InstallObservation {
@@ -3120,14 +3123,6 @@ pub(crate) fn run_hook_registered(
         clock,
         ensure_executable,
     )
-}
-/// The adapter's native callback deadline (UTC) as an `Instant` on `clock`: the callback
-/// window that remains at `clock`'s present, never negative.
-fn native_callback_deadline(decoded: &DecodedEvent, clock: &dyn Clock) -> Option<Instant> {
-    decoded.metadata.callback_deadline.map(|at| {
-        let remaining = at.0.saturating_sub(clock.utc_now().0).max(0);
-        clock.instant_now() + Duration::from_millis(remaining as u64)
-    })
 }
 /// The end-to-end bound of one event: the lifecycle budget for a lifecycle or qualified-turn
 /// intent, else the observer budget. Derived from the (refined) intent.
@@ -3573,7 +3568,10 @@ fn run_admitted_hook_since(
     // fixture's in tests (so host load cannot spend a simulated callback's budget).
     let bound = event_bound(registration, decoded);
     let deadline = deadline.min(clock.instant_now() + bound);
-    let deadline = native_callback_deadline(decoded, clock.as_ref())
+    // The native deadline is anchored at admission; the UTC checks below may only shorten it.
+    let deadline = decoded
+        .metadata
+        .callback_deadline
         .map_or(deadline, |native| native.min(deadline));
     let deadline = if let EventIntent::QualifiedTurn(turn) = &decoded.intent {
         if let Some(order) = &turn.ordering {
@@ -4143,7 +4141,9 @@ pub fn run_process_with(
                     }
                 };
                 let event_bound = event_bound(registration, &event);
-                let event_bound = native_callback_deadline(&event, clock.as_ref())
+                let event_bound = event
+                    .metadata
+                    .callback_deadline
                     .map_or(event_bound, |native| {
                         event_bound.min(native.saturating_duration_since(started))
                     });

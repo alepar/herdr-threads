@@ -6823,6 +6823,14 @@ mod registered_resume {
         utc: UtcMillis,
         at: Instant,
         running: bool,
+        step: Option<Step>,
+    }
+    /// A pending `step_after_admission`: `utc_seen` once the admitting UTC read happened.
+    #[derive(Clone, Copy)]
+    struct Step {
+        elapsed: Duration,
+        wall_ms: i64,
+        utc_seen: bool,
     }
     impl FixtureClock {
         fn pin(&self) -> UtcMillis {
@@ -6834,8 +6842,26 @@ mod registered_resume {
                 utc,
                 at: Instant::now(),
                 running: false,
+                step: None,
             });
             utc
+        }
+        /// Right after the hook's admission reads this clock (its UTC, then its `Instant`),
+        /// `elapsed` passes on the monotonic clock (slow decode and local evidence) while the
+        /// wall clock moves `elapsed + wall_ms` (`wall_ms < 0`: stepped backward). The held
+        /// present then stays at that point.
+        pub(super) fn step_after_admission(&self, elapsed: Duration, wall_ms: i64) {
+            let mut held = self.held.lock().unwrap();
+            let h = held.as_mut().expect("step a held fixture clock");
+            assert!(
+                !h.running && h.step.is_none(),
+                "step a held fixture clock once"
+            );
+            h.step = Some(Step {
+                elapsed,
+                wall_ms,
+                utc_seen: false,
+            });
         }
         /// Move the held present forward: the callback's budget is spent on this clock.
         pub(super) fn advance(&self, by: Duration) {
@@ -6858,13 +6884,14 @@ mod registered_resume {
             );
             h.running = true;
         }
-        fn held(&self) -> Option<Held> {
-            *self.held.lock().unwrap()
-        }
     }
     impl Clock for FixtureClock {
         fn utc_now(&self) -> UtcMillis {
-            match self.held() {
+            let mut held = self.held.lock().unwrap();
+            if let Some(step) = held.as_mut().and_then(|h| h.step.as_mut()) {
+                step.utc_seen = true;
+            }
+            match *held {
                 None => SystemClock::new().utc_now(),
                 Some(h) if h.running => UtcMillis(h.utc.0 + h.at.elapsed().as_millis() as i64),
                 Some(h) => h.utc,
@@ -6874,8 +6901,18 @@ mod registered_resume {
             MonoInstant(self.instant_now().duration_since(self.base).as_millis() as u64)
         }
         fn instant_now(&self) -> Instant {
-            match self.held() {
-                Some(h) if !h.running => h.at,
+            let mut held = self.held.lock().unwrap();
+            match held.as_mut() {
+                Some(h) if !h.running => {
+                    let at = h.at;
+                    // The admission's pair is read; every later read sees the step.
+                    if let Some(step) = h.step.filter(|s| s.utc_seen) {
+                        h.at += step.elapsed;
+                        h.utc = UtcMillis(h.utc.0 + step.elapsed.as_millis() as i64 + step.wall_ms);
+                        h.step = None;
+                    }
+                    at
+                }
                 _ => Instant::now(),
             }
         }
@@ -9205,6 +9242,64 @@ mod registered_resume {
         );
         assert_eq!(hermes_sent(&f, 0), ["AttentionDigest"]);
         assert_eq!(f.saved(), None);
+    }
+    // A backward wall-clock step between admission and the run never grows the callback's
+    // window: its native deadline is anchored on the monotonic clock at admission, and later
+    // UTC readings may only shorten it. Here decode and local evidence take 1250 ms of the
+    // 1200 ms window while the wall clock steps back 200 ms, so UTC still reads 1050 ms in.
+    // Kills: converting the native UTC deadline to an `Instant` after admission (it would
+    // read 150 ms left and check in past the real window).
+    #[test]
+    fn hermes_backward_wall_step_after_admission_never_grows_the_window() {
+        let r = task52_registration();
+        let f = Fixture::new(true);
+        let i = hermes_input("pre_llm_call", "fixture-session", "turn-1", 1, "top");
+        fixture_clock().step_after_admission(Duration::from_millis(1250), -200);
+        let outcome = f.run(r, &i);
+        assert!(outcome.attention.is_none());
+        assert_eq!(
+            outcome.diagnostic.as_deref(),
+            Some("hook callback budget expired")
+        );
+        assert_eq!(f.saved(), None);
+        assert_eq!(hermes_sent(&f, 0), Vec::<&str>::new());
+    }
+    // Positive control: the same backward step inside the window leaves the run its
+    // monotonic remainder, and it goes on to the canonical calls.
+    #[test]
+    fn hermes_backward_wall_step_inside_the_window_still_serves_the_turn() {
+        let r = task52_registration();
+        let f = Fixture::new(true);
+        let i = hermes_input("pre_llm_call", "fixture-session", "turn-1", 1, "top");
+        fixture_clock().step_after_admission(Duration::from_millis(200), -200);
+        let outcome = f.run(r, &i);
+        assert_ne!(
+            outcome.diagnostic.as_deref(),
+            Some("hook callback budget expired")
+        );
+        assert_eq!(hermes_sent(&f, 0).first(), Some(&"AttentionDigest"));
+    }
+    // Forward-step control: a later UTC reading still shortens the window. 1050 ms pass on
+    // the monotonic clock (150 ms left there) while the wall clock reads 1250 ms in: past
+    // the callback's deadline, so the run refuses before any canonical call.
+    #[test]
+    fn hermes_forward_wall_step_after_admission_shortens_the_window() {
+        let r = task52_registration();
+        let f = Fixture::new(true);
+        let i = hermes_input("pre_llm_call", "fixture-session", "turn-1", 1, "top");
+        fixture_clock().step_after_admission(Duration::from_millis(1050), 200);
+        let outcome = f.run(r, &i);
+        assert!(outcome.attention.is_none());
+        assert!(
+            outcome
+                .diagnostic
+                .as_deref()
+                .is_some_and(|d| d.starts_with("observation: ")),
+            "{:?}",
+            outcome.diagnostic
+        );
+        assert_eq!(f.saved(), None);
+        assert_eq!(hermes_sent(&f, 0), Vec::<&str>::new());
     }
     // The fixture clock's purpose: on a held clock, a host stall and calls that each fit the
     // per-call bound but together take longer than the callback's whole budget (host load, a
