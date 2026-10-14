@@ -285,6 +285,7 @@ fn page_in(fx: &Fx, claim: Option<&CallerClaim>, thread: Option<&str>) -> Vec<Ro
         &fx.context,
         "i",
         &Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             thread: thread.map(ThreadId::new),
             claim: claim.cloned(),
             seat: Some(SeatId::new("b")),
@@ -898,6 +899,7 @@ fn warning_refs(fx: &Fx, claim: &CallerClaim) -> Vec<String> {
         &fx.context,
         "i",
         &Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             thread: None,
             claim: Some(claim.clone()),
             seat: Some(SeatId::new("b")),
@@ -1022,6 +1024,7 @@ fn thread_scoped_page_lists_only_that_threads_lazy_rows() {
         &fx.context,
         "i",
         &Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             thread: Some(ThreadId::new("t2")),
             claim: Some(b1),
             seat: Some(SeatId::new("b")),

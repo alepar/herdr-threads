@@ -20,7 +20,10 @@ use crate::protocol::{
     pagination::DeliveryRowsPosition,
     priority::{DeliveryOrderKey, DeliveryPriority, SourceRank},
 };
-use crate::store::lazy_delivery::{Recipient, RowFilter, seek_pending};
+use crate::store::{
+    catch_up::HoldCache,
+    lazy_delivery::{Recipient, RowFilter, seek_pending},
+};
 
 /// Visits one window collection may overshoot `WINDOW_VISITS` by (one walk step).
 const WINDOW_SLACK: usize = 8;
@@ -62,20 +65,23 @@ impl OrderClass {
 /// Which classes and walks a caller sees.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum PageSubset<'a> {
-    /// CLI inbox, delivery pull, hook inbox and watch: every class.
+    /// CLI inbox, delivery pull and watch: every class.
     All,
     /// The private ordinary presentation: delivery rows and the receipt-bearing walks (binding
     /// Unread and Receipts), no invitations and no warnings.
     Presentation,
     /// Accept's thread-scoped display: the thread's delivery rows only.
     ThreadScoped(&'a ThreadId),
+    /// A hook's inbox check-in page: every class, with the catch-up hold applied to the deadline
+    /// class' ordinary messages as in the attention digest.
+    Pushed,
 }
 
 impl PageSubset<'_> {
     /// Mark the classes and walks this subset never shows as finished. Idempotent.
     pub(super) fn apply(&self, state: &mut State, reader: &Reader) {
         match self {
-            Self::All => {}
+            Self::All | Self::Pushed => {}
             Self::Presentation => {
                 state.warnings.done = true;
                 let invitations = state.deadline.high.invitation;
@@ -99,6 +105,10 @@ impl PageSubset<'_> {
     pub(super) fn private(&self) -> bool {
         matches!(self, Self::Presentation)
     }
+
+    fn pushed(&self) -> bool {
+        matches!(self, Self::Pushed)
+    }
 }
 
 pub(super) struct WarningHead {
@@ -118,6 +128,7 @@ pub(super) struct Merge<'a> {
     current_agent: bool,
     filter: RowFilter<'a>,
     private: bool,
+    hold: Option<HoldCache<'a>>,
     pub(super) visited: usize,
     pub(super) lazy_scope_probes: usize,
     row: Option<(DeliveryRowsPosition, Recipient)>,
@@ -184,6 +195,7 @@ impl<'a> Merge<'a> {
             current_agent,
             filter,
             private: subset.private(),
+            hold: subset.pushed().then(|| HoldCache::new(seat.as_str())),
             visited,
             lazy_scope_probes: 0,
             row: None,
@@ -279,6 +291,7 @@ impl<'a> Merge<'a> {
                 state.publication_decision_high_water,
                 state.last.as_ref(),
                 &mut self.visited,
+                &mut self.hold,
             )?);
         }
     }

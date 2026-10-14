@@ -246,6 +246,7 @@ fn probe_inbox_batch() {
     use crate::protocol::commands::InboxQuery;
     let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
     let command = Command::InboxBatch(InboxQuery {
+        pushed: false,
         thread: None,
         claim: None,
         seat: Some(crate::protocol::ids::SeatId::new("seat-probe")),
@@ -277,6 +278,7 @@ fn capability_constants_are_stable() {
     assert_eq!(BINDING_DIGEST, "attention.binding_digest_v1");
     assert_eq!(IN_TURN_OFFER, "inbox.in_turn_offer_v1");
     assert_eq!(INBOX_THREAD_SCOPE, "inbox.thread_scope_v1");
+    assert_eq!(INBOX_PUSHED_HOLD, "inbox.pushed_hold_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -312,7 +314,8 @@ fn capability_constants_are_stable() {
             "inbox.thread_scope_v1",
             "send.priority_v1",
             "seat.nudge_threshold_v1",
-            "direct.auto_join_v1"
+            "direct.auto_join_v1",
+            "inbox.pushed_hold_v1"
         ]
     );
 }
@@ -336,6 +339,7 @@ fn every_advertised_capability_has_a_handler() {
             INBOX_BATCH => probe_inbox_batch(),
             INBOX_BATCH_V2 => {
                 let command = Command::InboxBatchV2(crate::protocol::commands::InboxQuery {
+                    pushed: false,
                     thread: None,
                     claim: None,
                     seat: Some(crate::protocol::ids::SeatId::new("seat-probe")),
@@ -538,6 +542,7 @@ fn every_advertised_capability_has_a_handler() {
             }
             BINDING_CURSORS => probe_binding_cursors(),
             INBOX_THREAD_SCOPE => probe_inbox_thread_scope(),
+            INBOX_PUSHED_HOLD => probe_inbox_pushed_hold(),
             IN_TURN_OFFER => {
                 // The in-turn flag and its invitations are on the wire only when set and
                 // round-trip; the store records them
@@ -788,6 +793,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "send.priority_v1",
             "seat.nudge_threshold_v1",
             "direct.auto_join_v1",
+            "inbox.pushed_hold_v1",
             "invitation.confirmation_v1"
         ]
     );
@@ -2256,6 +2262,37 @@ fn presentation_capability_routes_use_configured_domain() {
     );
 }
 
+/// `inbox.pushed_hold_v1`: `InboxQuery.pushed` is on the wire only when set and round-trips; only
+/// a v2 first, unscoped page may carry it. The store applies the catch-up hold to it
+/// (`summary_flow::hold_and_bypass`).
+fn probe_inbox_pushed_hold() {
+    use crate::protocol::{commands::InboxQuery, ids::SeatId, pagination::PageRequest};
+    let query = |pushed: bool, cursor: Option<&str>| InboxQuery {
+        seat: Some(SeatId::new("s")),
+        page: PageRequest {
+            cursor: cursor.map(str::to_owned),
+            ..PageRequest::default()
+        },
+        claim: None,
+        thread: None,
+        pushed,
+    };
+    let pushed = Command::InboxBatchV2(query(true, None));
+    assert!(pushed.validate().is_ok());
+    let json = serde_json::to_value(&pushed).unwrap();
+    assert_eq!(json.to_string().matches("\"pushed\":true").count(), 1);
+    assert_eq!(serde_json::from_value::<Command>(json).unwrap(), pushed);
+    let plain = serde_json::to_value(Command::InboxBatchV2(query(false, None))).unwrap();
+    assert!(!plain.to_string().contains("\"pushed\""), "{plain}");
+    assert!(Command::Inbox(query(true, None)).validate().is_err());
+    assert!(Command::InboxBatch(query(true, None)).validate().is_err());
+    assert!(
+        Command::InboxBatchV2(query(true, Some("v2:x")))
+            .validate()
+            .is_err()
+    );
+}
+
 /// `inbox.thread_scope_v1` (ht-br0): `InboxQuery.thread` is on the wire only when set and
 /// round-trips; only a v2 first page may carry it. The store serves it
 /// (`binding_inbox::thread_scoped_page_lists_only_that_threads_lazy_rows`).
@@ -2266,6 +2303,7 @@ fn probe_inbox_thread_scope() {
         pagination::PageRequest,
     };
     let query = |thread: Option<&str>, cursor: Option<&str>| InboxQuery {
+        pushed: false,
         seat: Some(SeatId::new("s")),
         page: PageRequest {
             cursor: cursor.map(str::to_owned),

@@ -1330,6 +1330,7 @@ mod binding_presentation {
             .store
             .query(
                 &Command::InboxBatchV2(InboxQuery {
+                    pushed: false,
                     thread: None,
                     seat: Some(claim.seat.clone()),
                     claim: Some(claim.clone()),

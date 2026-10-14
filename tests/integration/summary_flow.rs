@@ -499,6 +499,7 @@ impl World {
             pagination::PageRequest,
         };
         self.daemon_call(Command::InboxBatch(InboxQuery {
+            pushed: false,
             thread: None,
             claim: None,
             seat: Some(SeatId::new(seat)),
@@ -895,17 +896,6 @@ impl Fixture {
     }
 }
 
-/// The attention-digest segment of a hook's JSON context. The catch-up hold is a property of what
-/// the digest offers: the hook's inbox page body is the same page `inbox` prints, which lists
-/// pending receipts in priority order (deadline first) and so shows a held one when it fits.
-fn digest_of(context: &str) -> &str {
-    context
-        .split("attention digest:")
-        .nth(1)
-        .and_then(|rest| rest.split("\\\"").next())
-        .unwrap_or("")
-}
-
 // ---- the scripted worker ----
 
 /// The level-0 chunks of the fixture thread.
@@ -1193,7 +1183,7 @@ fn hold_and_bypass() {
     let held = fx.send_as_a("an ordinary request", &["--require-ack", &fx.b]);
     let quiet = fx.boundary_b();
     assert!(
-        !digest_of(&quiet).contains(&held),
+        !quiet.contains(&held),
         "an ordinary message above F is held from the digest: {quiet}"
     );
     let history = fx
@@ -1224,7 +1214,7 @@ fn hold_and_bypass() {
         "a priority message bypasses the hold: {offered}"
     );
     assert!(
-        !digest_of(&offered).contains(&held),
+        !offered.contains(&held),
         "the ordinary one is still held: {offered}"
     );
     binding_refresh_keeps_the_binding_row(&fx, &held);

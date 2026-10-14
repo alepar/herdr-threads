@@ -619,6 +619,7 @@ fn mixed_ack_merged_pages_and_completion() {
             &context,
             "i",
             &Command::InboxBatchV2(InboxQuery {
+                pushed: false,
                 thread: None,
                 claim: None,
                 seat: Some(SeatId::new(seat)),

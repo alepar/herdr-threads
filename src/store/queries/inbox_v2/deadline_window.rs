@@ -15,7 +15,7 @@ use crate::protocol::{
     pagination::{DeadlineCursor, DeadlineHighWaters, DeadlineWalks},
     priority::{DeliveryOrderKey, DeliveryPriority, SourceRank},
 };
-use crate::store::effective::ReceiptScanPosition;
+use crate::store::{catch_up::HoldCache, effective::ReceiptScanPosition};
 
 /// Items per window.
 pub(super) const DEADLINE_WINDOW: usize = 64;
@@ -63,6 +63,24 @@ fn exhausted(walks: &DeadlineWalks, high: &DeadlineHighWaters) -> bool {
         && walks.manifest_after >= high.manifest
 }
 
+/// Whether a pushed page holds this ordinary message back (catch-up hold, spec section 7): the
+/// attention digest's rule, through the same `HoldCache`. An unpushed page holds nothing.
+fn held(
+    hold: &mut Option<HoldCache<'_>>,
+    db: &Connection,
+    thread: &str,
+    message: &str,
+    sequence: i64,
+    decision_seq: i64,
+) -> Result<bool, ApiError> {
+    match hold {
+        Some(hold) => Ok(hold
+            .attention_key(db, thread, message, sequence, (decision_seq, 0))?
+            .is_none()),
+        None => Ok(false),
+    }
+}
+
 fn unavailable(detail: &str) -> ApiError {
     invalid(detail)
 }
@@ -81,6 +99,7 @@ impl DeadlineWindow {
         decision: u64,
         last: Option<&DeliveryOrderKey>,
         visits: &mut usize,
+        hold: &mut Option<HoldCache<'_>>,
     ) -> Result<Self, ApiError> {
         let high = &cursor.high;
         let mut at = cursor.window_start;
@@ -156,6 +175,18 @@ impl DeadlineWindow {
                 };
                 spent += 1;
                 after = ordinal as u64;
+                if hold.is_some() {
+                    let (thread, sequence): (String, i64) = db
+                        .query_row(
+                            "SELECT thread_id,sequence FROM messages WHERE id=?1",
+                            [&id],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .map_err(store_error)?;
+                    if held(hold, db, &thread, &id, sequence, decision_seq)? {
+                        continue;
+                    }
+                }
                 let receipt = crate::store::effective::effective_receipt(db, &id, seat.as_str())?
                     .filter(|r| {
                         r.state == EffectiveReceiptState::Pending
@@ -209,6 +240,16 @@ impl DeadlineWindow {
             }
             spent += step.visited;
             if let Some(receipt) = step.receipt {
+                if held(
+                    hold,
+                    db,
+                    &receipt.thread_id,
+                    &receipt.message_id,
+                    receipt.sequence,
+                    receipt.decision_seq.unwrap_or(0),
+                )? {
+                    continue;
+                }
                 items.push(DeadlineItem {
                     key: DeliveryOrderKey {
                         priority: DeliveryPriority::p0(),

@@ -806,6 +806,7 @@ fn public_warning_page(
         store,
         "i",
         &crate::protocol::commands::InboxQuery {
+            pushed: false,
             thread: None,
             seat: Some(SeatId::new("s")),
             claim: Some(claim()),

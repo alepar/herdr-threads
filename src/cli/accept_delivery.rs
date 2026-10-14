@@ -124,6 +124,7 @@ fn scoped_page<C: LocalClient + ?Sized>(
 ) -> Option<Page<InboxBatchV2Item>> {
     match client.call_with_output(
         Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             seat: Some(request.claim.seat.clone()),
             page: PageRequest::default(),
             claim: Some(request.claim.clone()),

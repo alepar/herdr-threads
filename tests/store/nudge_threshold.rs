@@ -578,6 +578,7 @@ fn hydrate_wakes_follow_current_threshold() {
     send(&store, Some(1), "op");
     let wakes = |store: &SqliteStore| -> Vec<bool> {
         let query = InboxQuery {
+            pushed: false,
             seat: Some(SeatId::new("s")),
             page: PageRequest::default(),
             claim: None,

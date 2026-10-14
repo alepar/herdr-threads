@@ -372,7 +372,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         }
         let (_, upgraded) = client.submit(ServiceOperation::Invite(ServiceInvite { thread: thread.clone(), seat: SeatId::new("member-0"), constraint: InvitationConstraint::Required, deadline_millis: Some(300_000), operation: OperationId::new("upgrade-joined") }), &budget()).await.unwrap();
         let ServiceResult::Invitation(upgraded) = upgraded else { panic!("missing joined upgrade"); };
-        let response = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::Inbox(InboxQuery { thread: None, claim: None, seat: Some(SeatId::new("member-0")), page: PageRequest::default() }), &budget())).join().unwrap()).unwrap();
+        let response = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::Inbox(InboxQuery { pushed: false, thread: None, claim: None, seat: Some(SeatId::new("member-0")), page: PageRequest::default() }), &budget())).join().unwrap()).unwrap();
         let CommandResult::Inbox(inbox) = response else { panic!("missing native inbox"); };
         let row = inbox.items.iter().find(|item| item.thread == thread).expect("joined member pending requirement absent from inbox");
         let pending = row.pending_requirement.as_ref().expect("joined member pending requirement lacks revision");

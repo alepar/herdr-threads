@@ -108,6 +108,7 @@ fn collect(
         DECISION,
         last,
         visits,
+        &mut None,
     )
     .unwrap()
 }

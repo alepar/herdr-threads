@@ -192,6 +192,7 @@ fn query(
         context,
         "i",
         &Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             thread: None,
             claim: None,
             seat: Some(SeatId::new("b")),
@@ -552,6 +553,7 @@ fn lazy_inbox_addressed_leave_retire_archive() {
         &context,
         "i",
         &Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             thread: None,
             claim: None,
             seat: Some(SeatId::new("b")),
@@ -592,6 +594,7 @@ fn lazy_inbox_v2_rejects_changed_binding_foreign_and_bad_body_cursor() {
             &context,
             "i",
             &Command::InboxBatchV2(InboxQuery {
+                pushed: false,
                 thread: None,
                 claim: None,
                 seat: Some(SeatId::new("b")),
@@ -760,6 +763,7 @@ fn lazy_inbox_v2_small_budget_and_read_only_queries() {
             &context,
             "i",
             &Command::InboxBatchV2(InboxQuery {
+                pushed: false,
                 thread: None,
                 claim: None,
                 seat: Some(SeatId::new("b")),
@@ -1230,12 +1234,14 @@ fn invitation_confirmation_inbox_metadata_distinguishes_lazy_timed_and_legacy() 
     }
     for command in [
         Command::InboxBatch(InboxQuery {
+            pushed: false,
             thread: None,
             seat: Some(SeatId::new("b")),
             page: PageRequest::default(),
             claim: Some(claim()),
         }),
         Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             thread: None,
             seat: Some(SeatId::new("b")),
             page: PageRequest::default(),
@@ -1700,6 +1706,7 @@ fn work_limited_pages_resume_without_skips() {
             &context,
             "i",
             &Command::InboxBatchV2(InboxQuery {
+                pushed: false,
                 thread: None,
                 claim: Some(claim()),
                 seat: Some(SeatId::new("b")),
@@ -1800,6 +1807,7 @@ fn v1_cursor_is_invalid_cursor_with_the_older_daemon_detail() {
         &context,
         "i",
         &Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             thread: None,
             claim: None,
             seat: Some(SeatId::new("b")),

@@ -147,6 +147,7 @@ pub(super) fn query_mode(
     let subset = match (ordinary_only, q.thread.as_ref()) {
         (true, _) => PageSubset::Presentation,
         (false, Some(thread)) => PageSubset::ThreadScoped(thread),
+        (false, None) if q.pushed => PageSubset::Pushed,
         (false, None) => PageSubset::All,
     };
     let mut state = match q.page.cursor.as_ref() {

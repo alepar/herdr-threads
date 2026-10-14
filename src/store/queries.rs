@@ -6272,6 +6272,7 @@ pub(super) fn ordinary_presentation_page(
     budget: &CallBudget,
 ) -> Result<OrdinaryPresentationPage, ApiError> {
     let query = InboxQuery {
+        pushed: false,
         thread: None,
         seat: Some(claim.seat.clone()),
         claim: Some(claim.clone()),
