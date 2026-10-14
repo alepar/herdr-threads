@@ -55,7 +55,7 @@ fn stub_script(name: &str, version: &str) -> String {
 fn shared_stub(name: &str, version: &str, script: &str) -> PathBuf {
     // SAFETY: geteuid has no preconditions.
     let uid = unsafe { libc::geteuid() };
-    let cache = std::env::temp_dir().join(format!("ht-stub-harness-v1-uid{uid}"));
+    let cache = crate::test_support::scratch::temp_path(format!("ht-stub-harness-v1-uid{uid}"));
     fs::create_dir_all(&cache).unwrap();
     fs::set_permissions(&cache, fs::Permissions::from_mode(0o700)).unwrap();
     let shared = cache.join(format!("{name}-{version}"));

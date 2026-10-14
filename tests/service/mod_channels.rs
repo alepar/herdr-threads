@@ -903,7 +903,10 @@ mod domain {
     }
 
     fn rig() -> Rig {
-        let path = std::env::temp_dir().join(format!("mod-domain-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "mod-domain-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let sqlite = Arc::new(
             SqliteStore::new(

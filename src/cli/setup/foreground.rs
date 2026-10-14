@@ -130,7 +130,10 @@ mod tests {
 
     #[test]
     fn foreground_inspection_bounds_reads_and_rejects_symlinks_and_special_files() {
-        let root = std::env::temp_dir().join(format!("foreground-read-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_support::scratch::temp_path(format!(
+            "foreground-read-{}",
+            uuid::Uuid::new_v4()
+        ));
         fs::create_dir(&root).unwrap();
         let target = root.join("target");
         fs::write(&target, b"{}").unwrap();

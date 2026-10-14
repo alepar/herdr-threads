@@ -31,7 +31,10 @@ struct Case {
 
 impl Case {
     fn new(harness: &'static str) -> Self {
-        let root = std::env::temp_dir().join(format!("ht-setup-canary-{}", uuid::Uuid::new_v4()));
+        let root = herdr_threads::test_support::scratch::temp_path(format!(
+            "ht-setup-canary-{}",
+            uuid::Uuid::new_v4()
+        ));
         for dir in ["probe/ht", "probe/bin", "probe/logs", "home"] {
             fs::create_dir_all(root.join(dir)).unwrap();
         }

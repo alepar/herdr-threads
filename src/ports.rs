@@ -176,7 +176,7 @@ mod service_decision_contract_tests {
 
     #[test]
     fn actual_sqlite_transaction_ends_before_authority_guard_on_every_exit() {
-        let path = std::env::temp_dir().join(format!(
+        let path = crate::test_support::scratch::temp_path(format!(
             "herdr-service-decision-{}.db",
             uuid::Uuid::new_v4()
         ));

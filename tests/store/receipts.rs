@@ -25,8 +25,10 @@ impl Clock for TestClock {
 }
 fn setup() -> (StoreContext, Connection, Arc<TestClock>) {
     let clock = Arc::new(TestClock(AtomicI64::new(1000)));
-    let path: PathBuf =
-        std::env::temp_dir().join(format!("receipt-test-{}.db", uuid::Uuid::new_v4()));
+    let path: PathBuf = crate::test_support::scratch::temp_path(format!(
+        "receipt-test-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context = StoreContext::new(path, clock.clone());
     let conn = context.open_writer().unwrap();
     seed_discovery_database(&conn);
@@ -4425,7 +4427,10 @@ fn receipt_discovery_global_fair_snapshots_cover_upgrade_and_restart_with_blocke
 
 fn receipt_discovery_historical(version: usize) -> (StoreContext, Connection, Arc<TestClock>) {
     let clock = Arc::new(TestClock(AtomicI64::new(1000)));
-    let path = std::env::temp_dir().join(format!("receipt-upgrade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "receipt-upgrade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let db = Connection::open(&path).unwrap();
     let context = StoreContext::new(path, clock.clone());
     let mut paths =

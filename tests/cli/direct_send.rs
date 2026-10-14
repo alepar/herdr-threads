@@ -93,7 +93,10 @@ impl LocalClient for Client {
 }
 impl Fixture {
     fn new(human: bool) -> Self {
-        let root = std::env::temp_dir().join(format!("ht-direct-cli-{}", uuid::Uuid::new_v4()));
+        let root = herdr_threads::test_support::scratch::temp_path(format!(
+            "ht-direct-cli-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir(&root).unwrap();
         let root = root.canonicalize().unwrap();
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());

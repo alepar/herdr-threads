@@ -662,7 +662,7 @@ fn committed_canary_fixture_parses() {
 #[test]
 fn unparsable_payload_fails_the_run() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/harness/testdata/canary");
-    let tmp = std::env::temp_dir().join(format!("canary-bad-{}", std::process::id()));
+    let tmp = crate::test_support::scratch::temp_path(format!("canary-bad-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(tmp.join("capture/tier0")).unwrap();
     std::fs::create_dir_all(tmp.join("bin")).unwrap();
@@ -696,7 +696,8 @@ fn unparsable_payload_fails_the_run() {
 #[test]
 fn planted_capture_reports_contract_classification() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/harness/testdata/canary");
-    let tmp = std::env::temp_dir().join(format!("canary-contract-{}", std::process::id()));
+    let tmp =
+        crate::test_support::scratch::temp_path(format!("canary-contract-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(tmp.join("capture/tier0")).unwrap();
     std::fs::create_dir_all(tmp.join("bin")).unwrap();
@@ -743,7 +744,7 @@ fn planted_capture_reports_contract_classification() {
 
 #[test]
 fn stable_capture_argv_is_replayed_only_for_declared_native_events() {
-    let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
+    let dir = crate::test_support::scratch::temp_path(format!("ht-task9-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&dir).unwrap();
     let stdin = dir.join("capture.stdin");
     for (argv, harness, expected) in [

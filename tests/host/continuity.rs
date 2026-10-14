@@ -9,7 +9,10 @@ use std::{os::unix::net::UnixListener, path::PathBuf};
 struct Endpoint(PathBuf);
 impl Endpoint {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("ht-witness-{}", uuid::Uuid::new_v4()));
+        let path = herdr_threads::test_support::scratch::temp_path(format!(
+            "ht-witness-{}",
+            uuid::Uuid::new_v4()
+        ));
         eprintln!("owned endpoint generated: {}", path.display());
         Self(path)
     }

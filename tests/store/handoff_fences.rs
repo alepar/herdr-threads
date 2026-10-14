@@ -223,8 +223,10 @@ pub(super) fn store_fixture_with_clock(
     clock: std::sync::Arc<dyn herdr_threads::protocol::time::Clock>,
 ) -> StoreFixture {
     use herdr_threads::store::{SqliteStore, StoreSettings, connection::StoreContext};
-    let directory =
-        Directory(std::env::temp_dir().join(format!("handoff-fences-{}", uuid::Uuid::new_v4())));
+    let directory = Directory(herdr_threads::test_support::scratch::temp_path(format!(
+        "handoff-fences-{}",
+        uuid::Uuid::new_v4()
+    )));
     std::fs::create_dir(&directory.0).unwrap();
     let path = directory.0.join("store.db");
     let store = SqliteStore::new(
@@ -364,8 +366,10 @@ fn handoff_actual22_upgrade_imports_already_committed_create_then_replays_withou
             SqliteStore, StoreSettings, connection::StoreContext, control::cooperative_payload_hash,
         },
     };
-    let directory =
-        Directory(std::env::temp_dir().join(format!("legacy-create-{}", uuid::Uuid::new_v4())));
+    let directory = Directory(herdr_threads::test_support::scratch::temp_path(format!(
+        "legacy-create-{}",
+        uuid::Uuid::new_v4()
+    )));
     std::fs::create_dir(&directory.0).unwrap();
     let path = directory.0.join("store.db");
     let mut db = rusqlite::Connection::open(&path).unwrap();

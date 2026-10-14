@@ -23,7 +23,10 @@ impl Clock for TestClock {
 }
 
 fn setup(now: i64) -> (StoreContext, Connection, Arc<TestClock>, PathBuf) {
-    let path = std::env::temp_dir().join(format!("invitation-due-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "invitation-due-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let clock = Arc::new(TestClock(AtomicI64::new(now)));
     let context = StoreContext::new(path.clone(), clock.clone());
     let conn = context.open_writer().unwrap();
@@ -624,8 +627,10 @@ fn invitation_backlog_restart_reconstructs_progress_without_recipient_activity()
 #[test]
 fn invitation_confirmation_prior_schema_upgrade_preserves_exact_open_origins() {
     // The genuine prefix just before invitation warning origin (42).
-    let path =
-        std::env::temp_dir().join(format!("invitation-origin-v41-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "invitation-origin-v41-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let conn = Connection::open(&path).unwrap();
     conn.pragma_update(None, "foreign_keys", "ON").unwrap();
     let mut migrations: Vec<_> =
@@ -777,8 +782,10 @@ fn invitation_confirmation_actual32_upgrade_rolls_back_reopens_and_preserves_rec
         ("invitations_confirmation_pending_seat", 40),
         ("warning_conditions_invitation_origin", 41),
     ] {
-        let path =
-            std::env::temp_dir().join(format!("invitation-chain-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "invitation-chain-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let db = Connection::open(&path).unwrap();
         let mut paths = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
             .unwrap()

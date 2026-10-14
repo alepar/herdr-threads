@@ -1093,10 +1093,10 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             // Physical temp root: macOS /var is a symlink and the lock binds physical homes.
-            let root = std::env::temp_dir()
-                .canonicalize()
-                .unwrap()
-                .join(format!("asset Ω {}", uuid::Uuid::new_v4()));
+            let root = crate::test_support::scratch::temp_path_canonical(format!(
+                "asset Ω {}",
+                uuid::Uuid::new_v4()
+            ));
             let home = root.join("selected home");
             let state = root.join("state one");
             fs::create_dir_all(&home).unwrap();

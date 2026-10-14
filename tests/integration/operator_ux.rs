@@ -195,7 +195,7 @@ fn provenance(observation: Option<String>) -> String {
 /// unknown names with how to find the ID.
 #[test]
 fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() {
-    let root = std::env::temp_dir().join(format!(
+    let root = herdr_threads::test_support::scratch::temp_path(format!(
         "htme-{}",
         &uuid::Uuid::new_v4().simple().to_string()[..10]
     ));
@@ -535,7 +535,7 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
 }
 
 fn scratch(prefix: &str) -> (PathBuf, Scratch, PathBuf) {
-    let root = std::env::temp_dir().join(format!(
+    let root = herdr_threads::test_support::scratch::temp_path(format!(
         "{prefix}-{}",
         &uuid::Uuid::new_v4().simple().to_string()[..10]
     ));

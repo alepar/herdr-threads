@@ -19,7 +19,10 @@ struct Case {
 
 impl Case {
     fn new(tag: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("ht-adm-{}-{tag}", std::process::id()));
+        let root = herdr_threads::test_support::scratch::temp_path(format!(
+            "ht-adm-{}-{tag}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&root);
         for dir in ["bin", "home", "state"] {
             fs::create_dir_all(root.join(dir)).unwrap();

@@ -66,7 +66,8 @@ fn fourth() -> Harness {
 
 fn fixture() -> Fixture {
     use std::os::unix::fs::DirBuilderExt;
-    let directory = std::env::temp_dir().join(format!("delivery-pull-{}", uuid::Uuid::new_v4()));
+    let directory =
+        crate::test_support::scratch::temp_path(format!("delivery-pull-{}", uuid::Uuid::new_v4()));
     std::fs::DirBuilder::new()
         .mode(0o700)
         .create(&directory)

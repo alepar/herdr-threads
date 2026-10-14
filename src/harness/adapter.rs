@@ -1556,7 +1556,10 @@ mod tests {
         };
         let registry = super::super::registry::builtins();
         let registration = registry.by_id(registry.agent("claude").unwrap()).unwrap();
-        let root = std::env::temp_dir().join(format!("local-status-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_support::scratch::temp_path(format!(
+            "local-status-{}",
+            uuid::Uuid::new_v4()
+        ));
         let mut environment = SetupEnvironment {
             executable: root.join("plugin"),
             state_dir: Some(root.join("state")),

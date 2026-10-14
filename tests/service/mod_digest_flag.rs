@@ -71,7 +71,10 @@ impl Drop for Directory {
 }
 
 fn service(channels: Arc<dyn ModChannels>) -> (DomainService, Directory) {
-    let path = std::env::temp_dir().join(format!("mod-digest-flag-{}", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "mod-digest-flag-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::DirBuilder::new()
         .mode(0o700)
         .create(&path)

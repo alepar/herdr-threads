@@ -1208,7 +1208,8 @@ mod tests {
         }
     }
     fn dir() -> Dir {
-        let path = std::env::temp_dir().join(format!("pane-env-{}", uuid::Uuid::new_v4()));
+        let path =
+            crate::test_support::scratch::temp_path(format!("pane-env-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&path).unwrap();
         Dir(path)
     }

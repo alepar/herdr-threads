@@ -2042,10 +2042,10 @@ mod adapter_tests {
     #[test]
     fn hermes_unknown_rotation_uses_declared_startup_policy_without_resume() {
         use super::super::context::*;
-        let directory = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("hermes-context-{}", uuid::Uuid::new_v4()));
+        let directory = crate::test_support::scratch::temp_path_canonical(format!(
+            "hermes-context-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir(&directory).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();

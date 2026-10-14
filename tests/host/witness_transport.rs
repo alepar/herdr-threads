@@ -26,7 +26,8 @@ impl Fixture {
     /// `late_clock`: before writing any response, move the injected monotonic
     /// clock to the given value (a deterministic "late response").
     fn new(rebind_after_ping: bool, late_clock: Option<(Arc<AtomicU64>, u64)>) -> Self {
-        let path = std::env::temp_dir().join(format!("ht-witness-{}", uuid::Uuid::new_v4()));
+        let path =
+            crate::test_support::scratch::temp_path(format!("ht-witness-{}", uuid::Uuid::new_v4()));
         eprintln!("owned transport endpoint created: {}", path.display());
         let mut listener = UnixListener::bind(&path).unwrap();
         listener.set_nonblocking(true).unwrap();

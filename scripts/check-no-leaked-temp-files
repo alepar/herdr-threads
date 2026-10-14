@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Fail when a test run left temp files behind. Usage:
+  check-no-leaked-temp-files --run-id ID [--ledger-dir DIR] [--remove]
+Tests create scratch paths through `herdr_threads::test_support::scratch::temp_path`,
+which removes them at process exit and, with HT_LEAK_RUN_ID set, appends each path
+to <ledger dir>/ht-leak-ledger-<ID>.log (ledger dir: HT_LEAK_LEDGER_DIR, else
+TMPDIR, else /tmp). This checker lists every ledgered path (or SQLite -wal/-shm/
+-journal sidecar) that still exists, so only the run named by --run-id is judged
+and parallel worktrees are never flagged. A test killed or timed out never runs its
+exit hook; that is the leak this reports.
+Exit 0 clean (ledger deleted), 1 leaks (one `LEAK path=... bytes=...` line each,
+then a total), 2 usage. --remove deletes the listed leaks (only ledgered paths)."""
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import sys
+
+SIDECARS = ("-wal", "-shm", "-journal")
+
+
+def ledger_dir(explicit):
+    return explicit or os.environ.get("HT_LEAK_LEDGER_DIR") or os.environ.get("TMPDIR") or "/tmp"
+
+
+def size_of(path):
+    if os.path.islink(path) or not os.path.isdir(path):
+        try:
+            return os.lstat(path).st_size
+        except OSError:
+            return 0
+    total = 0
+    for base, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(base, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def leaked(ledger):
+    seen, found = set(), []
+    with open(ledger, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            base = line.rstrip("\n")
+            if not base.startswith("/"):
+                continue
+            for path in (base,) + tuple(base + s for s in SIDECARS):
+                if path not in seen and os.path.lexists(path):
+                    seen.add(path)
+                    found.append(path)
+    return found
+
+
+def remove(path):
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(prog="check-no-leaked-temp-files")
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--ledger-dir")
+    parser.add_argument("--remove", action="store_true")
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        return 2 if exc.code else 0
+    if not args.run_id or "/" in args.run_id:
+        print("check-no-leaked-temp-files: invalid --run-id", file=sys.stderr)
+        return 2
+    ledger = os.path.join(ledger_dir(args.ledger_dir), f"ht-leak-ledger-{args.run_id}.log")
+    if not os.path.exists(ledger):
+        print("no leaked test temp files (no ledger for this run)")
+        return 0
+    found = leaked(ledger)
+    if not found:
+        os.unlink(ledger)
+        print("no leaked test temp files")
+        return 0
+    total = 0
+    for path in found:
+        size = size_of(path)
+        total += size
+        print(f"LEAK path={path} bytes={size}")
+    print(f"{len(found)} leaked temp paths, {total} bytes")
+    if args.remove:
+        for path in found:
+            remove(path)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

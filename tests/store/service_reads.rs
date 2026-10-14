@@ -95,8 +95,10 @@ impl Drop for Fixture {
 /// Instance `i` with resolved seats `s1`, `s2`, `s3`; `s1` and `s2` are joined
 /// to the service-managed thread `t`, `s3` is not.
 fn fixture() -> Fixture {
-    let path =
-        std::env::temp_dir().join(format!("herdr-service-reads-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-service-reads-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
     let mut conn = context.open_writer().unwrap();
     conn.execute(

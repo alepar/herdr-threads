@@ -427,7 +427,10 @@ mod tests {
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
-            let p = std::env::temp_dir().join(format!("ht-permissions-{}", uuid::Uuid::new_v4()));
+            let p = crate::test_support::scratch::temp_path(format!(
+                "ht-permissions-{}",
+                uuid::Uuid::new_v4()
+            ));
             std::fs::create_dir(&p).unwrap();
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).unwrap();
             Self(p.canonicalize().unwrap())

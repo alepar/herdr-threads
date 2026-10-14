@@ -21,7 +21,10 @@ const RESUME: &str = "ccac2ead-d847-45fb-aa4b-9fc7126acdc5";
 pub(in crate::harness::agy) struct Temp(pub(in crate::harness::agy) PathBuf);
 impl Temp {
     pub(in crate::harness::agy) fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!("agyw-{}", uuid::Uuid::new_v4().simple()));
+        let dir = crate::test_support::scratch::temp_path(format!(
+            "agyw-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         Self(dir)
     }

@@ -60,9 +60,9 @@ fn fixture_with_context() -> (
     Arc<TestClock>,
     StoreContext,
 ) {
-    let directory = Arc::new(PrivateDirectory(
-        std::env::temp_dir().join(format!("cooperative-fixture-{}", uuid::Uuid::new_v4())),
-    ));
+    let directory = Arc::new(PrivateDirectory(crate::test_support::scratch::temp_path(
+        format!("cooperative-fixture-{}", uuid::Uuid::new_v4()),
+    )));
     std::fs::create_dir(&directory.0).unwrap();
     let clock = Arc::new(TestClock(AtomicU64::new(100)));
     let context = StoreContext::new(directory.0.join("store.db"), clock.clone());
@@ -2502,9 +2502,9 @@ fn builtin_warning_dedup_migration_backfills_existing_attributed_transitions() {
 fn builtin_warning_dedup_upgrade_backfills_existing_attributed_transitions() {
     // Build the actual historical schema: opening a current StoreContext first
     // would already install v26, which cannot honestly be relabelled v24.
-    let directory = Arc::new(PrivateDirectory(
-        std::env::temp_dir().join(format!("cooperative-upgrade-{}", uuid::Uuid::new_v4())),
-    ));
+    let directory = Arc::new(PrivateDirectory(crate::test_support::scratch::temp_path(
+        format!("cooperative-upgrade-{}", uuid::Uuid::new_v4()),
+    )));
     std::fs::create_dir(&directory.0).unwrap();
     let clock = Arc::new(TestClock(AtomicU64::new(100)));
     let context = StoreContext::new(directory.0.join("store.db"), clock.clone());

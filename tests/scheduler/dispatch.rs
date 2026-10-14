@@ -1125,7 +1125,7 @@ fn elected_boot_recovers_stranded_attempt_then_waits_full_monotonic_delay() {
 
 #[test]
 fn sqlite_reopen_recovers_old_boot_before_real_fake_host_attempt() {
-    let path = std::env::temp_dir().join(format!(
+    let path = crate::test_support::scratch::temp_path(format!(
         "herdr-scheduler-recovery-{}.db",
         uuid::Uuid::new_v4()
     ));
@@ -1348,7 +1348,10 @@ fn completion_fixture() -> (
     StoreContext,
     SqliteStore,
 ) {
-    let path = std::env::temp_dir().join(format!("herdr-completion-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-completion-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let clock = Arc::new(JumpClock {
         mono: AtomicU64::new(0),
         utc: AtomicI64::new(0),
@@ -2571,7 +2574,7 @@ impl HostPort for SqliteTimingHost {
 
 #[test]
 fn sqlite_completed_frontier_shortens_retry_only_after_new_logical_publication() {
-    let path = std::env::temp_dir().join(format!(
+    let path = crate::test_support::scratch::temp_path(format!(
         "herdr-scheduler-frontier-{}.db",
         uuid::Uuid::new_v4()
     ));
@@ -3497,7 +3500,8 @@ struct FakeHerdr {
 impl FakeHerdr {
     fn start(status: &'static str) -> Self {
         use std::io::{BufRead, BufReader, Write};
-        let socket = std::env::temp_dir().join(format!("ht-wake-{}", uuid::Uuid::new_v4()));
+        let socket =
+            crate::test_support::scratch::temp_path(format!("ht-wake-{}", uuid::Uuid::new_v4()));
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         let status = Arc::new(Mutex::new(status));
         let methods = Arc::new(Mutex::new(Vec::new()));
@@ -3640,8 +3644,10 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
             panic!("the kernel peer witness verifies the fake server");
         };
         herdr.methods.lock().unwrap().clear();
-        let path =
-            std::env::temp_dir().join(format!("herdr-coop-wake-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "herdr-coop-wake-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let store_clock = Arc::new(FreezableMonotonic {
             real: clock.clone(),
             frozen: AtomicU64::new(0),

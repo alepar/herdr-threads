@@ -4089,7 +4089,10 @@ mod topology_contract_retry_tests {
     }
     #[test]
     fn topology_contract_retry_refuses_unavailable_or_unconfigured_runtime_before_presentation() {
-        let root = std::env::temp_dir().join(format!("topology-retry-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_support::scratch::temp_path(format!(
+            "topology-retry-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let paths = InstancePaths::resolve(
             &crate::daemon::paths::RuntimeContext::explicit(

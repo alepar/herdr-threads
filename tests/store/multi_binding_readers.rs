@@ -126,8 +126,10 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
-    let path =
-        std::env::temp_dir().join(format!("herdr-multi-binding-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-multi-binding-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let store = StoreContext::new(path, Arc::new(FixedClock));
     let db = store.open_writer().unwrap();
     db.execute_batch(

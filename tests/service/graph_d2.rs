@@ -217,7 +217,10 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
     let _daemon_lock = super::IN_PROCESS_DAEMON
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let root = std::env::temp_dir().join(format!("herdr-graph-d2-{}", Uuid::new_v4()));
+    let root = herdr_threads::test_support::scratch::temp_path(format!(
+        "herdr-graph-d2-{}",
+        Uuid::new_v4()
+    ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let _root_cleanup = TempRoot(root.clone());
     let paths = InstancePaths::resolve(

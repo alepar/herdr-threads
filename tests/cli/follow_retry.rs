@@ -260,7 +260,7 @@ fn private_dir(path: &Path) {
 /// gave up, so the harness tag silently vanished from the transcript.
 #[test]
 fn nick_cache_render_path_takes_no_context_lock() {
-    let root = std::env::temp_dir().join(format!("ht-nick-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_support::scratch::temp_path(format!("ht-nick-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&root).unwrap();
     // The journal refuses symlinked ancestors (macOS `/var` is one).
     let root = root.canonicalize().unwrap();
@@ -332,8 +332,10 @@ fn silent_daemon(path: &Path) -> UnixListener {
 /// silent, the call waits out its whole 5 s budget before Ctrl-C is honoured.
 #[test]
 fn ctrl_c_during_a_call_returns_promptly() {
-    let socket =
-        std::env::temp_dir().join(format!("ht-{}.s", &uuid::Uuid::new_v4().to_string()[..8]));
+    let socket = crate::test_support::scratch::temp_path(format!(
+        "ht-{}.s",
+        &uuid::Uuid::new_v4().to_string()[..8]
+    ));
     let _daemon = silent_daemon(&socket);
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let client = LocalSocketClient::new(
@@ -412,7 +414,10 @@ impl CompletedRetryFixture {
                 ids::*,
             },
         };
-        let dir = std::env::temp_dir().join(format!("ht-completed-retry-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_support::scratch::temp_path(format!(
+            "ht-completed-retry-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let dir = dir.canonicalize().unwrap();
         let state = dir.join("state");

@@ -29,7 +29,10 @@ impl Clock for FixedClock {
 }
 
 fn fixture(at: i64) -> (StoreContext, Connection, PathBuf, Arc<FixedClock>) {
-    let path = std::env::temp_dir().join(format!("herdr-control-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-control-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let clock = Arc::new(FixedClock(AtomicI64::new(at)));
     let context = StoreContext::new(path.clone(), clock.clone());
     let conn = context.open_writer().unwrap();

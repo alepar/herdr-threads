@@ -96,7 +96,10 @@ impl Clock for FixedClock {
 }
 
 fn db_path() -> PathBuf {
-    std::env::temp_dir().join(format!("herdr-threads-store-{}.db", uuid::Uuid::new_v4()))
+    crate::test_support::scratch::temp_path(format!(
+        "herdr-threads-store-{}.db",
+        uuid::Uuid::new_v4()
+    ))
 }
 
 #[test]
@@ -308,7 +311,10 @@ struct ScratchStore(std::path::PathBuf);
 
 impl ScratchStore {
     fn new(prefix: &str) -> Self {
-        Self(std::env::temp_dir().join(format!("{prefix}-{}.sqlite3", uuid::Uuid::new_v4())))
+        Self(crate::test_support::scratch::temp_path(format!(
+            "{prefix}-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        )))
     }
 
     /// A fresh store at the latest schema, seeded from this binary's
@@ -7596,7 +7602,10 @@ fn direct_pair_migration_preserves_v28_and_enforces_identity() {
 // Catches losing released direct/automatic rows or omitting the additive capacity upgrade.
 #[test]
 fn released_main31_populated_automatic_graph_physically_upgrades_and_reopens() {
-    let path = std::env::temp_dir().join(format!("main31-upgrade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "main31-upgrade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", true).unwrap();
     let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))

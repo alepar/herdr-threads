@@ -41,7 +41,8 @@ fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
 /// slot.
 #[test]
 fn swapping_the_binary_reobserves_on_the_next_tick() {
-    let dir = std::env::temp_dir().join(format!("ht-reobserve-{}", std::process::id()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("ht-reobserve-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     // Regular files: the swap below must be detected by inode alone (same
@@ -105,7 +106,10 @@ fn swapping_the_binary_reobserves_on_the_next_tick() {
     );
 
     // Swap the binary for a newer one (a new inode, same size), then tick.
-    let staging = std::env::temp_dir().join(format!("ht-reobserve-staging-{}", std::process::id()));
+    let staging = crate::test_support::scratch::temp_path(format!(
+        "ht-reobserve-staging-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&staging).unwrap();
     let staged = write_regular_stub_harness(&staging, "claude", "2.1.299");
     std::fs::rename(&staged, dir.join("claude")).unwrap();
