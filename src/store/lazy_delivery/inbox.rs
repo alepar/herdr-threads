@@ -1,12 +1,13 @@
 use super::*;
 use crate::protocol::pagination::DeliveryRowsPosition;
 
-/// The ordered candidate of the delivery-row seek: the next pending published row of the seat
-/// after `(?3,?4,?5)` = (priority, decision_seq, ordinal), published at or below `?2`. The partial
-/// index holds only published pending rows, so unpublished rows are never visited and no sort runs.
-const SEEK_SEAT_SQL: &str = "SELECT r.priority,r.decision_seq,r.ordinal,r.preparation_id,r.message_id,r.thread_id FROM lazy_recipients r INDEXED BY lazy_recipients_pending_order WHERE r.seat_id=?1 AND r.state='pending' AND r.decision_seq IS NOT NULL AND r.decision_seq<=?2 AND (r.priority,r.decision_seq,r.ordinal)>(?3,?4,?5) ORDER BY r.priority,r.decision_seq,r.ordinal LIMIT 1";
-/// [`SEEK_SEAT_SQL`] for one thread (`?6`), on the thread twin of the index.
-const SEEK_THREAD_SQL: &str = "SELECT r.priority,r.decision_seq,r.ordinal,r.preparation_id,r.message_id,r.thread_id FROM lazy_recipients r INDEXED BY lazy_recipients_pending_thread_order WHERE r.seat_id=?1 AND r.thread_id=?6 AND r.state='pending' AND r.decision_seq IS NOT NULL AND r.decision_seq<=?2 AND (r.priority,r.decision_seq,r.ordinal)>(?3,?4,?5) ORDER BY r.priority,r.decision_seq,r.ordinal LIMIT 1";
+/// One view's ordered candidate: the next row of binding `?1`'s pending view (`binding_pending`) after
+/// `(?3,?4,?5)` = (priority, decision_seq, ordinal), published at or below `?2`. No sort runs.
+const SEEK_VIEW_SQL: &str = "SELECT p.priority,p.decision_seq,p.ordinal,r.preparation_id,r.message_id,r.thread_id FROM binding_pending p INDEXED BY binding_pending_order JOIN lazy_recipients r ON r.ordinal=p.ordinal WHERE p.binding_id=?1 AND p.decision_seq<=?2 AND (p.priority,p.decision_seq,p.ordinal)>(?3,?4,?5) ORDER BY p.priority,p.decision_seq,p.ordinal LIMIT 1";
+/// [`SEEK_VIEW_SQL`] in one thread (`?6`), on the thread twin of the index.
+const SEEK_VIEW_THREAD_SQL: &str = "SELECT p.priority,p.decision_seq,p.ordinal,r.preparation_id,r.message_id,r.thread_id FROM binding_pending p INDEXED BY binding_pending_thread_order JOIN lazy_recipients r ON r.ordinal=p.ordinal WHERE p.binding_id=?1 AND p.thread_id=?6 AND p.decision_seq<=?2 AND (p.priority,p.decision_seq,p.ordinal)>(?3,?4,?5) ORDER BY p.priority,p.decision_seq,p.ordinal LIMIT 1";
+/// The seat's legacy seat-pending rows (`?1` seat, `?6` thread or NULL), part of every seat-level view.
+const SEEK_LEGACY_SQL: &str = "SELECT r.priority,r.decision_seq,r.ordinal,r.preparation_id,r.message_id,r.thread_id FROM lazy_recipients r INDEXED BY lazy_recipients_legacy_order WHERE r.seat_id=?1 AND r.legacy_pending=1 AND r.decision_seq IS NOT NULL AND r.decision_seq<=?2 AND (r.priority,r.decision_seq,r.ordinal)>(?3,?4,?5) AND (?6 IS NULL OR r.thread_id=?6) ORDER BY r.priority,r.decision_seq,r.ordinal LIMIT 1";
 
 /// The post-seek filters, one `EXISTS` per candidate (`?1` ordinal, `?2` instance, `?3` publication
 /// bound) so the seek's own plan stays index-only. The row identity joins are the pending page's.
@@ -22,7 +23,7 @@ const BINDING_FILTER_SQL: &str = concat!(
     ")"
 );
 
-/// Which rows [`seek_pending`] may return after the indexed ordered seek (a post-seek filter; every
+/// Which rows [`seek_pending`] may return after the ordered view seek (a post-seek filter; every
 /// rejected row costs one visit).
 #[derive(Debug, Clone, Copy)]
 pub enum RowFilter<'a> {
@@ -58,11 +59,11 @@ impl RowFilter<'_> {
 pub struct SeekResult {
     /// The first row that passed the filter.
     pub row: Option<(DeliveryRowsPosition, Recipient)>,
-    /// Index rows examined, accepted or rejected.
+    /// View rows examined, accepted or rejected.
     pub visited: usize,
     /// The last position examined (accepted or rejected); resume strictly after it.
     pub position: Option<DeliveryRowsPosition>,
-    /// The index holds no further row after `position` within the publication bound.
+    /// The views hold no further row after `position` within the publication bound.
     pub exhausted: bool,
 }
 
@@ -70,11 +71,14 @@ pub struct SeekResult {
 /// (priority, decision_seq, ordinal) order, published at or below `dh`, that passes `filter`,
 /// visiting at most `max_visits` index rows.
 ///
-/// Owns: the one ordered seek over `lazy_recipients` (the v47 partial indexes, thread twin for a
-/// thread-scoped filter), the publication bound inside it, and the post-seek binding filter.
-/// Hides: the index choice, the position encoding in the bounds, the displayed-mark exclusion and
-/// the private presentation eligibility test. Must not: let a caller walk `lazy_recipients` for
-/// delivery order itself (the presentation path included), visit an unpublished row, or sort.
+/// Owns: the ordered walk of the reading binding's own pending view (`binding_pending`), or, for a
+/// seat-level reader, the min-merge of the connected top-level bindings' views and the seat's legacy
+/// rows (thread twins for a thread-scoped filter), the publication bound inside it, and the post-seek
+/// predicate. Hides: which views are read, the indexes, the position encoding in the bounds, the
+/// displayed-mark exclusion and the private presentation eligibility test. Must not: read a
+/// disconnected binding's view for a seat-level reader, read `lazy_recipients.state`, let a caller
+/// walk `lazy_recipients` for delivery order itself (the presentation path included), visit an
+/// unpublished row, or sort.
 pub fn seek_pending(
     conn: &Connection,
     instance: &str,
@@ -92,6 +96,14 @@ pub fn seek_pending(
     };
     let dh = i64::try_from(dh)
         .map_err(|_| api_error(ErrorCode::InvalidRequest, "invalid lazy publication bound"))?;
+    // A bound reader walks only its own view (a top-level binding's legacy rows are in it); a
+    // seat-level reader merges the connected top-level views and the seat's legacy rows.
+    let (views, legacy): (Vec<String>, bool) = match filter {
+        RowFilter::Binding(b)
+        | RowFilter::ThreadBinding { binding: b, .. }
+        | RowFilter::PrivatePresentation(b) => (vec![b.as_str().to_owned()], false),
+        RowFilter::Seat | RowFilter::Thread(_) => (connected_top_level(conn, seat.as_str())?, true),
+    };
     let mut position = after;
     let mut visited = 0;
     while visited < max_visits {
@@ -112,18 +124,50 @@ pub fn seek_pending(
                 r.get::<_, String>(5)?,
             ))
         };
-        let candidate = match filter.thread() {
-            Some(thread) => conn
-                .prepare_cached(SEEK_THREAD_SQL)
-                .map_err(store_error)?
-                .query_row(params![seat.as_str(), dh, p, d, o, thread.as_str()], read),
-            None => conn
-                .prepare_cached(SEEK_SEAT_SQL)
-                .map_err(store_error)?
-                .query_row(params![seat.as_str(), dh, p, d, o], read),
+        let mut candidate: Option<(i64, i64, i64, String, String, String)> = None;
+        let mut consider = |row: Option<(i64, i64, i64, String, String, String)>| {
+            if let Some(row) = row
+                && candidate
+                    .as_ref()
+                    .is_none_or(|best| (row.0, row.1, row.2) < (best.0, best.1, best.2))
+            {
+                candidate = Some(row);
+            }
+        };
+        for view in &views {
+            let row = match filter.thread() {
+                Some(thread) => conn
+                    .prepare_cached(SEEK_VIEW_THREAD_SQL)
+                    .map_err(store_error)?
+                    .query_row(params![view, dh, p, d, o, thread.as_str()], read),
+                None => conn
+                    .prepare_cached(SEEK_VIEW_SQL)
+                    .map_err(store_error)?
+                    .query_row(params![view, dh, p, d, o], read),
+            }
+            .optional()
+            .map_err(store_error)?;
+            consider(row);
         }
-        .optional()
-        .map_err(store_error)?;
+        if legacy {
+            let row = conn
+                .prepare_cached(SEEK_LEGACY_SQL)
+                .map_err(store_error)?
+                .query_row(
+                    params![
+                        seat.as_str(),
+                        dh,
+                        p,
+                        d,
+                        o,
+                        filter.thread().map(ThreadId::as_str)
+                    ],
+                    read,
+                )
+                .optional()
+                .map_err(store_error)?;
+            consider(row);
+        }
         let Some((priority, decision_seq, ordinal, preparation_id, message, thread)) = candidate
         else {
             return Ok(SeekResult {
@@ -385,9 +429,8 @@ pub const PENDING_SUMMARY_CAP: i64 = 1000;
 /// to the mod and to wake, and its publication (manifest + message) must change
 /// both. Shared by `mod_seat_view` and `wake_seat_attention`.
 pub fn pending_summary(conn: &Connection, seat: &SeatId) -> Result<(i64, i64), ApiError> {
-    // Pending means unread for some connected top-level binding (`seat_unread_sql!`); the ordered
-    // seeks also read `state='pending'`, which `MARK_DISPLAYED_SQL` clears once no binding still
-    // owes the display.
+    // Pending means unread for some connected top-level binding (`seat_unread_sql!`), the same
+    // seat-level definition the ordered seat seeks apply over the connected bindings' views.
     let (count, max) = seat_lazy_pending(conn, seat, PENDING_SUMMARY_CAP)?;
     Ok((i64::try_from(count).unwrap_or(i64::MAX), max))
 }

@@ -838,6 +838,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
         let result = conn
             .execute_batch(V47)
             .map_err(store_error)
+            .and_then(|_| super::lazy_delivery::seed_all_binding_pending(conn))
             .and_then(|_| verify_message_priority_schema(conn))
             .and_then(|_| {
                 conn.pragma_update(None, "user_version", 47)
@@ -851,12 +852,44 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
+    if version == 47 {
+        let has_views: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='binding_pending'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if has_views == 0 {
+            let (_, tail) = V47.split_once(V47_PENDING_VIEWS_MARKER).ok_or_else(|| {
+                api_error(ErrorCode::StoreCorrupt, "v47 pending views tail missing")
+            })?;
+            conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+            let result = conn
+                .execute_batch(tail)
+                .map_err(store_error)
+                .and_then(|_| super::lazy_delivery::seed_all_binding_pending(conn));
+            match result {
+                Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(error);
+                }
+            }
+        }
+    }
     verify_message_priority_schema(conn)
 }
 
+/// The appended tail of V47 (ht-yha.44 per-binding pending views): a store created at v47 before the
+/// amendment lacks it and gets it, with the backfill, in one transaction.
+const V47_PENDING_VIEWS_MARKER: &str =
+    "-- ht-yha.44 per-binding pending views (also the repair tail of a pre-amendment v47 store).";
+
 /// V47 (ht-yha.2): message delivery priority. Every `CREATE` statement of the migration is compared
 /// with `sqlite_master` exactly (as `verify_existing_v26` does), then the five added columns are
-/// checked for type, nullability, default and `CHECK` text.
+/// checked for type, nullability, default and `CHECK` text. The per-binding pending view objects
+/// (ht-yha.44) are part of the audited statements.
 fn verify_message_priority_schema(conn: &Connection) -> Result<(), ApiError> {
     let ddl = V47
         .lines()

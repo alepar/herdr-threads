@@ -217,20 +217,17 @@ fn unpublished_backlog_is_never_visited() {
     assert_eq!(r.visited, 1, "the 10k staged rows are outside the index");
     let seat = plan(
         &db,
-        SEEK_SEAT_SQL,
-        &[&"s", &(DH as i64), &-1i64, &0i64, &0i64],
+        SEEK_VIEW_SQL,
+        &[&"any-binding", &(DH as i64), &-1i64, &0i64, &0i64],
     );
-    assert!(seat.contains("lazy_recipients_pending_order"), "{seat}");
+    assert!(seat.contains("binding_pending_order"), "{seat}");
     assert!(!seat.contains("TEMP B-TREE"), "{seat}");
     let thread = plan(
         &db,
-        SEEK_THREAD_SQL,
-        &[&"s", &(DH as i64), &-1i64, &0i64, &0i64, &"t"],
+        SEEK_VIEW_THREAD_SQL,
+        &[&"any-binding", &(DH as i64), &-1i64, &0i64, &0i64, &"t"],
     );
-    assert!(
-        thread.contains("lazy_recipients_pending_thread_order"),
-        "{thread}"
-    );
+    assert!(thread.contains("binding_pending_thread_order"), "{thread}");
     assert!(!thread.contains("TEMP B-TREE"), "{thread}");
 }
 
@@ -348,12 +345,12 @@ fn thread_scoped_and_binding_filtered_seeks() {
         "the thread twin never visits t2's earlier row"
     );
     assert_eq!(drain(&db, RowFilter::Thread(&t("t2"))), [msg("t2", 1)]);
-    // The binding's cursor is past t3: the seek visits it, rejects it, and returns t4.
+    // The binding's cursor is past t3: the row left the binding's view, so the seek returns t4 at once.
     read_cursors::advance(&db, &b, &t("t"), 3).unwrap();
     let after_t2 = seek(&db, RowFilter::Binding(&b), None, 1).position;
     let r = seek(&db, RowFilter::Binding(&b), after_t2, 10);
     assert_eq!(r.row.unwrap().1.message, msg("t", 4));
-    assert_eq!(r.visited, 2, "one visit per rejected row");
+    assert_eq!(r.visited, 1, "a row the cursor passed is not in the view");
     assert_eq!(
         drain(&db, RowFilter::Binding(&b)),
         [msg("t2", 1), msg("t", 4)]

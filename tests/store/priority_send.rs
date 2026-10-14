@@ -676,7 +676,7 @@ fn mixed_ack_display_and_completion() {
     let seat = SeatId::new("c");
     assert_eq!(seat_pending(&conn, &seat).len(), 1);
     let tx = conn.transaction().unwrap();
-    assert!(lazy_delivery::complete_addressed(&tx, "i", &seat, &id).unwrap());
+    lazy_delivery::complete_for_binding(&tx, "i", &seat, None, std::slice::from_ref(&id)).unwrap();
     tx.commit().unwrap();
     assert_eq!(
         lazy_delivery::lazy_completion_state(&conn, "i", &seat, None, &id).unwrap(),
@@ -684,7 +684,18 @@ fn mixed_ack_display_and_completion() {
     );
     // The receipt recipient is not addressed by a row: completing is refused for it.
     let tx = conn.transaction().unwrap();
-    assert!(!lazy_delivery::complete_addressed(&tx, "i", &SeatId::new("b"), &id).unwrap());
+    lazy_delivery::complete_for_binding(
+        &tx,
+        "i",
+        &SeatId::new("b"),
+        None,
+        std::slice::from_ref(&id),
+    )
+    .unwrap();
+    assert_eq!(
+        lazy_delivery::lazy_completion_state(&tx, "i", &SeatId::new("b"), None, &id).unwrap(),
+        LazyCompletion::NotAddressed
+    );
     tx.rollback().unwrap();
 }
 
@@ -761,7 +772,14 @@ fn mixed_ack_merged_pages_and_completion() {
     assert_eq!(page("c"), [format!("row {}", id.as_str())]);
     assert_eq!(page("h"), [format!("row {}", id.as_str())]);
     let tx = conn.transaction().unwrap();
-    assert!(lazy_delivery::complete_addressed(&tx, "i", &SeatId::new("c"), &id).unwrap());
+    lazy_delivery::complete_for_binding(
+        &tx,
+        "i",
+        &SeatId::new("c"),
+        None,
+        std::slice::from_ref(&id),
+    )
+    .unwrap();
     tx.commit().unwrap();
     assert!(
         page("c").is_empty(),

@@ -155,6 +155,9 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     // Per-binding displayed marks (ht-yha.5.2): a mark only retires a row the binding already
     // displayed out of order, as a cursor advance does, so it never creates work for a lane.
     "binding_row_displays",
+    // Per-binding pending views (ht-yha.44): derived by triggers from publication, cursors and marks; a write
+    // never creates work for a lane (publication already kicks through `lazy_recipients`/`send_manifests`).
+    "binding_pending",
     "delivery_observations",
     "digest_notice_offer",
     // Current presentation progress/outbox never schedules its own work.

@@ -277,6 +277,13 @@ fn priority_schema_audit_rejects_missing_or_altered_objects() {
         "preparation_priority_immutable",
         "lazy_recipient_priority_immutable",
         "lazy_recipient_decision_seq_once",
+        "binding_pending_publish",
+        "binding_pending_legacy_set",
+        "binding_pending_legacy_clear",
+        "binding_pending_cursor_insert",
+        "binding_pending_cursor_advance",
+        "binding_pending_row_display",
+        "binding_pending_binding_end",
     ] {
         for altered in [false, true] {
             let db = fixture();
@@ -294,8 +301,9 @@ fn priority_schema_audit_rejects_missing_or_altered_objects() {
         }
     }
     for index in [
-        "lazy_recipients_pending_order",
-        "lazy_recipients_pending_thread_order",
+        "binding_pending_order",
+        "binding_pending_thread_order",
+        "lazy_recipients_legacy_order",
     ] {
         for altered in [false, true] {
             let db = fixture();
@@ -342,9 +350,16 @@ fn lazy_cleanup_is_bounded_and_preserves_published_rows() {
     let high = lazy_delivery::preparation_high_water(&tx, "prep-2").unwrap();
     let page = lazy_delivery::cleanup_unpublished(&tx, "prep-2", 0, high, 1).unwrap();
     assert_eq!((page.inspected, page.deleted), (1, 0));
-    assert!(
-        !lazy_delivery::complete_addressed(&tx, "i", &SeatId::new("s"), &MessageId::new("msg-1"))
-            .unwrap()
+    assert_eq!(
+        lazy_delivery::lazy_completion_state(
+            &tx,
+            "i",
+            &SeatId::new("s"),
+            None,
+            &MessageId::new("msg-1")
+        )
+        .unwrap(),
+        lazy_delivery::LazyCompletion::NotAddressed
     );
     tx.commit().unwrap();
     assert_index(
@@ -379,22 +394,18 @@ fn lazy_addressed_completion_uses_exact_index_even_after_display() {
     );
     drop(stmt);
     let tx = db.transaction().unwrap();
-    assert!(
-        lazy_delivery::complete_addressed(&tx, "i", &SeatId::new("s"), &MessageId::new("msg-1"))
-            .unwrap()
+    let (seat, message) = (SeatId::new("s"), MessageId::new("msg-1"));
+    for _ in 0..2 {
+        lazy_delivery::complete_for_binding(&tx, "i", &seat, None, std::slice::from_ref(&message))
+            .unwrap();
+    }
+    assert_eq!(
+        lazy_delivery::lazy_completion_state(&tx, "i", &seat, None, &message).unwrap(),
+        lazy_delivery::LazyCompletion::Completed
     );
-    assert!(
-        lazy_delivery::complete_addressed(&tx, "i", &SeatId::new("s"), &MessageId::new("msg-1"))
-            .unwrap()
-    );
-    assert!(
-        !lazy_delivery::complete_addressed(
-            &tx,
-            "other",
-            &SeatId::new("s"),
-            &MessageId::new("msg-1")
-        )
-        .unwrap()
+    assert_eq!(
+        lazy_delivery::lazy_completion_state(&tx, "other", &seat, None, &message).unwrap(),
+        lazy_delivery::LazyCompletion::NotAddressed
     );
 }
 
@@ -494,9 +505,11 @@ fn priority_schema_fresh_database_is_v47_with_audited_shape() {
         );
     }
     for (kind, name) in [
-        ("index", "lazy_recipients_pending_order"),
-        ("index", "lazy_recipients_pending_thread_order"),
+        ("index", "binding_pending_order"),
+        ("index", "binding_pending_thread_order"),
+        ("index", "lazy_recipients_legacy_order"),
         ("table", "binding_row_displays"),
+        ("table", "binding_pending"),
     ] {
         assert_eq!(
             db.query_row(
@@ -624,6 +637,32 @@ fn in_flight_rows(db: &Connection) -> Vec<(String, Vec<Vec<rusqlite::types::Valu
     .collect()
 }
 
+/// The v47 backfill seeds `binding_pending` from the unread predicate (ht-yha.44); kept here with the other
+/// v46 -> v47 upgrade tests, whose store fixtures it reuses.
+#[test]
+fn priority_schema_upgrade46_seeds_the_binding_pending_views() {
+    let db = v46_database();
+    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0);").unwrap();
+    db.execute_batch(&format!(
+        "{SEAT_ROW} ('a','i','resolved','native','a',1,0,0),('s','i','resolved','native','s',1,0,0)"
+    ))
+    .unwrap();
+    db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES('t','s','joined','joined',0)").unwrap();
+    db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,binding_id) VALUES('s',1,'s','boot',1,'h','sess','exec','test',0,'bind-1'),('s',2,'s','boot',1,'h','sess2','exec2','test',0,'bind-2'); UPDATE occupant_bindings SET ended_at=9,liveness='disconnected',disconnected_at=9,disconnect_reason='liveness_process_exit' WHERE binding_id='bind-2'").unwrap();
+    db.execute_batch(&format!("INSERT INTO send_preparations({PREPARATION_COLUMNS}) VALUES('prep-2','i','scope','prep-2',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy'); INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-2','msg-2','t','s'); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('msg-2','i','t',2,'ordinary',7,'passive',0,'lazy'); INSERT INTO send_manifests({MANIFEST_COLUMNS}) VALUES('prep-2','msg-2','i','t',7,0,2,0,1,0)")).unwrap();
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    let rows = |binding: &str| -> Vec<(String, i64, i64)> {
+        db.prepare("SELECT r.message_id,p.priority,p.decision_seq FROM binding_pending p JOIN lazy_recipients r ON r.ordinal=p.ordinal WHERE p.binding_id=?1")
+            .unwrap()
+            .query_map([binding], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(rows("bind-1"), [("msg-2".to_owned(), 1, 7)]);
+    assert!(rows("bind-2").is_empty(), "an ended binding has no view");
+}
+
 #[test]
 fn priority_schema_upgrade46_leaves_in_flight_state_as_recorded() {
     let db = v46_database();
@@ -674,30 +713,96 @@ fn priority_schema_upgrade46_leaves_in_flight_state_as_recorded() {
 #[test]
 fn priority_schema_ordered_pending_seek_uses_the_new_indexes() {
     let db = fixture();
-    let seek = "SELECT ordinal FROM lazy_recipients WHERE seat_id=?1 AND state='pending' AND decision_seq IS NOT NULL AND decision_seq<=?2 AND (priority,decision_seq,ordinal)>(?3,?4,?5) ORDER BY priority,decision_seq,ordinal LIMIT 1";
-    let plans = plan(&db, seek, &[&"s", &100, &1, &0, &0]);
+    let seek = "SELECT p.ordinal FROM binding_pending p WHERE p.binding_id=?1 AND p.decision_seq<=?2 AND (p.priority,p.decision_seq,p.ordinal)>(?3,?4,?5) ORDER BY p.priority,p.decision_seq,p.ordinal LIMIT 1";
+    let plans = plan(&db, seek, &[&"b", &100, &1, &0, &0]);
     assert!(
         plans
             .iter()
-            .any(|p| p.contains("lazy_recipients_pending_order") && p.contains("SEARCH")),
+            .any(|p| p.contains("binding_pending_order") && p.contains("SEARCH")),
         "{plans:?}"
     );
     assert!(
         plans.iter().all(|p| !p.contains("TEMP B-TREE")),
         "{plans:?}"
     );
-    let thread_seek = seek.replace("ORDER BY", "AND thread_id=?6 ORDER BY");
-    let plans = plan(&db, &thread_seek, &[&"s", &100, &1, &0, &0, &"t"]);
+    let thread_seek = seek.replace("ORDER BY", "AND p.thread_id=?6 ORDER BY");
+    let plans = plan(&db, &thread_seek, &[&"b", &100, &1, &0, &0, &"t"]);
     assert!(
         plans
             .iter()
-            .any(|p| p.contains("lazy_recipients_pending_thread_order") && p.contains("SEARCH")),
+            .any(|p| p.contains("binding_pending_thread_order") && p.contains("SEARCH")),
         "{plans:?}"
     );
     assert!(
         plans.iter().all(|p| !p.contains("TEMP B-TREE")),
         "{plans:?}"
     );
+    let legacy = "SELECT r.ordinal FROM lazy_recipients r WHERE r.seat_id=?1 AND r.legacy_pending=1 AND r.decision_seq IS NOT NULL AND r.decision_seq<=?2 AND (r.priority,r.decision_seq,r.ordinal)>(?3,?4,?5) ORDER BY r.priority,r.decision_seq,r.ordinal LIMIT 1";
+    let plans = plan(&db, legacy, &[&"s", &100, &1, &0, &0]);
+    assert!(
+        plans
+            .iter()
+            .any(|p| p.contains("lazy_recipients_legacy_order") && p.contains("SEARCH")),
+        "{plans:?}"
+    );
+    assert!(
+        plans.iter().all(|p| !p.contains("TEMP B-TREE")),
+        "{plans:?}"
+    );
+}
+
+#[test]
+fn priority_schema_repairs_a_pre_amendment_v47_store() {
+    const MARKER: &str = "-- ht-yha.44 per-binding pending views (also the repair tail of a pre-amendment v47 store).";
+    let (head, _) = include_str!("../../migrations/0047_message_priority.sql")
+        .split_once(MARKER)
+        .unwrap();
+    let db = v46_database();
+    db.execute_batch(head).unwrap();
+    db.execute_batch(
+        "CREATE INDEX lazy_recipients_pending_order ON lazy_recipients(seat_id,priority,decision_seq,ordinal) WHERE state='pending' AND decision_seq IS NOT NULL;
+         CREATE INDEX lazy_recipients_pending_thread_order ON lazy_recipients(seat_id,thread_id,priority,decision_seq,ordinal) WHERE state='pending' AND decision_seq IS NOT NULL;
+         PRAGMA user_version=47",
+    )
+    .unwrap();
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    for (kind, name) in [
+        ("table", "binding_pending"),
+        ("index", "binding_pending_order"),
+        ("index", "binding_pending_thread_order"),
+        ("index", "lazy_recipients_legacy_order"),
+        ("trigger", "binding_pending_publish"),
+        ("trigger", "binding_pending_legacy_set"),
+        ("trigger", "binding_pending_legacy_clear"),
+        ("trigger", "binding_pending_cursor_insert"),
+        ("trigger", "binding_pending_cursor_advance"),
+        ("trigger", "binding_pending_row_display"),
+        ("trigger", "binding_pending_binding_end"),
+    ] {
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type=?1 AND name=?2",
+                [kind, name],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "{name}"
+        );
+    }
+    for gone in [
+        "lazy_recipients_pending_order",
+        "lazy_recipients_pending_thread_order",
+    ] {
+        assert_eq!(
+            scalar(
+                &db,
+                &format!("SELECT count(*) FROM sqlite_master WHERE name='{gone}'")
+            ),
+            0,
+            "{gone}"
+        );
+    }
 }
 
 #[test]

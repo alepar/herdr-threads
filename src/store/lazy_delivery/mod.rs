@@ -103,10 +103,11 @@ pub(crate) use binding_lazy_unread_sql;
 
 /// A lazy recipient row `r` (with its message `m`, possibly absent) is unread at seat level when
 /// it is legacy pending (carried from before V34) or some connected top-level binding of the seat
-/// finds it unread (`binding_lazy_unread_sql!`). Every seat-level view uses it: the wake seeks
-/// (`wake_frontier`, `has_wake_rows`, `oldest_pending_at`), `pending_lazy`, `seat_lazy_pending`
-/// (mod fingerprint, kick count) and the seat inbox filter. Display marking uses
-/// `seat_owes_display_sql!` instead.
+/// finds it unread (`binding_lazy_unread_sql!`). The window walks (`pending_lazy`,
+/// `seat_lazy_pending`: mod fingerprint, kick count) and the seat inbox filter use it as a
+/// post-filter; the ordered seat-level seeks and the wake seeks read each connected top-level
+/// binding's pending view (`binding_pending`) plus the legacy rows and apply it to each
+/// candidate. Display marking uses `seat_owes_display_sql!` instead.
 macro_rules! seat_unread_sql {
     () => {
         concat!(
@@ -122,9 +123,9 @@ pub(crate) use seat_unread_sql;
 /// legacy pending or some open top-level binding of the seat that can still read it finds it
 /// unread: a connected one, or one disconnected because its process exited (`liveness_process_exit`,
 /// which reconnects on its next call). A binding disconnected as superseded, by an end event,
-/// retirement, unresolve, replacement or migration owes nothing, so it neither pins the row in the
-/// `state='pending'` indexes nor (through `seat_unread_sql!`, which counts connected bindings
-/// only) holds the wake frontier open. Used only by `MARK_DISPLAYED_SQL`.
+/// retirement, unresolve, replacement or migration owes nothing, so it neither keeps the seat-wide
+/// `state` `pending` nor (through `seat_unread_sql!`, which counts connected bindings only) holds the
+/// wake frontier open. Decides only the seat-wide `state` (`MARK_DISPLAYED_SQL`), which no seek reads.
 macro_rules! seat_owes_display_sql {
     () => {
         concat!(
@@ -133,6 +134,46 @@ macro_rules! seat_owes_display_sql {
             "))"
         )
     };
+}
+
+/// The published rows a binding finds unread now (`binding_lazy_unread_sql!`): the seed of a binding's
+/// pending view (`binding_pending`). The triggers of v47 keep the view after that; this is the only Rust
+/// writer.
+macro_rules! seed_view_sql {
+    ($filter:literal) => {
+        concat!(
+            "INSERT OR IGNORE INTO binding_pending(binding_id,ordinal,thread_id,priority,decision_seq) SELECT b.binding_id,r.ordinal,r.thread_id,r.priority,r.decision_seq FROM occupant_bindings b JOIN lazy_recipients r ON r.seat_id=b.seat_id JOIN messages m ON m.id=r.message_id WHERE ",
+            $filter,
+            " AND b.ended_at IS NULL AND r.decision_seq IS NOT NULL AND ",
+            binding_lazy_unread_sql!()
+        )
+    };
+}
+
+/// Seed `binding`'s pending view. `read_cursors::seed` runs it last, after the cursors and inherited marks
+/// are written, so the view starts as exactly the binding's unread rows (one pass over the seat's delivery
+/// rows, the cost class of `capture_high_water`'s binding form, once per enrolment, re-adoption or
+/// reopening).
+pub fn seed_binding_pending(tx: &Connection, binding: &BindingId) -> Result<(), ApiError> {
+    tx.execute(seed_view_sql!("b.binding_id=?1"), [binding.as_str()])
+        .map_err(store_error)?;
+    Ok(())
+}
+
+/// Seed the view of every open binding (the v47 migration's backfill and the pre-amendment repair).
+pub fn seed_all_binding_pending(conn: &Connection) -> Result<(), ApiError> {
+    conn.execute(seed_view_sql!("1"), []).map_err(store_error)?;
+    Ok(())
+}
+
+/// The seat's connected top-level bindings, the readers every seat-level delivery view consults.
+pub(crate) fn connected_top_level(conn: &Connection, seat: &str) -> Result<Vec<String>, ApiError> {
+    conn.prepare_cached("SELECT binding_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND role='top_level' AND liveness='connected' ORDER BY binding_id")
+        .map_err(store_error)?
+        .query_map([seat], |r| r.get(0))
+        .map_err(store_error)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(store_error)
 }
 
 mod completion;

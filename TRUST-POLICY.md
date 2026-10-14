@@ -794,16 +794,19 @@ ACK recipients and `lazy` otherwise, and is never read for decisions; an old cli
 priority 0 and `lazy` to priority 1 (a request's own priority wins; its payload digest covers the priority only
 when carried, so journaled old-shape intents retry unchanged). A delivery audience is frozen by canonical
 preparation and publication; recipient identity is immutable, and its pending/displayed progress is monotonic.
-A top-level completion marks the row `displayed` seat-wide only once no top-level binding of the seat that still
-owes it finds it unread: a connected binding, or an open one disconnected because its process exited (it
-reconnects on its next call; a sibling binding keeps its own unread view, and the ordered pending seek keeps
-listing the row for it, also after it reconnects). A binding disconnected as superseded, by an end event, by
-seat retirement or unresolve, replaced or migrated owes nothing: it neither keeps the row pending nor holds the
-seat's wake frontier open. Seat-level views (wake frontier and discovery, the digest's pending count, the mod
-fingerprint and kick count, the seat inbox filter) count connected top-level bindings only. Accepted limits: a
-process-exited binding that never returns keeps its unread rows pending (the ordered seeks skip them within
-their visit bound); a superseded or end-event binding that a later lifecycle check-in reconnects is not offered
-rows the seat displayed while it was disconnected.
+Each open binding (session) keeps its own pending view of delivery rows (user decision 2026-10-14): a row is
+pending for a binding until that binding displays it, by any display path (a completion, or a cursor-only
+display: a full `body` read, an `accept` display, a hook page whose completion then failed), its cursor
+passes it, or the binding ends. A binding's own reads (inbox, hook, accept, presentation) seek only its own
+view, so a sibling's display never changes what a binding is offered and a sibling's undisplayed backlog
+never costs it anything. A binding disconnected for any reason, process exit included, keeps its view and
+is offered its rows again when it reconnects, but no seat-level view reads it: the wake frontier and
+discovery, the seat inbox filter, the digest's pending count and the mod fingerprint and kick count consider
+connected top-level bindings only (plus legacy seat-pending rows). The seat-wide `displayed` mark (set once
+no top-level binding that still owes the row, connected or disconnected by process exit, finds it unread) is
+kept only as the join frontier's "no completion has displayed" fact below and the binding-less completion
+state; no delivery seek reads it. Accepted limit: a process-exited binding that never returns keeps its own
+view until it ends; it costs only itself.
 Already addressed rows survive leaving, retirement and archival, with no transfer to another seat.
 Undisplayed rows (`state` still `pending`) past the seat's furthest cursor when it joins become seat-pending
 (join frontier, below).

@@ -499,3 +499,226 @@ fn legacy_pending_survives_leaving_the_thread() {
         LazyCompletion::Pending
     );
 }
+
+// ht-yha.44: every binding keeps its own pending view (`binding_pending`).
+
+/// `lazy(n)` published the way a send publishes it (`note_published` stamps `decision_seq`).
+fn publish(db: &mut Connection, n: i64) {
+    lazy(db, n);
+    let tx = db.transaction().unwrap();
+    note_published(&tx, &format!("prep-{n}")).unwrap();
+    tx.commit().unwrap();
+}
+
+/// Rows in the binding's pending view.
+fn view(db: &Connection, binding: &BindingId) -> i64 {
+    db.query_row(
+        "SELECT count(*) FROM binding_pending WHERE binding_id=?1",
+        [binding.as_str()],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// The first row a fresh page's seek returns for `filter`, and the candidates it visited.
+fn first(db: &Connection, filter: RowFilter<'_>) -> (Option<MessageId>, usize) {
+    let seek = seek_pending(
+        db,
+        "i",
+        &SeatId::new("s"),
+        filter,
+        None,
+        i64::MAX as u64,
+        100,
+    )
+    .unwrap();
+    (
+        seek.row.map(|(_, recipient)| recipient.message),
+        seek.visited,
+    )
+}
+
+/// Every row the binding's ordered seek offers, in order.
+fn drain_binding(db: &Connection, binding: &BindingId) -> Vec<MessageId> {
+    let (mut after, mut seen) = (None, Vec::new());
+    loop {
+        let seek = seek_pending(
+            db,
+            "i",
+            &SeatId::new("s"),
+            RowFilter::Binding(binding),
+            after,
+            i64::MAX as u64,
+            100,
+        )
+        .unwrap();
+        seen.extend(seek.row.map(|(_, recipient)| recipient.message));
+        after = seek.position;
+        if seek.exhausted {
+            return seen;
+        }
+    }
+}
+
+fn reconnect(db: &Connection, binding: &BindingId) {
+    db.execute(
+        "UPDATE occupant_bindings SET liveness='connected',disconnected_at=NULL,disconnect_reason=NULL WHERE binding_id=?1",
+        [binding.as_str()],
+    )
+    .unwrap();
+}
+
+fn end_binding(db: &Connection, binding: &BindingId) {
+    db.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=5,disconnect_reason='liveness_process_exit',ended_at=6 WHERE binding_id=?1",
+        [binding.as_str()],
+    )
+    .unwrap();
+}
+
+#[test]
+fn two_sessions_keep_independent_views_through_every_display_path() {
+    let mut db = db();
+    let a = enroll_binding(&db, "sess-A", None);
+    let b = enroll_binding(&db, "sess-B", None);
+    for n in 3..=6 {
+        publish(&mut db, n);
+    }
+    assert_eq!((view(&db, &a), view(&db, &b)), (4, 4));
+    complete(&mut db, Some(&a), &[msg(3)]);
+    let t = ThreadId::new("t");
+    let tx = db.transaction().unwrap();
+    read_cursors::advance_through_displayed(&tx, &a, &t, &[4]).unwrap();
+    read_cursors::advance_through_displayed(&tx, &a, &t, &[6]).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(drain_binding(&db, &a), [msg(5)]);
+    assert_eq!(view(&db, &a), 1);
+    assert_eq!(
+        drain_binding(&db, &b),
+        [msg(3), msg(4), msg(5), msg(6)],
+        "a sibling's displays never change what b is offered"
+    );
+    assert_eq!(view(&db, &b), 4);
+    let c = enroll_binding(&db, "sess-C", None);
+    assert_eq!(unread(&db, &c), [msg(5)]);
+    assert_eq!(drain_binding(&db, &c), unread(&db, &c));
+    end_binding(&db, &b);
+    assert_eq!(view(&db, &b), 0);
+}
+
+#[test]
+fn a_process_exited_siblings_backlog_never_slows_the_live_session() {
+    let mut db = db();
+    let a = enroll_binding(&db, "sess-A", None);
+    let b = enroll_binding(&db, "sess-B", None);
+    disconnect(&db, &b, DisconnectReason::ProcessExit);
+    for n in 3..=103 {
+        publish(&mut db, n);
+    }
+    complete(&mut db, Some(&a), &(3..=103).map(msg).collect::<Vec<_>>());
+    assert_eq!(view(&db, &b), 101, "b keeps its own view");
+    assert_eq!(view(&db, &a), 0);
+    publish(&mut db, 104);
+    assert_eq!(first(&db, RowFilter::Binding(&a)), (Some(msg(104)), 1));
+    assert_eq!(
+        first(&db, RowFilter::Seat),
+        (Some(msg(104)), 1),
+        "seat views read connected bindings only"
+    );
+    assert_eq!(
+        wake_frontier(&db, "s", NudgeThreshold::ALL).unwrap(),
+        Some(104)
+    );
+}
+
+#[test]
+fn a_live_session_that_displayed_more_than_a_page_gets_the_next_row_first() {
+    let mut db = db();
+    let a = enroll_binding(&db, "sess-A", None);
+    let b = enroll_binding(&db, "sess-B", None);
+    for n in 3..=103 {
+        publish(&mut db, n);
+    }
+    complete(&mut db, Some(&a), &(3..=103).map(msg).collect::<Vec<_>>());
+    publish(&mut db, 104);
+    assert_eq!(first(&db, RowFilter::Binding(&a)), (Some(msg(104)), 1));
+    assert_eq!(
+        first(&db, RowFilter::Binding(&b)),
+        (Some(msg(3)), 1),
+        "b's own backlog is intact and costs a nothing"
+    );
+    assert_eq!(first(&db, RowFilter::Seat), (Some(msg(3)), 1));
+}
+
+#[test]
+fn the_wake_frontier_ignores_process_exited_bindings() {
+    let mut db = db();
+    db.execute("UPDATE seats SET nudge_threshold=-1 WHERE id='s'", [])
+        .unwrap();
+    let a = enroll_binding(&db, "sess-A", None);
+    let b = enroll_binding(&db, "sess-B", None);
+    publish(&mut db, 3);
+    disconnect(&db, &b, DisconnectReason::ProcessExit);
+    complete(&mut db, Some(&a), &[msg(3)]);
+    assert_eq!(wake_frontier(&db, "s", NudgeThreshold::ALL).unwrap(), None);
+    assert_eq!(
+        oldest_pending_at(&db, "s", NudgeThreshold::ALL).unwrap(),
+        None
+    );
+    assert!(!has_wake_rows(&db, "s").unwrap());
+    assert_eq!(first(&db, RowFilter::Seat), (None, 0));
+    reconnect(&db, &b);
+    assert_eq!(
+        wake_frontier(&db, "s", NudgeThreshold::ALL).unwrap(),
+        Some(3)
+    );
+    assert!(has_wake_rows(&db, "s").unwrap());
+    assert_eq!(first(&db, RowFilter::Binding(&b)), (Some(msg(3)), 1));
+}
+
+#[test]
+fn legacy_rows_enter_top_level_views_and_leave_once_displayed() {
+    let mut db = db();
+    let a = enroll_binding(&db, "sess-A", None);
+    let b = enroll_binding(&db, "sess-B", None);
+    publish(&mut db, 3);
+    complete(&mut db, Some(&a), &[msg(3)]);
+    complete(&mut db, Some(&b), &[msg(3)]);
+    assert_eq!((view(&db, &a), view(&db, &b)), (0, 0));
+    db.execute("UPDATE lazy_recipients SET legacy_pending=1", [])
+        .unwrap();
+    assert_eq!((view(&db, &a), view(&db, &b)), (1, 1));
+    assert_eq!(first(&db, RowFilter::Binding(&a)).0, Some(msg(3)));
+    assert_eq!(first(&db, RowFilter::Seat).0, Some(msg(3)));
+    complete(&mut db, Some(&a), &[msg(3)]);
+    assert_eq!((view(&db, &a), view(&db, &b)), (0, 0));
+    assert_eq!(first(&db, RowFilter::Seat), (None, 0));
+}
+
+#[test]
+fn the_backfill_seeds_every_open_binding_from_the_predicate() {
+    let mut db = db();
+    let a = enroll_binding(&db, "sess-A", None);
+    let b = enroll_binding(&db, "sess-B", None);
+    let c = enroll_binding(&db, "sess-C", None);
+    for n in 3..=5 {
+        publish(&mut db, n);
+    }
+    complete(&mut db, Some(&a), &[msg(3)]);
+    read_cursors::advance_through_displayed(&db, &b, &ThreadId::new("t"), &[5]).unwrap();
+    end_binding(&db, &c);
+    db.execute("DELETE FROM binding_pending", []).unwrap();
+    seed_all_binding_pending(&db).unwrap();
+    for (binding, expected) in [(&a, [msg(4), msg(5)]), (&b, [msg(3), msg(4)])] {
+        let rows: Vec<MessageId> = db
+            .prepare("SELECT r.message_id FROM binding_pending p JOIN lazy_recipients r ON r.ordinal=p.ordinal WHERE p.binding_id=?1 ORDER BY p.ordinal")
+            .unwrap()
+            .query_map([binding.as_str()], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|id| MessageId::new(id.unwrap()))
+            .collect();
+        assert_eq!(rows, expected);
+        assert_eq!(rows, unread(&db, binding));
+    }
+    assert_eq!(view(&db, &c), 0);
+}
