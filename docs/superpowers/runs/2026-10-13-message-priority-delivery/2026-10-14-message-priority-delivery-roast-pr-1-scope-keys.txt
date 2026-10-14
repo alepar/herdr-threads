@@ -1,0 +1,15 @@
+[Should-fix] src/delivery/page.rs:103; src/delivery/page.rs:101; src/delivery/page.rs:98
+[Should-fix] src/store/lazy_delivery/completion.rs:68
+[Should-fix] src/protocol/pagination.rs:538
+[Should-fix] docs/superpowers/runs/2026-10-13-message-priority-delivery/run.md:34
+[Should-fix] src/store/lazy_delivery/wake.rs:80; src/store/lazy_delivery/wake.rs:50
+[Should-fix] tests/store/priority_send.rs:480
+[Nit] src/store/handoff/automatic.rs:320
+[Nit] src/store/read_cursors.rs:497; src/store/read_cursors.rs:496
+[Nit] src/cli/send_priority.rs:66
+[Nit] src/delivery/assemble.rs:412; src/delivery/assemble.rs:391
+[Nit] integrations/claude/mod/tests/delivery.test.ts:2493
+[Nit] src/store/control.rs:2242
+[FYI] integrations/claude/mod/hooks/register.js:357
+[FYI] docs/superpowers/runs/2026-10-13-message-priority-delivery/run.md:21
+[FYI] src/store/schema.rs:835; src/store/schema.rs:836
