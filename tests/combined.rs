@@ -126,3 +126,6 @@ mod readme_commands;
 
 #[path = "cli/direct_send.rs"]
 mod direct_send;
+
+#[path = "integration/priority_config_smoke.rs"]
+mod priority_config_smoke;
