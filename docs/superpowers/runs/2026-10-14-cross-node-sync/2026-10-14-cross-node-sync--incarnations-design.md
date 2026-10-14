@@ -301,6 +301,8 @@ The window between detection and the rotation commit is one background writer tu
     Nothing is deleted. The old bytes are preserved in two forms whenever the vacuum succeeds.
   - `moved` or `salvaging`: it skips straight to the plan. `ResyncPlan{from, logs, backup_db}` uses `backup_db` = the vacuumed copy if it exists, else `orig/herdr-threads.db`.
 
+  A crash after step 4 is tested with the existing test-support failpoint mechanism (`src/test_support/failpoints.rs`): `failpoint!("resync.after_moved", <node_dir>)` sits right after the `moved` marker write, and an armed `Error` makes `resume_at_start` fail there as a crash would. Failpoints are armed in Rust test code, so this restart runs the daemon in-process; a second start must reach the plan without a second backup.
+
   ht-5fr.1's steps then run against a missing store. The key is loaded, not created, and `journal::open` bootstraps a new random incarnation (§8), which is root §10's "rebuilds under a new incarnation".
 - **After `journal::open`, before `SyncCoordinator::start`:**
   - `add_explicit` for each marker target, which restores the path to `from`;
@@ -352,6 +354,11 @@ pub trait ForkSink: Send + Sync {
   - Failures call `status.record_failure(Lane::Sync, &e)`, so Health shows the existing `lane sync failed: …` line. A pacer-style backoff (base 1 s, cap 60 s) applies before the job is retried.
 - **Composition** (`src/app.rs`): `IncarnationsSink::start(deps)` runs before `SyncCoordinator::start` and replaces `LogOnlyForkSink` in `CoordinatorDeps`. On shutdown the worker is cancelled after the coordinator stops, with a 3 s join bound.
 - **Status for ht-5fr.8.** `store::incarnations::status(conn) -> IncarnationsStatus { logs: Vec<LogRepair{log, frozen_at, origin, evidence_count, branches: Vec<BranchStatus>, reissued, pending}>, own_unknown_newer: Vec<LogKey> }`. `own_unknown_newer` lists own-node logs that are not active, are not named as a predecessor by any own genesis, and have a genesis HLC above the active genesis. That is a clone suspect (research 09 F6). It is detection only: no action is taken, and the operator repairs it.
+- **Settled at promotion review.**
+  - *Timers.* The request table's 30 s timeouts, its 10-minute penalties and `sync_branches.next_attempt_at` are driven by the worker's own timer, a `tokio::time::interval` of 1 s (paused time in tests), not by the coordinator's 1 s tick. Each tick calls the sink's `RequestTable::sweep(now)` and then schedules due pulls. The coordinator only drains the outbox.
+  - *Log metadata.* The sink and the worker read a log's pubkey and ownership through one new `JournalPort` read, `log_meta(log, budget) -> Result<Option<LogMeta{pubkey, own, active, state, frozen_at, contiguous, head}>, ApiError>` (query connection; `MemoryJournal` answers the same from its maps), next to `stored_hash`. They never open their own SQL for it.
+  - *Queue cap.* The 8 MiB cap counts the branch-entry bytes of queued jobs after `Have` coalescing. On overflow the oldest coalescible job (`Have` or `Branch`) is dropped, with one log line per minute, and its branch request is cleared so the next sweep re-requests it.
+  - *`owner_rotate` source.* `owner_rotate(tx, ctx, decision, proof, source: Option<NodeUuid>)` takes the node the proof came from (none for a local detection), which it passes to `record_fork` and `upsert_branch_tip`.
 
 **Considered.**
 - Running repairs on the coordinator's ingest worker: it would serialize fork repair with ordinary relay, and the coordinator must not resolve forks (root).
