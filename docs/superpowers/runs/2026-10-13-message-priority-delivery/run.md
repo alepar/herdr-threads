@@ -23,7 +23,6 @@ roastCodeExit: converged
 graph-pass: depth 8→7 · width 2.4→2.7 · applied 2 · parked 5
 
 parked:
-- super-code-final-review-wf_ecf6a4ce-925.md · escalation · "ht-yha.33 shipped option (c) (old CLI cannot follow a new daemon's next: inbox cursor; recorded in spec §Compatibility and docs/agent-usage.md) — orchestrator decision in the autonomous run, needs the user's ratification or another scheme"
 - graph-pass · graph-change · "ht-yha.8 <- ht-yha.4 drop (same-file hydrate.rs, safe no)"
 - graph-pass · graph-change · "ht-yha.6 <- ht-yha.5.2 drop (same-file read_cursors.rs, safe no)"
 - graph-pass · graph-change · "ht-yha.4 <- ht-yha.3 drop (same-file staging.rs + real-send test, safe no; depth 7→6 with a staging.rs seam contract)"
@@ -76,4 +75,7 @@ approvals:
 - post-hand-back fix pass (user 2026-10-14 'sgtm'): ht-yha.44 stale pending rows (connected-only owing + every display path marks; reconnect gap recorded as accepted limit), ht-yha.45 lazy composer wake served-in-turn check, ht-yha.46 mod stall counts admitted delivery rows
 - approvals · ServiceSend vs D9 · human · convert to D9 (2026-10-14)
 - approvals · delivery view · human · each session keeps its own independent pending view (2026-10-14)
+- approvals · ht-yha.33 · human · replaced: break backwards compatibility, PROTOCOL_VERSION 7→8 + crate 1.0.0 (ht-yha.49) (2026-10-14)
+- approvals · ht-yha.41/.42 test rewrites · human · lgtm (2026-10-14)
+- approvals · merge into main · human · hand off to the main tab when done (2026-10-14)
 - root-design · human · D1-D11 and sections A-E approved via seePN0MKW (mwRZ1YxXs, myas79LQ8, mXmhe1P2d, mpqluOeQD)
