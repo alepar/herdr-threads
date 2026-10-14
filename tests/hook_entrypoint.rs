@@ -2437,7 +2437,7 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     );
     assert!(context.contains(INBOX_HEADER), "{context}");
     assert!(context.contains("lazy hello from the peer"), "{context}");
-    assert!(context.contains("[lazy]"), "{context}");
+    assert!(!context.contains("[lazy]"), "{context}");
     assert_eq!(displayed(), 1);
     quiet("after lazy completion");
 

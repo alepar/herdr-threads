@@ -7,8 +7,8 @@
 use super::dispatch::{DomainService, error};
 use crate::{
     delivery::{
-        self, Assembler, DeliveryItem, DeliveryKind, DrainEvent, FrameItem, MAX_DRAIN_PAGES,
-        PAGE_MAX_BYTES, PAGE_MAX_ITEMS, PageError, PageSource, Stop, drain_pages, frame,
+        self, Assembler, DeliveryItem, DrainEvent, FrameItem, MAX_DRAIN_PAGES, PAGE_MAX_BYTES,
+        PAGE_MAX_ITEMS, PageError, PageSource, Stop, drain_pages, frame,
         ledger::{
             MAX_INVITATION_DISPLAYS_PER_BINDING, MAX_OFFERS_PER_BINDING, Offer, OfferedLedger,
         },
@@ -183,11 +183,8 @@ impl PageSource for StorePageSource<'_> {
 fn frame_item(item: &DeliveryItem) -> FrameItem {
     let message = &item.message;
     FrameItem {
-        kind: match item.kind {
-            DeliveryKind::Message => "message",
-            DeliveryKind::Lazy => "lazy",
-        }
-        .to_owned(),
+        kind: "message".to_owned(),
+        priority: message.priority.map(|p| p.get()),
         id: item.id.as_str().to_owned(),
         thread: Some(message.thread.as_str().to_owned()),
         thread_name: message.thread_name.clone(),

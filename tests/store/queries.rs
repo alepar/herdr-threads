@@ -6652,14 +6652,14 @@ fn presentation_q3_publication_recipient_keys_have_constant_sqlite_work() {
         // point-query workload below is measured, not this fixture's setup.
         db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('other','i','resolved','native',1,0)", []).unwrap();
         db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) SELECT 'prep-'||n,'i','actor','probe-'||n,zeroblob(32),'t',0,0,0,0,0,0,0,'building',CASE WHEN n%2=0 THEN 'lazy' ELSE 'ordinary' END FROM n", [retained]).unwrap();
-        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at,delivery_mode) SELECT 'msg-'||n,'i','t',n,'ordinary','body',n,0,CASE WHEN n%2=0 THEN 'lazy' ELSE 'ordinary' END FROM n", [retained]).unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at,delivery_mode) SELECT 'msg-'||n,'i','t',n,'ordinary','body',n,0,CASE WHEN n%2=0 AND n<>2 THEN 'lazy' ELSE 'ordinary' END FROM n", [retained]).unwrap();
         db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) SELECT 'prep-'||n,'t','other',1,100,1 FROM n WHERE n%2=1", [retained]).unwrap();
         db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) SELECT 'prep-'||n,'msg-'||n,'t','other' FROM n WHERE n%2=0", [retained]).unwrap();
         db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('prep-1','t','s',2,100,1)", []).unwrap();
         db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES ('prep-2','msg-2','t','s')", []).unwrap();
         let mut quantum = Vec::new();
         // A fixed slice of100 candidate identities mixes both modes; only 1
-        // and 2 address s. Misses still execute the selected recipient point SQL.
+        // and 2 address s. msg-2 is a mixed-ACK shape: recorded 'ordinary' with a delivery row. Misses still execute the selected recipient point SQL.
         // No manifest traversal, output or private signal allocation runs here.
         for n in 1..=100 {
             let message = q3_indexed_sql_work(
@@ -6670,15 +6670,13 @@ fn presentation_q3_publication_recipient_keys_have_constant_sqlite_work() {
                     Value::Text("i".into()),
                     Value::Text("t".into()),
                     Value::Integer(n),
+                    Value::Text("s".into()),
                 ],
-                1,
+                2,
             );
-            let (sql, expected) = if n % 2 == 0 {
-                (LAZY, "lazy")
-            } else {
-                (ORDINARY, "ordinary")
-            };
-            assert_eq!(message.0, [vec![Value::Text(expected.into())]]);
+            // The probe follows the table holding s's row: only msg-2 has a delivery row for s.
+            let (sql, has_row) = if n == 2 { (LAZY, 1) } else { (ORDINARY, 0) };
+            assert_eq!(message.0, [vec![Value::Integer(has_row)]]);
             let recipient = q3_indexed_sql_work(
                 &db,
                 sql,

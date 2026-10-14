@@ -1817,15 +1817,19 @@ fn ordinary_message(f: &Fixture, id: &str, body: &str) {
 }
 /// A published lazy message addressed to `s` (state `pending`).
 fn lazy_message(f: &Fixture, id: &str, body: &str) {
+    lazy_message_at(f, id, body, 1);
+}
+
+fn lazy_message_at(f: &Fixture, id: &str, body: &str, priority: u8) {
     let sequence = next_sequence(&f.db);
     let prep = format!("prep-{}", id.trim_start_matches("msg-"));
     f.db.execute(
-        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES (?1,'i','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'building','lazy',1)",
-        [&prep],
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES (?1,'i','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'building','lazy',?2)",
+        params![prep, priority],
     )
     .unwrap();
     f.db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,'t','s')", params![prep, id]).unwrap();
-    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,delivery_mode,priority) VALUES (?1,'i','t',?2,'ordinary',?3,0,?4,'lazy',1)", params![id, sequence, body, sequence + 2]).unwrap();
+    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,delivery_mode,priority) VALUES (?1,'i','t',?2,'ordinary',?3,0,?4,'lazy',?5)", params![id, sequence, body, sequence + 2, priority]).unwrap();
     f.db.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,'t',?3,0,?4,0,1,0)", params![prep, id, sequence + 2, sequence]).unwrap();
     f.db.execute(
         "UPDATE lazy_recipients SET decision_seq=?2 WHERE preparation_id=?1",
@@ -2032,6 +2036,37 @@ fn pull_returns_a_framed_page_whose_ordinary_ids_settle_on_confirm() {
     assert_eq!(observation["provenance"], "cooperative_top_level");
 }
 
+// Kills: a frame that names the row's kind from the variant (`lazy`), a missing `[pN]`, and a
+// marker on the silent default priority.
+#[test]
+fn delivery_rows_frame_as_message_with_the_priority_marker() {
+    let f = fixture(0);
+    let context = pull_seat(&f);
+    lazy_message_at(&f, "msg-p0", "urgent text", 0);
+    lazy_message_at(&f, "msg-p1", "plain text", 1);
+    lazy_message_at(&f, "msg-p5", "later text", 5);
+    let page = page(pull(&f, &context, None));
+    for (id, marker) in [("msg-p0", " [p0]:"), ("msg-p1", ":"), ("msg-p5", " [p5]:")] {
+        let header = page
+            .text
+            .lines()
+            .find(|line| line.starts_with(&format!("[herdr-threads] message {id} in ")))
+            .unwrap_or_else(|| panic!("no message header for {id}: {}", page.text));
+        assert!(
+            header.ends_with(&format!("from s{marker}")) || header.ends_with(marker),
+            "{header}"
+        );
+        if id == "msg-p1" {
+            assert!(!header.contains("[p"), "{header}");
+        }
+    }
+    assert!(
+        !page.text.contains("[herdr-threads] lazy "),
+        "{}",
+        page.text
+    );
+}
+
 #[test]
 fn a_lazy_row_is_offered_framed_and_completes_on_confirm() {
     let f = fixture(0);
@@ -2041,7 +2076,7 @@ fn a_lazy_row_is_offered_framed_and_completes_on_confirm() {
     lazy_message(&f, "msg-lz1", "passive text");
     let page = page(pull(&f, &context, None));
     assert!(
-        page.text.contains("[herdr-threads] lazy msg-lz1 in "),
+        page.text.contains("[herdr-threads] message msg-lz1 in ") && !page.text.contains(" lazy "),
         "{}",
         page.text
     );

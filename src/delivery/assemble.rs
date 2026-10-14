@@ -231,8 +231,10 @@ impl Assembler {
                 body_end,
                 body_len,
                 ack_candidate,
+                priority,
                 ..
             } => self.emit_chunk(Chunk {
+                priority,
                 lazy: false,
                 promoted: false,
                 ack_required: ack_candidate.is_some(),
@@ -261,8 +263,10 @@ impl Assembler {
                 body_end,
                 body_len,
                 wakes,
+                priority,
                 ..
             } => self.emit_chunk(Chunk {
+                priority,
                 lazy: true,
                 promoted: wakes,
                 ack_required: false,
@@ -325,7 +329,7 @@ impl Assembler {
         );
         let message = WatchMessage {
             deadline_at: None,
-            priority: None,
+            priority: chunk.priority,
             thread: chunk.thread,
             thread_name: label(&chunk.topic),
             sender: chunk.sender,
@@ -353,6 +357,7 @@ impl Assembler {
 }
 
 struct Chunk {
+    priority: Option<crate::protocol::priority::DeliveryPriority>,
     lazy: bool,
     /// A lazy row of a `wake_on: all` seat, delivered as a `message` line with
     /// no ACK to run (delivery-policy DP8); the daemon still completes it lazily.

@@ -4,11 +4,12 @@ use herdr_threads::{
     harness::context::{ContextJournal, Role},
     ports::LocalClient,
     protocol::{
-        capabilities::MESSAGE_DELIVERY_MODES,
+        capabilities::{MESSAGE_DELIVERY_MODES, SEND_PRIORITY_V1},
         commands::{Command, DeliveryMode},
         ids::{MessageId, ThreadId},
         output::{OutputSpec, encode_selected},
         pagination::{Consistency, Page, StopReason},
+        priority::DeliveryPriority,
         results::{
             ApiError, CommandResult, MessageContent, MessageDeliveryMode, MessageDetails,
             MessageKind, MessageSummary, SearchHit, SearchPage,
@@ -55,6 +56,8 @@ fn page<T>(items: Vec<T>) -> Page<T> {
     }
 }
 struct Client {
+    /// The daemon advertises `send.priority_v1`.
+    priority_v1: bool,
     advertised: bool,
     count: u64,
     calls: Mutex<Vec<Command>>,
@@ -62,6 +65,7 @@ struct Client {
 impl Client {
     fn new(advertised: bool, count: u64) -> Self {
         Self {
+            priority_v1: false,
             advertised,
             count,
             calls: Mutex::new(vec![]),
@@ -109,19 +113,33 @@ impl Client {
 impl LocalClient for Client {
     fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
         self.advertised && name == MESSAGE_DELIVERY_MODES
+            || self.priority_v1 && name == SEND_PRIORITY_V1
     }
     fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
         self.calls.lock().unwrap().push(command.clone());
         if let Command::MessageDeliveryModes(q) = command {
             assert!(self.advertised, "old daemon received new command");
+            if q.with_priority {
+                assert!(self.priority_v1, "pre-priority daemon asked for priority");
+            }
             assert!(!q.messages.is_empty() && q.messages.len() <= 100);
             return Ok(CommandResult::MessageDeliveryModes(
                 q.messages
                     .into_iter()
                     .map(|message| {
                         let lazy = message.as_str() != "msg-1";
+                        // Priority daemon: msg-1 is p1 (silent), msg-2 p0, msg-3 p5, others p1.
+                        // `delivery_mode` stays the legacy column (msg-2 is recorded lazy).
+                        let priority = q.with_priority.then(|| {
+                            let n = match message.as_str() {
+                                "msg-2" => 0,
+                                "msg-3" => 5,
+                                _ => 1,
+                            };
+                            DeliveryPriority::new(n).unwrap()
+                        });
                         MessageDeliveryMode {
-                            priority: None,
+                            priority,
                             message,
                             delivery_mode: if lazy {
                                 DeliveryMode::Lazy
@@ -200,6 +218,53 @@ fn lazy_markers_history_body_search_use_canonical_metadata() {
         );
         assert!(text.contains("canonical passive body"));
     }
+}
+// Kills: `[lazy]` surviving on a priority daemon, a marker for p1, a legacy query that asks for
+// priority, and a priority query sent to a daemon without `send.priority_v1`.
+#[test]
+fn priority_markers_replace_lazy_when_the_daemon_has_priority_v1() {
+    for argv in [
+        vec!["read", "t"],
+        vec!["body", "msg-2"],
+        vec!["search", "body"],
+    ] {
+        let mut client = Client::new(true, 3);
+        client.priority_v1 = true;
+        let (text, _) = run(&argv, &client);
+        assert!(text.contains("[p0] msg-2\n"), "{text}");
+        assert!(
+            !text.contains("[lazy]") || text.contains("[lazy] misleading"),
+            "{text}"
+        );
+        assert!(!text.contains("[p1]"), "{text}");
+        assert!(!text.contains("] msg-1\n"), "{text}");
+        let queries: Vec<bool> = client
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|c| match c {
+                Command::MessageDeliveryModes(q) => Some(q.with_priority),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !queries.is_empty() && queries.iter().all(|asked| *asked),
+            "{queries:?}"
+        );
+    }
+    let mut client = Client::new(true, 3);
+    client.priority_v1 = true;
+    let (text, _) = run(&["read", "t"], &client);
+    assert!(text.starts_with("[p0] msg-2\n[p5] msg-3\n"), "{text}");
+    // A daemon without the capability keeps the legacy query and `[lazy]`.
+    let client = Client::new(true, 3);
+    let (text, _) = run(&["read", "t"], &client);
+    assert!(text.starts_with("[lazy] msg-2\n[lazy] msg-3\n"), "{text}");
+    assert!(client.calls.lock().unwrap().iter().all(|c| match c {
+        Command::MessageDeliveryModes(q) => !q.with_priority,
+        _ => true,
+    }));
 }
 #[test]
 fn lazy_markers_lookup_only_selected_ids_at_most100() {

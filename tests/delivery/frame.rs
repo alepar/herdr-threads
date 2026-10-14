@@ -20,13 +20,17 @@ const GOLDENS: [(&str, &str, &str); 6] = [
     golden!("attention"),
 ];
 
+// Hand-written in the generator format; the mod's copy (`frame-goldens.ts`) gains this case when
+// the JS `frame()` learns the `[pN]` marker (the mod-side task), which then moves it into GOLDENS.
+const PRIORITY_GOLDEN: (&str, &str, &str) = golden!("priority");
+
 fn items(json: &str) -> Vec<FrameItem> {
     serde_json::from_str(json).unwrap()
 }
 
 #[test]
 fn frame_matches_the_js_golden_byte_for_byte() {
-    for (name, json, txt) in GOLDENS {
+    for (name, json, txt) in GOLDENS.into_iter().chain([PRIORITY_GOLDEN]) {
         let got = frame(&items(json));
         assert_eq!(got, txt, "case {name}");
         assert!(!got.starts_with('/'), "case {name}");
@@ -65,6 +69,21 @@ fn goldens_exercise_the_cases_they_name() {
     assert!(
         by_name("attention").contains("\n\n[herdr-threads] attention attention:4:\n  You have")
     );
+}
+
+#[test]
+fn priority_marker_leads_the_markers_and_p1_or_absent_is_silent() {
+    let text = PRIORITY_GOLDEN.2;
+    assert!(text.contains("from S1 \"alice\" [p0]:\n  body of m1"));
+    assert!(text.contains("from S1 \"alice\":\n  body of m2"));
+    assert!(text.contains("from S1 \"alice\" [p5]:\n  body of m3"));
+    assert!(text.contains("[p0] [human] [relays user] [rule]:\n  body of m4"));
+    assert!(text.contains("from S1 \"alice\":\n  body of m5"));
+    assert!(!text.contains("lazy"));
+    // An out-of-range priority from a future daemon adds nothing.
+    let mut item = items(include_str!("../fixtures/delivery/frame-priority.json")).remove(0);
+    item.priority = Some(10);
+    assert!(!frame(&[item]).contains("[p"));
 }
 
 #[test]

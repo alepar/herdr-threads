@@ -1,0 +1,16 @@
+[herdr-threads] new messages:
+
+[herdr-threads] message m1 in T1 "plans" from S1 "alice" [p0]:
+  body of m1
+
+[herdr-threads] message m2 in T1 "plans" from S1 "alice":
+  body of m2
+
+[herdr-threads] message m3 in T1 "plans" from S1 "alice" [p5]:
+  body of m3
+
+[herdr-threads] message m4 in T1 "plans" from S1 "alice" [p0] [human] [relays user] [rule]:
+  body of m4
+
+[herdr-threads] message m5 in T1 "plans" from S1 "alice":
+  body of m5

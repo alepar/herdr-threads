@@ -1808,3 +1808,131 @@ fn human_guidance_machine_and_foreign_seat_selectors_survive_text_budget_boundar
     );
     assert_eq!(serde_json::to_vec(&result).unwrap(), frozen);
 }
+
+fn v2_message(
+    id: &str,
+    priority: Option<u8>,
+    lazy: bool,
+    author_role: Option<crate::protocol::summary::AuthorRole>,
+) -> crate::protocol::results::InboxBatchV2Item {
+    use crate::protocol::{priority::DeliveryPriority, results::InboxBatchV2Item};
+    let priority = priority.map(|n| DeliveryPriority::new(n).unwrap());
+    let (thread, topic_data, message) =
+        (ThreadId::new("t1"), "plans".to_owned(), MessageId::new(id));
+    let sender = Some(SeatId::new("s1"));
+    let body = format!("body of {id}");
+    let len = body.len() as u64;
+    if lazy {
+        InboxBatchV2Item::LazyMessage {
+            priority,
+            thread,
+            topic_data,
+            message,
+            sequence: 1,
+            sender,
+            author_role,
+            relays_user: false,
+            user_intent: None,
+            author_role_backfilled: false,
+            body,
+            body_start: 0,
+            body_end: len,
+            body_len: len,
+            wakes: false,
+        }
+    } else {
+        InboxBatchV2Item::Message {
+            priority,
+            thread,
+            topic_data,
+            message,
+            sequence: 1,
+            sender,
+            author_role,
+            relays_user: false,
+            user_intent: None,
+            author_role_backfilled: false,
+            body,
+            body_start: 0,
+            body_end: len,
+            body_len: len,
+            ack_candidate: None,
+        }
+    }
+}
+
+// Kills: the old `[lazy]` insertion, a marker for p1 or an absent priority, a marker placed
+// after the author markers, and a JSON item that drops `priority`.
+#[test]
+fn inbox_v2_rows_carry_the_priority_marker_after_the_sender() {
+    let page = Page {
+        items: vec![
+            v2_message("m0", Some(0), false, None),
+            v2_message("m1", Some(1), true, None),
+            v2_message("m5", Some(5), true, None),
+            v2_message("m9", None, true, None),
+            v2_message(
+                "mh",
+                Some(0),
+                false,
+                Some(crate::protocol::summary::AuthorRole::Human),
+            ),
+        ],
+        next_cursor: None,
+        next_argv: None,
+        high_water_ordinal: 5,
+        scope_revision: None,
+        has_more: false,
+        stop_reason: StopReason::Complete,
+        consistency: Consistency::BoundedLive,
+    };
+    let result = CommandResult::InboxBatchV2(page);
+    let text = String::from_utf8(
+        encode_selected(
+            &result,
+            &OutputSpec {
+                format: OutputFormat::Text,
+                context: ContinuationContext::default(),
+            },
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let rows: Vec<&str> = text.lines().filter(|l| l.starts_with("message ")).collect();
+    assert_eq!(rows.len(), 5, "{text}");
+    assert!(
+        rows[0].starts_with("message m0 t1#1 from s1 [p0] bytes 0..10/10: "),
+        "{}",
+        rows[0]
+    );
+    assert!(
+        rows[1].starts_with("message m1 t1#1 from s1 bytes "),
+        "{}",
+        rows[1]
+    );
+    assert!(
+        rows[2].starts_with("message m5 t1#1 from s1 [p5] bytes "),
+        "{}",
+        rows[2]
+    );
+    assert!(
+        rows[3].starts_with("message m9 t1#1 from s1 bytes "),
+        "{}",
+        rows[3]
+    );
+    assert!(
+        rows[4].contains("from s1 [p0] [human] bytes "),
+        "{}",
+        rows[4]
+    );
+    assert!(!text.contains("[lazy]"), "{text}");
+
+    let json =
+        String::from_utf8(encode_selected(&result, &OutputSpec::default()).unwrap()).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let items = value["result"]["data"]["items"].as_array().unwrap();
+    assert_eq!(items[0]["priority"], 0);
+    assert_eq!(items[1]["priority"], 1);
+    assert_eq!(items[2]["priority"], 5);
+    assert!(items[3].get("priority").is_none());
+}

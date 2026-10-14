@@ -400,12 +400,12 @@ fn q4_episode_private_and_reconciliation_points_have_constant_sqlite_work() {
             let canonical = indexed(
                 &tx,
                 invitation_content::OFFER_RECONCILIATION_MESSAGE_SQL,
-                vec![text(&id), text("i")],
-                &["messages"],
+                vec![text(&id), text("i"), text("s")],
+                &["m", "r"],
             );
             assert_eq!(canonical.0.len(), 1);
             let row = &canonical.0[0];
-            assert_eq!(row[0], text("lazy"));
+            assert_eq!(row[0], Value::Integer(1));
             let recon = indexed(
                 &tx,
                 invitation_content::OFFER_RECONCILIATION_LAZY_SQL,
@@ -455,14 +455,14 @@ fn q4_episode_private_and_reconciliation_points_have_constant_sqlite_work() {
 fn q4_scalar_agreement_and_strict_retirement_use_exact_scope() {
     let (_store, mut db, binding) = seeded(128);
     let tx = db.transaction().unwrap();
-    let canonical: (String, String, i64, i64) = tx
+    let canonical: (bool, String, i64, i64) = tx
         .query_row(
             invitation_content::OFFER_RECONCILIATION_MESSAGE_SQL,
-            params!["msg-q4-0", "i"],
+            params!["msg-q4-0", "i", "s"],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .unwrap();
-    assert_eq!(canonical, ("lazy".into(), "q4-t0".into(), 100000, 2000000));
+    assert_eq!(canonical, (true, "q4-t0".into(), 100000, 2000000));
     let values = vec![
         text("s"),
         text("msg-q4-0"),

@@ -2077,7 +2077,7 @@ mod activation {
         assert_eq!(content.body_len, body.len() as u64);
         assert!(!content.truncated && !content.ack_required);
         assert!(page.text.contains(&format!(
-            "[herdr-threads] lazy {} in {}",
+            "[herdr-threads] message {} in {}",
             message.as_str(),
             actual.thread.as_str()
         )));
