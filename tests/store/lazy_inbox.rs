@@ -1701,6 +1701,13 @@ fn work_limited_pages_resume_without_skips() {
         [],
     )
     .unwrap();
+    // The cursor advance clears the binding's pending view of the passed rows; restore them as stale
+    // view entries so the post-seek filter still examines and rejects each (the work bound's input).
+    conn.execute(
+        "INSERT OR IGNORE INTO binding_pending(binding_id,ordinal,thread_id,priority,decision_seq) SELECT ob.binding_id,r.ordinal,r.thread_id,r.priority,r.decision_seq FROM lazy_recipients r JOIN messages m ON m.id=r.message_id JOIN occupant_bindings ob ON ob.seat_id=r.seat_id WHERE m.sequence<=150",
+        [],
+    )
+    .unwrap();
     let bound = |cursor: Option<String>| {
         let result = herdr_threads::store::queries::query_with_output(
             &context,
