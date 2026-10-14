@@ -861,3 +861,77 @@ fn installer_never_writes_the_pane_environment_and_only_advises() {
         "alias ll='ls -l'\n"
     );
 }
+
+// Kills a CLI that drops --config-root, writes through an aisw-style symlinked profile, or
+// prints an unlabelled verdict for a second root of a harness.
+#[test]
+fn installer_extra_config_roots_label_verdicts_and_report_shared_files() {
+    let f = Fixture::new();
+    success(&f.install());
+    let profile = f.0.join("profiles/codex/p1");
+    fs::create_dir_all(&profile).unwrap();
+    std::os::unix::fs::symlink(f.0.join("codex/skills"), profile.join("skills")).unwrap();
+    std::os::unix::fs::symlink(f.0.join("codex/rules"), profile.join("rules")).unwrap();
+    let root_arg = format!("codex={}", profile.display());
+    let out = f.run(&[
+        "internal",
+        "installer-integrations",
+        "--confirm-missing",
+        "--config-root",
+        &root_arg,
+    ]);
+    success(&out);
+    let text = String::from_utf8_lossy(&out.stdout);
+    let label = format!("CODEX_HOME={}", profile.display());
+    assert!(
+        text.contains(&format!("codex hooks ({label}): installed")),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "codex skill ({label}): shared (shared via symlink; managed at "
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("codex permissions ({label}): shared")),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "codex skill (CODEX_HOME={}): updated",
+            f.0.join("codex").display()
+        )),
+        "{text}"
+    );
+    assert!(text.contains("claude skill: updated"), "{text}");
+    assert!(
+        fs::symlink_metadata(profile.join("skills"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    // An invalid root fails only its own entry: every other root is still reconciled.
+    for bad in ["codex=relative", "nope=/x", "codex", "codex=/a\nb"] {
+        let out = f.run(&[
+            "internal",
+            "installer-integrations",
+            "--config-root",
+            bad,
+            "--config-root",
+            &root_arg,
+        ]);
+        assert!(!out.status.success(), "{bad}");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            text.contains(" config-root: failed (--config-root"),
+            "{bad}: {text}"
+        );
+        assert!(text.contains("claude skill: updated"), "{bad}: {text}");
+        assert!(
+            text.contains(&format!("codex hooks ({label}): updated")),
+            "{bad}: {text}"
+        );
+        assert!(!text.contains("a\nb"), "{bad}: {text}");
+    }
+}

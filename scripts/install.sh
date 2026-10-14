@@ -25,6 +25,8 @@
 #      harness: missing components need confirmation; owned integrations update
 #      silently; --setup confirms missing integrations, --no-setup skips all,
 #      --without-permissions skips the permissions (agents keep prompting);
+#      aisw profiles (${AISW_HOME:-~/.aisw}/profiles/claude|codex/NAME) are
+#      reconciled too, after the default roots (--no-aisw-profiles skips them);
 #   6. prints the next steps and ONE final status line.
 #
 # The final status line and the exit status (docs/install.md has the table):
@@ -43,7 +45,8 @@
 # Environment overrides (flags win): HERDR_THREADS_VERSION,
 # HERDR_THREADS_RELEASE_URL (a mirror or file:// tree laid out like GitHub
 # releases: latest/download/ASSET and download/TAG/ASSET),
-# HERDR_THREADS_HOME (install dir), HERDR_THREADS_BIN_DIR, HERDR_BIN (herdr).
+# HERDR_THREADS_HOME (install dir), HERDR_THREADS_BIN_DIR, HERDR_BIN (herdr),
+# AISW_HOME (the aisw directory whose profiles are reconciled; default ~/.aisw).
 # The whole script is one brace group: bash parses all of it before running
 # anything, so under `curl | bash` no command can read the rest of the script
 # from stdin, and a truncated download runs nothing.
@@ -65,6 +68,7 @@ register=1
 force=0
 yes=0
 without_permissions=0
+aisw_profiles=1
 
 say() { printf '%s\n' "herdr-threads: $*"; }
 warn() { printf '%s\n' "herdr-threads: warning: $*" >&2; }
@@ -95,6 +99,8 @@ usage: install.sh [options]
   --no-setup         skip all harness integration checks and updates
   --without-permissions
                      never grant permissions: agents keep prompting
+  --no-aisw-profiles do not reconcile the Claude and Codex profiles of aisw
+                     ($AISW_HOME, default ~/.aisw) besides the default roots
   --no-herdr         do not register the plugin with Herdr
   --prefix DIR       install directory (default ~/.local/share/herdr-threads)
   --bin-dir DIR      herdr-threads and ht symlink directory (default ~/.local/bin)
@@ -115,6 +121,7 @@ while [ $# -gt 0 ]; do
         --setup) setup=yes; shift ;;
         --no-setup) setup=no; shift ;;
         --without-permissions) without_permissions=1; shift ;;
+        --no-aisw-profiles) aisw_profiles=0; shift ;;
         --no-herdr) register=0; shift ;;
         --prefix) [ $# -ge 2 ] || die "--prefix needs a value"; install_dir=$2; shift 2 ;;
         --bin-dir) [ $# -ge 2 ] || die "--bin-dir needs a value"; bin_dir=$2; shift 2 ;;
@@ -227,6 +234,83 @@ installer_integrations() {
     # A help query has no configuration effects. A supported command failing
     # during reconciliation must never fall through to legacy setup.
     "$installed_binary" internal installer-integrations --help >/dev/null 2>&1
+}
+
+# aisw (the multi-account switcher) keeps one config root per account under
+# ${AISW_HOME:-$HOME/.aisw}/profiles/<tool>/<name>/, used as CLAUDE_CONFIG_DIR or
+# CODEX_HOME. Prints one "<tool>=<dir>" line per profile of a tool whose
+# harness is on PATH, the default root ($HOME/.<tool>) first when it is a
+# directory, since profiles share its skills (and Codex rules) through
+# symlinks. A profile is a plain directory (never a symlink) directly under
+# profiles/<tool>; when config.json lists the tool's profiles (its object keys,
+# read exactly by the installed executable, no jq), only the listed ones,
+# compared as literal names. Prints nothing without aisw, with
+# --no-aisw-profiles, or for a build without --config-root.
+# Whether NAME is one of the lines of KEYS, compared as literal strings.
+aisw_listed() {
+    local key
+    while IFS= read -r key; do
+        [ "$key" = "$1" ] && return 0
+    done <<EOF_KEYS
+$2
+EOF_KEYS
+    return 1
+}
+
+aisw_profile_roots() {
+    local home=${AISW_HOME:-$HOME/.aisw} tool dir name listed found keys rc
+    [ "${aisw_profiles:-1}" = 1 ] || return 0
+    # --config-root takes absolute directories: a relative AISW_HOME is resolved, or skipped.
+    home=$(CDPATH= cd -- "$home" 2>/dev/null && pwd) || return 0
+    case $home in /*) ;; *) return 0 ;; esac
+    [ -d "$home/profiles" ] || return 0
+    case $("$installed_binary" internal installer-integrations --help 2>/dev/null || true) in
+        *--config-root*) ;;
+        *) return 0 ;;
+    esac
+    for tool in claude codex; do
+        command -v "$tool" >/dev/null 2>&1 || continue
+        [ -d "$home/profiles/$tool" ] && [ ! -L "$home/profiles/$tool" ] || continue
+        listed=0
+        keys=''
+        # No config.json, or one that parses without listing this tool: every plain
+        # directory. One that exists but cannot be used (unreadable, invalid JSON, the
+        # tool's entry not an object): no profiles of this tool, and a warning.
+        if [ -e "$home/config.json" ] || [ -L "$home/config.json" ]; then
+            rc=0
+            if [ -f "$home/config.json" ] && [ -r "$home/config.json" ]; then
+                keys=$("$installed_binary" internal json-field --keys "profiles.$tool" \
+                    < "$home/config.json" 2>/dev/null) || rc=$?
+            else
+                rc=2
+            fi
+            case $rc in
+                0) listed=1 ;;
+                1) ;;   # json-field: the path is absent from a valid document
+                *)
+                    warn "aisw: cannot use $home/config.json (unreadable, invalid, or profiles.$tool is not an object); no $tool profiles included"
+                    if case $HOME in /*) true ;; *) false ;; esac && [ -d "$HOME/.$tool" ]; then
+                        printf '%s\n' "$tool=$HOME/.$tool"
+                    fi
+                    continue ;;
+            esac
+        fi
+        found=0
+        for dir in "$home/profiles/$tool"/*; do
+            [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+            name=${dir##*/}
+            case $name in *[[:cntrl:]]*) continue ;; esac   # newline or control character
+            if [ "$listed" = 1 ] && ! aisw_listed "$name" "$keys"; then
+                continue
+            fi
+            if [ "$found" = 0 ] && case $HOME in /*) true ;; *) false ;; esac &&
+                [ -d "$HOME/.$tool" ]; then
+                printf '%s\n' "$tool=$HOME/.$tool"
+            fi
+            found=1
+            printf '%s\n' "$tool=$dir"
+        done
+    done
 }
 
 bare_setup() {
@@ -705,8 +789,26 @@ elif installer_integrations; then
             *--without-permissions*) permission_arg=--without-permissions ;;
         esac
     fi
-    if "$installed_binary" internal installer-integrations ${integration_arg:+"$integration_arg"} \
-        ${permission_arg:+"$permission_arg"}; then
+    root_args=()
+    aisw_names=''
+    while IFS= read -r root; do
+        [ -n "$root" ] || continue
+        root_args+=(--config-root "$root")
+        case $root in
+            claude="$HOME/.claude"|codex="$HOME/.codex") ;;
+            *) aisw_names="$aisw_names ${root%%=*}/${root##*/}" ;;
+        esac
+    done <<EOF_ROOTS
+$(aisw_profile_roots)
+EOF_ROOTS
+    if [ -n "$aisw_names" ]; then
+        say "including aisw profiles:$aisw_names"
+    fi
+    # A user-level step: run from a neutral directory, so the directory the installer happens
+    # to run from (for example $HOME, whose .codex Codex would read as a project layer) is not
+    # mistaken for a project.
+    if (CDPATH= cd -- / && "$installed_binary" internal installer-integrations ${integration_arg:+"$integration_arg"} \
+        ${permission_arg:+"$permission_arg"} ${root_args[@]+"${root_args[@]}"}); then
         OUT_SETUP=complete
     else
         OUT_SETUP=failed

@@ -391,6 +391,77 @@ fn conflicting_native_registration(
 pub(crate) fn fingerprint(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
+
+/// `path` with every symbolic link resolved: the deepest existing ancestor is canonicalized and
+/// the rest of the path joined to it. Read-only.
+pub(crate) fn canonical_path(path: &Path) -> std::io::Result<std::path::PathBuf> {
+    let mut existing = path;
+    let mut rest = Vec::new();
+    loop {
+        match fs::canonicalize(existing) {
+            Ok(mut canonical) => {
+                canonical.extend(rest.iter().rev());
+                return Ok(canonical);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let (Some(up), Some(name)) = (existing.parent(), existing.file_name()) else {
+                    return Err(error);
+                };
+                rest.push(name);
+                existing = up;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// The canonical location of `file` when it lies outside its config root once symbolic links
+/// are resolved: a directory below `root` is a link to elsewhere, so the file is shared with
+/// whatever root holds the real one. `None` when the resolved parent is still under the resolved
+/// root (no link, or only `root` itself is a link, as with a dotfile manager). Read-only.
+pub(crate) fn shared_through_symlink(
+    root: &Path,
+    file: &Path,
+) -> std::io::Result<Option<std::path::PathBuf>> {
+    let (Some(parent), Some(name)) = (file.parent(), file.file_name()) else {
+        return Ok(None);
+    };
+    let linked = parent
+        .ancestors()
+        .take_while(|dir| dir.starts_with(root))
+        .any(|dir| fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()));
+    if !linked {
+        return Ok(None);
+    }
+    let canonical_parent = canonical_path(parent)?;
+    if canonical_parent.starts_with(canonical_path(root)?) {
+        return Ok(None);
+    }
+    Ok(Some(canonical_parent.join(name)))
+}
+
+/// The ownership manifests of `kind` in the state directory's `setup/` (at most 512 of that
+/// kind), for finding which recorded path owns a shared file. Read-only.
+pub(crate) fn manifests_of_kind(state_dir: &Path, kind: &str) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = fs::read_dir(state_dir.join("setup")) else {
+        return Vec::new();
+    };
+    let prefix = format!("{kind}-");
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry.file_name().to_str().is_some_and(|name| {
+                name.strip_prefix(&prefix)
+                    .and_then(|rest| rest.strip_suffix(".json"))
+                    .is_some_and(|digest| {
+                        digest.len() == 32 && digest.bytes().all(|b| b.is_ascii_hexdigit())
+                    })
+            })
+        })
+        .map(|entry| entry.path())
+        .take(512)
+        .collect()
+}
 fn permission_fingerprint(rule: &str) -> String {
     fingerprint(&serde_json::to_vec(&json!({ "allow": rule })).unwrap_or_default())
 }

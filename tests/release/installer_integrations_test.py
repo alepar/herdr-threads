@@ -24,9 +24,11 @@ class InstallerDispatch(unittest.TestCase):
     def run_actual_lane(self, mode='ask', modern=True, fail=False, registered=1,
                         harnesses=(), user_level=True, bare=True, terminal=False,
                         consent=False, final_status=False, without_permissions=False,
-                        help_text=''):
+                        help_text='', aisw=(), aisw_opt_out=False):
         with tempfile.TemporaryDirectory(prefix='ht-installer-actual-shell-') as folder:
             root = pathlib.Path(folder)
+            for profile in aisw:
+                (root / 'home/.aisw/profiles' / profile).mkdir(parents=True)
             path = root / 'bin'
             path.mkdir()
             (path / 'tr').symlink_to(TR)
@@ -88,7 +90,8 @@ new_version=fixture
                        INTEGRATION_STATUS='1' if fail else '0', USER_LEVEL=str(int(user_level)),
                        BARE_SETUP=str(int(bare)), TERMINAL=str(int(terminal)),
                        CONSENT=str(int(consent)), HELP_TEXT=help_text,
-                       without_permissions=str(int(without_permissions)))
+                       without_permissions=str(int(without_permissions)),
+                       aisw_profiles='0' if aisw_opt_out else '1')
             out = subprocess.run([BASH, '-c', script], env=env, cwd=root,
                                  capture_output=True, text=True, timeout=5)
             self.assertEqual(out.returncode, 3 if final_status and fail else 0, out.stderr)
@@ -107,6 +110,23 @@ new_version=fixture
                                         help_text='--without-permissions')
         self.assertEqual(calls[-1],
                          'internal installer-integrations --confirm-missing --without-permissions')
+
+    # Kills dropping aisw profiles, passing them to a build without --config-root, including a
+    # tool whose harness is absent, or ignoring --no-aisw-profiles.
+    def test_aisw_profiles_reach_only_a_build_that_knows_config_root(self):
+        profiles = ('codex/x1', 'claude/c1')
+        output, calls = self.run_actual_lane(harnesses=('codex',), aisw=profiles,
+                                             help_text='--config-root <HARNESS=DIR>')
+        self.assertIn('including aisw profiles: codex/x1', output)
+        self.assertNotIn('claude/c1', output)
+        self.assertTrue(calls[-1].startswith('internal installer-integrations --config-root codex='),
+                        calls)
+        self.assertTrue(calls[-1].endswith('/home/.aisw/profiles/codex/x1'), calls)
+        for kwargs in [dict(help_text=''), dict(help_text='--config-root', aisw_opt_out=True)]:
+            with self.subTest(**kwargs):
+                output, calls = self.run_actual_lane(harnesses=('codex',), aisw=profiles, **kwargs)
+                self.assertNotIn('aisw profiles', output)
+                self.assertEqual(calls[-1], 'internal installer-integrations')
 
     # Kills the legacy membership gate suppressing a registry-only modern installer.
     def test_modern_registry_route_without_legacy_path(self):

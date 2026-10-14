@@ -50,3 +50,66 @@ fn is_hidden_from_help() {
     assert!(!help.contains("internal"), "{help}");
     assert!(!help.contains("json-field"), "{help}");
 }
+
+fn keys(input: &str, path: &str) -> Result<String, i32> {
+    let mut out = Vec::new();
+    match json_field_with(input, path, true, &mut out) {
+        Ok(()) => Ok(String::from_utf8(out).unwrap()),
+        Err(RunError::Exit(code)) => Err(code),
+        Err(other) => panic!("unexpected error: {other:?}"),
+    }
+}
+
+// Kills: keys printed JSON-quoted, keys with punctuation/spaces mangled, a key holding a newline
+// splitting into two lines, or a non-object value printing anything.
+#[test]
+fn keys_mode_prints_object_keys_exactly_one_per_line() {
+    let json = r#"{"profiles":{"codex":{"team.one":{},"my profile":{},"retired@account":1,"-dash":{},"bad\nkey":{},"tab\tkey":{}},"list":[1]}}"#;
+    let printed = keys(json, "profiles.codex").unwrap();
+    let mut lines: Vec<&str> = printed.lines().collect();
+    lines.sort_unstable();
+    assert_eq!(
+        lines,
+        ["-dash", "my profile", "retired@account", "team.one"]
+    );
+    // Absent (1) is told apart from present but not an object (3) and from invalid JSON (2).
+    assert_eq!(keys(json, "profiles.list"), Err(3));
+    assert_eq!(keys(r#"{"p":{"codex":null}}"#, "p.codex"), Err(3));
+    assert_eq!(keys(r#"{"p":{"codex":"x"}}"#, "p.codex"), Err(3));
+    assert_eq!(keys(json, "profiles.nope"), Err(1));
+    assert_eq!(keys(r#"{"v":2}"#, "profiles.codex"), Err(1));
+    // A non-object anywhere on the path is unusable (3), at every depth; only a missing key in
+    // an object is absent (1).
+    for doc in [
+        "[]",
+        "\"x\"",
+        "null",
+        "7",
+        r#"{"profiles":[]}"#,
+        r#"{"profiles":"x"}"#,
+        r#"{"profiles":null}"#,
+        r#"{"profiles":[{"codex":{}}]}"#,
+    ] {
+        assert_eq!(keys(doc, "profiles.codex"), Err(3), "{doc}");
+    }
+    assert_eq!(keys(r#"{"profiles":{}}"#, "profiles.codex"), Err(1));
+    // The value mode is unchanged: array indexes still work and a non-object parent is absent.
+    assert_eq!(field(r#"{"profiles":[]}"#, "profiles.codex"), Err(1));
+    assert_eq!(field(r#"{"l":[{"a":"b"}]}"#, "l.0.a").unwrap(), "b\n");
+    assert_eq!(keys(r#"{"a":{}}"#, "a").unwrap(), "");
+    assert_eq!(keys("{", "a"), Err(2));
+}
+
+// Kills: input that is not UTF-8 reported as absent (or an I/O error) instead of invalid (2).
+#[test]
+fn non_utf8_input_exits_2_in_both_modes() {
+    let bytes = b"{\"profiles\":{\"codex\":{\"x\xff\":{}}}}";
+    for keys in [false, true] {
+        let mut out = Vec::new();
+        assert!(matches!(
+            json_field_bytes(bytes, "profiles.codex", keys, &mut out),
+            Err(RunError::Exit(2))
+        ));
+        assert!(out.is_empty());
+    }
+}

@@ -899,12 +899,12 @@ impl Registration {
             .ok_or_else(|| SetupFailure::Invalid("installer policy unavailable".into()))?
             .inspect_hooks(request, budget)
     }
-    pub fn installer_permissions_granted(
+    pub fn installer_permission_state(
         &self,
         request: &StatusRequest,
-    ) -> Result<Option<bool>, SetupFailure> {
+    ) -> Result<Option<InstallerPermissionState>, SetupFailure> {
         match self.installer_policy() {
-            Some(policy) => policy.permissions_granted(request),
+            Some(policy) => policy.permission_state(request),
             None => Ok(None),
         }
     }

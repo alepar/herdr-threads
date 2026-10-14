@@ -716,6 +716,175 @@ expect "linux refused link: exits 3" [ "$status" = 3 ]
 expect "linux refused link: says Herdr refused, without a stale unverified claim" \
     has "the manifest declares Linux, but Herdr refused the link; Herdr's error is in the status below"
 
+# --- aisw profiles ----------------------------------------------------------
+# A scratch aisw tree laid out like the real one: each profile is its own
+# CLAUDE_CONFIG_DIR / CODEX_HOME whose skills (and Codex rules) directories are
+# symlinks to the default roots'. Own HOME, tools and Herdr stub directory, so
+# the cases above are untouched; the stub server is down (no daemon).
+aisw_case() { # ARGS -> output in $out, status in $status; env from aisw_env
+    set +e
+    (CDPATH= cd -- "${aisw_cwd:-$root/cwd}" && "${run_env[@]}" "HOME=$ah" "FAKE_HERDR_DIR=$root/aisw-herdr" \
+        "PATH=$root/aisw-tools:$tools:/usr/bin:/bin:/usr/sbin:/sbin" ${aisw_env[@]+"${aisw_env[@]}"} \
+        bash "$repo/scripts/install.sh" --release-url "file://$rel" --version v0.1.0 "$@" < /dev/null > "$out" 2>&1)
+    status=$?
+    set -e
+}
+if [ "$modern_integrations" = 1 ] &&
+    "$binary" internal installer-integrations --help 2>/dev/null | grep -qF -- --config-root; then
+    ah="$root/aisw-home"
+    aw="$ah/.aisw"
+    mkdir -p "$root/aisw-herdr" "$root/aisw-tools" "$ah/.claude" "$ah/.codex" \
+        "$aw/profiles/claude/c1" "$aw/profiles/codex/x1" "$aw/profiles/codex/x2" \
+        "$aw/profiles/codex/unlisted" "$root/aisw-elsewhere"
+    printf '#!/bin/sh\necho "codex-cli 0.159.2"\n' > "$root/aisw-tools/codex"
+    chmod 755 "$root/aisw-tools/codex"
+    ln -s "$root/aisw-elsewhere" "$aw/profiles/codex/linked"
+    ln -s "$ah/.claude/skills" "$aw/profiles/claude/c1/skills"
+    for p in x1 x2 unlisted; do
+        ln -s "$ah/.codex/skills" "$aw/profiles/codex/$p/skills"
+        ln -s "$ah/.codex/rules" "$aw/profiles/codex/$p/rules"
+    done
+    printf '%s\n' '{"version":2,"profiles":{"claude":{"c1":{"x":1}},"codex":{"x1":{},"x2":{},"linked":{},"team.one":{},"my profile":{}}}}' \
+        > "$aw/config.json"
+    # Names outside [A-Za-z0-9_-] are matched literally against config.json's keys too.
+    for p in team.one 'my profile' old.profile 'old profile' retired@account; do
+        mkdir -p "$aw/profiles/codex/$p"
+    done
+    aisw_env=()
+
+    aisw_case --setup --no-aisw-profiles
+    expect "aisw opt-out: integrations still run" has "claude skill: installed"
+    expect "aisw opt-out: no profiles included" bash -c "! grep -qF 'aisw profiles' '$out'"
+    expect "aisw opt-out: nothing written to a profile" \
+        bash -c "[ -z \"\$(find '$aw/profiles' -name 'settings.json' -o -name 'hooks.json')\" ]"
+
+    # The effective CODEX_HOME is a profile: the default root still goes first,
+    # so the profile finds the shared files already owned.
+    aisw_env=("CODEX_HOME=$aw/profiles/codex/x1")
+    aisw_case --setup
+    expect "aisw: install exits 0" [ "$status" = 0 ]
+    expect "aisw: one line names the included profiles" \
+        bash -c "[ \"\$(grep -c 'including aisw profiles: claude/c1 codex/my profile codex/team.one codex/x1 codex/x2\$' '$out')\" = 1 ]"
+    expect "aisw: unlisted and symlinked profile directories are not included" \
+        bash -c "! grep -qE 'codex/(unlisted|linked)' '$out'"
+    for p in old.profile 'old profile' retired@account unlisted; do
+        expect "aisw: unlisted '$p' is not reconciled" \
+            bash -c "! grep -qF 'CODEX_HOME=$aw/profiles/codex/$p)' '$out'"
+    done
+    for p in team.one 'my profile'; do
+        expect "aisw: listed '$p' is reconciled" has "codex hooks (CODEX_HOME=$aw/profiles/codex/$p): installed"
+    done
+    expect "aisw: default Codex root reconciled first" \
+        bash -c "grep -n 'codex skill (CODEX_HOME=' '$out' | head -n 1 | grep -qF 'CODEX_HOME=$ah/.codex): '"
+    for p in x1 x2; do
+        expect "aisw: codex $p hooks installed" has "codex hooks (CODEX_HOME=$aw/profiles/codex/$p): installed"
+        expect "aisw: codex $p skill shared" \
+            has "codex skill (CODEX_HOME=$aw/profiles/codex/$p): shared (shared via symlink; managed at "
+        expect "aisw: codex $p permissions shared" \
+            has "codex permissions (CODEX_HOME=$aw/profiles/codex/$p): shared"
+        expect "aisw: codex $p skills is still a symlink" [ -L "$aw/profiles/codex/$p/skills" ]
+        expect "aisw: codex $p hooks.json written" [ -f "$aw/profiles/codex/$p/hooks.json" ]
+    done
+    expect "aisw: claude c1 skill shared" \
+        has "claude skill (CLAUDE_CONFIG_DIR=$aw/profiles/claude/c1): shared"
+    expect "aisw: claude c1 settings written" [ -f "$aw/profiles/claude/c1/settings.json" ]
+    expect "aisw: the real skill is in the default root" [ -f "$ah/.codex/skills/herdr-threads/SKILL.md" ]
+    expect "aisw: the real rules are in the default root" [ -f "$ah/.codex/rules/herdr-threads.rules" ]
+    expect "aisw: unlisted profile untouched" [ ! -e "$aw/profiles/codex/unlisted/hooks.json" ]
+    expect "aisw: symlinked profile untouched" [ ! -e "$root/aisw-elsewhere/hooks.json" ]
+    expect "aisw: no shared failure" bash -c "! grep -q ': failed' '$out'"
+    rm -rf "$aw/profiles/codex/team.one" "$aw/profiles/codex/my profile" "$aw/profiles/codex/old.profile" \
+        "$aw/profiles/codex/old profile" "$aw/profiles/codex/retired@account"
+
+    # Without config.json every plain profile directory is included.
+    mv "$aw/config.json" "$aw/config.json.off"
+    aisw_env=()
+    aisw_case
+    expect "aisw without config.json: rerun exits 0" [ "$status" = 0 ]
+    expect "aisw without config.json: every plain profile directory" \
+        has "including aisw profiles: claude/c1 codex/unlisted codex/x1 codex/x2"
+    expect "aisw without config.json: the new profile's shared skill needs no consent" \
+        has "codex skill (CODEX_HOME=$aw/profiles/codex/unlisted): shared"
+
+    # Run from the scratch $HOME, whose .codex holds the default root's hook: the
+    # installer's user-level step runs from a neutral directory, so a new profile
+    # still installs and existing ones update.
+    mkdir -p "$aw/profiles/codex/x3"
+    ln -s "$ah/.codex/skills" "$aw/profiles/codex/x3/skills"
+    ln -s "$ah/.codex/rules" "$aw/profiles/codex/x3/rules"
+    aisw_cwd=$ah
+    aisw_case --setup
+    aisw_cwd=''
+    expect "aisw from \$HOME: install exits 0" [ "$status" = 0 ]
+    expect "aisw from \$HOME: new profile hooks installed" \
+        has "codex hooks (CODEX_HOME=$aw/profiles/codex/x3): installed"
+    expect "aisw from \$HOME: existing profile hooks updated" \
+        has "codex hooks (CODEX_HOME=$aw/profiles/codex/x1): updated"
+    expect "aisw from \$HOME: no failure" bash -c "! grep -q ': failed' '$out'"
+
+    # An unusable config.json never widens the scope: no profiles of the tool it cannot
+    # list, one warning naming it; a valid file without the tool keeps every directory.
+    aisw_unusable() { # NAME TOOL: expects the warning and no profile of TOOL
+        expect "aisw $1: exits 0" [ "$status" = 0 ]
+        expect "aisw $1: warning names config.json" \
+            has "aisw: cannot use $aw/config.json (unreadable, invalid, or profiles.$2 is not an object); no $2 profiles included"
+        expect "aisw $1: no $2 profile reconciled" bash -c "! grep -qF '=$aw/profiles/$2/' '$out'"
+    }
+    printf '%s' '{"version":2,"profiles":{"codex":{"x1":' > "$aw/config.json"
+    aisw_case
+    aisw_unusable "invalid JSON" codex
+    aisw_unusable "invalid JSON" claude
+    if [ "$(id -u)" != 0 ]; then
+        printf '%s\n' '{"profiles":{"claude":{"c1":{}},"codex":{"x1":{}}}}' > "$aw/config.json"
+        chmod 000 "$aw/config.json"
+        aisw_case
+        chmod 600 "$aw/config.json"
+        aisw_unusable "unreadable config.json" codex
+        aisw_unusable "unreadable config.json" claude
+    else
+        pass "aisw unreadable config.json: skipped as root"
+    fi
+    printf '%s\n' '{"profiles":[]}' > "$aw/config.json"
+    aisw_case
+    aisw_unusable "profiles []" codex
+    aisw_unusable "profiles []" claude
+    printf '{"profiles":{"claude":{"c1":{}},"codex":{"x\377":{}}}}\n' > "$aw/config.json"
+    aisw_case
+    aisw_unusable "invalid UTF-8" codex
+    aisw_unusable "invalid UTF-8" claude
+    for value in '[]' null; do
+        printf '%s\n' "{\"profiles\":{\"claude\":{\"c1\":{}},\"codex\":$value}}" > "$aw/config.json"
+        aisw_case
+        aisw_unusable "profiles.codex $value" codex
+        expect "aisw profiles.codex $value: claude still listed" \
+            has "including aisw profiles: claude/c1"
+    done
+    printf '%s\n' '{"version":2,"profiles":{"claude":{"c1":{}}}}' > "$aw/config.json"
+    aisw_case
+    expect "aisw absent profiles.codex: exits 0" [ "$status" = 0 ]
+    expect "aisw absent profiles.codex: every codex directory" \
+        has "including aisw profiles: claude/c1 codex/unlisted codex/x1 codex/x2 codex/x3"
+    expect "aisw absent profiles.codex: no warning" bash -c "! grep -qF 'cannot use' '$out'"
+    rm -f "$aw/config.json"
+
+    # A relative AISW_HOME is resolved against the installer's working directory.
+    aisw_cwd=$ah
+    aisw_env=("AISW_HOME=.aisw")
+    aisw_case
+    aisw_cwd=''
+    expect "aisw relative AISW_HOME: resolved and included" has "including aisw profiles: claude/c1 codex/unlisted"
+    expect "aisw relative AISW_HOME: exits 0" [ "$status" = 0 ]
+
+    # No aisw directory: nothing is said about it.
+    aisw_env=("AISW_HOME=$root/no-aisw")
+    aisw_case
+    expect "aisw absent: nothing about aisw" bash -c "! grep -qF 'aisw profiles' '$out'"
+    expect "aisw absent: only the effective roots" bash -c "! grep -qF '(CODEX_HOME=' '$out'"
+    aisw_env=()
+else
+    pass "aisw profile cases need a build with --config-root (skipped)"
+fi
+
 for name in fresh_install_herdr_up fresh_install_herdr_down fresh_install_herdr_absent fresh_install_no_herdr \
     upgrade_herdr_up upgrade_with_herdr_down upgrade_herdr_absent upgrade_no_herdr \
     uninstall_herdr_up uninstall_herdr_down uninstall_herdr_absent uninstall_no_herdr partial_setup_failure; do
