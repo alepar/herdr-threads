@@ -2,7 +2,7 @@
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
 resumeChange: 2026-10-13 · "design APPROVED (A-E) ... Move to autonomous stage now (both roasts on). Nudge dev-herdr-threads when merge-ready." (relayed by seePN0MKW, mpqluOeQD) · autonomous=f→t after the interactive root design; nested brainstorms and later gates run Mode B
-phase: fix-loop
+phase: report
 codeMechanism: Workflow
 
 idea: Feature: message PRIORITY replaces lazy/nudge delivery modes in herdr-threads. Interactive design stage first (user reachable only via seat seePN0MKW in 1:1 thread tXPkAdb0O with --nudge; batch questions), then autonomous after design approval; both roasts ON (design + code). When integration branch is merge-ready, nudge dev-herdr-threads (taQXwBH7X). Details: priority = non-negative integer chosen by sender; 0 highest, always nudges. Recipient nudge threshold T: priority <= T nudges; negative T means everything nudges. Lazy mode removed. Default T=0, default send priority=1. Inbox listing and hook/mod injection sort by priority ascending then timestamp oldest first. Needs design: CLI flags and migration of --lazy/--nudge/--require-ack (ACK requests implied nudge today), per-seat vs per-thread threshold, existing recipient wake-on mode, wire/storage compat, docs/skill text, mod/hook surfaces.
@@ -20,6 +20,7 @@ roastCodeExit: converged
 graph-pass: depth 8→7 · width 2.4→2.7 · applied 2 · parked 5
 
 parked:
+- super-code-final-review-wf_ecf6a4ce-925.md · escalation · "ht-yha.33 shipped option (c) (old CLI cannot follow a new daemon's next: inbox cursor; recorded in spec §Compatibility and docs/agent-usage.md) — orchestrator decision in the autonomous run, needs the user's ratification or another scheme"
 - final-review (super-code, wf_24ee41b2-d4e) · escalation · "ServiceSend keeps receipts for its whole audience (AckAudience::Everyone), outside D9's 'receipts only for explicit --require-ack'; D9 was decided for agent/human sends — recommended default: keep ServiceSend unchanged as service-owned required delivery and record it as an accepted limit in TRUST-POLICY.md and the spec; user decision needed at hand-back"
 - graph-pass · graph-change · "ht-yha.8 <- ht-yha.4 drop (same-file hydrate.rs, safe no)"
 - graph-pass · graph-change · "ht-yha.6 <- ht-yha.5.2 drop (same-file read_cursors.rs, safe no)"
@@ -28,12 +29,12 @@ parked:
 - graph-pass · graph-change · "proposal: frame golden fixture seam for ht-yha.8/9"
 
 codeBuckets:
-  completed: ht-yha.1, ht-yha.2, ht-yha.3, ht-yha.4, ht-yha.5.1, ht-yha.5.2, ht-yha.5.3, ht-yha.5.4, ht-yha.6, ht-yha.7, ht-yha.8, ht-yha.9, ht-yha.10, ht-yha.11, ht-yha.12, ht-yha.13, ht-yha.14, ht-yha.15, ht-yha.16, ht-yha.31, ht-yha.32, ht-yha.34, ht-yha.35, ht-yha.36, ht-yha.37
-  escalated: ht-yha.33
+  completed: ht-yha.1, ht-yha.2, ht-yha.3, ht-yha.4, ht-yha.5.1, ht-yha.5.2, ht-yha.5.3, ht-yha.5.4, ht-yha.6, ht-yha.7, ht-yha.8, ht-yha.9, ht-yha.10, ht-yha.11, ht-yha.12, ht-yha.13, ht-yha.14, ht-yha.15, ht-yha.16, ht-yha.31, ht-yha.32, ht-yha.33, ht-yha.34, ht-yha.35, ht-yha.36, ht-yha.37, ht-yha.38, ht-yha.39
+  escalated:
   pendingRetry:
   parked:
   stalled: true
-  review: not ready (F1 stale disconnected binding keeps delivery rows pending and the wake frontier open — regression from ht-yha.32's seat_unread_sql! change; F2 seat-wide state column decides delivery again; F3 pre-D7 pair-invitation text in SKILL.md:17,199 and help.rs:151; F4 nudge-threshold treats a failed probe as an old daemon; ht-yha.33 open; ServiceSend vs D9)
+  review: not ready (A rows stay pending via never-returning process-exited bindings and cursor-only body reads; B main merge conflicts + for_seat_attention seam; C ht-yha.33 and ServiceSend need user decisions; markers_ok vacuous; no full suite)
   sweep: SWEEP DEFERRED (caller-owned)
   slowness: round 1: graph-bound — 17 open beads, depth 6, achievable width 3 vs cap 8; edge audit armed now; round 1: merge queue peaked at 3 (first invocation); network outage relaunches ×2 (ENOTFOUND)
   worktreesKept:

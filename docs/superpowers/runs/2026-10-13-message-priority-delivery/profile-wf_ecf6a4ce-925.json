@@ -1,0 +1,537 @@
+{
+  "version": 1,
+  "epic": "ht-yha",
+  "cap": 8,
+  "earlyUnblock": true,
+  "runtimeSlots": 10,
+  "invocations": [
+    {
+      "runId": "wf_ecf6a4ce-925",
+      "dir": "/Users/alepar/.aisw/profiles/claude/claude-2/projects/-Users-alepar-AleCode-herdr-threads/2fba7abe-bee7-4e80-a8ef-aec7e11233da/subagents/workflows/wf_ecf6a4ce-925",
+      "source": "workflow",
+      "start": "2026-10-14T09:22:04.971Z",
+      "end": "2026-10-14T09:54:09.012Z",
+      "agents": 52,
+      "timed": 52,
+      "journal": true
+    }
+  ],
+  "window": {
+    "start": "2026-10-14T09:22:04.971Z",
+    "lastLanding": "2026-10-14T09:42:41.681Z",
+    "end": "2026-10-14T09:54:09.012Z",
+    "graphMs": 1236710,
+    "wallMs": 1924041
+  },
+  "shape": {
+    "beads": 28,
+    "edges": 0,
+    "depth": 1,
+    "width": 28,
+    "levels": [
+      28
+    ],
+    "criticalPath": [
+      "ht-yha.38"
+    ],
+    "fanOut": [],
+    "cycles": []
+  },
+  "cuts": [],
+  "beads": [
+    {
+      "id": "ht-yha.14",
+      "n": 4,
+      "deps": [],
+      "dependents": [],
+      "attempts": [
+        null
+      ],
+      "landed": false,
+      "readyAt": "2026-10-14T09:31:18.893Z",
+      "dispatchedAt": "2026-10-14T09:31:25.960Z",
+      "landedAt": null,
+      "waitMs": 7067,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 0,
+      "implByTool": {},
+      "implToolMs": 0,
+      "reviewMs": 0,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 0,
+      "laneMs": 0,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-yha.33",
+      "n": 28,
+      "deps": [],
+      "dependents": [],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-14T09:31:18.893Z",
+      "dispatchedAt": "2026-10-14T09:31:25.960Z",
+      "landedAt": "2026-10-14T09:35:55.991Z",
+      "waitMs": 7067,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 188524,
+      "implByTool": {
+        "read": 620,
+        "git": 454,
+        "shell": 21190,
+        "other": 1,
+        "test": 124634
+      },
+      "implToolMs": 146899,
+      "reviewMs": 25287,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 2651,
+      "laneMs": 50941,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-yha.5.1",
+      "n": 6,
+      "deps": [],
+      "dependents": [],
+      "attempts": [
+        null
+      ],
+      "landed": false,
+      "readyAt": "2026-10-14T09:31:18.893Z",
+      "dispatchedAt": "2026-10-14T09:31:28.025Z",
+      "landedAt": null,
+      "waitMs": 9132,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 0,
+      "implByTool": {},
+      "implToolMs": 0,
+      "reviewMs": 0,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 0,
+      "laneMs": 0,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-yha.1",
+      "n": 1,
+      "deps": [],
+      "dependents": [],
+      "attempts": [
+        null
+      ],
+      "landed": false,
+      "readyAt": "2026-10-14T09:31:18.893Z",
+      "dispatchedAt": "2026-10-14T09:31:28.026Z",
+      "landedAt": null,
+      "waitMs": 9133,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 0,
+      "implByTool": {},
+      "implToolMs": 0,
+      "reviewMs": 0,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 0,
+      "laneMs": 0,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-yha.38",
+      "n": 26,
+      "deps": [],
+      "dependents": [],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-14T09:31:18.893Z",
+      "dispatchedAt": "2026-10-14T09:31:28.055Z",
+      "landedAt": "2026-10-14T09:42:41.681Z",
+      "waitMs": 9162,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 579295,
+      "implByTool": {
+        "read": 1332,
+        "git": 851,
+        "shell": 2600,
+        "test": 447366,
+        "build": 51274
+      },
+      "implToolMs": 503423,
+      "reviewMs": 32704,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 2474,
+      "laneMs": 56419,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 682788,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-yha.39",
+      "n": 27,
+      "deps": [],
+      "dependents": [],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-14T09:31:18.893Z",
+      "dispatchedAt": "2026-10-14T09:31:28.056Z",
+      "landedAt": "2026-10-14T09:41:06.857Z",
+      "waitMs": 9163,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 493907,
+      "implByTool": {
+        "read": 410,
+        "git": 1475,
+        "shell": 2245,
+        "test": 444364
+      },
+      "implToolMs": 448494,
+      "reviewMs": 21675,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 2282,
+      "laneMs": 57002,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    }
+  ],
+  "criticalPath": {
+    "ms": 1236710,
+    "byCategory": {
+      "startup": 29040,
+      "ready": 8994,
+      "dispatch": 16939,
+      "planning": 513319,
+      "implement": 579295,
+      "review": 32704,
+      "merge": 56419
+    },
+    "laneContentionMs": 0,
+    "redo": {
+      "stack-conflict": {
+        "ms": 0,
+        "beads": []
+      },
+      "cancelled": {
+        "ms": 0,
+        "beads": []
+      },
+      "retry": {
+        "ms": 0,
+        "beads": []
+      }
+    },
+    "segments": [
+      {
+        "kind": "startup",
+        "bead": null,
+        "label": "run start",
+        "via": null,
+        "start": "2026-10-14T09:22:04.971Z",
+        "ms": 29040
+      },
+      {
+        "kind": "ready",
+        "bead": null,
+        "label": "bd-ready",
+        "via": null,
+        "start": "2026-10-14T09:22:34.011Z",
+        "ms": 8994
+      },
+      {
+        "kind": "dispatch",
+        "bead": null,
+        "label": "previous → plan",
+        "via": null,
+        "start": "2026-10-14T09:22:43.005Z",
+        "ms": 2569
+      },
+      {
+        "kind": "planning",
+        "bead": null,
+        "label": "plan",
+        "via": "previous",
+        "start": "2026-10-14T09:22:45.574Z",
+        "ms": 513319
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-yha.38",
+        "label": "planned → impl:ht-yha.38",
+        "via": null,
+        "start": "2026-10-14T09:31:18.893Z",
+        "ms": 9162
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-yha.38",
+        "label": "impl:ht-yha.38",
+        "via": "planned",
+        "start": "2026-10-14T09:31:28.055Z",
+        "ms": 579295
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-yha.38",
+        "label": "chain → review:ht-yha.38",
+        "via": null,
+        "start": "2026-10-14T09:41:07.350Z",
+        "ms": 2734
+      },
+      {
+        "kind": "review",
+        "bead": "ht-yha.38",
+        "label": "review:ht-yha.38",
+        "via": "chain",
+        "start": "2026-10-14T09:41:10.084Z",
+        "ms": 32704
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-yha.38",
+        "label": "chain → merge:ht-yha.38",
+        "via": null,
+        "start": "2026-10-14T09:41:42.788Z",
+        "ms": 2474
+      },
+      {
+        "kind": "merge",
+        "bead": "ht-yha.38",
+        "label": "merge:ht-yha.38",
+        "via": "chain",
+        "start": "2026-10-14T09:41:45.262Z",
+        "ms": 56419
+      }
+    ]
+  },
+  "bottleneck": {
+    "bead": "ht-yha.38",
+    "ms": 682788,
+    "share": 0.5521003307161744,
+    "byCategory": {
+      "dispatch": 14370,
+      "implement": 579295,
+      "review": 32704,
+      "merge": 56419
+    },
+    "implByTool": {
+      "read": 1332,
+      "git": 851,
+      "shell": 2600,
+      "test": 447366,
+      "build": 51274
+    },
+    "calls": [
+      {
+        "name": "Bash",
+        "cat": "test",
+        "what": "python3 - <<'EOF'",
+        "test": "cargo test --locked --all-features --lib binding_lazy",
+        "ms": 183940
+      },
+      {
+        "name": "Bash",
+        "cat": "test",
+        "what": "for f in lazy_delivery wake attention delivery_row_seek nud…",
+        "test": "cargo test --locked --all-features --lib $f",
+        "ms": 111737
+      },
+      {
+        "name": "Bash",
+        "cat": "test",
+        "what": "python3 - <<'EOF'",
+        "test": "cargo test --locked --all-features --lib binding_lazy",
+        "ms": 77374
+      },
+      {
+        "name": "Bash",
+        "cat": "build",
+        "what": "cargo clippy --locked --all-targets --all-features -- -D wa…",
+        "ms": 51274
+      },
+      {
+        "name": "Bash",
+        "cat": "test",
+        "what": "for f in binding_lazy lazy_delivery wake delivery_row_seek",
+        "test": "cargo test --locked --all-features --lib $f",
+        "ms": 43180
+      },
+      {
+        "name": "Bash",
+        "cat": "test",
+        "what": "python3 - <<'EOF'",
+        "test": "cargo test --locked --all-features --lib binding_lazy",
+        "ms": 31135
+      },
+      {
+        "name": "Bash",
+        "cat": "shell",
+        "what": "git worktree add $W -b task-ht-yha.38 super-auto/message-pr…",
+        "ms": 2600
+      },
+      {
+        "name": "Bash",
+        "cat": "git",
+        "what": "git add -A",
+        "ms": 788
+      },
+      {
+        "name": "Bash",
+        "cat": "read",
+        "what": "sed -n 95,135p src/store/lazy_delivery/mod.rs",
+        "ms": 566
+      },
+      {
+        "name": "Bash",
+        "cat": "read",
+        "what": "sed -n 1,66p tests/store/binding_lazy.rs",
+        "ms": 379
+      }
+    ]
+  },
+  "lane": {
+    "busyMs": 164362,
+    "seamMs": 0,
+    "spanMs": 456631,
+    "merges": 3,
+    "firstTryFailed": 0,
+    "firstTryKnown": 3,
+    "queueWaitMs": 7407,
+    "stackWaitMs": 0,
+    "peakQueue": 1
+  },
+  "runtime": {
+    "slots": 10,
+    "peak": 7,
+    "fullMs": 0
+  },
+  "concurrency": null,
+  "tests": {
+    "busyMs": 1261726,
+    "testMs": 1016364,
+    "pollMs": 0,
+    "cappedCalls": 0
+  },
+  "slowTests": [
+    {
+      "cmd": "cargo test --locked --all-features --lib binding_lazy",
+      "ms": 292449,
+      "runs": 3,
+      "longestMs": 183940
+    },
+    {
+      "cmd": "cargo test --locked --all-features skill",
+      "ms": 239839,
+      "runs": 1,
+      "longestMs": 239839
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined golden_surfaces::",
+      "ms": 201475,
+      "runs": 3,
+      "longestMs": 118577
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib $f",
+      "ms": 154917,
+      "runs": 2,
+      "longestMs": 111737
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined lazy_inbox_v2",
+      "ms": 124634,
+      "runs": 1,
+      "longestMs": 124634
+    },
+    {
+      "cmd": "cargo test --locked --all-features agy_plugin",
+      "ms": 3050,
+      "runs": 1,
+      "longestMs": 3050
+    }
+  ],
+  "conflicts": [],
+  "simulation": {
+    "asRunMs": 1222340,
+    "actualMs": 1236710,
+    "fit": 0.99,
+    "unlimitedSlotsMs": 1222340,
+    "unlimitedLanesMs": 1222340,
+    "lowerBoundMs": 1222340,
+    "graphChain": [
+      "ht-yha.38"
+    ],
+    "whatIfs": [
+      {
+        "kind": "faster",
+        "target": "faster ht-yha.38",
+        "ms": 1126506,
+        "savingMs": 95834,
+        "note": "its implement time halved"
+      }
+    ],
+    "verdict": "bead-bound"
+  },
+  "unmeasured": [
+    "3 dispatched bead(s) did not land (not in the model): ht-yha.14, ht-yha.5.1, ht-yha.1"
+  ],
+  "summary": [
+    "Profile: ht-yha · 1 invocation · 2026-10-14T09:22Z → 2026-10-14T09:54Z · wall 32m (task graph 21m, after the last landing 11m) · agents 52 (timed 52) · beads dispatched 6, landed 3, planned 28",
+    "Profile: shape — 28 beads · 0 edges · depth 1 · width 28 · beads per level 28",
+    "Profile: bound — graph lower bound 20m (unlimited slots and merge lanes) · model of the run 20m (cap 8, one merge lane) vs actual 21m (99%) → bead-bound: ht-yha.38 alone set the pace — split it or make it faster",
+    "Profile: critical path — 21m = implement 10m · review 33s · merge 56s · planning 9m · ready 9s · startup 29s · dispatch 17s",
+    "Profile: critical chain — bd-ready ready 9s → plan planning 9m → ht-yha.38 implement+review+merge 11m",
+    "Profile: bottleneck — ht-yha.38 — 11m on the critical path (55%) · implement 10m · review 33s · merge 56s · dispatch 14s · implement on the path 10m: test 7m · build 51s · read 1s · shell 3s · model 1m (longest: \"python3 - <<'EOF'\" 3m, \"for f in lazy_delivery wake attention delivery_row_seek nud…\" 2m) · dependents 0",
+    "Profile: waits — ready→start, summed per bead (beads wait at the same time, so not wall time): 0s over 0 of 3 landed beads",
+    "Profile: early unblock — 0 landed beads had in-run blockers · stacked on an implementation 0 · bounced on a stack conflict then waited for the merge 0 (0s) · waited for a merge without one 0",
+    "Profile: rework — 51s of dispatch time in attempts that did not land — ht-yha.1 19s (?; never landed) · ht-yha.5.1 17s (?; never landed) · ht-yha.14 15s (?; never landed)",
+    "Profile: tests — implementers and fixers, summed: 17m running tests and 0s polling background runs, 81% of their 21m · 0 Bash call(s) ran into the 10-minute tool limit",
+    "Profile: slow tests — cargo test --locked --all-features --lib binding_lazy 5m (3 runs, longest 3m) · cargo test --locked --all-features skill 4m (1 run, longest 4m) · cargo test --locked --all-features --test combined golden_surfaces:: 3m (3 runs, longest 2m) · cargo test --locked --all-features --lib $f 3m (2 runs, longest 2m) · cargo test --locked --all-features --test combined lazy_inbox_v2 2m (1 run, longest 2m)",
+    "Profile: merge lane — busy 3m of 8m (36%) · seam reviews and fixes 0s (0% of busy) · 3 merge dispatches, first try not merged for 0 of 3 · queue wait 7s total, peak 1 waiting · stack-parent wait 0s",
+    "Profile: runtime — peak 7 agents at once of 10 runtime slots · full 0% of the run · slot cap 8",
+    "Profile: what-if — faster ht-yha.38 → 19m (−2m, 8%) — its implement time halved",
+    "Profile: unmeasured — 3 dispatched bead(s) did not land (not in the model): ht-yha.14, ht-yha.5.1, ht-yha.1"
+  ]
+}
