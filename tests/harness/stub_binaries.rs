@@ -55,7 +55,12 @@ fn stub_script(name: &str, version: &str) -> String {
 fn shared_stub(name: &str, version: &str, script: &str) -> PathBuf {
     // SAFETY: geteuid has no preconditions.
     let uid = unsafe { libc::geteuid() };
-    let cache = crate::test_support::scratch::temp_path(format!("ht-stub-harness-v1-uid{uid}"));
+    // Deliberately not `test_support::scratch::temp_path`: that removes the
+    // path when this test process exits, and nextest runs every test in its
+    // own process, so one test's exit would delete the scripts other tests'
+    // stubs still link to and are about to exec. The cache is shared across
+    // processes and persists; it holds a few bytes per (name, version).
+    let cache = std::env::temp_dir().join(format!("ht-stub-harness-v1-uid{uid}"));
     fs::create_dir_all(&cache).unwrap();
     fs::set_permissions(&cache, fs::Permissions::from_mode(0o700)).unwrap();
     let shared = cache.join(format!("{name}-{version}"));
