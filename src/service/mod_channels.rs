@@ -29,9 +29,10 @@
 //! This module is the sole owner of the disconnect kick (the wake lane is
 //! kicked whenever an entry stops being live) and of the stall state: the
 //! stall predicate (spec D7) is `last_ack_or_registration` older than
-//! [`MOD_STALL_AFTER_MS`], an Attention push on record, and an ordinary,
-//! non-truncated pending receipt published before that push and itself older
-//! than [`MOD_STALL_AFTER_MS`].
+//! [`MOD_STALL_AFTER_MS`], an Attention push on record, and a non-truncated
+//! wake-class pending item (an ordinary receipt or a delivery row the seat's
+//! nudge threshold admits) published before that push and itself older than
+//! [`MOD_STALL_AFTER_MS`].
 //!
 //! A binding that disconnects or ends loses its channel through [`ModChannelRegistry::pass`]:
 //! the store's disconnect hook (`mod_channel_release`) bumps the seat's attention version, the
