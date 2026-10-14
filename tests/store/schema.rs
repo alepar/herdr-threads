@@ -6826,13 +6826,31 @@ fn upgrade_from_v28_with_pending_lazy_and_catch_up_mail_delivers_exactly_once() 
             .collect()
     };
     let seat_page = |db: &Connection| -> Vec<MessageId> {
-        let high = lazy_delivery::capture_high_water(db, "i", &seat, None).unwrap();
-        lazy_delivery::pending_page(db, "i", &seat, None, 0, high, 100)
-            .unwrap()
-            .recipients
-            .into_iter()
-            .map(|r| r.message)
-            .collect()
+        let dh: i64 = db
+            .query_row(
+                "SELECT decision_seq FROM host_instances WHERE id='i'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let (mut after, mut out) = (None, Vec::new());
+        loop {
+            let seek = lazy_delivery::seek_pending(
+                db,
+                "i",
+                &seat,
+                lazy_delivery::RowFilter::Seat,
+                after,
+                dh as u64,
+                100,
+            )
+            .unwrap();
+            out.extend(seek.row.map(|(_, recipient)| recipient.message));
+            after = seek.position;
+            if seek.exhausted {
+                return out;
+            }
+        }
     };
     // The migrated binding starts disconnected; the seat-level inbox still carries the
     // pending message (legacy row), and the binding-level view carries it exactly once.

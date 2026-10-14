@@ -360,7 +360,9 @@ fn q4_direct_lazy_completion_is_independent_for_two_initial_bindings() {
             |row| Ok((row.get(0)?, row.get(1)?))
         )
         .unwrap(),
-        ("displayed".into(), 0)
+        // Binding b has not displayed the row: the seat-wide state stays pending (the ordered
+        // seek only holds pending rows), and a's own cursor already excludes it from a's reads.
+        ("pending".into(), 0)
     );
 }
 

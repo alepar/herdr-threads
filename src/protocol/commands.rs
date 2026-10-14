@@ -1283,7 +1283,7 @@ impl Command {
             page.validate()?;
             if let Some(raw) = &page.cursor {
                 if matches!(self, Self::InboxBatchV2(_)) {
-                    crate::protocol::pagination::InboxBatchV2CursorState::decode(raw)?;
+                    crate::protocol::pagination::InboxBatchV2CursorState::validate_decodable(raw)?;
                 } else {
                     Cursor::decode(raw)?;
                 }

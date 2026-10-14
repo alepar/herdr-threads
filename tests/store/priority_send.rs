@@ -562,17 +562,7 @@ fn mixed_ack_display_and_completion() {
     assert!(!attention("c"));
     // The row recipient's page lists the message and completing it settles the row.
     let seat = SeatId::new("c");
-    let page = lazy_delivery::pending_page(
-        &conn,
-        "i",
-        &seat,
-        None,
-        0,
-        lazy_delivery::capture_high_water(&conn, "i", &seat, None).unwrap(),
-        16,
-    )
-    .unwrap();
-    assert_eq!(page.recipients.len(), 1);
+    assert_eq!(seat_pending(&conn, &seat).len(), 1);
     let tx = conn.transaction().unwrap();
     assert!(lazy_delivery::complete_addressed(&tx, "i", &seat, &id).unwrap());
     tx.commit().unwrap();
@@ -584,4 +574,86 @@ fn mixed_ack_display_and_completion() {
     let tx = conn.transaction().unwrap();
     assert!(!lazy_delivery::complete_addressed(&tx, "i", &SeatId::new("b"), &id).unwrap());
     tx.rollback().unwrap();
+}
+
+/// Every message the seat-level delivery-row seek returns within the current publication bound.
+fn seat_pending(conn: &Connection, seat: &SeatId) -> Vec<MessageId> {
+    use crate::store::lazy_delivery::{RowFilter, seek_pending};
+    let dh: i64 = conn
+        .query_row(
+            "SELECT decision_seq FROM host_instances WHERE id='i'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let (mut after, mut out) = (None, Vec::new());
+    loop {
+        let seek = seek_pending(conn, "i", seat, RowFilter::Seat, after, dh as u64, 100).unwrap();
+        out.extend(seek.row.map(|(_, recipient)| recipient.message));
+        after = seek.position;
+        if seek.exhausted {
+            return out;
+        }
+    }
+}
+
+// Kills: the merged page changing the mixed ACK send: the explicit recipient's page lists the
+// receipt, the row recipients' pages list the delivery row, and completing the row empties only
+// that recipient's page.
+#[test]
+fn mixed_ack_merged_pages_and_completion() {
+    use crate::protocol::{
+        commands::{Command, InboxQuery},
+        output::OutputSpec,
+        pagination::PageRequest,
+        results::InboxBatchV2Item,
+    };
+    use crate::store::lazy_delivery;
+    let iso = TestIsolation::new("prio-mixed-page");
+    let (context, mut conn) = setup(&iso, GROUP);
+    let mut req = request();
+    req.invited_recipients = vec![SeatId::new("b")];
+    let id = send(&context, &mut conn, &req);
+    let page = |seat: &str| -> Vec<String> {
+        let CommandResult::InboxBatchV2(page) = crate::store::queries::query_with_output(
+            &context,
+            "i",
+            &Command::InboxBatchV2(InboxQuery {
+                thread: None,
+                claim: None,
+                seat: Some(SeatId::new(seat)),
+                page: PageRequest::default(),
+            }),
+            &OutputSpec::default(),
+            &budget(),
+        )
+        .unwrap() else {
+            panic!("v2 page")
+        };
+        assert!(!page.has_more);
+        page.items
+            .iter()
+            .map(|item| match item {
+                InboxBatchV2Item::Message { message, .. } => {
+                    format!("receipt {}", message.as_str())
+                }
+                InboxBatchV2Item::LazyMessage { message, .. } => {
+                    format!("row {}", message.as_str())
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    };
+    assert_eq!(page("b"), [format!("receipt {}", id.as_str())]);
+    assert_eq!(page("c"), [format!("row {}", id.as_str())]);
+    assert_eq!(page("h"), [format!("row {}", id.as_str())]);
+    let tx = conn.transaction().unwrap();
+    assert!(lazy_delivery::complete_addressed(&tx, "i", &SeatId::new("c"), &id).unwrap());
+    tx.commit().unwrap();
+    assert!(
+        page("c").is_empty(),
+        "a completed row leaves the merged page"
+    );
+    assert_eq!(page("b"), [format!("receipt {}", id.as_str())]);
+    assert_eq!(page("h"), [format!("row {}", id.as_str())]);
 }

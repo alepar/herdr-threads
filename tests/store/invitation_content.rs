@@ -546,6 +546,25 @@ mod binding_presentation {
     };
     use rusqlite::Connection;
     use std::{path::PathBuf, sync::Arc};
+
+    /// Isolate the one continued candidate: the receipt walks and warnings of a captured cursor
+    /// have nothing pending, so mark them finished at their captured high waters.
+    fn isolate_continued_candidate(
+        state: &mut herdr_threads::protocol::pagination::InboxBatchV2CursorState,
+    ) {
+        let high = state.deadline.high;
+        for walks in [
+            Some(&mut state.deadline.window_start),
+            state.deadline.window_end.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            walks.physical_after = high.physical;
+            walks.manifest_after = high.manifest;
+        }
+        state.warnings.done = true;
+    }
     struct FixedClock;
     impl Clock for FixedClock {
         fn utc_now(&self) -> UtcMillis {
@@ -1081,8 +1100,11 @@ mod binding_presentation {
         let (cursor, skip, done): (String, Option<String>, i64) = f.db.query_row("SELECT ordinary_cursor,ordinary_skip_body,ordinary_done FROM invitation_presentation_consumers WHERE binding_id='b' AND consumer='watch'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
         let persisted =
             InboxBatchV2CursorState::decode_for(&cursor, "i", &SeatId::new("s")).unwrap();
-        assert_eq!(persisted.source, InboxBatchV2Source::Unread);
-        assert_eq!(persisted.body.as_ref().unwrap().message.as_str(), "m");
+        assert_eq!(
+            persisted.body.as_ref().unwrap().0,
+            InboxBatchV2Source::Unread
+        );
+        assert_eq!(persisted.body.as_ref().unwrap().1.message.as_str(), "m");
         assert_eq!(skip.as_deref(), Some("m"));
         assert_eq!(done, 0, "the real source persisted an unfinished body walk");
 
@@ -1221,8 +1243,8 @@ mod binding_presentation {
         assert_eq!(initial.work.ordinary_continuation_key_probes, 0);
         let cursor: String = f.db.query_row("SELECT ordinary_cursor FROM invitation_presentation_consumers WHERE binding_id='b' AND consumer='watch'", [], |r| r.get(0)).unwrap();
         let state = InboxBatchV2CursorState::decode_for(&cursor, "i", &claim.seat).unwrap();
-        assert_eq!(state.source, InboxBatchV2Source::Unread);
-        assert_eq!(state.body.as_ref().unwrap().message.as_str(), "m");
+        assert_eq!(state.body.as_ref().unwrap().0, InboxBatchV2Source::Unread);
+        assert_eq!(state.body.as_ref().unwrap().1.message.as_str(), "m");
         (f, claim, cursor)
     }
     fn read_complete_body_and_advance(f: &Fixture, claim: &CallerClaim, operation: &str) {
@@ -1333,8 +1355,7 @@ mod binding_presentation {
         // Isolate the one continued candidate: the other captured sources have
         // no pending items, and this control marks their existing walks complete.
         let mut state = InboxBatchV2CursorState::decode_for(&cursor, "i", &claim.seat).unwrap();
-        state.attention.receipts_done = true;
-        state.attention.next_manifest_warning = true;
+        isolate_continued_candidate(&mut state);
         let isolated = state.encode("i").unwrap();
         f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_cursor=?1 WHERE binding_id='b' AND consumer='watch'", [&isolated]).unwrap();
         let result = f
@@ -1361,9 +1382,8 @@ mod binding_presentation {
         // A valid sub-8KiB private accumulator isolates a still-Pending
         // continued body after the captured receipt walk already completed.
         let mut state = InboxBatchV2CursorState::decode_for(&cursor, "i", &claim.seat).unwrap();
-        state.body.as_mut().unwrap().offset = 4096;
-        state.attention.receipts_done = true;
-        state.attention.next_manifest_warning = true;
+        state.body.as_mut().unwrap().1.offset = 4096;
+        isolate_continued_candidate(&mut state);
         let cursor = state.encode("i").unwrap();
         let partial = serde_json::json!({"m":"z".repeat(4096)}).to_string();
         f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_cursor=?1,ordinary_partial=?2,ordinary_skip_body=NULL WHERE binding_id='b' AND consumer='watch'", rusqlite::params![cursor, partial]).unwrap();
@@ -1393,9 +1413,8 @@ mod binding_presentation {
         use herdr_threads::protocol::{ids::MessageId, pagination::InboxBatchV2CursorState};
         let (f, claim, cursor) = continued_body_fixture_with_clock(Arc::new(FixedClock), true);
         let mut state = InboxBatchV2CursorState::decode_for(&cursor, "i", &claim.seat).unwrap();
-        state.body.as_mut().unwrap().offset = 4096;
-        state.attention.receipts_done = true;
-        state.attention.next_manifest_warning = true;
+        state.body.as_mut().unwrap().1.offset = 4096;
+        isolate_continued_candidate(&mut state);
         let partial = serde_json::json!({"m":"z".repeat(4096)}).to_string();
         f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_cursor=?1,ordinary_partial=?2,ordinary_skip_body=NULL WHERE binding_id='b' AND consumer='watch'", rusqlite::params![state.encode("i").unwrap(),partial]).unwrap();
         assert_eq!(
@@ -1567,11 +1586,7 @@ mod binding_presentation {
         // Keep one empty source-completion step after retirement. This makes
         // cancellation observable on OLD code before its final save, without
         // depending on a clock call introduced by the proposed new guard.
-        state.attention.receipts_done = false;
-        let receipts = state.attention.receipts.as_mut().unwrap();
-        receipts.physical_after = receipts.physical_high_water;
-        receipts.manifest_after = receipts.manifest_high_water;
-        state.attention.next_manifest_warning = true;
+        isolate_continued_candidate(&mut state);
         f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_cursor=?1 WHERE binding_id='b' AND consumer='watch'", [state.encode("i").unwrap()]).unwrap();
         let snapshot = || {
             let mut statement = f.db.prepare("SELECT * FROM invitation_presentation_consumers WHERE binding_id='b' AND consumer='watch'").unwrap();
@@ -1667,8 +1682,7 @@ mod binding_presentation {
         let (f, claim, cursor) = continued_body_fixture_with_clock(clock.clone(), false);
         read_complete_body_and_advance(&f, &claim, "decision-cancel-read");
         let mut state = InboxBatchV2CursorState::decode_for(&cursor, "i", &claim.seat).unwrap();
-        state.attention.receipts_done = true;
-        state.attention.next_manifest_warning = true;
+        isolate_continued_candidate(&mut state);
         f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_cursor=?1 WHERE binding_id='b' AND consumer='watch'", [state.encode("i").unwrap()]).unwrap();
         let snapshot = || {
             let mut statement = f.db.prepare("SELECT * FROM invitation_presentation_consumers WHERE binding_id='b' AND consumer='watch'").unwrap();

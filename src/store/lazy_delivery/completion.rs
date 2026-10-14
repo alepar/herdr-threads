@@ -63,6 +63,15 @@ fn complete_addressed_as(
     Ok(addressed)
 }
 
+/// A top-level display marks the row displayed seat-wide, unless a connected top-level binding of
+/// the seat (the displaying one included, for a row it left above its cursor) still finds it
+/// unread. `?1` = seat, `?2` = message; run after the displaying cursors moved.
+const MARK_DISPLAYED_SQL: &str = concat!(
+    "UPDATE lazy_recipients SET state='displayed' WHERE seat_id=?1 AND message_id=?2 AND state='pending' AND NOT EXISTS(SELECT 1 FROM lazy_recipients r JOIN messages m ON m.id=r.message_id WHERE r.seat_id=?1 AND r.message_id=?2 AND ",
+    seat_unread_sql!(),
+    ")"
+);
+
 /// Where a lazy row stands for one seat (read-only helper for mod acks).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LazyCompletion {
@@ -150,7 +159,10 @@ pub fn complete_displayed_for_binding(
     let mut by_thread: std::collections::BTreeMap<String, Vec<u64>> = Default::default();
     let mut displayed = Vec::new();
     for message in messages {
-        if !complete_addressed_as(tx, instance, seat, message, clears_legacy)? {
+        // The seat-wide `state` flips only after the cursors moved (below): a sibling top-level
+        // binding that has not displayed the row still owes it, and the ordered seek only holds
+        // `pending` rows.
+        if !complete_addressed_as(tx, instance, seat, message, false)? {
             continue;
         }
         let (thread, sequence): (String, i64) = tx
@@ -209,6 +221,12 @@ pub fn complete_displayed_for_binding(
         }
         if reader_changed {
             crate::store::presentation_reader::note_binding_reader_change(tx, target)?;
+        }
+    }
+    if clears_legacy {
+        for message in messages {
+            tx.execute(MARK_DISPLAYED_SQL, params![seat.as_str(), message.as_str()])
+                .map_err(store_error)?;
         }
     }
     // `binding_cursors` is WITHOUT ROWID, so SQLite's update hook never reports it. Touch the

@@ -605,7 +605,18 @@ fn agy_lazy_row_settles_only_through_the_transcript_confirm_never_hook_context()
     let stop = run_payload(&fx, &home, "Stop", &for_clear("stop-no-tool-call"));
     assert_eq!(stop.code, Some(0), "{}", stop.stderr);
     assert!(stop.stdout.is_empty(), "{:?}", stop.stdout);
-    assert_eq!(lazy_row_state(&fx, &lazy), "displayed");
+    // The confirm moved the clearing conversation's cursor past the row. The seat-wide state stays
+    // `pending` while the pre-`/clear` binding (still connected) has not displayed it.
+    let db = rusqlite::Connection::open(&fx.db).unwrap();
+    let passed: i64 = db
+        .query_row(
+            "SELECT count(*) FROM binding_cursors c JOIN messages m ON m.thread_id=c.thread_id WHERE m.id=?1 AND c.seq>=m.sequence",
+            [&lazy],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(passed, 1, "exactly the confirming binding passed the row");
+    assert_eq!(lazy_row_state(&fx, &lazy), "pending");
 }
 
 // Kills: classifying Lazy invitation as passive but losing its complete

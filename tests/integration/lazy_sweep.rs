@@ -82,8 +82,8 @@ fn lazy_sweep_full_body_mixed_page_then_independent_retry() {
     );
     assert_eq!(
         content,
-        format!("{body}{ordinary_body}"),
-        "exact UTF8 content in canonical lazy-first order"
+        format!("{ordinary_body}{body}"),
+        "exact UTF8 content in priority order: the explicit-ACK ordinary (p0) before the lazy row (p1)"
     );
     assert_eq!(
         pending_ordinary(&w, &ordinary),

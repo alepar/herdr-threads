@@ -212,7 +212,9 @@ impl herdr_threads::ports::LocalClient for Client {
                     let after = query.page.cursor.as_ref().map_or(0, |cursor| {
                         herdr_threads::protocol::pagination::InboxBatchV2CursorState::decode(cursor)
                             .unwrap()
-                            .lazy_after_ordinal
+                            .rows
+                            .after
+                            .map_or(0, |position| position.ordinal)
                     });
                     let next = test_cursor_after(after + 1);
                     page.next_cursor = Some(next.clone());
@@ -770,44 +772,51 @@ fn test_cursor() -> String {
 }
 
 fn test_cursor_after(after: u64) -> String {
-    use herdr_threads::protocol::pagination::{
-        InboxBatchV2CursorState, InboxBatchV2Source, ReceiptAttentionCursorState,
-        SeatAttentionCursorState,
+    use herdr_threads::protocol::{
+        pagination::{
+            DeadlineCursor, DeadlineHighWaters, DeadlineWalks, DeliveryRowsCursor,
+            DeliveryRowsPosition, InboxBatchV2CursorState, WarningsCursor,
+        },
+        priority::DeliveryPriority,
     };
     InboxBatchV2CursorState {
         seat: SeatId::new("seat"),
         binding_generation: Some(1),
         execution: Some(ExecutionId::new(uuid::Uuid::from_u128(2).to_string())),
-        source: InboxBatchV2Source::Lazy,
-        lazy_after_ordinal: after,
-        lazy_high_water_ordinal: 100,
-        publication_decision_high_water: 4,
-        body: None,
-        unread: None,
-        attention: SeatAttentionCursorState {
-            invitation_after_seq: 0,
-            invitation_after_ordinal: 0,
-            invitations_done: false,
-            has_pending_invitation: false,
-            invitation_frontier: Some((0, 2)),
-            receipts: Some(ReceiptAttentionCursorState {
+        publication_decision_high_water: 4 + after,
+        last: None,
+        rows: DeliveryRowsCursor {
+            after: (after > 0).then_some(DeliveryRowsPosition {
+                priority: DeliveryPriority::DEFAULT,
+                decision_seq: after,
+                ordinal: after,
+            }),
+            done: false,
+        },
+        deadline: DeadlineCursor {
+            high: DeadlineHighWaters {
+                invitation: 2,
+                unread: None,
+                physical: 2,
+                manifest: 2,
+            },
+            window_start: DeadlineWalks {
+                invitation_after: 0,
+                unread_after: None,
                 physical_after: 0,
                 manifest_after: 0,
-                physical_high_water: 2,
-                manifest_high_water: 2,
                 next_manifest: false,
-            }),
-            receipts_done: false,
-            has_pending_receipt: false,
-            receipt_frontier_seq: Some(4),
-            physical_warning_after: 0,
-            physical_warning_high_water: 4,
-            manifest_warning_after: 0,
-            manifest_warning_high_water: 4,
-            next_manifest_warning: false,
-            latest_warning_seq: None,
-            latest_warning_offset: Some(0),
+            },
+            window_end: None,
+            done: false,
         },
+        warnings: WarningsCursor {
+            physical_after: 0,
+            manifest_after: 0,
+            offered: 0,
+            done: false,
+        },
+        body: None,
     }
     .encode(&uuid::Uuid::from_u128(1).to_string())
     .unwrap()

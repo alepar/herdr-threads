@@ -92,7 +92,10 @@ impl DeadlineWindow {
         };
 
         // Invitations.
-        while more(&items, spent) && stop.is_none_or(|e| at.invitation_after < e.invitation_after) {
+        while more(&items, spent)
+            && at.invitation_after < high.invitation
+            && stop.is_none_or(|e| at.invitation_after < e.invitation_after)
+        {
             let Some(step) =
                 next_invitation(db, seat, at.invitation_after, high.invitation, decision)?
             else {
@@ -135,7 +138,10 @@ impl DeadlineWindow {
                 ),
                 None => None,
             };
-            while more(&items, spent) && stop_unread.is_none_or(|e| after < e) {
+            while more(&items, spent)
+                && after < high_unread
+                && stop_unread.is_none_or(|e| after < e)
+            {
                 let Some((ordinal, id, decision_seq)) = next_unread(
                     db,
                     seat,
@@ -175,6 +181,7 @@ impl DeadlineWindow {
 
         // Receipts.
         while more(&items, spent)
+            && (at.physical_after < high.physical || at.manifest_after < high.manifest)
             && stop.is_none_or(|e| {
                 at.physical_after < e.physical_after || at.manifest_after < e.manifest_after
             })
@@ -245,7 +252,28 @@ impl DeadlineWindow {
         }
     }
 
+    /// Remove the first remaining item for `message` (a body continuation emitted it directly).
+    /// The head is advanced past like any emitted item; a deeper item is only dropped. Returns the
+    /// head's key when it was the head.
+    pub(super) fn take_message(&mut self, message: &MessageId) -> Option<DeliveryOrderKey> {
+        let at = (self.next..self.items.len()).find(|&n| match &self.items[n].item {
+            DeadlineRef::Unread { message: m, .. } | DeadlineRef::Receipt { message: m, .. } => {
+                m == message
+            }
+            DeadlineRef::Invitation { .. } => false,
+        })?;
+        if at == self.next {
+            let key = self.items[at].key;
+            self.next += 1;
+            Some(key)
+        } else {
+            self.items.remove(at);
+            None
+        }
+    }
+
     /// No item left in this window and the walks are exhausted.
+    #[cfg(test)]
     pub(super) fn done(&self) -> bool {
         self.next >= self.items.len() && self.walks_exhausted
     }
@@ -261,6 +289,12 @@ impl DeadlineWindow {
         } else {
             cursor.window_end = Some(self.end);
         }
+    }
+
+    /// Write back a window whose head is only partly shown: re-collect exactly this window, even
+    /// when the head is its last item.
+    pub(super) fn persist_partial(&self, cursor: &mut DeadlineCursor) {
+        cursor.window_end = Some(self.end);
     }
 }
 

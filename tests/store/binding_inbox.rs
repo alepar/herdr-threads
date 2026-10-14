@@ -418,9 +418,10 @@ fn one_bindings_display_never_hides_mail_from_the_other() {
     let m3 = send(&mut fx, "three");
     // A sees only the new message; B sees everything it has not displayed itself.
     assert_eq!(page(&fx, Some(&claim_b1())), vec![msg(&m3, true)]);
+    // Merged order: the pending receipt (deadline) precedes the already settled unread rows.
     assert_eq!(
         page(&fx, Some(&claim_b2())),
-        vec![msg(&m1, false), msg(&m2, false), msg(&m3, true)]
+        vec![msg(&m3, true), msg(&m1, false), msg(&m2, false)]
     );
     // B displays only the first of its mail: its cursor stops there, A's is untouched.
     advance(&fx, &claim_b2(), "adv-2", &[&m1]);
@@ -428,7 +429,7 @@ fn one_bindings_display_never_hides_mail_from_the_other() {
     assert_cursor(&fx, &claim_b1(), &m2, Some(&m3));
     assert_eq!(
         page(&fx, Some(&claim_b2())),
-        vec![msg(&m2, false), msg(&m3, true)]
+        vec![msg(&m3, true), msg(&m2, false)]
     );
     // Without a claim the page is today's per-seat page, unchanged by the cursors.
     assert_eq!(page(&fx, None), vec![msg(&m3, true)]);
@@ -1054,4 +1055,77 @@ fn thread_scoped_page_stops_at_the_first_unread_ordinary_row() {
     for row in [lazy(&before), msg(&ordinary, true), lazy(&after)] {
         assert!(all.contains(&row), "{row:?} in {all:?}");
     }
+}
+
+// ht-yha.5.4: the caller subsets of the merged page. The hook/CLI page lists every class; accept's
+// thread-scoped page lists that thread's delivery rows only; the private presentation page lists
+// delivery rows and the receipt-bearing walks, never invitations or warnings.
+#[test]
+fn caller_subsets_produce_the_right_classes() {
+    let mut fx = fx("bi-caller-subsets");
+    let lazy = send_lazy(&mut fx, "quiet");
+    let ack = send(&mut fx, "needs an ACK");
+    let decision: i64 = fx
+        .conn
+        .query_row(
+            "SELECT decision_seq+1 FROM host_instances WHERE id='i'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    fx.conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES('inv','t','b',2,'pending',0,?1,300,300)", [decision]).unwrap();
+    let warned = decision + 1;
+    fx.conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_json,decision_seq,decision_at) VALUES('i','warning','t',100,'warn','{}',?1,0)", [warned]).unwrap();
+    fx.conn.execute("INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES('warning',?1,'t',100,'b','invitation','inv')", [warned]).unwrap();
+    fx.conn
+        .execute(
+            "UPDATE host_instances SET decision_seq=?1 WHERE id='i'",
+            [warned],
+        )
+        .unwrap();
+    // Hook / CLI page: invitation and receipt (priority 0) before the priority-1 row, plus the
+    // warning.
+    assert_eq!(
+        page(&fx, Some(&claim_b1())),
+        vec![
+            msg(&ack, true),
+            Row::Invitation("t".into()),
+            Row::Lazy(lazy.as_str().into())
+        ]
+    );
+    assert_eq!(warning_refs(&fx, &claim_b1()), ["warning"]);
+    // Accept's thread-scoped page: this thread's delivery rows only, below the first unread
+    // receipt-bearing row (the ACK message sits after the lazy one).
+    assert_eq!(
+        page_in(&fx, Some(&claim_b1()), Some("t")),
+        vec![Row::Lazy(lazy.as_str().into())]
+    );
+    // The private presentation page: rows and receipt-bearing walks, no invitation or warning.
+    let presentation = crate::store::queries::ordinary_presentation_page(
+        &fx.conn,
+        &fx.context,
+        "i",
+        &claim_b1(),
+        None,
+        &budget(),
+    )
+    .unwrap();
+    assert!(!presentation.page.has_more);
+    let kinds: Vec<_> = presentation
+        .page
+        .items
+        .iter()
+        .map(|item| match item {
+            InboxBatchV2Item::Message { message, .. } => format!("message {}", message.as_str()),
+            InboxBatchV2Item::LazyMessage { message, .. } => format!("lazy {}", message.as_str()),
+            other => panic!("the presentation lists no {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            format!("message {}", ack.as_str()),
+            format!("lazy {}", lazy.as_str())
+        ]
+    );
 }

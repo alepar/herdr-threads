@@ -160,7 +160,10 @@ fn recovery_to_ready_with_hold_and_poke_suppressed() {
         "a request that arrives mid catch-up",
         &["--require-ack", &fx.b, "--deadline", "30"],
     );
-    assert!(!fx.boundary_b().contains(&held), "held while catching up");
+    assert!(
+        !super::digest_of(&fx.boundary_b()).contains(&held),
+        "held while catching up"
+    );
     wait_projected(&fx, &fx.b, &held);
     wait_projected(&fx, &fx.b, &fx.ack);
     assert_eq!(

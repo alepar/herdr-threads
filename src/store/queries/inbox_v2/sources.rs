@@ -1,4 +1,5 @@
 use super::*;
+use crate::protocol::pagination::DeliveryRowsPosition;
 
 /// The recipient ordinal of `message` when it is unread by `binding`, within the captured
 /// publication bound.
@@ -18,25 +19,8 @@ pub(in crate::store::queries) fn unread_ordinal(
         .optional()
         .map_err(store_error)
 }
-/// A pending seat receipt within the publication bound: only then may a top-level display
-/// ACK settle it. A message another binding already settled is shown without that.
-pub(super) fn receipt_pending(
-    db: &Connection,
-    seat: &SeatId,
-    message: &str,
-    decision: u64,
-) -> Result<bool, ApiError> {
-    Ok(
-        crate::store::effective::effective_receipt(db, message, seat.as_str())?.is_some_and(|r| {
-            r.state == EffectiveReceiptState::Pending
-                && r.decision_seq.unwrap_or(0) <= decision as i64
-        }),
-    )
-}
 pub(super) struct ContinuedOrdinary {
     pub(super) message: MessageId,
-    pub(super) ordinal: i64,
-    pub(super) pending: bool,
     pub(super) retire: bool,
 }
 /// Private presentation continuation only. Positive captured authority is
@@ -49,14 +33,17 @@ pub(super) fn continued_ordinary(
     binding: &BindingId,
     probes: &mut usize,
 ) -> Result<ContinuedOrdinary, ApiError> {
-    let body = state.body.as_ref().expect("continued ordinary body");
-    let position = state
-        .unread
+    let (_, body) = state.body.as_ref().expect("continued ordinary body");
+    let (after_ordinal, high_water_ordinal) = state
+        .deadline
+        .window_start
+        .unread_after
+        .zip(state.deadline.high.unread)
         .ok_or_else(|| invalid("missing unread capture"))?;
     // Recipient, manifest, message, membership and the exact binding cursor.
     *probes += 5;
     let captured: Option<(i64, String, i64, i64, i64)> = db.query_row(
-            "SELECT pr.ordinal,m.thread_id,m.sequence,sm.decision_seq,COALESCE((SELECT c.seq FROM binding_cursors c WHERE c.binding_id=?2 AND c.thread_id=m.thread_id),0) FROM messages m JOIN send_manifests sm ON sm.message_id=m.id AND sm.thread_id=m.thread_id JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id AND pr.thread_id=m.thread_id AND pr.seat_id=?1 WHERE m.id=?3 AND m.instance_id=?4 AND sm.instance_id=?4 AND m.kind='ordinary' AND m.delivery_mode='ordinary' AND sm.decision_seq<=?5 AND EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=m.thread_id AND mb.seat_id=pr.seat_id AND mb.state='joined')",
+            "SELECT pr.ordinal,m.thread_id,m.sequence,sm.decision_seq,COALESCE((SELECT c.seq FROM binding_cursors c WHERE c.binding_id=?2 AND c.thread_id=m.thread_id),0) FROM messages m JOIN send_manifests sm ON sm.message_id=m.id AND sm.thread_id=m.thread_id JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id AND pr.thread_id=m.thread_id AND pr.seat_id=?1 WHERE m.id=?3 AND m.instance_id=?4 AND sm.instance_id=?4 AND m.kind='ordinary' AND sm.decision_seq<=?5 AND EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=m.thread_id AND mb.seat_id=pr.seat_id AND mb.state='joined')",
             params![state.seat.as_str(),binding.as_str(),body.message.as_str(),instance,state.publication_decision_high_water as i64],
             |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
         ).optional().map_err(store_error)?;
@@ -64,8 +51,8 @@ pub(super) fn continued_ordinary(
         return Err(invalid("continued body lacks captured recipient authority"));
     };
     if ordinal <= 0
-        || ordinal as u64 <= position.after_ordinal
-        || ordinal as u64 > position.high_water_ordinal
+        || ordinal as u64 <= after_ordinal
+        || ordinal as u64 > high_water_ordinal
         || sequence <= 0
         || decision < 0
         || displayed < 0
@@ -91,16 +78,14 @@ pub(super) fn continued_ordinary(
             "continued body receipt differs from captured authority",
         ));
     }
-    let (pending, terminal) = match receipt.state {
-        EffectiveReceiptState::Pending => (true, false),
+    let terminal = match receipt.state {
+        EffectiveReceiptState::Pending => false,
         EffectiveReceiptState::Acknowledged
         | EffectiveReceiptState::RecipientRetired
-        | EffectiveReceiptState::NotRequired => (false, true),
+        | EffectiveReceiptState::NotRequired => true,
     };
     Ok(ContinuedOrdinary {
         message: body.message.clone(),
-        ordinal,
-        pending,
         retire: displayed >= sequence && terminal,
     })
 }
@@ -159,7 +144,7 @@ pub(super) fn next_invitation(
     }))
 }
 /// The inbox item of a pending invitation step; `None` when it is no longer pending.
-fn invitation_item(
+pub(super) fn invitation_item(
     db: &Connection,
     seat: &SeatId,
     step: InvitationStep,
@@ -232,299 +217,69 @@ pub(super) fn next_receipt(
         visited: slice.visited as usize,
     })
 }
-#[allow(clippy::too_many_arguments)]
-pub(super) fn scan(
+/// The inbox item of a warning candidate when it is addressed to `seat`, still actionable and
+/// not yet offered to the reader (`offered` is the frozen offer cutoff of the cursor).
+pub(super) fn warning_item(
+    db: &Connection,
+    seat: &SeatId,
+    reading: Option<&BindingId>,
+    candidate: &crate::store::effective::GlobalLogicalCandidate,
+    offered: i64,
+) -> Result<Option<Item>, ApiError> {
+    let Some(warning) = effective_warning_by_id(db, &candidate.id)? else {
+        return Ok(None);
+    };
+    if !is_warning_recipient(db, &candidate.id, seat.as_str())?
+        || !warning_condition_actionable(db, &warning)?
+        || !crate::store::attention::informational_notice_pending_for(
+            db,
+            seat.as_str(),
+            &candidate.id,
+            reading.map(BindingId::as_str),
+        )?
+        .unwrap_or(warning.event_seq > offered)
+    {
+        return Ok(None);
+    }
+    Ok(Some(Item::Warning {
+        thread: ThreadId::new(&candidate.thread_id),
+        topic_data: batch_topic(db, &candidate.thread_id)?,
+        informational: !crate::store::attention::warning_wakes_seat(
+            db,
+            seat.as_str(),
+            &candidate.id,
+        )?,
+        warning: MessageId::new(candidate.id.clone()),
+        sequence: warning.sequence as u64,
+    }))
+}
+/// The delivery-row position of the published lazy `message` addressed to `seat`, when the row
+/// exists in this instance within the publication bound `decision`.
+pub(super) fn lazy_body_position(
     db: &Connection,
     instance: &str,
-    state: &mut State,
-    current_agent: bool,
-    reading: Option<&BindingId>,
-    ordinary_only: bool,
-    continuation: Option<&ContinuedOrdinary>,
-    lazy_scope_probes: &mut usize,
-    retired_body: &mut Option<MessageId>,
-    scope: Option<&ThreadId>,
-) -> Result<(Option<Item>, usize), ApiError> {
-    let seat = &state.seat.clone();
-    match state.source {
-        Source::Unread => {
-            let binding = reading.expect("unread walk only on a bound read");
-            let position = state.unread.expect("unread walk carries its position");
-            let decision = state.publication_decision_high_water;
-            // A partial body pins an already validated unread identity (the same rule as lazy).
-            if let Some(body) = state.body.clone() {
-                let (ordinal, pending) = if ordinary_only {
-                    let validated = continuation
-                        .filter(|value| value.message == body.message && !value.retire)
-                        .ok_or_else(|| invalid("missing validated private body continuation"))?;
-                    (validated.ordinal, validated.pending)
-                } else {
-                    let ordinal =
-                        unread_ordinal(db, seat, binding, body.message.as_str(), decision)?
-                            .ok_or_else(|| {
-                                invalid("continued body is not captured unread content")
-                            })?;
-                    (
-                        ordinal,
-                        receipt_pending(db, seat, body.message.as_str(), decision)?,
-                    )
-                };
-                let ack = current_agent && pending;
-                let item = message(db, body.message.as_str(), false, ack, state)?;
-                state.unread = Some(InboxBatchV2UnreadPosition {
-                    after_ordinal: ordinal as u64,
-                    ..position
-                });
-                return Ok((item, 1));
-            }
-            if ordinary_only {
-                let raw: Option<(i64, String)> = db.query_row(
-                        "SELECT ordinal,preparation_id FROM prepared_recipients WHERE seat_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1",
-                        params![seat.as_str(),position.after_ordinal as i64,position.high_water_ordinal as i64],
-                        |r| Ok((r.get(0)?,r.get(1)?)),
-                    ).optional().map_err(store_error)?;
-                let Some((ordinal, preparation)) = raw else {
-                    state.unread = Some(InboxBatchV2UnreadPosition {
-                        after_ordinal: position.high_water_ordinal,
-                        ..position
-                    });
-                    return Ok((None, 0));
-                };
-                state.unread = Some(InboxBatchV2UnreadPosition {
-                    after_ordinal: ordinal as u64,
-                    ..position
-                });
-                let id: Option<String> = db.query_row(
-                        "SELECT message_id FROM send_manifests WHERE preparation_id=?1 AND instance_id=?2 AND decision_seq<=?3",
-                        params![preparation,instance,decision as i64], |r|r.get(0),
-                    ).optional().map_err(store_error)?;
-                let Some(id) = id else {
-                    return Ok((None, 1));
-                };
-                if unread_ordinal(db, seat, binding, &id, decision)?.is_none() {
-                    return Ok((None, 1));
-                }
-                let ack = current_agent && receipt_pending(db, seat, &id, decision)?;
-                return Ok((message(db, &id, false, ack, state)?, 1));
-            }
-            let row = next_unread(
-                db,
-                seat,
-                binding,
-                position.after_ordinal as i64,
-                position.high_water_ordinal as i64,
-                decision,
-            )?;
-            let Some((ordinal, id, _)) = row else {
-                state.unread = Some(InboxBatchV2UnreadPosition {
-                    after_ordinal: position.high_water_ordinal,
-                    ..position
-                });
-                return Ok((None, 0));
-            };
-            state.unread = Some(InboxBatchV2UnreadPosition {
-                after_ordinal: ordinal as u64,
-                ..position
-            });
-            let ack = current_agent && receipt_pending(db, seat, &id, decision)?;
-            Ok((message(db, &id, false, ack, state)?, 1))
-        }
-        Source::Lazy => {
-            // A partial body pins an already validated addressed identity.
-            // Concurrent completion removes it from the pending index but
-            // must not apply its offset to the next pending message.
-            if let Some(body) = &state.body {
-                let (ordinal, legacy_pending): (i64, i64) = db.query_row(
-                        "SELECT ordinal,legacy_pending FROM lazy_recipients WHERE seat_id=?1 AND message_id=?2",
-                        params![seat.as_str(), body.message.as_str()],
-                        |r| Ok((r.get(0)?,r.get(1)?)),
-                    ).map_err(store_error)?;
-                if !matches!(legacy_pending, 0 | 1) {
-                    return Err(invalid("continued body is not captured addressed content"));
-                }
-                // Recheck only scope. A captured tail must survive its own
-                // cursor progress, but a cursorless reader cannot borrow a
-                // later invitation episode for an older publication.
-                if let Some(binding) = reading {
-                    if ordinary_only {
-                        *lazy_scope_probes += 3;
-                    }
-                    let visible: bool = db
-                        .query_row(
-                            super::super::LAZY_CONTINUATION_SCOPE_SQL,
-                            params![
-                                seat.as_str(),
-                                body.message.as_str(),
-                                binding.as_str(),
-                                instance
-                            ],
-                            |r| r.get(0),
-                        )
-                        .map_err(store_error)?;
-                    if !visible {
-                        // Positive captured publication/address/range and
-                        // accumulator validation preceded this scan. Only
-                        // modern private tails may retire on scope loss;
-                        // public and legacy continuations remain strict.
-                        if ordinary_only && legacy_pending == 0 {
-                            state.lazy_after_ordinal = ordinal as u64;
-                            *retired_body = Some(body.message.clone());
-                            state.body = None;
-                            // The caller charges this one physical visit.
-                            // Keep the captured cutoffs and signal tuple.
-                            return Ok((None, 1));
-                        }
-                        return Err(invalid("continued body is not captured unread content"));
-                    }
-                }
-                let item = message(db, body.message.as_str(), true, false, state)?;
-                state.lazy_after_ordinal = ordinal as u64;
-                return Ok((item, 1));
-            }
-            if ordinary_only {
-                let binding =
-                    reading.ok_or_else(|| invalid("presentation reader has no binding"))?;
-                let raw: Option<(i64,String)> = db.query_row(
-                        "SELECT ordinal,message_id FROM lazy_recipients WHERE seat_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1",
-                        params![seat.as_str(),state.lazy_after_ordinal as i64,state.lazy_high_water_ordinal as i64],
-                        |r|Ok((r.get(0)?,r.get(1)?)),
-                    ).optional().map_err(store_error)?;
-                let Some((ordinal, id)) = raw else {
-                    state.lazy_after_ordinal = state.lazy_high_water_ordinal;
-                    return Ok((None, 0));
-                };
-                state.lazy_after_ordinal = ordinal as u64;
-                *lazy_scope_probes += 3;
-                let visible: bool = db
-                    .query_row(
-                        super::super::PRIVATE_LAZY_ELIGIBILITY_SQL,
-                        params![
-                            seat.as_str(),
-                            id,
-                            binding.as_str(),
-                            instance,
-                            state.publication_decision_high_water as i64
-                        ],
-                        |r| r.get(0),
-                    )
-                    .map_err(store_error)?;
-                return Ok((
-                    if visible {
-                        message(db, &id, true, false, state)?
-                    } else {
-                        None
-                    },
-                    1,
-                ));
-            }
-            let pending = crate::store::lazy_delivery::pending_page_in(
-                db,
-                instance,
-                seat,
-                reading,
-                scope,
-                state.lazy_after_ordinal as i64,
-                crate::store::lazy_delivery::HighWater {
-                    recipient_ordinal: state.lazy_high_water_ordinal as i64,
-                    publication_decision: state.publication_decision_high_water as i64,
-                },
-                1,
-            )?;
-            let item = pending
-                .recipients
-                .first()
-                .map(|r| message(db, r.message.as_str(), true, false, state))
-                .transpose()?
-                .flatten();
-            state.lazy_after_ordinal = if pending.inspected == 0 {
-                state.lazy_high_water_ordinal
-            } else {
-                pending.last_inspected as u64
-            };
-            Ok((item, pending.inspected))
-        }
-        Source::Invitations => {
-            let a = &state.attention;
-            let step = next_invitation(
-                db,
-                seat,
-                a.invitation_after_ordinal,
-                a.invitation_frontier.unwrap().1,
-                state.publication_decision_high_water,
-            )?;
-            let Some(step) = step else {
-                state.attention.invitations_done = true;
-                return Ok((None, 0));
-            };
-            state.attention.invitation_after_ordinal = step.ordinal;
-            state.attention.invitation_after_seq = step.ordinal;
-            Ok((invitation_item(db, seat, step)?, 1))
-        }
-        Source::Receipts => {
-            let step = next_receipt(
-                db,
-                seat,
-                reading,
-                batch_receipt_position(&state.attention),
-                state.publication_decision_high_water,
-            )?;
-            let item = step
-                .receipt
-                .map(|r| message(db, &r.message_id, false, current_agent, state))
-                .transpose()?
-                .flatten();
-            state.attention.receipts_done = step.visited == 0;
-            batch_set_receipt_position(&mut state.attention, step.position);
-            Ok((item, step.visited))
-        }
-        Source::Warnings => {
-            let a = &state.attention;
-            let slice = scan_global_logical_candidates(
-                db,
-                instance,
-                GlobalLogicalKinds::Warnings,
-                Some(GlobalLogicalPosition {
-                    after_decision_seq: a.physical_warning_after,
-                    after_event_offset: a.manifest_warning_after,
-                    high_water_decision_seq: a.physical_warning_high_water,
-                }),
-                2,
-            )?;
-            state.attention.physical_warning_after = slice.position.after_decision_seq;
-            state.attention.manifest_warning_after = slice.position.after_event_offset;
-            let item = if let Some(candidate) = slice.candidates.into_iter().next() {
-                if let Some(warning) = effective_warning_by_id(db, &candidate.id)?
-                    && is_warning_recipient(db, &candidate.id, seat.as_str())?
-                    && warning_condition_actionable(db, &warning)?
-                    && crate::store::attention::informational_notice_pending_for(
-                        db,
-                        seat.as_str(),
-                        &candidate.id,
-                        reading.map(BindingId::as_str),
-                    )?
-                    .unwrap_or(
-                        warning.event_seq > state.attention.latest_warning_offset.unwrap_or(0),
-                    )
-                {
-                    Some(Item::Warning {
-                        thread: ThreadId::new(&candidate.thread_id),
-                        topic_data: batch_topic(db, &candidate.thread_id)?,
-                        informational: !crate::store::attention::warning_wakes_seat(
-                            db,
-                            seat.as_str(),
-                            &candidate.id,
-                        )?,
-                        warning: MessageId::new(candidate.id),
-                        sequence: warning.sequence as u64,
-                    })
-                } else {
-                    None
-                }
-            } else {
-                state.attention.next_manifest_warning = true;
-                None
-            };
-            Ok((item, slice.visited as usize))
-        }
-    }
+    seat: &SeatId,
+    message: &str,
+    decision: u64,
+) -> Result<Option<DeliveryRowsPosition>, ApiError> {
+    let row: Option<(i64, Option<i64>, i64)> = db
+        .query_row(
+            "SELECT r.priority,r.decision_seq,r.ordinal FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id AND sm.thread_id=r.thread_id JOIN messages m ON m.id=r.message_id AND m.instance_id=sm.instance_id AND m.thread_id=r.thread_id AND m.decision_seq=sm.decision_seq WHERE r.seat_id=?1 AND r.message_id=?2 AND sm.instance_id=?3 AND sm.decision_seq<=?4 AND m.kind='ordinary'",
+            params![seat.as_str(), message, instance, decision as i64],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some((priority, Some(decision_seq), ordinal)) = row else {
+        return Ok(None);
+    };
+    let out_of_range = || invalid("continued body row is out of range");
+    Ok(Some(DeliveryRowsPosition {
+        priority: u8::try_from(priority)
+            .ok()
+            .and_then(|v| crate::protocol::priority::DeliveryPriority::new(v).ok())
+            .ok_or_else(out_of_range)?,
+        decision_seq: u64::try_from(decision_seq).map_err(|_| out_of_range())?,
+        ordinal: u64::try_from(ordinal).map_err(|_| out_of_range())?,
+    }))
 }

@@ -91,28 +91,15 @@ pub(super) fn capture(
     instance: &str,
     seat: &SeatId,
     reader: &Reader,
-    ordinary_only: bool,
+    subset: &PageSubset<'_>,
 ) -> Result<State, ApiError> {
-    let high = if ordinary_only {
-        crate::store::lazy_delivery::HighWater {
-            recipient_ordinal: db
-                .query_row(
-                    "SELECT coalesce(max(ordinal),0) FROM lazy_recipients WHERE seat_id=?1",
-                    [seat.as_str()],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?,
-            publication_decision: db
-                .query_row(
-                    "SELECT decision_seq FROM host_instances WHERE id=?1",
-                    [instance],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?,
-        }
-    } else {
-        crate::store::lazy_delivery::capture_high_water(db, instance, seat, bound(reader))?
-    };
+    let decision: i64 = db
+        .query_row(
+            "SELECT decision_seq FROM host_instances WHERE id=?1",
+            [instance],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
     let (generation, execution) =
         identity(db, seat, reader)?.map_or((None, None), |(g, e)| (Some(g), Some(e)));
     let max = |table: &str| -> Result<i64, ApiError> {
@@ -147,51 +134,51 @@ pub(super) fn capture(
             .map_err(store_error)?
             .unwrap_or(0),
     };
-    Ok(State {
+    let unread = matches!(reader, Reader::Bound(_));
+    let manifest = max("prepared_recipients")?;
+    // The private presentation never walks invitations: it neither bounds nor reads them.
+    let invitations = if subset.private() {
+        0
+    } else {
+        max("invitations")?
+    };
+    let mut state = State {
         seat: seat.clone(),
         binding_generation: generation,
         execution,
-        source: Source::Lazy,
-        lazy_after_ordinal: 0,
-        lazy_high_water_ordinal: high.recipient_ordinal as u64,
-        publication_decision_high_water: high.publication_decision as u64,
-        body: None,
-        unread: matches!(reader, Reader::Bound(_)).then_some(InboxBatchV2UnreadPosition {
-            after_ordinal: 0,
-            high_water_ordinal: max("prepared_recipients")? as u64,
-        }),
-        attention: SeatAttentionCursorState {
-            invitation_after_seq: 0,
-            invitation_after_ordinal: 0,
-            invitations_done: ordinary_only,
-            has_pending_invitation: false,
-            invitation_frontier: Some((
-                0,
-                if ordinary_only {
-                    0
-                } else {
-                    max("invitations")?
-                },
-            )),
-            receipts: Some(ReceiptAttentionCursorState {
+        publication_decision_high_water: decision as u64,
+        last: None,
+        rows: DeliveryRowsCursor {
+            after: None,
+            done: false,
+        },
+        deadline: DeadlineCursor {
+            high: DeadlineHighWaters {
+                invitation: invitations,
+                unread: unread.then_some(manifest as u64),
+                physical: max("receipts")?,
+                manifest,
+            },
+            window_start: DeadlineWalks {
+                invitation_after: 0,
+                unread_after: unread.then_some(0),
                 physical_after: 0,
                 manifest_after: 0,
-                physical_high_water: max("receipts")?,
-                manifest_high_water: max("prepared_recipients")?,
                 next_manifest: false,
-            }),
-            receipts_done: false,
-            has_pending_receipt: false,
-            receipt_frontier_seq: Some(high.publication_decision),
-            physical_warning_after: 0,
-            physical_warning_high_water: high.publication_decision,
-            manifest_warning_after: 0,
-            manifest_warning_high_water: high.publication_decision,
-            // The global logical scan needs one phase-complete bit and the
-            // frozen informational offer cutoff, not v1 wake token state.
-            next_manifest_warning: ordinary_only,
-            latest_warning_seq: None,
-            latest_warning_offset: Some(offered),
+            },
+            window_end: None,
+            done: false,
         },
-    })
+        // The global logical scan needs its two positions and the frozen informational offer
+        // cutoff.
+        warnings: WarningsCursor {
+            physical_after: 0,
+            manifest_after: 0,
+            offered,
+            done: false,
+        },
+        body: None,
+    };
+    subset.apply(&mut state, reader);
+    Ok(state)
 }

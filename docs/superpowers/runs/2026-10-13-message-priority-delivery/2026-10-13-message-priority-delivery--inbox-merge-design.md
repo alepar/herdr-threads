@@ -161,3 +161,26 @@ Digest:
 ## Post-Implementation Notes
 
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
+
+### 2026-10-14, ht-yha.5.4 (merge loop, OrderClass, PageSubset)
+
+- `Presentation` keeps the Receipts walk. Today's private presentation traverses binding Unread **and** Receipts
+  (it excludes only invitations and warnings), so `PageSubset::Presentation` marks only the invitation walk and
+  warnings finished; the subspec's "delivery rows + Unread" would have dropped pending receipts the presentation
+  shows today. `capture` also skips the invitation high water for it (it neither reads nor bounds invitations, and
+  the unindexed `max(ordinal)` over a seat's invitations grew with history).
+- A partly shown body is pinned by the page's state before its head. A delivery-row body resumes straight from its
+  `lazy_recipients` row; a deadline-class body (Unread or Receipts) needs the re-collected window's head to be that
+  message (a head ordered elsewhere is an `InvalidCursor`), and the cursor stores the window's end positions
+  (`DeadlineWindow::persist_partial`) so the re-collection is exactly the original window.
+- `DeadlineWindow` no longer calls a walk whose position already reached its captured high water (an exhausted
+  walk is not queried; the invitation query otherwise scanned the seat's invitations for an empty range).
+- Delivery-row work: the row seek keeps two visits in reserve for the warnings scan while warnings are unfinished;
+  a deadline window starts only when `WINDOW_VISITS + 8` work remains, so a page never exceeds `CANDIDATE_LIMIT`.
+- Found while converting readers: a top-level completion used to flip `lazy_recipients.state` to `displayed`
+  seat-wide at once, which hides the row from the ordered seek (it indexes `state='pending'` only) for a sibling
+  top-level binding that has not displayed it. The flip now follows the cursor moves and happens only when no
+  connected top-level binding still finds the row unread (`MARK_DISPLAYED_SQL`); TRUST-POLICY.md says so.
+- `delivery_mode` readers converted: `RECEIVABLE_WHERE` and `continued_ordinary` rely on the `prepared_recipients`
+  join, `ordinary_presentation_message_by_id` branches on whether the seat holds a delivery row, and hot-thread
+  recency counts priority-0 messages (the legacy `ordinary` mode maps to priority 0).

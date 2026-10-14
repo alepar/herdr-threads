@@ -28,16 +28,6 @@ pub struct Recipient {
     pub seat: SeatId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingPage {
-    pub recipients: Vec<Recipient>,
-    pub high_water: HighWater,
-    pub last_inspected: i64,
-    pub inspected: usize,
-    /// A full work page may require an empty final page to prove exhaustion.
-    pub has_more: bool,
-}
-
 /// Reader scope from validated canonical scalars. A retained own cursor keeps its
 /// established stream; only a cursorless unjoined reader needs a current direct
 /// invitation episode and a publication after its creation decision. The existing

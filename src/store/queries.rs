@@ -6089,7 +6089,7 @@ fn hot_threads_in(
     let latest = |thread: &str| -> Result<i64, ApiError> {
         Ok(db
             .query_row(
-                "SELECT decision_at FROM messages WHERE thread_id=?1 AND kind='ordinary' AND delivery_mode='ordinary' ORDER BY sequence DESC LIMIT 1",
+                "SELECT decision_at FROM messages WHERE thread_id=?1 AND kind='ordinary' AND priority=0 ORDER BY sequence DESC LIMIT 1",
                 [thread],
                 |r| r.get(0),
             )
@@ -6340,19 +6340,20 @@ pub(super) fn ordinary_presentation_message_by_id(
     use crate::protocol::results::InboxBatchV2Item;
     let (head, current_agent) = due_context;
     work.ordinary_due_key_probes += 1;
-    let row: Option<(String, String, i64)> = db.query_row(
-        "SELECT delivery_mode,thread_id,COALESCE(decision_seq,0) FROM messages WHERE id=?1 AND instance_id=?2 AND kind='ordinary'",
-        params![id.as_str(), instance], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
+    // Which row the seat holds decides the branch: a delivery row (lazy) or a receipt.
+    let row: Option<(bool, String, i64)> = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM lazy_recipients r WHERE r.seat_id=?3 AND r.message_id=m.id),thread_id,COALESCE(decision_seq,0) FROM messages m WHERE id=?1 AND instance_id=?2 AND kind='ordinary'",
+        params![id.as_str(), instance, seat.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
     ).optional().map_err(store_error)?;
-    let Some((mode, thread, published)) = row else {
+    let Some((has_delivery_row, thread, published)) = row else {
         return Ok(None);
     };
     if published > head {
         return Ok(None);
     }
     let mut ack_candidate = false;
-    let lazy = match mode.as_str() {
-        "lazy" => {
+    let lazy = match has_delivery_row {
+        true => {
             // Existing seven relations plus the three exact episode points.
             work.ordinary_due_key_probes += 10;
             let addressed: bool = db.query_row(
@@ -6364,7 +6365,7 @@ pub(super) fn ordinary_presentation_message_by_id(
             }
             true
         }
-        "ordinary" => {
+        false => {
             work.ordinary_due_key_probes += 10;
             work.ordinary_due_seeks += 1;
             let receipt = super::effective::effective_receipt(db, id.as_str(), seat.as_str())?;
@@ -6384,7 +6385,6 @@ pub(super) fn ordinary_presentation_message_by_id(
             }
             false
         }
-        _ => return Ok(None),
     };
     work.ordinary_due_key_probes += if lazy { 3 } else { 2 };
     let item = inbox_v2::hydrate_message(db, id.as_str(), lazy, ack_candidate, seat, None)?;
