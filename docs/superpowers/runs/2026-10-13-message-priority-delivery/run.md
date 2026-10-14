@@ -4,7 +4,7 @@ flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
 resumeChange: 2026-10-13 · "design APPROVED (A-E) ... Move to autonomous stage now (both roasts on). Nudge dev-herdr-threads when merge-ready." (relayed by seePN0MKW, mpqluOeQD) · autonomous=f→t after the interactive root design; nested brainstorms and later gates run Mode B
 resumeChange: 2026-10-14 · "sgtm" (fix run for bugs 1-3 before merging; upstream feedback: "message it to the superpowers space we have here. no need to scrub.") · post-hand-back fix pass for report Remaining items 1-3, then re-sweep and update the report
 resumeChange: 2026-10-14 · "convert to d9, simplicity." + "doesnt each session have its own cursor so that other siblings cant affect it?" · ServiceSend converted to D9 (ht-yha.47); ht-yha.44 rewritten to per-session pending tracking (seat-wide display draft withdrawn, its partial worktree discarded after an unplanned coordinator stop)
-phase: report
+phase: finish
 feedback: herdr agent prompt wB:pB (superpowers workspace, Claude pane) with upstream-feedback-draft.md, 2026-10-14
 codeMechanism: Workflow
 
