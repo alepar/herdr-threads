@@ -46,7 +46,7 @@ pub(crate) fn validate_namespace(
     canonical: &HandoffNamespace,
     request: &AutomaticDeliveryMutation,
 ) -> Result<(), ApiError> {
-    request.validate().map_err(ApiError::invalid_request)?;
+    crate::store::verified::validated("automatic-delivery-request", request, |r| r.validate())?;
     original_bytes(request)?;
     let selected = &request.plan().payload.namespace;
     if selected.instance != canonical.instance
@@ -113,21 +113,25 @@ fn current_after_parent_guard(
             "oversized automatic original",
         ));
     }
-    let saved: AutomaticDeliveryMutation = serde_json::from_slice(&bytes)
-        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid automatic original"))?;
-    saved
-        .validate()
-        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid automatic original"))?;
-    if serde_json::from_slice::<serde_json::Value>(&bytes)
-        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid automatic original"))?
-        != serde_json::to_value(&saved)
-            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid automatic original"))?
-    {
-        return Err(api_error(
-            ErrorCode::StoreCorrupt,
-            "automatic original contains lost fields",
-        ));
-    }
+    let saved: AutomaticDeliveryMutation =
+        crate::store::verified::remembered("automatic-delivery-original", &[&bytes], || {
+            let saved: AutomaticDeliveryMutation = serde_json::from_slice(&bytes)
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid automatic original"))?;
+            saved
+                .validate()
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid automatic original"))?;
+            if serde_json::from_slice::<serde_json::Value>(&bytes)
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid automatic original"))?
+                != serde_json::to_value(&saved)
+                    .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid automatic original"))?
+            {
+                return Err(api_error(
+                    ErrorCode::StoreCorrupt,
+                    "automatic original contains lost fields",
+                ));
+            }
+            Ok(saved)
+        })?;
     if original_bytes(&saved)? != original_bytes(request)? {
         return Err(mismatch());
     }
@@ -186,7 +190,7 @@ pub(crate) fn validate_phase(
     replay: bool,
 ) -> Result<(), ApiError> {
     crate::store::topology_handoff::automatic::guard_child(db, request, replay)?;
-    request.validate().map_err(ApiError::invalid_request)?;
+    crate::store::verified::validated("automatic-delivery-request", request, |r| r.validate())?;
     let saved = current_after_parent_guard(db, request)?;
     let Some(saved) = saved else {
         return if matches!(request.action, AutomaticDeliveryAction::Begin { .. }) {
@@ -222,7 +226,7 @@ pub(crate) fn validate_phase(
     seats::eligible_delivery_recipient(db, &request.claim.instance, &request.plan().recipient)
 }
 pub(crate) fn inner(request: &AutomaticDeliveryMutation) -> Result<PermitMutation, ApiError> {
-    request.validate().map_err(ApiError::invalid_request)?;
+    crate::store::verified::validated("automatic-delivery-request", request, |r| r.validate())?;
     match &request.action {
         AutomaticDeliveryAction::Begin { operation } => {
             Ok(PermitMutation::BeginHandoff(HandoffMutation {
