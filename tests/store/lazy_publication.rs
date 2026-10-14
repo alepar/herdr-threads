@@ -491,6 +491,8 @@ fn ordinary_publication_positive_control() {
     member(&conn, "b", "unresolved", "joined");
     let mut request = send_request();
     request.delivery_mode = herdr_threads::protocol::commands::DeliveryMode::Ordinary;
+    // Only an explicit ACK recipient owes a receipt (D9).
+    request.invited_recipients = vec![SeatId::new("b")];
     assert!(
         messages::send_payload(&request)
             .get("delivery_mode")

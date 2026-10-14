@@ -20,8 +20,9 @@ pub fn stage_recipient(
     message: &MessageId,
     thread: &ThreadId,
     seat: &SeatId,
+    priority: crate::protocol::priority::DeliveryPriority,
 ) -> Result<(), ApiError> {
-    tx.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES(?1,?2,?3,?4)",params![preparation,message.as_str(),thread.as_str(),seat.as_str()]).map_err(store_error)?;
+    tx.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES(?1,?2,?3,?4,?5)",params![preparation,message.as_str(),thread.as_str(),seat.as_str(),priority.get()]).map_err(store_error)?;
     Ok(())
 }
 

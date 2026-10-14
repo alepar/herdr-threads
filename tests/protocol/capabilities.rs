@@ -309,7 +309,8 @@ fn capability_constants_are_stable() {
             "inbox.binding_cursors_v1",
             "attention.binding_digest_v1",
             "inbox.in_turn_offer_v1",
-            "inbox.thread_scope_v1"
+            "inbox.thread_scope_v1",
+            "send.priority_v1"
         ]
     );
 }
@@ -358,6 +359,22 @@ fn every_advertised_capability_has_a_handler() {
             LAZY_SEND | SEND_TIME_RECEIPTS_V1 => {
                 let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"delivery_mode":if *name == LAZY_SEND { "lazy" } else { "ordinary" },"thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
                 assert!(command.validate().is_ok());
+                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                assert_eq!(
+                    handler
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
+            SEND_PRIORITY_V1 => {
+                // The explicit priority is on the wire, validates and routes to the domain; the
+                // store freezes it (`store::messages::priority_send_tests`).
+                let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"priority":3,"thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                assert!(command.validate().is_ok());
+                let wire = serde_json::to_value(&command).unwrap();
+                assert_eq!(wire["args"]["priority"], 3);
                 let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
                 assert_eq!(
                     handler
@@ -735,6 +752,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "attention.binding_digest_v1",
             "inbox.in_turn_offer_v1",
             "inbox.thread_scope_v1",
+            "send.priority_v1",
             "invitation.confirmation_v1"
         ]
     );

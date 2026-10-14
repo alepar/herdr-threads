@@ -2653,7 +2653,11 @@ fn relevance_publish_unrelated_lazy(db: &mut Connection, n: u32) {
         "i",
         &ThreadId::new("relevance-unrelated"),
         "relevance-third",
-        100,
+        crate::store::messages::Staging {
+            duration: 100,
+            priority: crate::protocol::priority::DeliveryPriority::DEFAULT,
+            ack: false,
+        },
         &mut recipients,
         &mut warnings,
     )
@@ -3736,7 +3740,11 @@ fn presentation_relevance_unavailable_exact_episode_and_late_publication_are_swe
             "i",
             &ThreadId::new(&thread),
             "s",
-            100,
+            messages::Staging {
+                duration: 100,
+                priority: crate::protocol::priority::DeliveryPriority::p0(),
+                ack: true,
+            },
             &mut recipients,
             &mut warnings,
         )

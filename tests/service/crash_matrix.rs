@@ -337,13 +337,28 @@ impl Matrix {
         invited: &[&str],
         op: &str,
     ) -> Result<MessageId, ApiError> {
+        // Only explicit ACK recipients owe receipts (D9): no named recipients means every other
+        // joined member, as every ordinary send did before.
+        let invited: Vec<SeatId> = if invited.is_empty() {
+            self.db()
+                .prepare("SELECT seat_id FROM memberships WHERE thread_id=?1 AND state='joined' AND seat_id<>?2 ORDER BY seat_id")
+                .unwrap()
+                .query_map(rusqlite::params![thread.as_str(), claim.seat.as_str()], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap()
+                .map(|seat| SeatId::new(seat.unwrap()))
+                .collect()
+        } else {
+            invited.iter().map(|s| SeatId::new(*s)).collect()
+        };
         self.handle(Command::SendMessage(SendMessage {
             priority: None,
             delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: body.into(),
             direct_recipient: None,
-            invited_recipients: invited.iter().map(|s| SeatId::new(*s)).collect(),
+            invited_recipients: invited,
             deadline_millis: None,
             operation: OperationId::new(op),
             claim: claim.clone(),
@@ -561,7 +576,9 @@ fn send_response_lost_after_commit_recovers_original_message_and_snapshot() {
     m.join(&s, &thread, &x);
     {
         let _fp = Failpoint::error("send.after_commit", m.scope(), ErrorCode::UnknownOutcome);
-        let error = m.send(&s, &thread, "hello", &[], "send-1").unwrap_err();
+        let error = m
+            .send(&s, &thread, "hello", &["r", "x"], "send-1")
+            .unwrap_err();
         assert_eq!(error.code, ErrorCode::UnknownOutcome);
     }
     // The caller saw a failure, yet SQLite committed exactly one message.
@@ -583,7 +600,7 @@ fn send_response_lost_after_commit_recovers_original_message_and_snapshot() {
     .unwrap();
     // The daemon also restarts before the caller retries.
     m.restart();
-    let recovered = m.send(&s, &thread, "hello", &[], "send-1").unwrap();
+    let recovered = m.send(&s, &thread, "hello", &["r", "x"], "send-1").unwrap();
     assert_eq!(recovered.as_str(), committed);
     assert_eq!(m.message_rows(), 1);
     assert_eq!(m.recipient_snapshot(&recovered), snapshot);
@@ -1116,12 +1133,8 @@ fn join_and_leave_between_send_quanta_yield_one_exact_recipient_snapshot() {
     // Bounded cleanup runs, then the exact-key retry prepares afresh.
     m.drive_deadlines();
     let sent = m.send(&s, &thread, "hello", &explicit, "send-1").unwrap();
-    let mut expected: Vec<String> = members
-        .iter()
-        .map(|c| c.seat.as_str().to_string())
-        .collect();
-    expected.extend(["late".to_string(), "x".to_string()]);
-    expected.sort();
+    // Receipts exist only for the explicit ACK recipients (D9); everyone else holds a row.
+    let expected = vec!["r00".to_string(), "x".to_string()];
     assert_eq!(m.recipient_snapshot(&sent), expected);
     assert_eq!(m.message_rows(), 1);
     // The immutable snapshot survives later membership change.
@@ -1132,8 +1145,20 @@ fn join_and_leave_between_send_quanta_yield_one_exact_recipient_snapshot() {
     }))
     .unwrap();
     assert_eq!(m.recipient_snapshot(&sent), expected);
-    assert_eq!(m.pending("late"), vec![sent.clone()]);
-    assert!(m.pending(leaver.seat.as_str()).is_empty());
+    assert_eq!(
+        m.count(
+            "SELECT count(*) FROM lazy_recipients WHERE seat_id='late'",
+            []
+        ),
+        1
+    );
+    assert_eq!(
+        m.count(
+            "SELECT count(*) FROM lazy_recipients WHERE seat_id=?1",
+            [leaver.seat.as_str()]
+        ),
+        0
+    );
 }
 
 /// Boundary: archive while a receipt is pending, deadline passes.

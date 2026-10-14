@@ -222,13 +222,21 @@ fn send_one(
     operation: &str,
     deadline_millis: Option<u64>,
 ) -> Result<MessageId, ApiError> {
+    // Only explicit ACK recipients owe receipts (D9): name every other joined member.
+    let recipients = conn
+        .prepare("SELECT seat_id FROM memberships WHERE thread_id=?1 AND state='joined' AND seat_id<>?2 ORDER BY seat_id")
+        .and_then(|mut stmt| {
+            stmt.query_map([thread, from.seat.as_str()], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(store_error)?;
     let request = SendMessage {
         priority: None,
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: ThreadId::new(thread),
         body: format!("history {operation}"),
         direct_recipient: None,
-        invited_recipients: Vec::new(),
+        invited_recipients: recipients.into_iter().map(SeatId::new).collect(),
         deadline_millis,
         operation: OperationId::new(operation),
         claim: from.claim(),

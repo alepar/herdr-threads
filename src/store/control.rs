@@ -2568,15 +2568,13 @@ pub fn complete_inbox_delivery(
         digest,
         |tx| {
             for id in &request.messages {
-                if super::lazy_delivery::recorded_mode(tx, &request.claim.instance, id)?
-                    != Some(crate::protocol::commands::DeliveryMode::Lazy)
-                    || !tx
-                        .query_row(
-                            super::lazy_delivery::ADDRESSED_SQL,
-                            params![seat.as_str(), id.as_str(), request.claim.instance],
-                            |r| r.get::<_, bool>(0),
-                        )
-                        .map_err(store_error)?
+                if !tx
+                    .query_row(
+                        super::lazy_delivery::ADDRESSED_SQL,
+                        params![seat.as_str(), id.as_str(), request.claim.instance],
+                        |r| r.get::<_, bool>(0),
+                    )
+                    .map_err(store_error)?
                 {
                     return Err(api_error(
                         ErrorCode::InvalidRequest,

@@ -11,6 +11,8 @@ Amended 2026-10-12 for the text accept's thread-scoped opening-mail display (ht-
 ordinary stop and, with a live mod channel, by a bounded channel grace.
 Amended 2026-10-12 for the consented Codex pane environment block (foreground configuration only; no seat,
 binding, receipt or attribution rule changes).
+Amended 2026-10-13 for message priority delivery (ht-yha.3): delivery rows are the bookkeeping of every message and
+audience member, and receipts exist only for explicit ACK recipients (A8, A5a, A6).
 
 ## Abstract
 
@@ -609,9 +611,9 @@ change; it never recreates membership. Archived threads require a member or serv
 owner to reopen them before a new join. Discovery and names confer no additional authority.
 
 **A5a. Human seats do not owe ACKs.** The daemon classifies a recipient from its canonical open
-binding when staging a send. A human binding gets the message through thread membership but no
-receipt expectation, even when the sender requested an ACK; an unbound or agent bound recipient
-keeps the existing expectation. A human lifecycle check-in waives every pending obligation already
+binding when staging a send. A human binding gets the message through a priority-0 delivery row (A8) but no
+receipt expectation, even when the sender requested an ACK; an unbound or agent bound explicit ACK
+recipient keeps the existing expectation. A human lifecycle check-in waives every pending obligation already
 owed by that seat, including obligations inherited from an earlier agent binding. It records a
 durable decision cutoff and a bounded reconciliation job in the same decision. The job records
 each receipt table's high water independently and sets the separate `ack_required=0` obligation
@@ -650,14 +652,14 @@ boundary or claim that an unprocessed clear event was delivered.
 and original deadline at canonical committed send time plus that duration. This applies to
 unbound, unregistered, unavailable and invited recipients; later registration, acceptance,
 restart or rebind cannot restart the clock. Availability remains observed availability and
-confers no new wake or receipt authority. Lazy delivery and canonical human waivers remain
-free of ACK obligations. The durable per-instance send-time cutover preserves every previously
+confers no new wake or receipt authority. Delivery rows (every priority, A8) and canonical human waivers remain
+free of ACK obligations; only explicit ACK recipients owe one. The durable per-instance send-time cutover preserves every previously
 running sparse deadline using the earliest canonical availability recorded before the cutover
 and before retirement; stored running deadlines and terminal receipt provenance are preserved.
 Previously dormant obligations derive their deadline from immutable send time and duration.
 
 Modern clients require `messages.send_time_receipts_v1` before a new ACK-required send;
-absent or refused discovery fails explicitly without a legacy fallback. Lazy sends are exempt.
+absent or refused discovery fails explicitly without a legacy fallback. Sends without explicit ACK recipients are exempt.
 Accepted mixed-version limit: ordinary CLI and service clients cannot prove that the canonical
 recipient audience is entirely human-waived, so an ordinary send that can create an agent
 obligation conservatively requires the capability, even when its eventual audience is all human.
@@ -744,14 +746,26 @@ The same rule decides a live Claude mod channel's attention: the daemon counts o
 the channel's attention fingerprint (with the same saturated fallback) and marks each other pending
 warning `informational` in the inbox batch, so `watch` raises no `attention` line for it.
 
-**A8. Passive lazy delivery bookkeeping.** Recorded `ordinary`/`lazy` delivery mode is immutable and
-independent of sender role, relay and human intent. A lazy audience is frozen by canonical preparation
-and publication; recipient identity is immutable, and its pending/displayed progress is monotonic.
+**A8. Passive delivery-row bookkeeping.** Every message carries an immutable delivery priority 0..=9
+(default 1), frozen at send and independent of sender role, relay and human intent. Delivery rows
+(`lazy_recipients`, the former "lazy" bookkeeping, now for every priority) are the bookkeeping of the whole
+audience: each joined non-author audience member that is not an explicit ACK recipient gets one row carrying the
+message priority, human seats included. Only an explicit non-human ACK recipient (`--require-ack SEAT`) gets a
+receipt instead (D9); a human explicit recipient gets a priority-0 row, never a receipt, and a priority above 0
+cannot be combined with explicit ACK recipients (the daemon refuses it, as it refuses a deadline without explicit
+ACK recipients). Receipts, deadlines, overdue warnings and ACK obligations therefore exist only for explicit ACK
+recipients; the old rule that every joined agent owes an ACK for an ordinary message ended. A priority-0 row-only
+send keeps the send-time unavailable-recipient warning (sender feedback, not an obligation); a priority above 0
+produces none. The recorded `delivery_mode` column is audit only, written `ordinary` iff the send has explicit
+ACK recipients and `lazy` otherwise, and is never read for decisions; an old client's modes map `ordinary` to
+priority 0 and `lazy` to priority 1 (a request's own priority wins; its payload digest covers the priority only
+when carried, so journaled old-shape intents retry unchanged). A delivery audience is frozen by canonical
+preparation and publication; recipient identity is immutable, and its pending/displayed progress is monotonic.
 Already addressed rows survive leaving, retirement and archival, with no transfer to another seat.
 Undisplayed rows (`state` still `pending`) past the seat's furthest cursor when it joins become seat-pending
 (join frontier, below).
 Unpublished rows are invisible and may be discarded in bounded cleanup; published progress is retained.
-Lazy delivery creates no receipt, deadline, ACK evidence, wake attention, wake, poke or automatic adoption,
+Delivery rows create no receipt, deadline, ACK evidence, wake attention, wake, poke or automatic adoption,
 except that a seat with `wake_on: all` is woken (wake eligibility only; still no receipt, digest
 attention or poke).
 

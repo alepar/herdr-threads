@@ -6199,7 +6199,7 @@ fn participant_locations(
 /// The actual private normal-source Lazy eligibility statement. Rejected raw
 /// recipient candidates still consume one visit and three added scope probes.
 pub(crate) const PRIVATE_LAZY_ELIGIBILITY_SQL: &str = concat!(
-    "SELECT EXISTS(SELECT 1 FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id AND sm.thread_id=r.thread_id JOIN messages m ON m.id=r.message_id AND m.instance_id=sm.instance_id AND m.thread_id=r.thread_id AND m.decision_seq=sm.decision_seq JOIN occupant_bindings b ON b.binding_id=?3 AND b.seat_id=r.seat_id WHERE r.seat_id=?1 AND r.message_id=?2 AND sm.instance_id=?4 AND sm.decision_seq<=?5 AND m.kind='ordinary' AND m.delivery_mode='lazy' AND ",
+    "SELECT EXISTS(SELECT 1 FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id AND sm.thread_id=r.thread_id JOIN messages m ON m.id=r.message_id AND m.instance_id=sm.instance_id AND m.thread_id=r.thread_id AND m.decision_seq=sm.decision_seq JOIN occupant_bindings b ON b.binding_id=?3 AND b.seat_id=r.seat_id WHERE r.seat_id=?1 AND r.message_id=?2 AND sm.instance_id=?4 AND sm.decision_seq<=?5 AND m.kind='ordinary' AND ",
     super::lazy_delivery::binding_lazy_unread_sql!(),
     ")"
 );
@@ -6208,7 +6208,7 @@ pub(crate) const PRIVATE_LAZY_ELIGIBILITY_SQL: &str = concat!(
 /// another chunk must never apply this offset to a different message. This
 /// preserves the historical continuation's absence of a Legacy exception.
 pub(crate) const LAZY_CONTINUATION_SCOPE_SQL: &str = concat!(
-    "SELECT EXISTS(SELECT 1 FROM messages m WHERE m.id=?2 AND m.instance_id=?4 AND m.kind='ordinary' AND m.delivery_mode='lazy' AND ",
+    "SELECT EXISTS(SELECT 1 FROM messages m WHERE m.id=?2 AND m.instance_id=?4 AND m.kind='ordinary' AND ",
     super::lazy_delivery::binding_lazy_scope_sql! {
         binding: "?3", seat: "?1", thread: "m.thread_id", instance: "?4",
         publication: "m.decision_seq"

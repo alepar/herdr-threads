@@ -1214,7 +1214,7 @@ mod activation {
                     thread,
                     body: "ordinary body needs later receipt ACK".into(),
                     direct_recipient: None,
-                    invited_recipients: vec![],
+                    invited_recipients: vec![self.recipient.seat.clone()],
                     deadline_millis: Some(300_000),
                     operation: OperationId::new("activation-ordinary-send"),
                     claim: origin,

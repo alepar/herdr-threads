@@ -689,7 +689,7 @@ fn installed_flow_prelaunch_handoff_to_explicit_receipt_survives_daemon_restart(
     assert_eq!(plugin.kind(Some(author), &["reopen", &thread]), "reopened");
     let reopened = plugin.ok(
         Some(author),
-        &["send", &thread, "--body", "reopened", "--nudge"],
+        &["send", &thread, "--body", "reopened", "--require-ack", &b],
     );
     let pending: Vec<Value> = plugin.pending(&b);
     assert_eq!(pending.len(), 1, "{pending:?}");

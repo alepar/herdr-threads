@@ -85,7 +85,7 @@ pub const MOD_WATCH_PRESENTATION_V2: &str = "mod.watch_presentation_v2";
 pub const DELIVERY_PULL: &str = "delivery.pull_v1";
 
 /// `SendMessage.priority` and the priority-aware inbox/watch fields. Defined by the ht-yha.1 seam;
-/// advertised by its handler's task.
+/// advertised with the send handler (ht-yha.3).
 pub const SEND_PRIORITY_V1: &str = "send.priority_v1";
 /// `Command::NudgeThreshold` / `Command::SetNudgeThreshold`. Defined by the ht-yha.1 seam;
 /// advertised by its handler's task.
@@ -132,6 +132,7 @@ pub const ADVERTISED: &[&str] = &[
     BINDING_DIGEST,
     IN_TURN_OFFER,
     INBOX_THREAD_SCOPE,
+    SEND_PRIORITY_V1,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

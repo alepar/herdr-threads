@@ -1011,6 +1011,29 @@ pub struct SendMessage {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub relays_user: bool,
 }
+
+impl SendMessage {
+    /// The delivery-option rules every client and the daemon enforce before staging (priority
+    /// design D3/D9). Details are model-visible: 44, 32, 44 and 50 bytes.
+    pub fn validate_delivery_options(&self) -> Result<(), &'static str> {
+        let explicit = !self.invited_recipients.is_empty();
+        if self.delivery_mode == DeliveryMode::Lazy
+            && self.priority == Some(crate::protocol::priority::DeliveryPriority::p0())
+        {
+            return Err("lazy delivery mode conflicts with priority 0");
+        }
+        if explicit && self.priority.is_some_and(|p| p.get() > 0) {
+            return Err("--require-ack implies priority 0");
+        }
+        if self.deadline_millis.is_some() && !explicit {
+            return Err("a deadline requires --require-ack recipients");
+        }
+        if self.delivery_mode == DeliveryMode::Lazy && explicit {
+            return Err("lazy messages cannot request receipts or deadlines");
+        }
+        Ok(())
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ack {
@@ -1435,11 +1458,8 @@ impl Command {
             {
                 Err("invalid inbox delivery completion batch size")
             }
-            Self::SendMessage(send)
-                if send.delivery_mode == DeliveryMode::Lazy
-                    && (!send.invited_recipients.is_empty() || send.deadline_millis.is_some()) =>
-            {
-                Err("lazy messages cannot request receipts or deadlines")
+            Self::SendMessage(send) if send.validate_delivery_options().is_err() => {
+                Err(send.validate_delivery_options().unwrap_err())
             }
             Self::SendMessage(send) if send.invited_recipients.len() > MAX_BATCH_ITEMS => {
                 Err("too many explicit recipients")

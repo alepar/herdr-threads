@@ -406,7 +406,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         let sent = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::SendMessage(SendMessage { priority: None,
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
             direct_recipient: None,
-            thread: thread.clone(), body: "native system mail".into(), invited_recipients: vec![],
+            thread: thread.clone(), body: "native system mail".into(), invited_recipients: (0..20).map(|index| SeatId::new(format!("member-{index}"))).collect(),
             deadline_millis: None, operation: OperationId::new("native-system-send"), claim: native.clone(), relays_user: false, user_intent: None,
         }), &budget())).join().unwrap()).unwrap();
         let CommandResult::MessageSent(sent) = sent else { panic!("missing system message") };

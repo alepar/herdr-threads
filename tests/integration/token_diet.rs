@@ -180,11 +180,17 @@ fn agent_facing_machine_text_is_compact() {
             _ => (hatter, format!("Twinkle, twinkle, little bat! (#{index})")),
         };
         let mut args = vec!["send", thread.as_str(), "--body", body.as_str()];
-        if from.0 == alice_seat && index % 8 == 0 {
-            args.extend(["--require-ack", hatter_seat.as_str()]);
+        let tracked = from.0 == alice_seat && index % 8 == 0;
+        // Only an explicit ACK recipient owes a receipt (D9): the other participant is named.
+        let other = if from.0 == alice_seat {
+            hatter_seat.as_str()
         } else {
+            alice_seat.as_str()
+        };
+        if !tracked {
             args.push("--nudge");
         }
+        args.extend(["--require-ack", other]);
         let message = plugin.ok(Some(from), &args)["data"]
             .as_str()
             .unwrap()
@@ -192,7 +198,7 @@ fn agent_facing_machine_text_is_compact() {
         if index == 2 {
             long_message = message.clone();
         }
-        if args.contains(&"--require-ack") && index < 10 {
+        if tracked && index < 10 {
             acked.push(message);
         }
     }

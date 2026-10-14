@@ -819,7 +819,7 @@ fn q3_reader_fixture(consumers: usize) -> (Fixture, CallerClaim, CallerClaim, Me
                 thread: ThreadId::new("t"),
                 body: "reader invalidation canonical body".into(),
                 direct_recipient: None,
-                invited_recipients: vec![],
+                invited_recipients: ack_all_but(&sender),
                 deadline_millis: None,
                 operation: OperationId::new("q3-reader-send"),
                 claim: sender,
@@ -1009,7 +1009,13 @@ fn q3_many_thread_messages(
                         thread: thread.clone(),
                         body: body.clone(),
                         direct_recipient: None,
-                        invited_recipients: vec![],
+                        invited_recipients: if mode
+                            == crate::protocol::commands::DeliveryMode::Ordinary
+                        {
+                            vec![a.seat.clone()]
+                        } else {
+                            vec![]
+                        },
                         deadline_millis: None,
                         operation: OperationId::new(format!("q3-many-send-{n}-{ordinal}")),
                         claim: sender.clone(),
@@ -1332,7 +1338,7 @@ fn presentation_q3_reader_change_preserves_nonempty_progress_outbox_and_offers()
                     thread: ThreadId::new("t"),
                     body,
                     direct_recipient: None,
-                    invited_recipients: vec![],
+                    invited_recipients: ack_all_but(&sender.clone()),
                     deadline_millis: None,
                     operation: OperationId::new(format!("q3-retained-send-{n}")),
                     claim: sender.clone(),
@@ -1850,6 +1856,15 @@ fn claim(
 }
 /// Initial positive fixture claim uses the seat's actual mapping generation.
 /// Raw `claim` and `check_in` keep caller-supplied generations for negative controls.
+/// Only explicit ACK recipients owe receipts (D9): every fixture member but the sender.
+fn ack_all_but(sender: &CallerClaim) -> Vec<SeatId> {
+    ["s", "x", "c"]
+        .into_iter()
+        .filter(|seat| *seat != sender.seat.as_str())
+        .map(SeatId::new)
+        .collect()
+}
+
 fn fixture_claim(
     f: &Fixture,
     seat: &str,
@@ -7525,7 +7540,7 @@ fn presentation_watch_fresh_confirmation_records_exact_owner_publication_cutoff_
                     thread: ThreadId::new("t"),
                     body: key.into(),
                     direct_recipient: None,
-                    invited_recipients: vec![],
+                    invited_recipients: ack_all_but(&sender.clone()),
                     deadline_millis: None,
                     operation: OperationId::new(key),
                     claim: sender.clone(),
@@ -8915,7 +8930,12 @@ impl OfferWindowFixture {
                     // This fixture's existing thread has joined memberships;
                     // it is not an automatic direct-pair channel.
                     direct_recipient: None,
-                    invited_recipients: vec![],
+                    invited_recipients: if mode == crate::protocol::commands::DeliveryMode::Ordinary
+                    {
+                        ack_all_but(&self.sender.clone())
+                    } else {
+                        vec![]
+                    },
                     deadline_millis: None,
                     operation: OperationId::new(format!("offer-window-send-{n}")),
                     claim: self.sender.clone(),
@@ -10359,7 +10379,7 @@ fn presentation_handler_initial_ordinary_receipt_delivers_body_without_invented_
                 thread: ThreadId::new("t"),
                 body: "ordinary bounded response needed".into(),
                 direct_recipient: None,
-                invited_recipients: vec![],
+                invited_recipients: ack_all_but(&sender),
                 deadline_millis: None,
                 operation: OperationId::new("initial-ordinary-send"),
                 claim: sender,
@@ -10652,7 +10672,7 @@ fn presentation_quiet_channel_observes_new_ordinary_ack_message() {
                 thread: ThreadId::new("t"),
                 body: "new ordinary ACK content after quiet registration".into(),
                 direct_recipient: None,
-                invited_recipients: vec![],
+                invited_recipients: ack_all_but(&sender),
                 deadline_millis: None,
                 operation: OperationId::new("quiet-ordinary-send"),
                 claim: sender,
