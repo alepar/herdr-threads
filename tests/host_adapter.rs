@@ -36,7 +36,10 @@ fn budget(ms: u64) -> CallBudget {
     }
 }
 fn socket_path() -> PathBuf {
-    std::env::temp_dir().join(format!("ht-host-socket-{}", uuid::Uuid::new_v4()))
+    herdr_threads::test_support::scratch::temp_path(format!(
+        "ht-host-socket-{}",
+        uuid::Uuid::new_v4()
+    ))
 }
 fn read_request(stream: &mut UnixStream) -> Value {
     let mut line = String::new();

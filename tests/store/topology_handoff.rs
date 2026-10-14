@@ -130,9 +130,11 @@ fn file_fixture() -> (
     std::path::PathBuf,
     Connection,
 ) {
-    let directory = super::handoff_fences::Directory(
-        std::env::temp_dir().join(format!("ht-topology-{}", uuid::Uuid::new_v4())),
-    );
+    let directory =
+        super::handoff_fences::Directory(herdr_threads::test_support::scratch::temp_path(format!(
+            "ht-topology-{}",
+            uuid::Uuid::new_v4()
+        )));
     std::fs::create_dir(&directory.0).unwrap();
     let path = directory.0.join("store.db");
     // A serialized image is a complete database file.
@@ -313,9 +315,11 @@ fn new_channel_retains_frozen_create_key_without_creating_channel() {
 
 #[test]
 fn retained_identity_and_attempt_survive_database_reopen() {
-    let directory = super::handoff_fences::Directory(
-        std::env::temp_dir().join(format!("ht-topology-{}", uuid::Uuid::new_v4())),
-    );
+    let directory =
+        super::handoff_fences::Directory(herdr_threads::test_support::scratch::temp_path(format!(
+            "ht-topology-{}",
+            uuid::Uuid::new_v4()
+        )));
     std::fs::create_dir(&directory.0).unwrap();
     let path = directory.0.join("store.db");
     let expected = {

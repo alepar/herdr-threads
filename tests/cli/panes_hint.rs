@@ -60,7 +60,7 @@ fn autodetect_probe_is_bounded() {
         AUTODETECT_PROBE_TIMEOUT <= Duration::from_millis(2_000),
         "the probe bound is short: {AUTODETECT_PROBE_TIMEOUT:?}"
     );
-    let dir = std::env::temp_dir().join(format!("ht-hung-{}", uuid::Uuid::new_v4()));
+    let dir = crate::test_support::scratch::temp_path(format!("ht-hung-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&dir).unwrap();
     let inputs = DetectInputs {
         herdr: Some(hung_herdr(&dir)),

@@ -116,7 +116,7 @@ mod tests {
     /// host_unavailable.
     #[test]
     fn local_client_reports_denied_socket_distinctly() {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_support::scratch::temp_path(format!(
             "htcd-{}",
             &uuid::Uuid::new_v4().simple().to_string()[..10]
         ));

@@ -2521,7 +2521,8 @@ pub(crate) mod tests {
     where
         F: FnOnce(&mut UnixStream, Value) + Send + 'static,
     {
-        let socket = std::env::temp_dir().join(format!("ht-start-{}", uuid::Uuid::new_v4()));
+        let socket =
+            crate::test_support::scratch::temp_path(format!("ht-start-{}", uuid::Uuid::new_v4()));
         // Reserve one byte for the Unix address terminator.
         assert!(socket.as_os_str().as_encoded_bytes().len() < 104);
         let listener = UnixListener::bind(&socket).unwrap();
@@ -2616,7 +2617,8 @@ pub(crate) mod tests {
             F: FnMut(&mut UnixStream, &Value) + Send + 'static,
         {
             use std::io::{BufRead, BufReader};
-            let socket = std::env::temp_dir().join(format!("hint-{}", uuid::Uuid::new_v4()));
+            let socket =
+                crate::test_support::scratch::temp_path(format!("hint-{}", uuid::Uuid::new_v4()));
             // Reserve one byte for the Unix address terminator.
             assert!(socket.as_os_str().as_encoded_bytes().len() < 104);
             let listener = UnixListener::bind(&socket).unwrap();
@@ -3501,7 +3503,8 @@ pub(crate) mod tests {
         worker.join().unwrap();
         let _ = fs::remove_file(socket);
         // HostUnavailable: no listener at the socket path.
-        let missing = std::env::temp_dir().join(format!("ht-absent-{}", uuid::Uuid::new_v4()));
+        let missing =
+            crate::test_support::scratch::temp_path(format!("ht-absent-{}", uuid::Uuid::new_v4()));
         let cli = NativeCli::new(missing, Arc::new(TestClock(Instant::now())));
         cli.epoch.store(3, Ordering::Release);
         let failure = cli
@@ -3511,7 +3514,7 @@ pub(crate) mod tests {
         assert_epoch_untouched(&cli, 3);
         // Parse-time overrun: the reply arrived after the limit.
         let cli = NativeCli::new(
-            std::env::temp_dir().join("unused"),
+            crate::test_support::scratch::temp_path("unused"),
             Arc::new(TestClock(Instant::now())),
         );
         cli.epoch.store(3, Ordering::Release);
@@ -3529,7 +3532,8 @@ pub(crate) mod tests {
         assert_eq!(cli.epoch(), 4);
     }
     fn absent_cli() -> NativeCli {
-        let missing = std::env::temp_dir().join(format!("ht-absent-{}", uuid::Uuid::new_v4()));
+        let missing =
+            crate::test_support::scratch::temp_path(format!("ht-absent-{}", uuid::Uuid::new_v4()));
         let cli = NativeCli::new(missing, Arc::new(TestClock(Instant::now())));
         cli.epoch.store(3, Ordering::Release);
         cli
@@ -3767,7 +3771,8 @@ pub(crate) mod tests {
     type Exchange = Box<dyn FnOnce(&mut UnixStream, Value) + Send>;
     /// Serves one ping+operation exchange per entry of `responses`.
     fn serve_sequence(responses: Vec<Exchange>) -> (PathBuf, NativeCli, thread::JoinHandle<()>) {
-        let socket = std::env::temp_dir().join(format!("ht-start-{}", uuid::Uuid::new_v4()));
+        let socket =
+            crate::test_support::scratch::temp_path(format!("ht-start-{}", uuid::Uuid::new_v4()));
         // Reserve one byte for the Unix address terminator.
         assert!(socket.as_os_str().as_encoded_bytes().len() < 104);
         let listener = UnixListener::bind(&socket).unwrap();
@@ -4079,7 +4084,10 @@ pub(crate) mod tests {
             "ui",
             "epoch",
         ] {
-            let socket = std::env::temp_dir().join(format!("ht-no-start-{}", uuid::Uuid::new_v4()));
+            let socket = crate::test_support::scratch::temp_path(format!(
+                "ht-no-start-{}",
+                uuid::Uuid::new_v4()
+            ));
             let listener = UnixListener::bind(&socket).unwrap();
             listener.set_nonblocking(true).unwrap();
             let cli = NativeCli::new(socket.clone(), Arc::new(TestClock(Instant::now())));
@@ -5159,7 +5167,10 @@ pub(crate) mod tests {
         worker.join().unwrap();
         fs::remove_file(&socket).unwrap();
 
-        let log = std::env::temp_dir().join(format!("ht-restart-log-{}", uuid::Uuid::new_v4()));
+        let log = crate::test_support::scratch::temp_path(format!(
+            "ht-restart-log-{}",
+            uuid::Uuid::new_v4()
+        ));
         let mut host = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -5274,7 +5285,7 @@ pub(crate) mod tests {
     fn cooperative_wake_target_and_submission_fences_without_io() {
         let (_, _, observation) = launch_fixture();
         let cli = NativeCli::new(
-            std::env::temp_dir().join(format!("ht-absent-{}", uuid::Uuid::new_v4())),
+            crate::test_support::scratch::temp_path(format!("ht-absent-{}", uuid::Uuid::new_v4())),
             Arc::new(TestClock(Instant::now())),
         );
         cli.epoch.store(3, Ordering::Release);
@@ -5935,7 +5946,8 @@ pub(crate) mod tests {
     where
         F: FnMut(&mut UnixStream, &Value) -> bool + Send + 'static,
     {
-        let socket = std::env::temp_dir().join(format!("ht-start-{}", uuid::Uuid::new_v4()));
+        let socket =
+            crate::test_support::scratch::temp_path(format!("ht-start-{}", uuid::Uuid::new_v4()));
         let listener = UnixListener::bind(&socket).unwrap();
         let worker = thread::spawn(move || {
             let mut wires = Vec::new();

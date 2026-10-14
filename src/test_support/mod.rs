@@ -8,6 +8,7 @@ pub mod history;
 pub mod isolated_herdr;
 pub mod isolation;
 pub mod owner_watch;
+pub mod scratch;
 #[cfg(feature = "test-support")]
 pub mod search_barrier;
 #[cfg(feature = "test-support")]

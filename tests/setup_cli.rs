@@ -35,7 +35,7 @@ struct Scratch {
 }
 impl Scratch {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
+        let root = herdr_threads::test_support::scratch::temp_path(format!(
             "htsetup-{}",
             &uuid::Uuid::new_v4().simple().to_string()[..10]
         ));

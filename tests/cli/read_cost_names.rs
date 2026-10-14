@@ -394,7 +394,8 @@ fn scoped_labels(index: usize, workspace: &str, tab: &str) -> SeatHostLabels {
 struct NickScratch(std::path::PathBuf);
 impl NickScratch {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("ht-nicks-{}", uuid::Uuid::new_v4()));
+        let root =
+            crate::test_support::scratch::temp_path(format!("ht-nicks-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         Self(root.canonicalize().unwrap())
     }

@@ -21,7 +21,8 @@ struct Fixture {
 
 impl Fixture {
     fn new(settings: &[u8]) -> Self {
-        let root = std::env::temp_dir().join(format!("claude-mod-{}", uuid::Uuid::new_v4()));
+        let root =
+            crate::test_support::scratch::temp_path(format!("claude-mod-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&root).unwrap();
         let state = root.join("state");
         fs::create_dir_all(state.join("setup")).unwrap();

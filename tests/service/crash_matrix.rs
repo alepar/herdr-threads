@@ -116,7 +116,10 @@ impl Matrix {
     }
 
     fn with_instance_durability(instance: String, production_durability: bool) -> Self {
-        let root = std::env::temp_dir().join(format!("ht-crash-matrix-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_support::scratch::temp_path(format!(
+            "ht-crash-matrix-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::DirBuilder::new()
             .mode(0o700)
             .create(&root)

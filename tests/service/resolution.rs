@@ -343,7 +343,10 @@ impl Fixture {
         let stdio_guard = super::IN_PROCESS_DAEMON
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let root = std::env::temp_dir().join(format!("herdr-resolve-service-{}", Uuid::new_v4()));
+        let root = herdr_threads::test_support::scratch::temp_path(format!(
+            "herdr-resolve-service-{}",
+            Uuid::new_v4()
+        ));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let runtime_context =
             RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
@@ -1661,7 +1664,10 @@ fn committed_resolution_with_lost_wire_response_retains_exact_intent_for_explici
     let command = semantic
         .to_command(reference.operation.clone(), None)
         .unwrap();
-    let proxy_path = std::env::temp_dir().join(format!("h-{}.sock", Uuid::new_v4().simple()));
+    let proxy_path = herdr_threads::test_support::scratch::temp_path(format!(
+        "h-{}.sock",
+        Uuid::new_v4().simple()
+    ));
     let listener = UnixListener::bind(&proxy_path).unwrap();
     let endpoint = fixture.descriptor.endpoint.clone();
     let (committed_tx, committed_rx) = mpsc::sync_channel(1);

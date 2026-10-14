@@ -208,7 +208,8 @@ fn publication_validation_has_zero_journal_effects() {
 struct Temp(std::path::PathBuf);
 impl Temp {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("ht-qhz4-{}", uuid::Uuid::new_v4()));
+        let path =
+            crate::test_support::scratch::temp_path(format!("ht-qhz4-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }

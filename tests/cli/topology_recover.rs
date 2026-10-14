@@ -177,7 +177,10 @@ impl Env {
         Self::new_with_state(hint, true)
     }
     fn new_with_state(hint: bool, reserved: bool) -> Self {
-        let root = std::env::temp_dir().join(format!("ht-human-topology-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_support::scratch::temp_path(format!(
+            "ht-human-topology-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir(&root).unwrap();
         let runtime = crate::daemon::paths::RuntimeContext::explicit(
             root.join("state dir"),

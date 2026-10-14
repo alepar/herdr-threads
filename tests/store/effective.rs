@@ -1077,7 +1077,10 @@ fn dormant_upgrade_fixture(physical: usize, manifests: usize) -> (std::path::Pat
         .unwrap(),
         0
     );
-    let path = std::env::temp_dir().join(format!("dormant-upgrade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "dormant-upgrade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     db.execute("VACUUM INTO ?1", [path.to_str().unwrap()])
         .unwrap();
     drop(db);

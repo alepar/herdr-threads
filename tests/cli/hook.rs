@@ -1782,7 +1782,8 @@ fn deep_run_root_context_fits_and_abbreviates() {
 }
 
 fn private_root() -> PathBuf {
-    let root = std::env::temp_dir().join(format!("hook-unit-{}", uuid::Uuid::new_v4()));
+    let root =
+        crate::test_support::scratch::temp_path(format!("hook-unit-{}", uuid::Uuid::new_v4()));
     std::fs::DirBuilder::new()
         .mode(0o700)
         .create(&root)
@@ -7647,7 +7648,7 @@ mod registered_resume {
             Self::new_mode_with_root(
                 resolved,
                 mode,
-                std::env::temp_dir().join(format!("ht42-{}", uuid())),
+                crate::test_support::scratch::temp_path(format!("ht42-{}", uuid())),
             )
         }
         fn new_mode_with_root(resolved: bool, mode: &str, root: PathBuf) -> Self {
@@ -7986,7 +7987,7 @@ mod registered_resume {
     }
     #[test]
     fn registered_fixture_publication_before_ready_failure_cleans_owned_endpoint() {
-        let root = std::env::temp_dir().join(format!("ht42-{}", uuid()));
+        let root = crate::test_support::scratch::temp_path(format!("ht42-{}", uuid()));
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             Fixture::new_mode_with_root(false, "before-ready", root.clone())
         }));

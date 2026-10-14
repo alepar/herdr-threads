@@ -144,7 +144,10 @@ impl Fixture {
     }
 
     fn with_settings(settings: StoreSettings) -> Self {
-        let path = std::env::temp_dir().join(format!("service-send-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "service-send-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let clock = Arc::new(TestClock(AtomicI64::new(100)));
         let context = StoreContext::new(path.clone(), clock.clone());
         let db = context.open_writer().unwrap();

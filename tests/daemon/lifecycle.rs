@@ -171,7 +171,10 @@ const LIVENESS: Duration = Duration::from_secs(60);
 
 fn fixture() -> (PathBuf, RuntimeContext, InstancePaths) {
     use std::os::unix::fs::PermissionsExt;
-    let root = std::env::temp_dir().join(format!("herdr-lifecycle-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_support::scratch::temp_path(format!(
+        "herdr-lifecycle-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir(&root).unwrap();
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
     let context = RuntimeContext::explicit(root.clone(), root.join("host.sock"), None).unwrap();

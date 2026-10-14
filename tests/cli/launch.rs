@@ -254,7 +254,7 @@ struct Scratch {
 }
 impl Scratch {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
+        let root = crate::test_support::scratch::temp_path(format!(
             "ht-launch-{}",
             &uuid::Uuid::new_v4().simple().to_string()[..10]
         ));
@@ -978,7 +978,7 @@ fn codex_wrapper_rejecting_no_daemon_accepts_managed_launch_arguments() {
 /// returns no export.
 #[test]
 fn system_shell_probe_is_bounded_and_reads_stdout() {
-    let dir = std::env::temp_dir().join(format!(
+    let dir = crate::test_support::scratch::temp_path(format!(
         "ht-probe-{}",
         &uuid::Uuid::new_v4().simple().to_string()[..10]
     ));

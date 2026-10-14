@@ -7,8 +7,10 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let root =
-            std::env::temp_dir().join(format!("ht-installer-prompts-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_support::scratch::temp_path(format!(
+            "ht-installer-prompts-{}",
+            uuid::Uuid::new_v4()
+        ));
         fs::create_dir_all(root.join("bin")).unwrap();
         for (name, version) in [
             ("claude", "2.1.284 (Claude Code)"),

@@ -97,7 +97,8 @@ fn sqlite_error_mapping_table() {
 /// because the page is unreadable is SQLITE_CORRUPT, also Corrupt).
 #[test]
 fn failed_integrity_check_is_corrupt() {
-    let dir = std::env::temp_dir().join(format!("ht-integrity-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("ht-integrity-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&dir).unwrap();
     let path = dir.join("db.sqlite3");
     {

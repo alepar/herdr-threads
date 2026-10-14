@@ -1425,7 +1425,7 @@ mod task23_tests {
     }
     impl Scratch {
         fn new() -> Self {
-            let root = std::env::temp_dir().join(format!(
+            let root = crate::test_support::scratch::temp_path(format!(
                 "ht-launch-{}",
                 &uuid::Uuid::new_v4().simple().to_string()[..10]
             ));

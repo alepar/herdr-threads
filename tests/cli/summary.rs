@@ -189,7 +189,10 @@ struct Fixture {
 }
 impl Fixture {
     fn new(reply: fn(&Command) -> CommandResult) -> Self {
-        let root = std::env::temp_dir().join(format!("cli-summary-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_support::scratch::temp_path(format!(
+            "cli-summary-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir(&root).unwrap();
         let runtime = crate::daemon::paths::RuntimeContext::explicit(
             root.join("state"),

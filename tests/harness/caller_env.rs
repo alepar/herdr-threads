@@ -346,7 +346,10 @@ fn refusal_codes_and_messages_are_stable() {
 struct AgyHome(std::path::PathBuf);
 impl AgyHome {
     fn new() -> Self {
-        let home = std::env::temp_dir().join(format!("ht-agy-derive-{}", uuid::Uuid::new_v4()));
+        let home = crate::test_support::scratch::temp_path(format!(
+            "ht-agy-derive-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(home.join(".gemini/antigravity-cli")).unwrap();
         Self(home)
     }

@@ -22,9 +22,10 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let directory = super::handoff_fences::Directory(
-            std::env::temp_dir().join(format!("ht-authority-{}", uuid::Uuid::new_v4())),
-        );
+        let directory =
+            super::handoff_fences::Directory(herdr_threads::test_support::scratch::temp_path(
+                format!("ht-authority-{}", uuid::Uuid::new_v4()),
+            ));
         std::fs::create_dir(&directory.0).unwrap();
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let context = StoreContext::new(directory.0.join("store.db"), clock.clone());

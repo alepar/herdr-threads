@@ -37,7 +37,10 @@ fn count(db: &Connection, table: &str) -> i64 {
 
 fn file_fixture() -> (Connection, std::path::PathBuf) {
     let source = fixture();
-    let path = std::env::temp_dir().join(format!("materialization-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "materialization-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     source
         .execute("VACUUM INTO ?1", [path.to_str().unwrap()])
         .unwrap();

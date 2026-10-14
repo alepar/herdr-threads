@@ -802,7 +802,7 @@ fn send_accepts_multi_and_repeated_require_ack_with_following_options() {
 
 #[test]
 fn file_body_preserves_exact_utf8_and_rejects_invalid_bytes() {
-    let path = std::env::temp_dir().join(format!("herdr-cli-body-{}", std::process::id()));
+    let path = crate::test_support::scratch::temp_path(format!("herdr-cli-body-{}", std::process::id()));
     std::fs::write(&path, "first\n雪\n").unwrap();
     let parsed = parse_argv([
         "herdr-threads",
@@ -3788,7 +3788,7 @@ fn direct_send_rejects_ambiguous_selectors_and_broadened_ack() {
 
 #[test]
 fn direct_send_file_and_options_preserve_frozen_input() {
-    let path = std::env::temp_dir().join(format!("ht-direct-body-{}", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!("ht-direct-body-{}", uuid::Uuid::new_v4()));
     std::fs::write(&path, "first\n雪\n").unwrap();
     let parsed = parse_argv([
         "ht",

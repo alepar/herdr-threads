@@ -121,7 +121,7 @@ struct Seam {
 }
 impl Seam {
     fn new(states: Vec<AgentComposerState>) -> Self {
-        let path = std::env::temp_dir().join(format!(
+        let path = crate::test_support::scratch::temp_path(format!(
             "herdr-wake-outcome-seam-{}.db",
             uuid::Uuid::new_v4()
         ));

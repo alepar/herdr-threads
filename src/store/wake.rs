@@ -1253,7 +1253,10 @@ mod batch_tests {
 
     #[test]
     fn batch_deadline_retains_first_arrival_through_reopen_and_clear() {
-        let path = std::env::temp_dir().join(format!("wake-batch-{}.sqlite", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "wake-batch-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
         let db = Connection::open(&path).unwrap();
         db.execute_batch(
             "CREATE TABLE wake_batches(seat_id TEXT PRIMARY KEY, deadline_at INTEGER NOT NULL);",
