@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v0.11.0
+
+- **Installation across AISW profiles.** The installer discovers configured Claude and Codex profiles and reconciles each root separately, alongside the default roots. `--no-aisw-profiles` skips discovery; `internal installer-integrations --config-root HARNESS=DIR` selects additional roots explicitly. Invalid roots retain their individual failure reports.
+- **Shared skills and permissions.** Profiles that share owned, unedited skill or rule files through directory symlinks report them as shared. Setup preserves those links and files; foreign or edited files require reconciliation through their owning root.
+- **Skill update backups.** Replacing an existing owned skill now saves a timestamped `.herdr-threads` preimage before atomic replacement. Unchanged reruns create no additional backup, and edited skills remain protected.
+
 ## v0.10.0
 
 - **Send-time receipt deadlines.** ACK-required messages start their confirmation deadline when sent, including mail for unavailable or unregistered recipients. Upgrades preserve existing deadlines and receipt attribution; overdue confirmations produce durable warnings for their originators.
