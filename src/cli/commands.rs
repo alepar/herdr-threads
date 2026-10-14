@@ -672,7 +672,7 @@ enum Top {
     /// Send to THREAD or use --seat SEAT for its canonical automatic pair channel.
     /// Priority 1 by default (--body TEXT, --file PATH or --stdin); -p N sets 0..9, --nudge is -p 0.
     /// Direct ACK requests name only the target; --require-ack-pane is refused.
-    /// Creation invites the peer without accepting; lifecycle repair is explicit.
+    /// Creation joins both seats (no invitation); lifecycle repair is explicit.
     /// Immediate human send uses the same recipient routing.
     Send(SendArgs),
     /// ACK exact message IDs after reading them.
