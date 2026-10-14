@@ -571,44 +571,81 @@ mod live {
         /// instead of the real one (see [`HeldStoreClock`]).
         store_clock: Option<Arc<HeldStoreClock>>,
     }
-    /// A store clock that moves only when the test moves it. The durable
-    /// child path issues a 250 ms cooperative permit and consumes it in the
-    /// deciding transaction, both sampled on the store context's clock. A
-    /// fixture whose subject is not timing holds that clock so host load
-    /// cannot expire the permit; `permit_window` is how far the clock moves
-    /// between permit issuance and the decision, so the expiry itself stays
-    /// exercised (see `held_store_clock_permit_window_*`).
+    /// The durable-child store clock for a fixture whose subject is not
+    /// timing. The durable child path issues a 250 ms cooperative permit and
+    /// consumes it in the deciding transaction, both sampled on the store
+    /// context's monotonic clock. This clock follows real time, except that
+    /// it is held from just before one child's permit issuance until that
+    /// child's mutation returns, so host load cannot widen the
+    /// issuance-to-decision gap: the gap is exactly `permit_window` for the
+    /// child named by `window_role` (every child when `None`) and zero for the
+    /// others. After a hold, real time resumes without running backwards.
+    /// The expiry itself stays exercised (see `held_store_clock_permit_window_*`).
+    ///
+    /// Hang mode: while held, the writer budget and the busy handler see no
+    /// time pass, so a writer deadlock inside that one child mutation would
+    /// hang until nextest's timeout instead of failing `DeadlineExceeded`.
+    /// Everywhere else (setup, the send preparation steps, other calls) they
+    /// run on real time.
     struct HeldStoreClock {
-        utc: std::sync::atomic::AtomicI64,
-        monotonic: std::sync::atomic::AtomicU64,
+        real: crate::app::SystemClock,
+        offset: std::sync::atomic::AtomicU64,
+        held: Mutex<Option<u64>>,
         permit_window: std::sync::atomic::AtomicU64,
+        window_role: Mutex<Option<&'static str>>,
     }
     impl HeldStoreClock {
         fn new() -> Self {
             Self {
-                utc: std::sync::atomic::AtomicI64::new(
-                    crate::protocol::time::Clock::utc_now(&crate::app::SystemClock::new()).0,
-                ),
-                monotonic: std::sync::atomic::AtomicU64::new(0),
+                real: crate::app::SystemClock::new(),
+                offset: std::sync::atomic::AtomicU64::new(0),
+                held: Mutex::new(None),
                 permit_window: std::sync::atomic::AtomicU64::new(0),
+                window_role: Mutex::new(None),
             }
         }
-        fn pass_permit_window(&self) {
-            use std::sync::atomic::Ordering;
-            let millis = self.permit_window.load(Ordering::SeqCst);
-            self.monotonic.fetch_add(millis, Ordering::SeqCst);
-            self.utc
-                .fetch_add(i64::try_from(millis).unwrap(), Ordering::SeqCst);
+        fn running(&self) -> u64 {
+            crate::protocol::time::Clock::monotonic_now(&self.real).0
+                + self.offset.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        /// Freezes time just before a child's permit issuance.
+        fn hold(&self) -> HeldStoreClockHold<'_> {
+            *self.held.lock().unwrap() = Some(self.running());
+            HeldStoreClockHold(self)
+        }
+        /// Moves the frozen instant by the window when `role` is targeted.
+        fn pass_permit_window(&self, role: &str) {
+            let target = *self.window_role.lock().unwrap();
+            if target.is_none_or(|target| target == role) {
+                let millis = self.permit_window.load(std::sync::atomic::Ordering::SeqCst);
+                if let Some(held) = self.held.lock().unwrap().as_mut() {
+                    *held += millis;
+                }
+            }
+        }
+    }
+    /// Resumes real time when the held child mutation returns, including
+    /// on an early error return.
+    struct HeldStoreClockHold<'a>(&'a HeldStoreClock);
+    impl Drop for HeldStoreClockHold<'_> {
+        fn drop(&mut self) {
+            let clock = self.0;
+            if let Some(held) = clock.held.lock().unwrap().take() {
+                let real = crate::protocol::time::Clock::monotonic_now(&clock.real).0;
+                clock.offset.fetch_max(
+                    held.saturating_sub(real),
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+            }
         }
     }
     impl crate::protocol::time::Clock for HeldStoreClock {
         fn utc_now(&self) -> UtcMillis {
-            UtcMillis(self.utc.load(std::sync::atomic::Ordering::SeqCst))
+            crate::protocol::time::Clock::utc_now(&self.real)
         }
         fn monotonic_now(&self) -> crate::protocol::time::MonoInstant {
-            crate::protocol::time::MonoInstant(
-                self.monotonic.load(std::sync::atomic::Ordering::SeqCst),
-            )
+            let held = *self.held.lock().unwrap();
+            crate::protocol::time::MonoInstant(held.unwrap_or_else(|| self.running()))
         }
     }
     impl LocalClient for Peer {
@@ -895,12 +932,18 @@ mod live {
                     }
                 }
             }
+            let role = match &mutation {
+                crate::protocol::commands::PermitMutation::CreateThread(_) => "create_child",
+                crate::protocol::commands::PermitMutation::Invite(_) => "invite_child",
+                _ => "send_child",
+            };
+            let _hold = self.store_clock.as_deref().map(HeldStoreClock::hold);
             let permit = store.issue_cooperative_permit(
                 crate::store::cooperative_permit_request(&mutation)?,
                 budget,
             )?;
             if let Some(held) = &self.store_clock {
-                held.pass_permit_window();
+                held.pass_permit_window(role);
             }
             let permit = if matches!(
                 mutation,
@@ -2149,16 +2192,18 @@ mod live {
             max_report: true,
             ..Default::default()
         };
+        let error = downstream(
+            &f,
+            &mut launcher,
+            &mut FailingOutput {
+                bytes: vec![],
+                write: true,
+            },
+        )
+        .unwrap_err();
         assert!(
-            downstream(
-                &f,
-                &mut launcher,
-                &mut FailingOutput {
-                    bytes: vec![],
-                    write: true
-                }
-            )
-            .is_err()
+            matches!(error, RunError::Io(_)),
+            "only the injected output loss may fail the maximal run: {error:?}"
         );
         let before = f.peer.status();
         assert_eq!(
@@ -2715,26 +2760,52 @@ mod live {
         );
         assert_downstream_once(&f, &launcher);
     }
+    fn child_calls(f: &Fixture) -> Vec<&'static str> {
+        f.peer
+            .state
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .copied()
+            .filter(|role| role.ends_with("_child"))
+            .collect()
+    }
     /// Negative control for [`HeldStoreClock`]: holding the clock does not
     /// disable the permit expiry. A window past `MAX_PERMIT_MILLIS` between
-    /// issuance and decision still refuses the child mutation, leaving the
-    /// bootstrap Attached (the hosted-CI failure shape); the exact bound
-    /// still completes.
+    /// one child's issuance and decision refuses exactly that child, every
+    /// earlier child having decided, and leaves the bootstrap Attached (the
+    /// hosted-CI failure shape); the exact bound completes every child.
     #[test]
     fn held_store_clock_permit_window_past_the_bound_still_expires() {
-        let mut f = Fixture::downstream(Fault::None);
-        let held = f.hold_store_clock();
-        held.permit_window.store(
-            crate::protocol::authority::MAX_PERMIT_MILLIS + 1,
-            std::sync::atomic::Ordering::SeqCst,
-        );
-        let mut launcher = DownstreamLauncher::default();
-        let error = downstream(&f, &mut launcher, &mut vec![]).unwrap_err();
-        assert!(
-            matches!(&error, RunError::Api(e) if e.code == ErrorCode::CallerUnverified && e.detail == "permit expired"),
-            "{error:?}"
-        );
-        assert_eq!(f.peer.status().state, BootstrapState::Attached);
+        let children = {
+            let mut f = Fixture::downstream(Fault::None);
+            f.hold_store_clock();
+            downstream(&f, &mut DownstreamLauncher::default(), &mut vec![]).unwrap();
+            child_calls(&f)
+        };
+        assert!(children.contains(&"invite_child") && children.contains(&"send_child"));
+        for (index, role) in children.iter().copied().enumerate() {
+            let mut f = Fixture::downstream(Fault::None);
+            let held = f.hold_store_clock();
+            *held.window_role.lock().unwrap() = Some(role);
+            held.permit_window.store(
+                crate::protocol::authority::MAX_PERMIT_MILLIS + 1,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            let error =
+                downstream(&f, &mut DownstreamLauncher::default(), &mut vec![]).unwrap_err();
+            assert!(
+                matches!(&error, RunError::Api(e) if e.code == ErrorCode::CallerUnverified && e.detail == "permit expired"),
+                "{role}: {error:?}"
+            );
+            assert_eq!(
+                child_calls(&f),
+                children[..=index],
+                "{role} must be the refused child"
+            );
+            assert_eq!(f.peer.status().state, BootstrapState::Attached, "{role}");
+        }
     }
     #[test]
     fn held_store_clock_permit_window_at_the_bound_completes() {
@@ -2747,6 +2818,8 @@ mod live {
         let mut launcher = DownstreamLauncher::default();
         let done = downstream(&f, &mut launcher, &mut vec![]).unwrap();
         assert_eq!(done.state, BootstrapState::Completed);
+        let children = child_calls(&f);
+        assert!(children.contains(&"invite_child") && children.contains(&"send_child"));
         assert_downstream_once(&f, &launcher);
     }
     #[test]
