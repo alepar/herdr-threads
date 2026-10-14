@@ -68,6 +68,23 @@ fn recovery_result_limit(id: &AutomaticBootstrapIdentity) -> usize {
 fn same<T: Serialize>(a: &T, b: &T) -> Result<bool, ApiError> {
     Ok(encode(a, 2097152)? == encode(b, 2097152)?)
 }
+/// [`namespace`], remembered by the namespace and the identity's bytes.
+fn remembered_namespace(
+    ns: &HandoffNamespace,
+    id: &AutomaticBootstrapIdentity,
+    id_bytes: &[u8],
+) -> Result<(), ApiError> {
+    crate::store::verified::remembered(
+        "automatic-bootstrap-namespace",
+        &[
+            id_bytes,
+            ns.instance.as_bytes(),
+            ns.state_dir.as_os_str().as_encoded_bytes(),
+            ns.host_endpoint.as_os_str().as_encoded_bytes(),
+        ],
+        || namespace(ns, id),
+    )
+}
 pub(crate) fn namespace(
     ns: &HandoffNamespace,
     id: &AutomaticBootstrapIdentity,
@@ -110,7 +127,9 @@ pub(crate) fn current(
     ns: &HandoffNamespace,
     id: &AutomaticBootstrapIdentity,
 ) -> Result<Option<AutomaticBootstrapResult>, ApiError> {
-    namespace(ns, id)?;
+    // Every pure whole-body check below is keyed by these exact bytes (store::verified).
+    let id_bytes = serde_json::to_vec(id).map_err(|_| corrupt())?;
+    remembered_namespace(ns, id, &id_bytes)?;
     type Row = (
         i64,
         Vec<u8>,
@@ -126,11 +145,18 @@ pub(crate) fn current(
         return Ok(None);
     };
     let revision = u64::try_from(revision).map_err(|_| corrupt())?;
-    let saved: AutomaticBootstrapIdentity = decode(&bytes, 524288)?;
-    saved.validate().map_err(|_| corrupt())?;
-    if encode(&saved, 524288)? != encode(id, 524288)? {
-        return Err(mismatch());
-    }
+    crate::store::verified::remembered(
+        "automatic-bootstrap-original",
+        &[&bytes, &id_bytes],
+        || {
+            let saved: AutomaticBootstrapIdentity = decode(&bytes, 524288)?;
+            saved.validate().map_err(|_| corrupt())?;
+            if encode(&saved, 524288)? != encode(id, 524288)? {
+                return Err(mismatch());
+            }
+            Ok(())
+        },
+    )?;
     if Some(state_dir.as_str()) != ns.state_dir.to_str()
         || Some(endpoint.as_str()) != ns.host_endpoint.to_str()
     {
@@ -146,17 +172,25 @@ pub(crate) fn current(
     let attachment:Option<Vec<u8>>=db.query_row("SELECT substr(attachment_json,1,524289) FROM automatic_bootstrap_attachments WHERE parent_id=?1",[parent],|r|r.get(0)).optional().map_err(store_error)?;
     let attachment: Option<AutomaticBootstrapAttachment> = attachment
         .as_deref()
-        .map(|b| decode(b, 524288))
+        .map(|b| {
+            crate::store::verified::remembered(
+                "automatic-bootstrap-attachment",
+                &[b, &id_bytes],
+                || {
+                    let a: AutomaticBootstrapAttachment = decode(b, 524288)?;
+                    a.validate(id).map_err(|_| corrupt())?;
+                    Ok(a)
+                },
+            )
+        })
         .transpose()?;
-    if let Some(a) = &attachment {
-        a.validate(id).map_err(|_| corrupt())?;
-        if a.attempt != attempt
+    if let Some(a) = &attachment
+        && (a.attempt != attempt
             || creation
                 .as_ref()
-                .is_none_or(|c| !same(c, &a.created).unwrap_or(false))
-        {
-            return Err(corrupt());
-        }
+                .is_none_or(|c| !same(c, &a.created).unwrap_or(false)))
+    {
+        return Err(corrupt());
     }
     let report:Option<Vec<u8>>=db.query_row("SELECT substr(report_json,1,2097153) FROM automatic_bootstrap_reports WHERE parent_id=?1",[parent],|r|r.get(0)).optional().map_err(store_error)?;
     let completed: Option<LinkedBootstrapReport> =
@@ -398,7 +432,7 @@ pub(crate) fn validate_parent_phase(
     request: &AutomaticBootstrapMutation,
     replay: bool,
 ) -> Result<(), ApiError> {
-    request.validate().map_err(ApiError::invalid_request)?;
+    crate::store::verified::validated("automatic-bootstrap-request", request, |r| r.validate())?;
     let ns = &request.identity.plan.payload.handoff.namespace;
     if let Some(s) = current(db, ns, &request.identity)? {
         if !replay {
@@ -450,7 +484,11 @@ pub(crate) fn guard_child(
     if rows.len() != 1 {
         return Err(mismatch());
     }
-    let id: AutomaticBootstrapIdentity = decode(&rows[0].1, 524288)?;
+    let id: AutomaticBootstrapIdentity = crate::store::verified::remembered(
+        "automatic-bootstrap-guard-original",
+        &[&rows[0].1],
+        || decode(&rows[0].1, 524288),
+    )?;
     let ns = &id.plan.payload.handoff.namespace;
     handoff::automatic::validate_namespace(ns, request)?;
     let s = status(db, ns, &id)?;
@@ -887,8 +925,12 @@ pub(crate) fn mutate(
     guard: Option<&BootstrapAttachmentGuard>,
     budget: &CallBudget,
 ) -> Result<CommandResult, ApiError> {
-    request.validate().map_err(ApiError::invalid_request)?;
-    namespace(ns, &request.identity)?;
+    crate::store::verified::validated("automatic-bootstrap-request", request, |r| r.validate())?;
+    remembered_namespace(
+        ns,
+        &request.identity,
+        &serde_json::to_vec(&request.identity).map_err(|_| corrupt())?,
+    )?;
     let mut permit = permit.with_automatic_bootstrap(request);
     let input = crate::store::cooperative_permit_request(&PermitMutation::AutomaticBootstrap(
         Box::new(request.clone()),

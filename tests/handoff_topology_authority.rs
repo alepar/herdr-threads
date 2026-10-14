@@ -1046,6 +1046,28 @@ fn automatic_canonical_companion_is_immutable_retained_foreign_keyed_and_audited
         .unwrap();
     assert!(herdr_threads::store::schema::initialize(&f.db, || f.clock.utc_now()).is_err());
 }
+// The decision window reuses checks of a canonical original already passed on
+// byte-identical rows (store::verified). A row that changes after such a
+// success is checked again, never served from the remembered result.
+// Kills: remembering a step by anything less than its exact input bytes.
+#[test]
+fn automatic_original_changed_after_a_remembered_check_is_rechecked() {
+    use herdr_threads::protocol::results::ErrorCode;
+    let f = Fixture::new();
+    let request = automatic_request(&f);
+    automatic_call(&f, request.begin()).unwrap();
+    let ensured = automatic_call(&f, request.ensure()).unwrap();
+    assert_eq!(automatic_call(&f, request.ensure()).unwrap(), ensured);
+    f.db.execute_batch("DROP TRIGGER automatic_handoff_immutable")
+        .unwrap();
+    f.db.execute(
+        "UPDATE automatic_handoff_companions SET original_json=CAST(replace(CAST(original_json AS TEXT),'\"version\":2','\"version\":3') AS BLOB)",
+        [],
+    )
+    .unwrap();
+    let error = automatic_call(&f, request.ensure()).unwrap_err();
+    assert_eq!(error.code, ErrorCode::StoreCorrupt, "{error:?}");
+}
 #[test]
 fn automatic_canonical_namespace_requires_exact_frozen_path_spelling() {
     use herdr_threads::protocol::results::ErrorCode;
