@@ -1857,6 +1857,7 @@ fn v2_message(
             body_end: len,
             body_len: len,
             ack_candidate: None,
+            deadline_at: None,
         }
     }
 }

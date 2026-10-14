@@ -9,7 +9,7 @@
     "body": "first\r\nsecond third\n\nfifth after an empty line\rsixth\u000bseventh\feighthninth tenth"
   },
   {
-    "kind": "lazy",
+    "kind": "message",
     "id": "m2",
     "thread": "T1",
     "threadName": "plans",

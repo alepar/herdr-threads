@@ -578,6 +578,7 @@ fn lazy_display_mixed_candidates_and_human_policy() {
         body_end: 4,
         body_len: 4,
         ack_candidate: Some(MessageId::new("ordinary")),
+        deadline_at: None,
     });
     let result = CommandResult::InboxBatchV2(p);
     let c = write_page(
@@ -853,6 +854,7 @@ fn continuation_mixed_sources_preserve_invocation() {
             body_end: 8,
             body_len: 8,
             ack_candidate: Some(MessageId::new("ordinary")),
+            deadline_at: None,
         },
     ]);
     p.has_more = true;

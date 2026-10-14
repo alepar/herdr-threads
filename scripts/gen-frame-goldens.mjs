@@ -36,7 +36,7 @@ const cases = {
   empty: [],
   multiline: [
     msg('m1', { body: 'first\r\nsecond third\n\nfifth after an empty line\rsixth\u000bseventh\u000ceighth\u0085ninth tenth' }),
-    msg('m2', { kind: 'lazy', body: '' }),
+    msg('m2', { body: '' }),
     msg('m3', { body: 'trailing break\n' }),
   ],
   controls: [
@@ -64,6 +64,13 @@ const cases = {
     msg('m6', { user_intent: 'bogus', body: 'unknown intent adds no marker' }),
     msg('m7', { author_role: 'human', relays_user: true, user_intent: 'rule', ack_required: true, body: 'all markers, ack required' }),
     msg('m8', { author_role: 'agent', relays_user: false, ack_required: true, body: 'no marker' }),
+  ],
+  priority: [
+    msg('m1', { priority: 0 }),
+    msg('m2', { priority: 1 }),
+    msg('m3', { priority: 5 }),
+    msg('m4', { priority: 0, author_role: 'human', relays_user: true, user_intent: 'rule' }),
+    msg('m5'),
   ],
   attention: [
     { kind: 'attention', id: 'attention:4', body: 'You have pending herdr-threads items.' },

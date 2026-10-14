@@ -46,7 +46,7 @@ export default {
   ],
   attentionBody: '  herdr-threads: attention pending; run herdr-threads --state-dir /private/tmp/htmd-f38b3559/state inbox',
   passiveHeaders: [
-    '[herdr-threads] lazy mw7dy8CUc in tmFxjHevw "mod delivery" from seM75yOxM:',
+    '[herdr-threads] message mw7dy8CUc in tmFxjHevw "mod delivery" from seM75yOxM:',
     '[herdr-threads] notice notice:nMJDRPQ3Z in activation-warn from unknown:',
     '[herdr-threads] invitation invitation:ivRL92tt0 in tncVlNIeG "activation invitation" from unknown:',
   ],

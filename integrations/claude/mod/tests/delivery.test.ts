@@ -1303,7 +1303,7 @@ test('framing: relay, role and intent markers follow the sender', () => {
     { kind: 'message', id: 'm5', thread: 'plans', sender: 'dan', author_role: 'service', relays_user: false, user_intent: 'bogus', body: 'x' },
   ])
   expect(text).toContain('[herdr-threads] message m2 in plans from alice [relays user] [rule]:\n  Always run tests')
-  expect(text).toContain('[herdr-threads] lazy m3 in plans from bob [human] [query]:\n  progress?')
+  expect(text).toContain('[herdr-threads] message m3 in plans from bob [human] [query]:\n  progress?')
   expect(text).toContain('[herdr-threads] message m4 in plans from carol [human] [relays user] [request]:\n  cut it')
   expect(text).toContain('[herdr-threads] message m5 in plans from dan:\n  x')
 })
@@ -1397,7 +1397,7 @@ test('markers reach every delivery path', async () => {
   const l = await harness({ state: IDLE }).boot()
   l.line({ ...lazy('r2'), author_role: 'human' })
   await flush()
-  expect(l.appends[0]).toContain('lazy r2 in T1 "plans" from S1 "alice" [human]:\n')
+  expect(l.appends[0]).toContain('message r2 in T1 "plans" from S1 "alice" [human]:\n')
   const b = await harness({ state: busyState() }).boot()
   b.line(msg('r3', { user_intent: 'query' }))
   const r = await b.core.onToolCall({ tool: 'Bash' }, answered)
@@ -2444,4 +2444,81 @@ test('a queued notice retains passive scheduling while busy tool context preserv
   await flush()
   expect(h.ackRuns().flat()).not.toContain('notice:tool')
   expect(h.submits).toEqual([])
+})
+
+// ---- priority order and wakes (ht-yha.9) -----------------------------------------------------------
+const headerIds = (text: string) => Array.from(text.matchAll(/^\[herdr-threads\] message (\S+) /gm), (m) => m[1])
+// Arrival order a, b, c, d, e, f; expected: e (p0 d100), c (p0 d200), b (p0 none), a, f (p1), d (p5).
+const mixed = () => [
+  msg('a', { priority: 1 }),
+  msg('b', { priority: 0 }),
+  msg('c', { priority: 0, deadline_at: 200 }),
+  msg('d', { priority: 5 }),
+  msg('e', { priority: 0, deadline_at: 100 }),
+  msg('f', { priority: 1 }),
+]
+const SORTED = ['e', 'c', 'b', 'a', 'f', 'd']
+
+test('wake path: an idle batch is framed in priority, deadline, arrival order', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  for (const o of mixed()) h.line(o)
+  await flush()
+  expect(h.appends.length).toBe(1)
+  expect(headerIds(h.appends[0])).toEqual(SORTED)
+  expect(h.appends[0]).toContain('message d in T1 "plans" from S1 "alice" [p5]:')
+  expect(h.appends[0]).toContain('message b in T1 "plans" from S1 "alice" [p0]:')
+  expect(h.appends[0]).not.toContain('[p1]')
+})
+
+test('wake path: busy tool context is framed in the same order', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  for (const o of mixed()) h.line(o)
+  const r = await h.core.onToolCall({ tool: 'Bash' }, answered)
+  expect(headerIds(r.context[0])).toEqual(SORTED)
+})
+
+test('passive path: a mixed batch of wakes:false rows is framed in the same order', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  // The first append is denied, so the whole mixed set is still queued when the retry batches it.
+  h.appendResult = () => ({ deny: 'busy' })
+  for (const o of mixed()) h.line({ ...o, ack_required: false })
+  await flush()
+  h.appendResult = () => ({})
+  await h.advance(30_000)
+  expect(h.submits.length).toBe(0)
+  expect(headerIds(h.appends[h.appends.length - 1])).toEqual(SORTED)
+})
+
+test('a message with no priority sorts as p1, an invitation as p0, ties by arrival', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  h.line(msg('plain1'))
+  h.line(msg('p2', { priority: 2 }))
+  h.line({ schema: 1, id: 'invitation:i1', kind: 'invitation', thread: 'T1', thread_name: 'plans', body: 'join', wakes: true })
+  h.line(msg('plain2'))
+  const r = await h.core.onToolCall({ tool: 'Bash' }, answered)
+  const order = Array.from(r.context[0].matchAll(/^\[herdr-threads\] (?:message|invitation) (\S+) /gm), (m: Any) => m[1])
+  expect(order).toEqual(['invitation:i1', 'plain1', 'plain2', 'p2'])
+})
+
+test('passive and wake split follows wakes: a p1 wakes:false row is passive, a p1 wakes:true row wakes', async () => {
+  const passive = await harness({ state: IDLE }).boot()
+  passive.line(msg('q1', { priority: 1, ack_required: false, wakes: false }))
+  await flush()
+  expect(passive.submits.length).toBe(0)
+  expect(passive.appends.length).toBe(1)
+  const woken = await harness({ state: IDLE }).boot()
+  woken.line(msg('q2', { priority: 1, ack_required: false, wakes: true }))
+  await flush()
+  expect(woken.submits).toEqual([WAKE])
+  // a p0 row the daemon did not promote does not wake on its own priority
+  const p0 = await harness({ state: IDLE }).boot()
+  p0.line(msg('q3', { priority: 0, ack_required: false, wakes: false }))
+  await flush()
+  expect(p0.submits.length).toBe(0)
+})
+
+test('a kind:lazy item (an old daemon delivery row) frames as message', () => {
+  const text = frame([{ kind: 'lazy', id: 'l9', thread: 'T1', sender: 'S1', body: 'x' }])
+  expect(text).toContain('[herdr-threads] message l9 in T1 from S1:\n  x')
+  expect(text).not.toContain('lazy')
 })

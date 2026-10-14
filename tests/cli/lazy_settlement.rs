@@ -151,6 +151,7 @@ fn page() -> CommandResult {
                 body_end: 4,
                 body_len: 4,
                 ack_candidate: Some(MessageId::new("ordinary")),
+                deadline_at: None,
             },
         ],
         next_cursor: None,

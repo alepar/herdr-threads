@@ -241,6 +241,7 @@ fn message(id: &str, body: &str, start: u64, end: u64, len: u64, ack: bool) -> I
         body_end: end,
         body_len: len,
         ack_candidate: ack.then(|| MessageId::new(id)),
+        deadline_at: None,
     }
 }
 

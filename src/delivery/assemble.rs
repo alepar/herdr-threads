@@ -232,9 +232,11 @@ impl Assembler {
                 body_len,
                 ack_candidate,
                 priority,
+                deadline_at,
                 ..
             } => self.emit_chunk(Chunk {
                 priority,
+                deadline_at,
                 lazy: false,
                 promoted: false,
                 ack_required: ack_candidate.is_some(),
@@ -267,6 +269,7 @@ impl Assembler {
                 ..
             } => self.emit_chunk(Chunk {
                 priority,
+                deadline_at: None,
                 lazy: true,
                 promoted: wakes,
                 ack_required: false,
@@ -328,7 +331,7 @@ impl Assembler {
                 .map_or_else(|| "service".to_owned(), |seat| seat.as_str().to_owned()),
         );
         let message = WatchMessage {
-            deadline_at: None,
+            deadline_at: chunk.deadline_at,
             priority: chunk.priority,
             thread: chunk.thread,
             thread_name: label(&chunk.topic),
@@ -358,6 +361,7 @@ impl Assembler {
 
 struct Chunk {
     priority: Option<crate::protocol::priority::DeliveryPriority>,
+    deadline_at: Option<crate::protocol::time::UtcMillis>,
     lazy: bool,
     /// A lazy row of a `wake_on: all` seat, delivered as a `message` line with
     /// no ACK to run (delivery-policy DP8); the daemon still completes it lazily.
@@ -374,6 +378,32 @@ struct Chunk {
     body_start: u64,
     body_end: u64,
     body_len: u64,
+}
+
+/// Sorts one emitted batch (several pages or arrivals combined) by the delivery order key.
+///
+/// Watch items carry no `decision_seq` or ordinal and the inbox v2 merge already ordered each page
+/// by the full key, so callers build the key as `DeliveryOrderKey { priority, deadline,
+/// decision_seq: 0, rank: SourceRank::DeliveryRow, ordinal: 0 }`: only priority and deadline
+/// differ. The sort is stable, so arrival (the merge order) breaks every remaining tie; ranking
+/// by `SourceRank` here would contradict the merge's `decision_seq`-before-rank order.
+pub fn batch_order<T>(
+    items: &mut [T],
+    key: impl Fn(&T) -> crate::protocol::priority::DeliveryOrderKey,
+) {
+    items.sort_by_key(key);
+}
+
+/// The batch key of one assembled message item (see [`batch_order`]).
+pub fn item_order_key(item: &DeliveryItem) -> crate::protocol::priority::DeliveryOrderKey {
+    use crate::protocol::priority::{DeliveryOrderKey, DeliveryPriority, SourceRank};
+    DeliveryOrderKey {
+        priority: item.message.priority.unwrap_or(DeliveryPriority::DEFAULT),
+        deadline: item.message.deadline_at,
+        decision_seq: 0,
+        rank: SourceRank::DeliveryRow,
+        ordinal: 0,
+    }
 }
 
 /// A user-controlled name for one header line (spec D4): every control
@@ -431,3 +461,7 @@ pub fn read_truncated_hint(path: Option<&Path>) -> HashSet<String> {
         .map(|text| text.lines().map(str::to_owned).collect())
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+#[path = "../../tests/delivery/batch_order.rs"]
+mod batch_order_tests;
