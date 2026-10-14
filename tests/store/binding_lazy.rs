@@ -169,7 +169,7 @@ fn legacy_pending_survives_a_subagent_display_attempt() {
 }
 
 #[test]
-fn a_seat_without_a_connected_top_level_binding_counts_only_legacy_rows() {
+fn a_seat_whose_bindings_ended_counts_only_legacy_rows() {
     let db = db();
     let a = enroll_binding(&db, "sess-A", None);
     lazy(&db, 3);
@@ -181,9 +181,19 @@ fn a_seat_without_a_connected_top_level_binding_counts_only_legacy_rows() {
     )
     .unwrap();
     assert_eq!(
+        seat_lazy_pending(&db, &SeatId::new("s"), 100).unwrap().0,
+        1,
+        "a disconnected but open binding still owes the row"
+    );
+    db.execute(
+        "UPDATE occupant_bindings SET ended_at=6 WHERE binding_id=?1",
+        [a.as_str()],
+    )
+    .unwrap();
+    assert_eq!(
         seat_lazy_pending(&db, &SeatId::new("s"), 100).unwrap(),
         (0, 0),
-        "a disconnected binding is not a reader"
+        "an ended binding is not a reader"
     );
     db.execute("UPDATE lazy_recipients SET legacy_pending=1", [])
         .unwrap();
@@ -191,6 +201,87 @@ fn a_seat_without_a_connected_top_level_binding_counts_only_legacy_rows() {
         seat_lazy_pending(&db, &SeatId::new("s"), 100).unwrap().0,
         1,
         "legacy rows count regardless"
+    );
+}
+
+#[test]
+fn a_disconnected_sibling_still_owes_its_display_and_sees_it_after_reconnecting() {
+    let mut db = db();
+    let a = enroll_binding(&db, "sess-A", None);
+    let b = enroll_binding(&db, "sess-B", None);
+    lazy(&db, 3);
+    // The ordered seek reads the publication decision `note_published` copies onto the row.
+    let tx = db.transaction().unwrap();
+    note_published(&tx, "prep-3").unwrap();
+    tx.commit().unwrap();
+    let state = |db: &Connection| -> String {
+        db.query_row(
+            "SELECT state FROM lazy_recipients WHERE message_id='msg-3'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let offered = |db: &Connection, b: &BindingId| -> Option<MessageId> {
+        crate::store::lazy_delivery::seek_pending(
+            db,
+            "i",
+            &SeatId::new("s"),
+            RowFilter::Binding(b),
+            None,
+            i64::MAX as u64,
+            100,
+        )
+        .unwrap()
+        .row
+        .map(|(_, recipient)| recipient.message)
+    };
+    db.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=5,disconnect_reason='process_exited' WHERE binding_id=?1",
+        [b.as_str()],
+    )
+    .unwrap();
+    complete(&mut db, Some(&a), &[msg(3)]);
+    assert_eq!(
+        state(&db),
+        "pending",
+        "the open disconnected sibling still owes it"
+    );
+    db.execute(
+        "UPDATE occupant_bindings SET liveness='connected',disconnected_at=NULL,disconnect_reason=NULL WHERE binding_id=?1",
+        [b.as_str()],
+    )
+    .unwrap();
+    assert_eq!(unread(&db, &b), [msg(3)]);
+    assert_eq!(
+        offered(&db, &b),
+        Some(msg(3)),
+        "the ordered seek still offers it"
+    );
+    complete(&mut db, Some(&b), &[msg(3)]);
+    assert_eq!(state(&db), "displayed");
+}
+
+#[test]
+fn an_ended_sibling_owes_nothing_to_the_displayed_mark() {
+    let mut db = db();
+    let a = enroll_binding(&db, "sess-A", None);
+    let b = enroll_binding(&db, "sess-B", None);
+    lazy(&db, 3);
+    db.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=5,disconnect_reason='process_exited',ended_at=6 WHERE binding_id=?1",
+        [b.as_str()],
+    )
+    .unwrap();
+    complete(&mut db, Some(&a), &[msg(3)]);
+    assert_eq!(
+        db.query_row(
+            "SELECT state FROM lazy_recipients WHERE message_id='msg-3'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "displayed"
     );
 }
 

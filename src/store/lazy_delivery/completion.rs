@@ -63,9 +63,9 @@ fn complete_addressed_as(
     Ok(addressed)
 }
 
-/// A top-level display marks the row displayed seat-wide, unless a connected top-level binding of
-/// the seat (the displaying one included, for a row it left above its cursor) still finds it
-/// unread. `?1` = seat, `?2` = message; run after the displaying cursors moved.
+/// A top-level display marks the row displayed seat-wide, unless an open top-level binding of the
+/// seat (connected or not; the displaying one included, for a row it left above its cursor)
+/// still finds it unread. `?1` = seat, `?2` = message; run after the displaying cursors moved.
 const MARK_DISPLAYED_SQL: &str = concat!(
     "UPDATE lazy_recipients SET state='displayed' WHERE seat_id=?1 AND message_id=?2 AND state='pending' AND NOT EXISTS(SELECT 1 FROM lazy_recipients r JOIN messages m ON m.id=r.message_id WHERE r.seat_id=?1 AND r.message_id=?2 AND ",
     seat_unread_sql!(),

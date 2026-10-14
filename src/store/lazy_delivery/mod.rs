@@ -102,13 +102,14 @@ macro_rules! binding_lazy_unread_sql {
 pub(crate) use binding_lazy_unread_sql;
 
 /// A lazy recipient row `r` (with its message `m`, possibly absent) is unread at seat level when
-/// it is legacy pending (carried from before V34) or some connected top-level binding of the seat
-/// finds it unread (`binding_lazy_unread_sql!`). Post-V34 delivery predicates never read
-/// `lazy_recipients.state`; only `read_cursors::init_for_join` does, to skip displayed rows.
+/// it is legacy pending (carried from before V34) or some open (not ended) top-level binding of
+/// the seat, connected or not, finds it unread (`binding_lazy_unread_sql!`). The ordered seeks
+/// run over `state='pending'`, and `MARK_DISPLAYED_SQL` flips `state` only when no such binding
+/// still finds the row unread, so a disconnected sibling that reconnects is still offered it.
 macro_rules! seat_unread_sql {
     () => {
         concat!(
-            "(r.legacy_pending=1 OR EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=r.seat_id AND b.ended_at IS NULL AND b.role='top_level' AND b.liveness='connected' AND ",
+            "(r.legacy_pending=1 OR EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=r.seat_id AND b.ended_at IS NULL AND b.role='top_level' AND ",
             $crate::store::lazy_delivery::binding_lazy_unread_sql!(),
             "))"
         )
