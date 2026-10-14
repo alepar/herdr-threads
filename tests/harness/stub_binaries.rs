@@ -19,16 +19,7 @@ use std::{
 /// exec. The probe's identity resolves the link to the shared script, whose
 /// inode, size and times never change once published.
 pub(crate) fn write_stub_harness(dir: &Path, name: &str, version: &str) -> PathBuf {
-    let line = match name {
-        "claude" => format!("{version} (Claude Code)"),
-        "codex" => format!("codex-cli {version}"),
-        other => panic!("no stub version line for harness {other:?}"),
-    };
-    let shared = shared_stub(
-        name,
-        version,
-        &format!("#!/bin/sh\nprintf '%s\\n' '{line}'\n"),
-    );
+    let shared = shared_stub(name, version, &stub_script(name, version));
     let path = dir.join(name);
     match fs::remove_file(&path) {
         Ok(()) => {}
@@ -37,6 +28,25 @@ pub(crate) fn write_stub_harness(dir: &Path, name: &str, version: &str) -> PathB
     }
     std::os::unix::fs::symlink(&shared, &path).unwrap();
     path
+}
+
+/// [`write_stub_harness`] as a new regular file of its own, for a test whose
+/// subject is the file's identity (a same-path, same-size inode swap) rather
+/// than executing it; its first exec pays macOS's new-file assessment.
+pub(crate) fn write_regular_stub_harness(dir: &Path, name: &str, version: &str) -> PathBuf {
+    let path = dir.join(name);
+    fs::write(&path, stub_script(name, version)).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+fn stub_script(name: &str, version: &str) -> String {
+    let line = match name {
+        "claude" => format!("{version} (Claude Code)"),
+        "codex" => format!("codex-cli {version}"),
+        other => panic!("no stub version line for harness {other:?}"),
+    };
+    format!("#!/bin/sh\nprintf '%s\\n' '{line}'\n")
 }
 
 /// The shared script for (name, version): staged under a unique name, then
