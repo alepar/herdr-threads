@@ -5206,11 +5206,19 @@ fn mod_seat_view_mode(
     }))
 }
 
-/// The oldest publication time among the seat's ordinary pending receipts
+/// Head of the stall query over the seat's published pending delivery rows (aliases `r`, `m`, `s`);
+/// the threshold predicate (`THRESHOLD_ADMITS_SQL`, a non-const-concat `&str`) and `STALL_ROWS_TAIL`
+/// follow.
+const STALL_ROWS_HEAD: &str = "SELECT min(m.decision_at) FROM lazy_recipients r JOIN seats s ON s.id=r.seat_id JOIN messages m ON m.id=r.message_id WHERE r.seat_id=?1 AND r.state='pending' AND r.decision_seq IS NOT NULL AND m.kind='ordinary' AND length(CAST(m.body AS BLOB))<=?2 AND m.decision_at<=?3 AND ";
+/// Tail: the row is unread for some connected top-level binding (`seat_unread_sql!`).
+const STALL_ROWS_TAIL: &str = concat!(" AND ", crate::store::lazy_delivery::seat_unread_sql!());
+
+/// The oldest publication time among the seat's wake-class pending items:
+/// ordinary receipts (the digest's bounded receipt walk, catch-up held items
+/// excluded) and delivery rows its current nudge threshold admits. Only items
 /// published at or before `at_or_before` whose stored body is at most
-/// `body_limit` bytes (spec D7: a truncated item never counts toward a
-/// stall). The pending set is the digest's canonical receipt walk (catch-up
-/// held items excluded), so it is bounded like the digest.
+/// `body_limit` bytes count (spec D7: a truncated item never counts toward a
+/// stall).
 pub fn mod_stall_oldest(
     db: &Connection,
     seat: &SeatId,
@@ -5222,7 +5230,7 @@ pub fn mod_stall_oldest(
     for item in &pending.items {
         let published: Option<i64> = db
             .query_row(
-                "SELECT decision_at FROM messages WHERE id=?1 AND kind='ordinary' AND delivery_mode='ordinary' AND length(CAST(body AS BLOB))<=?2 AND decision_at<=?3",
+                "SELECT decision_at FROM messages WHERE id=?1 AND kind='ordinary' AND length(CAST(body AS BLOB))<=?2 AND decision_at<=?3",
                 params![
                     item.id,
                     i64::try_from(body_limit).unwrap_or(i64::MAX),
@@ -5236,6 +5244,21 @@ pub fn mod_stall_oldest(
             oldest = Some(oldest.map_or(at, |current| current.min(at)));
         }
     }
+    let rows: Option<i64> = db
+        .query_row(
+            &format!("{STALL_ROWS_HEAD}{THRESHOLD_ADMITS_SQL}{STALL_ROWS_TAIL}"),
+            params![
+                seat.as_str(),
+                i64::try_from(body_limit).unwrap_or(i64::MAX),
+                at_or_before.0
+            ],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let oldest = match (oldest, rows) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
     Ok(oldest.map(UtcMillis))
 }
 

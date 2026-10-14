@@ -2687,9 +2687,10 @@ pub trait ModStoreReads: Send + Sync {
     ) -> Result<Option<ModSeatView>, ApiError> {
         self.mod_binding_view(seat, binding, budget)
     }
-    /// The oldest publication time among the seat's ordinary pending receipts
-    /// published at or before `at_or_before` whose body is at most
-    /// `body_limit` bytes (truncated items never count toward a stall).
+    /// The oldest publication time among the seat's wake-class pending items (ordinary
+    /// receipts and delivery rows its nudge threshold admits) published at or before
+    /// `at_or_before` whose body is at most `body_limit` bytes (truncated items never
+    /// count toward a stall).
     fn mod_stall_oldest(
         &self,
         seat: &SeatId,
@@ -4027,8 +4028,9 @@ pub trait ModChannels: Send + Sync {
     /// Counts only for that binding's entry, in Live or ReconnectGrace.
     fn record_ack(&self, _seat: &SeatId, _binding: &BindingId, _now: UtcMillis) {}
     /// Spec D7 predicate for one binding: its channel is live; its last mod ack or
-    /// registration is older than `MOD_STALL_AFTER_MS`; and some ordinary,
-    /// non-truncated pending receipt for the seat, published at or before the
+    /// registration is older than `MOD_STALL_AFTER_MS`; and some non-truncated wake-class
+    /// pending item for the seat (an ordinary receipt or a delivery row its nudge threshold
+    /// admits), published at or before the
     /// binding's last pushed Attention, is itself older than `MOD_STALL_AFTER_MS`. A mod
     /// hold counts; there is no heartbeat. The default answers from the seat.
     fn binding_stalled(&self, seat: &SeatId, binding: &BindingId, now: UtcMillis) -> bool {

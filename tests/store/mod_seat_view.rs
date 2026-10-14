@@ -584,6 +584,94 @@ fn stall_oldest_excludes_truncated_and_later_publications() {
     assert_eq!(oldest(10_000), Some(UtcMillis(900)));
 }
 
+/// A published pending delivery row (message `id`, sequence `n` of `t2`) for seat `s` with `priority`
+/// and no receipt (D9: a bare p0 send makes a delivery row only).
+fn seed_stall_row(
+    conn: &Connection,
+    n: i64,
+    priority: i64,
+    decision_seq: i64,
+    decision_at: i64,
+    body_len: usize,
+) {
+    conn.execute(
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES(?1,'i','scope',?1,zeroblob(32),'t2',0,0,0,0,0,0,0,'building','lazy')",
+        [format!("prep-{n}")],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES(?1,?2,'t2','s',?3)",
+        rusqlite::params![format!("prep-{n}"), format!("msg-{n}"), priority],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES(?1,'i','t2',?2,'ordinary',?3,?4,?5,'lazy')",
+        rusqlite::params![format!("msg-{n}"), n, decision_seq, "x".repeat(body_len), decision_at],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'i','t2',?3,?4,?5,0,1,0)",
+        rusqlite::params![format!("prep-{n}"), format!("msg-{n}"), decision_seq, decision_at, n],
+    )
+    .unwrap();
+    // Publication (`note_published`) stamps the recipient row with the manifest's decision sequence.
+    conn.execute(
+        "UPDATE lazy_recipients SET decision_seq=?2 WHERE preparation_id=?1",
+        rusqlite::params![format!("prep-{n}"), decision_seq],
+    )
+    .unwrap();
+}
+
+#[test]
+fn stall_oldest_counts_threshold_admitted_delivery_rows() {
+    let (store, conn, _) = fixture();
+    base(&conn);
+    conn.execute_batch(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',0,'p','b',0,'claude','stall-session','e','cooperative_top_level',0,'tm','inc');\
+         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t2','s','joined');\
+         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t2','s',1,1);",
+    )
+    .unwrap();
+    let oldest = |bound: i64| {
+        store
+            .mod_stall_oldest(
+                &seat_s(),
+                UtcMillis(bound),
+                WATCH_BODY_LIMIT_BYTES,
+                &budget(),
+            )
+            .unwrap()
+    };
+    // A p1 row at the default threshold T = 0 is not admitted.
+    seed_stall_row(&conn, 1, 1, 5, 200, 10);
+    assert_eq!(oldest(10_000), None);
+    // A p0 row is admitted; a truncated older p0 row never counts.
+    seed_stall_row(&conn, 2, 0, 6, 400, 10);
+    seed_stall_row(&conn, 3, 0, 7, 100, WATCH_BODY_LIMIT_BYTES + 1);
+    assert_eq!(oldest(10_000), Some(UtcMillis(400)));
+    assert_eq!(oldest(399), None, "published after the bound");
+    // T < 0 admits the p1 row too.
+    conn.execute("UPDATE seats SET nudge_threshold=-1 WHERE id='s'", [])
+        .unwrap();
+    assert_eq!(oldest(10_000), Some(UtcMillis(200)));
+    conn.execute("UPDATE seats SET nudge_threshold=0 WHERE id='s'", [])
+        .unwrap();
+    assert_eq!(oldest(10_000), Some(UtcMillis(400)));
+    // A pending receipt older than every row wins by minimum.
+    seed_stall_receipt(&conn, "m-rcpt", 9, 9, 50, 10);
+    assert_eq!(oldest(10_000), Some(UtcMillis(50)));
+    conn.execute("UPDATE receipts SET state='acked',acked_at=1,ack_actor_seat_id='s',ack_generation=1,ack_observation='obs' WHERE message_id='m-rcpt'", [])
+        .unwrap();
+    assert_eq!(oldest(10_000), Some(UtcMillis(400)));
+    // The binding's cursor passes the rows: nothing is unread for a connected binding.
+    conn.execute(
+        "INSERT OR REPLACE INTO binding_cursors(binding_id,thread_id,seq) SELECT binding_id,'t2',100 FROM occupant_bindings WHERE seat_id='s'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(oldest(10_000), None);
+}
+
 fn counting_observer(store: &SqliteStore) -> Arc<AtomicUsize> {
     let count = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&count);
