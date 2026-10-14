@@ -445,10 +445,30 @@ fn cli_against_an_old_fixture_daemon_never_sends_full_bodies() {
         3,
         "one fetch per clipped preview: {kinds:?}"
     );
+    // Priorities postdate the old daemon: it never shows `[pN]` rows, while the
+    // current daemon annotates each p0 (`--require-ack`) message exactly once.
+    // Everything else renders byte for byte the same.
+    let (old_out, current_out) = (text(&old.stdout), text(&current.stdout));
+    assert!(
+        !old_out.lines().any(|l| l.starts_with("[p")),
+        "no [pN] row from an old daemon: {old_out}"
+    );
+    let (p0_rows, rest): (Vec<&str>, Vec<&str>) =
+        current_out.lines().partition(|l| l.starts_with("[p0] "));
+    let p0_messages = 4; // the opener and the three long bodies, all --require-ack
+    assert_eq!(p0_rows.len(), p0_messages, "{current_out}");
+    let mut ids: Vec<&str> = p0_rows.iter().map(|l| l["[p0] ".len()..].trim()).collect();
+    assert!(
+        ids.iter().all(|id| !id.is_empty() && !id.contains(' ')),
+        "{p0_rows:?}"
+    );
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), p0_messages, "one row per message: {p0_rows:?}");
     assert_eq!(
-        text(&old.stdout),
-        text(&current.stdout),
-        "identical rendered bytes"
+        old_out.lines().collect::<Vec<_>>(),
+        rest,
+        "remaining rendered lines identical"
     );
     assert_eq!(old.stderr, current.stderr);
 }
