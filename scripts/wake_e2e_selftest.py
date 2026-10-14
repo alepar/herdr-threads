@@ -646,8 +646,18 @@ class MixedOrder(unittest.TestCase):
 
     def test_markers_check(self):
         self.assertTrue(W.markers_ok({"mA1": 0, "mB1": 1}, {"mA1": 0, "mB1": 1, "mC1": 5}))
-        self.assertTrue(W.markers_ok({}, {"mA1": 0}))  # no header on screen: nothing to contradict
+        self.assertFalse(W.markers_ok({}, {"mA1": 0}))  # no header on screen: no marker was seen
+        self.assertFalse(W.markers_ok({"zZ9": 0}, {"mA1": 0}))  # headers of other messages only
         self.assertFalse(W.markers_ok({"mA1": 1}, {"mA1": 0}))  # a p0 shown as the silent default
+
+    def test_markers_reason_names_the_case(self):
+        none = W.markers_reason("mixed-order/group", {}, {"mA1": 0})
+        self.assertIn("mixed-order/group", none)
+        self.assertIn("no expected [herdr-threads] header", none)
+        bad = W.markers_reason("mixed-order/group", {"mA1": 1}, {"mA1": 0})
+        for part in ("mixed-order/group", "mA1", "p1", "p0"):
+            self.assertIn(part, bad)
+        self.assertIsNone(W.markers_reason("mixed-order/group", {"mA1": 0}, {"mA1": 0}))
 
 
 class MixedOrderCase(unittest.TestCase):
@@ -658,7 +668,7 @@ class MixedOrderCase(unittest.TestCase):
         self.addCleanup(setattr, W, "SPACING_S", saved)
         W.SPACING_S = 0.0
 
-    def run_case(self, screen_order_ids, threshold=0, headers=None):
+    def run_case(self, screen_order_ids, threshold=0, headers=None, framed=True):
         rows, sends = [], []
         ids = {"p5": "m5555", "p1": "m1111", "p0": "m0000", "ack": "mACK0"}
         r = object.__new__(W.Recipient)
@@ -675,7 +685,11 @@ class MixedOrderCase(unittest.TestCase):
         r.watch_quiet = lambda seconds: None
         r.on_screen = lambda mid, tries=15: True
         r.receipt = lambda mid: "acknowledged"
-        text = (headers or "") + "".join(f"RECEIVED {ids[k]}: x\n" for k in screen_order_ids)
+        marks = {"p0": " [p0]", "ack": " [p0]", "p1": "", "p5": " [p5]"}
+
+        def frame(k):
+            return f"[herdr-threads] message {ids[k]} in tGROUP from sX{marks[k]}:\n  x\n" if framed else ""
+        text = (headers or "") + "".join(frame(k) + f"RECEIVED {ids[k]}: x\n" for k in screen_order_ids)
         r.screen = lambda lines=400: text
         r.case("mixed-order/group")
         self.assertEqual(len(rows), 1)
@@ -701,9 +715,21 @@ class MixedOrderCase(unittest.TestCase):
 
     def test_wrong_marker_on_a_shown_header_fails(self):
         bad = "[herdr-threads] message m0000 in tGROUP from sX:\n  x\n"  # a p0 framed as the silent default
-        row_, _ = self.run_case(["ack", "p0", "p1", "p5"], headers=bad)
+        row_, _ = self.run_case(["ack", "p0", "p1", "p5"], headers=bad, framed=False)
         self.assertIs(row_["checks"]["markers"], False)
         self.assertEqual(row_["result"], "FAIL")
+
+    def test_no_header_on_screen_fails(self):
+        row_, _ = self.run_case(["ack", "p0", "p1", "p5"], framed=False)
+        self.assertIs(row_["checks"]["markers"], False)
+        self.assertEqual(row_["result"], "FAIL")
+        self.assertIn("mixed-order/group", row_["checks"]["markers_reason"])
+
+    def test_correct_pn_headers_pass(self):
+        row_, _ = self.run_case(["ack", "p0", "p1", "p5"])
+        self.assertIs(row_["checks"]["markers"], True)
+        self.assertEqual(row_["result"], "PASS", row_)
+        self.assertNotIn("markers_reason", row_["checks"])
 
     def test_runs_the_same_at_every_threshold(self):
         for threshold in W.THRESHOLDS:

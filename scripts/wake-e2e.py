@@ -206,8 +206,20 @@ def header_priorities(screen):
 
 
 def markers_ok(shown, expected):
-    """Every header shown on screen carries its message's priority marker (an id with no header is not judged)."""
-    return all(expected.get(mid) == p for mid, p in shown.items() if mid in expected)
+    """At least one of the case's messages shows its frame header on screen, and every shown header carries its
+    message's priority marker (an expected id with no header is not judged; no header at all fails, so a PASS
+    means a marker was actually seen)."""
+    judged = [mid for mid in shown if mid in expected]
+    return bool(judged) and all(shown[mid] == expected[mid] for mid in judged)
+
+
+def markers_reason(case, shown, expected):
+    """Why markers_ok failed for `case`, or None when it passed."""
+    judged = [mid for mid in shown if mid in expected]
+    if not judged:
+        return f"{case}: no expected [herdr-threads] header on screen"
+    bad = [f"{mid} shown p{shown[mid]} expected p{expected[mid]}" for mid in judged if shown[mid] != expected[mid]]
+    return f"{case}: " + "; ".join(bad) if bad else None
 
 
 def utc():
@@ -1372,7 +1384,10 @@ class Recipient:
         checks["order_judged"] = judged
         checks["order_shown"] = shown
         checks["order_expected"] = want
-        checks["markers"] = markers_ok(header_priorities(screen), {i["id"]: i["priority"] for i in items})
+        shown_headers, want_markers = header_priorities(screen), {i["id"]: i["priority"] for i in items}
+        checks["markers"] = markers_ok(shown_headers, want_markers)
+        if not checks["markers"]:
+            checks["markers_reason"] = markers_reason(case, shown_headers, want_markers)
         status = None
         for _ in range(20):
             status = self.receipt(ids["ack"])
