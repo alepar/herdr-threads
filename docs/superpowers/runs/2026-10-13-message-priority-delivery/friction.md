@@ -15,3 +15,5 @@
 - [2026-10-14T11:18:29Z] flakiness tab (memory herdr-threads-flakes-to-flakiness-tab) is not running; filed flake beads ht-3wm (q5) and ht-kk8 (doctor_reports) in the tracker instead
 - [2026-10-14T11:33:14Z] phase 7: instruction named dev-herdr-threads as (taQXwBH7X), which is a thread id, not a seat; seat send failed not_found; joined the discoverable thread and posted there (mmRxNj0E3)
 - [2026-10-14T13:55:07Z] unplanned coordinator stop (wf_cf7de11c-e3f) mid-dispatch to rewrite ht-yha.44 after the user rejected its seat-wide display rule; ht-yha.44 partial worktree discarded, .45/.46 worktrees kept for reuse
+- [2026-10-14T18:56:40Z] third network outage (ENOTFOUND) stopped coordinator wf_924abd0d-830 (ready-unavailable path, reported closure-unconfirmed); killed ht-yha.44 implementer mid-work (worktree kept, uncommitted), final review, sweeps; relaunched
+- [2026-10-14T19:35:35Z] ht-yha.44 escalated: config5 failure is unrelated (unpublished preparations from store_busy-refused sends exhaust the deadline window's receipt walk; same at base); orchestrator chose option 3: amend .44 to drop config5, new bead ht-yha.52 owns it
