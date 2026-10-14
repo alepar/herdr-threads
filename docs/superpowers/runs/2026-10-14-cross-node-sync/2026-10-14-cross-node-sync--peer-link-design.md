@@ -403,7 +403,7 @@ A failure refuses the start with the existing "names the file" error. The settin
 - **Idle exit** (new; `src/daemon/idle_exit.rs`). There is no idle exit today (verified in `src/app.rs` and `src/daemon/lifecycle.rs`), so root §1's "existing idle period" is fixed here as `IDLE_EXIT_AFTER = 10 min`, and the rule stays narrower than root §1's wording allows. A daemon exits only when **all** of these hold at every 30 s check for 10 continuous minutes:
   - `HostSessions::attached_count() == 0` (store-only);
   - `SyncHandle::link_count() == 0` (established or handshaking, inbound or dialed);
-  - `Dialer::enabled_targets() == 0`;
+  - `SyncHandle::enabled_target_count() == 0` (owned by the Dialer leaf, ht-5fr.5.7);
   - `ConnectionGauge == 0`.
 
   Any failed check resets the timer. On exit it logs one line, `idle exit: store-only, no peer links, no dial targets, no clients for 600 s`, and cancels the same `shutdown` the `Stop` path uses, so the descriptor, the lock and the drain behave as on `daemon stop`.
@@ -421,7 +421,7 @@ A failure refuses the start with the existing "names the file" error. The settin
 - `snapshot() -> SyncSnapshot { links: Vec<LinkStatus{ node, tag, role, mode, dest: Option<String>, since, rx_logs: u32, unsolicited: u64, last_error: Option<String> }>, paused_logs, headroom_until }`, for ht-5fr.8's `sync status`. It is bounded at 64 links and answered by the actor within the caller's budget, or `StoreBusy`.
 - `signals() -> Arc<SyncSignals>`, for ht-5fr.13.
 - `link_count()`.
-- `reload_targets()`, an explicit nudge that ht-5fr.8's `peer add` does not need, because the table kick covers it, but which ht-5fr.7 may call after a discovery batch.
+- `reload_targets()` (owned by the Dialer leaf, ht-5fr.5.7), an explicit nudge that ht-5fr.8's `peer add` does not need, because the table kick covers it, but which ht-5fr.7 may call after a discovery batch.
 
 ht-5fr.6 extends `PeerFrame` behind `fork.v1`, implements `ForkSink`, and may request a branch pull through a new coordinator method. Those are its additions. ht-5fr.10 consumes `sync.dial_command` and `peer --stdio` as specified.
 
