@@ -240,13 +240,13 @@ The result goes back to the actor, which always calls `grant(len)` on that link 
 |---|---|
 | `Stored{head, ..}` | `local[L] = head`; mark rx progress; contact `L.node` and the link's node (§12); schedule Have delta; `push` to other subscribers of `L` |
 | `Gap{expected, ..}` | re-`Want{L, from: expected}` on the same source |
-| `Fork{evidence, ..}` | `fork_sink.on_fork(L, evidence, link.peer.node)`; pause `L` (no Want) until the sink resumes it |
+| `Fork{evidence, ..}` | `fork_sink.on_fork(L, evidence, link.peer.node)`; on `ForkAck::Paused` pause `L` (no Want) until the sink resumes it; `ForkAck::Corrupt` is handled as `Corrupt` (amended by [incarnations design §12](2026-10-14-cross-node-sync--incarnations-design.md#12-runtime-sink-worker-coordinator-changes)) |
 | `Frozen{frozen_at, ..}` | `Unwant{L}`; `L` is no longer wantable past `frozen_at` |
 | `Corrupt{reason, ..}` | penalize `(link, L)` for 10 min, count an error, `Unwant`, `reselect(L)`; with no other source, re-Want the same source after the penalty expires |
 | `Headroom` | pause **all** wants: `Unwant` every rx subscription and set `headroom_until = now + 60 s`, after which reselect runs again (a still-full disk answers `Headroom` again) |
 | `Err(store)` | `status.record_failure(Lane::Sync, &e)` (Health: `lane sync failed: …`); re-Want from `contiguous+1` after the Lane::Sync pacer's backoff |
 
-`ForkSink` is a trait with `on_fork(&self, log, evidence, source)` and `resumed(&self) -> Vec<LogKey>` (polled on the 1 s tick). ht-5fr.6 implements it with Incarnations. Until then, `LogOnlyForkSink` writes one log line per log per hour, `sync: fork on <uuid8>/<inc> from <uuid8>; log paused`, and never resumes. The coordinator itself never freezes or re-issues anything (root: SyncCoordinator must not resolve forks). It is the second implementation of a trait ht-5fr.6 needs anyway, so it is not speculative.
+`ForkSink` is a trait with `on_fork(&self, log, evidence, source) -> ForkAck` (amended by [incarnations design §12](2026-10-14-cross-node-sync--incarnations-design.md#12-runtime-sink-worker-coordinator-changes): it returns `ForkAck::{Paused, Corrupt}`, not `()`; `LogOnlyForkSink` returns `Paused`) and `resumed(&self) -> Vec<LogKey>` (polled on the 1 s tick). ht-5fr.6 implements it with Incarnations. Until then, `LogOnlyForkSink` writes one log line per log per hour, `sync: fork on <uuid8>/<inc> from <uuid8>; log paused`, and never resumes. The coordinator itself never freezes or re-issues anything (root: SyncCoordinator must not resolve forks). It is the second implementation of a trait ht-5fr.6 needs anyway, so it is not speculative.
 
 **Considered.**
 - One ingest per link in parallel: FairWriter serializes them anyway, and per-log order across a source switch could interleave.
@@ -544,7 +544,7 @@ Order: 1 → 2 → (3, 4, 7) → 5 → 6 → 8 → 9 → 10 → 11.
 - Lifecycle: created by `SyncCoordinator::start`, shared as `Arc` for the daemon's life.
 
 **ForkSink** — new trait (`src/sync/coordinator.rs`), where the coordinator reports a fork and learns that a paused log may resume.
-- Owns: the two-call contract `on_fork(log, evidence, source)` and `resumed()` (polled on the 1 s tick).
+- Owns: the two-call contract `on_fork(log, evidence, source) -> ForkAck::{Paused, Corrupt}` (amended by [incarnations design §12](2026-10-14-cross-node-sync--incarnations-design.md#12-runtime-sink-worker-coordinator-changes)) and `resumed()` (polled on the 1 s tick).
 - Hides: fork policy entirely; the coordinator only pauses and unpauses wants.
 - Must not: be called for anything but `IngestOutcome::Fork`; the coordinator never freezes or re-issues (root SyncCoordinator "must not").
 - Relationships: `LogOnlyForkSink` (rate-limited log line, never resumes) now; ht-5fr.6's Incarnations implementation next. Chosen once in `CoordinatorDeps` in `app.rs`.
