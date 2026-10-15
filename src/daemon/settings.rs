@@ -1,4 +1,4 @@
-//! Per-instance operator settings: `<instance_dir>/settings.json`.
+//! Per-instance operator settings: `<node_dir>/settings.json`.
 //!
 //! Read once at daemon start (and by `doctor`). This is the single schema for
 //! the file: the daemon's hardened read (`ServiceConfig::load`), the elected
@@ -96,13 +96,13 @@ impl std::fmt::Display for SettingsError {
 
 impl std::error::Error for SettingsError {}
 
-/// Load `<instance_dir>/settings.json`. A missing file gives the defaults;
+/// Load `<node_dir>/settings.json`. A missing file gives the defaults;
 /// an unreadable file, invalid JSON, an unknown key or a bad value (including
 /// an out-of-range timing value) is an error naming the file and the
 /// complaint. A plain read: the permission checks live in
 /// `ServiceConfig::load`.
-pub fn load(instance_dir: &Path) -> Result<InstanceSettings, SettingsError> {
-    let path = instance_dir.join(SETTINGS_FILE);
+pub fn load(node_dir: &Path) -> Result<InstanceSettings, SettingsError> {
+    let path = node_dir.join(SETTINGS_FILE);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

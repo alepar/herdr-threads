@@ -5,7 +5,7 @@ use herdr_threads::{
     app::SystemClock,
     daemon::{
         ownership::OwnerLock,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
     },
     harness::context::{ContextJournal, Harness, OccupantContext, Role, SessionReference},
     host::native::NativeCli,
@@ -361,18 +361,18 @@ pub(super) struct Fixture {
     pub(super) host: Host,
     pub(super) iso: TestIsolation,
     pub(super) context: RuntimeContext,
-    paths: InstancePaths,
-    pub(super) instance: Uuid,
+    paths: NodePaths,
+    pub(super) instance: herdr_threads::node::NodeUuid,
     cli_log: Mutex<Vec<Value>>,
 }
 impl Fixture {
     pub(super) fn new() -> Self {
         Self::with_instance(None)
     }
-    fn with_instance(copied: Option<Uuid>) -> Self {
+    fn with_instance(copied: Option<&Fixture>) -> Self {
         Self::with_layout(copied, false)
     }
-    fn with_layout(copied: Option<Uuid>, long_state: bool) -> Self {
+    fn with_layout(copied: Option<&Fixture>, long_state: bool) -> Self {
         let iso = TestIsolation::new("handoff-topology-cli");
         for dir in ["claude-config", "codex-home", "cwd"] {
             fs::create_dir(iso.path(dir)).unwrap();
@@ -409,17 +409,19 @@ impl Fixture {
         }
         fs::create_dir_all(&state).unwrap();
         let context = RuntimeContext::explicit(state, socket, None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
-        let owner = OwnerLock::acquire(&paths).unwrap();
-        let mut instance = owner.instance_uuid();
-        drop(owner);
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        // A copied state directory carries the original node's key, so the
+        // copy is the same node (same uuid).
         if let Some(copied) = copied {
-            fs::write(&paths.namespace_path, copied.to_string()).unwrap();
-            let owner = OwnerLock::acquire(&paths).unwrap();
-            instance = owner.instance_uuid();
-            assert_eq!(instance, copied);
-            drop(owner);
+            paths.prepare_node_dir().unwrap();
+            fs::copy(&copied.paths.key_path, &paths.key_path).unwrap();
         }
+        let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+        let instance = owner.node_uuid().unwrap();
+        if let Some(copied) = copied {
+            assert_eq!(instance, copied.instance);
+        }
+        drop(owner);
         Self::seed(&paths, &context, instance);
         let mut cmd = iso.command(BIN);
         cmd.args(["daemon", "run", "--state-dir"])
@@ -455,7 +457,7 @@ impl Fixture {
             cli_log: Mutex::new(Vec::new()),
         }
     }
-    fn seed(paths: &InstancePaths, context: &RuntimeContext, instance: Uuid) {
+    fn seed(paths: &NodePaths, context: &RuntimeContext, instance: herdr_threads::node::NodeUuid) {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let native = NativeCli::new(context.host_endpoint.clone(), clock.clone());
         let budget = CallBudget {
@@ -535,7 +537,7 @@ impl Fixture {
             herdr_threads::test_support::isolation::stand_in_fingerprint("codex", "session");
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES('sender',1,'w4:p1',?1,1,1,'codex','session',?2,'cooperative_top_level',0,0,'term_1',?1,?3,?4)",params![observation.host_boot.as_str(),execution.to_string(),i64::from(sender_fp.pid),sender_fp.start as i64]).unwrap();
         let contexts = paths
-            .instance_dir
+            .node_dir
             .join("contexts")
             .join(format!("{:x}", Sha256::digest(b"sender")));
         fs::DirBuilder::new()
@@ -683,7 +685,7 @@ impl Fixture {
         }
     }
     fn journal(&self) -> PathBuf {
-        self.paths.instance_dir.join("intents")
+        self.paths.node_dir.join("intents")
     }
     fn reference(&self) -> String {
         let files: Vec<_> = fs::read_dir(self.journal())
@@ -805,7 +807,7 @@ impl Fixture {
         self.db().execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) SELECT 'recipient',1,'w4:p2',host_boot,host_epoch,1,'codex','peer-session',?1,'cooperative_top_level',observed_at,registered_at,'term_2',incarnation,?2,?3 FROM occupant_bindings WHERE seat_id='sender'",params![execution.to_string(),i64::from(peer_fp.pid),peer_fp.start as i64]).unwrap();
         let contexts = self
             .paths
-            .instance_dir
+            .node_dir
             .join("contexts")
             .join(format!("{:x}", Sha256::digest(b"recipient")));
         fs::DirBuilder::new()
@@ -1521,7 +1523,7 @@ fn public_copied_uuid_namespace_refuses_before_effects() {
     ));
     let saved = original.original_bytes();
     assert!(!saved.is_empty());
-    let foreign = Fixture::with_instance(Some(original.instance));
+    let foreign = Fixture::with_instance(Some(&original));
     assert_eq!(foreign.instance, original.instance);
     fs::create_dir_all(foreign.journal()).unwrap();
     fs::set_permissions(foreign.journal(), fs::Permissions::from_mode(0o700)).unwrap();

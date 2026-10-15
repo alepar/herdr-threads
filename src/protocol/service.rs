@@ -359,9 +359,7 @@ impl ServiceWireRequest {
         {
             return Err("invalid request id");
         }
-        if uuid::Uuid::parse_str(&self.expected_instance).map_or(true, |id| {
-            id.hyphenated().to_string() != self.expected_instance
-        }) {
+        if !crate::protocol::wire::valid_instance(&self.expected_instance) {
             return Err("invalid expected instance");
         }
         match &self.service {
@@ -482,7 +480,7 @@ mod contract_tests {
     };
     use serde_json::{Value, json};
 
-    const INSTANCE: &str = "123e4567-e89b-12d3-a456-426614174000";
+    const INSTANCE: &str = "123e4567e89b12d3a456426614174000";
     const BOOT: &str = "123e4567-e89b-12d3-a456-426614174001";
 
     fn registration() -> ServiceWireRequest {

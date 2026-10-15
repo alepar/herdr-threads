@@ -29,6 +29,34 @@ impl NodeUuid {
         Self(bytes)
     }
 
+    /// Fixture constructors mirroring `uuid::Uuid`'s, for tests that stand in
+    /// for a node.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn nil() -> Self {
+        Self([0; 16])
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_u128(value: u128) -> Self {
+        Self(value.to_be_bytes())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn new_v4() -> Self {
+        Self(*uuid::Uuid::new_v4().as_bytes())
+    }
+
+    /// Parse a hyphenated or plain `uuid::Uuid` text into a fixture node.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn parse_str(text: &str) -> Result<Self, uuid::Error> {
+        uuid::Uuid::parse_str(text).map(|parsed| Self(*parsed.as_bytes()))
+    }
+
+    /// All-zero uuid: never a real node (fixtures and unset values).
+    pub fn is_nil(&self) -> bool {
+        self.0 == [0; 16]
+    }
+
     pub fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }

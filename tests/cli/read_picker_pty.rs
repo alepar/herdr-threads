@@ -2,7 +2,7 @@
 //! rather than snapshots: idle must be silent and interaction must not erase
 //! the entire screen. Each child has an owner and an isolated configuration.
 use herdr_threads::{
-    daemon::paths::{InstancePaths, RuntimeContext},
+    daemon::paths::{NodePaths, RuntimeContext},
     test_support::{
         isolation::TestIsolation,
         spawn::{OwnedChild, SpawnOwned},
@@ -117,7 +117,7 @@ impl Fixture {
         let host = Host::start(&host_socket);
         let state = iso.path("state");
         let context = RuntimeContext::explicit(state.clone(), host_socket.clone(), None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
         let mut daemon_command = iso.command(BIN);
         daemon_command
             .args(["daemon", "run", "--state-dir"])
@@ -267,7 +267,7 @@ impl PageGate {
         let context =
             RuntimeContext::explicit(fixture.iso.path("state"), fixture.host_socket.clone(), None)
                 .unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
         let original_descriptor = fs::read(&paths.descriptor_path).unwrap();
         let mut descriptor: Value = serde_json::from_slice(&original_descriptor).unwrap();
         let socket = paths.socket_path;
@@ -889,7 +889,7 @@ fn gate_worker_panic_during_unwind_restores_private_socket_and_daemon_cleanup() 
     let context =
         RuntimeContext::explicit(fixture.iso.path("state"), fixture.host_socket.clone(), None)
             .unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
     let descriptor = fs::read(&paths.descriptor_path).unwrap();
     let pid = fixture.daemon.id() as libc::pid_t;
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

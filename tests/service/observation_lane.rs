@@ -183,7 +183,7 @@ impl Rig {
     fn new() -> Self {
         let dir = Scratch::new();
         let clock = Arc::new(LaneClock(AtomicU64::new(START)));
-        let instance = uuid::Uuid::new_v4().to_string();
+        let instance = crate::node::NodeUuid::new_v4().to_string();
         let db = dir.0.join("db");
         let store = SqliteStore::new(
             StoreContext::new(db.clone(), clock.clone()),

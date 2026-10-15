@@ -857,8 +857,7 @@ impl Health {
         }
     }
     pub fn validate(&self) -> Result<(), &'static str> {
-        if uuid::Uuid::parse_str(&self.instance_id)
-            .map_or(true, |id| id.to_string() != self.instance_id)
+        if !crate::protocol::wire::valid_instance(&self.instance_id)
             || uuid::Uuid::parse_str(&self.boot_id)
                 .map_or(true, |id| id.to_string() != self.boot_id)
         {

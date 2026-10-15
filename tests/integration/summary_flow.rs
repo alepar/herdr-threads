@@ -11,7 +11,7 @@
 use super::sweep::{FakeHost, Scratch, agent_pane, pane};
 use herdr_threads::{
     cli::hook::installed_argv,
-    daemon::paths::{InstancePaths, RuntimeContext},
+    daemon::paths::{NodePaths, RuntimeContext},
     harness::{claude::setup::plan_claude, context::Harness},
     test_support::spawn::SpawnOwned,
 };
@@ -84,7 +84,7 @@ struct World {
     root: PathBuf,
     state: PathBuf,
     host: PathBuf,
-    instance_dir: PathBuf,
+    node_dir: PathBuf,
     claude_hooks: Value,
     codex_hook: String,
     _host: FakeHost,
@@ -118,9 +118,9 @@ impl World {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         }
         let context = RuntimeContext::explicit(state.clone(), socket.clone(), None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
-        paths.prepare_instance_dir().unwrap();
-        let file = paths.instance_dir.join("settings.json");
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        paths.prepare_node_dir().unwrap();
+        let file = paths.node_dir.join("settings.json");
         fs::write(&file, settings).unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
         let argv = installed_argv(binary, Some(state.to_str().unwrap()), None, Harness::Claude);
@@ -135,7 +135,7 @@ impl World {
             root,
             state,
             host: socket,
-            instance_dir: paths.instance_dir,
+            node_dir: paths.node_dir,
             claude_hooks,
             codex_hook,
             _host: host,
@@ -323,7 +323,7 @@ impl World {
     }
     fn db(&self) -> rusqlite::Connection {
         let db = rusqlite::Connection::open_with_flags(
-            self.instance_dir.join("threads.sqlite3"),
+            self.node_dir.join("herdr-threads.db"),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
         .unwrap();
@@ -338,7 +338,7 @@ impl World {
         use herdr_threads::{
             app::SystemClock,
             client::local::LocalSocketClient,
-            daemon::ownership::{read_descriptor, read_existing_namespace},
+            daemon::ownership::{read_descriptor, read_node_uuid_hint},
             protocol::{
                 output::{OutputFormat, OutputSpec, encode_selected},
                 time::{CallBudget, Cancellation, Clock, MonoInstant},
@@ -346,11 +346,13 @@ impl World {
         };
         use std::sync::Arc;
 
-        let paths = InstancePaths::resolve(
-            &RuntimeContext::explicit(self.state.clone(), self.host.clone(), None).unwrap(),
+        let paths = NodePaths::resolve(
+            &RuntimeContext::explicit(self.state.clone(), self.host.clone(), None)
+                .unwrap()
+                .state_dir,
         )
         .unwrap();
-        let instance = read_existing_namespace(&paths).unwrap().unwrap();
+        let instance = read_node_uuid_hint(&paths).unwrap().unwrap();
         let descriptor = read_descriptor(&paths, instance).unwrap();
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let client = LocalSocketClient::new(
@@ -383,17 +385,19 @@ impl World {
     /// cooperative mutations send (an agent saves no context).
     fn seat_claim(&self, seat: &str) -> herdr_threads::protocol::authority::CallerClaim {
         use herdr_threads::{
-            daemon::ownership::read_existing_namespace,
+            daemon::ownership::read_node_uuid_hint,
             protocol::{
                 authority::{CallerRole, Harness, LivenessFingerprint},
                 ids::*,
             },
         };
-        let paths = InstancePaths::resolve(
-            &RuntimeContext::explicit(self.state.clone(), self.host.clone(), None).unwrap(),
+        let paths = NodePaths::resolve(
+            &RuntimeContext::explicit(self.state.clone(), self.host.clone(), None)
+                .unwrap()
+                .state_dir,
         )
         .unwrap();
-        let instance = read_existing_namespace(&paths).unwrap().unwrap();
+        let instance = read_node_uuid_hint(&paths).unwrap().unwrap();
         let db = rusqlite::Connection::open(&paths.database_path).unwrap();
         #[allow(clippy::type_complexity)]
         let (generation, harness, session, execution, target, pid, start): (
@@ -586,7 +590,7 @@ impl Drop for World {
     fn drop(&mut self) {
         let _ = self.cli(None, None, &["daemon", "stop"]);
         if std::thread::panicking()
-            && let Ok(log) = fs::read(self.instance_dir.join("daemon.log"))
+            && let Ok(log) = fs::read(self.node_dir.join("daemon.log"))
         {
             let tail = &log[log.len().saturating_sub(16 * 1024)..];
             eprintln!(
@@ -1485,7 +1489,7 @@ fn lapsed_reservation_fetch_is_honoured_while_free() {
     // The real-store clock tests cover the 60 s transition. Backdate both
     // timestamps in this private fixture, retaining the reservation duration,
     // owner and token; every fetch and competing lease still uses the daemon.
-    let mut db = rusqlite::Connection::open(fx.world.instance_dir.join("threads.sqlite3")).unwrap();
+    let mut db = rusqlite::Connection::open(fx.world.node_dir.join("herdr-threads.db")).unwrap();
     db.busy_timeout(Duration::from_secs(5)).unwrap();
     // Take the writer lock before reading: a deferred read transaction cannot
     // upgrade while a daemon writer is active, even with the busy timeout.
@@ -1786,7 +1790,7 @@ fn programmatic_rows_map_to_service() {
     use herdr_threads::{
         app::SystemClock,
         client::service::{PersistentServiceClient, ServiceIntentJournal},
-        daemon::ownership::{read_descriptor, read_existing_namespace},
+        daemon::ownership::{read_descriptor, read_node_uuid_hint},
         protocol::{
             ids::{OperationId, ThreadId},
             service::{
@@ -1802,14 +1806,14 @@ fn programmatic_rows_map_to_service() {
     let fx = Fixture::build_until(Stage::SeatA);
     let context =
         RuntimeContext::explicit(fx.world.state.clone(), fx.world.host.clone(), None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    let instance = read_existing_namespace(&paths).unwrap().expect("instance");
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let instance = read_node_uuid_hint(&paths).unwrap().expect("instance");
     let descriptor = read_descriptor(&paths, instance).unwrap();
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let client = PersistentServiceClient::new(
         descriptor.endpoint.clone(),
         Arc::clone(&clock),
-        descriptor.instance_uuid,
+        descriptor.node_uuid,
         Some(descriptor.boot_id),
         ServiceIntentJournal::open(fx.world.root.join("intents")).unwrap(),
     );
@@ -2912,8 +2916,10 @@ use crate::token_diet::lazy_proxy as useful_page_proxy;
 /// The capability proxy in front of the fixture daemon, passing everything
 /// through until [`select_reader`] picks a reader.
 fn useful_page_proxy(fx: &Fixture) -> useful_page_proxy::Proxy {
-    let paths = herdr_threads::daemon::paths::InstancePaths::resolve(
-        &RuntimeContext::explicit(fx.world.state.clone(), fx.world.host.clone(), None).unwrap(),
+    let paths = herdr_threads::daemon::paths::NodePaths::resolve(
+        &RuntimeContext::explicit(fx.world.state.clone(), fx.world.host.clone(), None)
+            .unwrap()
+            .state_dir,
     )
     .unwrap();
     useful_page_proxy::Proxy::new(paths, &fx.world.root)
@@ -2966,7 +2972,7 @@ fn inbox_history_fixture_at(history_count: i64, stage: Stage) -> Fixture {
         .exec_in_pane(None, Some(PANE_B), None, &["inbox"], false);
     assert_eq!(original.code, 0, "{}", original.stderr);
     assert!(fx.world.pending(&fx.b).is_empty());
-    let mut db = rusqlite::Connection::open(fx.world.instance_dir.join("threads.sqlite3")).unwrap();
+    let mut db = rusqlite::Connection::open(fx.world.node_dir.join("herdr-threads.db")).unwrap();
     db.busy_timeout(Duration::from_secs(5)).unwrap();
     // One write transaction for the whole history: one commit (one fsync)
     // instead of three per row, and the daemon never sees a partial history.
@@ -3013,7 +3019,7 @@ fn inbox_history_fixture_at(history_count: i64, stage: Stage) -> Fixture {
 }
 
 fn add_pending_physical(fx: &Fixture, sent: &str) -> rusqlite::Connection {
-    let db = rusqlite::Connection::open(fx.world.instance_dir.join("threads.sqlite3")).unwrap();
+    let db = rusqlite::Connection::open(fx.world.node_dir.join("herdr-threads.db")).unwrap();
     db.busy_timeout(Duration::from_secs(5)).unwrap();
     let instance: String = db
         .query_row("SELECT instance_id FROM seats WHERE id=?1", [&fx.b], |r| {

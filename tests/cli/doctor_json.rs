@@ -869,7 +869,7 @@ fn doctor_report_and_text_carry_the_manifest_policy() {
     let context =
         crate::daemon::paths::RuntimeContext::explicit(state.clone(), endpoint.clone(), None)
             .unwrap();
-    let instance = crate::daemon::paths::instance_dir(&context);
+    let instance = crate::daemon::paths::node_dir(&context.state_dir);
     std::fs::create_dir_all(&instance).unwrap();
     std::fs::write(
         instance.join("settings.json"),

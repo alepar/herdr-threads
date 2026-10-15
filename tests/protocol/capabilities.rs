@@ -92,7 +92,7 @@ fn api_error(code: ErrorCode, detail: &str) -> ApiError {
     ApiError::new(code, detail)
 }
 
-fn daemon_handler(instance: Uuid, boot: Uuid) -> impl LocalService {
+fn daemon_handler(instance: crate::node::NodeUuid, boot: Uuid) -> impl LocalService {
     ControlService::new(
         StopController::new(instance, boot, Cancellation::default()),
         move |_: &CallBudget| HealthInputs::unknown(instance, boot),
@@ -168,7 +168,7 @@ impl Fixture {
         LocalSocketClient::new(
             self.path.clone(),
             Arc::new(FixedClock),
-            Uuid::new_v4(),
+            crate::node::NodeUuid::new_v4(),
             None,
         )
     }
@@ -190,7 +190,7 @@ fn list(names: &[&str]) -> CommandResult {
 /// NotFound), so the field is neither ignored at decode nor refused.
 fn probe_history_full_bodies() {
     use crate::protocol::{commands::HistoryQuery, ids::ThreadId, pagination::PageRequest};
-    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let command = Command::History(HistoryQuery {
         thread: ThreadId::new("t"),
         page: PageRequest::default(),
@@ -218,7 +218,7 @@ fn probe_seat_managed_launch() {
         commands::RecordManagedLaunch,
         ids::{HostBootId, HostTargetId, SeatId, TerminalId},
     };
-    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let command = Command::RecordManagedLaunch(RecordManagedLaunch {
         seat: SeatId::new("s"),
         target: HostTargetId::new("w1:p1"),
@@ -244,7 +244,7 @@ fn probe_seat_managed_launch() {
 
 fn probe_inbox_batch() {
     use crate::protocol::commands::InboxQuery;
-    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let command = Command::InboxBatch(InboxQuery {
         thread: None,
         claim: None,
@@ -358,7 +358,7 @@ fn every_advertised_capability_has_a_handler() {
             LAZY_SEND | SEND_TIME_RECEIPTS_V1 => {
                 let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"delivery_mode":if *name == LAZY_SEND { "lazy" } else { "ordinary" },"thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
                 assert!(command.validate().is_ok());
-                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
                 assert_eq!(
                     handler
                         .handle(command, PeerIdentity::from_kernel(501), &budget())
@@ -398,7 +398,7 @@ fn every_advertised_capability_has_a_handler() {
                     });
                 assert!(command.validate().is_ok());
                 assert_eq!(
-                    daemon_handler(Uuid::new_v4(), Uuid::new_v4())
+                    daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4())
                         .handle(command, PeerIdentity::from_kernel(501), &budget())
                         .unwrap_err()
                         .code,
@@ -410,7 +410,7 @@ fn every_advertised_capability_has_a_handler() {
             PICKER_DIRECTORY_V1 => probe_picker_directory(),
             MESSAGE_DELIVERY_MODES => probe_message_delivery_modes(),
             ATTENTION_NOTICE_DELIVERY => {
-                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
                 let command = Command::AttentionDigestDelivery(
                     crate::protocol::commands::AttentionDigestQuery {
                         seat: crate::protocol::ids::SeatId::new("s"),
@@ -435,7 +435,7 @@ fn every_advertised_capability_has_a_handler() {
             DELIVERY_PULL => {
                 // The command decodes and routes to the domain service (served by
                 // `service::delivery_pull`, tested there); this daemon has none.
-                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
                 let command: Command = serde_json::from_value(serde_json::json!({"kind":"delivery_pull","args":{"claim":{"instance":"i","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
                 assert!(command.validate().is_ok());
                 assert_eq!(
@@ -449,7 +449,7 @@ fn every_advertised_capability_has_a_handler() {
             SEAT_WAKE_ON_V1 => {
                 // The daemon serves the read: an unknown seat is NotFound (a
                 // daemon without the handler would refuse the command itself).
-                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
                 let command = Command::WakeOn(crate::protocol::commands::WakeOnQuery {
                     seat: crate::protocol::ids::SeatId::new("nobody"),
                 });
@@ -467,7 +467,7 @@ fn every_advertised_capability_has_a_handler() {
             LAZY_HOOK_DELIVERY => {
                 // The lazy digest request is routed to the store's
                 // seat-scoped read: an unknown seat is NotFound.
-                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
                 let command = Command::AttentionDigestDelivery(
                     crate::protocol::commands::AttentionDigestQuery {
                         seat: crate::protocol::ids::SeatId::new("s"),
@@ -518,7 +518,7 @@ fn every_advertised_capability_has_a_handler() {
             BINDING_DIGEST => {
                 // A claimed digest request round-trips and is routed to the store's seat-scoped
                 // read: an unknown seat is NotFound, whoever the claim names.
-                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
                 let command =
                     Command::AttentionDigest(crate::protocol::commands::AttentionDigestQuery {
                         seat: crate::protocol::ids::SeatId::new("s"),
@@ -664,7 +664,7 @@ fn probe_mod_watch(presentation_v2: bool) {
 
 #[test]
 fn capabilities_reply_round_trips_and_defaults_empty() {
-    let instance = Uuid::new_v4().to_string();
+    let instance = crate::node::NodeUuid::new_v4().to_string();
     let boot = Uuid::new_v4().to_string();
     let response = WireResponse {
         version: PROTOCOL_VERSION,
@@ -693,7 +693,7 @@ fn capabilities_reply_round_trips_and_defaults_empty() {
 
 #[test]
 fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
-    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let result = handler
         .handle(
             Command::Capabilities,
@@ -778,7 +778,7 @@ fn old_daemon_that_answers_an_error_reads_as_no_capabilities() {
 
 #[test]
 fn pre_change_cli_decodes_this_daemons_hello_and_history() {
-    let instance = Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let boot = Uuid::new_v4();
     let handler = daemon_handler(instance, boot);
     let CommandResult::Health(health) = handler
@@ -850,7 +850,7 @@ fn daemon_counts_a_hook_parse_failure_report() {
 fn probe_hook_parse_failure_report() {
     use crate::daemon::logs::{HookParseFailures, RateLimitedLaneLog};
     use crate::protocol::commands::HookParseFailure;
-    let (instance, boot) = (Uuid::new_v4(), Uuid::new_v4());
+    let (instance, boot) = (crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let failures = std::sync::Arc::new(HookParseFailures::new(std::sync::Arc::new(
         RateLimitedLaneLog::new(
             std::sync::Arc::new(FixedClock),
@@ -1001,7 +1001,7 @@ fn probe_harness_evidence() {
         store::{SqliteStore, StoreSettings, connection::StoreContext},
         test_support::isolation::TestIsolation,
     };
-    let (instance, boot) = (Uuid::new_v4(), Uuid::new_v4());
+    let (instance, boot) = (crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let iso = TestIsolation::new("cap-harness-evidence");
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
     let store = Arc::new(
@@ -1061,7 +1061,7 @@ fn probe_harness_states() {
         store::{SqliteStore, StoreSettings, connection::StoreContext},
         test_support::isolation::TestIsolation,
     };
-    let (instance, boot) = (Uuid::new_v4(), Uuid::new_v4());
+    let (instance, boot) = (crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let iso = TestIsolation::new("cap-harness-states");
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
     let store = Arc::new(
@@ -1176,7 +1176,7 @@ fn harness_states_round_trips_on_the_wire() {
 
 #[test]
 fn control_without_a_recorder_accepts_and_drops_evidence() {
-    let (instance, boot) = (Uuid::new_v4(), Uuid::new_v4());
+    let (instance, boot) = (crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let handler = ControlService::new(
         StopController::new(instance, boot, Cancellation::default()),
         move |_: &CallBudget| HealthInputs::unknown(instance, boot),
@@ -1340,7 +1340,7 @@ fn probe_invitation_reject() {
         commands::Reject,
         ids::*,
     };
-    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let command = Command::Reject(Reject {
         thread: ThreadId::new("t1"),
         invitation: InvitationId::new("v1"),
@@ -1375,7 +1375,7 @@ fn probe_invitation_reject() {
 
 fn probe_participant_locations() {
     use crate::protocol::{commands::ParticipantLocationsQuery, ids::*};
-    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let command = Command::ParticipantLocations(ParticipantLocationsQuery {
         thread: ThreadId::new("t1"),
         seats: vec![SeatId::new("s1")],
@@ -1403,7 +1403,7 @@ fn v2_capability_is_negotiated_only_with_recorder() {
         store::{SqliteStore, StoreSettings, connection::StoreContext},
         test_support::isolation::TestIsolation,
     };
-    let (instance, boot) = (Uuid::new_v4(), Uuid::new_v4());
+    let (instance, boot) = (crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let make = || {
         ControlService::new(
             StopController::new(instance, boot, Cancellation::default()),
@@ -1526,7 +1526,7 @@ fn health_v2_capability_is_negotiated_only_with_cached_provider() {
         store::{SqliteStore, StoreSettings, connection::StoreContext},
         test_support::isolation::TestIsolation,
     };
-    let instance = Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let boot = Uuid::new_v4();
     let bare = daemon_handler(instance, boot);
     let CommandResult::Capabilities(caps) = bare
@@ -1865,7 +1865,7 @@ fn probe_message_delivery_modes() {
 }
 
 fn probe_thread_join() {
-    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let command = Command::Join(crate::protocol::commands::Join {
         thread: crate::protocol::ids::ThreadId::new("t1"),
         operation: crate::protocol::ids::OperationId::new("join-probe"),
@@ -1971,7 +1971,7 @@ fn public_operation_status_cannot_bypass_send_time_capability_guard() {
 
 #[test]
 fn invitation_confirmation_capability_is_advertised_with_active_lifecycle() {
-    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let CommandResult::Capabilities(reply) = handler
         .handle(
             Command::Capabilities,
@@ -1992,7 +1992,7 @@ fn invitation_confirmation_capability_is_advertised_with_active_lifecycle() {
 
 #[test]
 fn automatic_contract_declarations_do_not_advertise_an_unimplemented_runtime() {
-    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let CommandResult::Capabilities(caps) = handler
         .handle(
             Command::Capabilities,
@@ -2037,7 +2037,7 @@ fn presentation_capability_routes_use_configured_domain() {
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
     let context = StoreContext::new(isolated.path("store.db"), clock.clone());
     let db = context.open_writer().unwrap();
-    let instance = Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let boot = Uuid::new_v4();
     db.execute(
         "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)",

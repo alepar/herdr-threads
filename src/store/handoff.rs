@@ -310,7 +310,7 @@ pub(crate) fn begin_pending_impl(
 }
 
 /// Explicit daemon-selected namespace seam for a newly linked child. Public
-/// activation must pass its actual InstancePaths, never the retained parent.
+/// activation must pass its actual NodePaths, never the retained parent.
 pub fn begin_linked_pending(
     tx: &Transaction<'_>,
     canonical: &crate::protocol::handoff::HandoffNamespace,

@@ -1,7 +1,7 @@
 //! Owner diagnostic files. The lifecycle installs this sink only after election.
 
 use crate::daemon::diagnostics::{DiagnosticSink, DiagnosticSource};
-use crate::daemon::paths::{InstancePaths, effective_uid};
+use crate::daemon::paths::{NodePaths, effective_uid};
 use crate::protocol::time::Clock;
 use std::collections::{HashMap, hash_map::Entry};
 use std::fs::{self, File, OpenOptions};
@@ -267,20 +267,20 @@ impl Default for StartAttempt {
 }
 
 /// The daemon log: `<instance>/daemon.log`. The bead's `StateDir` is
-/// `InstancePaths` here, the type that knows the instance directory.
-pub fn daemon_log_path(paths: &InstancePaths) -> PathBuf {
-    paths.instance_dir.join(DAEMON_LOG_FILE)
+/// `NodePaths` here, the type that knows the instance directory.
+pub fn daemon_log_path(paths: &NodePaths) -> PathBuf {
+    paths.node_dir.join(DAEMON_LOG_FILE)
 }
 
 /// Directory of per-attempt startup logs: `<instance>/logs`. "<state>" in
 /// root §B3 D1 is the instance directory, consistent with `daemon.log`.
-pub fn startup_logs_dir(paths: &InstancePaths) -> PathBuf {
-    paths.instance_dir.join("logs")
+pub fn startup_logs_dir(paths: &NodePaths) -> PathBuf {
+    paths.node_dir.join("logs")
 }
 
 /// One attempt's startup log: `<instance>/logs/startup-<pid>-<nonce>.log`.
 /// The file itself is created by the starter (ht-p03.11), not here.
-pub fn startup_log_path(paths: &InstancePaths, attempt: &StartAttempt) -> PathBuf {
+pub fn startup_log_path(paths: &NodePaths, attempt: &StartAttempt) -> PathBuf {
     startup_logs_dir(paths).join(format!(
         "startup-{}-{}.log",
         attempt.starter_pid, attempt.nonce
@@ -301,7 +301,7 @@ pub const STARTUP_TAIL_LINES: usize = 40;
 /// then the file with O_CREAT|O_EXCL at 0600, with the same private-file
 /// checks as `daemon.log` (regular file, our uid, mode 0600, empty).
 pub fn create_startup_log(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     attempt: &StartAttempt,
 ) -> io::Result<(File, PathBuf)> {
     let dir = startup_logs_dir(paths);

@@ -7,7 +7,7 @@ use super::{
     RunError,
     commands::{CliAction, CooperativeSelection, ParsedCli},
 };
-use crate::daemon::paths::InstancePaths;
+use crate::daemon::paths::NodePaths;
 use crate::ports::LocalClient;
 use crate::{
     harness::context::Role,
@@ -47,8 +47,8 @@ pub fn render(state: &WakeOnState, set: bool) -> String {
 pub(crate) fn run<C: LocalClient + ?Sized, W: Write>(
     parsed: ParsedCli,
     selection: &CooperativeSelection,
-    paths: &InstancePaths,
-    instance: uuid::Uuid,
+    paths: &NodePaths,
+    instance: crate::node::NodeUuid,
     client: &C,
     clock: &dyn Clock,
     writer: &mut W,
@@ -101,8 +101,8 @@ pub(crate) fn run<C: LocalClient + ?Sized, W: Write>(
 /// current binding generation (the same check `summary` makes).
 fn current_claim<C: LocalClient + ?Sized>(
     selection: &CooperativeSelection,
-    paths: &InstancePaths,
-    instance: uuid::Uuid,
+    paths: &NodePaths,
+    instance: crate::node::NodeUuid,
     client: &C,
     parsed: &ParsedCli,
     clock: &dyn Clock,

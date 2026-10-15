@@ -1,6 +1,6 @@
 use super::*;
 use crate::daemon::ownership::OwnerLock;
-use crate::daemon::paths::{InstancePaths, RuntimeContext};
+use crate::daemon::paths::{NodePaths, RuntimeContext};
 use crate::daemon::{control, lifecycle};
 use std::io;
 use std::os::unix::fs::PermissionsExt;
@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 struct LockFixture {
     root: std::path::PathBuf,
-    paths: InstancePaths,
+    paths: NodePaths,
 }
 
 impl Drop for LockFixture {
@@ -25,13 +25,13 @@ fn elected_paths() -> LockFixture {
     let context = RuntimeContext::explicit(root.clone(), root.join("host.sock"), None).unwrap();
     LockFixture {
         root,
-        paths: InstancePaths::resolve(&context).unwrap(),
+        paths: crate::test_support::resolve_seeded(&context.state_dir),
     }
 }
 
 fn elected_lock() -> (LockFixture, OwnerLock) {
     let fixture = elected_paths();
-    let lock = OwnerLock::acquire(&fixture.paths).unwrap();
+    let lock = OwnerLock::acquire_with_test_hint(&fixture.paths).unwrap();
     (fixture, lock)
 }
 
@@ -41,7 +41,9 @@ fn only_elected_owner_lock_can_install_sink_and_retains_it_through_close() {
     let events = Events::default();
     let listener = lock.bind_socket().unwrap();
     assert_eq!(
-        OwnerLock::acquire(&fixture.paths).unwrap_err().kind(),
+        OwnerLock::acquire_with_test_hint(&fixture.paths)
+            .unwrap_err()
+            .kind(),
         io::ErrorKind::WouldBlock
     );
     let sink = || LockCheckingSink {
@@ -57,7 +59,9 @@ fn only_elected_owner_lock_can_install_sink_and_retains_it_through_close() {
             .unwrap()
             .unwrap();
     assert_eq!(
-        OwnerLock::acquire(&fixture.paths).unwrap_err().kind(),
+        OwnerLock::acquire_with_test_hint(&fixture.paths)
+            .unwrap_err()
+            .kind(),
         io::ErrorKind::WouldBlock
     );
     control::drain_and_close(owner).unwrap();
@@ -66,23 +70,27 @@ fn only_elected_owner_lock_can_install_sink_and_retains_it_through_close() {
         ["install_with_lock", "drain", "close_with_lock"]
     );
     assert_eq!(
-        OwnerLock::acquire(&fixture.paths).unwrap_err().kind(),
+        OwnerLock::acquire_with_test_hint(&fixture.paths)
+            .unwrap_err()
+            .kind(),
         io::ErrorKind::WouldBlock
     );
     drop(listener);
     // The error kind (WouldBlock vs a path or permission error) on failure.
-    OwnerLock::acquire(&fixture.paths).unwrap();
+    OwnerLock::acquire_with_test_hint(&fixture.paths).unwrap();
 }
 
 struct LockCheckingSink {
     events: Events,
-    paths: InstancePaths,
+    paths: NodePaths,
 }
 
 impl DiagnosticSink for LockCheckingSink {
     fn install(&mut self) -> io::Result<()> {
         assert_eq!(
-            OwnerLock::acquire(&self.paths).unwrap_err().kind(),
+            OwnerLock::acquire_with_test_hint(&self.paths)
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::WouldBlock
         );
         self.events.push("install_with_lock");
@@ -97,7 +105,9 @@ impl DiagnosticSink for LockCheckingSink {
     }
     fn close(&mut self) -> io::Result<()> {
         assert_eq!(
-            OwnerLock::acquire(&self.paths).unwrap_err().kind(),
+            OwnerLock::acquire_with_test_hint(&self.paths)
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::WouldBlock
         );
         self.events.push("close_with_lock");

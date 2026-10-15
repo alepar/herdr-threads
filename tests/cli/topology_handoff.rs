@@ -582,7 +582,7 @@ mod live {
                 let wire = crate::protocol::wire::WireRequest {
                     version: crate::protocol::wire::PROTOCOL_VERSION,
                     request_id: "maximum-body".into(),
-                    expected_instance: "00000000-0000-4000-8000-000000000001".into(),
+                    expected_instance: "00000000000040008000000000000001".into(),
                     expected_boot: None,
                     output: None,
                     command: command.clone(),
@@ -1039,12 +1039,12 @@ mod live {
                 )
                 .unwrap();
                 let paths =
-                    crate::daemon::paths::InstancePaths::resolve_read_only(&runtime).unwrap();
-                std::fs::create_dir_all(&paths.instance_dir).unwrap();
+                    crate::daemon::paths::NodePaths::resolve_read_only(&runtime.state_dir).unwrap();
+                std::fs::create_dir_all(&paths.node_dir).unwrap();
                 identity.payload.handoff.namespace.state_dir = runtime.state_dir.clone();
                 identity.payload.handoff.namespace.host_endpoint = runtime.host_endpoint.clone();
                 identity.digest = identity.semantic_digest().unwrap();
-                (paths.instance_dir.join("intents"), paths.database_path)
+                (paths.node_dir.join("intents"), paths.database_path)
             } else {
                 (
                     temp.path().join("intents"),
@@ -1390,9 +1390,9 @@ mod live {
             None,
         )
         .unwrap();
-        let paths = crate::daemon::paths::InstancePaths::resolve_read_only(&runtime).unwrap();
+        let paths = crate::daemon::paths::NodePaths::resolve_read_only(&runtime.state_dir).unwrap();
         assert_eq!(paths.database_path, f.peer.database_path);
-        assert_eq!(paths.instance_dir.join("intents"), f.journal.root());
+        assert_eq!(paths.node_dir.join("intents"), f.journal.root());
         crate::archival_legacy::Source::new(
             &paths,
             "i".into(),

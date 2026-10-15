@@ -6,7 +6,7 @@ use herdr_threads::{
     },
     daemon::{
         ownership::OwnerLock,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
         transport::{read_frame, write_frame},
     },
     ports::{HostPort, LocalClient},
@@ -220,12 +220,14 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
     let root = std::env::temp_dir().join(format!("herdr-graph-d2-{}", Uuid::new_v4()));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let _root_cleanup = TempRoot(root.clone());
-    let paths = InstancePaths::resolve(
-        &RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap(),
+    let paths = NodePaths::resolve(
+        &RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None)
+            .unwrap()
+            .state_dir,
     )
     .unwrap();
-    let owner = OwnerLock::acquire(&paths).unwrap();
-    let instance = owner.instance_uuid();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+    let instance = owner.node_uuid().unwrap();
     drop(owner);
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let db = StoreContext::new(paths.database_path.clone(), Arc::clone(&clock))
@@ -273,14 +275,14 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
     let client = PersistentServiceClient::new(
         descriptor.endpoint.clone(),
         Arc::clone(&clock),
-        descriptor.instance_uuid,
+        descriptor.node_uuid,
         Some(descriptor.boot_id),
         ServiceIntentJournal::open(root.join("intents")).unwrap(),
     );
     let ordinary = LocalSocketClient::new(
         descriptor.endpoint.clone(),
         Arc::clone(&clock),
-        descriptor.instance_uuid,
+        descriptor.node_uuid,
         Some(descriptor.boot_id),
     );
     let budget = || CallBudget {
@@ -458,7 +460,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         let deadline_clock = Arc::new(JournalDeadlineClock { root: recovery_root.clone(), expire_after_record: AtomicBool::new(true) });
         let recovery_clock: Arc<dyn Clock> = deadline_clock.clone();
         let recovery_client = PersistentServiceClient::new(
-            descriptor.endpoint.clone(), recovery_clock, descriptor.instance_uuid, Some(descriptor.boot_id),
+            descriptor.endpoint.clone(), recovery_clock, descriptor.node_uuid, Some(descriptor.boot_id),
             ServiceIntentJournal::open(&recovery_root).unwrap(),
         );
         let recovery_budget = || CallBudget { deadline: MonoInstant(5_000), cancellation: Cancellation::default() };
@@ -514,7 +516,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         let completion_root = root.join("completion-fault-intents");
         let completion_clock = Arc::new(CompletionFaultClock { root: completion_root.clone(), armed: AtomicBool::new(false) });
         let completion_client = PersistentServiceClient::new(
-            descriptor.endpoint.clone(), completion_clock.clone(), descriptor.instance_uuid, Some(descriptor.boot_id),
+            descriptor.endpoint.clone(), completion_clock.clone(), descriptor.node_uuid, Some(descriptor.boot_id),
             ServiceIntentJournal::open(&completion_root).unwrap(),
         );
         let completion_budget = || CallBudget { deadline: MonoInstant(5_000), cancellation: Cancellation::default() };

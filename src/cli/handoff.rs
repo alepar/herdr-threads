@@ -1566,7 +1566,7 @@ pub(crate) mod bootstrap_v1 {
     /// The V1 expected routing object (`instance`, `state_dir`,
     /// `host_endpoint`, in that order).
     pub(crate) struct Routing {
-        instance: uuid::Uuid,
+        instance: crate::node::NodeUuid,
         state_dir: String,
         host_endpoint: String,
     }
@@ -1581,7 +1581,7 @@ pub(crate) mod bootstrap_v1 {
         let host = Path::new(context.host.as_deref()?);
         let endpoint = host.parent()?.canonicalize().ok()?.join(host.file_name()?);
         Some(Routing {
-            instance: uuid::Uuid::parse_str(instance).ok()?,
+            instance: instance.parse::<crate::node::NodeUuid>().ok()?,
             state_dir: state.to_str()?.to_owned(),
             host_endpoint: endpoint.to_str()?.to_owned(),
         })
@@ -1591,7 +1591,7 @@ pub(crate) mod bootstrap_v1 {
     /// verbatim. Validation never repeats today's filesystem lookup.
     fn retained(instance: &str, context: &ContinuationContext) -> Option<Routing> {
         Some(Routing {
-            instance: uuid::Uuid::parse_str(instance).ok()?,
+            instance: instance.parse::<crate::node::NodeUuid>().ok()?,
             state_dir: context.state_dir.clone()?,
             host_endpoint: context.host.clone()?,
         })
@@ -1669,7 +1669,7 @@ pub(crate) mod bootstrap_v1 {
             None => out.push_str("null"),
             Some(routing) => {
                 out.push_str("{\"instance\":\"");
-                out.push_str(&routing.instance.hyphenated().to_string());
+                out.push_str(&routing.instance.to_string());
                 out.push_str("\",\"state_dir\":");
                 json_string(&routing.state_dir, &mut out);
                 out.push_str(",\"host_endpoint\":");
@@ -2165,7 +2165,7 @@ pub(crate) fn run<W: Write>(
     parsed: super::commands::ParsedCli,
     claim: CallerClaim,
     journal: &Journal,
-    paths: &crate::daemon::paths::InstancePaths,
+    paths: &crate::daemon::paths::NodePaths,
     writer: &mut W,
 ) -> Result<(), RunError> {
     use std::sync::Arc;
@@ -2236,7 +2236,7 @@ pub(crate) fn run<W: Write>(
             seats: &seats,
             handoff: &client,
             clock: clock.as_ref(),
-            record_dir: Some(&paths.instance_dir),
+            record_dir: Some(&paths.node_dir),
             shell_probe: &shell,
         },
     };

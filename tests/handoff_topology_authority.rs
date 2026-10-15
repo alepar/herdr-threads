@@ -237,7 +237,7 @@ fn actual_guarded_domain_capability_requires_concrete_composition_and_handler() 
     };
     let control = ControlService::new_guarded(
         StopController::new(
-            uuid::Uuid::new_v4(),
+            herdr_threads::node::NodeUuid::new_v4(),
             uuid::Uuid::new_v4(),
             Cancellation::default(),
         ),
@@ -272,7 +272,7 @@ fn actual_guarded_domain_capability_requires_concrete_composition_and_handler() 
     let f = Fixture::new();
     let control = ControlService::new(
         StopController::new(
-            uuid::Uuid::new_v4(),
+            herdr_threads::node::NodeUuid::new_v4(),
             uuid::Uuid::new_v4(),
             Cancellation::default(),
         ),
@@ -2130,7 +2130,7 @@ fn automatic_canonical_descriptor_requires_the_concrete_automatic_runtime() {
         };
         let service = ControlService::new_guarded(
             StopController::new(
-                uuid::Uuid::new_v4(),
+                herdr_threads::node::NodeUuid::new_v4(),
                 uuid::Uuid::new_v4(),
                 Cancellation::default(),
             ),

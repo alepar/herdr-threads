@@ -197,22 +197,22 @@ impl Smoke {
     /// not depend on the embedded manifest (as the Hermes smoke does).
     pub(super) fn write_settings(&self, extra: &str) {
         let paths = self.paths();
-        paths.prepare_instance_dir().unwrap();
+        paths.prepare_node_dir().unwrap();
         let settings = paths
-            .instance_dir
+            .node_dir
             .join(herdr_threads::daemon::settings::SETTINGS_FILE);
         fs::write(&settings, format!(r#"{{{extra}"harness_manifest":"off"}}"#)).unwrap();
         fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).unwrap();
     }
 
-    pub(super) fn paths(&self) -> herdr_threads::daemon::paths::InstancePaths {
+    pub(super) fn paths(&self) -> herdr_threads::daemon::paths::NodePaths {
         let runtime = herdr_threads::daemon::paths::RuntimeContext::explicit(
             self.state.clone(),
             self.herdr.socket_path(),
             None,
         )
         .unwrap();
-        herdr_threads::daemon::paths::InstancePaths::resolve(&runtime).unwrap()
+        herdr_threads::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap()
     }
 
     /// A new long-lived process to run an agent in: its pid is the agent's liveness fingerprint.

@@ -3,7 +3,7 @@
 //! Cooperative actors are model-free claims; this is not native/model evidence.
 use super::sweep::{Scratch, host_reply, pane};
 use herdr_threads::{
-    daemon::paths::{InstancePaths, RuntimeContext},
+    daemon::paths::{NodePaths, RuntimeContext},
     store::effective::{EffectiveReceiptState, effective_receipt},
     test_support::spawn::{OwnedChild, SpawnOwned},
 };
@@ -133,7 +133,7 @@ struct World {
     root: PathBuf,
     state: PathBuf,
     socket: PathBuf,
-    paths: InstancePaths,
+    paths: NodePaths,
     host: GuardedHost,
     _scratch: Scratch,
 }
@@ -161,8 +161,10 @@ impl World {
         let socket = root.join("host.sock");
         let host = GuardedHost::start(&socket);
         let state = root.join("state");
-        let paths = InstancePaths::resolve(
-            &RuntimeContext::explicit(state.clone(), socket.clone(), None).unwrap(),
+        let paths = NodePaths::resolve(
+            &RuntimeContext::explicit(state.clone(), socket.clone(), None)
+                .unwrap()
+                .state_dir,
         )
         .unwrap();
         let world = Self {

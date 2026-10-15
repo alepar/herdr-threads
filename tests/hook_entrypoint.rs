@@ -9,7 +9,7 @@ use herdr_threads::{
     daemon::harness_evidence::{HarnessEvidenceRecorder, ManifestTrigger},
     daemon::{
         ownership::OwnerLock,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
     },
     harness::manifest::{CurlFetcher, ManifestPolicy, ManifestService},
     harness::{claude::setup::plan_claude, context::Harness},
@@ -708,9 +708,9 @@ fn agent_origin(harness: &str, session: &str) -> herdr_threads::cli::caller::Ori
     ))
 }
 
-fn seed(paths: &InstancePaths) -> Uuid {
-    let owner = OwnerLock::acquire(paths).unwrap();
-    let instance = owner.instance_uuid();
+fn seed(paths: &NodePaths) -> herdr_threads::node::NodeUuid {
+    let owner = OwnerLock::acquire_with_test_hint(paths).unwrap();
+    let instance = owner.node_uuid().unwrap();
     drop(owner);
     let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()));
     let db = setup.open_writer().unwrap();
@@ -828,7 +828,7 @@ struct Fixture {
     state: PathBuf,
     host: PathBuf,
     db: PathBuf,
-    instance_dir: PathBuf,
+    node_dir: PathBuf,
     stop: Cancellation,
     worker: Option<std::thread::JoinHandle<()>>,
     check_ins: Arc<AtomicU64>,
@@ -881,7 +881,7 @@ impl Fixture {
         }
         let host = root.join("host.sock");
         let context = RuntimeContext::explicit(state.clone(), host.clone(), None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
         let instance = seed(&paths);
         let db = paths.database_path.clone();
         let stop = Cancellation::default();
@@ -907,8 +907,7 @@ impl Fixture {
             let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
             let service_clock = Arc::clone(&clock);
             let database = worker_paths.database_path.clone();
-            let manifest_dir =
-                herdr_threads::harness::manifest::cache_dir(&worker_paths.instance_dir);
+            let manifest_dir = herdr_threads::harness::manifest::cache_dir(&worker_paths.node_dir);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -996,7 +995,7 @@ impl Fixture {
                 .unwrap();
         });
         let descriptor = ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert_eq!(descriptor.instance_uuid, instance);
+        assert_eq!(descriptor.node_uuid, instance);
         let argv = installed_argv(BIN, Some(state.to_str().unwrap()), None, Harness::Claude);
         // This fixture exercises multiple callback classes through a legacy
         // registration. Explicit --event routing is covered separately.
@@ -1008,7 +1007,7 @@ impl Fixture {
             state,
             host,
             db,
-            instance_dir: paths.instance_dir.clone(),
+            node_dir: paths.node_dir.clone(),
             stop,
             worker: Some(worker),
             check_ins,
@@ -1071,7 +1070,7 @@ impl Fixture {
     /// The seat's private context-journal directory.
     fn context_dir(&self, seat: &str) -> PathBuf {
         use sha2::Digest;
-        self.instance_dir
+        self.node_dir
             .join("contexts")
             .join(format!("{:x}", sha2::Sha256::digest(seat.as_bytes())))
     }
@@ -1080,7 +1079,7 @@ impl Fixture {
         registered_current(serde_json::from_slice(&bytes).unwrap())
     }
     fn intents(&self) -> usize {
-        let dir = self.instance_dir.join("intents");
+        let dir = self.node_dir.join("intents");
         fs::read_dir(dir).map_or(0, |entries| {
             entries
                 .filter_map(Result::ok)
@@ -5569,9 +5568,9 @@ mod continuity {
         root: PathBuf,
         pub host: PathBuf,
         pub db: PathBuf,
-        pub instance_dir: PathBuf,
-        paths: InstancePaths,
-        pub instance: Uuid,
+        pub node_dir: PathBuf,
+        paths: NodePaths,
+        pub instance: herdr_threads::node::NodeUuid,
         herdr: Arc<Herdr>,
         clock: Arc<dyn Clock>,
         descriptor: Option<herdr_threads::daemon::ownership::EndpointDescriptor>,
@@ -5612,15 +5611,15 @@ mod continuity {
             let state = root.join("state");
             let host = root.join("host.sock");
             let context = RuntimeContext::explicit(state.clone(), host.clone(), None).unwrap();
-            let paths = InstancePaths::resolve(&context).unwrap();
-            let owner = OwnerLock::acquire(&paths).unwrap();
-            let instance = owner.instance_uuid();
+            let paths = NodePaths::resolve(&context.state_dir).unwrap();
+            let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+            let instance = owner.node_uuid().unwrap();
             drop(owner);
             if manifest_off {
                 use std::os::unix::fs::PermissionsExt;
-                paths.prepare_instance_dir().unwrap();
+                paths.prepare_node_dir().unwrap();
                 let settings = paths
-                    .instance_dir
+                    .node_dir
                     .join(herdr_threads::daemon::settings::SETTINGS_FILE);
                 fs::write(&settings, br#"{"harness_manifest":"off"}"#).unwrap();
                 fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).unwrap();
@@ -5673,7 +5672,7 @@ mod continuity {
                 root,
                 host,
                 db: paths.database_path.clone(),
-                instance_dir: paths.instance_dir.clone(),
+                node_dir: paths.node_dir.clone(),
                 paths,
                 instance,
                 herdr,
@@ -5717,7 +5716,7 @@ mod continuity {
             let descriptor = rx
                 .recv_timeout(Duration::from_secs(5))
                 .unwrap_or_else(|error| {
-                    let log = fs::read_to_string(self.paths.instance_dir.join("daemon.log"))
+                    let log = fs::read_to_string(self.paths.node_dir.join("daemon.log"))
                         .unwrap_or_default();
                     panic!("elected daemon not ready: {error}; {log}");
                 });
@@ -5769,7 +5768,7 @@ mod continuity {
             LocalSocketClient::new(
                 descriptor.endpoint,
                 Arc::clone(&self.clock),
-                descriptor.instance_uuid,
+                descriptor.node_uuid,
                 Some(descriptor.boot_id),
             )
         }
@@ -5801,7 +5800,7 @@ mod continuity {
 
         pub fn context_dir(&self, seat: &str) -> PathBuf {
             use sha2::Digest;
-            self.instance_dir
+            self.node_dir
                 .join("contexts")
                 .join(format!("{:x}", sha2::Sha256::digest(seat.as_bytes())))
         }
@@ -5810,7 +5809,7 @@ mod continuity {
             super::registered_current(serde_json::from_slice(&bytes).unwrap())
         }
         pub fn intents(&self) -> usize {
-            fs::read_dir(self.instance_dir.join("intents")).map_or(0, |entries| {
+            fs::read_dir(self.node_dir.join("intents")).map_or(0, |entries| {
                 entries
                     .filter_map(Result::ok)
                     .filter(|e| e.path().extension().is_some_and(|x| x == "intent"))
@@ -5843,7 +5842,7 @@ mod continuity {
             // joined shutdown restores the descriptors and drains the reader;
             // only then replay a failure diagnostic before deleting the root.
             if std::thread::panicking()
-                && let Ok(log) = fs::read(self.instance_dir.join("daemon.log"))
+                && let Ok(log) = fs::read(self.node_dir.join("daemon.log"))
             {
                 let tail = &log[log.len().saturating_sub(8 * 1024)..];
                 let mut stderr = std::io::stderr().lock();
@@ -5956,7 +5955,7 @@ mod continuity {
             // Commit an ordinary intent but lose its reply before journal completion.
             // The next hook must reuse that allocation, not manufacture another role.
             use herdr_threads::cli::journal::{IntentScope, Journal, SemanticMutation};
-            let journal = Journal::open(fx.instance_dir.join("intents")).unwrap();
+            let journal = Journal::open(fx.node_dir.join("intents")).unwrap();
             let reference = journal
                 .record(
                     IntentScope::ServiceAllocation {
@@ -6201,7 +6200,7 @@ mod continuity {
         // A racing start may leave an uncertain intent for explicit replay;
         // settle each under its exact key and frozen payload.
         use herdr_threads::cli::journal::Journal;
-        let journal = Journal::open(fx.instance_dir.join("intents")).unwrap();
+        let journal = Journal::open(fx.node_dir.join("intents")).unwrap();
         let pending = journal
             .page(&herdr_threads::protocol::pagination::PageRequest {
                 cursor: None,
@@ -6699,7 +6698,7 @@ mod continuity {
     fn commit_with_lost_reply(fx: &Fixture, harness: &str, session: &str) -> String {
         use herdr_threads::cli::journal::{IntentScope, Journal, SemanticMutation};
         use herdr_threads::protocol::authority::Harness as Wire;
-        let journal = Journal::open(fx.instance_dir.join("intents")).unwrap();
+        let journal = Journal::open(fx.node_dir.join("intents")).unwrap();
         let reference = journal
             .record(
                 IntentScope::Continuity {
@@ -6861,7 +6860,7 @@ mod continuity {
         // gave up while the daemon had not reconciled).
         {
             use herdr_threads::cli::journal::{IntentScope, Journal, SemanticMutation};
-            let journal = Journal::open(fx.instance_dir.join("intents")).unwrap();
+            let journal = Journal::open(fx.node_dir.join("intents")).unwrap();
             journal
                 .record(
                     IntentScope::Continuity {
@@ -6966,7 +6965,7 @@ mod continuity {
             // An earlier hook gave up with its intent kept (daemon down, or
             // not yet reconciled): nothing was decided.
             fx.stop_daemon();
-            let journal = Journal::open(fx.instance_dir.join("intents")).unwrap();
+            let journal = Journal::open(fx.node_dir.join("intents")).unwrap();
             let reference = journal
                 .record(
                     IntentScope::Continuity {

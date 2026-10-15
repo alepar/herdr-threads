@@ -258,7 +258,7 @@ fn settings_change_starts_a_new_generation() {
     fx.world.cli(None, None, &["daemon", "stop"]);
     let mut settings: Value = serde_json::from_str(SETTINGS).unwrap();
     settings["summary"]["chunk_bytes"] = json!(2048);
-    let file = fx.world.instance_dir.join("settings.json");
+    let file = fx.world.node_dir.join("settings.json");
     fs::write(&file, settings.to_string()).unwrap();
     fx.world
         .cli(None, None, &["daemon", "ensure"])

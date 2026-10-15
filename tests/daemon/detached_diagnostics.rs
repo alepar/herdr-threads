@@ -1,6 +1,6 @@
 use super::*;
 use crate::daemon::ownership::OwnerLock;
-use crate::daemon::paths::{InstancePaths, RuntimeContext};
+use crate::daemon::paths::{NodePaths, RuntimeContext};
 use crate::ports::LocalService;
 use crate::protocol::{
     authority::PeerIdentity,
@@ -100,9 +100,9 @@ fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) {
     }
 }
 
-fn fixture_paths(root: PathBuf) -> InstancePaths {
+fn fixture_paths(root: PathBuf) -> NodePaths {
     let context = RuntimeContext::explicit(root.clone(), root.join("host.sock"), None).unwrap();
-    InstancePaths::resolve(&context).unwrap()
+    crate::test_support::resolve_seeded(&context.state_dir)
 }
 
 struct ContinuousFixtureGuard {
@@ -198,7 +198,7 @@ fn elected_child_output_rotates_without_retaining_a_terminal() {
         started.elapsed() < Duration::from_secs(5),
         "oversized output drain stalled"
     );
-    let logs = fixture_paths(root.clone()).instance_dir;
+    let logs = fixture_paths(root.clone()).node_dir;
     let mut names = fs::read_dir(&logs)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -244,7 +244,7 @@ fn startup_error_is_retained_in_elected_child_log() {
         .status()
         .unwrap();
     assert!(!status.success());
-    let content = fs::read(fixture_paths(root.clone()).instance_dir.join("daemon.log")).unwrap();
+    let content = fs::read(fixture_paths(root.clone()).node_dir.join("daemon.log")).unwrap();
     assert!(
         content
             .windows(b"daemon owner error: startup-retained-sentinel".len())
@@ -273,12 +273,12 @@ fn prepublication_factory_error_is_logged_without_a_ready_endpoint() {
     let paths = fixture_paths(root.clone());
     assert!(!paths.descriptor_path.exists());
     assert!(
-        !fs::read_dir(&paths.instance_dir)
+        !fs::read_dir(&paths.node_dir)
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
             .any(|name| name.to_string_lossy().ends_with(".sock"))
     );
-    let content = fs::read(paths.instance_dir.join("daemon.log")).unwrap();
+    let content = fs::read(paths.node_dir.join("daemon.log")).unwrap();
     assert!(
         content
             .windows(b"daemon owner error: factory-startup-sentinel".len())
@@ -304,7 +304,7 @@ fn owner_error_after_oversized_output_survives_final_drain() {
         .status()
         .unwrap();
     assert!(!status.success());
-    let logs = fixture_paths(root.clone()).instance_dir;
+    let logs = fixture_paths(root.clone()).node_dir;
     let active = fs::read(logs.join("daemon.log")).unwrap();
     let previous = fs::read(logs.join("daemon.log.1")).unwrap();
     assert!(active.len() <= 1_048_576 && previous.len() <= 1_048_576);
@@ -495,7 +495,7 @@ fn run_continuous_case(slow: bool, probe_drain: bool, writer_end_gate: bool) {
             "reader completed before lease probe"
         );
         let paths = fixture_paths(root.clone());
-        let attempt = OwnerLock::acquire(&paths);
+        let attempt = OwnerLock::acquire_with_test_hint(&paths);
         assert!(
             matches!(&attempt, Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
             "contender acquired owner lease during reader drain: {attempt:?}"
@@ -582,8 +582,8 @@ fn run_continuous_case(slow: bool, probe_drain: bool, writer_end_gate: bool) {
     }
     let paths = fixture_paths(root.clone());
     assert!(!paths.descriptor_path.exists());
-    let active = fs::read(paths.instance_dir.join("daemon.log")).unwrap();
-    let previous = fs::read(paths.instance_dir.join("daemon.log.1")).unwrap_or_default();
+    let active = fs::read(paths.node_dir.join("daemon.log")).unwrap();
+    let previous = fs::read(paths.node_dir.join("daemon.log.1")).unwrap_or_default();
     assert!(active.len() <= 1_048_576 && previous.len() <= 1_048_576);
     assert!(
         active
@@ -786,7 +786,7 @@ fn detached_output_survives_ensure_parent_and_loser_does_not_touch_logs() {
     let paths = fixture_paths(root.clone());
     wait_until(HANG_GUARD, || paths.descriptor_path.exists());
     wait_until(HANG_GUARD, || {
-        fs::read(paths.instance_dir.join("daemon.log"))
+        fs::read(paths.node_dir.join("daemon.log"))
             .ok()
             .is_some_and(|bytes| {
                 bytes
@@ -794,7 +794,7 @@ fn detached_output_survives_ensure_parent_and_loser_does_not_touch_logs() {
                     .any(|window| window == b"owner-startup")
             })
     });
-    let before = fs::read(paths.instance_dir.join("daemon.log")).unwrap();
+    let before = fs::read(paths.node_dir.join("daemon.log")).unwrap();
     assert_eq!(
         before
             .windows(b"owner-startup".len())
@@ -813,14 +813,11 @@ fn detached_output_survives_ensure_parent_and_loser_does_not_touch_logs() {
         .status()
         .unwrap();
     assert!(loser.success(), "loser exited {loser}");
-    assert_eq!(
-        fs::read(paths.instance_dir.join("daemon.log")).unwrap(),
-        before
-    );
-    assert!(!paths.instance_dir.join("daemon.log.1").exists());
+    assert_eq!(fs::read(paths.node_dir.join("daemon.log")).unwrap(), before);
+    assert!(!paths.node_dir.join("daemon.log.1").exists());
     fs::write(root.join("go"), b"").unwrap();
     wait_until(HANG_GUARD, || {
-        fs::read(paths.instance_dir.join("daemon.log"))
+        fs::read(paths.node_dir.join("daemon.log"))
             .ok()
             .is_some_and(|bytes| {
                 bytes
@@ -828,8 +825,8 @@ fn detached_output_survives_ensure_parent_and_loser_does_not_touch_logs() {
                     .any(|w| w == b"stderr-after-ensure-exit")
             })
     });
-    let active = fs::read(paths.instance_dir.join("daemon.log")).unwrap();
-    let previous = fs::read(paths.instance_dir.join("daemon.log.1")).unwrap();
+    let active = fs::read(paths.node_dir.join("daemon.log")).unwrap();
+    let previous = fs::read(paths.node_dir.join("daemon.log.1")).unwrap();
     assert!(active.len() <= 1_048_576 && previous.len() <= 1_048_576);
     let retained = [previous, active].concat();
     assert!(

@@ -1895,7 +1895,7 @@ pub fn create_thread(
     create_thread_impl(context, conn, budget, command, permit, None)
 }
 /// Bootstrap CREATE seam. `canonical` must come from the daemon's independently
-/// selected InstancePaths; this adds no wire mode or runtime admission.
+/// selected NodePaths; this adds no wire mode or runtime admission.
 pub fn create_thread_in_namespace(
     context: &StoreContext,
     conn: &mut Connection,

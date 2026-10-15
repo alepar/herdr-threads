@@ -32,11 +32,16 @@ fn fixture() -> (
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     }
     let j = Journal::open(root.join("intents")).unwrap();
-    let cj =
-        ContextJournal::open(&root, uuid::Uuid::from_u128(1), "seat", CONTEXT_LOCK_WAIT).unwrap();
+    let cj = ContextJournal::open(
+        &root,
+        crate::node::NodeUuid::from_u128(1),
+        "seat",
+        CONTEXT_LOCK_WAIT,
+    )
+    .unwrap();
     let c = OccupantContext {
         format_version: 1,
-        instance: uuid::Uuid::from_u128(1),
+        instance: crate::node::NodeUuid::from_u128(1),
         seat: "seat".into(),
         target: "pane".into(),
         harness: Harness::Codex,
@@ -1434,8 +1439,13 @@ fn cross_instance_context_diagnostic_precedes_any_new_hook_intent() {
     )
     .unwrap();
     drop(cj);
-    let other =
-        ContextJournal::open(&root, uuid::Uuid::from_u128(999), "seat", CONTEXT_LOCK_WAIT).unwrap();
+    let other = ContextJournal::open(
+        &root,
+        crate::node::NodeUuid::from_u128(999),
+        "seat",
+        CONTEXT_LOCK_WAIT,
+    )
+    .unwrap();
     assert_eq!(
         prepare_event(&j, &other, &event, Some(&seed), 2),
         Err(ContextError::WrongInstance)

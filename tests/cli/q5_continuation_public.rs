@@ -246,7 +246,7 @@ fn execute_owned(argv: &[String], client: &impl LocalClient) -> (Result<(), RunE
         .unwrap();
     let contexts = ContextJournal::open(
         &iso.path("contexts").canonicalize().unwrap(),
-        uuid::Uuid::from_u128(1),
+        herdr_threads::node::NodeUuid::from_u128(1),
         "seat-1",
         Duration::from_secs(1),
     )

@@ -29,7 +29,7 @@ def wait_until(pred, timeout, step=0.1):
 
 
 def db_path(world):
-    found = sorted(world.state.glob("**/threads.sqlite3"))
+    found = sorted(world.state.glob("node/herdr-threads.db")) or sorted(world.state.glob("**/threads.sqlite3"))
     return found[0] if found else None
 
 

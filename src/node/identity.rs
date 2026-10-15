@@ -9,6 +9,8 @@ use std::{
 
 use ed25519_dalek::{Signer, SigningKey};
 
+use crate::daemon::paths::NodePaths;
+
 use super::tag::{NodeTag, NodeUuid, tag_for};
 
 /// File name of the node's signing seed inside the node directory.
@@ -45,6 +47,20 @@ pub enum NodeKeyError {
         store: NodeUuid,
         key: NodeUuid,
     },
+}
+
+impl NodeKeyError {
+    /// The variant's name, for one-line start-failure text.
+    pub fn variant(&self) -> &'static str {
+        match self {
+            Self::KeyMissingForStore { .. } => "KeyMissingForStore",
+            Self::Unreadable { .. } => "Unreadable",
+            Self::Permissions { .. } => "Permissions",
+            Self::NotRegularFile { .. } => "NotRegularFile",
+            Self::Malformed { .. } => "Malformed",
+            Self::IdentityMismatch { .. } => "IdentityMismatch",
+        }
+    }
 }
 
 impl fmt::Display for NodeKeyError {
@@ -132,7 +148,15 @@ impl NodeIdentity {
     /// store does not exist yet. A missing key next to an existing store, and
     /// every unsafe or malformed key, is refused. The caller creates
     /// `node_dir`; a missing directory surfaces as `Unreadable`.
-    pub fn load_or_create(node_dir: &Path, store_exists: bool) -> Result<Self, NodeKeyError> {
+    pub fn load_or_create(paths: &NodePaths, store_exists: bool) -> Result<Self, NodeKeyError> {
+        Self::load_or_create_in(&paths.node_dir, store_exists)
+    }
+
+    /// [`Self::load_or_create`] over a bare node directory (the unit tests').
+    pub(crate) fn load_or_create_in(
+        node_dir: &Path,
+        store_exists: bool,
+    ) -> Result<Self, NodeKeyError> {
         let key_path = node_dir.join(KEY_FILE);
         match read_seed(&key_path)? {
             Some(seed) => Ok(Self::from_seed(seed)),
@@ -293,8 +317,8 @@ mod tests {
     #[test]
     fn create_then_reload_same_uuid() {
         let iso = TestIsolation::new("node");
-        let first = NodeIdentity::load_or_create(iso.state_root(), false).unwrap();
-        let second = NodeIdentity::load_or_create(iso.state_root(), true).unwrap();
+        let first = NodeIdentity::load_or_create_in(iso.state_root(), false).unwrap();
+        let second = NodeIdentity::load_or_create_in(iso.state_root(), true).unwrap();
         assert_eq!(first.uuid(), second.uuid());
         assert_eq!(first.public_key(), second.public_key());
     }
@@ -302,7 +326,7 @@ mod tests {
     #[test]
     fn created_key_is_0600_and_32_bytes() {
         let iso = TestIsolation::new("node");
-        NodeIdentity::load_or_create(iso.state_root(), false).unwrap();
+        NodeIdentity::load_or_create_in(iso.state_root(), false).unwrap();
         let meta = fs::metadata(iso.state_root().join(KEY_FILE)).unwrap();
         assert_eq!(meta.permissions().mode() & 0o777, 0o600);
         assert_eq!(meta.len(), 32);
@@ -318,7 +342,7 @@ mod tests {
     fn refuses_group_readable_key() {
         let iso = TestIsolation::new("node");
         let path = put_key(iso.state_root(), &[3u8; 32], 0o644);
-        match NodeIdentity::load_or_create(iso.state_root(), true) {
+        match NodeIdentity::load_or_create_in(iso.state_root(), true) {
             Err(NodeKeyError::Permissions { mode, path: p, .. }) => {
                 assert_eq!(mode & 0o777, 0o644);
                 assert_eq!(p, path);
@@ -337,7 +361,7 @@ mod tests {
         for len in [31usize, 33] {
             let iso = TestIsolation::new("node");
             put_key(iso.state_root(), &vec![5u8; len], 0o600);
-            match NodeIdentity::load_or_create(iso.state_root(), true) {
+            match NodeIdentity::load_or_create_in(iso.state_root(), true) {
                 Err(NodeKeyError::Malformed { len: got, .. }) => assert_eq!(got, len as u64),
                 other => panic!("{other:?}"),
             }
@@ -349,7 +373,7 @@ mod tests {
         let iso = TestIsolation::new("node");
         fs::create_dir(iso.state_root().join(KEY_FILE)).unwrap();
         assert!(matches!(
-            NodeIdentity::load_or_create(iso.state_root(), true),
+            NodeIdentity::load_or_create_in(iso.state_root(), true),
             Err(NodeKeyError::NotRegularFile { .. })
         ));
 
@@ -359,7 +383,7 @@ mod tests {
         fs::set_permissions(&real, fs::Permissions::from_mode(0o600)).unwrap();
         symlink(&real, iso.state_root().join(KEY_FILE)).unwrap();
         assert!(matches!(
-            NodeIdentity::load_or_create(iso.state_root(), true),
+            NodeIdentity::load_or_create_in(iso.state_root(), true),
             Err(NodeKeyError::NotRegularFile { .. })
         ));
     }
@@ -367,7 +391,7 @@ mod tests {
     #[test]
     fn missing_key_with_store_refuses() {
         let iso = TestIsolation::new("node");
-        let err = NodeIdentity::load_or_create(iso.state_root(), true).unwrap_err();
+        let err = NodeIdentity::load_or_create_in(iso.state_root(), true).unwrap_err();
         assert!(matches!(err, NodeKeyError::KeyMissingForStore { .. }));
         assert!(err.to_string().contains("restore node.key"));
         assert!(!iso.state_root().join(KEY_FILE).exists());
@@ -376,7 +400,7 @@ mod tests {
     #[test]
     fn missing_directory_is_unreadable() {
         let iso = TestIsolation::new("node");
-        let err = NodeIdentity::load_or_create(&iso.state_root().join("absent"), false);
+        let err = NodeIdentity::load_or_create_in(&iso.state_root().join("absent"), false);
         assert!(matches!(err, Err(NodeKeyError::Unreadable { .. })));
     }
 
@@ -402,7 +426,7 @@ mod tests {
     fn fixed_seed_golden_node_uuid() {
         let iso = TestIsolation::new("node");
         put_key(iso.state_root(), &[7u8; 32], 0o600);
-        let id = NodeIdentity::load_or_create(iso.state_root(), true).unwrap();
+        let id = NodeIdentity::load_or_create_in(iso.state_root(), true).unwrap();
         let public = SigningKey::from_bytes(&[7u8; 32])
             .verifying_key()
             .to_bytes();

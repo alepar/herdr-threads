@@ -13,7 +13,7 @@ use crate::harness::setup::{
 };
 use crate::ports::ConfiguredHook;
 use crate::{
-    daemon::paths::{RuntimeContext, instance_dir},
+    daemon::paths::{RuntimeContext, node_dir},
     harness::{
         codex,
         codex::permissions::{CodexPermissionState, CodexPermissions},
@@ -386,7 +386,7 @@ pub(crate) fn codex_sandbox_roots(env: &SetupEnv) -> Result<Vec<String>, String>
     let host = env.host_endpoint().map_err(|error| error.to_string())?;
     let context = RuntimeContext::explicit(state.to_path_buf(), host, None)
         .map_err(|error| format!("invalid host endpoint: {error}"))?;
-    let instance = canonical_prefix(&instance_dir(&context));
+    let instance = canonical_prefix(&node_dir(&context.state_dir));
     CODEX_WRITABLE_DIRS
         .iter()
         .map(|name| {

@@ -7,7 +7,7 @@ use super::{
     journal::{IntentScope, Journal, OriginalActor, SemanticMutation},
 };
 use crate::{
-    daemon::paths::{InstancePaths, RuntimeContext},
+    daemon::paths::{NodePaths, RuntimeContext},
     host::native::NativeCli,
     ports::{BootstrapObserver, HostCallContext, LocalClient},
     protocol::{
@@ -44,7 +44,7 @@ fn runtime(output: &OutputSpec) -> Result<RuntimeContext, RunError> {
         .0,
     )
 }
-fn namespace(selected: &RuntimeContext, instance: uuid::Uuid) -> HandoffNamespace {
+fn namespace(selected: &RuntimeContext, instance: crate::node::NodeUuid) -> HandoffNamespace {
     HandoffNamespace {
         instance: instance.to_string(),
         state_dir: selected.state_dir.clone(),
@@ -143,7 +143,7 @@ fn agent_claim(claim: &CallerClaim) -> Result<(), RunError> {
 pub(crate) fn try_completed<C: LocalClient + ?Sized>(
     parsed: &ParsedCli,
     journal: &Journal,
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     selected: &RuntimeContext,
     client: &C,
     clock: &dyn Clock,
@@ -357,7 +357,7 @@ pub(crate) fn run(
     parsed: ParsedCli,
     claim: CallerClaim,
     journal: &Journal,
-    paths: &InstancePaths,
+    paths: &NodePaths,
     writer: &mut dyn Write,
 ) -> Result<(), RunError> {
     let mut sink = ForwardWriter(writer);
@@ -400,7 +400,7 @@ pub(crate) fn run(
                     seats: &seats,
                     handoff: &client,
                     clock: clock.as_ref(),
-                    record_dir: Some(&paths.instance_dir),
+                    record_dir: Some(&paths.node_dir),
                     shell_probe: &shell,
                 },
             };
@@ -433,7 +433,7 @@ pub(crate) fn run(
                             seats: &seats,
                             handoff: &client,
                             clock: clock.as_ref(),
-                            record_dir: Some(&paths.instance_dir),
+                            record_dir: Some(&paths.node_dir),
                             shell_probe: &shell,
                         },
                     )?;
@@ -572,7 +572,7 @@ pub(crate) fn run(
                     seats: &seats,
                     handoff: &client,
                     clock: clock.as_ref(),
-                    record_dir: Some(&paths.instance_dir),
+                    record_dir: Some(&paths.node_dir),
                     shell_probe: &shell,
                 },
             )?;
@@ -669,7 +669,7 @@ pub(crate) fn run(
                         seats: &seats,
                         handoff: &client,
                         clock: clock.as_ref(),
-                        record_dir: Some(&paths.instance_dir),
+                        record_dir: Some(&paths.node_dir),
                         shell_probe: &shell,
                     },
                 };
@@ -867,7 +867,7 @@ pub(crate) fn run(
             seats: &seats,
             handoff: &client,
             clock: clock.as_ref(),
-            record_dir: Some(&paths.instance_dir),
+            record_dir: Some(&paths.node_dir),
             shell_probe: &shell,
         },
     };
@@ -893,7 +893,7 @@ pub(crate) fn run(
 pub(crate) fn run_operator(
     parsed: &ParsedCli,
     selected: &RuntimeContext,
-    paths: &InstancePaths,
+    paths: &NodePaths,
     clock: &Arc<dyn Clock>,
     writer: &mut dyn Write,
 ) -> Result<bool, RunError> {
@@ -905,7 +905,7 @@ pub(crate) fn run_operator(
     ) {
         return Ok(false);
     }
-    let journal = Journal::open(paths.instance_dir.join("intents"))?;
+    let journal = Journal::open(paths.node_dir.join("intents"))?;
     let mut automatic_connect = || -> Result<(HandoffNamespace, Box<dyn LocalClient>), RunError> {
         let (instance, _, client) = super::connect(paths, clock)?;
         Ok((namespace(selected, instance), Box::new(client)))

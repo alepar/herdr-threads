@@ -294,7 +294,10 @@ fn occupant_context(claim: &CallerClaim) -> Result<OccupantContext, ContextError
     };
     Ok(OccupantContext {
         format_version: 1,
-        instance: Uuid::parse_str(&claim.instance).map_err(|_| ContextError::Invalid)?,
+        instance: claim
+            .instance
+            .parse::<crate::node::NodeUuid>()
+            .map_err(|_| ContextError::Invalid)?,
         seat: claim.seat.as_str().into(),
         target: claim.target.as_str().into(),
         harness: claim.harness.into(),

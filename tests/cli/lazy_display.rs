@@ -272,7 +272,7 @@ fn run_to_writer<C: herdr_threads::ports::LocalClient, W: Write>(
     let parsed = herdr_threads::cli::commands::parse_argv(argv.iter().copied()).unwrap();
     let context = OccupantContext {
         format_version: 1,
-        instance: uuid::Uuid::from_u128(1),
+        instance: herdr_threads::node::NodeUuid::from_u128(1),
         seat: "seat".into(),
         target: "pane".into(),
         harness: if parsed.actor == herdr_threads::cli::actor_route::InvocationActor::Human {
@@ -414,7 +414,7 @@ fn lazy_display_default_text_routes_v2_settles_complete_body() {
     assert_eq!(
         completion.claim,
         CallerClaim {
-            instance: uuid::Uuid::from_u128(1).to_string(),
+            instance: herdr_threads::node::NodeUuid::from_u128(1).to_string(),
             seat: SeatId::new("seat"),
             binding_generation: 1,
             role: CallerRole::TopLevel,
@@ -634,14 +634,14 @@ fn lazy_display_empty_body_and_invalid_bounds() {
 fn lazy_display_progress_does_not_veto_archival_coverage() {
     use herdr_threads::{
         archival_legacy::Source,
-        daemon::paths::{InstancePaths, RuntimeContext},
+        daemon::paths::{NodePaths, RuntimeContext},
         protocol::output::ContinuationContext,
     };
     let f = Fixture::new();
     let runtime = RuntimeContext::explicit(f.root.clone(), f.root.join("host.sock"), None).unwrap();
-    let paths = InstancePaths::resolve_read_only(&runtime).unwrap();
-    std::fs::create_dir_all(&paths.instance_dir).unwrap();
-    let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+    let paths = NodePaths::resolve_read_only(&runtime.state_dir).unwrap();
+    std::fs::create_dir_all(&paths.node_dir).unwrap();
+    let journal = Journal::open(paths.node_dir.join("intents")).unwrap();
     assert!(
         journal
             .record_lazy_displayed_chunk(&f.claim, &MessageId::new("lazy"), 0, 10, 10)

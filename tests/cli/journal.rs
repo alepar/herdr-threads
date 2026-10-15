@@ -1915,8 +1915,8 @@ fn retry_preflight_retained_human_root_refuses_before_connect() {
     let host = dir.join("host.sock");
     let context =
         crate::daemon::paths::RuntimeContext::explicit(state.clone(), host.clone(), None).unwrap();
-    let paths = crate::daemon::paths::InstancePaths::resolve_read_only(&context).unwrap();
-    let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+    let paths = crate::daemon::paths::NodePaths::resolve_read_only(&context.state_dir).unwrap();
+    let journal = Journal::open(paths.node_dir.join("intents")).unwrap();
     let mut human = claim();
     human.harness = Harness::Human;
     let frozen = SemanticMutation::freeze(send(), human.clone()).unwrap();

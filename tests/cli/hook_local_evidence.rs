@@ -371,9 +371,9 @@ fn fixture(label: &str, serve: bool) -> Fixture {
             None,
         )
         .unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
-        let owner = OwnerLock::acquire(&paths).unwrap();
-        let instance = owner.instance_uuid();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+        let instance = owner.node_uuid().unwrap();
         let listener = owner.bind_socket().unwrap();
         owner
             .publish_endpoint(
@@ -586,7 +586,7 @@ fn lifecycle_evidence_raises_the_event_bound_to_the_lifecycle_budget() {
 }
 
 /// Kills: an evidence deadline that is not half of the provisional (pre-refinement) bound, a
-/// missing or wrong HOME, and a state dir that is not `<instance_dir>/adapter-state/<id>/`.
+/// missing or wrong HOME, and a state dir that is not `<node_dir>/adapter-state/<id>/`.
 #[test]
 fn local_evidence_request_carries_a_half_bound_deadline_home_and_state_dir() {
     let fixture = fixture("local-evidence-request", false);
@@ -631,7 +631,7 @@ fn local_evidence_request_carries_a_half_bound_deadline_home_and_state_dir() {
     assert_eq!(
         seen[0].state_dir,
         Some(
-            crate::daemon::paths::instance_dir(&context)
+            crate::daemon::paths::node_dir(&context.state_dir)
                 .join("adapter-state")
                 .join(ADAPTER.metadata().id)
         )
@@ -809,10 +809,10 @@ fn hook_step_without_a_running_daemon_gets_none_and_starts_none() {
         None,
     )
     .unwrap();
-    let instance_dir = crate::daemon::paths::instance_dir(&context);
+    let node_dir = crate::daemon::paths::node_dir(&context.state_dir);
     for started in ["endpoint.json", "owner.lock", "namespace"] {
         assert!(
-            !instance_dir.join(started).exists(),
+            !node_dir.join(started).exists(),
             "the step must not start a daemon: {started}"
         );
     }

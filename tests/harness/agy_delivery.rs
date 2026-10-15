@@ -1832,7 +1832,7 @@ mod daemon {
                 let response = crate::protocol::wire::WireResponse {
                     version: crate::protocol::wire::PROTOCOL_VERSION,
                     request_id: "\"".repeat(128),
-                    instance: uuid::Uuid::from_u128(1).to_string(),
+                    instance: crate::node::NodeUuid::from_u128(1).to_string(),
                     daemon_boot: uuid::Uuid::from_u128(2).to_string(),
                     result: Ok(result.clone()),
                 };
@@ -1913,7 +1913,7 @@ mod daemon {
             let response = crate::protocol::wire::WireResponse {
                 version: crate::protocol::wire::PROTOCOL_VERSION,
                 request_id: "\"".repeat(128),
-                instance: uuid::Uuid::from_u128(1).to_string(),
+                instance: crate::node::NodeUuid::from_u128(1).to_string(),
                 daemon_boot: uuid::Uuid::from_u128(2).to_string(),
                 result: Ok(result),
             };

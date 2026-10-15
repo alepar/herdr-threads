@@ -453,12 +453,12 @@ fn unlocated_caller_exits_2_no_binding() {
         None,
     )
     .unwrap();
-    let paths = crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
+    let paths = crate::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap();
     let clock: Arc<dyn Clock> = Arc::new(clock());
     // The pane maps to no seat.
     let connection = LazyConnection::new(|| {
         Ok((
-            uuid::Uuid::from_u128(1),
+            crate::node::NodeUuid::from_u128(1),
             FakeClient::new(|command| match command {
                 Command::Seats(_) => Ok(CommandResult::Seats(page(vec![], None))),
                 other => panic!("unexpected command {other:?}"),
@@ -542,7 +542,7 @@ fn unreachable_daemon_exits_1_daemon_unavailable() {
         None,
     )
     .unwrap();
-    let paths = crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
+    let paths = crate::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap();
     let clock: Arc<dyn Clock> = Arc::new(clock());
     let connection: LazyConnection<FakeClient, _> =
         LazyConnection::new(|| Err(crate::cli::daemon_unavailable()));
@@ -985,7 +985,7 @@ fn parent_death_ends_watch() {
 
 fn claim() -> CallerClaim {
     CallerClaim {
-        instance: uuid::Uuid::from_u128(1).to_string(),
+        instance: crate::node::NodeUuid::from_u128(1).to_string(),
         seat: SeatId::new("me"),
         binding_generation: 1,
         role: CallerRole::TopLevel,
@@ -1321,7 +1321,7 @@ fn session<'a>(
         client,
         clock,
         socket,
-        instance: uuid::Uuid::from_u128(1),
+        instance: crate::node::NodeUuid::from_u128(1),
         claim: claim(),
         hint_path: None,
     }

@@ -303,7 +303,7 @@ fn continuation_malformed_namespace_is_refused() {
 
 fn traverse(w: &World, who: usize, human: bool, args: &[&str], readonly: bool, selected: usize) {
     let paths = w.paths();
-    let instance = herdr_threads::daemon::ownership::read_existing_namespace(&paths)
+    let instance = herdr_threads::daemon::ownership::read_node_uuid_hint(&paths)
         .unwrap()
         .unwrap();
     let descriptor = herdr_threads::daemon::ownership::read_descriptor(&paths, instance).unwrap();

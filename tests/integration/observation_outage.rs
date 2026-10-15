@@ -54,7 +54,7 @@ impl Lane5 {
     fn start_with_clock(herdr: &IsolatedHerdr, clock: Arc<dyn Clock>) -> Self {
         let scratch = herdr.root().join("lane-state");
         std::fs::create_dir_all(&scratch).unwrap();
-        let instance = uuid::Uuid::new_v4().to_string();
+        let instance = herdr_threads::node::NodeUuid::new_v4().to_string();
         let store = SqliteStore::new(
             StoreContext::new(scratch.join("store.db"), Arc::clone(&clock)),
             instance.clone(),

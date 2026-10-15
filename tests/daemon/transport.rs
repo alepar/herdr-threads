@@ -2,16 +2,13 @@ use super::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
 
-fn instance_id(paths: &crate::daemon::paths::InstancePaths) -> uuid::Uuid {
-    uuid::Uuid::parse_str(
-        std::fs::read_to_string(&paths.namespace_path)
-            .unwrap()
-            .trim(),
-    )
-    .unwrap()
+fn instance_id(paths: &crate::daemon::paths::NodePaths) -> crate::node::NodeUuid {
+    crate::daemon::ownership::read_node_uuid_hint(paths)
+        .unwrap()
+        .unwrap()
 }
 
-fn health_request(instance: uuid::Uuid, request_id: &str) -> Vec<u8> {
+fn health_request(instance: crate::node::NodeUuid, request_id: &str) -> Vec<u8> {
     serde_json::to_vec(&WireRequest {
         version: PROTOCOL_VERSION,
         request_id: request_id.into(),
@@ -27,11 +24,11 @@ fn guarded_listener() -> (
     OwnedAsyncListener,
     std::path::PathBuf,
     std::path::PathBuf,
-    crate::daemon::paths::InstancePaths,
+    crate::daemon::paths::NodePaths,
 ) {
     use crate::daemon::{
         ownership::OwnerLock,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
     };
     use std::os::unix::fs::PermissionsExt;
     let root = std::env::temp_dir().join(format!("herdr-ipc-{}", uuid::Uuid::new_v4()));
@@ -39,8 +36,8 @@ fn guarded_listener() -> (
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
     let host = root.join("host-placeholder.sock");
     let context = RuntimeContext::explicit(root.clone(), host, None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    let owner = OwnerLock::acquire(&paths).unwrap();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let bound = owner.bind_socket().unwrap();
     let socket = bound.path().to_owned();
     let listener = bound.into_async().unwrap();
@@ -201,7 +198,11 @@ async fn wrong_instance_and_boot_stop_do_not_cancel_real_socket_owner() {
         shutdown.clone(),
     ));
     for (expected_instance, expected_boot, code) in [
-        (uuid::Uuid::new_v4(), boot, ErrorCode::InstanceMismatch),
+        (
+            crate::node::NodeUuid::new_v4(),
+            boot,
+            ErrorCode::InstanceMismatch,
+        ),
         (
             instance_id,
             uuid::Uuid::new_v4(),
@@ -303,13 +304,15 @@ async fn disconnected_stop_keeps_worker_and_owner_lease_until_handler_exits() {
     };
     assert_eq!(pending.remaining(), 1);
     assert_eq!(
-        OwnerLock::acquire(&instance).unwrap_err().kind(),
+        OwnerLock::acquire_with_test_hint(&instance)
+            .unwrap_err()
+            .kind(),
         io::ErrorKind::WouldBlock
     );
     service.release.store(true, Ordering::SeqCst);
     pending.wait().await.unwrap();
     drop(pending);
-    drop(OwnerLock::acquire(&instance).unwrap());
+    drop(OwnerLock::acquire_with_test_hint(&instance).unwrap());
     std::fs::remove_file(path).unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -505,7 +508,7 @@ async fn lost_response_reports_unknown_outcome_without_retry() {
     let client = crate::client::local::LocalSocketClient::new(
         path.clone(),
         clock,
-        uuid::Uuid::new_v4(),
+        crate::node::NodeUuid::new_v4(),
         None,
     );
     let error = client
@@ -608,7 +611,7 @@ async fn client_cancellation_after_send_reports_unknown_outcome_promptly() {
     let client = crate::client::local::LocalSocketClient::new(
         path.clone(),
         clock,
-        uuid::Uuid::new_v4(),
+        crate::node::NodeUuid::new_v4(),
         None,
     );
     let call = tokio::spawn(async move { client.call_async(Command::Health, &budget).await });
@@ -965,7 +968,9 @@ async fn shutdown_interrupts_incomplete_frame_and_reports_unfinished_worker() {
     };
     assert_eq!(pending.remaining(), 1);
     assert_eq!(
-        OwnerLock::acquire(&instance).unwrap_err().kind(),
+        OwnerLock::acquire_with_test_hint(&instance)
+            .unwrap_err()
+            .kind(),
         io::ErrorKind::WouldBlock
     );
     service.release.store(true, Ordering::SeqCst);
@@ -974,7 +979,7 @@ async fn shutdown_interrupts_incomplete_frame_and_reports_unfinished_worker() {
         .unwrap()
         .unwrap();
     drop(pending);
-    drop(OwnerLock::acquire(&instance).unwrap());
+    drop(OwnerLock::acquire_with_test_hint(&instance).unwrap());
     drop(incomplete);
     drop(deciding);
     std::fs::remove_file(path).unwrap();
@@ -1038,7 +1043,7 @@ async fn incomplete_real_socket_frame_is_pre_submission_error() {
     let client = crate::client::local::LocalSocketClient::new(
         std::path::PathBuf::new(),
         clock.clone(),
-        uuid::Uuid::new_v4(),
+        crate::node::NodeUuid::new_v4(),
         None,
     );
     let cancellation = Cancellation::default();
@@ -1096,13 +1101,15 @@ async fn drain_wait_keeps_owner_lease_after_an_earlier_task_error() {
             .is_err()
     );
     assert_eq!(
-        OwnerLock::acquire(&instance).unwrap_err().kind(),
+        OwnerLock::acquire_with_test_hint(&instance)
+            .unwrap_err()
+            .kind(),
         io::ErrorKind::WouldBlock
     );
     release.store(true, Ordering::SeqCst);
     assert!(pending.wait().await.is_err());
     drop(pending);
-    drop(OwnerLock::acquire(&instance).unwrap());
+    drop(OwnerLock::acquire_with_test_hint(&instance).unwrap());
     std::fs::remove_file(path).unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -1120,7 +1127,7 @@ async fn client_rejects_oversized_request_before_submission() {
     let client = crate::client::local::LocalSocketClient::new(
         path.clone(),
         clock,
-        uuid::Uuid::new_v4(),
+        crate::node::NodeUuid::new_v4(),
         None,
     );
     let command = Command::Search(SearchQuery {
@@ -1228,9 +1235,12 @@ async fn another_instance_request_never_reaches_handler() {
         shutdown.clone(),
     ));
     let mut wrong = UnixStream::connect(&path).await.unwrap();
-    write_frame(&mut wrong, &health_request(uuid::Uuid::new_v4(), "wrong"))
-        .await
-        .unwrap();
+    write_frame(
+        &mut wrong,
+        &health_request(crate::node::NodeUuid::new_v4(), "wrong"),
+    )
+    .await
+    .unwrap();
     let mismatch: serde_json::Value =
         serde_json::from_slice(&read_frame(&mut wrong).await.unwrap()).unwrap();
     assert_eq!(mismatch["request_id"], "wrong");
@@ -1261,7 +1271,7 @@ async fn another_instance_request_never_reaches_handler() {
 async fn client_rejects_wrong_boot_after_submission_without_retry() {
     let path = std::env::temp_dir().join(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&path).unwrap();
-    let instance = uuid::Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let expected_boot = uuid::Uuid::new_v4();
     let actual_boot = uuid::Uuid::new_v4();
     let accepted = tokio::spawn(async move {
@@ -1302,8 +1312,8 @@ async fn client_rejects_wrong_boot_after_submission_without_retry() {
 async fn client_rejects_wrong_response_instance_after_submission() {
     let path = std::env::temp_dir().join(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&path).unwrap();
-    let expected_instance = uuid::Uuid::new_v4();
-    let other_instance = uuid::Uuid::new_v4();
+    let expected_instance = crate::node::NodeUuid::new_v4();
+    let other_instance = crate::node::NodeUuid::new_v4();
     let boot = uuid::Uuid::new_v4();
     let accepted = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
@@ -1344,7 +1354,7 @@ async fn client_rejects_wrong_response_instance_after_submission() {
 async fn client_rejects_malformed_boot_even_without_expected_boot() {
     let path = std::env::temp_dir().join(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&path).unwrap();
-    let instance = uuid::Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let accepted = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         let request = WireRequest::decode(&read_frame(&mut stream).await.unwrap()).unwrap();
@@ -1378,7 +1388,7 @@ async fn client_rejects_malformed_boot_even_without_expected_boot() {
 async fn correlated_server_rejection_preserves_its_error_code() {
     let path = std::env::temp_dir().join(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&path).unwrap();
-    let instance = uuid::Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let boot = uuid::Uuid::new_v4();
     let accepted = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
@@ -1412,7 +1422,7 @@ async fn correlated_server_rejection_preserves_its_error_code() {
 }
 
 fn service_registration(
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     request_id: &str,
 ) -> crate::protocol::service::ServiceWireRequest {
     use crate::protocol::service::*;
@@ -1829,7 +1839,7 @@ async fn restart_starts_with_empty_live_slot_and_same_reserved_author() {
         ServeOutcome::Drained
     ));
     drop(old_client);
-    let owner = OwnerLock::acquire(&paths).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let bound = owner.bind_socket().unwrap();
     let new_path = bound.path().to_owned();
     let new_boot = bound.boot_id().to_string();
@@ -1948,7 +1958,9 @@ impl LocalService for DecisionBarrierService {
     }
 }
 
-fn decision_request(instance: uuid::Uuid) -> crate::protocol::service::ServiceWireRequest {
+fn decision_request(
+    instance: crate::node::NodeUuid,
+) -> crate::protocol::service::ServiceWireRequest {
     use crate::protocol::{
         ids::{OperationId, ThreadId},
         service::{EnsureManagedThread, ServiceOperation, ServiceRequest},
@@ -2372,7 +2384,7 @@ impl LocalService for RecoveryDomain {
 
 async fn recovery_call(
     path: &std::path::Path,
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     command: Command,
 ) -> WireResponse {
     let mut stream = UnixStream::connect(path).await.unwrap();
@@ -2912,7 +2924,7 @@ struct HealthLockStore {
 }
 
 fn health_lock_store(
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     boot: uuid::Uuid,
     clock: Arc<dyn Clock>,
 ) -> HealthLockStore {
@@ -2951,7 +2963,7 @@ fn health_lock_store(
 /// the same builder `run_elected` uses) over a real `SqliteStore`, behind the
 /// production `ControlService`.
 fn elected_health_control(
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     boot: uuid::Uuid,
     shutdown: Cancellation,
     store: Arc<dyn crate::ports::StorePort>,
@@ -3038,7 +3050,7 @@ fn locked_health_request_ends(
 ) -> Option<ErrorCode> {
     let step = Arc::new(HealthStepClock(std::sync::atomic::AtomicU64::new(1_000)));
     let clock: Arc<dyn Clock> = step.clone();
-    let (instance, boot) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    let (instance, boot) = (crate::node::NodeUuid::new_v4(), uuid::Uuid::new_v4());
     let HealthLockStore {
         store,
         writer,
@@ -3175,7 +3187,7 @@ async fn started_server(
     Cancellation,
     std::path::PathBuf,
     std::path::PathBuf,
-    crate::daemon::paths::InstancePaths,
+    crate::daemon::paths::NodePaths,
 ) {
     let (listener, path, root, instance) = guarded_listener();
     let uid = UnixStream::pair().unwrap().0.peer_cred().unwrap().uid();
@@ -3236,7 +3248,7 @@ async fn waiting_client_returns_on_cancel() {
     let client = crate::client::local::LocalSocketClient::new(
         path.clone(),
         clock,
-        uuid::Uuid::new_v4(),
+        crate::node::NodeUuid::new_v4(),
         None,
     );
     let call = tokio::spawn(async move { client.call_async(Command::Health, &budget).await });
@@ -3293,7 +3305,7 @@ async fn accept_drain_returns_at_deadline_when_a_task_never_finishes() {
         .unwrap()
         .unwrap();
     drop(pending);
-    drop(OwnerLock::acquire(&instance).unwrap());
+    drop(OwnerLock::acquire_with_test_hint(&instance).unwrap());
     drop(deciding);
     std::fs::remove_file(path).unwrap();
     std::fs::remove_dir_all(root).unwrap();
@@ -3352,7 +3364,7 @@ impl LocalService for BootCheckService {
 
 async fn send_with_expected_boot(
     path: &std::path::Path,
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     expected_boot: Option<String>,
 ) -> WireResponse {
     let mut stream = UnixStream::connect(path).await.unwrap();
@@ -3431,7 +3443,7 @@ async fn matching_or_absent_expected_boot_dispatches() {
 async fn client_maps_daemon_boot_changed_to_definite_rejection() {
     let path = std::env::temp_dir().join(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&path).unwrap();
-    let instance = uuid::Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let expected_boot = uuid::Uuid::new_v4();
     let actual_boot = uuid::Uuid::new_v4();
     let accepted = tokio::spawn(async move {
@@ -3474,7 +3486,7 @@ async fn local_client_sends_expected_boot_from_descriptor() {
     for boot in [Some(uuid::Uuid::new_v4()), None] {
         let path = std::env::temp_dir().join(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
         let listener = UnixListener::bind(&path).unwrap();
-        let instance = uuid::Uuid::new_v4();
+        let instance = crate::node::NodeUuid::new_v4();
         let accepted = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let frame = read_frame(&mut stream).await.unwrap();
@@ -3877,7 +3889,7 @@ async fn automatic_historical_response_keeps_one_mib_client_allocation_limit() {
     for large in [false, true] {
         let path = std::env::temp_dir().join(format!("ht-h-{}.sock", uuid::Uuid::new_v4()));
         let listener = UnixListener::bind(&path).unwrap();
-        let instance = uuid::Uuid::new_v4();
+        let instance = crate::node::NodeUuid::new_v4();
         let result = historical_completed_transport_result(
             &instance.to_string(),
             if large { usize::MAX } else { 300_000 },
@@ -3942,7 +3954,7 @@ async fn automatic_historical_response_keeps_one_mib_client_allocation_limit() {
 #[test]
 fn automatic_historical_response_keeps_one_mib_scoped_encoder_limit() {
     use crate::protocol::handoff::{AutomaticBootstrapAction, AutomaticBootstrapMutation};
-    let instance = uuid::Uuid::new_v4().to_string();
+    let instance = crate::node::NodeUuid::new_v4().to_string();
     let result = historical_completed_transport_result(&instance, usize::MAX);
     let command = Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
         identity: result.identity.clone(),
@@ -3970,7 +3982,7 @@ fn unscoped_ordinary_encoder_keeps_one_mib_even_for_automatic_result() {
     let response = crate::protocol::wire::WireResponse {
         version: crate::protocol::wire::PROTOCOL_VERSION,
         request_id: "request".into(),
-        instance: uuid::Uuid::from_u128(1).to_string(),
+        instance: crate::node::NodeUuid::from_u128(1).to_string(),
         daemon_boot: uuid::Uuid::from_u128(2).to_string(),
         result: Ok(CommandResult::AutomaticBootstrap(Box::new(
             maximum_automatic_recovery_result(&uuid::Uuid::from_u128(1).to_string()),

@@ -34,7 +34,7 @@ struct BodyFixture {
     clock: Arc<TestClock>,
     db: Connection,
     directory: std::path::PathBuf,
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     sender: CallerClaim,
     a: CallerClaim,
     b: CallerClaim,
@@ -48,7 +48,7 @@ impl Drop for BodyFixture {
 impl BodyFixture {
     fn new() -> Self {
         use std::os::unix::fs::DirBuilderExt;
-        let instance = uuid::Uuid::new_v4();
+        let instance = crate::node::NodeUuid::new_v4();
         let temp_base = std::env::temp_dir().canonicalize().unwrap();
         let directory = temp_base.join(format!("q4-body-{instance}"));
         std::fs::DirBuilder::new()

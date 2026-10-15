@@ -1990,8 +1990,8 @@ fn actor_prerequisite_public_retained_agent_delivery_requires_elected_daemon_wit
         None,
     )
     .unwrap();
-    let paths = crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
-    let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+    let paths = crate::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap();
+    let journal = Journal::open(paths.node_dir.join("intents")).unwrap();
     let (reference, client) = terminal_fixture(&journal);
     retry_to_writer(
         &journal,
@@ -2044,7 +2044,7 @@ fn actor_prerequisite_public_retained_agent_delivery_requires_elected_daemon_wit
     assert_eq!(snapshot(), before);
     assert!(!paths.descriptor_path.exists());
     assert!(!paths.database_path.exists());
-    assert!(!paths.instance_dir.join("contexts").exists());
+    assert!(!paths.node_dir.join("contexts").exists());
 }
 
 // Real guarded delivery envelopes reach the canonical deciding store APIs. A
@@ -2122,7 +2122,7 @@ impl LocalClient for GuardedCanonical {
             let wire = crate::protocol::wire::WireRequest {
                 version: crate::protocol::wire::PROTOCOL_VERSION,
                 request_id: "maximum-body".into(),
-                expected_instance: "00000000-0000-4000-8000-000000000001".into(),
+                expected_instance: "00000000000040008000000000000001".into(),
                 expected_boot: None,
                 output: None,
                 command: Command::HandoffDelivery(request.clone()),

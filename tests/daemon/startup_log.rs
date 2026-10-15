@@ -3,7 +3,7 @@
 //! exactly what it writes to stderr and how it exits.
 use super::*;
 use crate::daemon::logs::{create_startup_log, prune_startup_logs, startup_log_path};
-use crate::daemon::paths::{InstancePaths, RuntimeContext};
+use crate::daemon::paths::{NodePaths, RuntimeContext};
 use crate::protocol::time::{Clock, MonoInstant, UtcMillis};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -27,12 +27,12 @@ impl Clock for WallClock {
     }
 }
 
-fn scratch() -> (PathBuf, RuntimeContext, InstancePaths) {
+fn scratch() -> (PathBuf, RuntimeContext, NodePaths) {
     let root = std::env::temp_dir().join(format!("herdr-startlog-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
     let context = RuntimeContext::explicit(root.clone(), root.join("host.sock"), None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
     (root, context, paths)
 }
 
@@ -48,7 +48,7 @@ fn fake_daemon(root: &Path, name: &str, message: &str, code: i32) -> PathBuf {
     path
 }
 
-fn startup_files(paths: &InstancePaths) -> Vec<PathBuf> {
+fn startup_files(paths: &NodePaths) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(startup_logs_dir(paths)) else {
         return Vec::new();
     };
@@ -101,7 +101,7 @@ async fn daemon_failing_before_election_prints_its_attempt_tail() {
 #[tokio::test]
 async fn unwritable_logs_dir_falls_back_to_piped_stderr() {
     let (root, context, paths) = scratch();
-    paths.prepare_instance_dir().unwrap();
+    paths.prepare_node_dir().unwrap();
     std::fs::write(startup_logs_dir(&paths), b"not a directory").unwrap();
     let exe = fake_daemon(&root, "daemon-a", "store startup: corrupt page 7", 2);
     let error = ensure_with(&context, &exe).await;
@@ -149,7 +149,7 @@ async fn racing_starters_print_only_their_own_tail() {
 #[test]
 fn pruning_keeps_eight_newest_and_drops_older_than_24h() {
     let (root, _context, paths) = scratch();
-    paths.prepare_instance_dir().unwrap();
+    paths.prepare_node_dir().unwrap();
     let attempt = StartAttempt::new();
     let (_file, current) = create_startup_log(&paths, &attempt).unwrap();
     let dir = startup_logs_dir(&paths);
@@ -193,7 +193,7 @@ fn pruning_keeps_eight_newest_and_drops_older_than_24h() {
 #[test]
 fn startup_log_is_exclusive_and_private() {
     let (root, _context, paths) = scratch();
-    paths.prepare_instance_dir().unwrap();
+    paths.prepare_node_dir().unwrap();
     let attempt = StartAttempt::new();
     let (_file, path) = create_startup_log(&paths, &attempt).unwrap();
     assert_eq!(

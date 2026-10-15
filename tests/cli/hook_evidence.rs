@@ -899,7 +899,7 @@ fn evidence_skips_a_previous_protocol_daemon() {
     use crate::{
         daemon::{
             ownership::OwnerLock,
-            paths::{InstancePaths, RuntimeContext},
+            paths::{NodePaths, RuntimeContext},
         },
         protocol::wire::PROTOCOL_VERSION,
     };
@@ -917,8 +917,8 @@ fn evidence_skips_a_previous_protocol_daemon() {
         None,
     )
     .unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    let lock = OwnerLock::acquire(&paths).unwrap();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let lock = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     // Bound but never accepted: a client that sent anyway would block.
     let listener = lock.bind_socket().unwrap();
     lock.publish_endpoint(&listener, "0.0.1", PROTOCOL_VERSION - 1)

@@ -18,7 +18,7 @@ use super::sweep::{Scratch, agent_pane, host_reply, pane};
 use herdr_threads::{
     app::{LaneProbe, SystemClock, run_elected_probed},
     cli::hook::installed_argv,
-    daemon::paths::{InstancePaths, RuntimeContext},
+    daemon::paths::{NodePaths, RuntimeContext},
     harness::{claude::setup::plan_claude, context::Harness},
     host::native::NativeCli,
     ports::HostPort,
@@ -363,7 +363,7 @@ struct Rig {
     root: PathBuf,
     state: PathBuf,
     socket: PathBuf,
-    paths: InstancePaths,
+    paths: NodePaths,
     clock: Arc<ShiftedClock>,
     host: Host,
     claude_hooks: Value,
@@ -426,10 +426,10 @@ impl Rig {
         let plan = plan_claude(b"{}", &argv).unwrap();
         let installed: Value = serde_json::from_slice(&plan.proposed_bytes).unwrap();
         let context = RuntimeContext::explicit(state.clone(), socket.clone(), None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
-        paths.prepare_instance_dir().unwrap();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        paths.prepare_node_dir().unwrap();
         if let Some(settings) = settings {
-            let file = paths.instance_dir.join("settings.json");
+            let file = paths.node_dir.join("settings.json");
             fs::write(&file, serde_json::to_vec(&settings).unwrap()).unwrap();
             fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
         }
@@ -573,7 +573,7 @@ impl Rig {
 
     fn require_advertised_presentation(&self) {
         use herdr_threads::{
-            daemon::ownership::{read_descriptor, read_existing_namespace},
+            daemon::ownership::{read_descriptor, read_node_uuid_hint},
             protocol::{
                 commands::Command,
                 results::CommandResult,
@@ -582,13 +582,13 @@ impl Rig {
         };
         let descriptor = read_descriptor(
             &self.paths,
-            read_existing_namespace(&self.paths).unwrap().unwrap(),
+            read_node_uuid_hint(&self.paths).unwrap().unwrap(),
         )
         .unwrap();
         let request = WireRequest {
             version: PROTOCOL_VERSION,
             request_id: uuid::Uuid::new_v4().to_string(),
-            expected_instance: descriptor.instance_uuid.to_string(),
+            expected_instance: descriptor.node_uuid.to_string(),
             expected_boot: Some(descriptor.boot_id.to_string()),
             output: None,
             command: Command::Capabilities,
@@ -1286,7 +1286,7 @@ impl Drop for Rig {
         // The elected daemon points this process's stderr at daemon.log, so a
         // failed assertion's message lands there: show its tail.
         if std::thread::panicking()
-            && let Ok(log) = fs::read(self.paths.instance_dir.join("daemon.log"))
+            && let Ok(log) = fs::read(self.paths.node_dir.join("daemon.log"))
         {
             let tail = &log[log.len().saturating_sub(8 * 1024)..];
             println!("daemon.log tail:\n{}", String::from_utf8_lossy(tail));
@@ -2420,7 +2420,7 @@ fn activation_invitation(rig: &Rig) -> String {
 fn activation_warn(rig: &Rig) {
     use herdr_threads::{
         client::service::{PersistentServiceClient, ServiceIntentJournal},
-        daemon::ownership::{read_descriptor, read_existing_namespace},
+        daemon::ownership::{read_descriptor, read_node_uuid_hint},
         protocol::{
             ids::{OperationId, SeatId, ThreadId},
             service::{
@@ -2432,14 +2432,14 @@ fn activation_warn(rig: &Rig) {
     };
     let descriptor = read_descriptor(
         &rig.paths,
-        read_existing_namespace(&rig.paths).unwrap().unwrap(),
+        read_node_uuid_hint(&rig.paths).unwrap().unwrap(),
     )
     .unwrap();
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let client = PersistentServiceClient::new(
         descriptor.endpoint,
         clock.clone(),
-        descriptor.instance_uuid,
+        descriptor.node_uuid,
         Some(descriptor.boot_id),
         ServiceIntentJournal::open(rig.root.join("activation-intents")).unwrap(),
     );
@@ -3406,7 +3406,7 @@ fn send_attention_drain_ack_settles_with_mod_delivery_provenance() {
     assert_eq!(observation["provenance"], "cooperative_top_level");
     assert_eq!(observation["via"], "context");
     // The registration's audit line names the channel claim's provenance.
-    let log = fs::read_to_string(rig.paths.instance_dir.join("daemon.log")).unwrap_or_default();
+    let log = fs::read_to_string(rig.paths.node_dir.join("daemon.log")).unwrap_or_default();
     assert!(
         log.contains("mod channel registered")
             && log.contains("provenance=cooperative_mod_channel"),
@@ -3689,7 +3689,7 @@ fn truncated_body_streamed_with_marker_and_ack_refused_terminal() {
     assert_eq!(result["result"], "refused_terminal", "{result}");
     assert_eq!(result["reason"], "truncated");
     // Without the local hint the daemon still refuses (stored body length).
-    let contexts = rig.paths.instance_dir.join("contexts");
+    let contexts = rig.paths.node_dir.join("contexts");
     for entry in fs::read_dir(&contexts).unwrap().flatten() {
         if entry
             .file_name()
@@ -4221,7 +4221,7 @@ fn operator_switch_off_takes_effect_on_daemon_restart() {
     // Idle in the stream loop (the first drain is over) when the daemon stops.
     let id = rig.send_ordinary("before the operator switch");
     watch.wait_item(&id);
-    let settings = rig.paths.instance_dir.join("settings.json");
+    let settings = rig.paths.node_dir.join("settings.json");
     fs::write(&settings, br#"{"mod_delivery":"off"}"#).unwrap();
     fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).unwrap();
     rig.restart_daemon();
@@ -4388,7 +4388,7 @@ fn fresh_watch_after_accept_prints_no_attention() {
 fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
     use herdr_threads::{
         client::service::{PersistentServiceClient, ServiceIntentJournal},
-        daemon::ownership::{read_descriptor, read_existing_namespace},
+        daemon::ownership::{read_descriptor, read_node_uuid_hint},
         protocol::{
             ids::{OperationId, SeatId, ThreadId},
             service::{
@@ -4440,15 +4440,13 @@ fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
     // The killed child leaves the channel in reconnect grace; the next watch
     // replaces it.
     rig.kill(&mut watch);
-    let instance = read_existing_namespace(&rig.paths)
-        .unwrap()
-        .expect("instance");
+    let instance = read_node_uuid_hint(&rig.paths).unwrap().expect("instance");
     let descriptor = read_descriptor(&rig.paths, instance).unwrap();
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let client = PersistentServiceClient::new(
         descriptor.endpoint.clone(),
         Arc::clone(&clock),
-        descriptor.instance_uuid,
+        descriptor.node_uuid,
         Some(descriptor.boot_id),
         ServiceIntentJournal::open(rig.root.join("intents")).unwrap(),
     );
@@ -4546,7 +4544,7 @@ fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
     );
     assert!(notice.get("ack_required").is_none(), "{notice}");
     let (expected_binding, expected_generation, expected_execution) =
-        expected_notice_binding(&rig, descriptor.instance_uuid);
+        expected_notice_binding(&rig, descriptor.node_uuid);
     let (offered_generation, offered_execution, frontier, ordinal, generation, execution, thread, offered_binding):
         (i64, String, i64, i64, i64, String, String, String) = rig.db().query_row(
             "SELECT offered.generation,offered.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id,d.thread_id,o.binding_id FROM digest_notice_offer o JOIN occupant_bindings offered ON offered.binding_id=o.binding_id AND offered.seat_id=o.seat_id JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN occupant_bindings b ON b.seat_id=o.seat_id AND b.harness='claude' AND b.native_session=?3 AND b.agent_id='' AND b.role='top_level' AND b.ended_at IS NULL AND b.liveness='connected' AND b.binding_id=o.binding_id WHERE o.seat_id=?1 AND d.warning_id=?2 AND o.binding_id=?4",
@@ -4634,7 +4632,10 @@ fn clear_rebind_pending_item_restreamed_to_new_session() {
 }
 
 /// The exact Watch binding expected by the notice tests, independently of its offer row.
-fn expected_notice_binding(rig: &Rig, instance: uuid::Uuid) -> (String, i64, String) {
+fn expected_notice_binding(
+    rig: &Rig,
+    instance: herdr_threads::node::NodeUuid,
+) -> (String, i64, String) {
     let (binding, generation): (String, i64) = rig.db().query_row(
         "SELECT b.binding_id,s.generation FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.target_id=?3 AND b.harness='claude' AND b.native_session=?4 AND b.agent_id='' AND b.role='top_level' AND b.ended_at IS NULL AND b.liveness='connected'",
         rusqlite::params![rig.b.as_str(), instance.to_string(), PANE_B, SESSION_B],
@@ -4970,7 +4971,7 @@ fn session_start_and_pre_tool_use_emit_no_digest_while_live() {
 fn notice_published_while_live_reaches_the_next_pre_tool_use_once() {
     use herdr_threads::{
         client::service::{PersistentServiceClient, ServiceIntentJournal},
-        daemon::ownership::{read_descriptor, read_existing_namespace},
+        daemon::ownership::{read_descriptor, read_node_uuid_hint},
         protocol::{
             ids::{OperationId, SeatId, ThreadId},
             service::{
@@ -4984,15 +4985,13 @@ fn notice_published_while_live_reaches_the_next_pre_tool_use_once() {
     let rig = Rig::new();
     let mut watch = rig.watch(SESSION_B);
     watch.wait_connected();
-    let instance = read_existing_namespace(&rig.paths)
-        .unwrap()
-        .expect("instance");
+    let instance = read_node_uuid_hint(&rig.paths).unwrap().expect("instance");
     let descriptor = read_descriptor(&rig.paths, instance).unwrap();
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let client = PersistentServiceClient::new(
         descriptor.endpoint.clone(),
         Arc::clone(&clock),
-        descriptor.instance_uuid,
+        descriptor.node_uuid,
         Some(descriptor.boot_id),
         ServiceIntentJournal::open(rig.root.join("intents")).unwrap(),
     );
@@ -5070,7 +5069,7 @@ fn notice_published_while_live_reaches_the_next_pre_tool_use_once() {
     );
     assert!(notice.get("ack_required").is_none(), "{notice}");
     let (expected_binding, expected_generation, expected_execution) =
-        expected_notice_binding(&rig, descriptor.instance_uuid);
+        expected_notice_binding(&rig, descriptor.node_uuid);
     let (offered_generation, offered_execution, frontier, ordinal, generation, execution, thread, offered_binding):
         (i64, String, i64, i64, i64, String, String, String) = rig.db().query_row(
             "SELECT offered.generation,offered.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id,d.thread_id,o.binding_id FROM digest_notice_offer o JOIN occupant_bindings offered ON offered.binding_id=o.binding_id AND offered.seat_id=o.seat_id JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN occupant_bindings b ON b.seat_id=o.seat_id AND b.harness='claude' AND b.native_session=?3 AND b.agent_id='' AND b.role='top_level' AND b.ended_at IS NULL AND b.liveness='connected' AND b.binding_id=o.binding_id WHERE o.seat_id=?1 AND d.warning_id=?2 AND o.binding_id=?4",

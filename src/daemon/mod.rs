@@ -17,7 +17,7 @@ use crate::daemon::{
     lifecycle::run_owner_with_factory,
     logs::RotatingLogSink,
     ownership::EndpointDescriptor,
-    paths::InstancePaths,
+    paths::NodePaths,
 };
 use crate::ports::LocalService;
 use crate::protocol::time::{Cancellation, Clock};
@@ -122,9 +122,9 @@ struct ReaderCompletion {
 }
 
 impl ChildOwnedLogSink {
-    fn new(paths: &InstancePaths) -> Self {
+    fn new(paths: &NodePaths) -> Self {
         Self {
-            log: Arc::new(Mutex::new(RotatingLogSink::new(paths.instance_dir.clone()))),
+            log: Arc::new(Mutex::new(RotatingLogSink::new(paths.node_dir.clone()))),
             reader: None,
             close_deadline: Arc::new(OnceLock::new()),
             daemon_tail: Vec::new(),
@@ -339,7 +339,7 @@ impl Drop for ChildOwnedLogSink {
 /// Construct the service from the elected instance and bound boot before
 /// endpoint publication. Teardown is awaited under the same owner lease.
 pub async fn run_elected_with_diagnostics<F, R, D, Fut>(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
     make_service: F,
@@ -347,7 +347,7 @@ pub async fn run_elected_with_diagnostics<F, R, D, Fut>(
     on_drained: D,
 ) -> io::Result<bool>
 where
-    F: FnOnce(Uuid, Uuid, Cancellation) -> io::Result<Arc<dyn LocalService>>,
+    F: FnOnce(crate::node::NodeUuid, Uuid, Cancellation) -> io::Result<Arc<dyn LocalService>>,
     R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
     D: FnOnce() -> Fut,
     Fut: Future<Output = io::Result<()>>,

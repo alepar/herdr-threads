@@ -34,7 +34,7 @@ impl Fixture {
         }
         let contexts = ContextJournal::open(
             &root,
-            uuid::Uuid::from_u128(1),
+            herdr_threads::node::NodeUuid::from_u128(1),
             "seat",
             std::time::Duration::from_millis(20),
         )
@@ -43,7 +43,7 @@ impl Fixture {
         contexts
             .install_reattached(OccupantContext {
                 format_version: 1,
-                instance: uuid::Uuid::from_u128(1),
+                instance: herdr_threads::node::NodeUuid::from_u128(1),
                 seat: "seat".into(),
                 target: "pane".into(),
                 harness: if human {
@@ -487,14 +487,14 @@ fn lazy_frozen_actor_completed_retry_preflight() {
             journal::{IntentScope, OriginalActor},
             retry,
         },
-        daemon::paths::{InstancePaths, RuntimeContext},
+        daemon::paths::{NodePaths, RuntimeContext},
     };
     let f = Fixture::new(true);
     let state = f.root.join("state");
     let host = f.root.join("host.sock");
     let runtime = RuntimeContext::explicit(state.clone(), host.clone(), None).unwrap();
-    let paths = InstancePaths::resolve_read_only(&runtime).unwrap();
-    let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+    let paths = NodePaths::resolve_read_only(&runtime.state_dir).unwrap();
+    let journal = Journal::open(paths.node_dir.join("intents")).unwrap();
     let claim =
         herdr_threads::harness::bridge::caller_claim(&f.contexts.current().unwrap().unwrap())
             .unwrap();
@@ -510,13 +510,13 @@ fn lazy_frozen_actor_completed_retry_preflight() {
     )
     .unwrap();
     let reference = journal.record(scope, frozen, 1).unwrap();
-    let entry = std::fs::read_dir(paths.instance_dir.join("intents"))
+    let entry = std::fs::read_dir(paths.node_dir.join("intents"))
         .unwrap()
         .map(|e| e.unwrap().path())
         .find(|p| p.extension().is_some_and(|e| e == "intent"))
         .unwrap();
     let before = std::fs::read(&entry).unwrap();
-    std::fs::remove_file(paths.instance_dir.join("intents/allocator.lock")).unwrap();
+    std::fs::remove_file(paths.node_dir.join("intents/allocator.lock")).unwrap();
     let mut output = vec![];
     let error = herdr_threads::cli::run_in_pane(
         vec![
@@ -540,10 +540,10 @@ fn lazy_frozen_actor_completed_retry_preflight() {
     );
     assert!(output.is_empty());
     assert_eq!(std::fs::read(entry).unwrap(), before);
-    assert!(!paths.instance_dir.join("intents/allocator.lock").exists());
+    assert!(!paths.node_dir.join("intents/allocator.lock").exists());
     assert_eq!(
         retry::preflight_original_actor(
-            paths.instance_dir.join("intents"),
+            paths.node_dir.join("intents"),
             &reference.recovery_ref(),
             InvocationActor::Human,
             &Default::default()

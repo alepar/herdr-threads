@@ -4,7 +4,7 @@ use herdr_threads::{
     client::local::LocalSocketClient,
     daemon::{
         ownership::OwnerLock,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
     },
     harness::context::Harness,
     host::native::NativeCli,
@@ -98,8 +98,8 @@ fn trace_host(trace: &HostTrace, event: String) {
 struct Fixture {
     root: PathBuf,
     context: RuntimeContext,
-    paths: InstancePaths,
-    instance: Uuid,
+    paths: NodePaths,
+    instance: herdr_threads::node::NodeUuid,
     client: LocalSocketClient,
     clock: Arc<dyn Clock>,
     pane_reads: Arc<AtomicUsize>,
@@ -273,9 +273,9 @@ impl Fixture {
             host: Some(host),
         };
         let context = RuntimeContext::explicit(root.join("state"), endpoint, None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
-        let owner = OwnerLock::acquire(&paths).unwrap();
-        let instance = owner.instance_uuid();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+        let instance = owner.node_uuid().unwrap();
         drop(owner);
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let native = Arc::new(NativeCli::new(context.host_endpoint.clone(), clock.clone()));
@@ -563,7 +563,7 @@ impl Fixture {
             None,
         )
         .unwrap();
-        let copy_paths = InstancePaths::resolve(&copy_context).unwrap();
+        let copy_paths = NodePaths::resolve(&copy_context.state_dir).unwrap();
         fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -1022,7 +1022,7 @@ fn elected_public_delivery_is_staged_without_native_effect_and_completed_retry_i
     assert!(!refusal.status.success());
     assert!(refusal.stdout.is_empty());
     assert_eq!(f.effects.load(Ordering::Relaxed), 0);
-    assert!(f.instance != Uuid::nil());
+    assert!(f.instance != herdr_threads::node::NodeUuid::nil());
 }
 
 #[test]
@@ -1371,7 +1371,7 @@ fn elected_unconfigured_daemon_refuses_new_mode_before_semantic_publication_or_e
             .unwrap(),
         0
     );
-    let directory = f.paths.instance_dir.join("intents");
+    let directory = f.paths.node_dir.join("intents");
     assert!(fs::read_dir(directory).unwrap().all(|e| {
         !e.unwrap()
             .file_name()
@@ -1631,7 +1631,7 @@ fn public_unknown_created_pane_agent_retry_chain(retain_request: bool) {
             .unwrap(),
         1
     );
-    let directory = f.paths.instance_dir.join("intents");
+    let directory = f.paths.node_dir.join("intents");
     let journal = Journal::open(&directory).unwrap();
     let pending = journal.page(&Default::default()).unwrap();
     let local = pending
@@ -2178,7 +2178,7 @@ fn current_main_topology_native_preparation_refuses_before_publication() {
     );
     assert!(out.stdout.is_empty());
     let journal =
-        herdr_threads::cli::journal::Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+        herdr_threads::cli::journal::Journal::open(f.paths.node_dir.join("intents")).unwrap();
     assert!(journal.page(&Default::default()).unwrap().items.is_empty());
 }
 
@@ -2255,7 +2255,7 @@ fn elected_generic_refuses_fresh_and_saved_recovery_before_publication_or_effect
         instance: f.instance.to_string(),
         seat: claim.seat.clone(),
     };
-    let journal = Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+    let journal = Journal::open(f.paths.node_dir.join("intents")).unwrap();
     let reference = journal
         .record(
             scope.clone(),
@@ -2307,7 +2307,7 @@ fn elected_generic_refuses_fresh_and_saved_recovery_before_publication_or_effect
         )
         .unwrap();
     let snapshot = || {
-        let mut files: Vec<_> = fs::read_dir(f.paths.instance_dir.join("intents"))
+        let mut files: Vec<_> = fs::read_dir(f.paths.node_dir.join("intents"))
             .unwrap()
             .map(|e| {
                 let p = e.unwrap().path();

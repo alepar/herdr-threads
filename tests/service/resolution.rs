@@ -3,7 +3,7 @@ use herdr_threads::{
     client::local::LocalSocketClient,
     daemon::{
         ownership::{EndpointDescriptor, OwnerLock},
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
     },
     ports::*,
     protocol::{
@@ -310,7 +310,7 @@ impl Drop for HeldSqliteWriter<'_> {
 
 struct Fixture {
     root: PathBuf,
-    paths: InstancePaths,
+    paths: NodePaths,
     clock: Arc<dyn Clock>,
     store: Arc<SqliteStore>,
     host: Arc<ResolutionHost>,
@@ -332,9 +332,9 @@ impl Fixture {
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let runtime_context =
             RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
-        let paths = InstancePaths::resolve(&runtime_context).unwrap();
-        let owner = OwnerLock::acquire(&paths).unwrap();
-        let instance = owner.instance_uuid();
+        let paths = NodePaths::resolve(&runtime_context.state_dir).unwrap();
+        let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+        let instance = owner.node_uuid().unwrap();
         drop(owner);
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let store = Arc::new(
@@ -496,7 +496,7 @@ impl Fixture {
         LocalSocketClient::new(
             self.descriptor.endpoint.clone(),
             Arc::clone(&self.clock),
-            self.descriptor.instance_uuid,
+            self.descriptor.node_uuid,
             Some(self.descriptor.boot_id),
         )
     }
@@ -524,7 +524,7 @@ impl Drop for Fixture {
             let _ = worker.join();
         }
         if std::thread::panicking()
-            && let Ok(log) = fs::read_to_string(self.paths.instance_dir.join("daemon.log"))
+            && let Ok(log) = fs::read_to_string(self.paths.node_dir.join("daemon.log"))
         {
             eprintln!("{log}");
         }
@@ -676,7 +676,7 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
     for n in 0..25 {
         let thread = format!("selected-thread-{n:02}");
         let invitation = format!("selected-invite-{n:02}");
-        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,?2,'selected topic','goal',0,0)", rusqlite::params![thread, fixture.descriptor.instance_uuid.to_string()]).unwrap();
+        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,?2,'selected topic','goal',0,0)", rusqlite::params![thread, fixture.descriptor.node_uuid.to_string()]).unwrap();
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES (?1,?2,'invited')",
             rusqlite::params![thread, seat.as_str()],
@@ -686,14 +686,14 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
     }
     db.execute(
         "UPDATE host_instances SET decision_seq=25 WHERE id=?1",
-        [fixture.descriptor.instance_uuid.to_string()],
+        [fixture.descriptor.node_uuid.to_string()],
     )
     .unwrap();
     drop(db);
     let intents = Journal::open(fixture.root.join("hook-intents")).unwrap();
     let contexts = ContextJournal::open(
         &fixture.root.canonicalize().unwrap(),
-        fixture.descriptor.instance_uuid,
+        fixture.descriptor.node_uuid,
         seat.as_str(),
         Duration::from_millis(500),
     )
@@ -702,7 +702,7 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
     // The hook acts as the harness session its payload names (decision 15).
     let seed = OccupantContext {
         format_version: 1,
-        instance: fixture.descriptor.instance_uuid,
+        instance: fixture.descriptor.node_uuid,
         seat: seat.as_str().into(),
         target: "w1:p1".into(),
         harness: Harness::Codex,
@@ -864,7 +864,7 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
     drop(contexts);
     let contexts = ContextJournal::open(
         &fixture.root.canonicalize().unwrap(),
-        fixture.descriptor.instance_uuid,
+        fixture.descriptor.node_uuid,
         seat.as_str(),
         Duration::from_millis(500),
     )
@@ -1010,10 +1010,7 @@ fn real_ipc_late_target_read_cannot_publish_after_newer_invalidation_and_health_
     ));
     let admission = fixture
         .store
-        .begin_host_observation(
-            &fixture.descriptor.instance_uuid.to_string(),
-            &fixture.budget(),
-        )
+        .begin_host_observation(&fixture.descriptor.node_uuid.to_string(), &fixture.budget())
         .unwrap();
     fixture
         .store
@@ -1209,7 +1206,7 @@ fn real_cli_resolve_journals_before_submission_and_exact_retry_survives_output_f
     ];
     let mut failed = FailedFlush(Vec::new());
     assert!(cli::run(argv, &mut failed).is_err());
-    let journal = Journal::open(fixture.paths.instance_dir.join("intents")).unwrap();
+    let journal = Journal::open(fixture.paths.node_dir.join("intents")).unwrap();
     let reference = journal
         .resolve_recovery_ref("local:1")
         .expect("resolve did not retain its private intent before submission");
@@ -1217,7 +1214,7 @@ fn real_cli_resolve_journals_before_submission_and_exact_retry_survives_output_f
     assert_eq!(
         pending.header.scope,
         IntentScope::ServiceAllocation {
-            instance: fixture.descriptor.instance_uuid.to_string(),
+            instance: fixture.descriptor.node_uuid.to_string(),
             target: HostTargetId::new("w1:p1")
         }
     );
@@ -1301,7 +1298,7 @@ fn real_cli_resolve_discards_intent_only_after_correlated_definitive_rejection()
         let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
         value
     };
-    let journal = Journal::open(fixture.paths.instance_dir.join("intents")).unwrap();
+    let journal = Journal::open(fixture.paths.node_dir.join("intents")).unwrap();
     fixture.host.fail.store(true, Ordering::SeqCst);
     for (mode, code, recovery) in [
         (1, ErrorCode::NotFound, "local:1"),
@@ -1630,14 +1627,14 @@ fn committed_resolution_with_lost_wire_response_retains_exact_intent_for_explici
     use std::os::unix::net::{UnixListener, UnixStream};
 
     let fixture = Fixture::new(false);
-    let journal = Journal::open(fixture.paths.instance_dir.join("intents")).unwrap();
+    let journal = Journal::open(fixture.paths.node_dir.join("intents")).unwrap();
     let semantic = SemanticMutation::ResolveSeat {
         target: HostTargetId::new("w1:p1"),
     };
     let reference = journal
         .record(
             IntentScope::ServiceAllocation {
-                instance: fixture.descriptor.instance_uuid.to_string(),
+                instance: fixture.descriptor.node_uuid.to_string(),
                 target: HostTargetId::new("w1:p1"),
             },
             semantic.clone(),
@@ -1669,7 +1666,7 @@ fn committed_resolution_with_lost_wire_response_retains_exact_intent_for_explici
     let proxy_client = LocalSocketClient::new(
         proxy_path.clone(),
         fixture.clock.clone(),
-        fixture.descriptor.instance_uuid,
+        fixture.descriptor.node_uuid,
         Some(fixture.descriptor.boot_id),
     );
     let lost = LocalClient::call(&proxy_client, command.clone(), &fixture.budget()).unwrap_err();
@@ -1807,19 +1804,19 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
     let db = fixture.db();
     db.execute(
         "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('search-thread',?1,?2,'goal',0,0)",
-        rusqlite::params![fixture.descriptor.instance_uuid.to_string(), literal],
+        rusqlite::params![fixture.descriptor.node_uuid.to_string(), literal],
     ).unwrap();
     db.execute(
         "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('successor-thread',?1,?2,'goal',0,0)",
-        rusqlite::params![fixture.descriptor.instance_uuid.to_string(), successor_literal],
+        rusqlite::params![fixture.descriptor.node_uuid.to_string(), successor_literal],
     ).unwrap();
     db.execute(
         "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('checkin-seat',?1,'resolved','native','w1:p1',0,1,0)",
-        [fixture.descriptor.instance_uuid.to_string()],
+        [fixture.descriptor.node_uuid.to_string()],
     ).unwrap();
     db.execute(
         "INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('sender',?1,'resolved','native',1,0)",
-        [fixture.descriptor.instance_uuid.to_string()],
+        [fixture.descriptor.node_uuid.to_string()],
     ).unwrap();
     db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq)
         SELECT 'search-message',id,'search-thread',1,'ordinary','sender','hello',0,1000 FROM host_instances;
@@ -1856,7 +1853,7 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
         CommandResult::Health(_)
     ));
     let claim = CallerClaim {
-        instance: fixture.descriptor.instance_uuid.to_string(),
+        instance: fixture.descriptor.node_uuid.to_string(),
         seat: SeatId::new("checkin-seat"),
         binding_generation: 0,
         role: CallerRole::TopLevel,
@@ -1953,7 +1950,7 @@ fn composed_search_admits_one_active_four_waiters_and_releases_all_slots() {
     let literal = format!("queue-search-{}", Uuid::new_v4().simple());
     fixture.db().execute(
         "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('queue-thread',?1,?2,'goal',0,0)",
-        rusqlite::params![fixture.descriptor.instance_uuid.to_string(), literal],
+        rusqlite::params![fixture.descriptor.node_uuid.to_string(), literal],
     ).unwrap();
     let query = Command::Search(SearchQuery {
         literal: literal.clone(),
@@ -2056,7 +2053,7 @@ fn identity_final_currentness_check_uses_new_admitted_read_and_rejects_existing_
         std::thread::sleep(Duration::from_millis(5));
     }
     let identity = OrdinaryIdentity::new(
-        fixture.descriptor.instance_uuid.to_string(),
+        fixture.descriptor.node_uuid.to_string(),
         fixture.store.clone(),
         fixture.host.clone(),
         fixture.clock.clone(),
@@ -2067,7 +2064,7 @@ fn identity_final_currentness_check_uses_new_admitted_read_and_rejects_existing_
         .unwrap();
     assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 2);
     let db = fixture.db();
-    db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES (?1,'w1:p1','host',1,'repair')", [fixture.descriptor.instance_uuid.to_string()]).unwrap();
+    db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES (?1,'w1:p1','host',1,'repair')", [fixture.descriptor.node_uuid.to_string()]).unwrap();
     // Exact resolution replay still returns historical data; the independent
     // check must reject the active hold without treating replay as authority.
     assert_eq!(
@@ -2142,7 +2139,7 @@ fn elected_failed_partial_unknown_captures_cannot_create_allocation_baseline() {
         }
         let db = fixture.db();
         for n in 0..17 {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,1,1,0)", rusqlite::params![format!("denied-{n}"),fixture.descriptor.instance_uuid.to_string(),format!("missing-{n}")]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,1,1,0)", rusqlite::params![format!("denied-{n}"),fixture.descriptor.node_uuid.to_string(),format!("missing-{n}")]).unwrap();
         }
         fixture.host.snapshot_mode.store(mode, Ordering::SeqCst);
         fixture.host.snapshot_held.store(false, Ordering::SeqCst);
@@ -2218,7 +2215,7 @@ fn elected_hung_snapshot_keeps_health_deadlines_and_owner_until_physical_join() 
         assert!(std::time::Instant::now() < until);
         std::thread::sleep(Duration::from_millis(5));
     }
-    let instance = fixture.descriptor.instance_uuid.to_string();
+    let instance = fixture.descriptor.node_uuid.to_string();
     let db = fixture.db();
     db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('due',?1,'unresolved','native',1,0)", [&instance]).unwrap();
     db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('due-thread',?1,'topic','goal',0,0)", [&instance]).unwrap();
@@ -2259,7 +2256,7 @@ fn elected_hung_snapshot_keeps_health_deadlines_and_owner_until_physical_join() 
     ));
     std::thread::sleep(Duration::from_millis(50));
     assert!(!fixture.daemon.as_ref().unwrap().is_finished());
-    assert!(OwnerLock::acquire(&fixture.paths).is_err());
+    assert!(OwnerLock::acquire_with_test_hint(&fixture.paths).is_err());
     fixture.host.snapshot_held.store(false, Ordering::SeqCst);
     assert!(fixture.daemon.take().unwrap().join().unwrap().unwrap());
     let active: Option<String> = db
@@ -2268,7 +2265,7 @@ fn elected_hung_snapshot_keeps_health_deadlines_and_owner_until_physical_join() 
         })
         .unwrap();
     assert!(active.is_none(), "cancelled capture published a baseline");
-    assert!(OwnerLock::acquire(&fixture.paths).is_ok());
+    assert!(OwnerLock::acquire_with_test_hint(&fixture.paths).is_ok());
 }
 
 #[test]
@@ -2324,7 +2321,7 @@ fn elected_driver_reconciles_multiple_saved_pages_and_reopens_with_fresh_capture
     }
     let db = fixture.db();
     for n in 0..33 {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,1,1,0)", rusqlite::params![format!("saved-{n}"),fixture.descriptor.instance_uuid.to_string(),format!("missing-{n}")]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,1,1,0)", rusqlite::params![format!("saved-{n}"),fixture.descriptor.node_uuid.to_string(),format!("missing-{n}")]).unwrap();
     }
     fixture.host.snapshot_held.store(false, Ordering::SeqCst);
     loop {
@@ -2425,7 +2422,7 @@ fn quiesced_identity(
     assert!(fixture.daemon.take().unwrap().join().unwrap().unwrap());
     let writer = Arc::new(FairWriter::new(32));
     let identity = OrdinaryIdentity::new(
-        fixture.descriptor.instance_uuid.to_string(),
+        fixture.descriptor.node_uuid.to_string(),
         fixture.store.clone(),
         fixture.host.clone(),
         fixture.clock.clone(),
@@ -2810,7 +2807,7 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
     let db = fixture.db();
     db.execute(
         "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('handoff',?1,'topic','goal',0,0)",
-        [fixture.descriptor.instance_uuid.to_string()],
+        [fixture.descriptor.node_uuid.to_string()],
     )
     .unwrap();
     let invited = LocalClient::call(
@@ -2862,11 +2859,11 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
     .expect("setup claude");
 
     let client = fixture.client();
-    let journal = Journal::open(fixture.paths.instance_dir.join("intents")).unwrap();
+    let journal = Journal::open(fixture.paths.node_dir.join("intents")).unwrap();
     let resolver = DaemonSeatResolver::new(
         &client,
         &journal,
-        fixture.descriptor.instance_uuid,
+        fixture.descriptor.node_uuid,
         fixture.clock.as_ref(),
     );
     // No configuration exports from this pane shell.
@@ -2893,7 +2890,7 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
                 seats: &resolver,
                 handoff: &client,
                 clock: fixture.clock.as_ref(),
-                record_dir: Some(&fixture.paths.instance_dir),
+                record_dir: Some(&fixture.paths.node_dir),
                 shell_probe: &NoShell,
             },
         )
@@ -2939,6 +2936,6 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
         .unwrap();
     assert_eq!(provenance, "managed_launch");
     assert_eq!(registered_at, None);
-    let records = fs::read_to_string(fixture.paths.instance_dir.join("launches.jsonl")).unwrap();
+    let records = fs::read_to_string(fixture.paths.node_dir.join("launches.jsonl")).unwrap();
     assert_eq!(records.lines().count(), 2);
 }

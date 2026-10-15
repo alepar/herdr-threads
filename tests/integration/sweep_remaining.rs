@@ -23,7 +23,7 @@ use crate::lanes_latency;
 use herdr_threads::{
     daemon::{
         health::HEALTH_LINE_BUDGET,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
         remedy::{RemedyContext, remedy},
     },
     protocol::{
@@ -2626,11 +2626,13 @@ fn startup_failure_lane_failure_and_skew_reach_the_operator() {
         }
         let _cleanup = Cleanup(root.clone());
         let host = root.join("no-host.sock");
-        let paths = InstancePaths::resolve(
-            &RuntimeContext::explicit(state.clone(), host.clone(), None).unwrap(),
+        let paths = NodePaths::resolve(
+            &RuntimeContext::explicit(state.clone(), host.clone(), None)
+                .unwrap()
+                .state_dir,
         )
         .unwrap();
-        paths.prepare_instance_dir().unwrap();
+        paths.prepare_node_dir().unwrap();
         fs::write(&paths.database_path, b"this is not a sqlite database").unwrap();
         let ensure = crate::scrubbed_command(env!("CARGO_BIN_EXE_herdr-threads"))
             .arg("--state-dir")
@@ -2643,7 +2645,7 @@ fn startup_failure_lane_failure_and_skew_reach_the_operator() {
             .unwrap();
         let stderr = String::from_utf8_lossy(&ensure.stderr).into_owned();
         assert_eq!(ensure.status.code(), Some(3), "{stderr}");
-        let logs: Vec<_> = fs::read_dir(paths.instance_dir.join("logs"))
+        let logs: Vec<_> = fs::read_dir(paths.node_dir.join("logs"))
             .unwrap()
             .flatten()
             .collect();
@@ -2690,8 +2692,10 @@ fn startup_failure_lane_failure_and_skew_reach_the_operator() {
     assert!(lines.contains(&pointer), "{pointer:?} not in {lines:?}");
 
     // 3. Skew: the descriptor says the daemon speaks the previous protocol.
-    let paths = InstancePaths::resolve(
-        &RuntimeContext::explicit(s.state.clone(), s.herdr.socket_path(), None).unwrap(),
+    let paths = NodePaths::resolve(
+        &RuntimeContext::explicit(s.state.clone(), s.herdr.socket_path(), None)
+            .unwrap()
+            .state_dir,
     )
     .unwrap();
     let original = fs::read(&paths.descriptor_path).unwrap();

@@ -226,7 +226,7 @@ impl PaneNameSource for CountingPanes {
 struct Invocation {
     fake: Arc<CountingLocalClient>,
     seen_full_bodies: Arc<Mutex<Vec<bool>>>,
-    paths: InstancePaths,
+    paths: NodePaths,
     clock: Arc<dyn Clock>,
 }
 
@@ -239,15 +239,15 @@ impl Invocation {
             DaemonVintage::Current,
         ));
         let root = std::env::temp_dir().join(format!("read-cost-seam-{}", uuid::Uuid::new_v4()));
-        let paths = InstancePaths {
-            instance_dir: root.clone(),
-            socket_path: root.join("sock"),
+        let paths = NodePaths {
+            state_dir: root.clone(),
+            node_dir: root.clone(),
+            key_path: root.join("k"),
+            node_json_path: root.join("nj"),
+            database_path: root.join("db"),
             lock_path: root.join("lock"),
             descriptor_path: root.join("descriptor"),
-            locator_path: root.join("locator"),
-            namespace_path: root.join("namespace"),
-            database_path: root.join("db"),
-            locator: "test".into(),
+            socket_path: root.join("sock"),
         };
         Self {
             fake,
@@ -259,11 +259,12 @@ impl Invocation {
 
     fn connection(
         &self,
-    ) -> LazyConnection<Shared, impl Fn() -> Result<(uuid::Uuid, Shared), RunError>> {
+    ) -> LazyConnection<Shared, impl Fn() -> Result<(crate::node::NodeUuid, Shared), RunError>>
+    {
         let fake = Arc::clone(&self.fake);
         LazyConnection::new(move || {
             fake.connect();
-            Ok((uuid::Uuid::nil(), Shared(Arc::clone(&fake))))
+            Ok((crate::node::NodeUuid::nil(), Shared(Arc::clone(&fake))))
         })
     }
 
@@ -278,8 +279,8 @@ impl Invocation {
         let mut out = Vec::new();
         // No pane-agent read reaches a host here (agent contexts only).
         let runtime = crate::daemon::paths::RuntimeContext {
-            state_dir: self.paths.instance_dir.clone(),
-            host_endpoint: self.paths.instance_dir.join("host.sock"),
+            state_dir: self.paths.node_dir.clone(),
+            host_endpoint: self.paths.node_dir.join("host.sock"),
             herdr_bin: None,
         };
         let rest = run_caller_scoped(
@@ -308,7 +309,7 @@ impl Invocation {
         let mut cache = NickCache::with_pane_source(
             Box::new(CountingPanes(Arc::clone(&self.fake))),
             &self.paths,
-            uuid::Uuid::nil(),
+            crate::node::NodeUuid::nil(),
             &self.clock,
         );
         let mut out = Vec::new();

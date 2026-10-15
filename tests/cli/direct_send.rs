@@ -99,7 +99,7 @@ impl Fixture {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let context = StoreContext::new(root.join("store.db"), clock.clone());
         let db = context.open_writer().unwrap();
-        let instance = uuid::Uuid::from_u128(1);
+        let instance = herdr_threads::node::NodeUuid::from_u128(1);
         db.execute(
             "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES(?1,0,'b',1)",
             [instance.to_string()],
@@ -1006,7 +1006,7 @@ fn invalid_target_and_caller_refuse_before_intent_or_pair() {
                     .unwrap();
             }
             "held" => {
-                f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES(?1,'seat-b','b',1,'operator')", [uuid::Uuid::from_u128(1).to_string()]).unwrap();
+                f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES(?1,'seat-b','b',1,'operator')", [herdr_threads::node::NodeUuid::from_u128(1).to_string()]).unwrap();
             }
             "stale-caller" => {
                 f.db.execute("UPDATE seats SET generation=2 WHERE id='seat-a'", [])
@@ -1449,17 +1449,15 @@ fn public_completed_retry_missing_endpoint_retains_files_and_one_frozen_hint() {
         None,
     )
     .unwrap();
-    let paths = herdr_threads::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
-    std::fs::create_dir_all(&paths.instance_dir).unwrap();
+    let paths = herdr_threads::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap();
+    std::fs::create_dir_all(&paths.node_dir).unwrap();
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&paths.instance_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-    std::fs::write(&paths.namespace_path, uuid::Uuid::from_u128(1).to_string()).unwrap();
-    std::fs::set_permissions(
-        &paths.namespace_path,
-        std::fs::Permissions::from_mode(0o600),
-    )
-    .unwrap();
-    let public_root = paths.instance_dir.join("intents");
+    std::fs::set_permissions(&paths.node_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    herdr_threads::test_support::write_node_hint(
+        &paths,
+        herdr_threads::node::NodeUuid::from_u128(1),
+    );
+    let public_root = paths.node_dir.join("intents");
     let _public = Journal::open(&public_root).unwrap();
     for entry in std::fs::read_dir(f.root.join("intents")).unwrap() {
         let path = entry.unwrap().path();
@@ -1641,7 +1639,7 @@ fn ensure_command(
         recipient: SeatId::new("seat-b"),
         operation: OperationId::new(operation),
         claim: CallerClaim {
-            instance: uuid::Uuid::from_u128(1).to_string(),
+            instance: herdr_threads::node::NodeUuid::from_u128(1).to_string(),
             seat: SeatId::new("seat-a"),
             binding_generation: 1,
             role: CallerRole::TopLevel,

@@ -192,15 +192,15 @@ fn fixture(daemon: Daemon) -> Fixture {
         DaemonVintage::Current,
     ));
     let root = std::path::PathBuf::from("/nonexistent-herdr-threads-read-cost");
-    let paths = InstancePaths {
-        instance_dir: root.clone(),
-        socket_path: root.join("s"),
+    let paths = NodePaths {
+        state_dir: root.clone(),
+        node_dir: root.clone(),
+        key_path: root.join("k"),
+        node_json_path: root.join("nj"),
+        database_path: root.join("db"),
         lock_path: root.join("l"),
         descriptor_path: root.join("d"),
-        locator_path: root.join("loc"),
-        namespace_path: root.join("n"),
-        database_path: root.join("db"),
-        locator: "test".into(),
+        socket_path: root.join("s"),
     };
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let cache = NickCache::with_pane_source(
@@ -209,7 +209,7 @@ fn fixture(daemon: Daemon) -> Fixture {
             panes: panes(),
         }),
         &paths,
-        uuid::Uuid::nil(),
+        crate::node::NodeUuid::nil(),
         &clock,
     );
     Fixture {
@@ -407,8 +407,8 @@ impl Drop for NickScratch {
 
 fn agent_contexts(fx: &mut Fixture, root: &std::path::Path) {
     use std::os::unix::fs::PermissionsExt;
-    fx.cache.paths.instance_dir = root.to_owned();
-    fx.cache.instance = uuid::Uuid::new_v4();
+    fx.cache.paths.node_dir = root.to_owned();
+    fx.cache.instance = crate::node::NodeUuid::new_v4();
     for (index, harness) in [(0, "Claude"), (1, "Codex")] {
         let seat = seat(index);
         let dir = root
@@ -737,7 +737,7 @@ fn write_display_context(fx: &mut Fixture, seat: &SeatId, harness: &str, generat
     let dir = fx
         .cache
         .paths
-        .instance_dir
+        .node_dir
         .join("contexts")
         .join(format!("{:x}", Sha256::digest(seat.as_str().as_bytes())));
     std::fs::create_dir_all(&dir).unwrap();
@@ -777,8 +777,8 @@ fn registered_display_fixture(
         .push(seat_summary(author.clone(), Some(target(1))));
     daemon.participants.push(author.clone());
     let mut fx = fixture(daemon);
-    fx.cache.paths.instance_dir = root.0.clone();
-    fx.cache.instance = uuid::Uuid::new_v4();
+    fx.cache.paths.node_dir = root.0.clone();
+    fx.cache.instance = crate::node::NodeUuid::new_v4();
     if let Some((harness, generation)) = context {
         write_display_context(&mut fx, &author, harness, generation);
     }

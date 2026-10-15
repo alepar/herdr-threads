@@ -9,7 +9,7 @@ use super::sweep::{FakeHost, Scratch, pane};
 use serde_json::{Value, json};
 #[path = "../support/lazy_proxy.rs"]
 pub(super) mod lazy_proxy;
-use herdr_threads::daemon::paths::{InstancePaths, RuntimeContext};
+use herdr_threads::daemon::paths::{NodePaths, RuntimeContext};
 use std::sync::atomic::Ordering;
 use std::{fs, os::unix::fs::DirBuilderExt, path::PathBuf, process::Command};
 
@@ -204,8 +204,10 @@ fn agent_facing_machine_text_is_compact() {
     // Retain the legacy compact byte contract on supported wire6 with
     // pre-lazy capabilities. Current v2 machine bodies are covered separately.
     let inbox = {
-        let paths = InstancePaths::resolve(
-            &RuntimeContext::explicit(plugin.state.clone(), plugin.host.clone(), None).unwrap(),
+        let paths = NodePaths::resolve(
+            &RuntimeContext::explicit(plugin.state.clone(), plugin.host.clone(), None)
+                .unwrap()
+                .state_dir,
         )
         .unwrap();
         let proxy = lazy_proxy::Proxy::new(paths, &root);

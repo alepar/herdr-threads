@@ -257,7 +257,7 @@ impl LaunchHookInspector for PreparedHookInspector {
 pub struct DaemonSeatResolver<'a> {
     client: &'a LocalSocketClient,
     journal: &'a Journal,
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     clock: &'a dyn Clock,
 }
 
@@ -265,7 +265,7 @@ impl<'a> DaemonSeatResolver<'a> {
     pub fn new(
         client: &'a LocalSocketClient,
         journal: &'a Journal,
-        instance: uuid::Uuid,
+        instance: crate::node::NodeUuid,
         clock: &'a dyn Clock,
     ) -> Self {
         Self {
@@ -282,7 +282,7 @@ impl<'a> DaemonSeatResolver<'a> {
 pub(crate) fn resolve_seat(
     client: &LocalSocketClient,
     journal: &Journal,
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     target: &HostTargetId,
     clock: &dyn Clock,
     budget: &CallBudget,

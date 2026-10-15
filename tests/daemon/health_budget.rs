@@ -29,7 +29,7 @@ fn pointer(class: Option<ErrorClass>) -> String {
 }
 
 pub(super) fn ready_inputs() -> HealthInputs {
-    let mut inputs = HealthInputs::unknown(Uuid::new_v4(), Uuid::new_v4());
+    let mut inputs = HealthInputs::unknown(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     inputs.database = ComponentStatus::Ready;
     inputs.schema = ComponentStatus::Ready;
     inputs.host = ComponentStatus::Ready;

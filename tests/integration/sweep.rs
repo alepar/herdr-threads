@@ -626,7 +626,7 @@ fn installed_flow_prelaunch_handoff_to_explicit_receipt_survives_daemon_restart(
         None,
     )
     .unwrap();
-    let paths = herdr_threads::daemon::paths::InstancePaths::resolve(&context).unwrap();
+    let paths = herdr_threads::daemon::paths::NodePaths::resolve(&context.state_dir).unwrap();
     let db = rusqlite::Connection::open(&paths.database_path).unwrap();
     assert_eq!(db.query_row(
         "SELECT count(*),count(clear_warning_id) FROM warning_conditions WHERE condition_kind='receipt' AND thread_id=?1 AND condition_id=?2 AND affected_seat_id=?2",

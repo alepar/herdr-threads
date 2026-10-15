@@ -14,7 +14,7 @@
 //!    (`$XDG_CONFIG_HOME/herdr/herdr.sock`, else `~/.config/herdr/herdr.sock`)
 //!    when a socket exists there. With `XDG_STATE_HOME` set, a `~/.local/state`
 //!    directory is a legacy location, chosen only when it holds a store (an
-//!    `instances/<id>/` with the database) and the XDG directory does not; the
+//!    `node/herdr-threads.db`, or a legacy `instances/<id>/` with the database) and the XDG directory does not; the
 //!    source then says so. A named Herdr session (`HERDR_SESSION` /
 //!    `HERDR_CONFIG_PATH`) gets neither fast default: its server, not the
 //!    default one, decides, so both fields go through step 4;

@@ -328,19 +328,28 @@ instance_pid() {
     printf '%s\n' "$pid"
 }
 
-# Instance directories of live herdr-threads daemons under Herdr's default
-# plugin state roots, one per line ("$state/instances/<digest>"). Best effort:
-# a daemon run with another --state-dir is not found.
+# Daemon directories of live herdr-threads daemons under Herdr's default
+# plugin state roots, one per line ("$state/node", or "$state/instances/<digest>"
+# for a daemon of the pre-node layout). Best effort: a daemon run with another
+# --state-dir is not found.
 live_instances() {
     local state instance
     for state in "${XDG_STATE_HOME:-$HOME/.local/state}/herdr/plugins/$PLUGIN_ID" \
         "$HOME/.local/state/herdr/plugins/$PLUGIN_ID"; do
-        for instance in "$state"/instances/*; do
+        for instance in "$state"/node "$state"/instances/*; do
             [ -f "$instance/endpoint.json" ] || continue
             instance_pid "$instance" > /dev/null || continue
             printf '%s\n' "$instance"
         done
     done | sort -u
+}
+
+# The state directory a live_instances entry belongs to.
+state_of_instance() {
+    case "$1" in
+        */node) printf '%s\n' "${1%/node}" ;;
+        *) printf '%s\n' "${1%/instances/*}" ;;
+    esac
 }
 
 # PIDs of live herdr-threads daemons published under Herdr's default plugin
@@ -371,7 +380,7 @@ stop_with_installed() {
             [ -n "$instance" ] || continue
             locator=$(cat "$instance/locator" 2>/dev/null) || continue
             [ -n "$locator" ] || continue
-            if err=$("$installed_binary" --state-dir "${instance%/instances/*}" \
+            if err=$("$installed_binary" --state-dir "$(state_of_instance "$instance")" \
                 --host-endpoint "$locator" daemon stop 2>&1 > /dev/null); then
                 ok=1
             else

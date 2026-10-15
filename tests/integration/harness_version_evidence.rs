@@ -441,22 +441,21 @@ impl Rig {
             .collect()
     }
 
-    fn instance_dir(&self) -> PathBuf {
+    fn node_dir(&self) -> PathBuf {
         PathBuf::from(
-            self.doctor_json()["doctor"]["instance_dir"]
+            self.doctor_json()["doctor"]["node_dir"]
                 .as_str()
                 .expect("doctor reports the instance dir"),
         )
     }
 
     fn cache_file(&self) -> PathBuf {
-        self.instance_dir()
+        self.node_dir()
             .join("harness-manifest/harness-versions.json")
     }
 
     fn cache_meta(&self) -> Option<Value> {
-        let text =
-            fs::read_to_string(self.instance_dir().join("harness-manifest/meta.json")).ok()?;
+        let text = fs::read_to_string(self.node_dir().join("harness-manifest/meta.json")).ok()?;
         serde_json::from_str(&text).ok()
     }
 
@@ -476,7 +475,7 @@ impl Rig {
     /// fetches (`opt_out_never_fetches` in tests/harness/manifest.rs). No
     /// sleep: the daemon log is the structural proof.
     fn assert_policy_off(&self, expected: &str) {
-        let log = self.instance_dir().join("daemon.log");
+        let log = self.node_dir().join("daemon.log");
         let line = format!("harness manifest: {expected}");
         wait_for(
             "the daemon to log its manifest policy",
@@ -765,7 +764,7 @@ fn opt_out_and_offline_paths_fetch_nothing() {
     let mut rig = Rig::new(Some(NEW_VERSION));
     let manifest = rig.canary_manifest("branch", "2.1.900", &[NEW_VERSION]);
     let url = Rig::manifest_url(&manifest);
-    let instance = rig.instance_dir();
+    let instance = rig.node_dir();
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -897,7 +896,7 @@ fn malformed_only_version_with_canary_known_broken_is_broken() {
     assert_eq!(state["source"], "canary manifest row");
     assert!(rig.version_lines(OTHER_VERSION).is_empty());
     let db = rusqlite::Connection::open(
-        rig.instance_dir()
+        rig.node_dir()
             .join(herdr_threads::daemon::paths::DATABASE_FILE),
     )
     .unwrap();
