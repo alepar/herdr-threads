@@ -24,6 +24,45 @@ fn begin_retirement(
     let _guard = crate::test_support::write_guard::arm(conn);
     super::begin_retirement(context, conn, seat, proof)
 }
+/// `join`, `leave` and `create_thread` author membership facts, so every call in
+/// this suite runs (in test-support builds) with the write guard armed: they
+/// reach `memberships` and `membership_intervals` only through the fact
+/// (ht-5fr.4.9).
+fn join(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    command: &crate::protocol::commands::Join,
+    permit: MutationPermit,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(conn);
+    super::join(context, conn, budget, command, permit)
+}
+
+fn leave(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    command: &Leave,
+    permit: MutationPermit,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(conn);
+    super::leave(context, conn, budget, command, permit)
+}
+
+fn create_thread(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    command: &CreateThread,
+    permit: MutationPermit,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(conn);
+    super::create_thread(context, conn, budget, command, permit)
+}
 use std::{
     path::PathBuf,
     sync::{

@@ -244,6 +244,8 @@ impl FactRegistry {
                 .with::<thread::ThreadCreated>()
                 .with::<thread::ThreadRegister>()
                 .with::<thread::ThreadDirect>()
+                .with::<membership::MembershipJoined>()
+                .with::<membership::MembershipLeft>()
                 .build()
         })
     }
