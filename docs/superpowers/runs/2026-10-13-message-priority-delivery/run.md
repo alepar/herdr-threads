@@ -5,7 +5,7 @@ resumeChange: 2026-10-13 · "design APPROVED (A-E) ... Move to autonomous stage 
 resumeChange: 2026-10-14 · "sgtm" (fix run for bugs 1-3 before merging; upstream feedback: "message it to the superpowers space we have here. no need to scrub.") · post-hand-back fix pass for report Remaining items 1-3, then re-sweep and update the report
 resumeChange: 2026-10-14 · "convert to d9, simplicity." + "doesnt each session have its own cursor so that other siblings cant affect it?" · ServiceSend converted to D9 (ht-yha.47); ht-yha.44 rewritten to per-session pending tracking (seat-wide display draft withdrawn, its partial worktree discarded after an unplanned coordinator stop)
 resumeChange: 2026-10-14 · "SGTM" (views only while connected; rebuilt from the cursor on reconnect) · ht-yha.57
-phase: fix-loop
+phase: finish
 feedback: herdr agent prompt wB:pB (superpowers workspace, Claude pane) with upstream-feedback-draft.md, 2026-10-14
 codeMechanism: Workflow
 
@@ -36,8 +36,8 @@ codeBuckets:
   pendingRetry:
   parked:
   stalled: false
-  review: not ready (process-exited bindings keep their pending view indefinitely — growth limit needs the user's decision; main merged and q4 fixture fixed after it; full suite then run @ e6de8153)
-  sweep: e6de8153 — 6412 passed, 4 failed, 0 errors, 44 skipped; failing: cli::doctor::doctor_json::doctor_classifies_claude_on_path, mod_delivery::stall_with_only_a_p0_delivery_row_hands_over_to_the_native_wake, harness::hermes::runtime::tests::capture_kills_and_reaps_owned_hung_child, harness::hermes::runtime::tests::capture_tolerates_bootstrap_slower_than_two_seconds; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast @ e6de8153
+  review: ready (final review wf_cee76482-6b1: no Critical/Important code defect; landing waited on the merged-tip sweep, run @ 9de1002a)
+  sweep: 9de1002a — 6418 passed, 2 failed, 0 errors, 44 skipped; failing: cli::topology_handoff::tests::live::downstream_new_thread_create_links_parent_child_in_same_real_transaction, package manifest::failpoints_are_compiled_out_of_release_builds (timeout); command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast @ 9de1002a
   slowness: round 1: graph-bound — 17 open beads, depth 6, achievable width 3 vs cap 8; edge audit armed now; round 1: merge queue peaked at 3 (first invocation); network outage relaunches ×2 (ENOTFOUND)
   worktreesKept:
   processSweep: stopped 0 · survived 0
@@ -83,4 +83,5 @@ approvals:
 - post-hand-back fixes landed: ht-yha.44 (per-session pending views), .45, .46, .47 (ServiceSend→D9), .49 (protocol 8, v1.0.0), .50, .51, .52 (pending-only deadline walks), .53 (dead fallbacks removed), .54 (view lifecycle, no seat-wide state reads), .55 (spec sync); main dc2996c3 merged a2f1ae2d; q4 fixture 0873fa12; skew 7→8 db18eefc; unreleased v47 repairs dropped e6de8153
 - main-tab handoff · herdr-threads handoff --existing --pane w4:p1 → seat sRpHoWRVk, pair thread tEtr8uFMX, message mbGwVKTMO (2026-10-14); merge into local main is the main tab's
 - approvals · view lifetime · human · views only for connected sessions, dropped on any disconnect, rebuilt on reconnect (ht-yha.57) (2026-10-14)
+- view-lifetime + stall fixes landed: ht-yha.57 (connected-only views), ht-yha.58 (mod Attention push stamped no earlier than the push; real missed-p0-wake bug behind flake ht-3eic), ht-yha.59 (doc drift); main 6d8bc095 merged 9de1002a; sweep @ 9de1002a: 2 load failures (topology_handoff flake ht-p1eu passes 5/5 isolated; release-build manifest test timeout ht-wur) at load avg ~62
 - root-design · human · D1-D11 and sections A-E approved via seePN0MKW (mwRZ1YxXs, myas79LQ8, mXmhe1P2d, mpqluOeQD)
