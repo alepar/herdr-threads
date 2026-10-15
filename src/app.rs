@@ -142,6 +142,11 @@ pub(crate) struct ElectedHostEvidence {
 pub(crate) struct HostReleaseSource(Option<Arc<dyn HostPort>>);
 
 impl HostReleaseSource {
+    /// Herdr servers attached: 1 with the primary host, 0 store-only.
+    fn attached(&self) -> u32 {
+        u32::from(self.0.is_some())
+    }
+
     fn observed(&self) -> Option<crate::host::compatibility::HostRelease> {
         self.0.as_ref().and_then(|host| host.observed_release())
     }
@@ -204,6 +209,7 @@ impl ElectedHealth {
     fn inputs(&self, request: &CallBudget) -> HealthInputs {
         let mut inputs = HealthInputs::unknown(self.instance, self.boot);
         inputs.settings = Some(self.settings.clone());
+        inputs.hosts = self.host.release.attached();
         inputs.since_start_ms = Some(self.clock.monotonic_now().0.saturating_sub(self.started.0));
         inputs.database = ComponentStatus::Ready;
         inputs.schema = ComponentStatus::Ready;

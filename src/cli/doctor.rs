@@ -718,9 +718,12 @@ fn collect_local_with_budget(
 }
 /// Doctor's word for the daemon's Health state. A daemon that reports itself
 /// starting ([`crate::protocol::results::Health::starting`]) is `starting`,
-/// not `degraded`, until its first reconciliation or the startup bound.
+/// not `degraded`, until its first reconciliation or the startup bound. A
+/// daemon that reports no attached host (`hosts == 0`) is `store-only`.
 pub(crate) fn daemon_state_label(health: &crate::protocol::results::Health) -> &'static str {
     match health.state {
+        // A daemon with no attached Herdr server serves the store only.
+        HealthState::Healthy | HealthState::Degraded if health.hosts == 0 => "store-only",
         HealthState::Healthy => "healthy",
         HealthState::Degraded if health.starting() => "starting",
         HealthState::Degraded => "degraded",
@@ -745,7 +748,7 @@ fn writes_safe(report: &Value) -> bool {
         && report["daemon"]["version_matches"] != false
         && matches!(
             report["daemon"]["state"].as_str(),
-            Some("not_running" | "healthy" | "starting" | "degraded")
+            Some("not_running" | "healthy" | "starting" | "store-only" | "degraded")
         )
 }
 fn repair_outcome(name: &str, outcome: Result<String, String>) -> Value {
@@ -1457,7 +1460,7 @@ pub(crate) fn repairs_allowed(report: &Value) -> bool {
         && report["daemon"]["version_matches"] != json!(false)
         && matches!(
             report["daemon"]["state"].as_str(),
-            Some("not_running" | "healthy" | "starting" | "degraded")
+            Some("not_running" | "healthy" | "starting" | "store-only" | "degraded")
         )
 }
 
