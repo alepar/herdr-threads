@@ -107,6 +107,11 @@ fn seeded_body(
         rows.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,?3,?4,0,100000,0,1,0)", params![prep,message,thread,decision]).unwrap();
         rows.execute("UPDATE lazy_recipients SET decision_seq=?2 WHERE preparation_id=?1 AND decision_seq IS NULL", params![prep,decision]).unwrap();
     }
+    // Publication writes a view row only inside the reader scope (ht-yha.67), so only the
+    // eligible group reached the binding's view. The raw-scan measurements charge the post-seek
+    // eligibility check for out-of-scope view rows too: write the other candidates' view rows
+    // raw, as a view row whose scope changed after publication stays.
+    rows.execute("INSERT OR IGNORE INTO binding_pending(binding_id,ordinal,thread_id,priority,decision_seq) SELECT ?1,ordinal,thread_id,priority,decision_seq FROM lazy_recipients WHERE seat_id='s' AND message_id LIKE 'msg-q4-%'", [binding.as_str()]).unwrap();
     for n in 0..retained {
         let sender = format!("a-noise-{n}");
         let thread = format!("noise-t{n}");

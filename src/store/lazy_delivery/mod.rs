@@ -142,7 +142,14 @@ macro_rules! seat_owes_display_sql {
 /// (`bindings::disconnect_with_hooks`) and the connected transition re-seeds it (`bindings::connect`), so a
 /// disconnected binding costs only its cursors and display marks. The v47 triggers `binding_pending_publish`
 /// and `binding_pending_legacy_set` spell the same predicate for alias `b` (pinned by
-/// `the_view_triggers_spell_the_held_predicate`).
+/// `the_view_triggers_spell_the_held_predicate`); `binding_pending_publish` also spells the reader scope
+/// (`binding_lazy_scope_sql!`), so no view row is written that the binding can never read.
+///
+/// A subagent's view is held on purpose (main review b6ad43fe M12, ht-yha.67): its own inbox reads it
+/// (`seek_pending` walks the reading binding's own view for `RowFilter::Binding` / `ThreadBinding`, which
+/// `inbox_v2::order` uses for a bound reader), its rows leave as its cursor or a display mark passes them,
+/// and every disconnect drops it. No wake path reads it, which is correct, since a subagent is never woken.
+/// Pinned by `a_subagent_reads_its_own_view`.
 macro_rules! view_held_sql {
     ($b:literal) => {
         concat!(
@@ -173,13 +180,18 @@ macro_rules! seed_view_sql {
 
 /// One binding's seed (`?1` binding, `?2` its seat). The candidates are a superset of every row the unread
 /// predicate accepts and are found without walking the seat's delivery history: the messages past each of
-/// the binding's cursors, the messages of the seat's joined or invited threads the binding has no cursor in,
-/// and the seat's legacy rows; each reaches its delivery row by `UNIQUE(message_id, seat_id)`. The unchanged
-/// predicate then decides exactly.
+/// the binding's cursors, the messages of the seat's pending direct-pair invitations the binding has no
+/// cursor in, and the seat's legacy rows; each reaches its delivery row by `UNIQUE(message_id, seat_id)`.
+/// The unchanged predicate then decides exactly. A pending pair is the only cursorless thread the reader
+/// scope (`binding_lazy_scope_sql!`) admits: an open binding has a cursor in every joined thread (V32
+/// backfill, `read_cursors::init_for_new_binding` at enrolment, `read_cursors::init_for_join` and
+/// `init_for_direct_accept` at every join), and an invited ordinary or declined thread is never readable, so
+/// neither is walked (ht-yha.67, M11). The pair's walk is its history while the invitation is pending:
+/// rows the binding reads there, plus the pair's creation events.
 pub(crate) const SEED_BINDING_VIEW_SQL: &str = concat!(
     "WITH cand(ordinal) AS (",
     "SELECT lr.ordinal FROM binding_cursors c CROSS JOIN messages cm INDEXED BY messages_thread_sequence ON cm.thread_id=c.thread_id AND cm.sequence>c.seq CROSS JOIN lazy_recipients lr ON lr.message_id=cm.id AND lr.seat_id=?2 WHERE c.binding_id=?1 ",
-    "UNION SELECT lr.ordinal FROM memberships mb INDEXED BY memberships_seat_ordinal CROSS JOIN messages mm INDEXED BY messages_thread_sequence ON mm.thread_id=mb.thread_id CROSS JOIN lazy_recipients lr ON lr.message_id=mm.id AND lr.seat_id=?2 WHERE mb.seat_id=?2 AND mb.state IN ('joined','invited') AND NOT EXISTS(SELECT 1 FROM binding_cursors nc WHERE nc.binding_id=?1 AND nc.thread_id=mb.thread_id) ",
+    "UNION SELECT lr.ordinal FROM memberships mb INDEXED BY memberships_seat_ordinal CROSS JOIN messages mm INDEXED BY messages_thread_sequence ON mm.thread_id=mb.thread_id CROSS JOIN lazy_recipients lr ON lr.message_id=mm.id AND lr.seat_id=?2 WHERE mb.seat_id=?2 AND mb.state='invited' AND COALESCE(mb.voluntary_state,mb.state)='invited' AND EXISTS(SELECT 1 FROM direct_threads nd JOIN invitations ni ON ni.thread_id=nd.thread_id AND ni.seat_id=mb.seat_id AND ni.episode=mb.episode WHERE nd.thread_id=mb.thread_id AND ni.state='pending') AND NOT EXISTS(SELECT 1 FROM binding_cursors nc WHERE nc.binding_id=?1 AND nc.thread_id=mb.thread_id) ",
     "UNION SELECT lg.ordinal FROM lazy_recipients lg INDEXED BY lazy_recipients_legacy WHERE lg.seat_id=?2 AND lg.legacy_pending=1) ",
     "INSERT OR IGNORE INTO binding_pending(binding_id,ordinal,thread_id,priority,decision_seq) SELECT b.binding_id,r.ordinal,r.thread_id,r.priority,r.decision_seq FROM occupant_bindings b JOIN lazy_recipients r ON r.ordinal IN (SELECT ordinal FROM cand) JOIN messages m ON m.id=r.message_id WHERE b.binding_id=?1 AND ",
     view_held_sql!("b"),
@@ -190,8 +202,8 @@ pub(crate) const SEED_BINDING_VIEW_SQL: &str = concat!(
 /// Seed `binding`'s pending view from its cursors, display marks and (top-level) legacy rows; only a
 /// connected binding gets rows (`view_held_sql!`). Called by `read_cursors::seed` (enrolment, re-adoption,
 /// reopening) and by `bindings::connect` on every disconnected -> connected transition. Cost: the messages
-/// past its cursors, the scope threads it has no cursor in and the seat's legacy rows, never the seat's
-/// delivery history.
+/// past its cursors, the pending direct pairs it has no cursor in and the seat's legacy rows, never the
+/// seat's delivery history (`SEED_BINDING_VIEW_SQL`).
 pub fn seed_binding_pending(tx: &Connection, binding: &BindingId) -> Result<(), ApiError> {
     let seat: Option<String> = tx
         .query_row(

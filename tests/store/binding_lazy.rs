@@ -39,15 +39,20 @@ fn lazy(db: &Connection, n: i64) {
 
 /// `lazy`, with the delivery row's priority set at insert (a later `UPDATE` is refused).
 fn lazy_with_priority(db: &Connection, n: i64, priority: i64) {
+    lazy_in(db, "t", n, priority);
+}
+
+/// `lazy_with_priority` in `thread`, at thread sequence and decision `n` (unique across threads).
+fn lazy_in(db: &Connection, thread: &str, n: i64, priority: i64) {
     db.execute(
         "INSERT OR IGNORE INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('a','i','resolved','native',1,0)",
         [],
     )
     .unwrap();
-    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES(?1,'i','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy')",[format!("prep-{n}")]).unwrap();
-    db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES(?1,?2,'t','s',?3)",params![format!("prep-{n}"),format!("msg-{n}"),priority]).unwrap();
-    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,actor_seat_id) VALUES(?1,'i','t',?2,'ordinary',?2,'passive',0,'lazy','a')",params![format!("msg-{n}"),n]).unwrap();
-    db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'i','t',?3,0,?3,0,1,0)",params![format!("prep-{n}"),format!("msg-{n}"),n]).unwrap();
+    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES(?1,'i','scope',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy')",params![format!("prep-{n}"),thread]).unwrap();
+    db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES(?1,?2,?4,'s',?3)",params![format!("prep-{n}"),format!("msg-{n}"),priority,thread]).unwrap();
+    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,actor_seat_id) VALUES(?1,'i',?3,?2,'ordinary',?2,'passive',0,'lazy','a')",params![format!("msg-{n}"),n,thread]).unwrap();
+    db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'i',?4,?3,0,?3,0,1,0)",params![format!("prep-{n}"),format!("msg-{n}"),n,thread]).unwrap();
 }
 
 fn msg(n: i64) -> MessageId {
@@ -907,6 +912,21 @@ fn the_view_triggers_spell_the_held_predicate() {
             "{name} must spell view_held_sql!(\"b\")"
         );
     }
+    // ht-yha.67 (M10): publication writes only the rows the reader scope admits.
+    let publish = v47
+        .split("\n\n")
+        .map(str::trim)
+        .find(|s| s.starts_with("CREATE TRIGGER binding_pending_publish "))
+        .unwrap();
+    let scope = binding_lazy_scope_sql! {
+        binding: "b.binding_id", seat: "NEW.seat_id", thread: "NEW.thread_id",
+        instance: "(SELECT si.instance_id FROM seats si WHERE si.id=NEW.seat_id)",
+        publication: "NEW.decision_seq",
+    };
+    assert!(
+        publish.contains(scope),
+        "binding_pending_publish must spell binding_lazy_scope_sql!:\n{scope}"
+    );
 }
 
 #[test]
@@ -995,12 +1015,12 @@ fn the_reconnect_seed_equals_the_unread_predicate() {
         !unread(&db, &sub).contains(&msg(3)),
         "a legacy row below the cursor never counts for a subagent"
     );
-    db.execute(
-        "DELETE FROM binding_cursors WHERE binding_id=?1",
-        [b.as_str()],
-    )
-    .unwrap();
+    // The one cursorless scope (a joined thread always has a cursor,
+    // `a_held_binding_has_a_cursor_in_every_joined_thread`): a pending direct pair.
+    invited_thread(&db, "tp", Some("a"), "invited");
+    publish_in(&mut db, "tp", 20);
     check(&db, &b, true);
+    assert!(unread(&db, &b).contains(&msg(20)));
 }
 
 #[test]
@@ -1016,7 +1036,10 @@ fn the_binding_seed_never_walks_the_seats_delivery_history() {
         .collect();
     for needle in [
         "SEARCH cm USING INDEX messages_thread_sequence (thread_id=? AND sequence>?)",
+        // ht-yha.67 (M11): only a pending direct pair's history is walked without a cursor.
         "SEARCH mm USING INDEX messages_thread_sequence (thread_id=?)",
+        "SEARCH ni USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)",
+        "SEARCH nd USING COVERING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)",
         "SEARCH lg USING COVERING INDEX lazy_recipients_legacy (seat_id=?)",
     ] {
         assert!(
@@ -1039,4 +1062,191 @@ fn the_binding_seed_never_walks_the_seats_delivery_history() {
             );
         }
     }
+}
+
+// ht-yha.67: view cost (main review M10, M11, M12).
+
+/// `lazy_in(thread, n)` published.
+fn publish_in(db: &mut Connection, thread: &str, n: i64) {
+    lazy_in(db, thread, n, 1);
+    let tx = db.transaction().unwrap();
+    note_published(&tx, &format!("prep-{n}")).unwrap();
+    tx.commit().unwrap();
+}
+
+/// Thread `thread` with seat `s` invited (membership `state='invited'`, `voluntary` its voluntary
+/// state) by a pending invitation created at decision 2; a direct pair with seat `pair` when given.
+fn invited_thread(db: &Connection, thread: &str, pair: Option<&str>, voluntary: &str) {
+    for seat in ["a"].into_iter().chain(pair) {
+        db.execute(
+            "INSERT OR IGNORE INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','resolved','native',1,0)",
+            [seat],
+        )
+        .unwrap();
+    }
+    db.execute(
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)",
+        [thread],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state,voluntary_state) VALUES (?1,'s','invited',?2)",
+        [thread, voluntary],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES (?1,?2,'s',1,'pending',2,0,100,1000)",
+        [format!("inv-{thread}"), thread.to_owned()],
+    )
+    .unwrap();
+    if let Some(pair) = pair {
+        db.execute(
+            "INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i',?1,'s',?2)",
+            [pair, thread],
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn publication_writes_no_view_rows_outside_the_read_scope() {
+    let mut db = db();
+    let b = enroll_binding(&db, "sess-B", None);
+    let sub = enroll_binding(&db, "sess-B", Some(&b));
+    invited_thread(&db, "to", None, "invited");
+    invited_thread(&db, "td", Some("c"), "absent");
+    invited_thread(&db, "tp", Some("a"), "invited");
+    publish_in(&mut db, "t", 3);
+    publish_in(&mut db, "to", 4);
+    publish_in(&mut db, "td", 5);
+    publish_in(&mut db, "tp", 6);
+    for binding in [&b, &sub] {
+        assert_eq!(
+            view_messages(&db, binding),
+            [msg(3), msg(6)],
+            "an invited ordinary thread (4) and a declined pair (5) are never readable"
+        );
+        assert_eq!(view_messages(&db, binding), unread(&db, binding));
+    }
+}
+
+#[test]
+fn a_held_binding_has_a_cursor_in_every_joined_thread() {
+    let db = db();
+    let missing = |db: &Connection| -> i64 {
+        db.query_row(
+            "SELECT count(*) FROM occupant_bindings b JOIN memberships mb ON mb.seat_id=b.seat_id AND mb.state='joined' \
+             WHERE b.ended_at IS NULL AND NOT EXISTS(SELECT 1 FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=mb.thread_id)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let joined = |db: &Connection| -> i64 {
+        db.query_row(
+            "SELECT count(*) FROM occupant_bindings b JOIN memberships mb ON mb.seat_id=b.seat_id AND mb.state='joined' WHERE b.ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    // Enrolment (`read_cursors::init_for_new_binding`): a cursor per joined thread.
+    let a = enroll_binding(&db, "sess-A", None);
+    let sub = enroll_binding(&db, "sess-A", Some(&a));
+    // A join (`control::record_join` and pair creation call `read_cursors::init_for_join`):
+    // a cursor for every open binding, disconnected ones included.
+    let b = enroll_binding(&db, "sess-B", None);
+    disconnect_now(&db, &b, DisconnectReason::ProcessExit);
+    db.execute_batch(
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','i','topic','goal',0,0);
+         INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES ('t2','s','joined','joined',1);",
+    )
+    .unwrap();
+    read_cursors::init_for_join(&db, &SeatId::new("s"), &ThreadId::new("t2")).unwrap();
+    plain_reconnect_now(&db, &b);
+    let c = enroll_binding(&db, "sess-C", None);
+    assert_eq!(joined(&db), 8, "4 open bindings x 2 joined threads");
+    assert_eq!(missing(&db), 0);
+    for binding in [&a, &sub, &b, &c] {
+        for thread in ["t", "t2"] {
+            assert!(
+                read_cursors::cursor_for(&db, binding, &ThreadId::new(thread))
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    }
+}
+
+/// VM steps of one `SEED_BINDING_VIEW_SQL` run for `binding`, its view emptied first.
+fn seed_steps(db: &Connection, binding: &BindingId) -> i32 {
+    db.execute(
+        "DELETE FROM binding_pending WHERE binding_id=?1",
+        [binding.as_str()],
+    )
+    .unwrap();
+    let mut stmt = db.prepare(SEED_BINDING_VIEW_SQL).unwrap();
+    stmt.execute(params![binding.as_str(), "s"]).unwrap();
+    stmt.get_status(rusqlite::StatementStatus::VmStep)
+}
+
+#[test]
+fn the_reconnect_seed_never_walks_an_unreadable_invited_thread() {
+    let mut db = db();
+    let b = enroll_binding(&db, "sess-B", None);
+    invited_thread(&db, "to", None, "invited");
+    invited_thread(&db, "td", Some("c"), "absent");
+    publish_in(&mut db, "t", 3);
+    let base = seed_steps(&db, &b);
+    for n in 0..100 {
+        publish_in(&mut db, "to", 100 + 2 * n);
+        publish_in(&mut db, "td", 101 + 2 * n);
+    }
+    let grown = seed_steps(&db, &b);
+    assert!(
+        grown - base < 100,
+        "200 unreadable invited rows cost {} steps over {base}",
+        grown - base
+    );
+    assert_eq!(view_messages(&db, &b), [msg(3)]);
+    assert_eq!(view_messages(&db, &b), unread(&db, &b));
+    // The pending pair is walked: its rows are what the binding reads there.
+    invited_thread(&db, "tp", Some("a"), "invited");
+    publish_in(&mut db, "tp", 400);
+    seed_steps(&db, &b);
+    assert_eq!(view_messages(&db, &b), [msg(3), msg(400)]);
+    assert_eq!(view_messages(&db, &b), unread(&db, &b));
+}
+
+#[test]
+fn a_subagent_reads_its_own_view() {
+    let mut db = db();
+    let a = enroll_binding(&db, "sess-A", None);
+    let sub = enroll_binding(&db, "sess-A", Some(&a));
+    publish(&mut db, 3);
+    assert_eq!(view_messages(&db, &sub), [msg(3)]);
+    assert_eq!(
+        drain_binding(&db, &sub),
+        [msg(3)],
+        "the subagent's page lists the row"
+    );
+    // The seek reads the view itself: without the view row the page has nothing.
+    db.execute(
+        "DELETE FROM binding_pending WHERE binding_id=?1",
+        [sub.as_str()],
+    )
+    .unwrap();
+    assert!(drain_binding(&db, &sub).is_empty());
+    seed_binding_pending(&db, &sub).unwrap();
+    assert_eq!(drain_binding(&db, &sub), [msg(3)]);
+    // Its display leaves its view (and only its view).
+    read_cursors::advance_through_displayed(&db, &sub, &ThreadId::new("t"), &[3]).unwrap();
+    assert_eq!(view(&db, &sub), 0);
+    assert!(drain_binding(&db, &sub).is_empty());
+    assert_eq!(drain_binding(&db, &a), [msg(3)]);
+    // A disconnect drops it (ht-yha.57).
+    publish(&mut db, 4);
+    assert_eq!(view(&db, &sub), 1);
+    disconnect_now(&db, &sub, DisconnectReason::EndEvent);
+    assert_eq!(view(&db, &sub), 0);
 }

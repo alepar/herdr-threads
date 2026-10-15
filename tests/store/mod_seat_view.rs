@@ -680,11 +680,14 @@ fn stall_oldest_sees_a_reconnected_bindings_pending_row() {
     use crate::store::bindings::{ConnectTrigger, DisconnectReason};
     let (store, conn, _) = fixture();
     base(&conn);
+    // A join writes a cursor per open binding (`read_cursors::init_for_join`); the reconnect
+    // re-seed walks only past cursors (ht-yha.67).
     conn.execute_batch(
         "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation,binding_id) VALUES ('s',0,'p','b',0,'claude','stall-live','e','cooperative_top_level',0,'tm','inc','live');\
          INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation,binding_id) VALUES ('s',0,'p','b',0,'claude','stall-resumed','e','cooperative_top_level',0,'tm','inc','resumed');\
          INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t2','s','joined');\
-         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t2','s',1,1);",
+         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t2','s',1,1);\
+         INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES ('live','t2',0),('resumed','t2',0);",
     )
     .unwrap();
     let oldest = |bound: i64| {

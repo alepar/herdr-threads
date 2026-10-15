@@ -2723,6 +2723,13 @@ fn a_one_process_lazy_wake_is_refused_once_every_binding_displayed_the_frontier_
             [],
         )
         .unwrap();
+        // The readers' cursors exist when the row publishes, so publication writes their views
+        // (the seat is only invited to the ordinary thread `t`: without a cursor it reads nothing).
+        db.execute(
+            "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES ('main','t',0),('side1','t',0)",
+            [],
+        )
+        .unwrap();
         db.execute(
             "UPDATE lazy_recipients SET decision_seq=2 WHERE preparation_id='prep-1'",
             [],
@@ -2730,11 +2737,6 @@ fn a_one_process_lazy_wake_is_refused_once_every_binding_displayed_the_frontier_
         .unwrap();
         db.execute("UPDATE host_instances SET decision_seq=2", [])
             .unwrap();
-        db.execute(
-            "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES ('main','t',0),('side1','t',0)",
-            [],
-        )
-        .unwrap();
     }
     let reservation = StorePort::reserve_wake(&store, &owed_candidate(&store).unwrap(), &budget())
         .unwrap()
@@ -2816,9 +2818,15 @@ fn a_sibling_display_never_blocks_a_one_process_lazy_wake() {
     serve_in_turn(&store, "side1", "inv");
     {
         let db = store.context.open_writer().unwrap();
+        // The readers' cursors exist when the row publishes (the seat is only invited to `t`).
+        db.execute(
+            "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES ('main','t',0),('side1','t',0)",
+            [],
+        )
+        .unwrap();
         insert_p0_delivery_row(&db);
         db.execute(
-            "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES ('main','t',0),('side1','t',1)",
+            "UPDATE binding_cursors SET seq=1 WHERE binding_id='side1'",
             [],
         )
         .unwrap();
@@ -2885,10 +2893,15 @@ fn a_mixed_receipt_and_lazy_wake_is_owed_while_any_binding_has_the_row_unread() 
     serve_in_turn(&store, "side1", "inv");
     {
         let db = store.context.open_writer().unwrap();
+        // The readers' cursors exist when the row publishes (the seat is only invited to `t`).
+        db.execute(
+            "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES ('main','t',0),('side1','t',0)",
+            [],
+        )
+        .unwrap();
         insert_p0_delivery_row(&db);
         db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('m','i','t',2,'ordinary','body',1,0);
-            INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t','s','pending',100000);
-            INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES ('main','t',0),('side1','t',0);").unwrap();
+            INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t','s','pending',100000);").unwrap();
     }
     let mut reservation =
         StorePort::reserve_wake(&store, &owed_candidate(&store).unwrap(), &budget())
