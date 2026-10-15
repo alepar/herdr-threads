@@ -982,7 +982,7 @@ CREATE TABLE lazy_recipients (
     UNIQUE(message_id,seat_id),
     CHECK(message_id IS CASE
         WHEN substr(preparation_id,1,5)='prep-' AND length(preparation_id)>5 THEN 'msg-'||substr(preparation_id,6)
-        WHEN length(preparation_id)=9 AND substr(preparation_id,1,1)='p' AND substr(preparation_id,2) NOT GLOB '*[^A-Za-z0-9]*' THEN 'm'||substr(preparation_id,2)
+        WHEN length(preparation_id)=12 AND substr(preparation_id,1,1)='p' AND substr(preparation_id,2) NOT GLOB '*[^A-Za-z0-9]*' THEN 'm'||substr(preparation_id,2)
         ELSE NULL END)
 ) STRICT;
 
@@ -2554,7 +2554,7 @@ CREATE TRIGGER lazy_manifest_source BEFORE INSERT ON send_manifests
 BEGIN
     SELECT RAISE(ABORT, 'lazy manifest source mismatch') WHERE
         (SELECT delivery_mode FROM send_preparations WHERE id=NEW.preparation_id) IS NOT (SELECT delivery_mode FROM messages WHERE id=NEW.message_id)
-        OR ((SELECT delivery_mode FROM send_preparations WHERE id=NEW.preparation_id)='lazy' AND NEW.message_id IS NOT CASE WHEN substr(NEW.preparation_id,1,5)='prep-' AND length(NEW.preparation_id)>5 THEN 'msg-'||substr(NEW.preparation_id,6) WHEN length(NEW.preparation_id)=9 AND substr(NEW.preparation_id,1,1)='p' AND substr(NEW.preparation_id,2) NOT GLOB '*[^A-Za-z0-9]*' THEN 'm'||substr(NEW.preparation_id,2) ELSE NULL END)
+        OR ((SELECT delivery_mode FROM send_preparations WHERE id=NEW.preparation_id)='lazy' AND NEW.message_id IS NOT CASE WHEN substr(NEW.preparation_id,1,5)='prep-' AND length(NEW.preparation_id)>5 THEN 'msg-'||substr(NEW.preparation_id,6) WHEN length(NEW.preparation_id)=12 AND substr(NEW.preparation_id,1,1)='p' AND substr(NEW.preparation_id,2) NOT GLOB '*[^A-Za-z0-9]*' THEN 'm'||substr(NEW.preparation_id,2) ELSE NULL END)
         OR ((SELECT delivery_mode FROM messages WHERE id=NEW.message_id)='lazy' AND NEW.warning_count<>0);
 END;
 

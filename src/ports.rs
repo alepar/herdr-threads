@@ -1752,11 +1752,13 @@ pub fn sanitize_agent_name(raw: &str) -> Option<String> {
 }
 
 /// Short readable seat suffix, lowercased and at most eight characters.
-/// Both `sk3Fq9a2B` and persisted `seat-k3Fq9a2B` yield `k3fq9a2b`.
+/// A tagged seat `sQ7ak3Fq9a2B` yields its random suffix `k3fq9a2b` (never the
+/// node tag, so Herdr agent names stay `s<8>`); persisted `seat-k3Fq9a2B`
+/// yields the same.
 pub fn short_seat(seat: &SeatId) -> String {
     let seat_str = seat.as_str();
-    let rest = if crate::protocol::ids::is_short_public_id("s", seat_str) {
-        &seat_str[1..]
+    let rest = if let Some((_, suffix)) = crate::protocol::ids::public_id_parts("s", seat_str) {
+        suffix
     } else {
         seat_str
             .strip_prefix("seat-")
@@ -1783,14 +1785,14 @@ fn seat_digest(seat: &SeatId) -> String {
 
 /// The Herdr agent names one launch of `seat` may submit, in order: the
 /// sanitized `hint` (`launch --name`, else the pane label), else
-/// `s<short seat id>` for a compact ID (or `seat-<short id>` for a persisted
+/// `s<short seat id>` for a tagged ID (or `seat-<short id>` for a persisted
 /// seat); then, used once only after Herdr refuses the first
 /// as `agent_name_taken`, that name cut to fit plus `-<short seat id>` (a
 /// seat digest when the name already ends with that id).
 pub fn launch_agent_names(seat: &SeatId, hint: Option<&str>) -> [String; 2] {
     let short = short_seat(seat);
     let first = hint.and_then(sanitize_agent_name).unwrap_or_else(|| {
-        if crate::protocol::ids::is_short_public_id("s", seat.as_str()) {
+        if crate::protocol::ids::is_public_id("s", seat.as_str()) {
             format!("s{short}")
         } else {
             format!("seat-{short}")
@@ -5346,4 +5348,20 @@ pub struct PresentationOutput {
     pub work: PresentationWork,
     /// Exact terminal delta from this admitted transaction; never a pending-set snapshot.
     pub reclaimed_messages: Vec<MessageId>,
+}
+
+#[cfg(test)]
+mod short_seat_tests {
+    use super::*;
+
+    #[test]
+    fn short_seat_uses_random_suffix() {
+        let seat = SeatId::new("sQ7ak3Fq9a2B");
+        assert_eq!(short_seat(&seat), "k3fq9a2b");
+        assert_eq!(launch_agent_names(&seat, None)[0], "sk3fq9a2b");
+        // Two nodes' seats with the same suffix get the same short name only
+        // when the random suffix matches; the tag is never part of it.
+        assert_eq!(short_seat(&SeatId::new("sZz9k3Fq9a2B")), "k3fq9a2b");
+        assert_eq!(short_seat(&SeatId::new("seat-k3Fq9a2B")), "k3fq9a2b");
+    }
 }

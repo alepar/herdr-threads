@@ -3983,7 +3983,7 @@ pub(crate) mod tests {
         let (mut request, _, _) = launch_fixture();
         for hint in [None, Some("!!!".to_owned()), Some("".to_owned())] {
             request.name_hint = hint;
-            request.seat = SeatId::new("sk3Fq9a2B");
+            request.seat = SeatId::new("sQ7ak3Fq9a2B");
             assert_eq!(request.agent_name(), "sk3fq9a2b");
             // The suffix never repeats the id the name already ends with.
             let retry = &request.agent_name_candidates()[1];
@@ -4008,7 +4008,7 @@ pub(crate) mod tests {
     #[test]
     fn launch_agent_name_retry_fits_a_full_length_name() {
         let (mut request, _, _) = launch_fixture();
-        request.seat = SeatId::new("sk3Fq9a2B");
+        request.seat = SeatId::new("sQ7ak3Fq9a2B");
         request.name_hint = Some("a".repeat(40));
         let [first, retry] = request.agent_name_candidates();
         assert_eq!(first, "a".repeat(32));

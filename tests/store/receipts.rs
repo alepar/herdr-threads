@@ -390,10 +390,7 @@ fn send_snapshots_joined_plus_explicit_invited_once() {
         _ => panic!("wrong result"),
     };
     assert!(
-        crate::protocol::ids::is_short_public_id(
-            crate::protocol::ids::prefix::MESSAGE,
-            id.as_str()
-        ),
+        crate::protocol::ids::is_public_id(crate::protocol::ids::prefix::MESSAGE, id.as_str()),
         "new message IDs are short: {}",
         id.as_str()
     );
@@ -428,7 +425,7 @@ fn send_snapshots_joined_plus_explicit_invited_once() {
 }
 
 #[test]
-fn persisted_legacy_preparation_publishes_beside_a_new_compact_message() {
+fn earlier_tag_preparation_publishes_beside_a_new_message() {
     let (context, mut conn, _) = setup();
     let request = send_request(vec![]);
     let budget = crate::protocol::time::CallBudget {
@@ -449,11 +446,12 @@ fn persisted_legacy_preparation_publishes_beside_a_new_compact_message() {
         other => panic!("{other:?}"),
     };
     let staged_message = send_message_id_for_preparation(&preparation).unwrap();
-    let old_preparation = "prep-bc121d12-9d30-4510-b93c-e7cd26e890f1";
-    let old_message = "msg-bc121d12-9d30-4510-b93c-e7cd26e890f1";
-    // Simulate an in-flight preparation written by the prior release. Keep
-    // the same durable operation and recipient snapshot; only its stored ID
-    // and the event's copied source ID use the persisted format.
+    let old_preparation = "pOld9bc121d1";
+    let old_message = "mOld9bc121d1";
+    // Simulate an in-flight preparation minted under another node tag (a
+    // retag between prepare and publish). Keep the same durable operation and
+    // recipient snapshot; only its stored ID and the event's copied source ID
+    // carry the earlier tag.
     let tx = conn.transaction().unwrap();
     tx.execute_batch("PRAGMA defer_foreign_keys=ON").unwrap();
     tx.execute(
@@ -504,7 +502,7 @@ fn persisted_legacy_preparation_publishes_beside_a_new_compact_message() {
     let crate::protocol::results::CommandResult::MessageSent(new_id) = new else {
         panic!("{new:?}")
     };
-    assert!(is_short_public_id(prefix::MESSAGE, new_id.as_str()));
+    assert!(is_public_id(prefix::MESSAGE, new_id.as_str()));
     let ids: Vec<String> = conn
         .prepare(
             "SELECT id FROM messages WHERE thread_id='t' AND kind='ordinary' ORDER BY sequence",

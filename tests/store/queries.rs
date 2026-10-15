@@ -6746,11 +6746,11 @@ fn presentation_publication_observes_old_staging_only_after_late_manifest() {
     let baseline = refresh(&db);
     assert_eq!(baseline.version, 0);
     let tx = db.transaction().unwrap();
-    tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES ('prep-late-publication','34750f98bd59fcfc946da45aaabe933b','seat:s','late-publication',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy')",[]).unwrap();
+    tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES ('pTstlate0001','34750f98bd59fcfc946da45aaabe933b','seat:s','late-publication',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy')",[]).unwrap();
     let (mut recipients, mut warnings) = (0, 0);
     stage_recipient(
         &tx,
-        "prep-late-publication",
+        "pTstlate0001",
         "34750f98bd59fcfc946da45aaabe933b",
         &thread,
         "s",
@@ -6768,7 +6768,7 @@ fn presentation_publication_observes_old_staging_only_after_late_manifest() {
     );
     let tx = db.transaction().unwrap();
     tx.execute(
-        "UPDATE send_preparations SET status='sealed' WHERE id='prep-late-publication'",
+        "UPDATE send_preparations SET status='sealed' WHERE id='pTstlate0001'",
         [],
     )
     .unwrap();

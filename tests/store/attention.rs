@@ -2581,7 +2581,7 @@ fn relevance_publication_binding(db: &Connection) -> BindingId {
 fn relevance_publish_unrelated_lazy(db: &mut Connection, n: u32) {
     use crate::store::messages::{PublicationAuthor, insert_publication, stage_recipient};
     let tx = db.transaction().unwrap();
-    let preparation = format!("prep-relevance-churn-{n}");
+    let preparation = format!("pChu{n:08}");
     let operation = format!("relevance-churn-{n}");
     tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','seat:o',?2,zeroblob(32),'relevance-unrelated',0,0,0,0,0,0,0,'building','lazy')",params![preparation,operation]).unwrap();
     let (mut recipients, mut warnings) = (0, 0);
@@ -3662,7 +3662,7 @@ fn presentation_relevance_unavailable_exact_episode_and_late_publication_are_swe
     for n in 0..2 {
         let tx = db.transaction().unwrap();
         let thread = format!("relevance-episode-{n}");
-        let prep = format!("prep-relevance-episode-{n}");
+        let prep = format!("pEpi{n:08}");
         tx.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','episode','episode',0,0)",[&thread]).unwrap();
         tx.execute("INSERT INTO memberships(thread_id,seat_id,state) VALUES (?1,'s','joined'),(?1,'o','joined')",[&thread]).unwrap();
         tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,'s',1,1),(?1,'o',1,1)",[&thread]).unwrap();
