@@ -17,8 +17,10 @@
 //! - Where new behaviour goes: frame routing, duplicate-link ranking and clone
 //!   detection are ht-5fr.5.12; serving, live tail, ingest and Have deltas
 //!   are ht-5fr.5.13. Each fills the marked stub arm of [`Actor::run`] and the
-//!   state fields marked below; `signals()` is ht-5fr.5.6's and
-//!   `reload_targets()` with the enabled-target count are ht-5fr.5.7's.
+//!   state fields marked below; `signals()` is ht-5fr.5.6's. The Dialer
+//!   (`super::dialer`, ht-5fr.5.7) is constructed here: [`SyncHandle::reload_targets`]
+//!   and [`SyncHandle::enabled_target_count`] reach it, a pacer kick re-diffs
+//!   its targets, and shutdown cancels its tasks.
 //! - Role: the single owner of per-link and per-log sync state, so routing
 //!   decisions that span links need no locks.
 //!
@@ -40,6 +42,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{Instant, MissedTickBehavior, timeout};
 use uuid::Uuid;
 
+use super::dialer::{DialConfig, DialShared, Dialer, DialerDeps};
 use super::envelope::{GENESIS_KIND, WireEnvelope, hex_decode};
 use super::facts::GenesisPayload;
 use super::frame::{BranchWant, CloseReason, ForkRef, HaveLog, PeerFrame, Role, write_peer_frame};
@@ -54,7 +57,7 @@ use crate::node::{NodeIdentity, NodeTag, NodeUuid};
 use crate::protocol::results::{ApiError, ErrorCode};
 use crate::protocol::time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis};
 use crate::service::fair_writer::FairWriter;
-use crate::service::pacer::Pacer;
+use crate::service::pacer::{Pacer, Wake};
 use crate::service::workers::WorkerStatus;
 use crate::store::sync_dial_targets::TargetId;
 
@@ -205,7 +208,7 @@ impl LogOnlyForkSink {
     }
 }
 
-fn uuid8(node: &NodeUuid) -> String {
+pub(super) fn uuid8(node: &NodeUuid) -> String {
     node.to_string().chars().take(8).collect()
 }
 
@@ -328,7 +331,6 @@ pub struct DialedStream {
 // ---------------------------------------------------------------------------
 
 /// Everything the coordinator is composed from (`src/app.rs` builds it once).
-/// ht-5fr.5.7 adds `dial: DialConfig`.
 pub struct CoordinatorDeps {
     pub journal: Arc<dyn JournalPort>,
     pub sync_store: Arc<dyn SyncStorePort>,
@@ -343,6 +345,8 @@ pub struct CoordinatorDeps {
     pub status: Arc<WorkerStatus>,
     pub log: LogFn,
     pub fork_sink: Arc<dyn ForkSink>,
+    /// The Dialer's transport template and test jitter seed.
+    pub dial: DialConfig,
     pub cancel: Cancellation,
 }
 
@@ -397,6 +401,7 @@ pub struct SyncHandle {
     links: Arc<AtomicUsize>,
     requests: mpsc::Sender<Request>,
     dialed: mpsc::Sender<DialedStream>,
+    dial: Arc<DialShared>,
     clock: Arc<dyn Clock>,
 }
 
@@ -404,6 +409,18 @@ impl SyncHandle {
     /// Links that are established or handshaking, inbound or dialed.
     pub fn link_count(&self) -> usize {
         self.links.load(Ordering::Acquire)
+    }
+
+    /// Ask the Dialer to re-read the enabled dial targets now (new targets
+    /// get a task, removed ones are cancelled). Never waits.
+    pub fn reload_targets(&self) {
+        self.dial.request_reload();
+    }
+
+    /// Enabled dial targets after the Dialer's last reload diff (0 before the
+    /// first). The idle exit reads it.
+    pub fn enabled_target_count(&self) -> usize {
+        self.dial.enabled_targets()
     }
 
     /// The actor's links, answered within `budget` or `StoreBusy`.
@@ -457,10 +474,20 @@ impl SyncCoordinator {
         let (requests_tx, requests_rx) = mpsc::channel(REQUEST_SLOTS);
         let (events_tx, events_rx) = mpsc::channel(LINK_EVENT_SLOTS);
         let (ingest_tx, ingest_rx) = mpsc::channel(LINK_EVENT_SLOTS);
+        let dialer = Dialer::start(
+            DialerDeps {
+                store: deps.sync_store.clone(),
+                clock: deps.clock.clone(),
+                log: deps.log.clone(),
+                dialed: dialed_tx.clone(),
+            },
+            deps.dial.clone(),
+        );
         let handle = SyncHandle {
             links: links.clone(),
             requests: requests_tx,
             dialed: dialed_tx,
+            dial: dialer.shared(),
             clock: deps.clock.clone(),
         };
         let me = Arc::new(LocalHello::new(deps.identity.clone(), deps.boot));
@@ -476,6 +503,7 @@ impl SyncCoordinator {
             handshakes: JoinSet::new(),
             events_tx,
             link_cancel: Cancellation::default(),
+            dialer,
             _ingest_tx: ingest_tx,
         };
         let join = tokio::spawn(actor.run(Inputs {
@@ -554,6 +582,8 @@ struct Actor {
     /// Ends link tasks that outlive the shutdown bound. Never cancelled
     /// earlier: the actor closes links itself.
     link_cancel: Cancellation,
+    /// Owns the dial tasks and their children.
+    dialer: Dialer,
     /// Keeps the ingest channel open until the worker (ht-5fr.5.13) takes it.
     _ingest_tx: mpsc::Sender<IngestDone>,
 }
@@ -581,8 +611,13 @@ impl Actor {
                 Some(IngestDone) = inputs.ingest.recv() => {
                     // Ingest results: ht-5fr.5.13 acts on the outcome here.
                 }
-                _ = pacer.wait(PACER_TICK) => {
-                    // Kicks (Have deltas, target reload): ht-5fr.5.13 / 5.7.
+                wake = pacer.wait(PACER_TICK) => {
+                    if wake == Wake::Kicked {
+                        // A table or commit kick: re-diff the dial targets
+                        // (the Dialer limits this to once a second).
+                        self.dialer.kick();
+                    }
+                    // Have deltas on a kick: ht-5fr.5.13.
                 }
                 _ = tick.tick() => {
                     // Housekeeping (fork_sink.resumed(), penalties, contact
@@ -793,6 +828,7 @@ impl Actor {
         }
         self.link_cancel.cancel();
         self.handshakes.abort_all();
+        self.dialer.shutdown().await;
         let leftover: Vec<u64> = self.links.keys().copied().collect();
         for link_id in leftover {
             self.on_ended(link_id, LinkError::Shutdown, Duration::ZERO);
@@ -945,6 +981,7 @@ mod tests {
             status: Arc::new(WorkerStatus::default()),
             log: log.clone(),
             fork_sink: Arc::new(LogOnlyForkSink::new(log, clock.clone())),
+            dial: DialConfig::default(),
             cancel: cancel.clone(),
         });
         Rig {
@@ -1327,6 +1364,7 @@ mod tests {
             links: Arc::default(),
             requests,
             dialed: dialed_tx,
+            dial: rig.handle.dial.clone(),
             clock: rig.clock.clone(),
         };
         let short = CallBudget {

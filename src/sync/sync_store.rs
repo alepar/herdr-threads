@@ -115,6 +115,20 @@ mod memory {
             }
         }
 
+        /// What `add_explicit` does to an existing row: back to `idle` with no
+        /// attempts, stop or retry time (the operator's "changed").
+        pub fn reset(&self, dest: &str) {
+            let mut state = self.state.lock().unwrap();
+            for target in state.targets.iter_mut().filter(|t| t.ssh_dest == dest) {
+                target.enabled = true;
+                target.state = DialState::Idle;
+                target.stopped = None;
+                target.attempts = 0;
+                target.next_attempt_at = None;
+                target.updated_at = i64::MAX;
+            }
+        }
+
         /// Every target, enabled or not, by id.
         pub fn targets(&self) -> Vec<DialTarget> {
             self.state.lock().unwrap().targets.clone()

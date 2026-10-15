@@ -24,6 +24,11 @@
 //! - `"summary"`: thread summary, catch-up and soft-deadline poke settings
 //!   (`crate::protocol::summary::SummarySettings`; every key optional,
 //!   unknown keys rejected, validated by `ServiceConfig::from_settings`).
+//! - `"sync": {"dial_command": "<sh template>"}`: replaces the ssh transport of
+//!   every peer dial target with `/bin/sh -c <template>`, each `{dest}` replaced
+//!   by the target's destination single-quoted for sh (at most 4096 bytes, at
+//!   least one `{dest}`, no NUL or newline). Unset means ssh. Unknown `sync.*`
+//!   keys are rejected. Read once at daemon start.
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -55,6 +60,16 @@ pub struct InstanceSettings {
     pub archive_after_ms: u64,
     pub mod_delivery: crate::protocol::watch::ModDeliverySetting,
     pub summary: crate::protocol::summary::SummarySettings,
+    pub sync: SyncSettings,
+}
+
+/// The `sync` object of `settings.json`. Unknown keys are rejected.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SyncSettings {
+    /// The raw dial template; `ServiceConfig::from_settings` validates it into
+    /// a `DialTemplate`.
+    pub dial_command: Option<String>,
 }
 
 impl Default for InstanceSettings {
@@ -68,6 +83,7 @@ impl Default for InstanceSettings {
             archive_after_ms: crate::store::archival::DEFAULT_AFTER_MS,
             mod_delivery: crate::protocol::watch::ModDeliverySetting::default(),
             summary: crate::protocol::summary::SummarySettings::default(),
+            sync: SyncSettings::default(),
         }
     }
 }
@@ -193,6 +209,37 @@ mod tests {
         let bad = dir_with(Some(r#"{"mod_delivery":"maybe"}"#));
         let error = load(bad.path()).unwrap_err();
         assert!(error.to_string().contains(SETTINGS_FILE), "{error}");
+    }
+
+    #[test]
+    fn unknown_sync_key_refused() {
+        let dir = dir_with(Some(r#"{"sync":{"dial_cmd":"x"}}"#));
+        let error = load(dir.path()).unwrap_err();
+        assert!(error.to_string().contains(SETTINGS_FILE), "{error}");
+        assert!(error.detail.contains("unknown field `dial_cmd`"), "{error}");
+        let ok = dir_with(Some(r#"{"sync":{"dial_command":"exec cat {dest}"}}"#));
+        assert_eq!(
+            load(ok.path()).unwrap().sync.dial_command.as_deref(),
+            Some("exec cat {dest}")
+        );
+        assert_eq!(
+            load(dir_with(Some("{}")).path()).unwrap().sync.dial_command,
+            None
+        );
+    }
+
+    #[test]
+    fn bad_dial_command_names_the_file() {
+        for bad in [
+            r#"{"sync":{"dial_command":"no placeholder"}}"#,
+            r#"{"sync":{"dial_command":"a {dest}\nb"}}"#,
+            r#"{"sync":{"dial_command":"a {dest}\u0000"}}"#,
+        ] {
+            let dir = dir_with(Some(bad));
+            let error = load(dir.path()).unwrap_err();
+            assert!(error.to_string().contains(SETTINGS_FILE), "{bad}: {error}");
+            assert!(error.detail.contains("sync.dial_command"), "{bad}: {error}");
+        }
     }
 
     #[test]
