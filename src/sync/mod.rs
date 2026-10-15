@@ -2,10 +2,13 @@
 //! clocks that order them.
 //!
 //! Core and harness-neutral: nothing here names a harness, and nothing in this
-//! tree touches the store directly. Store-facing code lives in `src/store/`.
+//! tree touches SQLite directly: store access goes through the narrow ports
+//! (`journal_port`, `sync_store`). The Dialer (`dialer`) is the only place
+//! that spawns sync child processes. Store-facing code lives in `src/store/`.
 
 pub mod chain;
 pub mod coordinator;
+pub mod dialer;
 pub mod envelope;
 pub mod facts;
 pub mod frame;

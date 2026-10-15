@@ -1,6 +1,7 @@
 //! Validated process timing shared by the store and scheduler.
 
 use crate::protocol::summary::SummarySettings;
+use crate::sync::dialer::DialTemplate;
 use crate::{
     daemon::paths::{NodePaths, effective_uid},
     scheduler::config::SchedulerTiming,
@@ -23,6 +24,7 @@ pub struct ServiceConfig {
     archive_after_ms: u64,
     watch_connection_cap: usize,
     summary: SummarySettings,
+    dial_template: Option<DialTemplate>,
 }
 
 impl Default for ServiceConfig {
@@ -34,11 +36,16 @@ impl Default for ServiceConfig {
             archive_after_ms: crate::store::archival::DEFAULT_AFTER_MS,
             watch_connection_cap: crate::protocol::watch::MAX_WATCH_CONNECTIONS,
             summary: SummarySettings::default(),
+            dial_template: None,
         }
     }
 }
 
 impl ServiceConfig {
+    /// The validated `sync.dial_command`, or `None` for the ssh transport.
+    pub fn dial_template(&self) -> Option<&DialTemplate> {
+        self.dial_template.as_ref()
+    }
     pub fn archive_after_ms(&self) -> u64 {
         self.archive_after_ms
     }
@@ -181,6 +188,7 @@ impl ServiceConfig {
         .and_then(|config| config.with_wake_batch_delay(settings.wake_batch_delay_ms))
         .and_then(|config| config.with_summary(settings.summary.clone()))
         .and_then(|config| config.with_archive_after(settings.archive_after_ms))
+        .and_then(|config| config.with_dial_command(settings.sync.dial_command.as_deref()))
     }
 
     pub fn new(
@@ -199,7 +207,17 @@ impl ServiceConfig {
             archive_after_ms: crate::store::archival::DEFAULT_AFTER_MS,
             watch_connection_cap: crate::protocol::watch::MAX_WATCH_CONNECTIONS,
             summary: SummarySettings::default(),
+            dial_template: None,
         })
+    }
+
+    /// Validate `sync.dial_command` into a `DialTemplate`.
+    pub fn with_dial_command(mut self, command: Option<&str>) -> Result<Self, &'static str> {
+        self.dial_template = match command {
+            None => None,
+            Some(text) => Some(DialTemplate::parse(text).map_err(|_| "invalid sync.dial_command")?),
+        };
+        Ok(self)
     }
 
     pub fn with_wake_batch_delay(mut self, delay_ms: u64) -> Result<Self, &'static str> {

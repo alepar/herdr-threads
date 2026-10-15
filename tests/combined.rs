@@ -64,6 +64,8 @@ mod sync_contacts;
 
 #[path = "store/sync_dial_targets.rs"]
 mod sync_dial_targets;
+#[path = "daemon/sync_dialer.rs"]
+mod sync_dialer;
 
 #[path = "store/topology_handoff.rs"]
 mod topology_handoff;

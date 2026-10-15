@@ -53,7 +53,7 @@ uuid = { version = "=1.24.0", features = ["v4", "serde"] }
 sha2 = "=0.10.9"
 ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std", "zeroize"] }
 getrandom = "=0.4.3"
-tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal"] }
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal", "process"] }
 libc = "=0.2.189"
 toml_edit = { version = "=0.25.13", default-features = false, features = ["parse", "display"] }
 unicode-width = { version = "=0.2.2", default-features = false, features = ["cjk"] }

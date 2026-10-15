@@ -46,6 +46,24 @@ pub struct Backoff {
     rng: u64,
 }
 
+/// Turns a seed into a non-zero xorshift64 state; small seeds differ.
+pub(crate) fn scramble_seed(seed: u64) -> u64 {
+    let rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5_4A32_D192_ED03;
+    if rng == 0 { 0x2545_F491_4F6C_DD1D } else { rng }
+}
+
+/// One xorshift64 step: advances `state` and returns a uniform value in
+/// `[0, 1)`. The one PRNG step shared by [`Backoff`] and the sync Dialer's
+/// full-jitter delay.
+pub(crate) fn xorshift_unit(state: &mut u64) -> f64 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *state = x;
+    (x >> 11) as f64 / (1u64 << 53) as f64
+}
+
 impl Default for Backoff {
     fn default() -> Self {
         Self::new()
@@ -59,21 +77,14 @@ impl Backoff {
     }
     /// Deterministic jitter, for tests.
     pub fn with_seed(seed: u64) -> Self {
-        // xorshift64 must not be seeded with zero; scramble so small seeds differ.
-        let rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5_4A32_D192_ED03;
         Self {
             attempts: 0,
             next_retry_at: None,
-            rng: if rng == 0 { 0x2545_F491_4F6C_DD1D } else { rng },
+            rng: scramble_seed(seed),
         }
     }
     fn next_unit(&mut self) -> f64 {
-        let mut x = self.rng;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.rng = x;
-        (x >> 11) as f64 / (1u64 << 53) as f64
+        xorshift_unit(&mut self.rng)
     }
     /// Records a failure at `now` and returns the time of the next retry.
     pub fn on_failure(&mut self, now: MonoInstant) -> MonoInstant {
