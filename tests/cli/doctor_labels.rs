@@ -530,17 +530,32 @@ fn task3_versionless_doctor_metadata_unknown_is_informational_not_repairable() {
 /// reconciliation), or once the startup bound passed.
 fn boot_health(since_start_ms: u64, reconciled: bool) -> crate::protocol::results::Health {
     use crate::daemon::health::{ComponentStatus, HealthInputs};
+    use crate::protocol::results::CapabilityState;
     let mut inputs = HealthInputs::unknown(crate::node::NodeUuid::new_v4(), uuid::Uuid::new_v4());
     inputs.database = ComponentStatus::Ready;
     inputs.schema = ComponentStatus::Ready;
     inputs.scheduler = ComponentStatus::Ready;
-    inputs.safe_prompt = crate::protocol::results::CapabilityState::Supported;
-    inputs.current_execution = crate::protocol::results::CapabilityState::Unsupported;
     inputs.since_start_ms = Some(since_start_ms);
+    // The one attached server: unobserved until the first reconciliation.
+    inputs.hosts = vec![crate::daemon::health::HostHealthInput {
+        host_id: 1,
+        endpoint: "/s/herdr.sock".into(),
+        status: if reconciled {
+            ComponentStatus::Ready
+        } else {
+            ComponentStatus::Unknown
+        },
+        version: None,
+        current_execution: CapabilityState::Unsupported,
+        coherent_enumeration: if reconciled {
+            CapabilityState::Supported
+        } else {
+            CapabilityState::Unknown
+        },
+        safe_prompt: CapabilityState::Supported,
+        last_reconciliation_at: reconciled.then_some(crate::protocol::time::UtcMillis(9)),
+    }];
     if reconciled {
-        inputs.host = ComponentStatus::Ready;
-        inputs.coherent_enumeration = crate::protocol::results::CapabilityState::Supported;
-        inputs.last_reconciliation_at = Some(crate::protocol::time::UtcMillis(9));
         inputs.set_harness(
             "claude",
             crate::daemon::health::HarnessStatus::Supported("claude: listed".into()),
@@ -622,26 +637,35 @@ fn starting_daemon_text_relabels_pending_observation_lines_only() {
     assert!(text.contains(&format!("issue: {pending}\n")), "{text}");
 }
 
-/// ht-5fr.1.11. Kills: doctor calling a daemon with no attached Herdr server
-/// `healthy`, `degraded` or `starting` (it serves the store only), calling a
-/// daemon with its one host anything but its usual state, and refusing
-/// repairs because of the new word.
+/// ht-5fr.1.11, keyed on the entries list by ht-5fr.2.10. Kills: doctor
+/// calling a daemon with no attached Herdr server `healthy`, `degraded` or
+/// `starting` (it serves the store only), calling a daemon with attached
+/// servers `store-only`, and refusing repairs because of the new word.
 #[test]
-fn store_only_label() {
-    // Assembled Health carries the input's host count.
+fn store_only_keyed_on_empty_hosts() {
+    // Assembled Health carries one entry per attached server.
     let hosted = boot_health(1_000, true);
-    assert_eq!(hosted.hosts, 1);
+    assert_eq!(hosted.hosts.len(), 1);
     assert_eq!(daemon_state_label(&hosted), "healthy");
 
     let mut inputs = crate::daemon::health::HealthInputs::unknown(
         crate::node::NodeUuid::new_v4(),
         uuid::Uuid::new_v4(),
     );
-    inputs.hosts = 0;
     inputs.since_start_ms = Some(1_000);
     let store_only = inputs.assemble();
-    assert_eq!(store_only.hosts, 0);
+    assert!(store_only.hosts.is_empty());
     assert_eq!(daemon_state_label(&store_only), "store-only");
+    // The aggregate of no entries is unknown, never ready.
+    assert_eq!(
+        store_only.host.reachability,
+        crate::protocol::results::ComponentState::Unknown
+    );
+
+    // Two attached servers: hosted, never store-only.
+    let mut two = boot_health(1_000, true);
+    two.hosts.push(two.hosts[0].clone());
+    assert_eq!(daemon_state_label(&two), "healthy");
 
     // Whatever else it reports, an unavailable daemon stays unavailable.
     let mut unavailable = store_only.clone();
@@ -656,23 +680,22 @@ fn store_only_label() {
     assert!(render_text(&report).contains("daemon: store-only\n"));
     assert!(repairs_allowed(&report));
 
-    // Wire: the single host is the default and is not serialized (a shipped
-    // CLI's strict decoder still reads it); zero is explicit.
+    // Wire: the entries round-trip; an absent list reads as no server.
     let hosted_json = serde_json::to_value(&hosted).unwrap();
-    assert!(hosted_json.get("hosts").is_none(), "{hosted_json}");
+    assert_eq!(hosted_json["hosts"][0]["host_id"], json!(1));
     assert_eq!(
         serde_json::from_value::<crate::protocol::results::Health>(hosted_json)
             .unwrap()
             .hosts,
-        1
+        hosted.hosts
     );
-    let store_only_json = serde_json::to_value(&store_only).unwrap();
-    assert_eq!(store_only_json["hosts"], json!(0));
-    assert_eq!(
+    let mut store_only_json = serde_json::to_value(&store_only).unwrap();
+    store_only_json.as_object_mut().unwrap().remove("hosts");
+    assert!(
         serde_json::from_value::<crate::protocol::results::Health>(store_only_json)
             .unwrap()
-            .hosts,
-        0
+            .hosts
+            .is_empty()
     );
 }
 

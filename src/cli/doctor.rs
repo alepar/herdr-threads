@@ -725,11 +725,11 @@ fn collect_local_with_budget(
 /// Doctor's word for the daemon's Health state. A daemon that reports itself
 /// starting ([`crate::protocol::results::Health::starting`]) is `starting`,
 /// not `degraded`, until its first reconciliation or the startup bound. A
-/// daemon that reports no attached host (`hosts == 0`) is `store-only`.
+/// daemon that reports no attached host (an empty `hosts` list) is `store-only`.
 pub(crate) fn daemon_state_label(health: &crate::protocol::results::Health) -> &'static str {
     match health.state {
         // A daemon with no attached Herdr server serves the store only.
-        HealthState::Healthy | HealthState::Degraded if health.hosts == 0 => "store-only",
+        HealthState::Healthy | HealthState::Degraded if health.hosts.is_empty() => "store-only",
         HealthState::Healthy => "healthy",
         HealthState::Degraded if health.starting() => "starting",
         HealthState::Degraded => "degraded",

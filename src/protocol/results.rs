@@ -713,21 +713,51 @@ pub struct Health {
     /// a reason for `degraded`. Absent from an older daemon's Health.
     #[serde(default)]
     pub notes: Vec<String>,
-    /// How many Herdr servers the daemon has attached: 0 for a store-only
-    /// daemon, 1 with the primary host (never a `host_id`). Absent on the wire
-    /// for the single-host value 1 so a pre-change CLI's
-    /// `deny_unknown_fields` decoder still reads a hosted daemon's Health, and
-    /// read as 1 when absent (an older daemon always had its one host).
-    #[serde(default = "single_host", skip_serializing_if = "is_single_host")]
-    pub hosts: u32,
+    /// One entry per attached Herdr server, ascending by `host_id`, at most
+    /// [`MAX_HEALTH_HOSTS`]. Empty means a store-only daemon (doctor's
+    /// `store-only` label). `host` above is the aggregate over these entries.
+    #[serde(default)]
+    pub hosts: Vec<AttachedHostHealth>,
 }
 
-fn single_host() -> u32 {
-    1
+/// The most attached-host entries Health carries (the daemon's attach cap).
+pub const MAX_HEALTH_HOSTS: usize = 16;
+
+/// The longest `AttachedHostHealth::endpoint`, in bytes.
+pub const HEALTH_ENDPOINT_MAX_BYTES: usize = 128;
+
+/// One attached Herdr server as Health reports it.
+///
+/// Operator-only surface: Health is read by `doctor` and `health`, never
+/// injected into an agent's context, so the node-local `host_id` and the
+/// server's socket path may appear here (and nowhere agent-facing).
+/// `endpoint` is the socket path bounded to 128 bytes keeping the tail (the
+/// distinguishing part), `…`-prefixed when cut.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttachedHostHealth {
+    pub host_id: i64,
+    pub endpoint: String,
+    pub reachability: ComponentState,
+    pub version: Option<String>,
+    pub coherent_enumeration: CapabilityState,
+    pub safe_prompt: CapabilityState,
+    pub current_execution: CapabilityState,
+    pub last_reconciliation_at: Option<UtcMillis>,
 }
 
-fn is_single_host(hosts: &u32) -> bool {
-    *hosts == 1
+/// `endpoint` bounded to [`HEALTH_ENDPOINT_MAX_BYTES`], keeping the tail and
+/// starting with `…` when cut (always on a character boundary).
+pub fn bound_endpoint_tail(endpoint: &str) -> String {
+    if endpoint.len() <= HEALTH_ENDPOINT_MAX_BYTES {
+        return endpoint.to_owned();
+    }
+    let keep = HEALTH_ENDPOINT_MAX_BYTES - '…'.len_utf8();
+    let mut start = endpoint.len() - keep;
+    while !endpoint.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &endpoint[start..])
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -870,7 +900,7 @@ impl Health {
             settings: None,
             limitations: Vec::new(),
             notes: Vec::new(),
-            hosts: 1,
+            hosts: Vec::new(),
         }
     }
     pub fn validate(&self) -> Result<(), &'static str> {
@@ -891,6 +921,14 @@ impl Health {
             || self.limitations.iter().any(|s| s.len() > 256)
             || self.notes.len() > 16
             || self.notes.iter().any(|s| s.len() > 256)
+        {
+            return Err("unbounded health detail");
+        }
+        if self.hosts.len() > MAX_HEALTH_HOSTS
+            || self.hosts.iter().any(|host| {
+                host.endpoint.len() > HEALTH_ENDPOINT_MAX_BYTES
+                    || host.version.as_ref().is_some_and(|s| s.len() > 128)
+            })
         {
             return Err("unbounded health detail");
         }

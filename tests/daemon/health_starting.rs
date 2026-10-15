@@ -118,7 +118,7 @@ fn real_problem_during_startup_is_degraded() {
         // A failed lane, with the scheduler component input still ready.
         ("degraded lane", |inputs| {
             inputs.degraded_lanes = vec![LaneDegradation {
-                lane: "observation",
+                lane: "observation".into(),
                 summary: "lane observation failed: StoreBusy".into(),
                 class: None,
             }]

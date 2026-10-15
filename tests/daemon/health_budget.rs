@@ -15,7 +15,7 @@ const LOG: &str = "/state/instances/i/logs/daemon.log";
 
 fn lane(name: &'static str) -> LaneDegradation {
     LaneDegradation {
-        lane: name,
+        lane: name.into(),
         summary: format!("lane {name} failed: StoreBusy"),
         class: Some(ErrorClass::Transient),
     }
@@ -98,7 +98,7 @@ pub(super) fn worst_case_inputs() -> HealthInputs {
     ]
     .into_iter()
     .map(|name| LaneDegradation {
-        lane: name,
+        lane: name.into(),
         summary: format!("lane {name} failed: StoreBusy; retrying (attempt 9, next ≤ 30s)"),
         class: Some(ErrorClass::Transient),
     })

@@ -1874,7 +1874,7 @@ fn three_failed_lanes_fold_in_production_health() {
         inputs
             .degraded_lanes
             .iter()
-            .map(|lane| lane.lane)
+            .map(|lane| lane.lane.as_str())
             .collect::<Vec<_>>(),
         ["deadline", "wake", "observation"]
     );

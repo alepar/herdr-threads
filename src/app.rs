@@ -176,11 +176,12 @@ impl ElectedHostEvidence {
 pub(crate) struct HostReleaseSource(Option<Arc<HostSessions>>);
 
 impl HostReleaseSource {
-    /// Herdr servers attached: one per session, 0 store-only.
-    fn attached(&self) -> u32 {
-        self.0.as_ref().map_or(0, |sessions| {
-            u32::try_from(sessions.attached_count()).unwrap_or(u32::MAX)
-        })
+    /// One Health entry per attached server, read on every Health call;
+    /// empty when none is attached (store-only).
+    fn entries(&self) -> Vec<crate::service::host_sessions::HostHealthEntry> {
+        self.0
+            .as_ref()
+            .map_or_else(Vec::new, |sessions| sessions.health_entries())
     }
 
     fn observed(&self) -> Option<crate::host::compatibility::HostRelease> {
@@ -250,7 +251,6 @@ impl ElectedHealth {
     fn inputs(&self, request: &CallBudget) -> HealthInputs {
         let mut inputs = HealthInputs::unknown(self.instance, self.boot);
         inputs.settings = Some(self.settings.clone());
-        inputs.hosts = self.host.release.attached();
         inputs.since_start_ms = Some(self.clock.monotonic_now().0.saturating_sub(self.started.0));
         inputs.database = ComponentStatus::Ready;
         inputs.schema = ComponentStatus::Ready;
@@ -303,6 +303,25 @@ impl ElectedHealth {
         // lane's private diagnostics and durable inspect rows.
         inputs.scheduler = scheduler_status(&self.workers);
         inputs.degraded_lanes = degraded_lanes(&self.workers);
+        // Each attached server reports its own observation and wake lanes
+        // (the shared slots above stay untouched when sessions exist); they
+        // degrade the scheduler like any lane, the first one through its
+        // component line.
+        let (hosts, session_lanes): (Vec<_>, Vec<_>) = self
+            .host
+            .release
+            .entries()
+            .into_iter()
+            .map(|entry| (entry.input, entry.lanes))
+            .unzip();
+        inputs.hosts = hosts;
+        let session_lanes: Vec<_> = session_lanes.into_iter().flatten().collect();
+        if inputs.scheduler == ComponentStatus::Ready
+            && let Some(first) = session_lanes.first()
+        {
+            inputs.scheduler = ComponentStatus::Degraded(first.summary.clone());
+        }
+        inputs.degraded_lanes.extend(session_lanes);
         inputs.transitions_refused = self.host.status.transitions_refused();
         inputs.last_scheduler_tick_at = self.workers.first().and_then(|status| status.last_tick());
         if let Ok(observed) = self.host.harnesses.lock() {
@@ -340,7 +359,7 @@ fn degraded_lanes(workers: &[Arc<WorkerStatus>]) -> Vec<crate::daemon::health::L
             status
                 .health()
                 .map(|health| crate::daemon::health::LaneDegradation {
-                    lane: lane.name(),
+                    lane: lane.name().to_owned(),
                     summary: health.summary(),
                     class: health
                         .failure
@@ -2317,6 +2336,12 @@ where
                 factory_sync_status.clone(),
             ];
             factory_probe.attach_registry(&kicks, lane_statuses.clone());
+            // Health reads the wake and observation lanes per attached server
+            // (`HostSessions::health_entries`); the shared slots stay on the
+            // never-started statuses, which report ready.
+            let mut health_lanes = lane_statuses.clone();
+            health_lanes[1] = factory_wake_status.clone();
+            health_lanes[2] = factory_observation_status.clone();
             let health_store = Arc::clone(&store);
             let evidence_store = Arc::clone(&store);
             let states_store = Arc::clone(&store);
@@ -2345,7 +2370,7 @@ where
                 config.health_settings(),
                 health_clock,
                 health_store,
-                lane_statuses,
+                health_lanes,
                 ElectedHostEvidence::of_sessions(
                     &host_sessions,
                     primary.as_deref(),
