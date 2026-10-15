@@ -86,7 +86,7 @@ fn seeded_body(
         rows.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES (?1,?2,'s',10000,'pending',0,1000000,300,300,'lazy',?3)", params![format!("q4-inv{n}"),thread,sender]).unwrap();
         let prep = format!("prep-q4-{n}");
         let message = format!("msg-q4-{n}");
-        rows.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'i','actor',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy')", params![prep,thread]).unwrap();
+        rows.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES (?1,'i','actor',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy',1)", params![prep,thread]).unwrap();
         rows.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,?3,'s')", params![prep,message,thread]).unwrap();
         let decision = if (25..50).contains(&n) {
             100000 + n
@@ -98,7 +98,7 @@ fn seeded_body(
         } else {
             "q4-body".into()
         };
-        rows.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode) VALUES (?1,'i',?2,100000,'ordinary',?3,?5,?4,0,'lazy')", params![message,thread,sender,decision,body]).unwrap();
+        rows.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode,priority) VALUES (?1,'i',?2,100000,'ordinary',?3,?5,?4,0,'lazy',1)", params![message,thread,sender,decision,body]).unwrap();
         rows.execute(
             "UPDATE send_preparations SET status='sealed' WHERE id=?1",
             [&prep],
@@ -143,12 +143,12 @@ fn seeded_body(
         // selected-seat high-water and exhaustion branch identical.
         let prep = format!("prep-noise-{n}");
         let message = format!("msg-noise-{n}");
-        rows.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'i','actor',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy')",params![prep,thread]).unwrap();
+        rows.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES (?1,'i','actor',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy',1)",params![prep,thread]).unwrap();
         rows.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,?3,?4)",params![prep,message,thread,sender]).unwrap();
         if same_seat_recipients {
             rows.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,?3,'s')",params![prep,message,thread]).unwrap();
         }
-        rows.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode) VALUES (?1,'i',?2,1,'ordinary',?3,'noise',?4,0,'lazy')",params![message,thread,sender,600000+n]).unwrap();
+        rows.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode,priority) VALUES (?1,'i',?2,1,'ordinary',?3,'noise',?4,0,'lazy',1)",params![message,thread,sender,600000+n]).unwrap();
         rows.execute(
             "UPDATE send_preparations SET status='sealed' WHERE id=?1",
             [&prep],

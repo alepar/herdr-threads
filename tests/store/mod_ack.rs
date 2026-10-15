@@ -208,9 +208,9 @@ fn manifest_receipt_state(conn: &Connection, id: &str) -> String {
 /// A published lazy message `m<id>` addressed to `b` (state `pending`).
 fn lazy(conn: &Connection, prep: &str, sequence: i64, body: &str) -> String {
     let message = format!("m{}", &prep[1..]);
-    conn.execute_batch(&format!("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES ('{prep}','i','actor','o-{prep}',zeroblob(32),'t',0,0,0,0,0,0,1,'building','lazy');")).unwrap();
+    conn.execute_batch(&format!("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES ('{prep}','i','actor','o-{prep}',zeroblob(32),'t',0,0,0,0,0,0,1,'building','lazy',1);")).unwrap();
     conn.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,'t','b')", params![prep,message]).unwrap();
-    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,delivery_mode) VALUES (?1,'i','t',?2,'ordinary','a',?3,0,?4,'lazy')", params![message,sequence,body,sequence+1]).unwrap();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,delivery_mode,priority) VALUES (?1,'i','t',?2,'ordinary','a',?3,0,?4,'lazy',1)", params![message,sequence,body,sequence+1]).unwrap();
     conn.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,'t',?3,0,?4,0,1,0)", params![prep,message,sequence+1,sequence]).unwrap();
     conn.execute(
         "UPDATE threads SET next_sequence=?1 WHERE id='t'",

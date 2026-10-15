@@ -94,9 +94,11 @@ fn labeled(id: &str, terminal: &str, label: &str) -> Value {
     value
 }
 
-/// D8: a priority-0 message carries one `[p0] <id>` annotation row (4 bytes,
-/// a space, the 9-byte id, a newline: 15 bytes) in body, read and search
-/// output. Every message in this fixture is p0 (each names an ACK recipient).
+/// D8: a priority-0 delivery-row send (no ACK recipient) carries one `[p0] <id>`
+/// annotation row (4 bytes, a space, the 9-byte id, a newline: 15 bytes) in body,
+/// read and search output. The conversation in this fixture names an ACK recipient
+/// in every send, so its ACK lines mark it and it gets no row (ht-yha.66); the
+/// probes sent at the end are the p0 delivery-row sends.
 fn p0_row(id: &str) -> String {
     format!("[p0] {id}\n")
 }
@@ -268,7 +270,7 @@ fn agent_facing_machine_text_is_compact() {
     keep("read-recent-3.txt", &paged);
     let body = plugin.text(Some(hatter), &["body", &long_message]);
     keep("body.txt", &body);
-    // The annotated-read refit reserves the 15-byte `[p0]` row under the documented 256 floor (ht-yha.50).
+    // An ACK send carries no `[p0]` row (ht-yha.66); the 256 floor still fits the clipped body.
     let body_budget = "256";
     let body_paged = plugin.text(
         Some(hatter),
@@ -276,11 +278,9 @@ fn agent_facing_machine_text_is_compact() {
     );
     keep("body-paged.txt", &body_paged);
 
-    // body: one header row, the full body verbatim and indented, no JSON.
-    let marker = p0_row(&long_message);
-    let body = body
-        .strip_prefix(&marker)
-        .unwrap_or_else(|| panic!("body starts with {marker:?}: {body}"));
+    // body: one header row, the full body verbatim and indented, no JSON, and no
+    // `[p0]` row for an ACK send (its ACK line marks it).
+    assert!(!body.starts_with("[p"), "{body}");
     let body_lines: Vec<&str> = body.lines().collect();
     assert_eq!(body_lines.len(), 2, "{body}");
     assert!(
@@ -291,9 +291,7 @@ fn agent_facing_machine_text_is_compact() {
     assert_eq!(body_lines[1], format!("  {long}"));
     // A clipped body names its byte range and ends with one `more:` line
     // that runs as printed.
-    let body_paged = body_paged
-        .strip_prefix(&marker)
-        .unwrap_or_else(|| panic!("clipped body starts with {marker:?}: {body_paged}"));
+    assert!(!body_paged.starts_with("[p"), "{body_paged}");
     let paged_lines: Vec<&str> = body_paged.lines().collect();
     assert!(paged_lines[0].contains(" bytes=0-"), "{body_paged}");
     let more = paged_lines
@@ -303,17 +301,15 @@ fn agent_facing_machine_text_is_compact() {
         .expect("more line");
     let args: Vec<&str> = more.split_whitespace().skip(1).collect();
     let rest = plugin.text(Some(hatter), &args);
-    let rest = rest
-        .strip_prefix(&marker)
-        .unwrap_or_else(|| panic!("continuation starts with {marker:?}: {rest}"));
     assert!(rest.starts_with("#6 "), "{rest}");
     let json = plugin.ok(Some(hatter), &["body", &long_message]);
     assert_eq!(json["data"]["content"]["body_data"], json!(long));
 
-    // read --recent 20: one `[p0] <id>` row per message entry (every fixture
-    // message names an ACK recipient, so D3 makes it p0), then the kind line,
-    // one row per entry, one `next:` line.
+    // read --recent 20: no `[p0] <id>` row (every fixture message names an ACK
+    // recipient, so its ACK line marks it: ht-yha.66), then the kind line, one row
+    // per entry, one `next:` line.
     let (annotated, history) = split_p0_rows(&read);
+    assert!(annotated.is_empty(), "{read}");
     let lines: Vec<&str> = history.lines().collect();
     assert_eq!(lines[0], "history", "{read}");
     assert_eq!(lines.len(), 22, "{read}");
@@ -363,11 +359,6 @@ fn agent_facing_machine_text_is_compact() {
         );
         assert!(row.len() < 400, "{row}");
     }
-    let message_rows: Vec<&str> = lines[2..21]
-        .iter()
-        .map(|row| row.split_whitespace().nth(1).unwrap())
-        .collect();
-    assert_eq!(annotated, message_rows, "{read}");
     let next = lines[21].strip_prefix("next: ").unwrap();
     assert!(
         !next.contains("--json"),
@@ -386,7 +377,7 @@ fn agent_facing_machine_text_is_compact() {
     let rest = plugin.text(Some(hatter), &args);
     let (rest_annotated, rest_history) = split_p0_rows(&rest);
     assert!(rest_history.starts_with("history\n#4 "), "{rest}");
-    assert_eq!(rest_annotated.len(), 1, "{rest}");
+    assert!(rest_annotated.is_empty(), "{rest}");
     assert!(!rest.contains("next: "), "{rest}");
     // The same cursor on another thread is refused as an invalid cursor.
     let wrong = plugin
@@ -479,6 +470,14 @@ fn agent_facing_machine_text_is_compact() {
 
     // A small --max-bytes bound still returns a p0 message (ht-yha.50): the refit
     // reserves only the `[p0] <id>` row, so body/read/search work from the floor up.
+    // The probes are p0 delivery-row sends (no ACK recipient), the marked kind.
+    let long_probe = plugin.ok(
+        Some(alice),
+        &["send", &thread, "--body", long.as_str(), "--nudge"],
+    )["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let probe = plugin.ok(
         Some(alice),
         &["send", &thread, "--body", "tiny-p0-probe", "--nudge"],
@@ -490,13 +489,16 @@ fn agent_facing_machine_text_is_compact() {
         let bound_arg = bound.to_string();
         let body = plugin.text(
             Some(hatter),
-            &["body", &long_message, "--max-bytes", &bound_arg],
+            &["body", &long_probe, "--max-bytes", &bound_arg],
         );
         assert!(body.len() <= bound, "body {bound}: {body}");
-        assert!(body.starts_with("[p0] "), "body {bound}: {body}");
+        assert!(
+            body.starts_with(&p0_row(&long_probe)),
+            "body {bound}: {body}"
+        );
         let header = body
             .lines()
-            .find(|l| l.starts_with(&format!("#6 {long_message} ")))
+            .find(|l| l.starts_with('#') && l.contains(&format!(" {long_probe} ")))
             .unwrap_or_else(|| panic!("body {bound} header: {body}"));
         let range = header.split("bytes=").nth(1);
         match range {

@@ -101,12 +101,15 @@ fn setup(iso: &TestIsolation, members: &[(&str, Kind)]) -> (StoreContext, Connec
 
 /// A schema v46 store (migrations 0001..=0046, no `open_writer`) holding the fixture and the
 /// `building` preparation v46 code wrote for `old` (no priority column): its real digest, the
-/// thread's and host's current revisions, `delivery_mode` as recorded. Reopened through
-/// `open_writer`, which upgrades it to v47.
+/// thread's and host's current revisions, `delivery_mode` as recorded. `staged` (a prefix of the
+/// audience in membership order) is already staged as receipts the way v46 code staged a
+/// nudge-class send's whole audience, with the cursor and count advanced past them. Reopened
+/// through `open_writer`, which upgrades it to v47.
 fn v46_setup(
     iso: &TestIsolation,
     members: &[(&str, Kind)],
     old: &SendMessage,
+    staged: &[&str],
 ) -> (StoreContext, Connection) {
     let path = iso.path("store.db");
     {
@@ -141,6 +144,18 @@ fn v46_setup(
             1,
             "v46 preparation row inserted"
         );
+        for (ordinal, seat) in staged.iter().enumerate() {
+            db.execute(
+                "INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot,availability_provenance) VALUES ('prep-v46','t',?1,?2,?3,1,'cooperative_top_level')",
+                rusqlite::params![seat, ordinal as i64 + 1, messages::DEFAULT_RECEIPT_MILLIS],
+            )
+            .unwrap();
+            db.execute(
+                "UPDATE send_preparations SET recipient_count=?2,recipient_cursor=(SELECT ordinal FROM membership_intervals WHERE thread_id='t' AND seat_id=?1) WHERE id='prep-v46'",
+                rusqlite::params![seat, ordinal as i64 + 1],
+            )
+            .unwrap();
+        }
     }
     let context = StoreContext::new(path, Arc::new(FixedClock));
     let conn = context.open_writer().unwrap();
@@ -574,7 +589,7 @@ fn v46_prepared_send_retries_under_v47_in_its_recorded_shape() {
         old.delivery_mode = mode;
         let v46_digest =
             crate::store::schema::canonical_digest(&messages::send_payload(&old)).unwrap();
-        let (context, mut conn) = v46_setup(&iso, GROUP, &old);
+        let (context, mut conn) = v46_setup(&iso, GROUP, &old, &[]);
         assert_eq!(count(&conn, "PRAGMA user_version"), 47);
         let stored: (i64, Vec<u8>) = conn
             .query_row("SELECT priority,digest FROM send_preparations", [], |r| {
@@ -619,6 +634,69 @@ fn v46_prepared_send_retries_under_v47_in_its_recorded_shape() {
         .unwrap_err();
         assert_eq!(error.code, ErrorCode::OperationPayloadMismatch);
     }
+}
+
+// Kills (ht-yha.66 M7): a v0.11 nudge-class send interrupted mid-build (receipts already staged
+// for its whole-audience shape, every agent owing an ACK) that resumes after the upgrade under the
+// D9 rule and ends with a mixed audience: receipts for the staged prefix, p0 delivery rows for the
+// rest. With explicit ACK recipients its frozen duration still matches and it resumes: it must
+// finish in the receipt shape. Without them its duration no longer matches (D9: no ACK
+// recipients, no duration), so the resume discards it rather than mixing shapes.
+#[test]
+fn v46_prepared_mid_build_send_resumes_in_its_recorded_audience_shape() {
+    const AGENTS: &[(&str, Kind)] = &[("b", Kind::Agent), ("c", Kind::Agent), ("d", Kind::Agent)];
+    let iso = TestIsolation::new("prio-v46-mid-build");
+    let mut old = request();
+    old.invited_recipients = vec![SeatId::new("c")];
+    let (context, mut conn) = v46_setup(&iso, AGENTS, &old, &["b"]);
+    assert_eq!(count(&conn, "PRAGMA user_version"), 47);
+    assert_eq!(
+        count(&conn, "SELECT count(*) FROM prepared_recipients"),
+        1,
+        "v46 staged b, not an explicit ACK recipient, as a receipt"
+    );
+
+    prepare(&context, &mut conn, &old);
+    let first = publish(&context, &mut conn, &old);
+    assert_eq!(message_mode(&conn), ("ordinary".to_owned(), 0));
+    assert_eq!(rows(&conn), vec![], "no delivery row beside the receipts");
+    assert_eq!(manifest(&conn), (3, 0));
+    for seat in ["b", "c", "d"] {
+        assert!(
+            receipt(&conn, &first, seat).is_some(),
+            "{seat} owes a receipt"
+        );
+    }
+
+    assert_eq!(publish(&context, &mut conn, &old), first);
+    assert_eq!(count(&conn, "SELECT count(*) FROM messages"), 1);
+    assert_eq!(rows(&conn), vec![]);
+    assert_eq!(count(&conn, "SELECT count(*) FROM prepared_recipients"), 3);
+
+    // No explicit ACK recipients: the staged receipt's duration no longer matches, so the
+    // preparation is discarded (its cleanup removes the staged receipt) and nothing publishes.
+    let iso = TestIsolation::new("prio-v46-mid-build-no-ack");
+    let old = request();
+    let (context, mut conn) = v46_setup(&iso, AGENTS, &old, &["b"]);
+    let error = messages::prepare_send_step(
+        &context,
+        &mut conn,
+        &old,
+        messages::MessageLimits::default(),
+        &budget(),
+        DurableWorkAdmission::new(16).unwrap(),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT count(*) FROM send_preparations WHERE status='discarded'"
+        ),
+        1
+    );
+    assert_eq!(rows(&conn), vec![]);
+    assert_eq!(count(&conn, "SELECT count(*) FROM messages"), 0);
 }
 
 // Kills: priority living in memory only: after a reopen the message, preparation and row

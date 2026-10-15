@@ -13,10 +13,6 @@ UPDATE send_preparations SET priority=1 WHERE delivery_mode='lazy';
 CREATE TRIGGER messages_immutable BEFORE UPDATE ON messages
 BEGIN SELECT RAISE(ABORT, 'message history is immutable'); END;
 
-CREATE TRIGGER message_priority_immutable BEFORE UPDATE OF priority ON messages
-WHEN NEW.priority IS NOT OLD.priority
-BEGIN SELECT RAISE(ABORT, 'message priority is immutable'); END;
-
 CREATE TRIGGER preparation_priority_immutable BEFORE UPDATE OF priority ON send_preparations
 WHEN NEW.priority IS NOT OLD.priority
 BEGIN SELECT RAISE(ABORT, 'preparation priority is immutable'); END;
@@ -45,7 +41,7 @@ CREATE TRIGGER lazy_recipient_source BEFORE INSERT ON lazy_recipients
 BEGIN
     SELECT RAISE(ABORT, 'lazy recipient source mismatch') WHERE NEW.state<>'pending' OR NEW.decision_seq IS NOT NULL OR NOT EXISTS (
         SELECT 1 FROM send_preparations p JOIN seats s ON s.id=NEW.seat_id AND s.instance_id=p.instance_id
-        WHERE p.id=NEW.preparation_id AND p.thread_id=NEW.thread_id AND p.status='building'
+        WHERE p.id=NEW.preparation_id AND p.thread_id=NEW.thread_id AND p.status='building' AND p.priority=NEW.priority
     ) OR EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=NEW.preparation_id);
 END;
 

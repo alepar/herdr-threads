@@ -307,7 +307,6 @@ fn priority_sweep_live_schema_has_the_v47_triggers() {
         "pre-v47 lazy_recipient_display_published is still live: {published}"
     );
     for guard in [
-        "message_priority_immutable",
         "preparation_priority_immutable",
         "lazy_recipient_priority_immutable",
         "lazy_recipient_decision_seq_once",

@@ -311,7 +311,9 @@ pub fn write_selected<W: Write>(
 /// the v1 result, saved summary content, or delivery progress.
 #[derive(Default)]
 pub(crate) struct ReadModes {
-    /// `(id, marker)` rows to print: `[pN]` for every priority except the default 1.
+    /// `(id, marker)` rows to print: `[pN]` for a delivery-row send (recorded `lazy`) of every
+    /// priority except the default 1 (`DeliveryPriority::read_marker`). A recorded-`ordinary`
+    /// message (pre-upgrade, or with explicit ACK recipients whose ACK line marks it) gets no row.
     marked: Vec<(crate::protocol::ids::MessageId, &'static str)>,
     // An actual refit must retain its invocation bound through final decorations,
     // including when the newly selected page has no Lazy rows.
@@ -400,16 +402,23 @@ impl ReadModes {
                     "daemon returned mismatched message modes",
                 ));
             }
-            marked.extend(modes.into_iter().filter_map(|mode| {
-                let marker = mode
-                    .priority
-                    .and_then(crate::protocol::priority::DeliveryPriority::marker);
-                marker.map(|marker| (mode.message, marker))
-            }));
+            marked.extend(Self::rows(modes));
         }
         Ok(Self {
             marked,
             ..Self::default()
+        })
+    }
+
+    /// The marker rows of one modes reply, in reply order.
+    fn rows(
+        modes: Vec<crate::protocol::results::MessageDeliveryMode>,
+    ) -> impl Iterator<Item = (crate::protocol::ids::MessageId, &'static str)> {
+        modes.into_iter().filter_map(|mode| {
+            let marker = mode
+                .priority
+                .and_then(|priority| priority.read_marker(mode.delivery_mode));
+            marker.map(|marker| (mode.message, marker))
         })
     }
 

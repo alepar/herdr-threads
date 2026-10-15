@@ -6954,9 +6954,9 @@ fn upgrade_from_v28_with_pending_lazy_and_catch_up_mail_delivers_exactly_once() 
     assert_eq!(unread(&db), [MessageId::new("msg-3")]);
     // A message published after the upgrade is past the cursor: delivered, once.
     db.execute_batch(
-        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES ('prep-6','i','scope','prep-6',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy');
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES ('prep-6','i','scope','prep-6',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',1);
          INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES ('prep-6','msg-6','t','agent');
-         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES ('msg-6','i','t',5,'ordinary',6,'late','0','lazy');
+         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES ('msg-6','i','t',5,'ordinary',6,'late','0','lazy',1);
          INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('prep-6','msg-6','i','t',6,0,5,0,1,0);
          UPDATE host_instances SET decision_seq=max(decision_seq,6);",
     )
@@ -7313,8 +7313,8 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         // frontier tables are rebuilt one for one. V36 deltas: +1 table (in_turn_offer), +1 index
         // (in_turn_offer_seat). V47 deltas: +2 tables (binding_row_displays, binding_pending), +3 indexes
         // (binding_pending_order, binding_pending_thread_order, lazy_recipients_legacy_order; the
-        // two state='pending' order indexes are dropped again by the same migration, net +1), +11 triggers (message_priority_immutable,
-        // preparation_priority_immutable, lazy_recipient_priority_immutable,
+        // two state='pending' order indexes are dropped again by the same migration, net +1), +10 triggers
+        // (preparation_priority_immutable, lazy_recipient_priority_immutable,
         // lazy_recipient_decision_seq_once and the seven binding_pending_* view triggers);
         // messages_immutable, lazy_recipient_source, lazy_recipient_display_published and lazy_manifest_source are
         // recreated one for one.
@@ -7328,7 +7328,7 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
-            318
+            317
         );
     }
 }

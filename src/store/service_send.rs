@@ -354,6 +354,8 @@ pub(crate) fn prepare_service_send_step(
         // D9: only the explicit `recipients` owe an ACK (receipts, deadline, overdue warning); the
         // joined snapshot, and a human explicit recipient, get priority-0 delivery rows (wake, no receipt).
         ack: &explicit,
+        // A v0.11 preparation resumed mid-build finishes in its whole-audience receipt shape.
+        legacy_receipts: messages::legacy_receipt_audience(tx, &prep_id, count, &explicit)?,
         priority: crate::protocol::priority::DeliveryPriority::p0(),
         exclude: None,
         duration,

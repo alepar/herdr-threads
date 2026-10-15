@@ -337,17 +337,10 @@ impl World {
         plugin.ok(Some(hatter), &["accept", &thread]);
         plugin.ok(
             Some(alice),
-            // This fixture compares ordinary legacy/current renderer bytes;
-            // explicitly retain attention delivery after native send became lazy.
-            &[
-                "send",
-                &thread,
-                "--body",
-                "a short opening line",
-                "--nudge",
-                "--require-ack",
-                &hatter_seat,
-            ],
+            // This fixture compares ordinary legacy/current renderer bytes. The
+            // opener is a p0 delivery-row send (no ACK recipient), the one kind
+            // the current daemon annotates with a `[p0]` row (ht-yha.66).
+            &["send", &thread, "--body", "a short opening line", "--nudge"],
         );
         for (agent, word) in [(hatter, "tea"), (alice, "jam"), (hatter, "bat")] {
             let long = format!(
@@ -446,7 +439,8 @@ fn cli_against_an_old_fixture_daemon_never_sends_full_bodies() {
         "one fetch per clipped preview: {kinds:?}"
     );
     // Priorities postdate the old daemon: it never shows `[pN]` rows, while the
-    // current daemon annotates each p0 (`--require-ack`) message exactly once.
+    // current daemon annotates each p0 delivery-row send exactly once and an
+    // explicit-ACK send not at all (its ACK line marks it: ht-yha.66).
     // Everything else renders byte for byte the same.
     let (old_out, current_out) = (text(&old.stdout), text(&current.stdout));
     assert!(
@@ -455,7 +449,7 @@ fn cli_against_an_old_fixture_daemon_never_sends_full_bodies() {
     );
     let (p0_rows, rest): (Vec<&str>, Vec<&str>) =
         current_out.lines().partition(|l| l.starts_with("[p0] "));
-    let p0_messages = 4; // the opener and the three long bodies, all --require-ack
+    let p0_messages = 1; // the opener; the three long bodies are --require-ack sends
     assert_eq!(p0_rows.len(), p0_messages, "{current_out}");
     let mut ids: Vec<&str> = p0_rows.iter().map(|l| l["[p0] ".len()..].trim()).collect();
     assert!(
