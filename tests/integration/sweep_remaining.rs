@@ -2204,7 +2204,7 @@ fn producer_ordering_control(
 /// Waits until every lane has finished a pass (the registry's Pacers).
 fn wait_lanes_settled_latency(s: &lanes_latency::Session) {
     let until = Instant::now() + Duration::from_secs(20);
-    while !Lane::ALL
+    while !Lane::WORKERS
         .iter()
         .all(|lane| s.probe.registered_idle_events(*lane) >= 1)
     {
@@ -2263,7 +2263,7 @@ fn send_commit_wake_under_100ms_with_all_five_lanes() {
     let Some(scene) = Scene::new("sweep_send_commit_wake", 3) else {
         return;
     };
-    for lane in Lane::ALL {
+    for lane in Lane::WORKERS {
         assert!(
             scene.session().probe.registered(lane) && scene.session().probe.status_has_pacer(lane),
             "{} is not registered with both the kick registry and its status",
@@ -2517,27 +2517,27 @@ fn lane_failure_surfaces_through_remedy_text_within_the_health_line_budget() {
     wait_lanes_settled(&s, Duration::from_millis(1500));
     let (state, healthy) = s.health();
     assert_eq!(state, "healthy", "{healthy:?}");
-    let log_before: Vec<usize> = Lane::ALL
+    let log_before: Vec<usize> = Lane::WORKERS
         .iter()
         .map(|lane| s.lane_log_lines(*lane).len())
         .collect();
-    for lane in Lane::ALL {
+    for lane in Lane::WORKERS {
         s.probe.fail_lane(lane, ErrorCode::StoreBusy);
     }
     let until = Instant::now() + Duration::from_secs(40);
-    while !Lane::ALL
+    while !Lane::WORKERS
         .iter()
         .all(|lane| s.probe.lane_health(*lane).is_some())
     {
         assert!(
             Instant::now() < until,
             "not every lane reported its failure: {:?}",
-            Lane::ALL
+            Lane::WORKERS
                 .iter()
                 .map(|lane| (lane.name(), s.probe.lane_health(*lane)))
                 .collect::<Vec<_>>()
         );
-        for lane in Lane::ALL {
+        for lane in Lane::WORKERS {
             s.probe.kick_registered(lane);
         }
         std::thread::sleep(Duration::from_millis(25));
@@ -2555,8 +2555,8 @@ fn lane_failure_surfaces_through_remedy_text_within_the_health_line_budget() {
         .collect();
     assert_eq!(scheduler.len(), 1, "one folded summary line: {lines:?}");
     assert!(
-        scheduler[0].contains(&format!("{} lanes degraded", Lane::ALL.len()))
-            && Lane::ALL
+        scheduler[0].contains(&format!("{} lanes degraded", Lane::WORKERS.len()))
+            && Lane::WORKERS
                 .iter()
                 .all(|lane| scheduler[0].contains(lane.name()))
             && scheduler[0].contains(&format!("see {}", s.log.display())),
@@ -2566,7 +2566,7 @@ fn lane_failure_surfaces_through_remedy_text_within_the_health_line_budget() {
         lines.iter().all(|line| !line.starts_with("degraded: ")),
         "a folded summary carries the log path itself, not a pointer per lane: {lines:?}"
     );
-    for (lane, before) in Lane::ALL.iter().zip(&log_before) {
+    for (lane, before) in Lane::WORKERS.iter().zip(&log_before) {
         assert_eq!(
             s.lane_log_lines(*lane).len(),
             before + 1,
@@ -2576,14 +2576,14 @@ fn lane_failure_surfaces_through_remedy_text_within_the_health_line_budget() {
             s.daemon_log()
         );
     }
-    for lane in Lane::ALL {
+    for lane in Lane::WORKERS {
         s.probe.heal_lane(lane);
     }
     wait_until("every lane to clear", Duration::from_secs(60), || {
-        for lane in Lane::ALL {
+        for lane in Lane::WORKERS {
             s.probe.kick_registered(lane);
         }
-        Lane::ALL
+        Lane::WORKERS
             .iter()
             .all(|lane| s.probe.lane_health(*lane).is_none())
     });

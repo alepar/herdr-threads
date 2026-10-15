@@ -369,12 +369,12 @@ pub(crate) fn wait_lanes_settled(s: &Session, quiet: Duration) {
         "every lane to finish its first pass",
         Duration::from_secs(20),
         || {
-            Lane::ALL
+            Lane::WORKERS
                 .iter()
                 .all(|lane| s.probe.registered_idle_events(*lane) >= 1)
         },
     );
-    let mut last: Vec<u64> = Lane::ALL
+    let mut last: Vec<u64> = Lane::WORKERS
         .iter()
         .map(|l| s.probe.registered_idle_events(*l))
         .collect();
@@ -387,7 +387,7 @@ pub(crate) fn wait_lanes_settled(s: &Session, quiet: Duration) {
             s.dump_table("wake_work")
         );
         std::thread::sleep(Duration::from_millis(20));
-        let now: Vec<u64> = Lane::ALL
+        let now: Vec<u64> = Lane::WORKERS
             .iter()
             .map(|l| s.probe.registered_idle_events(*l))
             .collect();
@@ -450,7 +450,7 @@ fn every_lane_registers() {
     let Some(s) = Session::new("every_lane_registers") else {
         return;
     };
-    for lane in Lane::ALL {
+    for lane in Lane::WORKERS {
         wait_until(
             &format!("{} to register and attach its Pacer", lane.name()),
             Duration::from_secs(10),
@@ -458,7 +458,7 @@ fn every_lane_registers() {
         );
     }
     wait_lanes_settled(&s, Duration::from_millis(1500));
-    for lane in Lane::ALL {
+    for lane in Lane::WORKERS {
         let before = s.probe.registered_idle_events(lane);
         s.probe.kick_registered(lane);
         wait_until(
@@ -596,7 +596,7 @@ fn injected_lane_failure_logs_and_degrades_then_clears() {
             &RemedyContext::LaneDegraded { log: s.log.clone() }
         )
     );
-    for lane in Lane::ALL {
+    for lane in Lane::WORKERS {
         let name = lane.name();
         assert_eq!(s.probe.lane_health(lane), None, "{name} starts healthy");
         let log_before = s.lane_log_lines(lane).len();

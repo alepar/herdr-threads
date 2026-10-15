@@ -6,6 +6,11 @@ use std::cell::Cell;
 use std::sync::{Arc, Mutex};
 
 /// A daemon lane that can be kicked by a store commit.
+///
+/// Responsibility: the closed lane set. Owns lane identity, bits and names.
+/// Does not own lane workers, or table classification beyond the table map
+/// ([`lanes_for_table`]). A new lane is a variant here plus its table mapping.
+/// Role: the one vocabulary commit kicks, Pacers and health share.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Lane {
     Deadlines,
@@ -14,22 +19,36 @@ pub enum Lane {
     Retention,
     AdmissionObserver,
     Archival,
+    /// Materializes journal entries into canonical state (ht-5fr.3).
+    Apply,
 }
 
 impl Lane {
-    pub const COUNT: usize = 6;
-    pub const INTERNAL_ALL: [Lane; 6] = [
+    pub const COUNT: usize = 7;
+    pub const INTERNAL_ALL: [Lane; Self::COUNT] = [
         Lane::Deadlines,
         Lane::Wakes,
         Lane::Observation,
         Lane::Retention,
         Lane::AdmissionObserver,
         Lane::Archival,
+        Lane::Apply,
     ];
     pub const ALL: [Lane; Self::COUNT] = {
         let mut lanes = [Lane::Deadlines; Self::COUNT];
         let mut i = 0;
         while i < Self::COUNT {
+            lanes[i] = Self::INTERNAL_ALL[i];
+            i += 1;
+        }
+        lanes
+    };
+    /// The lanes that run a worker today, in `ALL` order. `Apply` is the last
+    /// lane and joins when its worker registers a Pacer (ht-5fr.3.15).
+    pub const WORKERS: [Lane; Self::COUNT - 1] = {
+        let mut lanes = [Lane::Deadlines; Self::COUNT - 1];
+        let mut i = 0;
+        while i < Self::COUNT - 1 {
             lanes[i] = Self::INTERNAL_ALL[i];
             i += 1;
         }
@@ -44,17 +63,18 @@ impl Lane {
             Lane::Retention => "retention",
             Lane::AdmissionObserver => "admission-observer",
             Lane::Archival => "archival",
+            Lane::Apply => "apply",
         }
     }
 
-    fn bit(self) -> u8 {
-        1 << (self as u8)
+    fn bit(self) -> u16 {
+        1 << (self as u16)
     }
 }
 
 /// A small set of lanes (bitset over [`Lane::ALL`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct LaneSet(u8);
+pub struct LaneSet(u16);
 
 impl LaneSet {
     pub const EMPTY: LaneSet = LaneSet(0);
@@ -74,11 +94,11 @@ impl LaneSet {
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
-    pub(crate) fn to_bits(self) -> u8 {
+    pub(crate) fn to_bits(self) -> u16 {
         self.0
     }
-    pub(crate) fn from_bits(bits: u8) -> Self {
-        Self(bits & ((1 << Lane::INTERNAL_ALL.len()) - 1))
+    pub(crate) fn from_bits(bits: u16) -> Self {
+        Self(bits & ((1 << Lane::COUNT) - 1))
     }
     pub fn iter(self) -> impl Iterator<Item = Lane> {
         Lane::INTERNAL_ALL
@@ -87,6 +107,8 @@ impl LaneSet {
     }
 }
 
+/// Tables whose commits wake the apply lane: journal rows await materialization.
+const APPLY_TABLES: &[&str] = &["journal"];
 const ARCHIVAL_TABLES: &[&str] = &[
     "archival_instances",
     "channel_archival",
@@ -184,9 +206,8 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "herdr_hosts",
     "local_node",
     "node_directory",
-    // Journal core (ht-5fr.3.4): ht-5fr.3.12 maps `journal` to Lane::Apply and
+    // Journal core (ht-5fr.3.4): `journal` maps to Lane::Apply (ht-5fr.3.12);
     // ht-5fr.5 re-maps `sync_logs`/`journal` for Lane::Sync.
-    "journal",
     "journal_forked",
     "sync_logs",
     "thread_registers",
@@ -232,7 +253,7 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
 /// runs on its 60 s safety tick and `has_more` re-runs, because pruning
 /// is never urgent and a commit-driven kick would turn every publication
 /// into a retention commit; its own commits kick no lane
-/// ([`origin_discards_kicks`]). A table in neither mapped list nor [`KNOWN_UNMAPPED`] maps to
+/// ([`kicks_for_commit`]). A table in neither mapped list nor [`KNOWN_UNMAPPED`] maps to
 /// `EMPTY` and trips a debug assertion.
 pub fn lanes_for_table(table: &str) -> LaneSet {
     let mut set = LaneSet::EMPTY;
@@ -244,6 +265,9 @@ pub fn lanes_for_table(table: &str) -> LaneSet {
     }
     if DEADLINE_TABLES.contains(&table) {
         set = set.with(Lane::Deadlines);
+    }
+    if APPLY_TABLES.contains(&table) {
+        set = set.with(Lane::Apply);
     }
     debug_assert!(
         set != LaneSet::EMPTY || KNOWN_UNMAPPED.contains(&table),
@@ -258,6 +282,7 @@ pub fn mapped_tables() -> impl Iterator<Item = &'static str> {
         .iter()
         .chain(DEADLINE_TABLES)
         .chain(ARCHIVAL_TABLES)
+        .chain(APPLY_TABLES)
         .copied()
 }
 
@@ -301,12 +326,12 @@ pub fn notifies_mod(table: &str) -> bool {
 /// Registry of lane Pacers. A kick to an unregistered lane is a no-op.
 #[derive(Default)]
 pub struct CommitKicks {
-    pacers: Mutex<[Option<Arc<Pacer>>; 6]>,
+    pacers: Mutex<[Option<Arc<Pacer>>; Lane::COUNT]>,
     mod_observer: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl CommitKicks {
-    fn slots(&self) -> std::sync::MutexGuard<'_, [Option<Arc<Pacer>>; 6]> {
+    fn slots(&self) -> std::sync::MutexGuard<'_, [Option<Arc<Pacer>>; Lane::COUNT]> {
         self.pacers.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -389,10 +414,20 @@ pub fn current_origin() -> Option<Lane> {
     ORIGIN.with(Cell::get)
 }
 
-/// Commits sealed under these origins discard their pending kick set: deleting
-/// superseded or settled rows cannot make a seat sendable or a deadline due.
-pub fn origin_discards_kicks(origin: Option<Lane>) -> bool {
-    matches!(origin, Some(Lane::Retention))
+/// Which of the `sealed` lanes a commit under `origin` kicks.
+///
+/// Responsibility: the one commit-kick rule. Owns which sealed lanes a commit
+/// kicks per origin. Does not run or schedule lanes. New origin rules go here.
+/// Role: keeps Apply from kicking itself and Retention from kicking anything:
+/// a Retention commit deletes superseded or settled rows, which cannot make a
+/// seat sendable or a deadline due; an Apply commit is the materialization of
+/// the journal rows that already kicked it.
+pub fn kicks_for_commit(origin: Option<Lane>, sealed: LaneSet) -> LaneSet {
+    match origin {
+        Some(Lane::Retention) => LaneSet::EMPTY,
+        Some(Lane::Apply) => sealed.without(Lane::Apply),
+        _ => sealed,
+    }
 }
 
 #[cfg(test)]
