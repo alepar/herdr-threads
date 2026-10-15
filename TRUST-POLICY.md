@@ -1150,6 +1150,10 @@ attention bookkeeping, `herdr_hosts` (rebuilt on attach) and service-managed thr
 own seats come back from their `seat.created` facts as unresolved seats until C1 continuity or an operator rebinds
 them. It never merges seats and never moves one on heuristic evidence (N5).
 
+**N12. Discovery hints come only from this user's processes.** The process-table scan behind discovered
+`herdr_remote_process` dial targets reads only processes whose real uid is the daemon's; another local user's
+processes are skipped before their argv is read, so they never become dial targets (ht-5fr.18).
+
 ## Accepted limits
 
 For the generic join frontier (excluding active direct-invitation acceptance above), pre-join lazy
