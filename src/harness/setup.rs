@@ -2722,16 +2722,33 @@ pub fn adopt_user_settings(
         return Ok(None);
     };
     let current = config_bytes(config)?;
+    let manifest = adoption_manifest(kind, config, &current, adoptable)?;
+    let bytes = serde_json::to_vec(&manifest).map_err(|_| SetupError::Invalid)?;
+    publish_manifest(manifest_path, &bytes, false)?;
+    if config_bytes(config)? != current {
+        let _ = fs::remove_file(manifest_path);
+        return Err(SetupError::Conflict);
+    }
+    Ok(Some(manifest))
+}
+
+/// The installed manifest that adopts `adoptable` in `config`, whose bytes are `current`.
+fn adoption_manifest(
+    kind: SettingsKind,
+    config: &Path,
+    current: &[u8],
+    adoptable: Adoptable,
+) -> Result<OwnershipManifest, SetupError> {
     let manifest = OwnershipManifest {
         version: 2,
         harness: kind.harness().into(),
         scope: kind.scope().into(),
         path: config.to_str().ok_or(SetupError::Invalid)?.into(),
-        original_bytes: current.clone(),
-        installation_base_bytes: adoption_base(&current, &adoptable.owned),
+        original_bytes: current.to_vec(),
+        installation_base_bytes: adoption_base(current, &adoptable.owned),
         installation_id: adoptable.installation_id,
         owned: adoptable.owned,
-        installed_fingerprint: fingerprint(&current),
+        installed_fingerprint: fingerprint(current),
         phase: InstallPhase::Installed,
         superseded: Vec::new(),
         permission: None,
@@ -2741,13 +2758,98 @@ pub fn adopt_user_settings(
     if !recorded_ownership_valid(kind, &manifest) {
         return Err(SetupError::Invalid);
     }
-    let bytes = serde_json::to_vec(&manifest).map_err(|_| SetupError::Invalid)?;
-    publish_manifest(manifest_path, &bytes, false)?;
+    Ok(manifest)
+}
+
+/// A stale record: `manifest` records an installation of `config` none of whose recorded hook
+/// commands (owned or superseded) is left anywhere in the file, which instead holds another
+/// setup's groups for this hook command that [`find_adoptable`] accepts (one valid owner marker,
+/// each group exactly the declared group for its own declared event, an older event subset
+/// allowed). That is a hook file copied over ours: the recorded groups are gone and the groups
+/// present are recognisably ours, so they are adopted in place of the record and setup upgrades
+/// them. Anything else is not stale: a recorded command still present (exact or edited), a
+/// record that owns a permission rule, unmarked, edited or duplicated copies, another
+/// executable, state directory or instance, or an undeclared event keep their refusal.
+pub fn stale_record_successor(
+    kind: SettingsKind,
+    manifest: &OwnershipManifest,
+    config: &Path,
+    bytes: &[u8],
+    hook_argv: &[String],
+) -> Result<Option<Adoptable>, SetupError> {
+    if kind.allow_member_only()
+        || !manifest_matches(kind, manifest, config)?
+        || manifest.permission.is_some()
+        || manifest.superseded_permission.is_some()
+    {
+        return Ok(None);
+    }
+    let recorded: Vec<&str> = manifest
+        .owned
+        .iter()
+        .chain(&manifest.superseded)
+        .filter_map(entry_command)
+        .collect();
+    if recorded.is_empty() {
+        return Ok(None);
+    }
+    let value = root(bytes)?;
+    let still_present = value["hooks"].as_object().is_some_and(|hooks| {
+        hooks
+            .keys()
+            .any(|event| hook_commands(&value, event).any(|command| recorded.contains(&command)))
+    });
+    if still_present {
+        return Ok(None);
+    }
+    find_adoptable(kind, bytes, hook_argv)
+}
+
+/// A stale record superseded in place by [`readopt_stale_record`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Readoption {
+    /// The installation identity of the superseded record.
+    pub stale_owner: String,
+    /// Where the superseded record was kept (beside the manifest).
+    pub stale_backup: std::path::PathBuf,
+    /// The adopting manifest now recorded.
+    pub manifest: OwnershipManifest,
+}
+
+/// Replace a stale record ([`stale_record_successor`]) with a manifest adopting the groups the
+/// file holds. The hook file is not written here; the superseded record is kept beside the
+/// manifest as `<manifest>.<UTC timestamp>-<uuid>.herdr-threads` and the manifest is replaced
+/// atomically. `None` (nothing written) when there is no manifest or it is not stale.
+pub fn readopt_stale_record(
+    kind: SettingsKind,
+    config: &Path,
+    manifest_path: &Path,
+    hook_argv: &[String],
+) -> Result<Option<Readoption>, SetupError> {
+    if manifest_path == config || fs::symlink_metadata(config).is_err() {
+        return Ok(None);
+    }
+    let Some(stale) = read_manifest(manifest_path)? else {
+        return Ok(None);
+    };
+    let current = config_bytes(config)?;
+    let Some(adoptable) = stale_record_successor(kind, &stale, config, &current, hook_argv)? else {
+        return Ok(None);
+    };
+    let manifest = adoption_manifest(kind, config, &current, adoptable)?;
+    let stale_bytes = fs::read(manifest_path).map_err(|_| SetupError::Io)?;
+    let stale_backup = backup_user_config(manifest_path, &stale_bytes)?;
+    replace_manifest(manifest_path, &manifest)?;
     if config_bytes(config)? != current {
-        let _ = fs::remove_file(manifest_path);
+        // The file changed meanwhile: put the stale record back and refuse.
+        write_replacement(manifest_path, &stale_bytes, true)?;
         return Err(SetupError::Conflict);
     }
-    Ok(Some(manifest))
+    Ok(Some(Readoption {
+        stale_owner: stale.installation_id,
+        stale_backup,
+        manifest,
+    }))
 }
 
 /// Validate local selectors before any adapter resolver or filesystem write.
@@ -3217,11 +3319,19 @@ pub(crate) mod legacy {
                 }
                 Ok(())
             })();
-            ownership.map_err(|error| {
-                installer_failure(format!(
+            if let Err(error) = ownership {
+                // A stale record whose groups a copied hook file replaced with recognisably
+                // owned ones: setup re-adopts and upgrades them (see `stale_record_successor`).
+                if matches!(
+                    owned::stale_record_successor(kind, &recorded, &path, current, &argv),
+                    Ok(Some(_))
+                ) {
+                    return Ok(true);
+                }
+                return Err(installer_failure(format!(
                     "recorded hooks are partial or edited; preserved: {error:?}"
-                ))
-            })?;
+                )));
+            }
             // Ownership of an older declaration permits a canonical upgrade; it grants no readiness.
             return Ok(true);
         }
@@ -3756,6 +3866,59 @@ pub(crate) mod legacy {
         }
     }
 
+    /// The installation `unsetup` removes from `file`: its recorded manifest, a stale record
+    /// replaced by the groups the file holds ([`lib::readopt_stale_record`]), or, with no manifest,
+    /// another setup's adoptable groups ([`adopt_for_removal`]). A superseded stale record is
+    /// reported under `report["superseded_record"]`.
+    pub(crate) fn recorded_for_removal(
+        kind: SettingsKind,
+        env: &SetupEnv,
+        file: &Path,
+        manifest: &Path,
+        report: &mut Value,
+    ) -> Result<Option<lib::OwnershipManifest>, RunError> {
+        let map = |e| settings_error(e, SetupVerb::Remove, kind, file, manifest);
+        if let Ok(argv) = env.hook_argv(kind_harness(kind))
+            && let Some(readopted) =
+                lib::readopt_stale_record(kind, file, manifest, &argv).map_err(map)?
+        {
+            let mut superseded = json!({
+                "kept_at": readopted.stale_backup.display().to_string(),
+                "note": "record superseded; see `adopted`",
+            });
+            if !readopted.stale_owner.is_empty() {
+                superseded["owner"] = json!(readopted.stale_owner);
+            }
+            report["superseded_record"] = superseded;
+            return Ok(Some(readopted.manifest));
+        }
+        match read_settings_manifest(manifest).map_err(map)? {
+            Some(recorded) => Ok(Some(recorded)),
+            None => adopt_for_removal(kind, env, file, manifest),
+        }
+    }
+
+    /// The setup warning for a stale record superseded by [`lib::readopt_stale_record`].
+    pub(crate) fn readopted_warning(file: &Path, readoption: &lib::Readoption) -> String {
+        format!(
+            "{}: {} was no longer in the file; adopted its copied herdr-threads groups (owner {}) \
+             and upgraded them. Old record kept at {}",
+            file.display(),
+            stale_owner_label(&readoption.stale_owner),
+            readoption.manifest.installation_id,
+            readoption.stale_backup.display()
+        )
+    }
+
+    /// A superseded record's owner for display: a v1 record has no installation id.
+    fn stale_owner_label(owner: &str) -> String {
+        if owner.is_empty() {
+            "an earlier recorded installation".into()
+        } else {
+            format!("recorded installation {owner}")
+        }
+    }
+
     /// With no manifest for this file, adopt another setup's exact groups so `unsetup` can remove
     /// them; `None` when nothing is adoptable (or the hook command cannot be resolved).
     pub(crate) fn adopt_for_removal(
@@ -3798,6 +3961,13 @@ pub(crate) mod legacy {
         let argv = env.hook_argv(kind_harness(kind))?;
         let (path, manifest) = (file.path.clone(), file.manifest.clone());
         let map = |error| settings_error(error, verb, kind, &path, &manifest);
+        // A stale record whose groups a copied file replaced with recognisably owned ones is
+        // superseded first; the upgrade below then replaces those groups.
+        let readopted =
+            lib::readopt_stale_record(kind, &file.path, &file.manifest, &argv).map_err(map)?;
+        if let Some(readoption) = &readopted {
+            warnings.push(readopted_warning(&file.path, readoption));
+        }
         let recorded = read_settings_manifest(&file.manifest).map_err(map)?;
         let before = recorded
             .is_some()
@@ -3812,6 +3982,7 @@ pub(crate) mod legacy {
         let legacy = before
             .as_ref()
             .is_some_and(|inspection| inspection.legacy_event_registration)
+            || readopted.is_some()
             || (recorded.is_none()
                 && matches!(
                     adoptable_user_settings(kind, &file.path, &argv),
