@@ -13,7 +13,7 @@ use crate::protocol::{
 };
 use std::sync::Arc;
 
-const INSTANCE: &str = "i";
+const INSTANCE: &str = "34750f98bd59fcfc946da45aaabe933b";
 const OLD_BOOT: &str = "00000000-0000-0000-0000-000000000001";
 const CURRENT_BOOT: &str = "00000000-0000-0000-0000-000000000002";
 
@@ -43,11 +43,11 @@ impl Fixture {
     fn new() -> Self {
         let path =
             std::env::temp_dir().join(format!("herdr-page-seam-{}.db", uuid::Uuid::new_v4()));
-        let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
+        let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
         let db = context.open_writer().unwrap();
         db.execute_batch(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1000000);\
-             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);",
+            "UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1000000;\
+             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);",
         )
         .unwrap();
         Self { path, context }
@@ -69,7 +69,7 @@ fn seed_seats(db: &Connection, count: u64) {
     db.execute_batch(&format!(
         "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{count}) \
          INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) \
-         SELECT 'seat-'||x,'i','resolved','native','pane-'||x,1,1,0 FROM n"
+         SELECT 'seat-'||x,'34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-'||x,1,1,0 FROM n"
     ))
     .unwrap();
 }

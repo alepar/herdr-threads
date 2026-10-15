@@ -56,7 +56,13 @@ const AXES: [&str; 6] = [
 /// are idle) plus `history` of settled rows around them.
 fn fixture(live: u64, history: History) -> Connection {
     let db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
+    schema::initialize(
+        &db,
+        || crate::protocol::time::UtcMillis(0),
+        &crate::test_support::test_node_seed(),
+    )
+    .unwrap();
+    crate::test_support::attach_test_host_to_connection(&db);
     db.pragma_update(None, "foreign_keys", "OFF").unwrap();
     // A CTE lives for one statement, so every statement gets its own.
     let each = |n: u64, statements: &[&str]| {
@@ -68,21 +74,21 @@ fn fixture(live: u64, history: History) -> Connection {
         }
     };
     db.execute_batch(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1000000);\
-         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);",
+        "UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1000000;\
+         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);",
     )
     .unwrap();
     // Retired seats take the low ordinals, so only the live partial index can skip them.
     each(
         history.retired_seats,
         &[
-            "INSERT INTO seats(id,instance_id,state,role,generation,target_generation,created_at,retired_at,retired_seq) SELECT 'r'||x,'i','retired','native',1,1,0,1,1 FROM n",
+            "INSERT INTO seats(id,instance_id,state,role,generation,target_generation,created_at,retired_at,retired_seq) SELECT 'r'||x,'34750f98bd59fcfc946da45aaabe933b','retired','native',1,1,0,1,1 FROM n",
         ],
     );
     each(
         live,
         &[
-            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) SELECT 'l'||x,'i','resolved','native','p'||x,1,1,0 FROM n",
+            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) SELECT 'l'||x,'34750f98bd59fcfc946da45aaabe933b','resolved','native','p'||x,1,1,0 FROM n",
         ],
     );
     db.execute_batch(
@@ -98,7 +104,7 @@ fn fixture(live: u64, history: History) -> Connection {
     each(
         history.settled_receipts,
         &[
-            "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) SELECT 'sm'||x,'i','t',x,'ordinary','b',x+1,0 FROM n",
+            "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) SELECT 'sm'||x,'34750f98bd59fcfc946da45aaabe933b','t',x,'ordinary','b',x+1,0 FROM n",
             "INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,acked_at,ack_actor_seat_id,ack_generation,ack_observation) SELECT 'sm'||x,'t','l1','acked',100,1,'l1',1,'obs' FROM n",
         ],
     );
@@ -107,7 +113,7 @@ fn fixture(live: u64, history: History) -> Connection {
         history.settled_warnings,
         &[
             &format!(
-                "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) SELECT 'sw'||x,'i','t',x+{offset},'warn','{{}}',0,x+1,x FROM n"
+                "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) SELECT 'sw'||x,'34750f98bd59fcfc946da45aaabe933b','t',x+{offset},'warn','{{}}',0,x+1,x FROM n"
             ),
             "INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) SELECT 'sw'||x,x+1,'t',100,'l1','invitation','si'||x FROM n",
             "INSERT INTO warning_recipients(warning_id,seat_id,generation) SELECT 'sw'||x,'l1',1 FROM n",
@@ -140,7 +146,7 @@ fn fixture(live: u64, history: History) -> Connection {
 fn pass(db: &Connection) -> (u64, usize) {
     let high: i64 = db
         .query_row(
-            "SELECT COALESCE(MAX(ordinal),0) FROM seats WHERE instance_id='i'",
+            "SELECT COALESCE(MAX(ordinal),0) FROM seats WHERE instance_id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get(0),
         )
@@ -148,7 +154,15 @@ fn pass(db: &Connection) -> (u64, usize) {
     let counter = CostCounter::default();
     db.execute_batch("BEGIN DEFERRED").unwrap();
     let found = count_vm_units(db, &counter, || {
-        discover_wake_candidates(db, "i", 0, high as u64, 100, &|| Ok(())).unwrap()
+        discover_wake_candidates(
+            db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            0,
+            high as u64,
+            100,
+            &|| Ok(()),
+        )
+        .unwrap()
     });
     db.execute_batch("COMMIT").unwrap();
     assert!(!found.items.is_empty(), "the pending seat must be found");
@@ -205,7 +219,13 @@ fn wake_discovery_scales_with_live_seats_only() {
 #[test]
 fn every_access_path_prepares_indexed_by() {
     let db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
+    schema::initialize(
+        &db,
+        || crate::protocol::time::UtcMillis(0),
+        &crate::test_support::test_node_seed(),
+    )
+    .unwrap();
+    crate::test_support::attach_test_host_to_connection(&db);
     let plan = |sql: &str| -> String {
         let mut stmt = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
         let n = stmt.parameter_count();

@@ -40,7 +40,7 @@ fn budget() -> CallBudget {
 }
 fn read_context() -> ReadContext {
     ReadContext {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         output: OutputSpec::default(),
         operation_scope: None,
     }
@@ -56,13 +56,13 @@ impl Fixture {
     fn new() -> Self {
         let iso = TestIsolation::new("lazy-attention");
         let clock = Arc::new(FixedClock(AtomicI64::new(1000)));
-        let context = StoreContext::new(iso.path("store.db"), clock.clone());
+        let context = StoreContext::new(iso.path("store.db"), clock.clone()).with_test_host();
         let db = context.open_writer().unwrap();
-        db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES('i',0,'b',1,1);
-            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0);").unwrap();
+        db.execute_batch("UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1;
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);").unwrap();
         let store = SqliteStore::new(
-            StoreContext::new(iso.path("store.db"), clock.clone()),
-            "i",
+            StoreContext::new(iso.path("store.db"), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap();
@@ -77,8 +77,8 @@ impl Fixture {
         f
     }
     fn member(&self, seat: &str, state: &str, membership: &str, harness: Harness) {
-        self.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,retired_at,retired_seq) VALUES(?1,'i',?2,'native',?1,1,0,0,CASE WHEN ?2='retired' THEN 0 END,CASE WHEN ?2='retired' THEN 1 END)",params![seat,state]).unwrap();
-        self.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch,ui_state) VALUES('i',?1,'b',1,0,1,'fresh',0,'term-'||?1,'inc','coherent_enumeration',1,'idle')",[seat]).unwrap();
+        self.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,retired_at,retired_seq) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b',?2,'native',?1,1,0,0,CASE WHEN ?2='retired' THEN 0 END,CASE WHEN ?2='retired' THEN 1 END)",params![seat,state]).unwrap();
+        self.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch,ui_state) VALUES('34750f98bd59fcfc946da45aaabe933b',?1,'b',1,0,1,'fresh',0,'term-'||?1,'inc','coherent_enumeration',1,'idle')",[seat]).unwrap();
         self.db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES(?1,1,?1,'b',1,0,?2,'session-'||?1,?3,?4,0,0,'term-'||?1,'inc')",params![seat,harness.as_str(), execution(seat), if harness==Harness::Human {"operator_human"} else {"cooperative_top_level"}]).unwrap();
         self.db
             .execute(
@@ -95,7 +95,7 @@ impl Fixture {
     fn claim(&self, seat: &str) -> CallerClaim {
         let (generation, harness, saved_execution): (i64,String,String) = self.db.query_row("SELECT generation,harness,execution_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",[seat],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
         CallerClaim {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new(seat),
             binding_generation: generation as u64,
             role: CallerRole::TopLevel,
@@ -228,8 +228,8 @@ impl Fixture {
     }
     fn reopen(&mut self) {
         self.store = SqliteStore::new(
-            StoreContext::new(self._iso.path("store.db"), self.clock.clone()),
-            "i",
+            StoreContext::new(self._iso.path("store.db"), self.clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap();
@@ -560,9 +560,14 @@ fn lazy_attention_current_startup_stable_across_restart() {
     );
     let baseline = offer_attention(&no_mail);
     assert_eq!(offer_attention(&initial), baseline);
-    let digest = attention::seat_digest(&f.db, "i", &SeatId::new("agent"), &|| Ok(()))
-        .unwrap()
-        .digest;
+    let digest = attention::seat_digest(
+        &f.db,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &SeatId::new("agent"),
+        &|| Ok(()),
+    )
+    .unwrap()
+    .digest;
     let id = f.send("lazy", DeliveryMode::Lazy);
     for round in 0..4 {
         if round == 2 {
@@ -575,9 +580,14 @@ fn lazy_attention_current_startup_stable_across_restart() {
             );
             f.assert_passive();
             assert_eq!(
-                attention::seat_digest(&f.db, "i", &SeatId::new("agent"), &|| Ok(()))
-                    .unwrap()
-                    .digest,
+                attention::seat_digest(
+                    &f.db,
+                    "34750f98bd59fcfc946da45aaabe933b",
+                    &SeatId::new("agent"),
+                    &|| Ok(())
+                )
+                .unwrap()
+                .digest,
                 digest
             );
             assert_eq!(f.inbox("agent").as_slice(), std::slice::from_ref(&id));
@@ -595,10 +605,15 @@ fn lazy_attention_current_startup_stable_across_restart() {
 fn lazy_attention_moves_the_lazy_digest_marker_but_never_wake() {
     let f = Fixture::new();
     let lazy_digest = || {
-        let mut digest = attention::seat_digest(&f.db, "i", &SeatId::new("agent"), &|| Ok(()))
-            .unwrap()
-            .digest;
-        attention::add_lazy(&f.db, "i", &mut digest).unwrap();
+        let mut digest = attention::seat_digest(
+            &f.db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &SeatId::new("agent"),
+            &|| Ok(()),
+        )
+        .unwrap()
+        .digest;
+        attention::add_lazy(&f.db, "34750f98bd59fcfc946da45aaabe933b", &mut digest).unwrap();
         digest.validate().unwrap();
         digest
     };
@@ -629,9 +644,14 @@ fn lazy_attention_moves_the_lazy_digest_marker_but_never_wake() {
             .ends_with(&format!("; lazy=1 [{}@t]", first.as_str()))
     );
     // The default digest (wake fingerprint inputs, old clients) is unchanged.
-    let plain = attention::seat_digest(&f.db, "i", &SeatId::new("agent"), &|| Ok(()))
-        .unwrap()
-        .digest;
+    let plain = attention::seat_digest(
+        &f.db,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &SeatId::new("agent"),
+        &|| Ok(()),
+    )
+    .unwrap()
+    .digest;
     assert!(plain.lazy.is_none() && plain.token.lazy.is_none() && plain.is_empty());
     assert_eq!(wake(), wake_before);
     assert!(
@@ -757,9 +777,14 @@ fn lazy_attention_mixed_ordinary_positive_controls() {
     }))
     .unwrap();
     let digest = |seat| {
-        attention::seat_digest(&f.db, "i", &SeatId::new(seat), &|| Ok(()))
-            .unwrap()
-            .digest
+        attention::seat_digest(
+            &f.db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &SeatId::new(seat),
+            &|| Ok(()),
+        )
+        .unwrap()
+        .digest
     };
     assert!(
         digest("outsider").invitations.count > 0,
@@ -954,9 +979,12 @@ fn lazy_attention_backlog_allows_qualified_quiet_archive() {
             valid_until_mono: None,
             legacy_source: Some("covered".into()),
         };
-        archival::advance(&f.db, "i", &rt).unwrap();
+        archival::advance(&f.db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
         for seat in ["author", "agent"] {
-            if let Some(ticket) = archival::observation_ticket(&f.db, "i", seat, &rt).unwrap() {
+            if let Some(ticket) =
+                archival::observation_ticket(&f.db, "34750f98bd59fcfc946da45aaabe933b", seat, &rt)
+                    .unwrap()
+            {
                 let mut sample = crate::channel_archival::sample(at, HostUiState::Idle);
                 sample.0.observation_sequence = (at / 30_000 + 2) as u64;
                 sample.0.target = HostTargetId::new(seat);
@@ -965,7 +993,10 @@ fn lazy_attention_backlog_allows_qualified_quiet_archive() {
             }
         }
         for _ in 0..20 {
-            if !archival::advance(&f.db, "i", &rt).unwrap().has_more {
+            if !archival::advance(&f.db, "34750f98bd59fcfc946da45aaabe933b", &rt)
+                .unwrap()
+                .has_more
+            {
                 break;
             }
         }
@@ -1198,8 +1229,8 @@ fn a_sibling_lifecycle_check_in_resets_only_its_own_in_turn_service() {
 fn in_turn_timed_invitation_service_ignores_unseen_lazy_backlog_per_binding() {
     let mut f = Fixture::new();
     f.store = SqliteStore::new(
-        StoreContext::new(f._iso.path("store.db"), f.clock.clone()),
-        "i",
+        StoreContext::new(f._iso.path("store.db"), f.clock.clone()).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings {
             daemon_boot: Some(uuid::Uuid::new_v4()),
             ..StoreSettings::default()
@@ -1360,7 +1391,7 @@ fn in_turn_timed_invitation_service_ignores_unseen_lazy_backlog_per_binding() {
     }
     let through =
         f.db.query_row(
-            "SELECT decision_seq FROM host_instances WHERE id='i'",
+            "SELECT decision_seq FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get::<_, i64>(0),
         )

@@ -50,11 +50,12 @@ impl Fixture {
     }
     fn with_lazy_only(lazy_only: Option<&str>) -> Self {
         let iso = TestIsolation::new("q5-public-continuations");
-        let context = StoreContext::new(iso.path("db"), Arc::new(SystemClock::new()));
+        let context =
+            StoreContext::new(iso.path("db"), Arc::new(SystemClock::new())).with_test_host();
         let db = context.open_writer().unwrap();
-        db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES('i',0,'host',1,10000);
-            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s','i','resolved','native','pane-s',1,1,0);
-            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','i','topic','goal',0,0,41);").unwrap();
+        db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=10000;
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-s',1,1,0);
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,41);").unwrap();
         // Historical ordinary-content rows with canonical mixed delivery modes.
         // Read/Search do not require a membership/read cursor; none is manufactured.
         for n in 1..=40_i64 {
@@ -63,12 +64,17 @@ impl Fixture {
                 Some(wanted) => wanted == id,
                 None => n % 2 == 0,
             };
-            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode,author_role) VALUES(?1,'i','t',?2,'ordinary','s',?3,?2,0,?4,'agent')",
+            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode,author_role) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','s',?3,?2,0,?4,'agent')",
                 rusqlite::params![id, n, format!("needle value π {}", "x".repeat(180)), if is_lazy { "lazy" } else { "ordinary" }]).unwrap();
         }
         let client = RecordedStore {
             inner: StoreClient {
-                store: SqliteStore::new(context, "i", StoreSettings::default()).unwrap(),
+                store: SqliteStore::new(
+                    context,
+                    "34750f98bd59fcfc946da45aaabe933b",
+                    StoreSettings::default(),
+                )
+                .unwrap(),
                 calls: Mutex::new(vec![]),
             },
             selected: Mutex::new(vec![]),
@@ -85,7 +91,7 @@ impl Fixture {
             &self.client.inner.store,
             command,
             &ReadContext {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 output: spec.clone(),
                 operation_scope: None,
             },

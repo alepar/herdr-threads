@@ -4151,7 +4151,7 @@ mod topology_contract_retry_tests {
                     (
                         SemanticMutation::freeze(semantic, fixture::claim()).unwrap(),
                         IntentScope::Cooperative {
-                            instance: "i".into(),
+                            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                             seat: fixture::claim().seat,
                         },
                     )
@@ -4159,7 +4159,7 @@ mod topology_contract_retry_tests {
                     (
                         semantic,
                         IntentScope::Native {
-                            instance: "i".into(),
+                            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                             seat: fixture::claim().seat,
                         },
                     )

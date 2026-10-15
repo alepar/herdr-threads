@@ -297,13 +297,13 @@ impl Fixture {
             )
             .unwrap();
         let observation = pane.observation();
-        let store_context = StoreContext::new(paths.database_path.clone(), clock.clone());
+        let store_context = StoreContext::new(paths.database_path.clone(), clock.clone())
+            .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
+        // The host row the elected daemon will attach (same endpoint).
+        store_context
+            .attach_host(&context.host_endpoint.clone().unwrap().to_string_lossy())
+            .unwrap();
         let db = store_context.open_writer().unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at) VALUES (?1,0)",
-            [instance.to_string()],
-        )
-        .unwrap();
         let store = SqliteStore::new(
             store_context,
             instance.to_string(),
@@ -436,7 +436,7 @@ impl Fixture {
             harness: original_harness.as_str(),
         };
         let until = Instant::now() + Duration::from_secs(5);
-        while fixture.db().query_row("SELECT count(*) FROM host_instances WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch", [], |r|r.get::<_,i64>(0)).unwrap() == 0 {
+        while fixture.db().query_row("SELECT count(*) FROM herdr_hosts WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch", [], |r|r.get::<_,i64>(0)).unwrap() == 0 {
             assert!(Instant::now() < until, "canonical reconciliation");
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -537,7 +537,8 @@ impl Fixture {
     fn unconfigured_domain(&self) -> herdr_threads::service::dispatch::DomainService {
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(self.paths.database_path.clone(), self.clock.clone()),
+                StoreContext::new(self.paths.database_path.clone(), self.clock.clone())
+                    .with_test_host(),
                 self.instance.to_string(),
                 StoreSettings::default(),
             )
@@ -586,7 +587,7 @@ impl Fixture {
         f_copy_database(&self.db(), &copy);
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(copy, self.clock.clone()),
+                StoreContext::new(copy, self.clock.clone()).with_test_host(),
                 self.instance.to_string(),
                 StoreSettings::default(),
             )
@@ -771,7 +772,7 @@ fn registered_begin_create_replay_matrix(
     }
     let generic = f.unconfigured_domain();
     let store = SqliteStore::new(
-        StoreContext::new(f.paths.database_path.clone(), f.clock.clone()),
+        StoreContext::new(f.paths.database_path.clone(), f.clock.clone()).with_test_host(),
         f.instance.to_string(),
         StoreSettings::default(),
     )
@@ -951,7 +952,7 @@ fn elected_public_delivery_is_staged_without_native_effect_and_completed_retry_i
             .any(|v| v == herdr_threads::protocol::capabilities::BOOTSTRAP_INSPECTED_RECOVERY_V1)
     );
     let until = Instant::now() + Duration::from_secs(5);
-    while f.db().query_row("SELECT count(*) FROM host_instances WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch", [], |r|r.get::<_,i64>(0)).unwrap()==0 {assert!(Instant::now()<until,"reconciliation"); std::thread::sleep(Duration::from_millis(10));}
+    while f.db().query_row("SELECT count(*) FROM herdr_hosts WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch", [], |r|r.get::<_,i64>(0)).unwrap()==0 {assert!(Instant::now()<until,"reconciliation"); std::thread::sleep(Duration::from_millis(10));}
     let out = f.cli(
         &[
             "--cooperative-seat",
@@ -1235,7 +1236,7 @@ fn elected_public_new_tab_completes_one_native_create_and_start_then_replays_his
         &budget,
     );
     let store = SqliteStore::new(
-        StoreContext::new(f.paths.database_path.clone(), f.clock.clone()),
+        StoreContext::new(f.paths.database_path.clone(), f.clock.clone()).with_test_host(),
         f.instance.to_string(),
         StoreSettings::default(),
     )

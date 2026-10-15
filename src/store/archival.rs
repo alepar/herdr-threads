@@ -54,15 +54,21 @@ pub struct Progress {
     pub has_more: bool,
 }
 
-// The archival lane can win the startup race with the first observation.
-// Only the observation/identity paths establish the canonical host instance.
+// The archival lane can win the startup race with the host attach: the
+// attached host's row is what establishes the canonical host instance.
+// With no host attached there is no canonical host instance yet either.
 fn instance_initialized(db: &Connection, instance: &str) -> Result<bool, ApiError> {
-    db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM host_instances WHERE id=?1)",
-        [instance],
-        |r| r.get(0),
-    )
-    .map_err(store_error)
+    match db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1)",
+            [instance],
+            |r| r.get(0),
+        )
+        .map_err(store_error)
+    {
+        Err(error) if error.code == ErrorCode::HostUnavailable => Ok(false),
+        other => other,
+    }
 }
 
 /// Each call owns one bounded deciding transaction. The caller must already
@@ -384,7 +390,7 @@ fn scan_members(
             .map_err(store_error)?;
             continue;
         }
-        let qualified:Option<(i64,String)>=tx.query_row("SELECT a.last_mono,b.harness FROM seat_archival a JOIN seats s ON s.id=a.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL JOIN host_instances h ON h.id=s.instance_id WHERE a.seat_id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=a.binding_generation AND s.target_generation=a.target_generation AND s.target_id=a.target_id AND b.generation=a.binding_generation AND b.registered_at IS NOT NULL AND b.harness=a.harness AND b.role='top_level' AND b.liveness='connected' AND b.native_session=a.native_session AND b.execution_id=a.execution AND h.host_boot=a.host_boot AND h.host_epoch=a.host_epoch AND a.runtime_boot=?3 AND a.evidence_epoch=?4 AND a.samples>=2 AND a.idle_mono<=?5 AND a.last_mono>=?6 AND a.last_mono<=?7 AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.instance_id=s.instance_id AND rh.target_id=s.target_id AND rh.released_at IS NULL)",params![seat,instance,rt.boot,epoch,rt.mono.saturating_sub(rt.after_ms),rt.mono.saturating_sub(MAX_GAP_MS),rt.mono],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(store_error)?;
+        let qualified:Option<(i64,String)>=tx.query_row("SELECT a.last_mono,b.harness FROM seat_archival a JOIN seats s ON s.id=a.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id WHERE a.seat_id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=a.binding_generation AND s.target_generation=a.target_generation AND s.target_id=a.target_id AND b.generation=a.binding_generation AND b.registered_at IS NOT NULL AND b.harness=a.harness AND b.role='top_level' AND b.liveness='connected' AND b.native_session=a.native_session AND b.execution_id=a.execution AND h.host_boot=a.host_boot AND h.host_epoch=a.host_epoch AND a.runtime_boot=?3 AND a.evidence_epoch=?4 AND a.samples>=2 AND a.idle_mono<=?5 AND a.last_mono>=?6 AND a.last_mono<=?7 AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.instance_id=s.instance_id AND rh.target_id=s.target_id AND rh.released_at IS NULL)",params![seat,instance,rt.boot,epoch,rt.mono.saturating_sub(rt.after_ms),rt.mono.saturating_sub(MAX_GAP_MS),rt.mono],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(store_error)?;
         let Some((last, harness)) = qualified else {
             return Ok((rows.len(), false, true));
         };
@@ -850,7 +856,7 @@ fn validate_snapshot_page(
     instance: &str,
     rt: &Runtime,
 ) -> Result<bool, ApiError> {
-    let (current,saved,checked,mut cursor):(Option<String>,Option<String>,bool,String)=tx.query_row("SELECT h.active_snapshot_id,a.validating_snapshot,a.snapshot_checked,a.snapshot_cursor FROM archival_instances a JOIN host_instances h ON h.id=a.instance_id WHERE a.instance_id=?1",[instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(store_error)?;
+    let (current,saved,checked,mut cursor):(Option<String>,Option<String>,bool,String)=tx.query_row("SELECT h.active_snapshot_id,a.validating_snapshot,a.snapshot_checked,a.snapshot_cursor FROM archival_instances a JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=a.instance_id WHERE a.instance_id=?1",[instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(store_error)?;
     if current == saved && checked {
         return Ok(true);
     }

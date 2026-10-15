@@ -14,7 +14,12 @@ fn budget() -> CallBudget {
 fn store_fixture() -> (SqliteStore, Connection, PathBuf) {
     let (context, conn, path, _) = bound_fixture(100);
     (
-        SqliteStore::new(context, "i", StoreSettings::default()).unwrap(),
+        SqliteStore::new(
+            context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            StoreSettings::default(),
+        )
+        .unwrap(),
         conn,
         path,
     )
@@ -50,7 +55,7 @@ fn count(db: &Connection, table: &str) -> i64 {
         .unwrap()
 }
 fn raw_pair(db: &Connection) {
-    db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('pair','i','topic','goal',0,0); INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES('i','s1','s2','pair'); INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES('pair','s1','joined','joined',0),('pair','s2','invited','invited',NULL); INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('pair','s1',1,1); INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s3','i','resolved','native','s3',1,1,0); INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','s3','b',1,1,0,'fresh','term-s3','inc','coherent_enumeration',1); INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES('s3',1,'s3','b',1,1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-s3','inc');").unwrap();
+    db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('pair','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0); INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES('34750f98bd59fcfc946da45aaabe933b','s1','s2','pair'); INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES('pair','s1','joined','joined',0),('pair','s2','invited','invited',NULL); INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('pair','s1',1,1); INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s3','34750f98bd59fcfc946da45aaabe933b','resolved','native','s3',1,1,0); INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('34750f98bd59fcfc946da45aaabe933b','s3','b',1,1,0,'fresh','term-s3','inc','coherent_enumeration',1); INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES('s3',1,'s3','b',1,1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-s3','inc');").unwrap();
 }
 #[test]
 fn atomic_create_reuse_invitation_and_historical_replay() {
@@ -340,9 +345,14 @@ fn pair_refuses_service_third_invite_and_ownership() {
     use sha2::Digest;
     let (context, mut db, path, _) = bound_fixture(100);
     raw_pair(&db);
-    let author = ServiceAuthorId::new(format!("graph:{:x}", sha2::Sha256::digest(b"i")));
+    let author = ServiceAuthorId::new(format!(
+        "graph:{:x}",
+        sha2::Sha256::digest(b"34750f98bd59fcfc946da45aaabe933b")
+    ));
     let gate = GraphGate(author.clone());
-    let connection = gate.register("i", "boot", author).unwrap();
+    let connection = gate
+        .register("34750f98bd59fcfc946da45aaabe933b", "boot", author)
+        .unwrap();
     let op = ServiceOperation::Invite(ServiceInvite {
         thread: ThreadId::new("pair"),
         seat: SeatId::new("s3"),
@@ -354,7 +364,7 @@ fn pair_refuses_service_third_invite_and_ownership() {
         crate::store::service_controls::operate(
             &context,
             &mut db,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             op,
             &connection,
             &gate,
@@ -374,7 +384,7 @@ fn pair_refuses_service_third_invite_and_ownership() {
         crate::store::service_controls::operate(
             &context,
             &mut db,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             op,
             &connection,
             &gate,
@@ -568,11 +578,11 @@ fn ensure_invalid_targets_and_claims_have_no_effects() {
         ("s2", "UPDATE seats SET state='unresolved' WHERE id='s2'"),
         (
             "s2",
-            "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('i','s2','b',1,'held')",
+            "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('34750f98bd59fcfc946da45aaabe933b','s2','b',1,'held')",
         ),
         (
             "s2",
-            "INSERT INTO host_instances(id,created_at) VALUES('foreign',0); UPDATE seats SET instance_id='foreign' WHERE id='s2'",
+            "PRAGMA foreign_keys=OFF; UPDATE seats SET instance_id='foreign' WHERE id='s2'",
         ),
         (
             "s2",
@@ -630,7 +640,12 @@ fn resolved_unbound_and_human_ordinary_direct_smoke() {
                 .unwrap();
         }
         let binding_count = count(&db, "occupant_bindings");
-        let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+        let store = SqliteStore::new(
+            context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            StoreSettings::default(),
+        )
+        .unwrap();
         let t = thread(ensure(&store, "s1", "s2", "smoke").unwrap());
         let v = send_request_to(&t, "s1", "s2", "ordinary", DeliveryMode::Ordinary);
         prepare(&store, &v).unwrap();
@@ -689,8 +704,8 @@ fn accept_pair(store: &SqliteStore, db: &Connection, t: &ThreadId, seat: &str, k
 fn reversed_concurrent_ensures_converge_then_explicit_accept_reuses() {
     let (store, db, path) = store_fixture();
     let second = SqliteStore::new(
-        StoreContext::new(path.clone(), Arc::new(FixedClock(AtomicI64::new(100)))),
-        "i",
+        StoreContext::new(path.clone(), Arc::new(FixedClock(AtomicI64::new(100)))).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings::default(),
     )
     .unwrap();
@@ -727,7 +742,7 @@ fn reversed_concurrent_ensures_converge_then_explicit_accept_reuses() {
     let v = send_request_to(&t, "s1", "s2", "dedup", DeliveryMode::Ordinary);
     prepare(&store, &v).unwrap();
     assert_eq!(count(&db, "prepared_recipients"), 1);
-    let query:String=db.query_row("EXPLAIN QUERY PLAN SELECT thread_id FROM direct_threads WHERE instance_id='i' AND seat_a='s1' AND seat_b='s2'",[],|r|r.get(3)).unwrap();
+    let query:String=db.query_row("EXPLAIN QUERY PLAN SELECT thread_id FROM direct_threads WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND seat_a='s1' AND seat_b='s2'",[],|r|r.get(3)).unwrap();
     assert!(query.contains("SEARCH"), "{query}");
     let plan:Vec<String>=db.prepare("EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM membership_intervals WHERE thread_id=?1 AND seat_id<?2) OR EXISTS(SELECT 1 FROM membership_intervals WHERE thread_id=?1 AND seat_id>?2 AND seat_id<?3) OR EXISTS(SELECT 1 FROM membership_intervals WHERE thread_id=?1 AND seat_id>?3)").unwrap().query_map(rusqlite::params![t.as_str(),"s1","s2"],|r|r.get(3)).unwrap().collect::<Result<_,_>>().unwrap();
     // Each range is a covering index search bounded by (thread_id, seat_id),
@@ -864,7 +879,7 @@ fn bootstrap_adapter_admits_unlinked_direct_and_revalidates_namespace() {
         DeliveryMode::Lazy,
     );
     let namespace = crate::protocol::handoff::HandoffNamespace {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         state_dir: "/tmp/direct".into(),
         host_endpoint: "/tmp/endpoint".into(),
     };
@@ -923,7 +938,17 @@ fn pair_operator_orphan_recovery_cannot_enroll_third_seat() {
         501,
     )
     .unwrap();
-    assert!(operator_orphan_invite(&context, &mut db, "i", &v, actor, None).is_err());
+    assert!(
+        operator_orphan_invite(
+            &context,
+            &mut db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &v,
+            actor,
+            None
+        )
+        .is_err()
+    );
     assert_eq!(count(&db, "invitations"), 0);
     assert_eq!(count(&db, "memberships"), 2);
     drop(db);
@@ -974,9 +999,14 @@ fn raw_service_send_cannot_own_or_address_automatic_pair() {
     use sha2::Digest;
     let (context, mut db, path, _) = bound_fixture(100);
     raw_pair(&db);
-    let author = ServiceAuthorId::new(format!("graph:{:x}", sha2::Sha256::digest(b"i")));
+    let author = ServiceAuthorId::new(format!(
+        "graph:{:x}",
+        sha2::Sha256::digest(b"34750f98bd59fcfc946da45aaabe933b")
+    ));
     let gate = GraphGate(author.clone());
-    let connection = gate.register("i", "boot", author).unwrap();
+    let connection = gate
+        .register("34750f98bd59fcfc946da45aaabe933b", "boot", author)
+        .unwrap();
     let v = ServiceSend {
         thread: ThreadId::new("pair"),
         body: "service".into(),
@@ -1039,7 +1069,7 @@ fn direct_publication_rechecks_archive_target_retirement_unresolve_and_hold() {
             ErrorCode::TargetUnresolved,
         ),
         (
-            "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('i','s2','b',1,'held')",
+            "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('34750f98bd59fcfc946da45aaabe933b','s2','b',1,'held')",
             ErrorCode::TargetUnresolved,
         ),
     ] {
@@ -1070,7 +1100,7 @@ fn direct_publication_rechecks_archive_target_retirement_unresolve_and_hold() {
 #[test]
 fn manual_two_member_channel_is_not_adopted_and_normal_send_is_unchanged() {
     let (store, db, path) = store_fixture();
-    db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('manual','i','manual','manual',0,0); INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES('manual','s1','joined','joined',0),('manual','s2','joined','joined',0); INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('manual','s1',1,1),('manual','s2',1,1);").unwrap();
+    db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('manual','34750f98bd59fcfc946da45aaabe933b','manual','manual',0,0); INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES('manual','s1','joined','joined',0),('manual','s2','joined','joined',0); INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('manual','s1',1,1),('manual','s2',1,1);").unwrap();
     let t = thread(ensure(&store, "s1", "s2", "distinct").unwrap());
     assert_ne!(t, ThreadId::new("manual"));
     assert_eq!(count(&db, "threads"), 2);
@@ -1153,7 +1183,7 @@ fn rejoin_never_reshows_a_lazy_row_displayed_out_of_order() {
     let tx = db.unchecked_transaction().unwrap();
     crate::store::lazy_delivery::complete_for_binding(
         &tx,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &SeatId::new("s2"),
         Some(&binding),
         std::slice::from_ref(&shown),

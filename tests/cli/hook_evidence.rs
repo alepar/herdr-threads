@@ -47,8 +47,9 @@ fn hermes_structural_domains_reach_real_recorder_without_qualification_conflatio
     let clock: Arc<dyn Clock> = Arc::new(crate::app::SystemClock::new());
     let store = Arc::new(
         crate::store::SqliteStore::new(
-            crate::store::connection::StoreContext::new(iso.path("store.db"), clock.clone()),
-            "i",
+            crate::store::connection::StoreContext::new(iso.path("store.db"), clock.clone())
+                .with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             crate::store::StoreSettings::default(),
         )
         .unwrap(),
@@ -1239,8 +1240,9 @@ fn codex_session_resumed_after_an_upgrade_records_nothing_for_either_version() {
             crate::store::connection::StoreContext::new(
                 iso.state_root().join("store.db"),
                 Arc::clone(&clock),
-            ),
-            "i",
+            )
+            .with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             crate::store::StoreSettings::default(),
         )
         .unwrap(),

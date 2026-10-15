@@ -185,24 +185,30 @@ impl Fixture {
     }
     fn with_long_body(long: bool) -> Self {
         let iso = TestIsolation::new("q5-normalizer-real-results");
-        let context = StoreContext::new(iso.path("db"), Arc::new(SystemClock::new()));
+        let context =
+            StoreContext::new(iso.path("db"), Arc::new(SystemClock::new())).with_test_host();
         let db = context.open_writer().unwrap();
-        db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES('i',0,'host',1,10000);
-            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s','i','resolved','native','pane-s',1,1,0);
-            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','i','topic','goal',0,0,41);").unwrap();
+        db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=10000;
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-s',1,1,0);
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,41);").unwrap();
         for n in 1..=40_i64 {
             let body = if long && n == 1 {
                 format!("{}tail", "π💡".repeat(10922))
             } else {
                 format!("needle value π {}", "x".repeat(180))
             };
-            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode,author_role) VALUES(?1,'i','t',?2,'ordinary','s',?3,?2,0,'lazy','agent')",
+            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode,author_role) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','s',?3,?2,0,'lazy','agent')",
                 rusqlite::params![format!("q5-msg-{n}"),n,body]).unwrap();
         }
         drop(db);
         Self {
             _iso: iso,
-            store: SqliteStore::new(context, "i", StoreSettings::default()).unwrap(),
+            store: SqliteStore::new(
+                context,
+                "34750f98bd59fcfc946da45aaabe933b",
+                StoreSettings::default(),
+            )
+            .unwrap(),
             calls: Mutex::new(vec![]),
             malformed: Mutex::new(None),
         }
@@ -212,7 +218,7 @@ impl Fixture {
             &self.store,
             command,
             &ReadContext {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 output: spec.clone(),
                 operation_scope: None,
             },

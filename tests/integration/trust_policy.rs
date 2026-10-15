@@ -515,7 +515,7 @@ impl World {
     fn marker(&self) -> Option<(String, i64)> {
         self.database()
             .query_row(
-                "SELECT reconciled_boot,reconciled_epoch FROM host_instances WHERE reconciled_boot IS NOT NULL",
+                "SELECT reconciled_boot,reconciled_epoch FROM herdr_hosts WHERE reconciled_boot IS NOT NULL",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -527,7 +527,7 @@ impl World {
     fn wait_reconciled(&self) {
         self.wait_for("the reconciliation marker", |world| {
             world.count(
-                "SELECT count(*) FROM host_instances WHERE active_snapshot_id IS NOT NULL \
+                "SELECT count(*) FROM herdr_hosts WHERE active_snapshot_id IS NOT NULL \
                  AND reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot \
                  AND reconciled_epoch=recovery_epoch",
             ) == 1
@@ -535,7 +535,7 @@ impl World {
         });
     }
     fn hold_unclaimed(&self) -> i64 {
-        self.count("SELECT baseline_hold_unclaimed FROM host_instances")
+        self.count("SELECT baseline_hold_unclaimed FROM herdr_hosts")
     }
     fn seat_state(&self, seat: &str) -> String {
         self.database()

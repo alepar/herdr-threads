@@ -418,7 +418,7 @@ pub fn recover(
             }
             let lifecycle: i64 = tx
                 .query_row(
-                    "SELECT lifecycle_revision FROM host_instances WHERE id=?1",
+                    "SELECT lifecycle_revision FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
                     [&ns.instance],
                     |r| r.get(0),
                 )
@@ -527,7 +527,8 @@ mod tests {
     }
     fn fixture_with_tab(tab: &str) -> (Connection, BootstrapIdentity, BootstrapAttachmentGuard) {
         let db = Connection::open_in_memory().unwrap();
-        schema::initialize(&db, || UtcMillis(0)).unwrap();
+        schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed()).unwrap();
+        crate::test_support::attach_test_host_to_connection(&db);
         let mut id = identity();
         id.payload.handoff.channel = HandoffChannel::New {
             name: None,
@@ -537,14 +538,14 @@ mod tests {
         id.claim.execution = ExecutionId::new("00000000-0000-4000-8000-000000000001");
         id.digest = id.semantic_digest().unwrap();
         let boot = created().host_incarnation;
-        db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,observation_sequence,observation_admission_sequence,observation_decided_sequence,lifecycle_revision,recovery_boot,recovery_epoch) VALUES('i',0,?1,1,1,1,1,1,?1,1)",[boot.as_str()]).unwrap();
-        db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) VALUES('g','i',?1,1,1,'herdr-server:pid=42:start=1.000002:uid=501',0,0,'published',0,0,0,0)",[boot.as_str()]).unwrap();
-        db.execute_batch("UPDATE host_instances SET active_snapshot_id='g',recovery_baseline_generation_id='g'; INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('sender','i','resolved','native','w1:p1',1,0,0);").unwrap();
+        db.execute("UPDATE herdr_hosts SET host_boot=?1,host_epoch=1,observation_sequence=1,observation_admission_sequence=1,observation_decided_sequence=1,lifecycle_revision=1,recovery_boot=?1,recovery_epoch=1",[boot.as_str()]).unwrap();
+        db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) VALUES('g','34750f98bd59fcfc946da45aaabe933b',?1,1,1,'herdr-server:pid=42:start=1.000002:uid=501',0,0,'published',0,0,0,0)",[boot.as_str()]).unwrap();
+        db.execute_batch("UPDATE herdr_hosts SET active_snapshot_id='g',recovery_baseline_generation_id='g'; INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('sender','34750f98bd59fcfc946da45aaabe933b','resolved','native','w1:p1',1,0,0);").unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('sender',1,'w1:p1',?1,1,'codex','session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,0)",[boot.as_str()]).unwrap();
         for (pane, terminal, generation) in
             [("w1:p1", "caller-terminal", 0), ("w1:p2", "terminal", 1)]
         {
-            db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i',?1,?2,1,?3,2,'fresh',0,?4,'herdr-server:pid=42:start=1.000002:uid=501','native_current_target',1)",params![pane,boot.as_str(),generation,terminal]).unwrap();
+            db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('34750f98bd59fcfc946da45aaabe933b',?1,?2,1,?3,2,'fresh',0,?4,'herdr-server:pid=42:start=1.000002:uid=501','native_current_target',1)",params![pane,boot.as_str(),generation,terminal]).unwrap();
         }
         let observation = HostObservation {
             focused: false,
@@ -571,7 +572,7 @@ mod tests {
             completed_at_mono: MonoInstant(1),
         };
         let admission = HostObservationAdmission {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             sequence: 1,
             expected_active: Some(SnapshotGenerationId::store_issued("g".into())),
             expected_boot: Some(boot),
@@ -724,7 +725,7 @@ mod tests {
             ),
             (
                 "decision",
-                "8b28643cb0c9e5f04e4168bccb5b3016b1255c12c171342c84790783f75ad5d6",
+                "3670e24c2258bb71fcac461bf03252cfd5f94d6fb346f3e68fe93da870427f44",
             ),
             (
                 "disposition",
@@ -732,25 +733,25 @@ mod tests {
             ),
             (
                 "identity",
-                "3e23dafb4ae353f85cbf16d6919c9719b767603718785aec528a1a20e89b1fae",
+                "275b792ea3985867c2b759604bd163988779a9e4064acdad40381ea620656809",
             ),
             (
                 "operation",
-                "38a41e4ad1c5694248ee4c83b88e7a627342e4bc21b1b022832def71b2dfeece",
+                "a3e52e53fa18b6f87522a3b2c59ad29a89e25290ec35ca671c17b97be32fd5ee",
             ),
             (
                 "request",
-                "2f57b3cfbafd13308697dccd374a927674a3b515695b291843d35d4ee0021395",
+                "ba88e8c0bd5a43da3f1aa1c7a4c84541afcea6a309a64a4049b525e8697c840f",
             ),
             (
                 "semantic",
-                "454dfbd3a27765377f2bb829f33a4b76d0e1811ddd3a1ea7a727ae2d11b28f4c",
+                "d2568486c6c8222a257a97a6e48d28118d823097cac4427a6634058e27558655",
             ),
         ]);
         for (name, hash) in hashes {
             assert_eq!(hash, expected[name], "a225 frozen {name} bytes changed");
         }
-        tx.execute_batch("UPDATE host_instances SET lifecycle_revision=5; DELETE FROM observed_targets; UPDATE occupant_bindings SET native_session='changed'").unwrap();
+        tx.execute_batch("UPDATE herdr_hosts SET lifecycle_revision=5; DELETE FROM observed_targets; UPDATE occupant_bindings SET native_session='changed'").unwrap();
         assert_eq!(
             recover(
                 &tx,
@@ -808,7 +809,7 @@ mod tests {
             )
             .unwrap();
         tx.execute_batch(
-            "UPDATE host_instances SET lifecycle_revision=17; DELETE FROM observed_targets;",
+            "UPDATE herdr_hosts SET lifecycle_revision=17; DELETE FROM observed_targets;",
         )
         .unwrap();
         assert_eq!(
@@ -839,8 +840,8 @@ mod tests {
         let tx = db.transaction().unwrap();
         begin_reserve(&tx, &id);
         let p = guard.ordinary().structural_proof();
-        tx.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES('recipient','i','resolved','native',?1,1,1,?2,?3,?4,1,'native_current_target',1,2,0)",params![p.target().as_str(),p.terminal().as_str(),p.incarnation(),p.host_boot().as_str()]).unwrap();
-        tx.execute_batch("UPDATE host_instances SET lifecycle_revision=2")
+        tx.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,?2,?3,?4,1,'native_current_target',1,2,0)",params![p.target().as_str(),p.terminal().as_str(),p.incarnation(),p.host_boot().as_str()]).unwrap();
+        tx.execute_batch("UPDATE herdr_hosts SET lifecycle_revision=2")
             .unwrap();
         assert!(
             recover(
@@ -878,7 +879,7 @@ mod tests {
             begin_reserve(&tx, &id);
             if owned {
                 let p = guard.ordinary().structural_proof();
-                tx.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES('recipient','i','resolved','native',?1,1,1,?2,?3,?4,1,'native_current_target',1,2,0)",params![p.target().as_str(),p.terminal().as_str(),p.incarnation(),p.host_boot().as_str()]).unwrap();
+                tx.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,?2,?3,?4,1,'native_current_target',1,2,0)",params![p.target().as_str(),p.terminal().as_str(),p.incarnation(),p.host_boot().as_str()]).unwrap();
             }
             // A genuine canonical retirement decision changes the lifecycle
             // after publication, independently of the recovery target owner.
@@ -886,7 +887,7 @@ mod tests {
                 &tx,
                 UtcMillis(1),
                 id.claim.seat.clone(),
-                "i",
+                "34750f98bd59fcfc946da45aaabe933b",
                 created().host_incarnation.as_str(),
                 1,
                 "w1:p1",
@@ -950,7 +951,7 @@ mod tests {
                 .unwrap(),
             1
         );
-        tx.execute_batch("UPDATE host_instances SET lifecycle_revision=5;UPDATE occupant_bindings SET native_session='changed'").unwrap();
+        tx.execute_batch("UPDATE herdr_hosts SET lifecycle_revision=5;UPDATE occupant_bindings SET native_session='changed'").unwrap();
         assert_eq!(
             recover(
                 &tx,
@@ -968,15 +969,15 @@ mod tests {
     fn created_recovery_refuses_hold_stale_admission_lifecycle_and_structural_mismatch() {
         for (sql, expected) in [
             (
-                "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) SELECT 'i','w1:p2',host_boot,1,'held' FROM host_instances",
+                "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) SELECT '34750f98bd59fcfc946da45aaabe933b','w1:p2',host_boot,1,'held' FROM herdr_hosts",
                 ErrorCode::TargetUnresolved,
             ),
             (
-                "UPDATE host_instances SET observation_admission_sequence=2",
+                "UPDATE herdr_hosts SET observation_admission_sequence=2",
                 ErrorCode::StaleHostObservation,
             ),
             (
-                "UPDATE host_instances SET lifecycle_revision=2",
+                "UPDATE herdr_hosts SET lifecycle_revision=2",
                 ErrorCode::TargetUnresolved,
             ),
             (
@@ -1037,18 +1038,27 @@ mod tests {
     #[test]
     fn common_canonical_guard_returns_exact_current_owner_without_mutation() {
         let (mut db, _, guard) = fixture();
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES('peer','i','resolved','native','w1:p2',1,1,'terminal','herdr-server:pid=42:start=1.000002:uid=501',?1,1,'native_current_target',1,2,0)",[created().host_incarnation.as_str()]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES('peer','34750f98bd59fcfc946da45aaabe933b','resolved','native','w1:p2',1,1,'terminal','herdr-server:pid=42:start=1.000002:uid=501',?1,1,'native_current_target',1,2,0)",[created().host_incarnation.as_str()]).unwrap();
         let tx = db.transaction().unwrap();
         assert_eq!(
-            seats::validate_bootstrap_creation(&tx, "i", guard.ordinary()).unwrap(),
+            seats::validate_bootstrap_creation(
+                &tx,
+                "34750f98bd59fcfc946da45aaabe933b",
+                guard.ordinary()
+            )
+            .unwrap(),
             Some(SeatId::new("peer"))
         );
         tx.execute_batch("UPDATE seats SET structural_terminal_id='changed' WHERE id='peer'")
             .unwrap();
         assert_eq!(
-            seats::validate_bootstrap_creation(&tx, "i", guard.ordinary())
-                .unwrap_err()
-                .code,
+            seats::validate_bootstrap_creation(
+                &tx,
+                "34750f98bd59fcfc946da45aaabe933b",
+                guard.ordinary()
+            )
+            .unwrap_err()
+            .code,
             ErrorCode::TargetUnresolved
         );
     }

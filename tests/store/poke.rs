@@ -21,15 +21,16 @@ impl Drop for RemoveOnDrop {
 /// projection go through the real writers. `snd` sends, `rcv` receives.
 fn fixture() -> (StoreContext, Connection, RemoveOnDrop) {
     let path = std::env::temp_dir().join(format!("ht-poke-{}.db", uuid::Uuid::new_v4()));
-    let context = StoreContext::new(path.clone(), Arc::new(crate::app::SystemClock::new()));
+    let context =
+        StoreContext::new(path.clone(), Arc::new(crate::app::SystemClock::new())).with_test_host();
     let guard = RemoveOnDrop(path);
     let conn = context.open_writer().unwrap();
     conn.execute_batch("\
-        INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1);\
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,unavailability_open) VALUES ('snd','i','resolved','native','p-snd',1,1,0,1,0),('rcv','i','resolved','native','p-rcv',1,1,0,1,0);\
-        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at) VALUES ('i','p-rcv','b',1,1,1,'fresh','unknown','unknown',0,0);\
+        UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1;\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,unavailability_open) VALUES ('snd','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-snd',1,1,0,1,0),('rcv','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-rcv',1,1,0,1,0);\
+        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at) VALUES ('34750f98bd59fcfc946da45aaabe933b','p-rcv','b',1,1,1,'fresh','unknown','unknown',0,0);\
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('rcv',1,1,'p-rcv','b',1,'codex','hist-rcv','hist-rcv','fresh',0,0,'term-rcv','inc');\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('ta','i','a','g',0,0),('tb','i','b','g',0,0);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('ta','34750f98bd59fcfc946da45aaabe933b','a','g',0,0),('tb','34750f98bd59fcfc946da45aaabe933b','b','g',0,0);\
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('ta','snd','joined'),('ta','rcv','joined'),('tb','snd','joined'),('tb','rcv','joined');\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('ta','snd',1,1),('ta','rcv',1,1),('tb','snd',1,1),('tb','rcv',1,1);\
     ").unwrap();
@@ -235,7 +236,7 @@ fn warned_receipts_are_not_candidates() {
 fn legacy_physical_receipt_is_marked_on_its_own_row() {
     let (_context, conn, _guard) = fixture();
     conn.execute_batch("\
-        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('legacy','i','ta',1,'ordinary','snd','x',0,5);\
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('legacy','34750f98bd59fcfc946da45aaabe933b','ta',1,'ordinary','snd','x',0,5);\
         INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('legacy','ta','rcv','pending',1000,0,1000);\
     ").unwrap();
     assert!(due(&conn, 599).is_empty());
@@ -278,22 +279,22 @@ fn budget() -> crate::protocol::time::CallBudget {
 fn bound_store() -> (crate::store::SqliteStore, PathBuf) {
     use crate::store::{SqliteStore, StoreSettings};
     let path = std::env::temp_dir().join(format!("ht-poke-store-{}.db", uuid::Uuid::new_v4()));
-    let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\
-        INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1);\
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','pane',1,1,0);\
-        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pane','host',1,1,0,'fresh','term-pane','inc','native_current_target',1);\
+        UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1;\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0);\
+        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','pane','host',1,1,0,'fresh','term-pane','inc','native_current_target',1);\
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'pane','host',0,'codex','session','self-reported','cooperative_top_level',0,0,'term-pane','inc');\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);\
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','joined');\
-        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('m','i','t',1,'ordinary','body',1,0);\
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('m','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','body',1,0);\
         INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('m','t','s','pending',1000,0,1000);\
     ").unwrap();
     drop(db);
     let store = SqliteStore::new(
         context,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings {
             daemon_boot: Some(
                 uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
@@ -313,6 +314,7 @@ fn soft_poke_targets_the_composer_rule_binding() {
     use crate::ports::{ReservedWakeAuthority, StorePort};
     let (store, path) = bound_store();
     let db = StoreContext::new(path.clone(), Arc::new(FixedClock))
+        .with_test_host()
         .open_writer()
         .unwrap();
     let insert = |id: &str, role: &str, connected: bool, pid: i64| {
@@ -362,6 +364,7 @@ fn poke_reservation_shares_the_wake_slot_and_marks_only_on_submit() {
     let (store, path) = bound_store();
     let reader = || {
         StoreContext::new(path.clone(), Arc::new(FixedClock))
+            .with_test_host()
             .open_writer()
             .unwrap()
     };
@@ -463,7 +466,7 @@ fn unresolved_targetless_and_held_seats_are_not_candidates() {
     let breakages = [
         "UPDATE seats SET state='unresolved', unresolved_reason='other' WHERE id='rcv'",
         "UPDATE seats SET target_id=NULL WHERE id='rcv'",
-        "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('i','p-rcv','b',1,'test')",
+        "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('34750f98bd59fcfc946da45aaabe933b','p-rcv','b',1,'test')",
     ];
     for breakage in breakages {
         let (context, mut conn, _guard) = fixture();
@@ -479,7 +482,7 @@ fn unresolved_targetless_and_held_seats_are_not_candidates() {
     send(&context, &mut conn, "ta", 1, "one");
     let (deadline, _) = first_window(&conn);
     conn.execute(
-        "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason,released_at) VALUES ('i','p-rcv','b',1,'test',1)",
+        "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason,released_at) VALUES ('34750f98bd59fcfc946da45aaabe933b','p-rcv','b',1,'test',1)",
         [],
     )
     .unwrap();
@@ -496,7 +499,7 @@ fn never_reservable_seats_do_not_displace_a_pokeable_seat() {
         let target = format!("p-{seat}");
         let message = format!("m-{seat}");
         conn.execute(
-            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,unavailability_open) VALUES (?1,'i','resolved','native',?2,1,1,0,1,0)",
+            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,unavailability_open) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,1,0)",
             rusqlite::params![seat, target],
         )
         .unwrap();
@@ -511,7 +514,7 @@ fn never_reservable_seats_do_not_displace_a_pokeable_seat() {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES (?1,'i','ta',?2,'ordinary','body',?2,0)",
+            "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','ta',?2,'ordinary','body',?2,0)",
             rusqlite::params![message, 1000 + n],
         )
         .unwrap();

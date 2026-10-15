@@ -162,8 +162,11 @@ fn worker_fixture_from_store(
     let paths =
         herdr_threads::daemon::paths::NodePaths::resolve_read_only(&context.state_dir).unwrap();
     std::fs::create_dir_all(&paths.node_dir).unwrap();
-    let source =
-        herdr_threads::archival_legacy::Source::new(&paths, "i".into(), Default::default());
+    let source = herdr_threads::archival_legacy::Source::new(
+        &paths,
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        Default::default(),
+    );
     let reachability = Arc::new(HostReachability::default());
     reachability.mark_archival_published(100);
     let worker = ArchivalWorker {
@@ -313,9 +316,10 @@ fn archival_worker_before_host_admission_waits_for_safety_tick() {
     let pacer = Arc::new(Pacer::new("archival", clock.clone(), cancellation.clone()));
     let kicks = Arc::new(CommitKicks::default());
     kicks.register(Lane::Archival, pacer.clone());
+    // The host row does not exist yet: it appears below, at host admission.
     let store = SqliteStore::new(
-        StoreContext::new(path.clone(), clock.clone()),
-        "i",
+        StoreContext::new(path.clone(), clock.clone()).with_pending_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings::default(),
     )
     .unwrap()
@@ -349,9 +353,10 @@ fn archival_worker_before_host_admission_waits_for_safety_tick() {
         .unwrap()
     };
     assert_eq!(count(), 0, "boot pass precedes canonical host admission");
+    herdr_threads::test_support::attach_test_host_to_connection(&db);
     store
         .begin_host_observation(
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &CallBudget {
                 deadline: MonoInstant(10_000),
                 cancellation,
@@ -435,13 +440,14 @@ fn archival_worker_negative_survives_failed_persistence_before_next_final_decisi
             valid_until_mono: None,
             legacy_source: Some("covered".into()),
         };
-        archival::advance(&db, "i", &rt).unwrap();
+        archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
         for at in [0, 100] {
             rt.mono = at;
             rt.utc = UtcMillis(at);
-            let ticket = archival::observation_ticket(&db, "i", "s", &rt)
-                .unwrap()
-                .unwrap();
+            let ticket =
+                archival::observation_ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt)
+                    .unwrap()
+                    .unwrap();
             let mut sample = super::channel_archival::sample(at, HostUiState::Idle);
             // A synthetic certificate precondition remains an honest
             // canonical association, never a manufactured native occupant.
@@ -464,7 +470,7 @@ fn archival_worker_negative_survives_failed_persistence_before_next_final_decisi
             if phase == 4 {
                 break;
             }
-            archival::advance(&db, "i", &rt).unwrap();
+            archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
         }
         assert_eq!(
             db.query_row(
@@ -545,8 +551,8 @@ fn archival_worker_negative_recovery_cycles_do_not_rediscover_retained_history()
         host.negative_failure.store(3, Ordering::SeqCst);
         db.execute_batch("BEGIN").unwrap();
         for n in 0..size {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at) VALUES(?1,'i','retired','native',1,0,0)",[format!("history{n:08}")]).unwrap();
-            db.execute("INSERT INTO threads(id,instance_id,topic,goal,archived,created_at,updated_at) VALUES(?1,'i','history','done',1,0,0)",[format!("history{n:08}")]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','retired','native',1,0,0)",[format!("history{n:08}")]).unwrap();
+            db.execute("INSERT INTO threads(id,instance_id,topic,goal,archived,created_at,updated_at) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','history','done',1,0,0)",[format!("history{n:08}")]).unwrap();
         }
         db.execute_batch("COMMIT").unwrap();
         let rt = Runtime {
@@ -560,7 +566,7 @@ fn archival_worker_negative_recovery_cycles_do_not_rediscover_retained_history()
             legacy_source: Some("covered".into()),
         };
         for _ in 0..size / archival::PAGE + 3 {
-            archival::advance(&db, "i", &rt).unwrap();
+            archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
         }
         let original_epoch: i64 = db
             .query_row(
@@ -626,7 +632,7 @@ fn archival_worker_busy_member_does_not_reset_unrelated_all_left_grace() {
     let fixture = super::handoff_fences::store_fixture_with_clock(clock.clone());
     let (mut worker, host, db, _directory) = worker_fixture_from_store(fixture);
     host.negative_failure.store(3, Ordering::SeqCst);
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('quiet','i','quiet','done',0,0)", []).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('quiet','34750f98bd59fcfc946da45aaabe933b','quiet','done',0,0)", []).unwrap();
     for minute in 0..=60 {
         let now = 100 + minute * 60_000;
         clock.0.store(now, Ordering::SeqCst);
@@ -677,8 +683,9 @@ fn journal_worker_fixture() -> JournalWorkerFixture {
         herdr_threads::store::connection::StoreContext::new(
             paths.database_path.clone(),
             Arc::new(JournalClock),
-        ),
-        "i",
+        )
+        .with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         Default::default(),
     )
     .unwrap();
@@ -739,7 +746,7 @@ fn drain_worker_traversal(worker: &mut ArchivalWorker) {
 }
 fn legacy_veto(db: &rusqlite::Connection) -> bool {
     db.query_row(
-        "SELECT bootstrap_veto FROM archival_instances WHERE instance_id='i'",
+        "SELECT bootstrap_veto FROM archival_instances WHERE instance_id='34750f98bd59fcfc946da45aaabe933b'",
         [],
         |r| r.get(0),
     )
@@ -886,8 +893,9 @@ fn archival_worker_consumed_page_preserves_deadline_cancel_runtime_and_rollback_
                         herdr_threads::store::connection::StoreContext::new(
                             paths.database_path.clone(),
                             clock,
-                        ),
-                        "i",
+                        )
+                        .with_test_host(),
+                        "34750f98bd59fcfc946da45aaabe933b",
                         Default::default(),
                     )
                     .unwrap(),
@@ -932,8 +940,9 @@ fn archival_worker_consumed_page_preserves_deadline_cancel_runtime_and_rollback_
                 herdr_threads::store::connection::StoreContext::new(
                     paths.database_path.clone(),
                     Arc::new(JournalClock),
-                ),
-                "i",
+                )
+                .with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 Default::default(),
             )
             .unwrap(),

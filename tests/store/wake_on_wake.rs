@@ -25,15 +25,15 @@ fn budget() -> CallBudget {
 /// ordinary attention at all, so a lazy row is the only possible wake reason.
 fn lazy_store(wake_on: &str, batch_delay_ms: u64) -> (SqliteStore, std::path::PathBuf) {
     let path = std::env::temp_dir().join(format!("herdr-wake-on-{}.db", uuid::Uuid::new_v4()));
-    let context = StoreContext::new(path.clone(), Arc::new(LazyWakeClock));
+    let context = StoreContext::new(path.clone(), Arc::new(LazyWakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1);\
-         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','pane',1,1,0);\
-         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pane','host',1,1,0,'fresh','term-pane','inc','coherent_enumeration',1);\
-         UPDATE observed_targets SET occupancy='occupied',ui_state='idle',verified_execution='exec',top_level_occupant=1 WHERE instance_id='i' AND target_id='pane';\
+        "UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1;\
+         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0);\
+         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','pane','host',1,1,0,'fresh','term-pane','inc','coherent_enumeration',1);\
+         UPDATE observed_targets SET occupancy='occupied',ui_state='idle',verified_execution='exec',top_level_occupant=1 WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND target_id='pane';\
          INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'pane','host',1,'codex','session','exec','fresh',0,0,'term-pane','inc');\
-         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);\
+         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);\
          INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','joined');\
          INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s',1,1);",
     )
@@ -43,7 +43,7 @@ fn lazy_store(wake_on: &str, batch_delay_ms: u64) -> (SqliteStore, std::path::Pa
     drop(db);
     let store = SqliteStore::new(
         context,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings {
             daemon_boot: Some(uuid::Uuid::parse_str(DAEMON_BOOT).unwrap()),
             wake_batch_delay_ms: batch_delay_ms,
@@ -66,7 +66,7 @@ fn publish_lazy(store: &SqliteStore, n: i64, decision_at: i64) {
 fn stage_lazy(store: &SqliteStore, n: i64) {
     let db = store.context.open_writer().unwrap();
     db.execute(
-        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES(?1,'i','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy')",
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy')",
         [format!("prep-{n}")],
     )
     .unwrap();
@@ -82,12 +82,12 @@ fn stage_lazy(store: &SqliteStore, n: i64) {
 fn publish_staged(store: &SqliteStore, n: i64, decision_seq: i64, decision_at: i64) {
     let db = store.context.open_writer().unwrap();
     db.execute(
-        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES(?1,'i','t',?2,'ordinary',?3,'passive',?4,'lazy')",
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?3,'passive',?4,'lazy')",
         params![format!("msg-{n}"), n, decision_seq, decision_at],
     )
     .unwrap();
     db.execute(
-        "INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'i','t',?4,?3,?4,0,1,0)",
+        "INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'34750f98bd59fcfc946da45aaabe933b','t',?4,?3,?4,0,1,0)",
         params![format!("prep-{n}"), format!("msg-{n}"), decision_at, decision_seq],
     )
     .unwrap();
@@ -105,7 +105,7 @@ fn direct_candidate(store: &SqliteStore) -> WakeCandidate {
     let scan = attention::wake_seat_attention(&db, "s").unwrap();
     wake::load_candidate(
         &db,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &SeatId::new("s"),
         &scan.attention,
         scan.decision_seq,
@@ -328,8 +328,8 @@ fn lazy_publication_sets_the_reason_bit_only_for_all_recipients() {
     let (store, path) = lazy_store("all", 0);
     let mut db = store.context.open_writer().unwrap();
     db.execute_batch(
-        "INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('n','i','unresolved','native',1,0);\
-         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-1','i','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy');\
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('n','34750f98bd59fcfc946da45aaabe933b','unresolved','native',1,0);\
+         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-1','34750f98bd59fcfc946da45aaabe933b','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy');\
          INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-1','msg-1','t','s');\
          INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-1','msg-1','t','n');",
     )

@@ -43,13 +43,10 @@ fn elected_health_sees_late_retirement_and_keeps_exact_error_on_seat_inspect() {
     let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let instance = owner.node_uuid().unwrap();
     drop(owner);
-    let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()));
+    let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()))
+        .with_test_host()
+        .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
     let db = setup.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES (?1,0)",
-        [instance.to_string()],
-    )
-    .unwrap();
     for n in 0..25 {
         let seat = format!("old-retired-seat-{n}");
         let job = format!("old-retirement-job-{n}");

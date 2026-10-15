@@ -1879,7 +1879,7 @@ mod activation {
                         'position',j.position,'high_water',j.high_water,'last_error',j.last_error)
                         FROM lazy_recipients r JOIN work_jobs j ON j.kind='send_attention'
                         AND j.subject_id=r.preparation_id WHERE r.message_id=?1 AND r.seat_id=?2),
-                    'head',(SELECT decision_seq FROM host_instances WHERE id=?4),
+                    'head',(SELECT decision_seq FROM local_node WHERE id=?4),
                     'reader_gate',(SELECT json_object(
                         'has_cursor',EXISTS(SELECT 1 FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=r.thread_id),
                         'joined',EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=r.thread_id AND mb.seat_id=r.seat_id AND mb.state='joined'),

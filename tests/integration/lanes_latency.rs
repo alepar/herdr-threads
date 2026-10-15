@@ -1032,11 +1032,9 @@ fn herdr_stopped_freezes_wake_lane() {
     let before = s.commits("wake");
     let invalidation_revision = || -> i64 {
         s.db()
-            .query_row(
-                "SELECT invalidation_revision FROM host_instances",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT invalidation_revision FROM herdr_hosts", [], |row| {
+                row.get(0)
+            })
             .unwrap()
     };
     let revision = invalidation_revision();

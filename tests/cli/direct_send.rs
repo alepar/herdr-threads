@@ -97,14 +97,13 @@ impl Fixture {
         std::fs::create_dir(&root).unwrap();
         let root = root.canonicalize().unwrap();
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
-        let context = StoreContext::new(root.join("store.db"), clock.clone());
-        let db = context.open_writer().unwrap();
         let instance = herdr_threads::node::NodeUuid::from_u128(1);
-        db.execute(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES(?1,0,'b',1)",
-            [instance.to_string()],
-        )
-        .unwrap();
+        let context = StoreContext::new(root.join("store.db"), clock.clone())
+            .with_test_host()
+            .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
+        let db = context.open_writer().unwrap();
+        db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+            .unwrap();
         for seat in ["seat-a", "seat-b"] {
             db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES(?1,?2,'resolved','native',?1,1,1,0)", rusqlite::params![seat, instance.to_string()]).unwrap();
             db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES(?1,?2,'b',1,1,0,'fresh','term-'||?2,'inc','coherent_enumeration',1)", rusqlite::params![instance.to_string(), seat]).unwrap();
@@ -942,7 +941,7 @@ fn completed_output_loss_replays_history_without_new_effects() {
         .unwrap();
     f.db.execute("UPDATE threads SET archived=1", []).unwrap();
     f.db.execute(
-        "UPDATE seats SET state='retired', retired_at=1, retired_seq=(SELECT decision_seq+1 FROM host_instances LIMIT 1), generation=generation+1 WHERE id='seat-b'",
+        "UPDATE seats SET state='retired', retired_at=1, retired_seq=(SELECT decision_seq+1 FROM local_node LIMIT 1), generation=generation+1 WHERE id='seat-b'",
         [],
     )
     .unwrap();
@@ -996,7 +995,7 @@ fn invalid_target_and_caller_refuse_before_intent_or_pair() {
         match case {
             "retired" => {
                 f.db.execute(
-                    "UPDATE seats SET state='retired', retired_at=1, retired_seq=(SELECT decision_seq+1 FROM host_instances LIMIT 1), generation=generation+1 WHERE id='seat-b'",
+                    "UPDATE seats SET state='retired', retired_at=1, retired_seq=(SELECT decision_seq+1 FROM local_node LIMIT 1), generation=generation+1 WHERE id='seat-b'",
                     [],
                 )
                 .unwrap();

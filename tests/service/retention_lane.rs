@@ -90,8 +90,8 @@ impl LaneFx {
         let kicks = Arc::new(CommitKicks::default());
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(path.clone(), clock.clone()),
-                "i",
+                StoreContext::new(path.clone(), clock.clone()).with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 StoreSettings::default(),
             )
             .unwrap()
@@ -199,7 +199,9 @@ fn observation(sequence: u64) -> HostObservation {
 
 /// One observation publish of a single pane, as the observation lane does it.
 fn publish(store: &SqliteStore, sequence: u64) {
-    let admission = StorePort::begin_host_observation(store, "i", &budget()).unwrap();
+    let admission =
+        StorePort::begin_host_observation(store, "34750f98bd59fcfc946da45aaabe933b", &budget())
+            .unwrap();
     let snapshot = HostSnapshot {
         boot: HostBootId::new("b"),
         epoch: 1,
@@ -231,14 +233,9 @@ fn publish(store: &SqliteStore, sequence: u64) {
 /// connection (a prunable backlog).
 fn seed_backlog(db: &Connection, generations: i64, targets: usize) {
     db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES ('i',0) ON CONFLICT(id) DO NOTHING",
-        [],
-    )
-    .unwrap();
     db.execute_batch("BEGIN").unwrap();
     let mut generation = db
-        .prepare("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,admission_sequence,created_at) VALUES (?1,'i','b',1,?2,'inc',?3,?3,'discarded',0,0,?2,0)")
+        .prepare("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,admission_sequence,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','b',1,?2,'inc',?3,?3,'discarded',0,0,?2,0)")
         .unwrap();
     let mut target = db
         .prepare("INSERT INTO snapshot_targets(generation_id,target_id,generation,observation_sequence,occupancy,ui_state,observed_at) VALUES (?1,?2,1,1,'unknown','unknown',0)")

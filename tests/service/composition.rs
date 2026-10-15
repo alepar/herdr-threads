@@ -396,13 +396,12 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
     let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let instance = owner.node_uuid().unwrap();
     drop(owner);
-    let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()));
+    let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()))
+        .with_test_host()
+        .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
     let db = setup.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)",
-        [instance.to_string()],
-    )
-    .unwrap();
+    db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+        .unwrap();
     db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat',?1,'resolved','native','w1:p1',1,0,0)", [instance.to_string()]).unwrap();
     db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'w1:p1','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'w1:p1','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
     db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient',?1,'resolved','native','w1:p2',1,0,0)", [instance.to_string()]).unwrap();
@@ -439,7 +438,11 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
                 move |instance, boot, cancellation| {
                     let store: Arc<dyn StorePort> = Arc::new(
                         SqliteStore::new(
-                            StoreContext::new(database, Arc::clone(&service_clock)),
+                            StoreContext::new(database, Arc::clone(&service_clock))
+                                .with_test_host()
+                                .with_node_seed(herdr_threads::test_support::node_seed_for(
+                                    instance,
+                                )),
                             instance.to_string(),
                             StoreSettings::default(),
                         )
@@ -870,13 +873,10 @@ fn elected_service_fixture(custom_settings: bool) {
     let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let instance = owner.node_uuid().unwrap();
     drop(owner);
-    let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()));
+    let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()))
+        .with_test_host()
+        .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
     let db = setup.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES (?1,0)",
-        [instance.to_string()],
-    )
-    .unwrap();
     db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s2',?1,'resolved','native',1,0)", [instance.to_string()]).unwrap();
     db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t',?1,'topic','goal',0,0)", [instance.to_string()]).unwrap();
     db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s2','invited');
@@ -1464,9 +1464,14 @@ fn elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined() {
     drop(owner);
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let db = StoreContext::new(paths.database_path.clone(), Arc::clone(&clock))
+        .with_test_host()
+        .with_node_seed(herdr_threads::test_support::node_seed_for(instance))
         .open_writer()
         .unwrap();
-    db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES (?1,0,'host',1,1)", [instance.to_string()]).unwrap();
+    db.execute("UPDATE herdr_hosts SET host_boot='host',host_epoch=1", [])
+        .unwrap();
+    db.execute("UPDATE local_node SET decision_seq=1", [])
+        .unwrap();
     db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('wake',?1,'resolved','native','pane',1,1,0)", [instance.to_string()]).unwrap();
     db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'pane','host',1,1,0,'fresh','occupied','idle','exec',1,'term-'||'pane','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
     db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t',?1,'topic','goal',0,0)", [instance.to_string()]).unwrap();
@@ -1661,13 +1666,10 @@ impl ActualNativeFixture {
         drop(owner);
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let db = StoreContext::new(paths.database_path.clone(), Arc::clone(&clock))
+            .with_test_host()
+            .with_node_seed(herdr_threads::test_support::node_seed_for(instance))
             .open_writer()
             .unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at) VALUES (?1,0)",
-            [instance.to_string()],
-        )
-        .unwrap();
         for n in 0..saved {
             db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,1,1,0)", rusqlite::params![format!("saved-{n}"),instance.to_string(),format!("absent-{n}")]).unwrap();
         }
@@ -1965,7 +1967,7 @@ impl ActualNativeFixture {
         )
     }
     fn db(&self) -> rusqlite::Connection {
-        rusqlite::Connection::open(&self.paths.database_path).unwrap()
+        herdr_threads::test_support::open_test_connection(&self.paths.database_path)
     }
 }
 impl Drop for ActualNativeFixture {
@@ -2123,7 +2125,7 @@ fn actual_native_snapshot_cancellation_closes_peer_before_elected_worker_join_an
     );
     assert!(OwnerLock::acquire_with_test_hint(&fixture.paths).is_ok());
     let active: Option<String> = db
-        .query_row("SELECT active_snapshot_id FROM host_instances", [], |r| {
+        .query_row("SELECT active_snapshot_id FROM herdr_hosts", [], |r| {
             r.get(0)
         })
         .unwrap();
@@ -2159,7 +2161,7 @@ fn actual_native_verified_baseline_holds_targets_and_cannot_retire_proofless_sea
     assert_eq!(counts, (0, 0));
     let baselines: (Option<String>, Option<String>, i64) = db
         .query_row(
-            "SELECT active_snapshot_id,recovery_baseline_generation_id,baseline_hold_unclaimed FROM host_instances",
+            "SELECT active_snapshot_id,recovery_baseline_generation_id,baseline_hold_unclaimed FROM herdr_hosts",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -2177,7 +2179,7 @@ fn actual_native_verified_baseline_holds_targets_and_cannot_retire_proofless_sea
 #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 fn host_state(db: &rusqlite::Connection) -> (Option<String>, i64, i64) {
     db.query_row(
-        "SELECT active_snapshot_id,host_epoch,invalidation_revision FROM host_instances",
+        "SELECT active_snapshot_id,host_epoch,invalidation_revision FROM herdr_hosts",
         [],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )
@@ -2443,7 +2445,7 @@ fn restart_keeps_registered_seat_available(provenance: &str) {
             herdr_threads::test_support::isolation::stand_in_fingerprint("claude", "x");
         let db = fixture.db();
         db.execute(
-            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) SELECT s.id,s.generation,s.target_generation,s.target_id,h.host_boot,h.host_epoch,'claude','plugin_context:x','exec-x',?2,1,1,s.structural_terminal_id,s.structural_incarnation,?3,?4 FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1",
+            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) SELECT s.id,s.generation,s.target_generation,s.target_id,h.host_boot,h.host_epoch,'claude','plugin_context:x','exec-x',?2,1,1,s.structural_terminal_id,s.structural_incarnation,?3,?4 FROM seats s JOIN herdr_hosts h ON h.node_id=s.instance_id WHERE s.id=?1",
             // A live fingerprint: the liveness worker (decision 9) disconnects a binding without one.
             rusqlite::params![
                 seat.as_str(),
@@ -2468,7 +2470,7 @@ fn restart_keeps_registered_seat_available(provenance: &str) {
     assert_eq!(available(&db).as_deref(), Some(provenance));
     let (binding_epoch, host_epoch, ended): (i64, i64, Option<i64>) = db
         .query_row(
-            "SELECT b.host_epoch,h.host_epoch,b.ended_at FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id JOIN host_instances h ON h.id=s.instance_id WHERE b.seat_id=?1",
+            "SELECT b.host_epoch,h.host_epoch,b.ended_at FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id JOIN herdr_hosts h ON h.node_id=s.instance_id WHERE b.seat_id=?1",
             [seat.as_str()],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -2528,17 +2530,16 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     drop(
         StoreContext::new(paths.database_path.clone(), Arc::clone(&clock))
+            .with_test_host()
+            .with_node_seed(herdr_threads::test_support::node_seed_for(&instance))
             .open_writer()
             .unwrap(),
     );
     {
         // A pre-invariant store: raw connection, so no evidence guard.
         let db = rusqlite::Connection::open(&paths.database_path).unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)",
-            [&instance],
-        )
-        .unwrap();
+        db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+            .unwrap();
         for seat in ["healable", "noproof"] {
             db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native','p-'||?1,1,1,0)", [seat, instance.as_str()]).unwrap();
             db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES (?1,1,1,'p-'||?1,'b',1,'codex','n','e-'||?1,'cooperative_top_level',1,1)", [seat]).unwrap();

@@ -13,7 +13,7 @@ pub(super) fn identity() -> HandoffIdentity {
         compound: OperationId::new("compound"),
         digest: "a".repeat(64),
         claim: CallerClaim {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("s"),
             target: HostTargetId::new("p"),
             binding_generation: 1,
@@ -174,7 +174,14 @@ fn handoff_new_thread_attachment_matches_exact_actor_scope_and_create_key() {
     id.thread = None;
     let tx = db.transaction().unwrap();
     handoff::begin_pending(&tx, &id, UtcMillis(0)).unwrap();
-    handoff::attach_created(&tx, "i", "seat:other", "create", &ThreadId::new("t")).unwrap();
+    handoff::attach_created(
+        &tx,
+        "34750f98bd59fcfc946da45aaabe933b",
+        "seat:other",
+        "create",
+        &ThreadId::new("t"),
+    )
+    .unwrap();
     assert!(
         handoff::current(&tx, &id)
             .unwrap()
@@ -182,7 +189,14 @@ fn handoff_new_thread_attachment_matches_exact_actor_scope_and_create_key() {
             .thread
             .is_none()
     );
-    handoff::attach_created(&tx, "i", "seat:s", "create", &ThreadId::new("t")).unwrap();
+    handoff::attach_created(
+        &tx,
+        "34750f98bd59fcfc946da45aaabe933b",
+        "seat:s",
+        "create",
+        &ThreadId::new("t"),
+    )
+    .unwrap();
     assert_eq!(
         handoff::current(&tx, &id).unwrap().unwrap().thread,
         Some(ThreadId::new("t"))
@@ -228,15 +242,13 @@ pub(super) fn store_fixture_with_clock(
     std::fs::create_dir(&directory.0).unwrap();
     let path = directory.0.join("store.db");
     let store = SqliteStore::new(
-        StoreContext::new(path.clone(), clock),
-        "i",
+        StoreContext::new(path.clone(), clock).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings::default(),
     )
     .unwrap();
-    let db = rusqlite::Connection::open(path).unwrap();
+    let db = herdr_threads::test_support::open_test_connection(&path);
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
-    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0)")
-        .unwrap();
     thread(&db);
     joined_agent(&db);
     StoreFixture {

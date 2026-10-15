@@ -1365,7 +1365,23 @@ where
                     "node.json hint does not match the loaded node key",
                 ));
             }
-            let context = StoreContext::new(database_path, Arc::clone(&factory_clock));
+            let context = StoreContext::new(database_path, Arc::clone(&factory_clock))
+                .with_node_seed(crate::store::schema::NodeSeed {
+                    uuid: identity.uuid(),
+                    tag: crate::node::tag_for(identity.uuid(), 0),
+                    tag_k: 0,
+                });
+            // Interim single-host attach (ht-5fr.1.7's HostChoice replaces it):
+            // the one host this daemon was composed with gets its
+            // `herdr_hosts` row and becomes the store's primary host before
+            // the store is opened for service.
+            let host_endpoint = legacy_host_endpoint.as_ref().map_or_else(
+                || crate::store::schema::UNNAMED_HOST_ENDPOINT.to_owned(),
+                |path| path.to_string_lossy().into_owned(),
+            );
+            context.attach_host(&host_endpoint).map_err(|error| {
+                io::Error::other(format!("store startup: {:?}: {}", error.code, error.detail))
+            })?;
             factory_probe.configure_store(&context);
             // One registry per elected daemon: the store's commit hooks kick
             // through it and every lane registers its Pacer here at start.

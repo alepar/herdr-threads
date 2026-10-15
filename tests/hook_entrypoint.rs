@@ -712,13 +712,12 @@ fn seed(paths: &NodePaths) -> herdr_threads::node::NodeUuid {
     let owner = OwnerLock::acquire_with_test_hint(paths).unwrap();
     let instance = owner.node_uuid().unwrap();
     drop(owner);
-    let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()));
+    let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()))
+        .with_test_host()
+        .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
     let db = setup.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)",
-        [instance.to_string()],
-    )
-    .unwrap();
+    db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+        .unwrap();
     for (seat, pane, seq) in [
         ("seat", "w9:p1", 1),
         ("peer", "w9:p2", 2),
@@ -924,7 +923,11 @@ impl Fixture {
                     move |instance, boot, cancellation| {
                         let store: Arc<dyn StorePort> = Arc::new(
                             SqliteStore::new(
-                                StoreContext::new(database, Arc::clone(&service_clock)),
+                                StoreContext::new(database, Arc::clone(&service_clock))
+                                    .with_test_host()
+                                    .with_node_seed(herdr_threads::test_support::node_seed_for(
+                                        instance,
+                                    )),
                                 instance.to_string(),
                                 StoreSettings::default(),
                             )
@@ -2979,7 +2982,7 @@ impl Fixture {
         db.execute_batch(&format!(
             "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{n}) \
              INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) \
-             SELECT 'fill-'||x,(SELECT id FROM host_instances),'filler','',0,0 FROM n;"
+             SELECT 'fill-'||x,(SELECT id FROM local_node),'filler','',0,0 FROM n;"
         ))
         .unwrap();
     }
@@ -3270,11 +3273,11 @@ impl Fixture {
         db.execute_batch(&format!(
             "BEGIN; \
              INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) \
-             SELECT 'hist',(SELECT id FROM host_instances),'history','',0,0; \
+             SELECT 'hist',(SELECT id FROM local_node),'history','',0,0; \
              INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('hist','seat',1,1); \
              WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{acked}) \
              INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,event_offset) \
-             SELECT 'hist-m'||x,(SELECT id FROM host_instances),'hist',x,'ordinary','b',0,1,100000+x FROM n; \
+             SELECT 'hist-m'||x,(SELECT id FROM local_node),'hist',x,'ordinary','b',0,1,100000+x FROM n; \
              INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) \
              SELECT id,'hist','seat','pending',100 FROM messages WHERE thread_id='hist'; \
              UPDATE receipts SET state='acked',ack_actor_seat_id='seat',ack_generation=1,ack_observation='obs',acked_at=1 WHERE thread_id='hist'; \
@@ -3282,13 +3285,13 @@ impl Fixture {
              INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) \
              SELECT 'hist-i'||x,'hist','seat',x+1,'pending',0,1,100,100 FROM n; \
              INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) \
-             SELECT 'hist-w'||ordinal,(SELECT id FROM host_instances),'hist',10000000+ordinal,'warn','{{}}',0,1,5000000+ordinal FROM invitations WHERE thread_id='hist'; \
+             SELECT 'hist-w'||ordinal,(SELECT id FROM local_node),'hist',10000000+ordinal,'warn','{{}}',0,1,5000000+ordinal FROM invitations WHERE thread_id='hist'; \
              INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) \
              SELECT 'hist-w'||ordinal,1,'hist',1000000,'seat','invitation',id FROM invitations WHERE thread_id='hist'; \
              UPDATE invitations SET state='accepted',accepted_at=1,accepted_actor_seat_id='seat',accepted_generation=1,accepted_observation='obs' WHERE thread_id='hist'; \
              WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{warns}) \
              INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) \
-             SELECT 'hist-b'||x,(SELECT id FROM host_instances),'hist',20000000+x,'warn','{{}}',0,1,9000000+x FROM n; \
+             SELECT 'hist-b'||x,(SELECT id FROM local_node),'hist',20000000+x,'warn','{{}}',0,1,9000000+x FROM n; \
              COMMIT;"
         ))
         .unwrap();
@@ -3385,7 +3388,8 @@ impl Fixture {
     /// `receipts` row exists, as in production.
     fn production_history(&self, acked: u64) -> Duration {
         let started = Instant::now();
-        let context = StoreContext::new(self.db.clone(), Arc::new(SystemClock::new()));
+        let context =
+            StoreContext::new(self.db.clone(), Arc::new(SystemClock::new())).with_test_host();
         // History setup only: the production writers run unchanged, but this
         // setup connection commits with `synchronous=NORMAL` (WAL), so writing
         // the history is not fsync-bound on a disk shared with the suite.
@@ -3395,7 +3399,7 @@ impl Fixture {
         conn.execute_batch(
             "BEGIN; \
              INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) \
-             SELECT 'hist',(SELECT id FROM host_instances),'history','',0,0; \
+             SELECT 'hist',(SELECT id FROM local_node),'history','',0,0; \
              INSERT INTO memberships(thread_id,seat_id,state) VALUES ('hist','peer','joined'),('hist','seat','joined'); \
              INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('hist','peer',1,1),('hist','seat',1,1); \
              COMMIT;",
@@ -3545,7 +3549,8 @@ impl Fixture {
     /// settled: its receipt is ACKed.
     fn settled_warning_history(&self, settled: u64) -> Duration {
         let started = Instant::now();
-        let context = StoreContext::new(self.db.clone(), Arc::new(SystemClock::new()));
+        let context =
+            StoreContext::new(self.db.clone(), Arc::new(SystemClock::new())).with_test_host();
         // History setup only: the production writers run unchanged, but this
         // setup connection commits with `synchronous=NORMAL` (WAL), so writing
         // the history is not fsync-bound on a disk shared with the suite.
@@ -3555,7 +3560,7 @@ impl Fixture {
         conn.execute_batch(
             "BEGIN; \
              INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) \
-             SELECT 'hist',(SELECT id FROM host_instances),'history','',0,0; \
+             SELECT 'hist',(SELECT id FROM local_node),'history','',0,0; \
              INSERT INTO memberships(thread_id,seat_id,state) VALUES ('hist','peer','joined'),('hist','seat','joined'); \
              INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('hist','peer',1,1),('hist','seat',1,1); \
              COMMIT;",
@@ -3688,7 +3693,8 @@ impl Fixture {
     fn pending_axis_history(&self, axis: PendingAxis, n: u64) -> Duration {
         use herdr_threads::test_support::history;
         let started = Instant::now();
-        let context = StoreContext::new(self.db.clone(), Arc::new(SystemClock::new()));
+        let context =
+            StoreContext::new(self.db.clone(), Arc::new(SystemClock::new())).with_test_host();
         // History setup only: the production writers run unchanged, but this
         // setup connection commits with `synchronous=NORMAL` (WAL), so writing
         // the history is not fsync-bound on a disk shared with the suite.
@@ -3698,7 +3704,7 @@ impl Fixture {
         conn.execute_batch(
             "BEGIN; \
              INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) \
-             SELECT 'hist',(SELECT id FROM host_instances),'history','',0,0; \
+             SELECT 'hist',(SELECT id FROM local_node),'history','',0,0; \
              INSERT INTO memberships(thread_id,seat_id,state) VALUES ('hist','peer','joined'),('hist','seat','joined'); \
              INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('hist','peer',1,1),('hist','seat',1,1); \
              COMMIT;",
@@ -5625,13 +5631,10 @@ mod continuity {
                 fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).unwrap();
             }
             let setup =
-                StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()));
+                StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()))
+                    .with_test_host()
+                    .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
             let db = setup.open_writer().unwrap();
-            db.execute(
-                "INSERT INTO host_instances(id,created_at) VALUES (?1,0)",
-                [instance.to_string()],
-            )
-            .unwrap();
             seed(&db, &instance.to_string());
             drop(db);
             // Write the pinned version reporters before any thread of this
@@ -5752,7 +5755,7 @@ mod continuity {
         pub fn wait_reconciled(&self) {
             let until = Instant::now() + Duration::from_secs(15);
             while self.count(
-                "SELECT count(*) FROM host_instances WHERE active_snapshot_id IS NOT NULL AND reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",
+                "SELECT count(*) FROM herdr_hosts WHERE active_snapshot_id IS NOT NULL AND reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",
             ) == 0
             {
                 assert!(
@@ -6315,7 +6318,7 @@ mod continuity {
                     .unwrap()
                     .insert("w1:p3".into(), Agent::NoSession);
                 let store = herdr_threads::store::SqliteStore::new(
-                    StoreContext::new(fx.db.clone(), Arc::clone(&fx.clock)),
+                    StoreContext::new(fx.db.clone(), Arc::clone(&fx.clock)).with_test_host(),
                     fx.instance.to_string(),
                     herdr_threads::store::StoreSettings::default(),
                 )
@@ -6326,8 +6329,8 @@ mod continuity {
                     &fx.instance.to_string(),
                     fx.clock.as_ref(),
                 );
-                assert_eq!(fx.count("SELECT count(*) FROM snapshot_targets WHERE target_id='w1:p3' AND generation_id=(SELECT active_snapshot_id FROM host_instances)"), 1);
-                assert_eq!(fx.count("SELECT count(*) FROM snapshot_targets WHERE target_id='w1:p3' AND generation_id=(SELECT recovery_baseline_generation_id FROM host_instances)"), 0);
+                assert_eq!(fx.count("SELECT count(*) FROM snapshot_targets WHERE target_id='w1:p3' AND generation_id=(SELECT active_snapshot_id FROM herdr_hosts)"), 1);
+                assert_eq!(fx.count("SELECT count(*) FROM snapshot_targets WHERE target_id='w1:p3' AND generation_id=(SELECT recovery_baseline_generation_id FROM herdr_hosts)"), 0);
                 let resume = fx.hook(
                     harness,
                     "w1:p3",
@@ -6373,7 +6376,7 @@ mod continuity {
                     .insert(pane.into(), Agent::NoSession);
             }
             let store = herdr_threads::store::SqliteStore::new(
-                StoreContext::new(fx.db.clone(), Arc::clone(&fx.clock)),
+                StoreContext::new(fx.db.clone(), Arc::clone(&fx.clock)).with_test_host(),
                 fx.instance.to_string(),
                 herdr_threads::store::StoreSettings::default(),
             )
@@ -6384,7 +6387,7 @@ mod continuity {
                 &fx.instance.to_string(),
                 fx.clock.as_ref(),
             );
-            assert_eq!(fx.count("SELECT count(*) FROM snapshot_targets WHERE target_id='w1:p3' AND generation_id=(SELECT recovery_baseline_generation_id FROM host_instances)"), 0);
+            assert_eq!(fx.count("SELECT count(*) FROM snapshot_targets WHERE target_id='w1:p3' AND generation_id=(SELECT recovery_baseline_generation_id FROM herdr_hosts)"), 0);
             for source in ["startup", "clear", "resume"] {
                 let callback = fx.hook(
                     harness,
@@ -6428,7 +6431,7 @@ mod continuity {
             let fx = reattaching_fixture(harness, Agent::Session("S-1".into()));
             // The pane is held by the restore baseline until the saved seat is resolved.
             assert_eq!(
-                fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+                fx.count("SELECT baseline_hold_unclaimed FROM herdr_hosts"),
                 1,
                 "{harness}"
             );
@@ -6464,7 +6467,7 @@ mod continuity {
                 0
             );
             assert_eq!(
-                fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+                fx.count("SELECT baseline_hold_unclaimed FROM herdr_hosts"),
                 0,
                 "{harness}"
             );
@@ -6488,7 +6491,7 @@ mod continuity {
                     "{harness} {source}"
                 );
                 assert_eq!(
-                    fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+                    fx.count("SELECT baseline_hold_unclaimed FROM herdr_hosts"),
                     1
                 );
                 assert_eq!(
@@ -6523,7 +6526,7 @@ mod continuity {
                 1
             );
             assert_eq!(
-                fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+                fx.count("SELECT baseline_hold_unclaimed FROM herdr_hosts"),
                 1
             );
             assert_eq!(fx.intents(), 0, "a definitive refusal discards the intent");
@@ -6542,7 +6545,7 @@ mod continuity {
                 "{harness}"
             );
             assert_eq!(
-                fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+                fx.count("SELECT baseline_hold_unclaimed FROM herdr_hosts"),
                 1
             );
             assert_eq!(fx.count("SELECT count(*) FROM allocation_decisions"), 0);
@@ -6673,7 +6676,7 @@ mod continuity {
             1
         );
         assert_eq!(
-            fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+            fx.count("SELECT baseline_hold_unclaimed FROM herdr_hosts"),
             1
         );
         // The other pane is still held; reattaching the last unresolved seat lifts it.
@@ -6684,7 +6687,7 @@ mod continuity {
             0
         );
         assert_eq!(
-            fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+            fx.count("SELECT baseline_hold_unclaimed FROM herdr_hosts"),
             0
         );
         assert_eq!(

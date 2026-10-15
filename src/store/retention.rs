@@ -45,7 +45,7 @@ pub const PRUNED_JOB_KINDS: [&str; 3] = [
 const CANDIDATE_SQL: &str = "\
 SELECT g.id, g.status \
 FROM snapshot_generations g {index} \
-JOIN host_instances h ON h.id = g.instance_id \
+JOIN herdr_hosts h ON h.host_id = primary_host() AND h.node_id = g.instance_id \
 LEFT JOIN snapshot_generations a ON a.id = h.active_snapshot_id \
 WHERE (g.status = 'discarded' \
     OR (g.status IN ('building','sealed') AND g.admission_sequence <= h.observation_decided_sequence) \

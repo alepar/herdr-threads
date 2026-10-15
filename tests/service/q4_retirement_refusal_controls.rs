@@ -211,7 +211,7 @@ fn bookend(f: &BodyFixture) -> Vec<Vec<Vec<Value>>> {
         "SELECT * FROM digest_notice_offer ORDER BY binding_id",
         "SELECT * FROM messages ORDER BY id",
         "SELECT * FROM send_manifests ORDER BY preparation_id",
-        "SELECT * FROM host_instances ORDER BY id",
+        "SELECT * FROM herdr_hosts ORDER BY host_id",
     ]
     .into_iter()
     .map(|sql| rows(f, sql))
@@ -359,8 +359,9 @@ fn modern_lazy_retirement_requires_intact_captured_publication_and_recipient_aut
             "foreign_publication_instance" => {
                 let foreign = uuid::Uuid::new_v4().to_string();
                 // Explicit corruption fixture: both retained identities agree with each other,
-                // but not the instance in the immutable captured continuation.
-                f.db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES(?1,0,'foreign',1,0)",[&foreign]).unwrap();
+                // but not the instance in the immutable captured continuation. A store
+                // has one node row, so the foreign identity references none.
+                f.db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
                 fault_with_restored_guard(f, "messages_immutable", || {
                     f.db.execute(
                         "UPDATE messages SET instance_id=?1 WHERE id=?2",
@@ -373,6 +374,7 @@ fn modern_lazy_retirement_requires_intact_captured_publication_and_recipient_aut
                         params![foreign, c.old.as_str()],
                     )
                 });
+                f.db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
             }
             "missing_recipient" => {
                 fault_with_restored_guard(f, "lazy_recipient_published_retained", || {

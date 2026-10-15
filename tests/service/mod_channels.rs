@@ -907,8 +907,8 @@ mod domain {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let sqlite = Arc::new(
             SqliteStore::new(
-                StoreContext::new(path.clone(), clock.clone()),
-                "i",
+                StoreContext::new(path.clone(), clock.clone()).with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 StoreSettings::default(),
             )
             .unwrap(),
@@ -916,9 +916,9 @@ mod domain {
         {
             let db = rusqlite::Connection::open(&path).unwrap();
             db.execute_batch(
-                "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1);\
-                 INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','p',1,1,0);\
-                 INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p','b',1,1,0,'fresh','term-p','inc','coherent_enumeration',1);\
+                "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1;\
+                 INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',1,1,0);\
+                 INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,1,0,'fresh','term-p','inc','coherent_enumeration',1);\
                  INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',1,'p','b',1,1,'claude','native','00000000-0000-4000-8000-0000000000aa','cooperative_top_level',0,'term-p','inc');\
                  INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES ('s',1,5);",
             )
@@ -929,14 +929,14 @@ mod domain {
         let registry = Arc::new(ModChannelRegistry::new(
             clock.clone(),
             sqlite.clone(),
-            "i".into(),
+            "34750f98bd59fcfc946da45aaabe933b".into(),
             Arc::new(move || {
                 counter.fetch_add(1, Ordering::SeqCst);
             }),
             ModDeliverySetting::On,
         ));
         let store: Arc<dyn StorePort> = sqlite;
-        let domain = DomainService::new("i".into(), store, clock)
+        let domain = DomainService::new("34750f98bd59fcfc946da45aaabe933b".into(), store, clock)
             .with_mod_channels(registry.clone() as Arc<dyn ModChannels>);
         Rig {
             path,
@@ -947,7 +947,7 @@ mod domain {
     }
 
     fn db(rig: &Rig) -> rusqlite::Connection {
-        rusqlite::Connection::open(&rig.path).unwrap()
+        crate::test_support::open_test_connection(&rig.path)
     }
 
     impl Rig {
@@ -990,7 +990,7 @@ mod domain {
         WatchRequest {
             presentation_v2: false,
             claim: CallerClaim {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 seat: seat("s"),
                 binding_generation: 1,
                 role: CallerRole::TopLevel,
@@ -1188,7 +1188,7 @@ mod domain {
         let rig = rig();
         db(&rig)
             .execute(
-                "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('i','p','b',1,'hold')",
+                "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,'hold')",
                 [],
             )
             .unwrap();
@@ -1350,8 +1350,8 @@ mod domain {
         // An ordinary message addressed to the seat.
         db(&rig)
             .execute_batch(
-                "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);\
-                 INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('m1','i','t',1,'ordinary','hello',0,1);\
+                "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);\
+                 INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('m1','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','hello',0,1);\
                  INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m1','t','s','pending',100);\
                  UPDATE wake_work SET attention_version=6 WHERE seat_id='s';",
             )
@@ -1659,12 +1659,12 @@ mod domain {
     /// An ordinary message `id` (sequence `seq` of thread `t`) published to seat `s`.
     fn deliver(db: &rusqlite::Connection, id: &str, seq: u32) {
         db.execute_batch(&format!(
-            "INSERT OR IGNORE INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);
+            "INSERT OR IGNORE INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);
              INSERT OR IGNORE INTO memberships(thread_id,seat_id,state) VALUES ('t','s','joined');
-             INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','{id}','t',{seq},'ordinary','b',{seq},{seq});
-             INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p-{id}','i','actor','{id}',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
+             INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','{id}','t',{seq},'ordinary','b',{seq},{seq});
+             INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p-{id}','34750f98bd59fcfc946da45aaabe933b','actor','{id}',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
              INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('p-{id}','t','s',1,300,0);
-             INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) SELECT 'p-{id}','{id}','i','t',decision_seq,{seq},{seq},0,1,0 FROM messages WHERE id='{id}';"
+             INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) SELECT 'p-{id}','{id}','34750f98bd59fcfc946da45aaabe933b','t',decision_seq,{seq},{seq},0,1,0 FROM messages WHERE id='{id}';"
         ))
         .unwrap();
     }

@@ -5,19 +5,81 @@ use crate::protocol::{
     time::{CallBudget, Clock, MonoInstant, UtcMillis},
 };
 use crate::service::kicks::{self, LaneSet};
-use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, ffi};
+use rusqlite::{
+    Connection, OpenFlags, Transaction, TransactionBehavior, ffi, functions::FunctionFlags,
+};
 use std::{
     ffi::{c_char, c_int, c_void},
     ops::Deref,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicU8, Ordering},
     },
     time::Duration,
 };
 
-use super::schema;
+use super::schema::{self, NodeSeed};
+
+/// The SQL function every store connection carries: the attached Herdr host's
+/// `herdr_hosts.host_id`, or an error `store_error` maps to `HostUnavailable`.
+/// Queries of a Herdr-scope column are written `FROM herdr_hosts WHERE
+/// host_id = primary_host() AND node_id = ?`; the function reads the set-once
+/// cell behind `StoreContext::primary_host`, so a statement never names the id.
+pub(crate) const PRIMARY_HOST_FN: &str = "primary_host";
+
+/// The message of the error the SQL function raises when no host is attached.
+const NO_PRIMARY_HOST: &str = "herdr-threads: no Herdr server attached";
+
+#[derive(Debug)]
+struct NoPrimaryHost;
+
+impl std::fmt::Display for NoPrimaryHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(NO_PRIMARY_HOST)
+    }
+}
+
+impl std::error::Error for NoPrimaryHost {}
+
+/// Stamps the `herdr_hosts` row of `endpoint` as attached at `now`, creating it
+/// for this node when it does not exist, and returns its `host_id`. Update
+/// first and insert only when absent, so a re-attach never advances the
+/// AUTOINCREMENT sequence.
+pub(crate) fn upsert_host(conn: &Connection, endpoint: &str, now: i64) -> rusqlite::Result<i64> {
+    use rusqlite::OptionalExtension;
+    if let Some(host_id) = conn
+        .query_row(
+            "UPDATE herdr_hosts SET last_attached_at=?2 WHERE endpoint=?1 RETURNING host_id",
+            rusqlite::params![endpoint, now],
+            |row| row.get(0),
+        )
+        .optional()?
+    {
+        return Ok(host_id);
+    }
+    conn.query_row(
+        "INSERT INTO herdr_hosts(node_id,endpoint,created_at,last_attached_at) \
+         SELECT id,?1,?2,?2 FROM local_node RETURNING host_id",
+        rusqlite::params![endpoint, now],
+        |row| row.get(0),
+    )
+}
+
+/// Installs the `primary_host()` SQL function on `conn`, reading `primary`.
+/// Every connection of a [`StoreContext`] gets it at open; a fixture that
+/// opens a bare connection binds it with [`StoreContext::bind_connection`].
+pub(crate) fn register_primary_host(
+    conn: &Connection,
+    primary: Arc<OnceLock<i64>>,
+) -> rusqlite::Result<()> {
+    conn.create_scalar_function(PRIMARY_HOST_FN, 0, FunctionFlags::SQLITE_UTF8, move |_| {
+        primary
+            .get()
+            .copied()
+            .ok_or_else(|| rusqlite::Error::UserFunctionError(Box::new(NoPrimaryHost)))
+    })
+}
 
 /// Decides, from the calling thread's lane origin, whether a store access
 /// fails (test hook).
@@ -35,6 +97,13 @@ type IdleQueries = Arc<std::sync::Mutex<Vec<Connection>>>;
 pub struct StoreContext {
     path: PathBuf,
     clock: Arc<dyn Clock>,
+    /// The attached Herdr host's `herdr_hosts.host_id`, set once (see
+    /// [`StoreContext::primary_host`]).
+    primary_host: Arc<OnceLock<i64>>,
+    /// The identity a fresh store is created with; an existing store keeps its
+    /// own. Production sets it from the loaded node key; test builds default to
+    /// the fixed test node.
+    node_seed: Option<NodeSeed>,
     idle_queries: IdleQueries,
     /// The last writer open's binding-evidence verification result.
     binding_evidence: std::sync::Mutex<Option<crate::ports::BindingEvidenceStartup>>,
@@ -49,6 +118,10 @@ pub struct StoreContext {
     /// missing or does not cover every target (restart, eviction, another
     /// process staging, a differing target).
     snapshot_stage_matches: std::sync::Mutex<Vec<SnapshotStageMatch>>,
+    /// Test hook: every writer open attaches the fixture Herdr host (see
+    /// `with_test_host`).
+    #[cfg(any(test, feature = "test-support"))]
+    test_host: bool,
     /// Test hook: fails store access on lane-owned threads (see `set_lane_fault`).
     #[cfg(any(test, feature = "test-support"))]
     lane_fault: std::sync::Mutex<Option<LaneFault>>,
@@ -144,10 +217,17 @@ impl StoreContext {
         Self {
             path,
             clock,
+            primary_host: Arc::new(OnceLock::new()),
+            #[cfg(any(test, feature = "test-support"))]
+            node_seed: Some(crate::test_support::test_node_seed()),
+            #[cfg(not(any(test, feature = "test-support")))]
+            node_seed: None,
             idle_queries: Arc::default(),
             binding_evidence: std::sync::Mutex::new(None),
             binding_evidence_lacking: std::sync::Mutex::new(Vec::new()),
             snapshot_stage_matches: std::sync::Mutex::new(Vec::new()),
+            #[cfg(any(test, feature = "test-support"))]
+            test_host: false,
             #[cfg(any(test, feature = "test-support"))]
             lane_fault: std::sync::Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
@@ -162,6 +242,84 @@ impl StoreContext {
             #[cfg(test)]
             rollback_journal: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// The identity a fresh store file is created with. An existing store
+    /// keeps the identity it was created with; a fresh store with no seed is an
+    /// error, never a silent default.
+    #[must_use]
+    pub fn with_node_seed(mut self, seed: NodeSeed) -> Self {
+        self.node_seed = Some(seed);
+        self
+    }
+
+    /// Test hook: a store whose Herdr host is the fixture host
+    /// (`test_support::TEST_HOST_ENDPOINT`). Every writer open upserts its
+    /// `herdr_hosts` row and makes it the primary host, so a fixture sets host
+    /// columns with `UPDATE herdr_hosts` and never inserts the row. A store
+    /// built without it has no attached host (`HostUnavailable`).
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn with_test_host(mut self) -> Self {
+        self.test_host = true;
+        self
+    }
+
+    /// Test hook: the primary host is fixed to id 1, the id the first
+    /// `herdr_hosts` row of a fresh store gets, before that row exists. A test
+    /// inserts the row later (see `test_support::attach_test_host_to_connection`)
+    /// to model the moment a host is first admitted.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn with_pending_test_host(self) -> Self {
+        self.set_primary_host(1);
+        self
+    }
+
+    /// Records the attached Herdr host's `herdr_hosts.host_id`. Set once, after
+    /// the host row exists; a second, different id is a bug.
+    pub(crate) fn set_primary_host(&self, host_id: i64) {
+        let recorded = *self.primary_host.get_or_init(|| host_id);
+        debug_assert_eq!(recorded, host_id, "primary host is set once");
+    }
+
+    /// The single attached Herdr host's `herdr_hosts.host_id`.
+    ///
+    /// Owns: the one answer to "which host does a Herdr-scope column belong
+    /// to" while the node has one attached host, and `HostUnavailable` ("no
+    /// Herdr server attached") when there is none. Does not own: the
+    /// `herdr_hosts` row (attach upserts it), the host's session or
+    /// reachability, or any per-seat routing. Role: the one seam every query of
+    /// a column that lives on `herdr_hosts` goes through, either here or via
+    /// the `primary_host()` SQL function this value backs on every connection
+    /// of this context; no code reads the field or a literal id directly. New
+    /// behaviour (several hosts, per-seat routing by `seats.host_id`) replaces
+    /// this accessor and the function, not the call sites (ht-5fr.2).
+    pub(crate) fn primary_host(&self) -> Result<i64, ApiError> {
+        self.primary_host
+            .get()
+            .copied()
+            .ok_or_else(|| api_error(ErrorCode::HostUnavailable, "no Herdr server attached"))
+    }
+
+    /// Interim single-host attach: upserts the `herdr_hosts` row of `endpoint`
+    /// for this node (stamping `last_attached_at`) and makes it the primary
+    /// host. It creates and verifies the store when it is new but opens no
+    /// writer, so the writer's startup invariant report is still produced once,
+    /// by the store that opens next. The store-only start and `HostChoice`
+    /// (ht-5fr.1.7) replace this call.
+    pub fn attach_host(&self, endpoint: &str) -> Result<i64, ApiError> {
+        let conn = self.open_initialized()?;
+        let now = self.clock.utc_now().0;
+        let host_id = upsert_host(&conn, endpoint, now).map_err(store_error)?;
+        self.set_primary_host(host_id);
+        Ok(host_id)
+    }
+
+    /// Binds `conn`, a connection this context did not open, to this context's
+    /// primary host (installs the `primary_host()` SQL function on it).
+    pub fn bind_connection(&self, conn: &Connection) -> Result<(), ApiError> {
+        register_primary_host(conn, Arc::clone(&self.primary_host)).map_err(store_error)
     }
 
     /// Test hook: installs (or clears) the lane fault `lane_fault_check` consults.
@@ -231,15 +389,30 @@ impl StoreContext {
         self.path.display().to_string()
     }
 
-    pub fn open_writer(&self) -> Result<Connection, ApiError> {
+    /// A connection to the store, created and verified when it is new: bound to
+    /// the primary host, foreign keys on, `schema::initialize` run. The shared
+    /// start of the writer open and the host attach.
+    fn open_initialized(&self) -> Result<Connection, ApiError> {
         #[cfg(test)]
-        fresh_schema_template::seed(&self.path);
+        if self.node_seed == Some(crate::test_support::test_node_seed()) {
+            fresh_schema_template::seed(&self.path);
+        }
         let conn = Connection::open(&self.path).map_err(store_error)?;
         conn.busy_timeout(Duration::from_secs(2))
             .map_err(store_error)?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(store_error)?;
-        schema::initialize(&conn, || self.clock.utc_now())?;
+        self.bind_connection(&conn)?;
+        schema::initialize_with(&conn, || self.clock.utc_now(), self.node_seed.as_ref())?;
+        #[cfg(any(test, feature = "test-support"))]
+        if self.test_host {
+            crate::test_support::attach_test_host(self, &conn);
+        }
+        Ok(conn)
+    }
+
+    pub fn open_writer(&self) -> Result<Connection, ApiError> {
+        let conn = self.open_initialized()?;
         #[cfg(test)]
         let journal_mode = if self
             .rollback_journal
@@ -378,6 +551,8 @@ impl StoreContext {
             );
         }
         if fresh {
+            self.bind_connection(&conn)
+                .map_err(|error| progress.map_api_error(error))?;
             conn.pragma_update(None, "foreign_keys", "ON")
                 .map_err(|error| progress.map_sqlite_error(error))?;
             conn.pragma_update(None, "query_only", "ON")
@@ -737,6 +912,11 @@ pub(crate) fn api_error(code: ErrorCode, detail: impl Into<String>) -> ApiError 
 /// failure, is Transient with the error as detail, never Corrupt. ht-p03.22's
 /// stored class is not merged yet: `StoreBusy` defaults to Transient.
 pub(crate) fn store_error(error: rusqlite::Error) -> ApiError {
+    if let rusqlite::Error::SqliteFailure(_, Some(message)) = &error
+        && message.contains(NO_PRIMARY_HOST)
+    {
+        return api_error(ErrorCode::HostUnavailable, "no Herdr server attached");
+    }
     let code = match &error {
         rusqlite::Error::SqliteFailure(err, _) => match err.code {
             rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked => {
@@ -828,18 +1008,18 @@ mod fresh_schema_template {
             return Some(path);
         }
         let staging = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-        let clock_read = std::cell::Cell::new(false);
+        // The template holds the fixed test node and `created_at = 0`; a
+        // store created through it differs from ordinary creation only in the
+        // node row's creation time, which nothing reads.
         let built = Connection::open(&staging).ok().and_then(|conn| {
-            schema::initialize(&conn, || {
-                clock_read.set(true);
-                UtcMillis(0)
-            })
+            schema::initialize(
+                &conn,
+                || UtcMillis(0),
+                &crate::test_support::test_node_seed(),
+            )
             .ok()
         });
-        // A creation path that reads the clock is not reproducible from a
-        // template: keep ordinary creation.
-        let renamed =
-            built.is_some() && !clock_read.get() && std::fs::rename(&staging, &path).is_ok();
+        let renamed = built.is_some() && std::fs::rename(&staging, &path).is_ok();
         let _ = std::fs::remove_file(&staging);
         renamed.then_some(path)
     }

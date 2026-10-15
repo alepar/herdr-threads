@@ -282,11 +282,14 @@ impl SqliteStore {
         let mut writer = context.open_writer()?;
         // A store stuck with a hold nothing protects (reconciliation already
         // finished, no unresolved seat) is cleared once at daemon start.
-        let tx = writer
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(store_error)?;
-        seats::lift_baseline_hold_if_clear(&tx, &instance, context.clock().utc_now())?;
-        tx.commit().map_err(store_error)?;
+        // A store with no attached Herdr host has no hold to clear.
+        if context.primary_host().is_ok() {
+            let tx = writer
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(store_error)?;
+            seats::lift_baseline_hold_if_clear(&tx, &instance, context.clock().utc_now())?;
+            tx.commit().map_err(store_error)?;
+        }
         Ok(Self {
             context,
             instance,
@@ -302,6 +305,13 @@ impl SqliteStore {
             #[cfg(any(test, feature = "test-support"))]
             kick_pause: Mutex::new(None),
         })
+    }
+
+    /// Test hook: the store's connection context (to attach a host after the
+    /// store has started).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn context(&self) -> &StoreContext {
+        &self.context
     }
 
     /// Replaces the lane registry commits kick through. The daemon passes the

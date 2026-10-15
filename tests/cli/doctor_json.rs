@@ -69,8 +69,8 @@ fn doctor_current_diagnostics_are_bounded_and_expired_history_is_all_scopes() {
     )));
     let store = Arc::new(
         SqliteStore::new(
-            StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
-            "i",
+            StoreContext::new(iso.state_root().join("store.db"), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap(),

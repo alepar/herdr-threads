@@ -65,19 +65,21 @@ fn fixture_with_context() -> (
     ));
     std::fs::create_dir(&directory.0).unwrap();
     let clock = Arc::new(TestClock(AtomicU64::new(100)));
-    let context = StoreContext::new(directory.0.join("store.db"), clock.clone());
+    let context = StoreContext::new(directory.0.join("store.db"), clock.clone()).with_test_host();
     let directory_path = directory.0.join("store.db");
     let conn = context.open_writer().unwrap();
-    conn.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1)",
-        [],
-    )
-    .unwrap();
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','p',0,0,0)", []).unwrap();
-    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'p','inc','coherent_enumeration',1)", []).unwrap();
+    conn.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+        .unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',0,0,0)", []).unwrap();
+    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'p','inc','coherent_enumeration',1)", []).unwrap();
     (
         OwnedFixture {
-            value: SqliteStore::new(context, "i", StoreSettings::default()).unwrap(),
+            value: SqliteStore::new(
+                context,
+                "34750f98bd59fcfc946da45aaabe933b",
+                StoreSettings::default(),
+            )
+            .unwrap(),
             _directory: directory.clone(),
         },
         OwnedFixture {
@@ -85,12 +87,12 @@ fn fixture_with_context() -> (
             _directory: directory,
         },
         clock.clone(),
-        StoreContext::new(directory_path, clock),
+        StoreContext::new(directory_path, clock).with_test_host(),
     )
 }
 pub(crate) fn claim() -> CallerClaim {
     CallerClaim {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s"),
         binding_generation: 0,
         role: CallerRole::TopLevel,
@@ -172,7 +174,7 @@ fn check_in_as(
         RegisterAvailableRequest {
             command,
             read: ReadContext {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 output: Default::default(),
                 operation_scope: None,
             },
@@ -252,14 +254,14 @@ fn lifecycle_cas_current_and_response_loss_replay_preserve_context_and_anchors()
     );
 }
 fn obligations(conn: &Connection) {
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,2)",[]).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,2)",[]).unwrap();
     conn.execute(
         "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','invited')",
         [],
     )
     .unwrap();
     conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('inv','t','s',1,'pending',1,0,1000,1000)",[]).unwrap();
-    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at) VALUES ('m','i','t',1,'ordinary',100,'mail',0)",[]).unwrap();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at) VALUES ('m','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary',100,'mail',0)",[]).unwrap();
     conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('m','t','s','pending',1000,0,1000)",[]).unwrap();
 }
 #[test]
@@ -627,7 +629,7 @@ fn dispatch_check_in(
         RegisterAvailableRequest {
             command,
             read: ReadContext {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 output: Default::default(),
                 operation_scope: None,
             },
@@ -655,7 +657,7 @@ fn decision_rechecks_permit_expiry_retirement_hold_mapping_and_known_invalidatio
                 .unwrap();
             }
             "hold" => {
-                conn.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('i','p','b',1,'hold')",[]).unwrap();
+                conn.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,'hold')",[]).unwrap();
             }
             "mapping" => {
                 conn.execute("UPDATE seats SET target_generation=1", [])
@@ -664,7 +666,7 @@ fn decision_rechecks_permit_expiry_retirement_hold_mapping_and_known_invalidatio
                     .unwrap();
             }
             "invalidation" => {
-                conn.execute("UPDATE host_instances SET invalidation_revision=1", [])
+                conn.execute("UPDATE herdr_hosts SET invalidation_revision=1", [])
                     .unwrap();
             }
             _ => unreachable!(),
@@ -938,9 +940,13 @@ fn additive_index_wrong_shape_is_rejected_without_replacing_it() {
     let (_, conn, _) = fixture();
     conn.execute_batch("DROP INDEX occupant_bindings_execution; CREATE INDEX occupant_bindings_execution ON occupant_bindings(seat_id,ordinal)").unwrap();
     assert_eq!(
-        schema::initialize(&conn, || crate::protocol::time::UtcMillis(0))
-            .unwrap_err()
-            .code,
+        schema::initialize(
+            &conn,
+            || crate::protocol::time::UtcMillis(0),
+            &crate::test_support::test_node_seed()
+        )
+        .unwrap_err()
+        .code,
         ErrorCode::IncompatibleSchema
     );
     let second_column: String = conn
@@ -973,7 +979,7 @@ fn canonical_factory_matches_invite_topic_archive_reopen_and_leave_decisions() {
     })) else {
         panic!()
     };
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('other','i','resolved','native','other-target',0,0,0)",[]).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('other','34750f98bd59fcfc946da45aaabe933b','resolved','native','other-target',0,0,0)",[]).unwrap();
     assert!(matches!(
         run(PermitMutation::Invite(Invite {
             confirmation: None,
@@ -1514,9 +1520,13 @@ fn execution_index_rejects_incompatible_key_metadata_without_replacing_it() {
             )
             .unwrap();
         assert_eq!(
-            schema::initialize(&conn, || crate::protocol::time::UtcMillis(0))
-                .unwrap_err()
-                .code,
+            schema::initialize(
+                &conn,
+                || crate::protocol::time::UtcMillis(0),
+                &crate::test_support::test_node_seed()
+            )
+            .unwrap_err()
+            .code,
             ErrorCode::IncompatibleSchema,
             "{shape}"
         );
@@ -1537,9 +1547,13 @@ fn execution_index_rejects_incompatible_key_metadata_without_replacing_it() {
         conn.execute_batch(&format!("DROP INDEX occupant_bindings_execution; {sql}"))
             .unwrap();
         assert_eq!(
-            schema::initialize(&conn, || crate::protocol::time::UtcMillis(0))
-                .unwrap_err()
-                .code,
+            schema::initialize(
+                &conn,
+                || crate::protocol::time::UtcMillis(0),
+                &crate::test_support::test_node_seed()
+            )
+            .unwrap_err()
+            .code,
             ErrorCode::IncompatibleSchema
         );
         assert_eq!(
@@ -1617,7 +1631,7 @@ fn dual_budget_final_validation_and_postdecision_outcomes_are_preserved() {
     let (store, mut conn, clock) = fixture();
     for source in ["current", "issuance"] {
         for expires in [false, true] {
-            conn.execute("UPDATE host_instances SET host_epoch=1", [])
+            conn.execute("UPDATE herdr_hosts SET host_epoch=1", [])
                 .unwrap();
             let mut current = budget();
             let mut issuance = budget();
@@ -1645,7 +1659,7 @@ fn dual_budget_final_validation_and_postdecision_outcomes_are_preserved() {
                         Ok(())
                     },
                     |tx, _, ()| {
-                        tx.execute("UPDATE host_instances SET host_epoch=2", [])
+                        tx.execute("UPDATE herdr_hosts SET host_epoch=2", [])
                             .map_err(super::connection::store_error)?;
                         Ok(())
                     },
@@ -1660,7 +1674,7 @@ fn dual_budget_final_validation_and_postdecision_outcomes_are_preserved() {
                 }
             );
             assert_eq!(
-                conn.query_row("SELECT host_epoch FROM host_instances", [], |r| r
+                conn.query_row("SELECT host_epoch FROM herdr_hosts", [], |r| r
                     .get::<_, i64>(0))
                     .unwrap(),
                 1
@@ -1678,7 +1692,7 @@ fn dual_budget_final_validation_and_postdecision_outcomes_are_preserved() {
                     |tx, _, ()| {
                         current.cancellation.cancel();
                         issuance.cancellation.cancel();
-                        tx.execute("UPDATE host_instances SET host_epoch=2", [])
+                        tx.execute("UPDATE herdr_hosts SET host_epoch=2", [])
                             .map_err(super::connection::store_error)?;
                         Ok("accepted")
                     },
@@ -1686,7 +1700,7 @@ fn dual_budget_final_validation_and_postdecision_outcomes_are_preserved() {
                 .unwrap();
             assert_eq!(result, "accepted");
             assert_eq!(
-                conn.query_row("SELECT host_epoch FROM host_instances", [], |r| r
+                conn.query_row("SELECT host_epoch FROM herdr_hosts", [], |r| r
                     .get::<_, i64>(0))
                     .unwrap(),
                 2
@@ -1728,7 +1742,7 @@ fn dual_budget_progress_interrupts_validation_and_keeps_writer_reusable() {
             let start = Instant::now();
             let result=store.context.execute_budgeted_decision_with_constraints(&mut conn,&current,Some(&issuance), |tx| {
             tx.query_row("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1000000000) SELECT sum(x) FROM n",[],|row|row.get::<_,i64>(0)).map_err(super::connection::store_error)
-        }, |tx,_,_| {tx.execute("UPDATE host_instances SET host_epoch=2",[]).map_err(super::connection::store_error)?;Ok(())});
+        }, |tx,_,_| {tx.execute("UPDATE herdr_hosts SET host_epoch=2",[]).map_err(super::connection::store_error)?;Ok(())});
             worker.join().unwrap();
             assert_eq!(
                 result.unwrap_err().code,
@@ -1740,7 +1754,7 @@ fn dual_budget_progress_interrupts_validation_and_keeps_writer_reusable() {
             );
             assert!(start.elapsed() < Duration::from_millis(750));
             assert_eq!(
-                conn.query_row("SELECT host_epoch FROM host_instances", [], |r| r
+                conn.query_row("SELECT host_epoch FROM herdr_hosts", [], |r| r
                     .get::<_, i64>(0))
                     .unwrap(),
                 1
@@ -1904,8 +1918,13 @@ fn cooperative_binding_records_observation_evidence_and_refuses_without_it() {
 /// them, and the projection rows kept for the seat (settlement deletes none).
 fn pending_notices(conn: &Connection) -> ((u64, bool), i64) {
     conn.execute_batch("BEGIN DEFERRED").unwrap();
-    let digest =
-        crate::store::attention::seat_digest(conn, "i", &SeatId::new("s"), &|| Ok(())).unwrap();
+    let digest = crate::store::attention::seat_digest(
+        conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &SeatId::new("s"),
+        &|| Ok(()),
+    )
+    .unwrap();
     let count = crate::store::attention::seat_pending_warnings(conn, "s", &|| Ok(()))
         .unwrap()
         .count();
@@ -1998,7 +2017,7 @@ fn open_warning_dedup_invitation_in(
 }
 
 fn seed_warning_dedup_thread(conn: &Connection) {
-    conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('dedup','i','warning dedup','g',0,0,1);").unwrap();
+    conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('dedup','34750f98bd59fcfc946da45aaabe933b','warning dedup','g',0,0,1);").unwrap();
 }
 
 // Kills retaining delivered transitions in the legacy "pending" sources:
@@ -2078,7 +2097,7 @@ fn builtin_warning_projection_cleanup_keeps_delivered_history_out_of_pending_wal
 fn builtin_warning_projection_cleanup_preserves_late_independent_recipient() {
     let (store, mut conn, clock, _) = fixture_with_context();
     seed_warning_dedup_thread(&conn);
-    conn.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('observer','i','resolved','native','observer-pane',0,0,0);
+    conn.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('observer','34750f98bd59fcfc946da45aaabe933b','resolved','native','observer-pane',0,0,0);
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('dedup','observer','joined');
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('dedup','observer',1,1);").unwrap();
     let first = check_in(&store, lifecycle(claim(), "cleanup-initial")).unwrap();
@@ -2198,7 +2217,7 @@ fn builtin_warning_dedup_open_clear_and_new_episode_are_offered_once() {
     assert_eq!(carried(&offer), (names(std::slice::from_ref(&next)), false));
     let CommandResult::Warnings(history) = crate::store::queries::warnings_in_transaction(
         &conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &crate::protocol::commands::WarningsQuery {
             seat: SeatId::new("s"),
             page: Default::default(),
@@ -2261,8 +2280,8 @@ fn builtin_warning_dedup_settles_only_carried_page_and_late_projection() {
 fn builtin_warning_dedup_recipients_and_successor_have_independent_frontiers() {
     let (store, mut conn, clock, _) = fixture_with_context();
     seed_warning_dedup_thread(&conn);
-    conn.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('observer','i','resolved','native','observer-pane',0,0,0);
-        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','observer-pane','b',1,0,1,'fresh','unknown','unknown',0,0,'observer-terminal','inc','coherent_enumeration',1);
+    conn.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('observer','34750f98bd59fcfc946da45aaabe933b','resolved','native','observer-pane',0,0,0);
+        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','observer-pane','b',1,0,1,'fresh','unknown','unknown',0,0,'observer-terminal','inc','coherent_enumeration',1);
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('dedup','observer','joined');
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('dedup','observer',1,1);").unwrap();
     let a = check_in(&store, lifecycle(claim(), "dedup-a")).unwrap();
@@ -2464,14 +2483,14 @@ fn builtin_warning_dedup_manifest_backed_transition_is_carried_without_message_r
     let (store, conn, _, _) = fixture_with_context();
     seed_warning_dedup_thread(&conn);
     let first = check_in(&store, lifecycle(claim(), "dedup-initial")).unwrap();
-    conn.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('manifest','i','actor','op',zeroblob(32),'dedup',0,0,0,0,0,0,1,'sealed');
+    conn.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('manifest','34750f98bd59fcfc946da45aaabe933b','actor','op',zeroblob(32),'dedup',0,0,0,0,0,0,1,'sealed');
         INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('manifest','dedup','s',1,300,0);
         INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES ('manifest','manifest-key','manifest-warning','s',1,1,'{\"event\":\"unavailable\"}');
-        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('manifest-message','i','dedup',1,'ordinary','s','b',100,10);
-        INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('manifest','manifest-message','i','dedup',10,100,1,0,1,1);
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('manifest-message','34750f98bd59fcfc946da45aaabe933b','dedup',1,'ordinary','s','b',100,10);
+        INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('manifest','manifest-message','34750f98bd59fcfc946da45aaabe933b','dedup',10,100,1,0,1,1);
         INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,episode,open_warning_id,opened_seq) VALUES ('unavailable','dedup','manifest-key','s',1,'manifest-warning',10);
         INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('manifest-warning','s',10);
-        UPDATE host_instances SET decision_seq=10 WHERE id='i';
+        UPDATE local_node SET decision_seq=10 WHERE id='34750f98bd59fcfc946da45aaabe933b';
         UPDATE threads SET next_sequence=3 WHERE id='dedup';").unwrap();
     assert_eq!(
         conn.query_row(
@@ -2516,7 +2535,7 @@ fn programmatic_notices_settle_page_by_page_for_the_current_occupant() {
     assert_eq!(MAX_NOTICE_PAGE_ITEMS, 16);
     let (store, mut conn, _, context) = fixture_with_context();
     conn.execute_batch("\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('n','i','notices','g',0,0,1);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('n','34750f98bd59fcfc946da45aaabe933b','notices','g',0,0,1);\
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('n','s','joined');\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('n','s',1,1);\
     ").unwrap();
@@ -2542,7 +2561,7 @@ fn programmatic_notices_settle_page_by_page_for_the_current_occupant() {
     assert!(offer.warnings.items.is_empty());
     let CommandResult::Warnings(history) = crate::store::queries::warnings_in_transaction(
         &conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &crate::protocol::commands::WarningsQuery {
             seat: SeatId::new("s"),
             page: Default::default(),
@@ -2724,7 +2743,7 @@ fn operator_human_override_replaces_agent_binding_and_is_audited() {
     use crate::protocol::authority::{OperatorActor, PeerIdentity};
     let (store, mut conn, clock) = fixture();
     let agent = check_in(&store, lifecycle(claim(), "agent")).unwrap();
-    conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('agent-owed','i','t',1,'ordinary','body',90,2); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('agent-owed','t','s','pending',10,90,100);").unwrap();
+    conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('agent-owed','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','body',90,2); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('agent-owed','t','s','pending',10,90,100);").unwrap();
     let actor = OperatorActor::from_peer(PeerIdentity::from_kernel(501), 501).unwrap();
     let result = check_in_as(
         &store,
@@ -2762,7 +2781,7 @@ fn operator_human_override_replaces_agent_binding_and_is_audited() {
     successor.binding_generation = result.context.binding_generation;
     successor.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
     check_in(&store, lifecycle(successor, "successor-agent")).unwrap();
-    conn.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p_agent','i','actor','o_agent',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed'); INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('p_agent','t','s',1,10,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('agent-new','i','t',2,'ordinary','new mail',110,50); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i','p_agent','agent-new','t',50,110,2,0,1,0);").unwrap();
+    conn.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p_agent','34750f98bd59fcfc946da45aaabe933b','actor','o_agent',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed'); INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('p_agent','t','s',1,10,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('agent-new','34750f98bd59fcfc946da45aaabe933b','t',2,'ordinary','new mail',110,50); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('34750f98bd59fcfc946da45aaabe933b','p_agent','agent-new','t',50,110,2,0,1,0);").unwrap();
     crate::store::materialization::advance_work(
         &mut conn,
         "work:human-receipts:s",
@@ -3110,7 +3129,7 @@ fn managed_launch_is_refused_when_evidence_differs_from_the_canonical_view() {
             "{label}"
         );
     }
-    conn.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('i','p','b',1,'restore')", [])
+    conn.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,'restore')", [])
         .unwrap();
     assert_eq!(
         record_launch(&store, managed_launch()).unwrap_err().code,
@@ -3241,9 +3260,14 @@ fn continuity_candidates_ignore_managed_launch_bindings() {
         .unwrap();
     let tx = conn.transaction().unwrap();
     assert!(
-        crate::store::seats::continuity_candidates(&tx, "i", "codex", &session)
-            .unwrap()
-            .is_empty()
+        crate::store::seats::continuity_candidates(
+            &tx,
+            "34750f98bd59fcfc946da45aaabe933b",
+            "codex",
+            &session
+        )
+        .unwrap()
+        .is_empty()
     );
     // Control: the same row as an agent's binding is a candidate.
     tx.execute(
@@ -3252,9 +3276,14 @@ fn continuity_candidates_ignore_managed_launch_bindings() {
     )
     .unwrap();
     assert_eq!(
-        crate::store::seats::continuity_candidates(&tx, "i", "codex", &session)
-            .unwrap()
-            .len(),
+        crate::store::seats::continuity_candidates(
+            &tx,
+            "34750f98bd59fcfc946da45aaabe933b",
+            "codex",
+            &session
+        )
+        .unwrap()
+        .len(),
         1
     );
 }
@@ -3304,11 +3333,14 @@ fn human_guidance_check_in_continuation_before_page_fit() {
         let (store, conn, _) = fixture();
         for n in 0..21 {
             let thread = format!("human-guidance-{n}");
-            conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','peer ht human --operator','goal',0,0)", [&thread]).unwrap();
+            conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','peer ht human --operator','goal',0,0)", [&thread]).unwrap();
             conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES (?1,?2,'s',1,'pending',0,300,300,1)", rusqlite::params![format!("inv-{n}"), thread]).unwrap();
         }
-        conn.execute("UPDATE host_instances SET decision_seq=1 WHERE id='i'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE local_node SET decision_seq=1 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+            [],
+        )
+        .unwrap();
         let mut caller = claim();
         caller.harness = harness;
         let command = lifecycle(caller, "human-guidance-check-in");
@@ -3419,8 +3451,8 @@ fn lifecycle_check_in_never_ends_another_binding() {
 #[test]
 fn cross_pane_resume_creates_a_new_binding_on_the_second_seat() {
     let (store, conn, _) = fixture();
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s2','i','resolved','native','q',0,0,0)", []).unwrap();
-    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-q','inc','coherent_enumeration',1)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',0,0,0)", []).unwrap();
+    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-q','inc','coherent_enumeration',1)", []).unwrap();
     let a = session_claim("sess-A", "00000000-0000-4000-8000-0000000000a1");
     check_in(&store, lifecycle(a.clone(), "on-a")).unwrap();
     let row = |seat: &str| -> Vec<String> {
@@ -3772,10 +3804,10 @@ fn resume_after_exclusivity_end_enrolls_a_fresh_binding() {
 #[test]
 fn human_seat_receipt_waivers_and_no_wake_hold() {
     let (store, conn, _) = fixture();
-    conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('old','i','t',1,'ordinary','body',90,1); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('old','t','s','pending',10,90,100);").unwrap();
+    conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('old','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','body',90,1); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('old','t','s','pending',10,90,100);").unwrap();
     check_in(&store, lifecycle(person(), "me-init")).unwrap();
     // Mail sent after the person's check-in: owed by nobody while the person holds the seat.
-    conn.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('owed','i','t',2,'ordinary','body',95,1000); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('owed','t','s','pending',10,95,105);").unwrap();
+    conn.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('owed','34750f98bd59fcfc946da45aaabe933b','t',2,'ordinary','body',95,1000); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('owed','t','s','pending',10,95,105);").unwrap();
     // A disconnected agent binding beside the person's (the last row inserted, so the seat's
     // latest binding is the agent's).
     let place = crate::store::bindings::BindingPlacement {
@@ -3883,14 +3915,14 @@ mod hermes_lineage {
     }
     /// Two messages on one joined thread: a fresh binding starts at 2.
     fn messages(conn: &Connection) {
-        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
         conn.execute(
             "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s','joined',1)",
             [],
         )
         .unwrap();
         for (id, seq) in [("m1", 1), ("m2", 2)] {
-            conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'t',?2,'ordinary','b',?2,?2)", rusqlite::params![id, seq]).unwrap();
+            conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'t',?2,'ordinary','b',?2,?2)", rusqlite::params![id, seq]).unwrap();
         }
     }
     fn binding_id(conn: &Connection, session: &str) -> String {

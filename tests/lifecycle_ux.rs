@@ -1312,7 +1312,7 @@ fn unmapped_pane_and_missing_context_are_invalid_request() {
     let db = rusqlite::Connection::open(&database).unwrap();
     db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
     let instance: String = db
-        .query_row("SELECT id FROM host_instances", [], |r| r.get(0))
+        .query_row("SELECT id FROM local_node", [], |r| r.get(0))
         .unwrap();
     db.execute(
         "INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at) \

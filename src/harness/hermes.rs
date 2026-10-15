@@ -2807,8 +2807,9 @@ mod adapter_tests {
                 crate::store::connection::StoreContext::new(
                     iso.state_root().join("store.db"),
                     Arc::clone(&clock),
-                ),
-                "synthetic-instance",
+                )
+                .with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 crate::store::StoreSettings::default(),
             )
             .unwrap(),

@@ -62,7 +62,7 @@ pub fn scan_effective_seat_attention(
         ));
     }
     let decision_seq: i64 = db.query_row(
-        "SELECT h.decision_seq FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1",
+        "SELECT h.decision_seq FROM seats s JOIN local_node h ON h.id=s.instance_id WHERE s.id=?1",
         [seat_id],|r|r.get(0),
     ).optional().map_err(store_error)?
         .ok_or_else(||api_error(ErrorCode::NotFound,"seat missing"))?;

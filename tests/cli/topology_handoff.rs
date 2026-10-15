@@ -100,7 +100,7 @@ fn prepared(
     root: &std::path::Path,
 ) -> Result<crate::protocol::handoff::BootstrapIdentity, RunError> {
     let namespace = crate::protocol::handoff::HandoffNamespace {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         state_dir: root.join("state dir"),
         host_endpoint: root.join("host.sock"),
     };
@@ -408,7 +408,7 @@ fn publication_explicit_cwd_claude_options_and_invalid_inputs() {
     let work = temp.path().join("quoted worktree");
     std::fs::create_dir(&work).unwrap();
     let namespace = crate::protocol::handoff::HandoffNamespace {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         state_dir: temp.path().join("state"),
         host_endpoint: temp.path().join("host.sock"),
     };
@@ -802,13 +802,15 @@ mod live {
             let context = crate::store::connection::StoreContext::new(
                 self.database_path.clone(),
                 Arc::new(crate::app::SystemClock::new()),
-            );
+            )
+            .with_test_host();
             let store = crate::store::SqliteStore::new(
                 crate::store::connection::StoreContext::new(
                     self.database_path.clone(),
                     Arc::new(crate::app::SystemClock::new()),
-                ),
-                "i",
+                )
+                .with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 Default::default(),
             )?;
             let mutation = crate::protocol::commands::PermitMutation::try_from(command).unwrap();
@@ -1101,17 +1103,18 @@ mod live {
                     database_path.clone(),
                     Arc::new(crate::app::SystemClock::new()),
                 )
+                .with_test_host()
                 .open_writer()
                 .unwrap(),
             );
-            let db = rusqlite::Connection::open(&database_path).unwrap();
+            let db = crate::test_support::open_test_connection(&database_path);
             let created = crate::protocol::handoff::topology_contract_tests::created();
             let boot = &created.host_incarnation;
-            db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,observation_sequence,observation_admission_sequence,observation_decided_sequence,lifecycle_revision,recovery_boot,recovery_epoch) VALUES('i',0,?1,1,1,1,1,1,?1,1)",[boot.as_str()]).unwrap();
-            db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) VALUES('g','i',?1,1,1,'herdr-server:pid=42:start=1.000002:uid=501',0,0,'published',0,0,0,0)",[boot.as_str()]).unwrap();
-            db.execute_batch("UPDATE host_instances SET active_snapshot_id='g',recovery_baseline_generation_id='g'; INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('sender','i','resolved','native','w1:p1',1,0,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('canonical-thread','i','topic','goal',0,0); INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES('canonical-thread','sender','joined',0)").unwrap();
+            db.execute("UPDATE herdr_hosts SET host_boot=?1,host_epoch=1,observation_sequence=1,observation_admission_sequence=1,observation_decided_sequence=1,lifecycle_revision=1,recovery_boot=?1,recovery_epoch=1",[boot.as_str()]).unwrap();
+            db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) VALUES('g','34750f98bd59fcfc946da45aaabe933b',?1,1,1,'herdr-server:pid=42:start=1.000002:uid=501',0,0,'published',0,0,0,0)",[boot.as_str()]).unwrap();
+            db.execute_batch("UPDATE herdr_hosts SET active_snapshot_id='g',recovery_baseline_generation_id='g'; INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('sender','34750f98bd59fcfc946da45aaabe933b','resolved','native','w1:p1',1,0,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('canonical-thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0); INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES('canonical-thread','sender','joined',0)").unwrap();
             db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('sender',1,'w1:p1',?1,1,'codex','session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,0)",[boot.as_str()]).unwrap();
-            db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','w1:p1',?1,1,0,2,'fresh',0,'caller-terminal','herdr-server:pid=42:start=1.000002:uid=501','native_current_target',1)",[boot.as_str()]).unwrap();
+            db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('34750f98bd59fcfc946da45aaabe933b','w1:p1',?1,1,0,2,'fresh',0,'caller-terminal','herdr-server:pid=42:start=1.000002:uid=501','native_current_target',1)",[boot.as_str()]).unwrap();
             let clock = crate::app::SystemClock::new();
             let context = HostCallContext {
                 budget: super::super::super::cooperative_budget(&clock),
@@ -1190,7 +1193,7 @@ mod live {
                 self._temp.path(),
                 &mut checkpoint.entries,
             );
-            state.db = rusqlite::Connection::open(&self.peer.database_path).unwrap();
+            state.db = crate::test_support::open_test_connection(&self.peer.database_path);
             checkpoint
         }
         /// Returns the fixture to exactly the checkpointed state: every file
@@ -1244,7 +1247,7 @@ mod live {
                 )
                 .unwrap();
             }
-            state.db = rusqlite::Connection::open(&self.peer.database_path).unwrap();
+            state.db = crate::test_support::open_test_connection(&self.peer.database_path);
             state.calls = checkpoint.calls.clone();
             state.native_calls = checkpoint.native_calls;
             state.fault = checkpoint.fault;
@@ -1308,7 +1311,7 @@ mod live {
                 vec![],
             )?;
             if let Some(path) = &self.change_binding_before_gate {
-                rusqlite::Connection::open(path).unwrap().execute("UPDATE occupant_bindings SET native_session='changed-before-launch' WHERE seat_id='sender'",[]).unwrap();
+                crate::test_support::open_test_connection(path).execute("UPDATE occupant_bindings SET native_session='changed-before-launch' WHERE seat_id='sender'",[]).unwrap();
             }
             gate(true)?;
             if self.not_submitted {
@@ -1396,7 +1399,7 @@ mod live {
         assert_eq!(paths.node_dir.join("intents"), f.journal.root());
         crate::archival_legacy::Source::new(
             &paths,
-            "i".into(),
+            "34750f98bd59fcfc946da45aaabe933b".into(),
             crate::protocol::output::ContinuationContext {
                 state_dir: Some(ns.state_dir.to_string_lossy().into()),
                 host: Some(ns.host_endpoint.to_string_lossy().into()),
@@ -1424,8 +1427,9 @@ mod live {
             crate::store::connection::StoreContext::new(
                 f.peer.database_path.clone(),
                 Arc::new(crate::app::SystemClock::new()),
-            ),
-            "i",
+            )
+            .with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             Default::default(),
         )
         .unwrap();
@@ -1737,8 +1741,9 @@ mod live {
                     crate::store::connection::StoreContext::new(
                         f.peer.database_path.clone(),
                         Arc::new(crate::app::SystemClock::new()),
-                    ),
-                    "i",
+                    )
+                    .with_test_host(),
+                    "34750f98bd59fcfc946da45aaabe933b",
                     Default::default(),
                 )
                 .unwrap(),
@@ -1767,7 +1772,7 @@ mod live {
             .unwrap()
             .db
             .query_row(
-                "SELECT bootstrap_veto FROM archival_instances WHERE instance_id='i'",
+                "SELECT bootstrap_veto FROM archival_instances WHERE instance_id='34750f98bd59fcfc946da45aaabe933b'",
                 [],
                 |r| r.get(0),
             )
@@ -2131,8 +2136,9 @@ mod live {
                 crate::store::connection::StoreContext::new(
                     f.peer.database_path.clone(),
                     Arc::new(crate::app::SystemClock::new()),
-                ),
-                "i",
+                )
+                .with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 Default::default(),
             )
             .unwrap(),
@@ -2381,7 +2387,7 @@ mod live {
             let mut output = vec![];
             assert!(downstream(&f, &mut launcher, &mut output).is_err());
             f.peer.state.lock().unwrap().db =
-                rusqlite::Connection::open(&f.peer.database_path).unwrap();
+                crate::test_support::open_test_connection(&f.peer.database_path);
             let result = downstream(&f, &mut launcher, &mut output).unwrap();
             assert_eq!(result.state, BootstrapState::Completed);
             assert_eq!(launcher.starts, 1);
@@ -3293,7 +3299,8 @@ mod live {
                 .unwrap();
             let mut state = f.peer.state.lock().unwrap();
             state.db.execute_batch("UPDATE threads SET archived=1; DELETE FROM memberships WHERE seat_id='sender'; UPDATE occupant_bindings SET execution_id='changed',generation=generation+1 WHERE seat_id='sender'; UPDATE seats SET state='unresolved',unresolved_reason='other' WHERE id='sender'").unwrap();
-            state.db = rusqlite::Connection::open(f._temp.path().join("canonical.db")).unwrap();
+            state.db =
+                crate::test_support::open_test_connection(&f._temp.path().join("canonical.db"));
             state.calls.clear();
             drop(state);
             let journal = super::super::super::journal::Journal::open(f.journal.root()).unwrap();
@@ -4219,7 +4226,7 @@ mod live {
         let reference = serde_json::from_value(input["reference"].clone()).unwrap();
         let journal_root = std::path::PathBuf::from(input["journal"].as_str().unwrap());
         let journal = super::super::super::journal::Journal::open(journal_root.clone()).unwrap();
-        let db = rusqlite::Connection::open(root.join("canonical.db")).unwrap();
+        let db = crate::test_support::open_test_connection(&root.join("canonical.db"));
         db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
         let peer = Peer {
             state: Mutex::new(State {
@@ -4537,11 +4544,17 @@ mod live {
         let context = crate::store::connection::StoreContext::new(
             peer.database_path.clone(),
             Arc::new(crate::app::SystemClock::new()),
-        );
+        )
+        .with_test_host();
         let budget = super::super::super::cooperative_budget(context.clock());
         let mut s = peer.state.lock().unwrap();
-        let admission =
-            crate::store::seats::begin_host_observation(&context, &mut s.db, "i", &budget).unwrap();
+        let admission = crate::store::seats::begin_host_observation(
+            &context,
+            &mut s.db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &budget,
+        )
+        .unwrap();
         let observed_at_mono = context.clock().monotonic_now();
         let observation = HostObservation {
             focused: false,
@@ -4686,7 +4699,12 @@ mod live {
             .unwrap();
         assert_eq!(
             digest,
-            schema::canonical_digest(&("resolve_seat", "i", HostTargetId::new("w1:p2"))).unwrap()
+            schema::canonical_digest(&(
+                "resolve_seat",
+                "34750f98bd59fcfc946da45aaabe933b",
+                HostTargetId::new("w1:p2")
+            ))
+            .unwrap()
         );
     }
     #[test]
@@ -4715,7 +4733,7 @@ mod live {
         let OrdinaryResolutionOutcome::Resolved(seat) = crate::store::seats::resolve_seat(
             &ctx,
             &mut f.peer.state.lock().unwrap().db,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             request,
             OrdinaryResolutionAttempt::Observed(guard),
             &budget,
@@ -4749,7 +4767,7 @@ mod live {
             .unwrap()
             .db
             .execute(
-                "UPDATE host_instances SET lifecycle_revision=lifecycle_revision+1 WHERE id='i'",
+                "UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
                 [],
             )
             .unwrap();
@@ -4784,7 +4802,7 @@ mod live {
             .unwrap()
             .db
             .execute(
-                "UPDATE host_instances SET lifecycle_revision=lifecycle_revision+1 WHERE id='i'",
+                "UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
                 [],
             )
             .unwrap();
@@ -4812,7 +4830,7 @@ mod live {
         let f = Fixture::new(Fault::ResolveUnsupported);
         let _ = f.run();
         let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
-        f.peer.state.lock().unwrap().db.execute_batch("CREATE TEMP TRIGGER extra_lifecycle AFTER INSERT ON allocation_decisions BEGIN UPDATE host_instances SET lifecycle_revision=lifecycle_revision+1 WHERE id='i'; END;").unwrap();
+        f.peer.state.lock().unwrap().db.execute_batch("CREATE TEMP TRIGGER extra_lifecycle AFTER INSERT ON allocation_decisions BEGIN UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'; END;").unwrap();
         assert!(
             resolve(&f, &resolve_request(&f), &ctx, &guard, &budget).is_err(),
             "unexpected own-transaction lifecycle bump committed"
@@ -4874,11 +4892,16 @@ mod live {
                 }
                 "key" => request.operation = OperationId::new("wrong-resolve"),
                 "hold" => {
-                    state.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('i','w1:p2',?1,1,'test hold')", ["herdr-server:pid=42:start=1.000002:uid=501"]).unwrap();
+                    state.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('34750f98bd59fcfc946da45aaabe933b','w1:p2',?1,1,'test hold')", ["herdr-server:pid=42:start=1.000002:uid=501"]).unwrap();
                 }
                 "admission" => {
-                    crate::store::seats::begin_host_observation(&ctx, &mut state.db, "i", &budget)
-                        .unwrap();
+                    crate::store::seats::begin_host_observation(
+                        &ctx,
+                        &mut state.db,
+                        "34750f98bd59fcfc946da45aaabe933b",
+                        &budget,
+                    )
+                    .unwrap();
                 }
                 "incarnation" => {
                     state.db.execute("UPDATE observed_targets SET incarnation='different-incarnation' WHERE target_id='w1:p2'", []).unwrap();
@@ -4949,7 +4972,7 @@ mod live {
         let f = Fixture::new(Fault::ResolveUnsupported);
         let _ = f.run();
         let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
-        f.peer.state.lock().unwrap().db.execute_batch("CREATE TEMP TRIGGER reject_resolution BEFORE INSERT ON operations WHEN NEW.actor_scope='service-allocation:i' BEGIN SELECT RAISE(ABORT,'injected late ledger failure'); END;").unwrap();
+        f.peer.state.lock().unwrap().db.execute_batch("CREATE TEMP TRIGGER reject_resolution BEFORE INSERT ON operations WHEN NEW.actor_scope='service-allocation:34750f98bd59fcfc946da45aaabe933b' BEGIN SELECT RAISE(ABORT,'injected late ledger failure'); END;").unwrap();
         assert!(resolve(&f, &resolve_request(&f), &ctx, &guard, &budget).is_err());
         assert_eq!(counts(&f), (0, 0, 0));
     }
@@ -4996,7 +5019,8 @@ mod live {
                     trip,
                     cancel: cancelled.then(|| cancel.clone()),
                 }),
-            );
+            )
+            .with_test_host();
             let budget = CallBudget {
                 deadline: MonoInstant(10),
                 cancellation: cancel,
@@ -5023,7 +5047,7 @@ mod live {
                 .unwrap()
                 .db
                 .execute(
-                    "UPDATE host_instances SET lifecycle_revision=?1 WHERE id='i'",
+                    "UPDATE herdr_hosts SET lifecycle_revision=?1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
                     [i64::MAX - 1],
                 )
                 .unwrap();
@@ -5908,14 +5932,19 @@ mod live {
                 let context = crate::store::connection::StoreContext::new(
                     base.peer.database_path.clone(),
                     permit_clock.clone(),
-                );
+                )
+                .with_test_host();
                 let entry_clock = permit_clock.clone();
                 context.set_lane_fault(Some(Arc::new(move |_| {
                     entry_clock.store_entry();
                     None
                 })));
-                let store =
-                    crate::store::SqliteStore::new(context, "i", Default::default()).unwrap();
+                let store = crate::store::SqliteStore::new(
+                    context,
+                    "34750f98bd59fcfc946da45aaabe933b",
+                    Default::default(),
+                )
+                .unwrap();
                 Self {
                     base,
                     identity,
@@ -8708,7 +8737,7 @@ mod live {
                     crate::ports::RegisterAvailableRequest {
                         command: check_in,
                         read: crate::ports::ReadContext {
-                            instance: "i".into(),
+                            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                             output: Default::default(),
                             operation_scope: None,
                         },
@@ -9255,7 +9284,7 @@ fn current_main_topology_native_argv_preserves_empty_tokens() {
     request.kind = Some("claude".into());
     request.argv = vec!["--tools".into(), String::new()];
     let namespace = crate::protocol::handoff::HandoffNamespace {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         state_dir: temp.path().join("state"),
         host_endpoint: temp.path().join("host.sock"),
     };
@@ -9707,7 +9736,7 @@ fn automatic_bootstrap_preparation_freezes_v2_without_invite_or_create_child() {
     request.automatic = true;
     request.thread = None;
     let namespace = crate::protocol::handoff::HandoffNamespace {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         state_dir: temp.path().join("state dir"),
         host_endpoint: temp.path().join("host.sock"),
     };
@@ -9744,7 +9773,7 @@ fn automatic_bootstrap_preparation_freezes_v2_without_invite_or_create_child() {
 fn automatic_bootstrap_preparation_refuses_a_kind_whose_composition_rewrites_the_caller_argv() {
     let temp = Temp::new();
     let namespace = crate::protocol::handoff::HandoffNamespace {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         state_dir: temp.path().join("state dir"),
         host_endpoint: temp.path().join("host.sock"),
     };

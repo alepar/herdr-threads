@@ -196,12 +196,12 @@ mod binding_presentation {
                 .mode(0o700)
                 .create(&directory)
                 .unwrap();
-            let context = StoreContext::new(directory.join("store.db"), clock);
+            let context = StoreContext::new(directory.join("store.db"), clock).with_test_host();
             let db = context.open_writer().unwrap();
-            db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES('i',0,'boot',1,100);
-                INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s','i','resolved','native','p',1,0,0);
-                INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','p','boot',1,0,0,'fresh','term','inc','coherent_enumeration',1);
-                INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','i','topic','goal',0,0,1);
+            db.execute_batch("UPDATE herdr_hosts SET host_boot='boot',host_epoch=1; UPDATE local_node SET decision_seq=100;
+                INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',1,0,0);
+                INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('34750f98bd59fcfc946da45aaabe933b','p','boot',1,0,0,'fresh','term','inc','coherent_enumeration',1);
+                INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,1);
                 INSERT INTO memberships(thread_id,seat_id,state,voluntary_state) VALUES('t','s','joined','joined');
                 INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t','s',1,1);").unwrap();
             for name in ["a", "b"] {
@@ -212,7 +212,12 @@ mod binding_presentation {
                 )
                 .unwrap();
             }
-            let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+            let store = SqliteStore::new(
+                context,
+                "34750f98bd59fcfc946da45aaabe933b",
+                StoreSettings::default(),
+            )
+            .unwrap();
             Self {
                 store,
                 db,
@@ -221,7 +226,7 @@ mod binding_presentation {
         }
         fn claim(&self, name: &str) -> CallerClaim {
             CallerClaim {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 seat: SeatId::new("s"),
                 binding_generation: 1,
                 role: CallerRole::TopLevel,
@@ -279,7 +284,7 @@ mod binding_presentation {
             }
         }
         fn notice(&self) {
-            self.db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES('notice','i','t',50,'warn','{}',0,50,1);
+            self.db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES('notice','34750f98bd59fcfc946da45aaabe933b','t',50,'warn','{}',0,50,1);
                 INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) VALUES('s','notice','t',50,1);").unwrap();
         }
         fn confirm(&self, name: &str, page: &DeliveryPageV2) -> DeliveryPresentationConfirmationV2 {
@@ -304,10 +309,10 @@ mod binding_presentation {
             self.ordinary_body("unread by b");
         }
         fn ordinary_body(&self, body: &str) {
-            self.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('m','i','t',1,'ordinary',?1,0,3)", [body]).unwrap();
-            self.db.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('prep','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
+            self.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('m','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary',?1,0,3)", [body]).unwrap();
+            self.db.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('prep','34750f98bd59fcfc946da45aaabe933b','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
                 INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('prep','t','s',1,300000,1);
-                INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','prep','m','t',3,0,1,0,1,0);
+                INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('34750f98bd59fcfc946da45aaabe933b','prep','m','t',3,0,1,0,1,0);
                 INSERT INTO receipt_state(message_id,seat_id,state,acked_at,ack_binding_id,ack_actor_seat_id,ack_generation,ack_observation) VALUES('m','s','acked',7,'a','s',1,json_object('harness','claude','session','a','execution','a','host_boot','boot','binding_generation',1,'target_generation',0,'provenance','cooperative_env_session','observed_at',0,'decided_at',7));
                 UPDATE binding_cursors SET seq=1 WHERE binding_id='a';").unwrap();
         }
@@ -551,10 +556,10 @@ mod binding_presentation {
         for n in 2..=32 {
             let id = format!("m{n}");
             let prep = format!("prep{n}");
-            f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES(?1,'i','t',?2,'ordinary','unread by b',0,?3)", rusqlite::params![id,n,n+3]).unwrap();
+            f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','unread by b',0,?3)", rusqlite::params![id,n,n+3]).unwrap();
             f.db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) SELECT ?1,instance_id,operation_scope,?1,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status FROM send_preparations WHERE id='prep'", [&prep]).unwrap();
             f.db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES(?1,'t','s',1,300000,1)", [&prep]).unwrap();
-            f.db.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i',?1,?2,'t',?3,0,?4,0,1,0)", rusqlite::params![prep,id,n+3,n]).unwrap();
+            f.db.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('34750f98bd59fcfc946da45aaabe933b',?1,?2,'t',?3,0,?4,0,1,0)", rusqlite::params![prep,id,n+3,n]).unwrap();
             f.db.execute("INSERT INTO receipt_state(message_id,seat_id,state,acked_at,ack_binding_id,ack_actor_seat_id,ack_generation,ack_observation) VALUES(?1,'s','acked',7,'a','s',1,json_object('harness','claude','session','a','execution','a','host_boot','boot','binding_generation',1,'target_generation',0,'provenance','cooperative_env_session','observed_at',0,'decided_at',7))", [&id]).unwrap();
             let mut item = items[0].clone();
             item["content"]["id"] = serde_json::json!(id);
@@ -678,10 +683,10 @@ mod binding_presentation {
         claim.execution = ExecutionId::new(execution);
         let input = || f.input_for_claim("b", claim.clone());
         // A real second published recipient follows the long unread message.
-        f.db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('later','i','t',2,'ordinary','later mail',0,4);
+        f.db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('later','34750f98bd59fcfc946da45aaabe933b','t',2,'ordinary','later mail',0,4);
             INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) SELECT 'later-prep',instance_id,operation_scope,'later-op',digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status FROM send_preparations WHERE id='prep';
             INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('later-prep','t','s',1,300000,1);
-            INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','later-prep','later','t',4,0,2,0,1,0);
+            INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('34750f98bd59fcfc946da45aaabe933b','later-prep','later','t',4,0,2,0,1,0);
             INSERT INTO receipt_state(message_id,seat_id,state,acked_at,ack_binding_id,ack_actor_seat_id,ack_generation,ack_observation) VALUES('later','s','acked',7,'a','s',1,json_object('harness','claude','session','a','execution','a','host_boot','boot','binding_generation',1,'target_generation',0,'provenance','cooperative_env_session','observed_at',0,'decided_at',7));").unwrap();
         let first = f.store.presentation_pull(input(), &budget()).unwrap();
         let DeliveryPullReplyV2::Page(first) = first.reply else {
@@ -692,8 +697,12 @@ mod binding_presentation {
             |item| matches!(item, PresentationItemV2::Message { id, .. } if id.as_str()=="later")
         ));
         let (cursor, skip, done): (String, Option<String>, i64) = f.db.query_row("SELECT ordinary_cursor,ordinary_skip_body,ordinary_done FROM invitation_presentation_consumers WHERE binding_id='b' AND consumer='watch'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
-        let persisted =
-            InboxBatchV2CursorState::decode_for(&cursor, "i", &SeatId::new("s")).unwrap();
+        let persisted = InboxBatchV2CursorState::decode_for(
+            &cursor,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &SeatId::new("s"),
+        )
+        .unwrap();
         assert_eq!(persisted.source, InboxBatchV2Source::Unread);
         assert_eq!(persisted.body.as_ref().unwrap().message.as_str(), "m");
         assert_eq!(skip.as_deref(), Some("m"));
@@ -702,7 +711,7 @@ mod binding_presentation {
         // Reproduce `body m` followed by its actual post-display cursor command.
         // No test SQL changes any cursor after the fixture was established.
         let read = ReadContext {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             output: Default::default(),
             operation_scope: None,
         };
@@ -833,7 +842,12 @@ mod binding_presentation {
         assert!(initial.work.ordinary > 0);
         assert_eq!(initial.work.ordinary_continuation_key_probes, 0);
         let cursor: String = f.db.query_row("SELECT ordinary_cursor FROM invitation_presentation_consumers WHERE binding_id='b' AND consumer='watch'", [], |r| r.get(0)).unwrap();
-        let state = InboxBatchV2CursorState::decode_for(&cursor, "i", &claim.seat).unwrap();
+        let state = InboxBatchV2CursorState::decode_for(
+            &cursor,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &claim.seat,
+        )
+        .unwrap();
         assert_eq!(state.source, InboxBatchV2Source::Unread);
         assert_eq!(state.body.as_ref().unwrap().message.as_str(), "m");
         (f, claim, cursor)
@@ -848,7 +862,7 @@ mod binding_presentation {
             },
         };
         let read = ReadContext {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             output: Default::default(),
             operation_scope: None,
         };
@@ -931,7 +945,7 @@ mod binding_presentation {
                     },
                 }),
                 &ReadContext {
-                    instance: "i".into(),
+                    instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                     output: Default::default(),
                     operation_scope: None,
                 },
@@ -945,10 +959,15 @@ mod binding_presentation {
         );
         // Isolate the one continued candidate: the other captured sources have
         // no pending items, and this control marks their existing walks complete.
-        let mut state = InboxBatchV2CursorState::decode_for(&cursor, "i", &claim.seat).unwrap();
+        let mut state = InboxBatchV2CursorState::decode_for(
+            &cursor,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &claim.seat,
+        )
+        .unwrap();
         state.attention.receipts_done = true;
         state.attention.next_manifest_warning = true;
-        let isolated = state.encode("i").unwrap();
+        let isolated = state.encode("34750f98bd59fcfc946da45aaabe933b").unwrap();
         f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_cursor=?1 WHERE binding_id='b' AND consumer='watch'", [&isolated]).unwrap();
         let result = f
             .store
@@ -973,11 +992,16 @@ mod binding_presentation {
         let (f, claim, cursor) = continued_body_fixture();
         // A valid sub-8KiB private accumulator isolates a still-Pending
         // continued body after the captured receipt walk already completed.
-        let mut state = InboxBatchV2CursorState::decode_for(&cursor, "i", &claim.seat).unwrap();
+        let mut state = InboxBatchV2CursorState::decode_for(
+            &cursor,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &claim.seat,
+        )
+        .unwrap();
         state.body.as_mut().unwrap().offset = 4096;
         state.attention.receipts_done = true;
         state.attention.next_manifest_warning = true;
-        let cursor = state.encode("i").unwrap();
+        let cursor = state.encode("34750f98bd59fcfc946da45aaabe933b").unwrap();
         let partial = serde_json::json!({"m":"z".repeat(4096)}).to_string();
         f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_cursor=?1,ordinary_partial=?2,ordinary_skip_body=NULL WHERE binding_id='b' AND consumer='watch'", rusqlite::params![cursor, partial]).unwrap();
         f.db.execute("UPDATE receipt_state SET state='pending',acked_at=NULL,ack_binding_id=NULL,ack_actor_seat_id=NULL,ack_generation=NULL,ack_observation=NULL WHERE message_id='m'", []).unwrap();
@@ -1005,12 +1029,17 @@ mod binding_presentation {
     fn continued_unread_body_survives_sibling_full_read() {
         use herdr_threads::protocol::{ids::MessageId, pagination::InboxBatchV2CursorState};
         let (f, claim, cursor) = continued_body_fixture_with_clock(Arc::new(FixedClock), true);
-        let mut state = InboxBatchV2CursorState::decode_for(&cursor, "i", &claim.seat).unwrap();
+        let mut state = InboxBatchV2CursorState::decode_for(
+            &cursor,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &claim.seat,
+        )
+        .unwrap();
         state.body.as_mut().unwrap().offset = 4096;
         state.attention.receipts_done = true;
         state.attention.next_manifest_warning = true;
         let partial = serde_json::json!({"m":"z".repeat(4096)}).to_string();
-        f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_cursor=?1,ordinary_partial=?2,ordinary_skip_body=NULL WHERE binding_id='b' AND consumer='watch'", rusqlite::params![state.encode("i").unwrap(),partial]).unwrap();
+        f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_cursor=?1,ordinary_partial=?2,ordinary_skip_body=NULL WHERE binding_id='b' AND consumer='watch'", rusqlite::params![state.encode("34750f98bd59fcfc946da45aaabe933b").unwrap(),partial]).unwrap();
         assert_eq!(
             f.db.query_row(
                 "SELECT seq FROM binding_cursors WHERE binding_id='a'",
@@ -1176,7 +1205,12 @@ mod binding_presentation {
         });
         let (f, claim, cursor) = continued_body_fixture_with_clock(clock.clone(), false);
         read_complete_body_and_advance(&f, &claim, "cancel-before-save");
-        let mut state = InboxBatchV2CursorState::decode_for(&cursor, "i", &claim.seat).unwrap();
+        let mut state = InboxBatchV2CursorState::decode_for(
+            &cursor,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &claim.seat,
+        )
+        .unwrap();
         // Keep one empty source-completion step after retirement. This makes
         // cancellation observable on OLD code before its final save, without
         // depending on a clock call introduced by the proposed new guard.
@@ -1185,7 +1219,7 @@ mod binding_presentation {
         receipts.physical_after = receipts.physical_high_water;
         receipts.manifest_after = receipts.manifest_high_water;
         state.attention.next_manifest_warning = true;
-        f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_cursor=?1 WHERE binding_id='b' AND consumer='watch'", [state.encode("i").unwrap()]).unwrap();
+        f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_cursor=?1 WHERE binding_id='b' AND consumer='watch'", [state.encode("34750f98bd59fcfc946da45aaabe933b").unwrap()]).unwrap();
         let snapshot = || {
             let mut statement = f.db.prepare("SELECT * FROM invitation_presentation_consumers WHERE binding_id='b' AND consumer='watch'").unwrap();
             let columns = statement.column_count();
@@ -1279,10 +1313,15 @@ mod binding_presentation {
         });
         let (f, claim, cursor) = continued_body_fixture_with_clock(clock.clone(), false);
         read_complete_body_and_advance(&f, &claim, "decision-cancel-read");
-        let mut state = InboxBatchV2CursorState::decode_for(&cursor, "i", &claim.seat).unwrap();
+        let mut state = InboxBatchV2CursorState::decode_for(
+            &cursor,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &claim.seat,
+        )
+        .unwrap();
         state.attention.receipts_done = true;
         state.attention.next_manifest_warning = true;
-        f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_cursor=?1 WHERE binding_id='b' AND consumer='watch'", [state.encode("i").unwrap()]).unwrap();
+        f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_cursor=?1 WHERE binding_id='b' AND consumer='watch'", [state.encode("34750f98bd59fcfc946da45aaabe933b").unwrap()]).unwrap();
         let snapshot = || {
             let mut statement = f.db.prepare("SELECT * FROM invitation_presentation_consumers WHERE binding_id='b' AND consumer='watch'").unwrap();
             let columns = statement.column_count();

@@ -51,7 +51,7 @@ pub fn load_candidate(
     scan_decision_seq: i64,
 ) -> Result<WakeCandidate, ApiError> {
     let (state,target,generation,target_generation,boot,epoch,decision_seq,episode,open):(String,Option<String>,i64,i64,Option<String>,i64,i64,i64,i64)=db.query_row(
-        "SELECT s.state,s.target_id,s.generation,s.target_generation,h.host_boot,h.host_epoch,h.decision_seq,s.unavailability_episode,s.unavailability_open FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
+        "SELECT s.state,s.target_id,s.generation,s.target_generation,h.host_boot,h.host_epoch,n.decision_seq,s.unavailability_episode,s.unavailability_open FROM seats s JOIN local_node n ON n.id=s.instance_id JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
         params![seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).map_err(store_error)?;
     if decision_seq != scan_decision_seq {
         return Err(api_error(
@@ -651,7 +651,7 @@ pub fn wake_owed_to_binding(
     if has(INVITATION) {
         let decision_seq: i64 = db
             .query_row(
-                "SELECT h.decision_seq FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1",
+                "SELECT h.decision_seq FROM seats s JOIN local_node h ON h.id=s.instance_id WHERE s.id=?1",
                 [seat],
                 |r| r.get(0),
             )
@@ -713,7 +713,7 @@ pub fn reserve(
     let committed=context.execute_decision(db,|tx|{
         type RowColumns = Option<(i64,i64,i64,i64,Option<String>,i64,String)>;
         let row:RowColumns=tx.query_row(
-            "SELECT h.decision_seq,s.unavailability_episode,s.unavailability_open,s.generation,s.target_id,s.target_generation,h.host_boot FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
+            "SELECT n.decision_seq,s.unavailability_episode,s.unavailability_open,s.generation,s.target_id,s.target_generation,h.host_boot FROM seats s JOIN local_node n ON n.id=s.instance_id JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
             params![candidate.seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
         let Some((decision_seq,episode,open,generation,target,target_generation,boot))=row else {return Ok(None)};
         if !witness.valid_for(candidate,instance,nonnegative(decision_seq)?,nonnegative(episode)?,open!=0) {return Ok(None)}
@@ -739,7 +739,7 @@ pub fn reserve(
             || current.last_reserved_frontier!=candidate.last_reserved_frontier {return Ok(None)}
         let Some(target)=target.map(HostTargetId::new) else {return Ok(None)};
         let boot=HostBootId::new(boot);
-        let host_epoch:i64=tx.query_row("SELECT host_epoch FROM host_instances WHERE id=?1",[instance],|r|r.get(0)).map_err(store_error)?;
+        let host_epoch:i64=tx.query_row("SELECT host_epoch FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",[instance],|r|r.get(0)).map_err(store_error)?;
         let seat_attention=current.has_pending_invitation||current.has_pending_receipt||current.actionable_warning_seq.is_some();
         let Some(authority)=current_authority(tx,instance,&candidate.seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?,seat_attention)? else {return Ok(None)};
         Ok(Some((target,boot,nonnegative(host_epoch)?,nonnegative(target_generation)?,authority,current)))
@@ -786,7 +786,7 @@ pub fn validate_reservation(
 ) -> Result<bool, ApiError> {
     type RowColumns = Option<(i64, i64, i64, String, i64, i64, Option<String>, i64)>;
     let row:RowColumns=db.query_row(
-        "SELECT h.decision_seq,s.unavailability_episode,s.unavailability_open,h.host_boot,h.host_epoch,s.target_generation,s.target_id,s.generation FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved'",
+        "SELECT n.decision_seq,s.unavailability_episode,s.unavailability_open,h.host_boot,h.host_epoch,s.target_generation,s.target_id,s.generation FROM seats s JOIN local_node n ON n.id=s.instance_id JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved'",
         params![reservation.seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional().map_err(store_error)?;
     let Some((
         seq,
@@ -984,7 +984,7 @@ pub fn reserve_poke(
     let committed=context.execute_decision(db,|tx|{
         type RowColumns = Option<(i64,i64,i64,i64,Option<String>,i64,String,i64)>;
         let row:RowColumns=tx.query_row(
-            "SELECT h.decision_seq,s.unavailability_episode,s.unavailability_open,s.generation,s.target_id,s.target_generation,h.host_boot,h.host_epoch FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
+            "SELECT n.decision_seq,s.unavailability_episode,s.unavailability_open,s.generation,s.target_id,s.target_generation,h.host_boot,h.host_epoch FROM seats s JOIN local_node n ON n.id=s.instance_id JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
             params![seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional().map_err(store_error)?;
         let Some((decision_seq,episode,open,generation,target,target_generation,boot,host_epoch))=row else {return Ok(None)};
         let Some(target)=target.map(HostTargetId::new) else {return Ok(None)};

@@ -133,7 +133,7 @@ impl Fixture {
         let instance = loop {
             if paths.descriptor_path.exists() && paths.database_path.exists() {
                 let db = Connection::open(&paths.database_path).unwrap();
-                if let Ok(id) = db.query_row("SELECT id FROM host_instances LIMIT 1", [], |r| {
+                if let Ok(id) = db.query_row("SELECT id FROM local_node LIMIT 1", [], |r| {
                     r.get::<_, String>(0)
                 }) {
                     break id;
@@ -205,7 +205,7 @@ impl Fixture {
         )
         .unwrap();
         db.execute(
-            "UPDATE host_instances SET decision_seq=MAX(decision_seq,?2) WHERE id=?1",
+            "UPDATE local_node SET decision_seq=MAX(decision_seq,?2) WHERE id=?1",
             params![self.instance, seq],
         )
         .unwrap();

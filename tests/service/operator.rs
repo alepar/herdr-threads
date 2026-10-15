@@ -92,7 +92,7 @@ impl HostPort for Host {
             .expect("operator host I/O held SQLite writer");
         assert!(
             db.query_row(
-                "SELECT observation_admission_sequence FROM host_instances WHERE id=?1",
+                "SELECT observation_admission_sequence FROM herdr_hosts WHERE node_id=?1",
                 [&self.instance],
                 |r| r.get::<_, i64>(0)
             )
@@ -202,18 +202,15 @@ impl Fixture {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(paths.database_path.clone(), clock.clone()),
+                StoreContext::new(paths.database_path.clone(), clock.clone())
+                    .with_test_host()
+                    .with_node_seed(herdr_threads::test_support::node_seed_for(&instance)),
                 &instance,
                 StoreSettings::default(),
             )
             .unwrap(),
         );
         let db = rusqlite::Connection::open(&paths.database_path).unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at) VALUES (?1,0)",
-            [&instance],
-        )
-        .unwrap();
         db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('saved',?1,'unresolved','native',1,0)",[&instance]).unwrap();
         drop(db);
         let host = Arc::new(Host {
@@ -332,7 +329,7 @@ impl Fixture {
         )
     }
     fn db(&self) -> rusqlite::Connection {
-        rusqlite::Connection::open(&self.paths.database_path).unwrap()
+        herdr_threads::test_support::open_test_connection(&self.paths.database_path)
     }
     fn fresh(&self, target: &str, operation: &str) -> Result<CommandResult, ApiError> {
         self.call(Command::OperatorFreshSeat(OperatorFreshSeat {

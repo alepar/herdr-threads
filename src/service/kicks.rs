@@ -124,8 +124,8 @@ const DEADLINE_TABLES: &[&str] = &[
     // Catch-up rows move effective receipt deadlines (TRUST-POLICY A6).
     "catch_up",
 ];
-/// Tables that explicitly kick no lane. `host_instances`,
-/// `snapshot_generations` and `snapshot_targets` are classified 'none' by
+/// Tables that explicitly kick no lane. `local_node`, `herdr_hosts`,
+/// `node_directory`, `snapshot_generations` and `snapshot_targets` are classified 'none' by
 /// design (observation admission, stage, seal and publish commits kick no
 /// lane). A new table must be added to one list; the exhaustive
 /// classification test fails until it is.
@@ -181,7 +181,9 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "harness_version_evidence",
     // SQL26 retained rows have no active lane consumer in this composition.
     "lazy_recipients",
-    "host_instances",
+    "herdr_hosts",
+    "local_node",
+    "node_directory",
     // Passive inbox progress never schedules attention or deadlines.
     "lazy_recipients",
     "membership_intervals",

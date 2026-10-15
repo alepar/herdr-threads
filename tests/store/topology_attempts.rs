@@ -435,7 +435,7 @@ fn cancellation_is_absorbing_and_requires_canonical_no_live_child() {
         let tx = db.transaction().unwrap();
         topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
         if live {
-            tx.execute("INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,original_thread,thread_id,origin,state,created_at) VALUES('i','seat:s','handoff',?1,'{}','child','create','invite','send','t','t','legacy_local_journal_hint','live',0)",["a".repeat(64)]).unwrap();
+            tx.execute("INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,original_thread,thread_id,origin,state,created_at) VALUES('34750f98bd59fcfc946da45aaabe933b','seat:s','handoff',?1,'{}','child','create','invite','send','t','t','legacy_local_journal_hint','live',0)",["a".repeat(64)]).unwrap();
         }
         let result = recover(
             &tx,
@@ -528,7 +528,7 @@ fn concurrent_connections_and_lost_reserve_reply_reopen_never_authorize_twice() 
             let path = path.clone();
             let barrier = barrier.clone();
             std::thread::spawn(move || {
-                let mut db = rusqlite::Connection::open(path).unwrap();
+                let mut db = herdr_threads::test_support::open_test_connection(&path);
                 db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
                 barrier.wait();
                 let tx = db
@@ -550,7 +550,7 @@ fn concurrent_connections_and_lost_reserve_reply_reopen_never_authorize_twice() 
             .sum::<usize>(),
         1
     );
-    let mut db = rusqlite::Connection::open(&path).unwrap();
+    let mut db = herdr_threads::test_support::open_test_connection(&path);
     let tx = db.transaction().unwrap();
     assert!(matches!(
         reserve_attempt(&tx, &namespace(), &reserve(&id, 1)).unwrap(),
@@ -757,7 +757,7 @@ fn cancellation_retains_attached_identity_and_created_evidence_after_reopen() {
         saved
     };
     drop(db);
-    let mut db = rusqlite::Connection::open(path).unwrap();
+    let mut db = herdr_threads::test_support::open_test_connection(&path);
     let tx = db.transaction().unwrap();
     let status = topology_handoff::current(&tx, &namespace(), &id)
         .unwrap()
@@ -850,7 +850,7 @@ fn recorded_creation_lost_reply_reopens_exact_without_new_authorization() {
         tx.commit().unwrap();
     }
     drop(db);
-    let mut db = rusqlite::Connection::open(path).unwrap();
+    let mut db = herdr_threads::test_support::open_test_connection(&path);
     let tx = db.transaction().unwrap();
     let status = topology_handoff::current(&tx, &namespace(), &id)
         .unwrap()
@@ -890,12 +890,12 @@ fn cancellation_serializes_with_underlying_live_child_insertion() {
     let (ready_rx, ready_tx) = (mpsc::channel::<()>(), mpsc::channel::<()>());
     let child_path = path.clone();
     let child = std::thread::spawn(move || {
-        let mut db = rusqlite::Connection::open(child_path).unwrap();
+        let mut db = herdr_threads::test_support::open_test_connection(&child_path);
         db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
         let tx = db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .unwrap();
-        tx.execute("INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,original_thread,thread_id,origin,state,created_at) VALUES('i','seat:s','handoff',?1,'{}','peer','create','invite','send','t','t','cooperative_pending_claim','live',0)",["b".repeat(64)]).unwrap();
+        tx.execute("INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,original_thread,thread_id,origin,state,created_at) VALUES('34750f98bd59fcfc946da45aaabe933b','seat:s','handoff',?1,'{}','peer','create','invite','send','t','t','cooperative_pending_claim','live',0)",["b".repeat(64)]).unwrap();
         ready_rx.0.send(()).unwrap();
         ready_tx.1.recv().unwrap();
         tx.commit().unwrap();
@@ -903,7 +903,7 @@ fn cancellation_serializes_with_underlying_live_child_insertion() {
     ready_rx.1.recv().unwrap();
     let cancel_path = path.clone();
     let cancel = std::thread::spawn(move || {
-        let mut db = rusqlite::Connection::open(cancel_path).unwrap();
+        let mut db = herdr_threads::test_support::open_test_connection(&cancel_path);
         db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
         let tx = db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -923,7 +923,7 @@ fn cancellation_serializes_with_underlying_live_child_insertion() {
     ready_tx.0.send(()).unwrap();
     child.join().unwrap();
     assert_eq!(cancel.join().unwrap(), ErrorCode::Conflict);
-    let db = rusqlite::Connection::open(path).unwrap();
+    let db = herdr_threads::test_support::open_test_connection(&path);
     assert_eq!(
         topology_handoff::current(&db, &namespace(), &id)
             .unwrap()
@@ -1102,7 +1102,7 @@ fn typed_zero_submission_lost_reply_reopens_and_old_replay_never_advances_again(
     assert_eq!(saved.attempt_state, BootstrapAttemptState::Prepared);
     tx.commit().unwrap();
     drop(db);
-    let mut db = rusqlite::Connection::open(path).unwrap();
+    let mut db = herdr_threads::test_support::open_test_connection(&path);
     let tx = db.transaction().unwrap();
     assert_eq!(
         record_not_submitted(&tx, &namespace(), &request).unwrap(),
@@ -1209,11 +1209,10 @@ fn typed_zero_submission_refuses_wrong_key_attempt_creation_unknown_and_terminal
 #[test]
 fn cancellation_writer_is_bounded_after_retained_legacy_history_and_checks_each_exact_key() {
     let mut db = fixture();
-    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('foreign',0)")
-        .unwrap();
+    db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
     {
         let tx = db.transaction().unwrap();
-        let mut insert = tx.prepare("INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,origin,state,created_at,completed_at) VALUES('i','seat:s',?1,?2,'{}','peer',?3,?4,?5,'cooperative_pending_claim','completed',0,1)").unwrap();
+        let mut insert = tx.prepare("INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,origin,state,created_at,completed_at) VALUES('34750f98bd59fcfc946da45aaabe933b','seat:s',?1,?2,'{}','peer',?3,?4,?5,'cooperative_pending_claim','completed',0,1)").unwrap();
         for n in 0..10_000 {
             insert
                 .execute(rusqlite::params![
@@ -1265,7 +1264,7 @@ fn cancellation_writer_is_bounded_after_retained_legacy_history_and_checks_each_
                     } else {
                         "unrelated-send"
                     };
-                    tx.execute("INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,origin,state,created_at,completed_at) VALUES(?1,?2,?3,?4,'{}','peer',?5,?6,?7,?8,?9,0,?10)",rusqlite::params![if scope == "foreign-instance" { "foreign" } else { "i" }, if scope == "foreign-actor" { "seat:other" } else { "seat:s" }, compound, "b".repeat(64), create, invite, send, origin, if scope == "completed" { "completed" } else { "live" }, if scope == "completed" { Some(1) } else { None }]).unwrap();
+                    tx.execute("INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,origin,state,created_at,completed_at) VALUES(?1,?2,?3,?4,'{}','peer',?5,?6,?7,?8,?9,0,?10)",rusqlite::params![if scope == "foreign-instance" { "foreign" } else { "34750f98bd59fcfc946da45aaabe933b" }, if scope == "foreign-actor" { "seat:other" } else { "seat:s" }, compound, "b".repeat(64), create, invite, send, origin, if scope == "completed" { "completed" } else { "live" }, if scope == "completed" { Some(1) } else { None }]).unwrap();
                 }
                 let mut steps = 0usize;
                 unsafe {

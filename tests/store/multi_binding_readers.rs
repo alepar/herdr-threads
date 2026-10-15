@@ -89,7 +89,7 @@ fn fingerprint(session: &str) -> LivenessFingerprint {
 
 fn claim(session: &str) -> CallerClaim {
     CallerClaim {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s"),
         binding_generation: SEAT_GENERATION,
         role: CallerRole::TopLevel,
@@ -128,14 +128,14 @@ struct Fixture {
 fn fixture() -> Fixture {
     let path =
         std::env::temp_dir().join(format!("herdr-multi-binding-{}.db", uuid::Uuid::new_v4()));
-    let store = StoreContext::new(path, Arc::new(FixedClock));
+    let store = StoreContext::new(path, Arc::new(FixedClock)).with_test_host();
     let db = store.open_writer().unwrap();
     db.execute_batch(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,30);
-         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','p',4,1,0);
-         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=30;
+         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',4,1,0);
+         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);
          INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s','joined',1);
-         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m1','t',1,'ordinary','b',1,1),('i','m2','t',2,'ordinary','b',2,2);
+         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m1','t',1,'ordinary','b',1,1),('34750f98bd59fcfc946da45aaabe933b','m2','t',2,'ordinary','b',2,2);
          UPDATE threads SET next_sequence=3 WHERE id='t';",
     )
     .unwrap();
@@ -186,7 +186,15 @@ fn fixture_holds_three_open_bindings_one_disconnected() {
 fn participants_and_seat_views_list_the_seat_once() {
     let f = fixture();
     stale_binding_generations(&f.db);
-    let q = |command: Command| query(&f.store, "i", &command, &budget()).unwrap();
+    let q = |command: Command| {
+        query(
+            &f.store,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &command,
+            &budget(),
+        )
+        .unwrap()
+    };
     let CommandResult::Participants(participants) = q(Command::Participants(ParticipantsQuery {
         thread: ThreadId::new("t"),
         page: page(),
@@ -352,7 +360,7 @@ fn open_binding_role_reports_agent_for_a_multi_binding_seat() {
         .unwrap();
     assert_eq!(schema::open_binding_role(&f.db, &seat).unwrap(), None);
     f.db.execute_batch(
-        "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('h','i','resolved','native','ph',1,1,0);
+        "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('h','34750f98bd59fcfc946da45aaabe933b','resolved','native','ph',1,1,0);
          INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('h',1,1,'ph','b',1,'human','','e','cooperative_top_level',0,0,'term','inc');",
     )
     .unwrap();
@@ -375,7 +383,7 @@ fn epochs(db: &Connection) -> Vec<(String, i64, i64, bool)> {
 fn publication(epoch: u64) -> PublishedSnapshot {
     PublishedSnapshot {
         id: SnapshotGenerationId::store_issued("g1".into()),
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         boot: HostBootId::new("b"),
         epoch,
         observation_sequence: 1,
@@ -399,7 +407,7 @@ fn carry_binding_forward_carries_every_registered_binding() {
     let tx = f.db.transaction().unwrap();
     let carried = seats::carry_binding_forward(
         &tx,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         UtcMillis(100),
         &SeatId::new("s"),
         SEAT_GENERATION,
@@ -442,15 +450,15 @@ fn carry_binding_forward_carries_every_registered_binding() {
     // a confirmed epoch-2 observation) anchors exactly once, at the seat generation.
     let mut g = fixture();
     g.db.execute_batch(
-        "UPDATE host_instances SET host_epoch=2;
-         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p','b',2,2,1,'fresh','unknown','unknown',0,0,'term','inc','coherent_enumeration',1);",
+        "UPDATE herdr_hosts SET host_epoch=2;
+         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',2,2,1,'fresh','unknown','unknown',0,0,'term','inc','coherent_enumeration',1);",
     )
     .unwrap();
     let tx = g.db.transaction().unwrap();
     assert!(
         seats::carry_binding_forward(
             &tx,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             UtcMillis(100),
             &SeatId::new("s"),
             SEAT_GENERATION,
@@ -471,7 +479,7 @@ fn carry_binding_forward_carries_every_registered_binding() {
     assert!(
         !seats::carry_binding_forward(
             &tx,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             UtcMillis(101),
             &SeatId::new("s"),
             SEAT_GENERATION,
@@ -580,16 +588,21 @@ fn summary_caller_is_current_per_session_binding() {
     stale_binding_generations(&f.db);
     let thread = ThreadId::new("t");
     let current = |claim: &CallerClaim| {
-        summary::check_caller(&f.db, "i", claim, &thread)
+        summary::check_caller(&f.db, "34750f98bd59fcfc946da45aaabe933b", claim, &thread)
             .unwrap()
             .current
     };
     assert!(current(&claim("sess-A")));
     assert!(current(&claim("sess-B")));
     assert_eq!(
-        summary::check_caller(&f.db, "i", &claim("sess-B"), &thread)
-            .unwrap()
-            .binding,
+        summary::check_caller(
+            &f.db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &claim("sess-B"),
+            &thread
+        )
+        .unwrap()
+        .binding,
         Some(binding_of(&f.db, "sess-B")),
         "the catch-up row belongs to the claim's own session binding"
     );
@@ -735,7 +748,7 @@ fn effective_non_human_reader_handles_multiple_bindings() {
     assert!(!effective::human_receipt_waived(&f.db, "s", Some(6)).unwrap());
     // A human binding alone waives (the human branch itself is ht-54r.4's).
     f.db.execute_batch(
-        "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('h','i','resolved','native','ph',1,1,0);
+        "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('h','34750f98bd59fcfc946da45aaabe933b','resolved','native','ph',1,1,0);
          INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('h',1,1,'ph','b',1,'human','','e','cooperative_top_level',0,0,'term','inc');",
     )
     .unwrap();

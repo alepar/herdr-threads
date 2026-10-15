@@ -792,7 +792,13 @@ fn real_store_reconfirms_host_invalidated_seat_from_production_shaped_publicatio
         budget: &CallBudget,
         capture: HostSnapshot,
     ) -> crate::ports::SnapshotGenerationId {
-        let admission = seats::begin_host_observation(context, conn, "i", budget).unwrap();
+        let admission = seats::begin_host_observation(
+            context,
+            conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            budget,
+        )
+        .unwrap();
         let header = SnapshotHeader::from_captured(admission, &capture).unwrap();
         let stage = seats::begin_snapshot_stage(context, conn, header, budget).unwrap();
         seats::stage_snapshot_targets(
@@ -812,26 +818,29 @@ fn real_store_reconfirms_host_invalidated_seat_from_production_shaped_publicatio
     for binding_incarnation in ["inc-a", "inc-old"] {
         let path =
             std::env::temp_dir().join(format!("herdr-reconcile-{}.db", uuid::Uuid::new_v4()));
-        let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
+        let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
         let mut conn = context.open_writer().unwrap();
         let budget = CallBudget {
             deadline: MonoInstant(1_000),
             cancellation: Cancellation::default(),
         };
-        conn.execute(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'boot-a',1)",
-            [],
-        )
-        .unwrap();
-        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','pane',1,1,0)", []).unwrap();
-        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('i','pane','boot-a',1,1,0,'fresh')", []).unwrap();
+        conn.execute("UPDATE herdr_hosts SET host_boot='boot-a',host_epoch=1", [])
+            .unwrap();
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0)", []).unwrap();
+        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('34750f98bd59fcfc946da45aaabe933b','pane','boot-a',1,1,0,'fresh')", []).unwrap();
         conn.execute(
             "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'pane','boot-a',1,'codex','plugin_context:x','e','cooperative_top_level',1,1,'terminal-a',?1)",
             [binding_incarnation],
         )
         .unwrap();
         publish(&context, &mut conn, &budget, production(2));
-        let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+        let admission = seats::begin_host_observation(
+            &context,
+            &mut conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &budget,
+        )
+        .unwrap();
         let fence = seats::invalidate_host_observation(
             &context,
             &mut conn,
@@ -1113,7 +1122,13 @@ fn real_store_reconfirms_never_registered_seat_from_its_structural_proof() {
         budget: &CallBudget,
         capture: HostSnapshot,
     ) -> crate::ports::SnapshotGenerationId {
-        let admission = seats::begin_host_observation(context, conn, "i", budget).unwrap();
+        let admission = seats::begin_host_observation(
+            context,
+            conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            budget,
+        )
+        .unwrap();
         let header = SnapshotHeader::from_captured(admission, &capture).unwrap();
         let stage = seats::begin_snapshot_stage(context, conn, header, budget).unwrap();
         seats::stage_snapshot_targets(
@@ -1133,21 +1148,24 @@ fn real_store_reconfirms_never_registered_seat_from_its_structural_proof() {
     for proof_incarnation in ["inc-a", "inc-old"] {
         let path =
             std::env::temp_dir().join(format!("herdr-reconcile-{}.db", uuid::Uuid::new_v4()));
-        let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
+        let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
         let mut conn = context.open_writer().unwrap();
         let budget = CallBudget {
             deadline: MonoInstant(1_000),
             cancellation: Cancellation::default(),
         };
-        conn.execute(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'boot-a',1)",
-            [],
+        conn.execute("UPDATE herdr_hosts SET host_boot='boot-a',host_epoch=1", [])
+            .unwrap();
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0,'terminal-u',?1,'coherent_enumeration','boot-a',1,1,1)", [proof_incarnation]).unwrap();
+        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('34750f98bd59fcfc946da45aaabe933b','pane','boot-a',1,1,0,'fresh')", []).unwrap();
+        publish(&context, &mut conn, &budget, production(2));
+        let admission = seats::begin_host_observation(
+            &context,
+            &mut conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &budget,
         )
         .unwrap();
-        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence) VALUES ('u','i','resolved','native','pane',1,1,0,'terminal-u',?1,'coherent_enumeration','boot-a',1,1,1)", [proof_incarnation]).unwrap();
-        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('i','pane','boot-a',1,1,0,'fresh')", []).unwrap();
-        publish(&context, &mut conn, &budget, production(2));
-        let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
         let fence = seats::invalidate_host_observation(
             &context,
             &mut conn,
@@ -1261,13 +1279,10 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
 
     let path =
         std::env::temp_dir().join(format!("herdr-ordinary-shell-{}.db", uuid::Uuid::new_v4()));
-    let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let mut conn = context.open_writer().unwrap();
-    conn.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'boot-a',1)",
-        [],
-    )
-    .unwrap();
+    conn.execute("UPDATE herdr_hosts SET host_boot='boot-a',host_epoch=1", [])
+        .unwrap();
     let budget = CallBudget {
         deadline: MonoInstant(1_000),
         cancellation: Cancellation::default(),
@@ -1283,7 +1298,13 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
         budget: &CallBudget,
         capture: HostSnapshot,
     ) -> crate::ports::PublishedSnapshot {
-        let admission = seats::begin_host_observation(context, conn, "i", budget).unwrap();
+        let admission = seats::begin_host_observation(
+            context,
+            conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            budget,
+        )
+        .unwrap();
         let header = SnapshotHeader::from_captured(admission, &capture).unwrap();
         let stage = seats::begin_snapshot_stage(context, conn, header, budget).unwrap();
         if !capture.targets.is_empty() {
@@ -1304,7 +1325,13 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
 
     publish(&context, &mut conn, &budget, snapshot(2, vec![shell(2)]));
     let fresh = shell(3);
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &budget,
+    )
+    .unwrap();
     assert!(
         seats::publish_current_target_observation(&context, &mut conn, &admission, &fresh, &budget)
             .unwrap()
@@ -1317,7 +1344,7 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
     let OrdinaryResolutionOutcome::Resolved(seat) = seats::resolve_seat(
         &context,
         &mut conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         request.clone(),
         OrdinaryResolutionAttempt::Observed(guard()),
         &budget,
@@ -1329,7 +1356,7 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
         seats::resolve_seat(
             &context,
             &mut conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             request.clone(),
             OrdinaryResolutionAttempt::Observed(guard()),
             &budget,
@@ -1338,7 +1365,7 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
         OrdinaryResolutionOutcome::Resolved(seat.clone())
     );
     conn.execute(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('handoff','i','handoff','goal',100,100)",
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('handoff','34750f98bd59fcfc946da45aaabe933b','handoff','goal',100,100)",
         [],
     )
     .unwrap();
@@ -1357,7 +1384,7 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
         crate::store::control::operator_orphan_invite(
             &context,
             &mut conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &invitation,
             operator,
             None
@@ -1393,7 +1420,7 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
         seats::resolve_seat(
             &context,
             &mut conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             request,
             OrdinaryResolutionAttempt::ReplayOnly,
             &budget,
@@ -1548,7 +1575,13 @@ fn real_store_registered_seat_follows_observed_move_with_unsupported_execution()
         budget: &CallBudget,
         capture: HostSnapshot,
     ) -> crate::ports::PublishedSnapshot {
-        let admission = seats::begin_host_observation(context, conn, "i", budget).unwrap();
+        let admission = seats::begin_host_observation(
+            context,
+            conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            budget,
+        )
+        .unwrap();
         let header = SnapshotHeader::from_captured(admission, &capture).unwrap();
         let stage = seats::begin_snapshot_stage(context, conn, header, budget).unwrap();
         seats::stage_snapshot_targets(
@@ -1567,23 +1600,20 @@ fn real_store_registered_seat_follows_observed_move_with_unsupported_execution()
     for bound_terminal in ["terminal-b", "terminal-other"] {
         let path =
             std::env::temp_dir().join(format!("herdr-reconcile-{}.db", uuid::Uuid::new_v4()));
-        let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
+        let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
         let mut conn = context.open_writer().unwrap();
         let budget = CallBudget {
             deadline: MonoInstant(1_000),
             cancellation: Cancellation::default(),
         };
-        conn.execute(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'boot-a',1)",
-            [],
-        )
-        .unwrap();
+        conn.execute("UPDATE herdr_hosts SET host_boot='boot-a',host_epoch=1", [])
+            .unwrap();
         let kind = structural_proof("w1:p2", "terminal-b", 1).source_spelling();
         for (seat, address, terminal) in
             [("b", "w1:p2", "terminal-b"), ("d", "w1:p3", "terminal-d")]
         {
             conn.execute(
-                "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at) VALUES (?1,'i','resolved','native',?2,1,1,?3,'inc-a',?4,'boot-a',1,1,1,0)",
+                "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,?3,'inc-a',?4,'boot-a',1,1,1,0)",
                 rusqlite::params![seat, address, terminal, kind],
             )
             .unwrap();
@@ -1658,8 +1688,8 @@ fn real_store_registered_seat_follows_observed_move_with_unsupported_execution()
         drop(conn);
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(path.clone(), Arc::new(FixedClock)),
-                "i",
+                StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 StoreSettings {
                     daemon_boot: Some(uuid::Uuid::new_v4()),
                     ..StoreSettings::default()
@@ -3020,8 +3050,13 @@ mod carry_forward {
     }
 
     fn publish(f: &mut Fixture, capture: HostSnapshot) -> PublishedSnapshot {
-        let admission =
-            seats::begin_host_observation(&f.context, &mut f.conn, "i", &f.budget).unwrap();
+        let admission = seats::begin_host_observation(
+            &f.context,
+            &mut f.conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &f.budget,
+        )
+        .unwrap();
         let header = SnapshotHeader::from_captured(admission, &capture).unwrap();
         let stage =
             seats::begin_snapshot_stage(&f.context, &mut f.conn, header, &f.budget).unwrap();
@@ -3045,17 +3080,14 @@ mod carry_forward {
     /// ended.
     fn fixture(provenance: &str, unresolved: bool) -> Fixture {
         let path = std::env::temp_dir().join(format!("herdr-carry-{}.db", uuid::Uuid::new_v4()));
-        let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
+        let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
         let conn = context.open_writer().unwrap();
         let budget = CallBudget {
             deadline: MonoInstant(1_000),
             cancellation: Cancellation::default(),
         };
-        conn.execute(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'boot-a',3)",
-            [],
-        )
-        .unwrap();
+        conn.execute("UPDATE herdr_hosts SET host_boot='boot-a',host_epoch=3", [])
+            .unwrap();
         let kind = structural_proof("pane", "terminal-a", 1).source_spelling();
         let (state, reason) = if unresolved {
             ("unresolved", Some("host_invalidation"))
@@ -3063,7 +3095,7 @@ mod carry_forward {
             ("resolved", None)
         };
         conn.execute(
-            "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at,unavailability_open) VALUES ('s','i',?1,?2,'native','pane',?4,1,'terminal-a','inc-a',?3,'boot-a',3,1,1,0,1)",
+            "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at,unavailability_open) VALUES ('s','34750f98bd59fcfc946da45aaabe933b',?1,?2,'native','pane',?4,1,'terminal-a','inc-a',?3,'boot-a',3,1,1,0,1)",
             rusqlite::params![state, reason, kind, if unresolved { 2 } else { 1 }],
         )
         .unwrap();
@@ -3102,7 +3134,7 @@ mod carry_forward {
     fn observed_generation(f: &Fixture) -> i64 {
         f.conn
             .query_row(
-                "SELECT t.generation FROM snapshot_targets t JOIN host_instances h ON h.active_snapshot_id=t.generation_id WHERE t.target_id='pane'",
+                "SELECT t.generation FROM snapshot_targets t JOIN herdr_hosts h ON h.active_snapshot_id=t.generation_id WHERE t.target_id='pane'",
                 [],
                 |r| r.get(0),
             )
@@ -3329,7 +3361,7 @@ mod carry_forward {
         let revision = |f: &Fixture| {
             count(
                 f,
-                "SELECT lifecycle_revision FROM host_instances WHERE id='i'",
+                "SELECT lifecycle_revision FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
             )
         };
         let before = revision(&f);

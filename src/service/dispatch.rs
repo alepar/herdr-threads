@@ -1471,13 +1471,18 @@ mod operator_tests {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(path.clone(), clock.clone()),
-                "i",
+                StoreContext::new(path.clone(), clock.clone()).with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 StoreSettings::default(),
             )
             .unwrap(),
         );
-        let domain = DomainService::new("i".into(), store, clock.clone()).with_operator_owner(501);
+        let domain = DomainService::new(
+            "34750f98bd59fcfc946da45aaabe933b".into(),
+            store,
+            clock.clone(),
+        )
+        .with_operator_owner(501);
         let result = domain.handle(
             Command::OperatorFreshSeat(OperatorFreshSeat {
                 target: HostTargetId::new("p"),
@@ -1512,8 +1517,8 @@ mod operator_tests {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(path.clone(), clock.clone()),
-                "i",
+                StoreContext::new(path.clone(), clock.clone()).with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 StoreSettings::default(),
             )
             .unwrap(),
@@ -1521,16 +1526,19 @@ mod operator_tests {
         {
             let db = rusqlite::Connection::open(&path).unwrap();
             db.execute_batch(
-                "INSERT OR IGNORE INTO host_instances(id,created_at) VALUES ('i',0);\
-                 INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0);\
-                 INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);",
+                "INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0);\
+                 INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);",
             )
             .unwrap();
         }
-        let domain = DomainService::new("i".into(), store, clock.clone())
-            .with_cooperative_owner(501, Arc::new(FairWriter::new(8)));
+        let domain = DomainService::new(
+            "34750f98bd59fcfc946da45aaabe933b".into(),
+            store,
+            clock.clone(),
+        )
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(8)));
         let claim = CallerClaim {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("s"),
             binding_generation: 0,
             role: CallerRole::Subagent,
@@ -1600,11 +1608,11 @@ mod operator_tests {
         assert_eq!(err.code, ErrorCode::CallerUnverified);
         // Without an elected runtime the route is closed.
         let bare = DomainService::new(
-            "i".into(),
+            "34750f98bd59fcfc946da45aaabe933b".into(),
             Arc::new(
                 SqliteStore::new(
-                    StoreContext::new(path.clone(), clock.clone()),
-                    "i",
+                    StoreContext::new(path.clone(), clock.clone()).with_test_host(),
+                    "34750f98bd59fcfc946da45aaabe933b",
                     StoreSettings::default(),
                 )
                 .unwrap(),
@@ -1616,7 +1624,7 @@ mod operator_tests {
                 Command::Summary(SummaryRequest {
                     thread: ThreadId::new("t"),
                     claim: CallerClaim {
-                        instance: "i".into(),
+                        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                         seat: SeatId::new("s"),
                         binding_generation: 0,
                         role: CallerRole::TopLevel,
@@ -1660,13 +1668,18 @@ mod topology_contract_dispatch_tests {
         let clock: Arc<dyn Clock> = Arc::new(crate::app::SystemClock::new());
         let store = Arc::new(
             crate::store::SqliteStore::new(
-                crate::store::connection::StoreContext::new(path.clone(), clock.clone()),
-                "i",
+                crate::store::connection::StoreContext::new(path.clone(), clock.clone())
+                    .with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 crate::store::StoreSettings::default(),
             )
             .unwrap(),
         );
-        let domain = DomainService::new("i".into(), store, clock.clone());
+        let domain = DomainService::new(
+            "34750f98bd59fcfc946da45aaabe933b".into(),
+            store,
+            clock.clone(),
+        );
         let db = rusqlite::Connection::open(path).unwrap();
         let before: i64 = db
             .query_row("PRAGMA data_version", [], |row| row.get(0))

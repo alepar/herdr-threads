@@ -1802,20 +1802,26 @@ mod loader_tests {
     /// Thread `t3`: ordinary (1) plus a published, unmaterialized warning (2).
     fn db() -> Connection {
         let db = Connection::open_in_memory().unwrap();
-        schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
+        schema::initialize(
+            &db,
+            || crate::protocol::time::UtcMillis(0),
+            &crate::test_support::test_node_seed(),
+        )
+        .unwrap();
+        crate::test_support::attach_test_host_to_connection(&db);
         db.execute_batch(
             "\
-            INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,40);\
-            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','pane-s',1,1,0);\
-            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t1','i','a','g',0,0,4),('t3','i','c','g',0,0,3);\
-            INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,relays_user) VALUES ('m1','i','t1',1,'ordinary','s','hello',60000,1,'human',0);\
-            INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,relays_user) VALUES ('m2','i','t1',2,'ordinary','s','second',120000,2,'agent',1);\
-            INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq) VALUES ('m3','i','t1',3,'info','{\"b\": 1,\n \"a\": \"x\"}',180000,3);\
-            INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p','i','actor','op',zeroblob(32),'t3',0,0,0,0,0,0,1,'sealed');\
+            UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=40;\
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-s',1,1,0);\
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t1','34750f98bd59fcfc946da45aaabe933b','a','g',0,0,4),('t3','34750f98bd59fcfc946da45aaabe933b','c','g',0,0,3);\
+            INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,relays_user) VALUES ('m1','34750f98bd59fcfc946da45aaabe933b','t1',1,'ordinary','s','hello',60000,1,'human',0);\
+            INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,relays_user) VALUES ('m2','34750f98bd59fcfc946da45aaabe933b','t1',2,'ordinary','s','second',120000,2,'agent',1);\
+            INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq) VALUES ('m3','34750f98bd59fcfc946da45aaabe933b','t1',3,'info','{\"b\": 1,\n \"a\": \"x\"}',180000,3);\
+            INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p','34750f98bd59fcfc946da45aaabe933b','actor','op',zeroblob(32),'t3',0,0,0,0,0,0,1,'sealed');\
             INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('p','t3','s',1,300,0);\
             INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES ('p','key','w-unavail','s',1,1,'{\"kind\":\"unavailable\"}');\
-            INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('m4','i','t3',1,'ordinary','s','b',7000,10);\
-            INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('p','m4','i','t3',10,7000,1,0,1,1);\
+            INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('m4','34750f98bd59fcfc946da45aaabe933b','t3',1,'ordinary','s','b',7000,10);\
+            INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('p','m4','34750f98bd59fcfc946da45aaabe933b','t3',10,7000,1,0,1,1);\
         ",
         )
         .unwrap();
@@ -1835,7 +1841,7 @@ mod loader_tests {
             .into_iter()
             .enumerate()
         {
-            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,user_intent) VALUES (?1,'i','t1',?2,'ordinary','s','new',0,?2,'human',?3)",params![format!("mi{n}"),(n+4) as i64,intent.as_str()]).unwrap();
+            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,user_intent) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t1',?2,'ordinary','s','new',0,?2,'human',?3)",params![format!("mi{n}"),(n+4) as i64,intent.as_str()]).unwrap();
         }
         let loaded = bundle_messages(&db, &t("t1"), 1, 6).unwrap();
         assert_eq!(
@@ -1857,7 +1863,7 @@ mod loader_tests {
         );
         db.execute_batch("PRAGMA ignore_check_constraints=ON")
             .unwrap();
-        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,user_intent) VALUES ('bad-intent','i','t1',7,'ordinary','s','bad',0,7,'human','instruction')",[]).unwrap();
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,user_intent) VALUES ('bad-intent','34750f98bd59fcfc946da45aaabe933b','t1',7,'ordinary','s','bad',0,7,'human','instruction')",[]).unwrap();
         assert_eq!(
             bundle_messages(&db, &t("t1"), 7, 7).unwrap_err().code,
             ErrorCode::StoreCorrupt
@@ -1910,7 +1916,7 @@ mod loader_tests {
             };
             insert_block(
                 &db,
-                "i",
+                "34750f98bd59fcfc946da45aaabe933b",
                 &job,
                 &NewBlock {
                     seat: &SeatId::new("s"),

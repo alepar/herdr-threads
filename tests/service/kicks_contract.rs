@@ -79,7 +79,7 @@ fn lane_set_is_a_set_over_all_lanes() {
         set.union(LaneSet::EMPTY.with(Lane::Retention))
             .contains(Lane::Retention)
     );
-    assert_eq!(lanes_for_table("host_instances"), LaneSet::EMPTY);
+    assert_eq!(lanes_for_table("herdr_hosts"), LaneSet::EMPTY);
     let names: Vec<_> = Lane::ALL.iter().map(|lane| lane.name()).collect();
     assert_eq!(
         names,

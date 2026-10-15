@@ -82,7 +82,9 @@ impl Production {
         let instance = crate::node::NodeUuid::new_v4();
         let store: Arc<dyn StorePort> = Arc::new(
             crate::store::SqliteStore::new(
-                crate::store::connection::StoreContext::new(dir.0.join("db"), clock.clone()),
+                crate::store::connection::StoreContext::new(dir.0.join("db"), clock.clone())
+                    .with_test_host()
+                    .with_node_seed(crate::test_support::node_seed_for(instance)),
                 instance.to_string(),
                 crate::store::StoreSettings::default(),
             )
@@ -548,12 +550,12 @@ impl crate::ports::NotificationPort for SubmittedNotifier {
 const WAKE_SEAT: &str = "seat-private-7f3a";
 
 fn wake_store(path: &std::path::Path, clock: Arc<TestClock>, boot: uuid::Uuid) -> FailingWakes {
-    let context = crate::store::connection::StoreContext::new(path.into(), clock);
+    let context = crate::store::connection::StoreContext::new(path.into(), clock).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1);
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);").unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?1,1,1,0)", [WAKE_SEAT]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant) VALUES ('i',?1,'host',1,1,0,'fresh','occupied','idle','execution',1)", [WAKE_SEAT]).unwrap();
+    db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1;
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);").unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,0)", [WAKE_SEAT]).unwrap();
+    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'host',1,1,0,'fresh','occupied','idle','execution',1)", [WAKE_SEAT]).unwrap();
     db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,1,1,?1,'host',1,'codex','session','execution','fresh',0,0,'term-'||?1,'inc')", [WAKE_SEAT]).unwrap();
     db.execute(
         "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'invited')",
@@ -565,7 +567,7 @@ fn wake_store(path: &std::path::Path, clock: Arc<TestClock>, boot: uuid::Uuid) -
     FailingWakes {
         store: crate::store::SqliteStore::new(
             context,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             crate::store::StoreSettings {
                 daemon_boot: Some(boot),
                 ..Default::default()
@@ -598,7 +600,7 @@ fn production_health_redacts_wake_callback_identity_and_detail() {
     let observed = ObservedWakePort::new(&fixture, &wake);
     let deadlines = ScriptedDeadlines::default();
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &deadlines,
         &observed,
         &SubmittedNotifier,
@@ -723,7 +725,7 @@ fn production_health_redacts_observation_capture_invalidation_and_reconciliation
 
     let fence = HostInvalidationFence {
         admission: HostObservationAdmission {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             sequence: 1,
             expected_active: None,
             expected_boot: None,
@@ -1541,7 +1543,9 @@ fn transitions_refused_reaches_health() {
     let instance = crate::node::NodeUuid::new_v4();
     let store: Arc<dyn StorePort> = Arc::new(
         crate::store::SqliteStore::new(
-            crate::store::connection::StoreContext::new(dir.0.join("db"), clock.clone()),
+            crate::store::connection::StoreContext::new(dir.0.join("db"), clock.clone())
+                .with_test_host()
+                .with_node_seed(crate::test_support::node_seed_for(instance)),
             instance.to_string(),
             crate::store::StoreSettings::default(),
         )
@@ -1710,7 +1714,7 @@ fn drive_wake_log(
     let observed = ObservedWakePort::new(&fixture, &wake);
     let deadlines = ScriptedDeadlines::default();
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &deadlines,
         &observed,
         notifier,

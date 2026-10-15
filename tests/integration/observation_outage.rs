@@ -56,7 +56,9 @@ impl Lane5 {
         std::fs::create_dir_all(&scratch).unwrap();
         let instance = herdr_threads::node::NodeUuid::new_v4().to_string();
         let store = SqliteStore::new(
-            StoreContext::new(scratch.join("store.db"), Arc::clone(&clock)),
+            StoreContext::new(scratch.join("store.db"), Arc::clone(&clock))
+                .with_test_host()
+                .with_node_seed(herdr_threads::test_support::node_seed_for(&instance)),
             instance.clone(),
             StoreSettings::default(),
         )
@@ -115,11 +117,9 @@ impl Lane5 {
     fn invalidation_revision(&self) -> i64 {
         rusqlite::Connection::open(self.scratch.join("store.db"))
             .unwrap()
-            .query_row(
-                "SELECT invalidation_revision FROM host_instances",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT invalidation_revision FROM herdr_hosts", [], |r| {
+                r.get(0)
+            })
             .unwrap()
     }
 

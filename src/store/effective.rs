@@ -48,7 +48,7 @@ pub fn effective_observation(
 ) -> Result<Option<EffectiveObservation>, ApiError> {
     type CurrentColumns = Option<(Option<String>, Option<String>, i64, i64, i64)>;
     let current: CurrentColumns = db.query_row(
-        "SELECT active_snapshot_id,host_boot,host_epoch,observation_sequence,invalidation_revision FROM host_instances WHERE id=?1",
+        "SELECT active_snapshot_id,host_boot,host_epoch,observation_sequence,invalidation_revision FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
         [instance], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
     ).optional().map_err(store_error)?;
     let Some((active_id, host_boot, host_epoch, publication_seq, invalidation_revision)) = current
@@ -135,7 +135,7 @@ pub fn effective_recovery_disposition(
     }
     type RowColumns = Option<(Option<String>, i64, Option<String>, Option<String>, i64)>;
     let row: RowColumns = db.query_row(
-        "SELECT host_boot,host_epoch,recovery_baseline_generation_id,active_snapshot_id,baseline_hold_unclaimed FROM host_instances WHERE id=?1",
+        "SELECT host_boot,host_epoch,recovery_baseline_generation_id,active_snapshot_id,baseline_hold_unclaimed FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
         [instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
     ).optional().map_err(store_error)?;
     let Some((boot, epoch, baseline, active, hold_unclaimed)) = row else {
@@ -673,7 +673,7 @@ pub fn scan_global_logical_candidates(
     }
     let high_water: i64 = db
         .query_row(
-            "SELECT decision_seq FROM host_instances WHERE id=?1",
+            "SELECT decision_seq FROM local_node WHERE id=?1",
             [instance],
             |r| r.get(0),
         )
@@ -797,7 +797,7 @@ fn inbox_revision(db: &Connection, instance: &str, seat: &str) -> Result<i64, Ap
 }
 fn inbox_host_revisions(db: &Connection, instance: &str) -> Result<(i64, i64), ApiError> {
     db.query_row(
-        "SELECT lifecycle_revision,decision_seq FROM host_instances WHERE id=?1",
+        "SELECT h.lifecycle_revision,n.decision_seq FROM local_node n JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=n.id WHERE n.id=?1",
         [instance],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )

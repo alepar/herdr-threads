@@ -1057,7 +1057,7 @@ fn cooperative_reader_enforces_selected_page_budget_before_writing() {
         ) -> Result<CommandResult, crate::protocol::results::ApiError> {
             Ok(CommandResult::Health(
                 crate::protocol::results::Health::unknown(
-                    "i".into(),
+                    "34750f98bd59fcfc946da45aaabe933b".into(),
                     "b".into(),
                     "v".repeat(2000),
                     1,
@@ -3105,7 +3105,7 @@ fn actor_prerequisite_all_unfrozen_handoffs_refuse_before_dispatch() {
         let reference = journal
             .record(
                 IntentScope::Native {
-                    instance: "i".into(),
+                    instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                     seat: SeatId::new("sender"),
                 },
                 semantic,
@@ -4426,9 +4426,12 @@ mod main539_composition {
                 .unwrap();
             let clock: Arc<dyn Clock> = Arc::new(crate::app::SystemClock::new());
             let context =
-                crate::store::connection::StoreContext::new(root.join("state.db"), clock.clone());
+                crate::store::connection::StoreContext::new(root.join("state.db"), clock.clone())
+                    .with_test_host()
+                    .with_node_seed(crate::test_support::node_seed_for(&claim.instance));
             let db = context.open_writer().unwrap();
-            db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)", [&claim.instance]).unwrap();
+            db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+                .unwrap();
             db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,1,1,0)", rusqlite::params![claim.seat.as_str(),claim.instance,claim.target.as_str()]).unwrap();
             db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,?2,'b',1,1,?3,'fresh','term','inc','coherent_enumeration',1)", rusqlite::params![claim.instance,claim.target.as_str(),clock.utc_now().0]).unwrap();
             db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,1,?2,'b',1,?3,?4,?5,?6,?7,'term','inc')", rusqlite::params![claim.seat.as_str(),claim.target.as_str(),if human {"human"} else {"codex"},claim.native_session.as_str(),claim.execution.as_str(),if human {"operator_human"} else {"cooperative_top_level"},clock.utc_now().0]).unwrap();
@@ -5223,13 +5226,12 @@ impl OrdinaryHumanRetryFixture {
         let clock: std::sync::Arc<dyn crate::protocol::time::Clock> =
             std::sync::Arc::new(crate::app::SystemClock::new());
         let context =
-            crate::store::connection::StoreContext::new(dir.join("store.db"), clock.clone());
+            crate::store::connection::StoreContext::new(dir.join("store.db"), clock.clone())
+                .with_test_host()
+                .with_node_seed(crate::test_support::node_seed_for(instance));
         let conn = context.open_writer().unwrap();
-        conn.execute(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)",
-            [&instance.to_string()],
-        )
-        .unwrap();
+        conn.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+            .unwrap();
         conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat',?1,'resolved','native','w:p1',0,0,0)", [&instance.to_string()]).unwrap();
         conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'w:p1','b',1,0,1,'fresh','unknown','unknown',0,0,'term','inc','coherent_enumeration',1)", [&instance.to_string()]).unwrap();
         drop(conn);

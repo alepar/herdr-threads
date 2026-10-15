@@ -36,7 +36,7 @@ fn init_for_new_binding_starts_at_the_seat_maximum_else_head() {
     assert_eq!(cursor_for(&db, &b, &t()).unwrap(), Some(1));
     // A joined thread with no messages gets 0.
     db.execute_batch(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('e','i','empty','goal',0,0);
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('e','34750f98bd59fcfc946da45aaabe933b','empty','goal',0,0);
          INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('e','s','joined',2);",
     )
     .unwrap();
@@ -74,10 +74,10 @@ fn init_for_join_gives_every_open_binding_a_cursor_at_the_join_point() {
     )
     .unwrap();
     db.execute_batch(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','i','topic2','goal',0,0);
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','topic2','goal',0,0);
          INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('u','s','joined',2);
          INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES
-           ('i','u1','u',1,'ordinary','b',3,3),('i','u2','u',2,'ordinary','b',4,4),('i','u3','u',3,'ordinary','b',5,5);",
+           ('34750f98bd59fcfc946da45aaabe933b','u1','u',1,'ordinary','b',3,3),('34750f98bd59fcfc946da45aaabe933b','u2','u',2,'ordinary','b',4,4),('34750f98bd59fcfc946da45aaabe933b','u3','u',3,'ordinary','b',5,5);",
     )
     .unwrap();
     assert_eq!(
@@ -162,7 +162,7 @@ fn seed_modes() {
     )
     .unwrap();
     db.execute_batch(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('v','i','topic3','goal',0,0);
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('v','34750f98bd59fcfc946da45aaabe933b','topic3','goal',0,0);
          INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('v','s','joined',2);",
     )
     .unwrap();
@@ -178,10 +178,10 @@ fn seed_modes() {
 /// An ordinary message `id` (sequence `seq` of thread `t`) published to seat `s` as a recipient.
 fn deliver(db: &Connection, id: &str, seq: u32) {
     db.execute_batch(&format!(
-        "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','{id}','t',{seq},'ordinary','b',{seq},{seq}) ON CONFLICT DO NOTHING;
-         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p-{id}','i','actor','{id}',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
+        "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','{id}','t',{seq},'ordinary','b',{seq},{seq}) ON CONFLICT DO NOTHING;
+         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p-{id}','34750f98bd59fcfc946da45aaabe933b','actor','{id}',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
          INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('p-{id}','t','s',1,300,0);
-         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) SELECT 'p-{id}','{id}','i','t',decision_seq,{seq},{seq},0,1,0 FROM messages WHERE id='{id}';"
+         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) SELECT 'p-{id}','{id}','34750f98bd59fcfc946da45aaabe933b','t',decision_seq,{seq},{seq},0,1,0 FROM messages WHERE id='{id}';"
     ))
     .unwrap();
 }
@@ -331,8 +331,8 @@ fn advance_through_displayed_stops_at_the_first_gap() {
         deliver(&db, id, seq);
     }
     db.execute_batch(
-        "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_json,decision_at,decision_seq) VALUES ('i','info5','t',5,'info','{}',5,5);
-         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','own6','t',6,'ordinary','b',6,6);",
+        "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_json,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','info5','t',5,'info','{}',5,5);
+         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','own6','t',6,'ordinary','b',6,6);",
     )
     .unwrap();
     deliver(&db, "m7", 7);

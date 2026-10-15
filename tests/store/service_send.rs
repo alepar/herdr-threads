@@ -115,8 +115,8 @@ impl Drop for Fixture {
 /// A resolved seat with a registered cooperative binding and a confirmed
 /// target observation: available, so receipt timers start at the send.
 fn seed_seat(db: &Connection, seat: &str) {
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?1,1,1,0)", [seat]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,0)", [seat]).unwrap();
+    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
     db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation,registered_at) VALUES (?1,1,1,?1,'b',1,'codex','n',?2,'cooperative_top_level',0,'term-'||?1,'inc',0)", params![seat, history::fixture_execution(seat)]).unwrap();
 }
 
@@ -146,20 +146,27 @@ impl Fixture {
     fn with_settings(settings: StoreSettings) -> Self {
         let path = std::env::temp_dir().join(format!("service-send-{}.db", uuid::Uuid::new_v4()));
         let clock = Arc::new(TestClock(AtomicI64::new(100)));
-        let context = StoreContext::new(path.clone(), clock.clone());
+        let context = StoreContext::new(path.clone(), clock.clone()).with_test_host();
         let db = context.open_writer().unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1)",
-            [],
+        db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+            .unwrap();
+        let tx = db.unchecked_transaction().unwrap();
+        let author = service_substrate::ensure_reserved_author(
+            &tx,
+            "34750f98bd59fcfc946da45aaabe933b",
+            UtcMillis(0),
         )
         .unwrap();
-        let tx = db.unchecked_transaction().unwrap();
-        let author = service_substrate::ensure_reserved_author(&tx, "i", UtcMillis(0)).unwrap();
         tx.commit().unwrap();
         drop(db);
-        let store = SqliteStore::new(context, "i", settings).unwrap();
-        let connection =
-            ServiceConnectionAuthority::new("i".into(), "boot".into(), 1, author.clone());
+        let store =
+            SqliteStore::new(context, "34750f98bd59fcfc946da45aaabe933b", settings).unwrap();
+        let connection = ServiceConnectionAuthority::new(
+            "34750f98bd59fcfc946da45aaabe933b".into(),
+            "boot".into(),
+            1,
+            author.clone(),
+        );
         let fixture = Self {
             store,
             connection,
@@ -250,7 +257,7 @@ impl Fixture {
 
     fn read(&self, command: Command) -> CommandResult {
         let read = ReadContext {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             // Text selects no `--json` continuation flag, like a service summary.
             output: OutputSpec {
                 format: OutputFormat::Text,
@@ -553,7 +560,7 @@ fn reads_and_notify_create_no_acks() {
     .unwrap();
     // A check-in by a recipient presents the pending item and acknowledges nothing.
     let claim = CallerClaim {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s1"),
         binding_generation: 1,
         role: CallerRole::TopLevel,
@@ -594,7 +601,7 @@ fn reads_and_notify_create_no_acks() {
             RegisterAvailableRequest {
                 command: check_in,
                 read: ReadContext {
-                    instance: "i".into(),
+                    instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                     output: OutputSpec::default(),
                     operation_scope: None,
                 },
@@ -807,9 +814,9 @@ fn error_cases_map_to_section_2_codes() {
     {
         let db = f.db();
         db.execute_batch(
-            "INSERT INTO host_instances(id,created_at) VALUES ('j',0);
+            "PRAGMA foreign_keys=OFF;
              INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('other-instance','j','x','x',0,0);
-             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('plain','i','x','x',0,0);
+             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('plain','34750f98bd59fcfc946da45aaabe933b','x','x',0,0);
 ",
         )
         .unwrap();
@@ -873,8 +880,12 @@ fn error_cases_map_to_section_2_codes() {
         author: foreign_author.clone(),
         revoked: Arc::new(AtomicBool::new(false)),
     };
-    let foreign_connection =
-        ServiceConnectionAuthority::new("i".into(), "boot".into(), 1, foreign_author);
+    let foreign_connection = ServiceConnectionAuthority::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        "boot".into(),
+        1,
+        foreign_author,
+    );
     assert_refused(
         &f,
         StorePort::service_operation(
@@ -1044,7 +1055,7 @@ fn replay_after_response_loss_returns_stored_result_without_second_message() {
         count(
             &db,
             &format!(
-                "SELECT count(*) FROM operations WHERE actor_scope='service:i:{}'",
+                "SELECT count(*) FROM operations WHERE actor_scope='service:34750f98bd59fcfc946da45aaabe933b:{}'",
                 f.author.as_str()
             )
         ),

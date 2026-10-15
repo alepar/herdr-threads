@@ -264,8 +264,9 @@ impl Fx {
         let clock = Arc::new(TestClock(AtomicI64::new(T0)));
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
-                "i",
+                StoreContext::new(iso.state_root().join("store.db"), clock.clone())
+                    .with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 StoreSettings::default(),
             )
             .unwrap(),
@@ -1565,8 +1566,9 @@ fn task3_versionless_violation_survives_reopen_and_success_without_version_rows(
     assert!(!fx.recorder.record(&note, &budget()).unwrap());
     let reopened = Arc::new(
         SqliteStore::new(
-            StoreContext::new(fx._iso.state_root().join("store.db"), fx.clock.clone()),
-            "i",
+            StoreContext::new(fx._iso.state_root().join("store.db"), fx.clock.clone())
+                .with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap(),

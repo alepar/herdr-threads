@@ -471,15 +471,11 @@ mod tests {
     fn seeded() -> (Connection, SeatId, ThreadId) {
         let path = std::env::temp_dir().join(format!("catch-up-{}.db", uuid::Uuid::new_v4()));
         let db = StoreContext::new(path, Arc::new(FixedClock))
+            .with_test_host()
             .open_writer()
             .unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id, created_at) VALUES ('i', 0)",
-            [],
-        )
-        .unwrap();
-        db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('s', 'i', 'resolved', 'native', 1, 0)", []).unwrap();
-        db.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('t', 'i', 'topic', 'purpose', 0, 0)", []).unwrap();
+        db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('s', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0)", []).unwrap();
+        db.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('t', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'purpose', 0, 0)", []).unwrap();
         (db, SeatId::new("s"), ThreadId::new("t"))
     }
 
@@ -500,12 +496,12 @@ mod tests {
         let (db, _, _) = seeded();
         let mut settings = SummarySettings::default();
         assert_eq!(
-            summary::p99_job_duration(&db, "i", &settings).unwrap(),
+            summary::p99_job_duration(&db, "34750f98bd59fcfc946da45aaabe933b", &settings).unwrap(),
             90_000
         );
         settings.p99_cold_ms = 123_000;
         assert_eq!(
-            summary::p99_job_duration(&db, "i", &settings).unwrap(),
+            summary::p99_job_duration(&db, "34750f98bd59fcfc946da45aaabe933b", &settings).unwrap(),
             123_000
         );
     }

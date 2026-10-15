@@ -294,7 +294,7 @@ impl LocalClient for StoreClient {
             &self.store,
             &command,
             &herdr_threads::ports::ReadContext {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 output: output.clone(),
                 operation_scope: None,
             },
@@ -349,21 +349,21 @@ fn lazy_markers_real_store_preserves_pending_delivery_and_ready_cached_summary()
     };
     use std::sync::Arc;
     let iso = TestIsolation::new("lazy-marker-store");
-    let context = StoreContext::new(iso.path("db"), Arc::new(SystemClock::new()));
+    let context = StoreContext::new(iso.path("db"), Arc::new(SystemClock::new())).with_test_host();
     let mut db = context.open_writer().unwrap();
-    db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES('i',0,'host',1,10000);
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s','i','resolved','native','pane-s',1,1,0);
+    db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=10000;
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-s',1,1,0);
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,terminal_id,incarnation,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('s',1,1,'pane-s','term-s','inc-s','host',1,'codex','ns','es','cooperative_top_level',0,0);
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','i','topic','goal',0,0,11);").unwrap();
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,11);").unwrap();
     let full_body = format!("full lazy source {}", "x".repeat(180));
     for n in 1..=10 {
-        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode,author_role) VALUES(?1,'i','t',?2,'ordinary','s',?3,?2,0,'lazy','agent')",rusqlite::params![format!("msg-{n}"),n,full_body]).unwrap();
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode,author_role) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','s',?3,?2,0,'lazy','agent')",rusqlite::params![format!("msg-{n}"),n,full_body]).unwrap();
     }
-    db.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-2','i','scope','op',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy');
+    db.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-2','34750f98bd59fcfc946da45aaabe933b','scope','op',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy');
         INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-2','msg-2','t','s');
-        INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('prep-2','msg-2','i','t',2,0,2,0,1,0);").unwrap();
+        INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('prep-2','msg-2','34750f98bd59fcfc946da45aaabe933b','t',2,0,2,0,1,0);").unwrap();
     let claim = CallerClaim {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s"),
         binding_generation: 1,
         role: CallerRole::TopLevel,
@@ -385,7 +385,14 @@ fn lazy_markers_real_store_preserves_pending_delivery_and_ready_cached_summary()
     let mut ready = None;
     for _ in 0..20 {
         let tx = db.transaction().unwrap();
-        let outcome = summary::summary(&tx, "i", &req, &settings, UtcMillis(1000000)).unwrap();
+        let outcome = summary::summary(
+            &tx,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &req,
+            &settings,
+            UtcMillis(1000000),
+        )
+        .unwrap();
         tx.commit().unwrap();
         match outcome {
             SummaryOutcome::Ready(value) => {
@@ -398,7 +405,7 @@ fn lazy_markers_real_store_preserves_pending_delivery_and_ready_cached_summary()
                     let tx = db.transaction().unwrap();
                     let bundle = summary::summary_job(
                         &tx,
-                        "i",
+                        "34750f98bd59fcfc946da45aaabe933b",
                         &SummaryJobRequest {
                             job_id: job.job_id.clone(),
                             lease_token: job.lease_token.clone(),
@@ -414,7 +421,7 @@ fn lazy_markers_real_store_preserves_pending_delivery_and_ready_cached_summary()
                     );
                     tx.commit().unwrap();
                     let tx = db.transaction().unwrap();
-                    summary::summary_submit(&tx,"i",&SummarySubmitRequest {job_id:job.job_id,lease_token:job.lease_token,claim:claim.clone(),submission:serde_json::json!({"submission_schema":2,"narrative":"cached narrative","prompt_version":"p1","model":"m1"})},&settings,UtcMillis(1000001)).unwrap();
+                    summary::summary_submit(&tx,"34750f98bd59fcfc946da45aaabe933b",&SummarySubmitRequest {job_id:job.job_id,lease_token:job.lease_token,claim:claim.clone(),submission:serde_json::json!({"submission_schema":2,"narrative":"cached narrative","prompt_version":"p1","model":"m1"})},&settings,UtcMillis(1000001)).unwrap();
                     tx.commit().unwrap();
                 }
             }
@@ -427,7 +434,12 @@ fn lazy_markers_real_store_preserves_pending_delivery_and_ready_cached_summary()
     );
     let before = snapshot(&db);
     let client = StoreClient {
-        store: SqliteStore::new(context, "i", StoreSettings::default()).unwrap(),
+        store: SqliteStore::new(
+            context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            StoreSettings::default(),
+        )
+        .unwrap(),
         calls: Mutex::new(vec![]),
     };
     for argv in [
@@ -460,7 +472,14 @@ fn lazy_markers_real_store_preserves_pending_delivery_and_ready_cached_summary()
         "all durable rows, including pending delivery and cache/lease jobs, are unchanged"
     );
     let tx = db.transaction().unwrap();
-    let after = summary::summary(&tx, "i", &req, &settings, UtcMillis(1000001)).unwrap();
+    let after = summary::summary(
+        &tx,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &req,
+        &settings,
+        UtcMillis(1000001),
+    )
+    .unwrap();
     tx.commit().unwrap();
     assert_eq!(after, SummaryOutcome::Ready(ready));
     assert_eq!(snapshot(&db), before);
@@ -692,17 +711,22 @@ fn lazy_markers_manifest_warning_history_and_body_render_readonly() {
     use herdr_threads::store::{SqliteStore, StoreSettings, connection::StoreContext};
     use std::sync::Arc;
     let iso = TestIsolation::new("lazy-logical-warning-read");
-    let context = StoreContext::new(iso.path("db"), Arc::new(SystemClock::new()));
+    let context = StoreContext::new(iso.path("db"), Arc::new(SystemClock::new())).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute_batch("INSERT INTO host_instances(id,created_at,decision_seq) VALUES('i',0,10);
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('s','i','unresolved','native',1,0);
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','i','topic','goal',0,0,4);
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('p','i','scope','op',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
+    db.execute_batch("UPDATE local_node SET decision_seq=10;
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('s','34750f98bd59fcfc946da45aaabe933b','unresolved','native',1,0);
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,4);
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('p','34750f98bd59fcfc946da45aaabe933b','scope','op',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
         INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES('p','key','warn-id','s',1,1,'{}');
-        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at,delivery_mode) VALUES('ordinary-id','i','t',1,'ordinary','ordinary control',10,0,'ordinary'),('lazy-id','i','t',3,'ordinary','lazy control',11,0,'lazy');
-        INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('p','ordinary-id','i','t',10,0,1,0,1,1);").unwrap();
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at,delivery_mode) VALUES('ordinary-id','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','ordinary control',10,0,'ordinary'),('lazy-id','34750f98bd59fcfc946da45aaabe933b','t',3,'ordinary','lazy control',11,0,'lazy');
+        INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('p','ordinary-id','34750f98bd59fcfc946da45aaabe933b','t',10,0,1,0,1,1);").unwrap();
     let client = StoreClient {
-        store: SqliteStore::new(context, "i", StoreSettings::default()).unwrap(),
+        store: SqliteStore::new(
+            context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            StoreSettings::default(),
+        )
+        .unwrap(),
         calls: Mutex::new(vec![]),
     };
     let before = snapshot(&db);

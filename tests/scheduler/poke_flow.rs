@@ -296,19 +296,19 @@ impl Fixture {
     fn new(threads: &[&str]) -> Self {
         let path = std::env::temp_dir().join(format!("ht-poke-flow-{}.db", uuid::Uuid::new_v4()));
         let clock = Arc::new(TestClock(AtomicI64::new(0)));
-        let context = StoreContext::new(path.clone(), clock.clone());
+        let context = StoreContext::new(path.clone(), clock.clone()).with_test_host();
         let guard = RemoveOnDrop(path.clone());
         let db = context.open_writer().unwrap();
         db.execute_batch("\
-            INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1);\
-            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','pane',1,1,0);\
-            INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pane','host',1,1,0,'fresh','term-pane','inc','native_current_target',1);\
+            UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1;\
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0);\
+            INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','pane','host',1,1,0,'fresh','term-pane','inc','native_current_target',1);\
             INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES ('s',1,1,'pane','host',0,'codex','session','self-reported','cooperative_top_level',0,0,'term-pane','inc',4242,1);\
         ").unwrap();
         for (n, thread) in threads.iter().enumerate() {
             let message = format!("m-{thread}");
             db.execute(
-                "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES (?1,'i','topic','goal',0,0,2)",
+                "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,2)",
                 [thread],
             )
             .unwrap();
@@ -318,7 +318,7 @@ impl Fixture {
             )
             .unwrap();
             db.execute(
-                "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES (?1,'i',?2,1,'ordinary','body',?3,0)",
+                "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,1,'ordinary','body',?3,0)",
                 rusqlite::params![message, thread, n as i64 + 1],
             )
             .unwrap();
@@ -331,7 +331,7 @@ impl Fixture {
         drop(db);
         let store = SqliteStore::new(
             context,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings {
                 daemon_boot: Some(
                     uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
@@ -353,6 +353,7 @@ impl Fixture {
 
     fn conn(&self) -> Connection {
         StoreContext::new(self.path.clone(), self.clock.clone())
+            .with_test_host()
             .open_writer()
             .unwrap()
     }
@@ -434,7 +435,7 @@ fn scheduler<'a, H: HostPort>(
     caps: &'a dyn PokeCapabilitySource,
 ) -> Flow<'a, H> {
     Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &fixture.store,
         &fixture.store,
         dispatcher,
@@ -855,7 +856,7 @@ fn counting_scheduler<'a, H: HostPort>(
     dispatcher: &'a NativeWakeDispatcher<'a, H, ScheduledStore>,
 ) -> CountingFlow<'a, H> {
     Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &fixture.store,
         port,
         dispatcher,
@@ -951,7 +952,7 @@ fn frozen_wake_lane_neither_reads_nor_pokes_until_recovery() {
         fx.sqlite.clone(),
         Arc::new(FairWriter::new(32)),
         host.clone(),
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
         RetryConfig::default(),
         pacer.clone(),
@@ -992,17 +993,20 @@ fn receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path(
         let db = fx.conn();
         // s2's binding carries the fingerprint pid RecordingHost reports as the
         // pane foreground process: a composer wake needs that match (ht-54r.82).
-        db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s2','i','resolved','native','pane2',1,1,0),('recipient','i','unresolved','native',NULL,0,0,0);
-        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pane2','host',1,1,0,'fresh','term-pane','inc','native_current_target',1);
+        db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane2',1,1,0),('recipient','34750f98bd59fcfc946da45aaabe933b','unresolved','native',NULL,0,0,0);
+        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','pane2','host',1,1,0,'fresh','term-pane','inc','native_current_target',1);
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES ('s2',1,1,'pane2','host',0,'codex','session2','original-sender2','cooperative_top_level',0,0,'term-pane','inc',4242,1);
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,3);
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,3);
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','left'),('t','s2','left');").unwrap();
         for (n, seat) in [(1, "s"), (2, "s2")] {
-            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,author_kind,actor_seat_id,decision_seq,decision_at) VALUES (?1,'i','t',?2,'ordinary','handoff','native',?3,?2,0)",rusqlite::params![format!("source-{n}"),n,seat]).unwrap();
+            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,author_kind,actor_seat_id,decision_seq,decision_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','handoff','native',?3,?2,0)",rusqlite::params![format!("source-{n}"),n,seat]).unwrap();
             db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','recipient','pending',?2,0,?2)",rusqlite::params![format!("source-{n}"),WINDOW]).unwrap();
         }
-        db.execute("UPDATE host_instances SET decision_seq=2 WHERE id='i'", [])
-            .unwrap();
+        db.execute(
+            "UPDATE local_node SET decision_seq=2 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+            [],
+        )
+        .unwrap();
         drop(db);
         fx.clock.set(WINDOW);
         let host = RecordingHost::new(ui, false);
@@ -1085,7 +1089,7 @@ fn receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path(
         // recipient binding; native notification is never synthesized as ACK.
         let mut db = fx.conn();
         db.execute_batch("UPDATE seats SET state='resolved',target_id='recipient-pane',generation=1,target_generation=1 WHERE id='recipient';
-            INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','recipient-pane','host',1,1,0,'fresh','recipient-terminal','inc','native_current_target',1);
+            INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','recipient-pane','host',1,1,0,'fresh','recipient-terminal','inc','native_current_target',1);
             INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('recipient',1,1,'recipient-pane','host',1,'codex','recipient-session','00000000-0000-4000-8000-0000000000cc','cooperative_top_level',0,0,'recipient-terminal','inc');").unwrap();
         let request = crate::protocol::commands::Ack {
             messages: vec![
@@ -1094,7 +1098,7 @@ fn receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path(
             ],
             operation: crate::protocol::ids::OperationId::new("final-original-sender-ack"),
             claim: crate::protocol::authority::CallerClaim {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 seat: SeatId::new("recipient"),
                 binding_generation: 1,
                 role: crate::protocol::authority::CallerRole::TopLevel,
@@ -1116,7 +1120,7 @@ fn receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path(
             (1, 0),
             budget(&fx),
         );
-        let context = StoreContext::new(fx.path.clone(), fx.clock.clone());
+        let context = StoreContext::new(fx.path.clone(), fx.clock.clone()).with_test_host();
         crate::store::receipts::ack(&context, &mut db, &budget(&fx), &request, &mut permit)
             .unwrap();
         assert_eq!(
@@ -1131,8 +1135,15 @@ fn receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path(
         let high = db
             .query_row("SELECT max(ordinal) FROM seats", [], |r| r.get::<_, i64>(0))
             .unwrap() as u64;
-        let candidates =
-            crate::store::discover_wake_candidates(&db, "i", 0, high, 100, &|| Ok(())).unwrap();
+        let candidates = crate::store::discover_wake_candidates(
+            &db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            0,
+            high,
+            100,
+            &|| Ok(()),
+        )
+        .unwrap();
         for (seat, session) in [("s", "session"), ("s2", "session2")] {
             let binding = crate::protocol::ids::BindingId::new(db.query_row("SELECT binding_id FROM occupant_bindings WHERE seat_id=?1 AND harness='codex' AND native_session=?2 AND agent_id=''", rusqlite::params![seat,session], |r|r.get::<_,String>(0)).unwrap());
             assert!(
@@ -1150,7 +1161,7 @@ fn receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path(
             );
             let loaded = crate::store::wake::load_candidate(
                 &db,
-                "i",
+                "34750f98bd59fcfc946da45aaabe933b",
                 &SeatId::new(seat),
                 &attention.attention,
                 attention.decision_seq,
@@ -1160,7 +1171,7 @@ fn receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path(
             assert_eq!(
                 crate::store::seats::mod_binding_view(
                     &db,
-                    "i",
+                    "34750f98bd59fcfc946da45aaabe933b",
                     &SeatId::new(seat),
                     crate::ports::ModBindingRef::Id(&binding)
                 )
