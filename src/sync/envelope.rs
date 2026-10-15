@@ -404,7 +404,7 @@ impl Envelope {
     }
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
+pub(super) fn hex_encode(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for b in bytes {
@@ -434,7 +434,7 @@ fn hex_decode_vec(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-fn hex_decode<const N: usize>(text: &str) -> Option<[u8; N]> {
+pub(super) fn hex_decode<const N: usize>(text: &str) -> Option<[u8; N]> {
     hex_decode_vec(text)?.try_into().ok()
 }
 

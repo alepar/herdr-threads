@@ -58,6 +58,11 @@ libc = "=0.2.189"
 toml_edit = { version = "=0.25.13", default-features = false, features = ["parse", "display"] }
 unicode-width = { version = "=0.2.2", default-features = false, features = ["cjk"] }
 
+[dev-dependencies]
+# Paused time for the peer link's timer tests; same exact pin as above, so
+# features unify and Cargo.lock does not change.
+tokio = { version = "=1.53.1", features = ["test-util"] }
+
 # Debug info for our own code is line tables only (backtraces keep file:line;
 # no variable inspection in a debugger) and none for dependencies: smaller
 # objects, faster codegen and linking (docs/dev/build-speed.md).
