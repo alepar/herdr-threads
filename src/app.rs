@@ -1138,6 +1138,13 @@ impl LaneProbe {
             .as_ref()
             .is_some_and(|kicks| kicks.registered(lane))
     }
+    /// How many Pacers the elected factory registered for `lane`.
+    pub fn registered_count(&self, lane: Lane) -> usize {
+        self.state()
+            .registry
+            .as_ref()
+            .map_or(0, |kicks| kicks.pacer_count(lane))
+    }
     /// Whether `lane`'s `WorkerStatus` (the one Health reads) has its Pacer
     /// attached; false until the lane thread started.
     pub fn status_has_pacer(&self, lane: Lane) -> bool {
@@ -2296,39 +2303,80 @@ where
                 push_worker(handle)?;
             }
             // One node-wide lane; its evidence and sampling are per host, routed
-            // through the sessions. Interim, with the other host lanes: it starts
-            // only when a host is attached at startup (a store-only daemon runs
-            // none), and a host attached later is sampled by the running lane.
-            if let Some(session) = &primary {
-                let archival_context = crate::protocol::output::ContinuationContext {
-                    state_dir: Some(archival_paths.state_dir.to_string_lossy().into_owned()),
-                    // The legacy journal source is a single-host artifact: its
-                    // namespace names the startup host's endpoint. Evidence and
-                    // sampling are per host; this is only where old intents match.
-                    host: Some(session.locator().as_str().to_owned()),
-                };
-                let hosts: Arc<dyn crate::service::archival::ArchivalHosts> =
-                    host_sessions.clone();
-                push_worker(crate::service::archival::start(
-                    crate::service::archival::ArchivalWorker {
-                        store: Arc::clone(&store),
-                        hosts,
-                        writer: Arc::clone(&writer),
-                        source: crate::archival_legacy::Source::new(
-                            &archival_paths,
-                            instance.to_string(),
-                            archival_context,
-                        ),
-                        boot: boot.to_string(),
-                        after_ms: config.archive_after_ms(),
-                        cancellation: factory_stop.clone(),
-                    },
-                    register_lane(Lane::Archival),
-                    Arc::clone(&factory_archival_status),
-                )?)?;
+            // through the sessions. It starts with the first attached host, once:
+            // at once when a host attached at startup, else on the first lazy
+            // attach or sweep attach of a store-only daemon. The wake and
+            // observation lanes are per-host session workers (started by every
+            // attach), so archival is the only lane gated on an attached host.
+            {
+                let store = Arc::clone(&store);
+                let writer = Arc::clone(&writer);
+                let kicks = Arc::clone(&kicks);
+                let clock = Arc::clone(&factory_clock);
+                let stop = factory_stop.clone();
+                let probe = factory_probe.clone();
+                let paths = archival_paths.clone();
+                let instance = instance.to_string();
+                let boot = boot.to_string();
+                let after_ms = config.archive_after_ms();
+                let status = Arc::clone(&factory_archival_status);
+                let slot = Arc::clone(&factory_slot);
+                let log = Arc::clone(&rate_limited_log);
+                let sessions = Arc::downgrade(&host_sessions);
+                host_sessions.on_first_attach(Box::new(move |session| {
+                    if stop.is_cancelled() {
+                        return;
+                    }
+                    let Some(sessions) = sessions.upgrade() else {
+                        return;
+                    };
+                    let context = crate::protocol::output::ContinuationContext {
+                        state_dir: Some(paths.state_dir.to_string_lossy().into_owned()),
+                        // The legacy journal source is a single-host artifact: its
+                        // namespace names the first attached host's endpoint.
+                        // Evidence and sampling are per host; this is only where
+                        // old intents match.
+                        host: Some(session.locator().as_str().to_owned()),
+                    };
+                    let hosts: Arc<dyn crate::service::archival::ArchivalHosts> = sessions;
+                    let pacer = Arc::new(Pacer::new(
+                        Lane::Archival.name(),
+                        clock,
+                        stop.clone(),
+                    ));
+                    kicks.register(Lane::Archival, Arc::clone(&pacer));
+                    probe.attach_pacer(Lane::Archival, &pacer);
+                    let started = crate::service::archival::start(
+                        crate::service::archival::ArchivalWorker {
+                            store,
+                            hosts,
+                            writer,
+                            source: crate::archival_legacy::Source::new(&paths, instance, context),
+                            boot,
+                            after_ms,
+                            cancellation: stop,
+                        },
+                        pacer,
+                        status,
+                    );
+                    match started {
+                        Ok(handle) => match slot.lock() {
+                            Ok(mut workers) => {
+                                workers.push(handle);
+                                log.write_line(&format!(
+                                    "archival lane started (host {})",
+                                    session.host_id().get()
+                                ));
+                            }
+                            Err(_) => log.write_line("archival lane: worker slot poisoned"),
+                        },
+                        Err(error) => log.write_line(&format!("archival lane: {error}")),
+                    }
+                }));
             }
-            // In `Lane::ALL` order. A lane that never started (host lanes of a
-            // store-only daemon) has an untouched status and reports ready; the
+            // In `Lane::ALL` order. A lane that has not started (the archival lane
+            // of a store-only daemon before its first host attaches) has an
+            // untouched status and reports ready; the
             // host lanes report the startup session's (per-host Health: ht-5fr.2.10).
             let lane_statuses = vec![
                 factory_status.clone(),

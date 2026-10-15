@@ -55,6 +55,8 @@ type SocketExists = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
 /// The `herdr_hosts` rows this node attached before, most recent first.
 pub type RememberedHosts = Arc<dyn Fn(&CallBudget) -> Result<Vec<HostRow>, ApiError> + Send + Sync>;
 type LogLine = Arc<dyn Fn(&str) + Send + Sync>;
+/// Runs once with the first attached session.
+pub type FirstAttachHook = Box<dyn FnOnce(&Arc<HostSession>) + Send>;
 
 /// HostFactory: how a Herdr server's port and observer are built and whether
 /// its socket exists.
@@ -382,7 +384,8 @@ impl BootstrapObserver for RefusedBootstrapObserver {
 /// owns its port, reachability, identity, bootstrap runtime, evidence and its
 /// own observation and wake workers; publication into `HostIndex` happens only
 /// after those workers run. A failed attach unregisters its Pacers and
-/// publishes nothing. `stop_all` cancels every session.
+/// publishes nothing. `stop_all` cancels every session. Also owns the one-shot
+/// first-attach hook node-wide lanes start from ([`HostSessions::on_first_attach`]).
 /// Hides: how many Herdr servers exist; it is the one place that routes by a
 /// seat's `host_id`.
 /// Must not: decide reachability for the store (that is `HostIndex` plus the
@@ -403,6 +406,8 @@ pub struct HostSessions {
     sweep_cursor: Mutex<Option<HostId>>,
     /// The first server `attach_startup` attached (see [`HostSessions::startup_primary`]).
     startup_first: Mutex<Option<HostId>>,
+    /// The one-shot hook node-wide lanes start from (see [`HostSessions::on_first_attach`]).
+    first_attach: Mutex<Option<FirstAttachHook>>,
     /// Set by [`HostSessions::prebuilt`]: the one session every locator names.
     sole: Option<Arc<HostSession>>,
     stopped: AtomicBool,
@@ -435,6 +440,7 @@ impl HostSessions {
             sweep_stop,
             sweep_cursor: Mutex::new(None),
             startup_first: Mutex::new(None),
+            first_attach: Mutex::new(None),
             sole: None,
             stopped: AtomicBool::new(false),
             _sweep_link: Mutex::new(Some(link)),
@@ -607,7 +613,39 @@ impl HostSessions {
             map.insert(host_id, Arc::clone(&session));
         }
         self.index.publish(locator.clone(), host_id);
+        // Taken under its own lock, so a hook installed concurrently by
+        // `on_first_attach` runs exactly once, here or there.
+        let hook = self
+            .first_attach
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(hook) = hook {
+            hook(&session);
+        }
         Ok(session)
+    }
+
+    /// Runs `hook` once with the first session that attaches: at once (on the
+    /// calling thread) when a session is attached already, else on the thread of
+    /// the first successful attach (startup, a lazy `resolve` on the request
+    /// path, or the sweep), after it is published. A second call replaces a hook
+    /// that has not run yet.
+    pub fn on_first_attach(&self, hook: FirstAttachHook) {
+        let mut slot = self.first_attach.lock().unwrap_or_else(|e| e.into_inner());
+        let attached = self.attached();
+        let startup_first = *self.startup_first.lock().unwrap_or_else(|e| e.into_inner());
+        let first = startup_first
+            .and_then(|id| attached.iter().find(|session| session.host_id == id))
+            .or_else(|| attached.first())
+            .cloned();
+        match first {
+            Some(session) => {
+                drop(slot);
+                hook(&session);
+            }
+            None => *slot = Some(hook),
+        }
     }
 
     /// Builds the session's values and starts its workers. On failure nothing
@@ -1176,6 +1214,54 @@ mod tests {
             assert!(Instant::now() < until, "timed out waiting for {what}");
             thread::yield_now();
         }
+    }
+
+    fn recording_hook(seen: &Arc<Mutex<Vec<String>>>) -> FirstAttachHook {
+        let seen = Arc::clone(seen);
+        Box::new(move |session| {
+            seen.lock()
+                .unwrap()
+                .push(session.locator().as_str().to_owned())
+        })
+    }
+
+    // Kills: a hook that runs on every attach, or never (installed before any attach).
+    #[test]
+    fn first_attach_hook_runs_once_on_the_first_attach() {
+        let rig = Rig::new("hs-first-hook", false, Duration::from_secs(60));
+        let (a, b) = (loc("/herdr/a.sock"), loc("/herdr/b.sock"));
+        rig.world.set_live(a.as_str(), true);
+        rig.world.set_live(b.as_str(), true);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        rig.sessions.on_first_attach(recording_hook(&seen));
+        assert!(seen.lock().unwrap().is_empty(), "nothing attached yet");
+        rig.sessions.resolve(&a, &rig.budget(10_000)).unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec![a.as_str().to_owned()]);
+        rig.sessions.resolve(&b, &rig.budget(10_000)).unwrap();
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            1,
+            "a second host does not rerun it"
+        );
+    }
+
+    // Kills: a hook stored forever when a session is attached already.
+    #[test]
+    fn first_attach_hook_runs_at_once_when_a_host_is_attached() {
+        let rig = Rig::new("hs-first-hook-now", false, Duration::from_secs(60));
+        let (a, b) = (loc("/herdr/a.sock"), loc("/herdr/b.sock"));
+        rig.world.set_live(a.as_str(), true);
+        rig.world.set_live(b.as_str(), true);
+        rig.sessions.resolve(&a, &rig.budget(10_000)).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        rig.sessions.on_first_attach(recording_hook(&seen));
+        assert_eq!(*seen.lock().unwrap(), vec![a.as_str().to_owned()]);
+        rig.sessions.resolve(&b, &rig.budget(10_000)).unwrap();
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            1,
+            "a later attach does not rerun it"
+        );
     }
 
     // Kills: an attach per caller (a check-then-act race outside attach_lock).
