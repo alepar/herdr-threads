@@ -1129,7 +1129,7 @@ fn daemon_start_refuses_an_invalid_settings_file() {
             clock,
             Cancellation::default(),
             ServiceConfig::default(),
-            crate::app::HostChoice::given(host),
+            crate::test_support::single_host_plan(host),
             LaneProbe::default(),
             |_| Ok(()),
         ))

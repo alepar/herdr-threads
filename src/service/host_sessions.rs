@@ -1,7 +1,8 @@
 //! The multi-host registry: one session per attached Herdr server.
 //!
-//! Not composed into the daemon yet (ht-5fr.2.8): the daemon still runs its
-//! single `app::HostSession`. This module is the registry that replaces it.
+//! The elected daemon composes one [`HostSessions`] from a [`HostAttachPlan`]
+//! (`app::run_elected_impl`): startup attach, the sweep, and `stop_all` in its
+//! stop path.
 
 use crate::daemon::logs::LaneErrorLog;
 use crate::identity::repair::OrdinaryIdentity;
@@ -78,8 +79,8 @@ pub struct HostFactory {
 /// Hides: whether the hint came from a flag or the environment.
 /// Must not: attach, write the store or spawn workers.
 /// Role: built by the caller of the elected daemon, passed into
-/// `run_elected_impl` and consumed by `HostSessions`. It replaces node
-/// identity's `HostChoice`.
+/// `run_elected_impl` and consumed by `HostSessions`. It replaced the
+/// single-host start choice.
 #[derive(Clone)]
 pub struct HostAttachPlan {
     pub hint: Option<HostLocator>,
@@ -249,6 +250,8 @@ pub struct HostSessions {
     threads: Mutex<Vec<ThreadId>>,
     sweep_stop: Cancellation,
     sweep_cursor: Mutex<Option<HostId>>,
+    /// The first server `attach_startup` attached (see [`HostSessions::startup_primary`]).
+    startup_first: Mutex<Option<HostId>>,
     stopped: AtomicBool,
     _sweep_link: Mutex<Option<CancelSubscription>>,
 }
@@ -278,6 +281,7 @@ impl HostSessions {
             threads: Mutex::new(Vec::new()),
             sweep_stop,
             sweep_cursor: Mutex::new(None),
+            startup_first: Mutex::new(None),
             stopped: AtomicBool::new(false),
             _sweep_link: Mutex::new(Some(link)),
         }
@@ -575,8 +579,25 @@ impl HostSessions {
         {
             self.log_attach_failure(hint, &error);
         }
-        self.attach_remembered_live();
+        let first_remembered = self.attach_remembered_live();
+        // Attach order is the hint, then remembered most recent first (read
+        // before the attaches restamp them): the first session in it leads.
+        *self.startup_first.lock().unwrap_or_else(|e| e.into_inner()) = hint
+            .and_then(|hint| self.by_locator(hint))
+            .map(|session| session.host_id)
+            .or(first_remembered);
         self.start_sweep()
+    }
+
+    /// The session the single-host service seams follow until dispatch routes by
+    /// claim host (ht-5fr.2.12): the hint's, else the first server startup
+    /// attached (the most recently attached remembered one), else the lowest
+    /// attached `host_id`; `None` when no server is attached.
+    pub fn startup_primary(&self, hint: Option<&HostLocator>) -> Option<Arc<HostSession>> {
+        let first = *self.startup_first.lock().unwrap_or_else(|e| e.into_inner());
+        hint.and_then(|hint| self.by_locator(hint))
+            .or_else(|| first.and_then(|id| self.get(id)))
+            .or_else(|| self.attached().into_iter().next())
     }
 
     fn remembered_rows(&self) -> Vec<HostRow> {
@@ -589,20 +610,29 @@ impl HostSessions {
         }
     }
 
-    fn attach_remembered_live(&self) {
+    /// Attaches the remembered rows whose socket exists, most recent first;
+    /// returns the first row now attached.
+    fn attach_remembered_live(&self) -> Option<HostId> {
+        let mut first = None;
         for row in self.remembered_rows() {
             if self.attached_count() >= MAX_ATTACHED_HOSTS {
                 break;
             }
-            if self.by_locator(&row.locator).is_some()
-                || !(self.factory.exists)(row.locator.as_path())
-            {
+            if let Some(session) = self.by_locator(&row.locator) {
+                first.get_or_insert(session.host_id);
                 continue;
             }
-            if let Err(error) = self.resolve(&row.locator, &self.background_budget()) {
-                self.log_attach_failure(&row.locator, &error);
+            if !(self.factory.exists)(row.locator.as_path()) {
+                continue;
+            }
+            match self.resolve(&row.locator, &self.background_budget()) {
+                Ok(session) => {
+                    first.get_or_insert(session.host_id);
+                }
+                Err(error) => self.log_attach_failure(&row.locator, &error),
             }
         }
+        first
     }
 
     /// Starts the `herdr-host-sweep` thread: every `sweep_interval` it attaches
@@ -1110,6 +1140,34 @@ mod tests {
             .collect();
         assert_eq!(attached, vec!["/herdr/live.sock"]);
         assert!(rig.sessions.by_locator(&loc("/herdr/dead.sock")).is_none());
+    }
+
+    // Kills: a primary picked by lowest id when the hint (or the most recently
+    // attached remembered server) names another one.
+    #[test]
+    fn startup_primary_prefers_hint_then_most_recent_remembered() {
+        let rig = Rig::new("hs-primary", false, Duration::from_secs(60));
+        assert!(rig.sessions.startup_primary(None).is_none());
+        for name in ["/herdr/a.sock", "/herdr/b.sock", "/herdr/c.sock"] {
+            rig.world.set_live(name, true);
+        }
+        // Stamps order by attach order: a < b < c.
+        for (stamp, name) in [(10, "/herdr/a.sock"), (20, "/herdr/b.sock")] {
+            rig.store
+                .attach_host(&loc(name), stamp, &rig.budget(5_000))
+                .unwrap();
+        }
+        rig.sessions.attach_startup(None).unwrap();
+        assert_eq!(rig.sessions.attached_count(), 2);
+        let primary = rig.sessions.startup_primary(None).unwrap();
+        assert_eq!(primary.locator().as_str(), "/herdr/b.sock");
+        let hint = loc("/herdr/c.sock");
+        rig.sessions.resolve(&hint, &rig.budget(5_000)).unwrap();
+        let primary = rig.sessions.startup_primary(Some(&hint)).unwrap();
+        assert_eq!(primary.locator(), &hint);
+        let missing = loc("/herdr/missing.sock");
+        let fallback = rig.sessions.startup_primary(Some(&missing)).unwrap();
+        assert_ne!(fallback.locator(), &missing);
     }
 
     #[test]

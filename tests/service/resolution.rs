@@ -429,7 +429,7 @@ impl Fixture {
                     thread_clock,
                     thread_stop,
                     ServiceConfig::default(),
-                    herdr_threads::app::HostChoice::given(thread_host),
+                    herdr_threads::test_support::single_host_plan(thread_host),
                     move |descriptor| {
                         ready.send(descriptor.clone()).unwrap();
                         Ok(())
@@ -478,7 +478,7 @@ impl Fixture {
                     clock,
                     stop,
                     ServiceConfig::default(),
-                    herdr_threads::app::HostChoice::given(host),
+                    herdr_threads::test_support::single_host_plan(host),
                     move |descriptor| {
                         ready.send(descriptor.clone()).unwrap();
                         Ok(())

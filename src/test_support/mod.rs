@@ -4,6 +4,7 @@ pub mod counting_client;
 #[cfg(feature = "test-support")]
 pub mod fact_exchange;
 pub mod failpoints;
+pub mod fake_hosts;
 pub mod harness_shim;
 pub mod history;
 #[cfg(feature = "test-support")]
@@ -17,6 +18,11 @@ pub mod search_barrier;
 #[cfg(feature = "test-support")]
 pub mod server_completion;
 pub mod spawn;
+
+pub use fake_hosts::{
+    FakeHostWorld, RefusingHost, fake_host_plan, single_host_plan, single_host_plan_at,
+    single_host_plan_with_observer,
+};
 
 use crate::{
     node::{NodeUuid, tag_for},

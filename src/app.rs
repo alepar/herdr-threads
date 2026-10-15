@@ -9,7 +9,7 @@ use crate::{
         run_elected_late_host,
     },
     node::{NodeIdentity, NodeKeyError},
-    ports::{HostPort, LocalService, StorePort},
+    ports::{LocalService, StorePort},
     protocol::{
         authority::Harness,
         results::{CapabilityState, HealthSettings},
@@ -20,14 +20,14 @@ use crate::{
         dispatch::DomainService,
         fair_writer::FairWriter,
         host_evidence::HostEvidenceStatus,
-        host_reachability::HostReachability,
+        host_sessions::{HostAttachPlan, HostSession, HostSessions, SessionDeps},
         kicks::{CommitKicks, Lane},
         mod_channels::ModChannelRegistry,
         pacer::Pacer,
         workers::{
             ApplyPostCommit, WorkerStatus, admission_handle, start_admission_observer,
             start_apply_worker, start_deadline_worker, start_mod_channel_worker,
-            start_observation_worker, start_retention_worker, start_wake_worker_with_liveness,
+            start_retention_worker,
         },
     },
     store::{SqliteStore, connection::StoreContext},
@@ -137,18 +137,59 @@ pub(crate) struct ElectedHostEvidence {
     pub(crate) release: HostReleaseSource,
 }
 
-/// Where Health reads the observed Herdr release; the default has none.
+impl ElectedHostEvidence {
+    /// The evidence of a composed daemon: the startup session's evidence
+    /// status and static adapter capabilities (`fallback` and the neutral
+    /// answers when no server is attached), and a release source over every
+    /// attached session.
+    pub(crate) fn of_sessions(
+        sessions: &Arc<HostSessions>,
+        primary: Option<&HostSession>,
+        fallback: Arc<HostEvidenceStatus>,
+        harnesses: Arc<Mutex<HarnessObservations>>,
+    ) -> Self {
+        let (status, incarnation_witness, safe_prompt) = match primary {
+            Some(session) => (
+                Arc::clone(session.evidence()),
+                session.port().incarnation_witness(),
+                session.port().safe_prompt_capability(),
+            ),
+            None => (
+                fallback,
+                CapabilityState::Unknown,
+                CapabilityState::Unsupported,
+            ),
+        };
+        Self {
+            status,
+            incarnation_witness,
+            safe_prompt,
+            harnesses,
+            release: HostReleaseSource(Some(Arc::clone(sessions))),
+        }
+    }
+}
+
+/// Where Health reads the attached Herdr servers and their observed release;
+/// the default has none.
 #[derive(Default)]
-pub(crate) struct HostReleaseSource(Option<Arc<dyn HostPort>>);
+pub(crate) struct HostReleaseSource(Option<Arc<HostSessions>>);
 
 impl HostReleaseSource {
-    /// Herdr servers attached: 1 with the primary host, 0 store-only.
+    /// Herdr servers attached: one per session, 0 store-only.
     fn attached(&self) -> u32 {
-        u32::from(self.0.is_some())
+        self.0.as_ref().map_or(0, |sessions| {
+            u32::try_from(sessions.attached_count()).unwrap_or(u32::MAX)
+        })
     }
 
     fn observed(&self) -> Option<crate::host::compatibility::HostRelease> {
-        self.0.as_ref().and_then(|host| host.observed_release())
+        self.0.as_ref().and_then(|sessions| {
+            sessions
+                .attached()
+                .iter()
+                .find_map(|session| session.port().observed_release())
+        })
     }
 }
 
@@ -791,8 +832,11 @@ struct ProbeState {
     faults: Arc<LaneFaults>,
     /// Where the lane error log writes instead of the process stderr.
     lane_log_path: Option<std::path::PathBuf>,
-    /// The host reachability the observation lane feeds the wake lane.
-    reachability: Option<Arc<HostReachability>>,
+    /// The daemon's multi-host registry; the host lanes' Pacers and the
+    /// reachability the observation lane feeds the wake lane live in its sessions.
+    sessions: Option<std::sync::Weak<HostSessions>>,
+    /// The sweep period the daemon is composed with (default: production's).
+    host_sweep_interval: Option<Duration>,
     /// The store commits without fsync (see [`LaneProbe::relax_commit_durability`]).
     relaxed_durability: bool,
 }
@@ -880,16 +924,60 @@ impl LaneProbe {
     fn attach_pacer(&self, lane: Lane, pacer: &Arc<Pacer>) {
         self.state().pacers.push((lane, Arc::clone(pacer)));
     }
-    fn attach_reachability(&self, reachability: &Arc<HostReachability>) {
-        self.state().reachability = Some(Arc::clone(reachability));
+    fn attach_host_sessions(&self, sessions: &Arc<HostSessions>) {
+        self.state().sessions = Some(Arc::downgrade(sessions));
     }
-    /// Whether the observation lane has the host marked down (the wake lane
-    /// is frozen); false before the daemon is attached.
-    pub fn host_down(&self) -> bool {
+    /// The period of the daemon's host sweep (set by
+    /// [`LaneProbe::set_host_sweep_interval`]); call the setter before the
+    /// daemon starts.
+    fn host_sweep_interval(&self) -> Duration {
         self.state()
-            .reachability
-            .as_ref()
-            .is_some_and(|reachability| reachability.is_down())
+            .host_sweep_interval
+            .unwrap_or(crate::service::host_sessions::DEFAULT_SWEEP_INTERVAL)
+    }
+    /// Shortens the host sweep so a test sees a socket that appears after
+    /// start attached within milliseconds. Call before the daemon starts.
+    pub fn set_host_sweep_interval(&self, interval: Duration) {
+        self.state().host_sweep_interval = Some(interval);
+    }
+    /// The session of the attached server `locator`, once the daemon attached it.
+    fn session_of(&self, locator: &crate::protocol::ids::HostLocator) -> Option<Arc<HostSession>> {
+        self.host_sessions()?.by_locator(locator)
+    }
+    /// The host-lane Pacer of the server `locator`: its observation or wake
+    /// worker's. `None` for any other lane, or while the server is unattached.
+    pub fn host_pacer(
+        &self,
+        locator: &crate::protocol::ids::HostLocator,
+        lane: Lane,
+    ) -> Option<Arc<Pacer>> {
+        let session = self.session_of(locator)?;
+        match lane {
+            Lane::Observation => Some(Arc::clone(session.observation().pacer())),
+            Lane::Wakes => Some(Arc::clone(session.wake().pacer())),
+            _ => None,
+        }
+    }
+    /// The first attached server's Pacer for a host lane.
+    fn first_host_pacer(&self, lane: Lane) -> Option<Arc<Pacer>> {
+        let session = self.host_sessions()?.attached().into_iter().next()?;
+        match lane {
+            Lane::Observation => Some(Arc::clone(session.observation().pacer())),
+            Lane::Wakes => Some(Arc::clone(session.wake().pacer())),
+            _ => None,
+        }
+    }
+    /// The daemon's host registry while the daemon lives (the probe holds it
+    /// weakly, so a stopped daemon's hosts are released).
+    pub fn host_sessions(&self) -> Option<Arc<HostSessions>> {
+        self.state().sessions.as_ref()?.upgrade()
+    }
+    /// Whether the first attached server's observation lane has it marked
+    /// down (its wake lane is frozen); false before the daemon is attached.
+    pub fn host_down(&self) -> bool {
+        self.host_sessions()
+            .and_then(|sessions| sessions.attached().into_iter().next())
+            .is_some_and(|session| session.reachability().is_down())
     }
     /// Whether the daemon's store and both worker-lane Pacers are attached.
     pub fn attached(&self) -> bool {
@@ -993,13 +1081,14 @@ impl LaneProbe {
     /// commit hook) and still wants the lane to see it at once.
     pub fn kick(&self, lane: Lane) {
         // The newest registration wins (a restarted daemon re-registers).
-        let pacer = self
+        let registered = self
             .state()
             .pacers
             .iter()
             .rev()
             .find(|(candidate, _)| *candidate == lane)
             .map(|(_, pacer)| Arc::clone(pacer));
+        let pacer = registered.or_else(|| self.first_host_pacer(lane));
         if let Some(pacer) = pacer {
             pacer.kick();
         }
@@ -1136,11 +1225,15 @@ impl LaneProbe {
     }
     /// How many times `lane`'s thread has entered a wait (finished a pass).
     pub fn idle_events(&self, lane: Lane) -> u64 {
-        self.state()
+        let registered = self
+            .state()
             .pacers
             .iter()
             .find(|(candidate, _)| *candidate == lane)
-            .map_or(0, |(_, pacer)| pacer.idle_events())
+            .map(|(_, pacer)| Arc::clone(pacer));
+        registered
+            .or_else(|| self.first_host_pacer(lane))
+            .map_or(0, |pacer| pacer.idle_events())
     }
 }
 
@@ -1150,186 +1243,13 @@ impl LaneProbe {
     fn attach_store(&self, _: &Arc<SqliteStore>) {}
     fn attach_registry(&self, _: &Arc<CommitKicks>, _: Vec<Arc<WorkerStatus>>) {}
     fn attach_pacer(&self, _: Lane, _: &Arc<Pacer>) {}
-    fn attach_reachability(&self, _: &Arc<HostReachability>) {}
+    fn attach_host_sessions(&self, _: &Arc<HostSessions>) {}
+    fn host_sweep_interval(&self) -> Duration {
+        crate::service::host_sessions::DEFAULT_SWEEP_INTERVAL
+    }
     fn lane_log(&self, clock: Arc<dyn Clock>) -> crate::daemon::logs::RateLimitedLaneLog {
         crate::daemon::logs::RateLimitedLaneLog::to_stderr(clock)
     }
-}
-
-/// How the elected daemon gets its zero or one Herdr server.
-///
-/// Owns: the start-time choice of the attached host and the attach itself,
-/// done once after the store opens: `Hint` upserts `herdr_hosts(endpoint)` and
-/// attaches it, `Remembered` attaches the row with the greatest
-/// `last_attached_at` whose endpoint is a live socket (or none), `Given` is a
-/// caller-built host (tests, `FakeHost`). Attaching stamps `last_attached_at`,
-/// sets the descriptor's `primary_host`; the composition then publishes the host
-/// into the store's `HostIndex` (see `publish_session`).
-/// Does not own: building the production host (the [`HostFactory`] closure
-/// from `main.rs` does), the host's session or reachability, or the daemon
-/// address. Must not be resolved before election (the remembered host lives
-/// in the store) and never appears in the daemon address. Role: consumed once
-/// by `run_elected_impl`; nothing keeps it afterwards. A new way to choose the
-/// start host is a new variant here.
-pub enum HostChoice {
-    /// `--host-endpoint`: attach this endpoint (upserting its row).
-    Hint(std::path::PathBuf),
-    /// No flag: attach the most recently attached row with a live socket.
-    Remembered,
-    /// A host the caller already built, with its bootstrap observer and the
-    /// endpoint to record for it.
-    Given(
-        Arc<dyn HostPort>,
-        Arc<dyn crate::ports::BootstrapObserver>,
-        std::path::PathBuf,
-    ),
-}
-
-/// Builds the production host and its bootstrap observer for an endpoint
-/// (`NativeCli` in `main.rs`). A closure, not a trait: there is one
-/// production implementation and tests use [`HostChoice::Given`].
-pub type HostFactory = Arc<
-    dyn Fn(&std::path::Path) -> (Arc<dyn HostPort>, Arc<dyn crate::ports::BootstrapObserver>)
-        + Send
-        + Sync,
->;
-
-/// A bootstrap observer for a host that never runs guarded bootstrap: every
-/// observation is refused.
-struct NoBootstrapObserver;
-
-impl crate::ports::BootstrapObserver for NoBootstrapObserver {
-    fn observe_bootstrap_target(
-        &self,
-        _: &crate::protocol::ids::HostTargetId,
-        _: &crate::ports::HostCallContext,
-    ) -> Result<crate::ports::BootstrapPaneObservation, crate::protocol::results::ApiError> {
-        Err(crate::protocol::results::ApiError::unsupported(
-            "bootstrap observation unavailable",
-        ))
-    }
-}
-
-impl HostChoice {
-    /// [`HostChoice::Given`] for a fixture host that is never used for guarded
-    /// bootstrap, recorded under the unnamed test endpoint.
-    pub fn given(host: Arc<dyn HostPort>) -> Self {
-        Self::given_at(
-            host,
-            std::path::PathBuf::from(crate::store::schema::UNNAMED_HOST_ENDPOINT),
-        )
-    }
-
-    /// [`HostChoice::given`] recorded (and published to the host index) under `endpoint`, the
-    /// server the fixture's claims name.
-    pub fn given_at(host: Arc<dyn HostPort>, endpoint: std::path::PathBuf) -> Self {
-        Self::Given(host, Arc::new(NoBootstrapObserver), endpoint)
-    }
-
-    /// Attaches the chosen host in `context`'s store (the store is created if
-    /// new) and returns the session, or `None` for a store-only daemon.
-    fn attach(
-        self,
-        context: &StoreContext,
-        factory: Option<&HostFactory>,
-    ) -> io::Result<Option<HostSession>> {
-        fn build(
-            factory: Option<&HostFactory>,
-            endpoint: &std::path::Path,
-        ) -> io::Result<(Arc<dyn HostPort>, Arc<dyn crate::ports::BootstrapObserver>)> {
-            let factory = factory.ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "no host factory to attach with",
-                )
-            })?;
-            Ok(factory(endpoint))
-        }
-        fn store_error(error: crate::protocol::results::ApiError) -> io::Error {
-            io::Error::other(format!("store startup: {:?}: {}", error.code, error.detail))
-        }
-        match self {
-            Self::Hint(endpoint) => {
-                let host_id = context
-                    .attach_host(&endpoint.to_string_lossy())
-                    .map_err(store_error)?;
-                let (port, observer) = build(factory, &endpoint)?;
-                Ok(Some(HostSession {
-                    host_id,
-                    endpoint,
-                    port,
-                    observer,
-                }))
-            }
-            Self::Remembered => {
-                let Some((host_id, endpoint)) = context
-                    .attach_remembered(&|endpoint| is_live_socket(std::path::Path::new(endpoint)))
-                    .map_err(store_error)?
-                else {
-                    return Ok(None);
-                };
-                let endpoint = std::path::PathBuf::from(endpoint);
-                let (port, observer) = build(factory, &endpoint)?;
-                Ok(Some(HostSession {
-                    host_id,
-                    endpoint,
-                    port,
-                    observer,
-                }))
-            }
-            Self::Given(port, observer, endpoint) => {
-                let host_id = context
-                    .attach_host(&endpoint.to_string_lossy())
-                    .map_err(store_error)?;
-                Ok(Some(HostSession {
-                    host_id,
-                    endpoint,
-                    port,
-                    observer,
-                }))
-            }
-        }
-    }
-}
-
-/// Whether `endpoint` is a bound Unix socket. No connect is attempted.
-fn is_live_socket(endpoint: &std::path::Path) -> bool {
-    use std::os::unix::fs::FileTypeExt;
-    std::fs::metadata(endpoint).is_ok_and(|meta| meta.file_type().is_socket())
-}
-
-/// The one attached Herdr server: its `herdr_hosts.host_id` (never shown to
-/// agents), canonical endpoint, port and bootstrap observer.
-///
-/// The daemon keeps it as `Option<HostSession>`: `Some` spawns the host
-/// workers (observation, wake dispatcher, archival sampler, handoff and
-/// bootstrap observer, `HostGuardedStart`), `None` serves store-only and the
-/// service reaches no host (`DomainService::attached_host`). ht-5fr.2 turns
-/// the `Option` into HostSessions without changing what one session owns.
-pub(crate) struct HostSession {
-    pub(crate) host_id: i64,
-    pub(crate) endpoint: std::path::PathBuf,
-    pub(crate) port: Arc<dyn HostPort>,
-    pub(crate) observer: Arc<dyn crate::ports::BootstrapObserver>,
-}
-
-/// Publishes `session`'s host into the store's [`HostIndex`](crate::store::hosts::HostIndex)
-/// under its canonical endpoint, so a claim naming that server resolves. Called once the
-/// session's workers run; HostSessions replaces this single-host step (ht-5fr.2.7).
-fn publish_session(
-    index: &crate::store::hosts::HostIndex,
-    session: &HostSession,
-) -> io::Result<()> {
-    let locator = crate::protocol::ids::HostLocator::parse(session.endpoint.to_string_lossy())
-        .map_err(|error| {
-            io::Error::other(format!(
-                "host endpoint {} is not a canonical locator: {}",
-                session.endpoint.display(),
-                error.detail
-            ))
-        })?;
-    index.publish(locator, crate::ports::HostId::from_row(session.host_id));
-    Ok(())
 }
 
 /// The lifecycle calls the factory only after ownership election and socket
@@ -1339,7 +1259,7 @@ pub async fn run_elected<R>(
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
     config: ServiceConfig,
-    host: HostChoice,
+    plan: HostAttachPlan,
     on_ready: R,
 ) -> io::Result<bool>
 where
@@ -1350,8 +1270,7 @@ where
         clock,
         shutdown,
         config,
-        host,
-        None,
+        plan,
         None,
         LaneProbe::default(),
         on_ready,
@@ -1368,31 +1287,26 @@ pub async fn run_elected_probed<R>(
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
     config: ServiceConfig,
-    host: HostChoice,
+    plan: HostAttachPlan,
     probe: LaneProbe,
     on_ready: R,
 ) -> io::Result<bool>
 where
     R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
 {
-    run_elected_impl(
-        paths, clock, shutdown, config, host, None, None, probe, on_ready,
-    )
-    .await
+    run_elected_impl(paths, clock, shutdown, config, plan, None, probe, on_ready).await
 }
 
-/// Production native composition: `factory` builds the host for a `Hint` or
-/// `Remembered` choice, and a host with `HostGuardedStart` retains its
-/// required scoped observer for guarded bootstrap.
-#[allow(clippy::too_many_arguments)]
+/// Production native composition: `plan.factory` builds each attached host,
+/// and a host with `HostGuardedStart` retains its required scoped observer for
+/// guarded bootstrap.
 pub async fn run_elected_guarded<R>(
     paths: &NodePaths,
     context: &crate::daemon::paths::RuntimeContext,
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
     config: ServiceConfig,
-    host: HostChoice,
-    factory: HostFactory,
+    plan: HostAttachPlan,
     on_ready: R,
 ) -> io::Result<bool>
 where
@@ -1410,8 +1324,7 @@ where
         clock,
         shutdown,
         config,
-        host,
-        Some(factory),
+        plan,
         Some(context.state_dir.clone()),
         LaneProbe::default(),
         on_ready,
@@ -1519,15 +1432,20 @@ fn check_store_identity(
     Ok(())
 }
 
+/// The daemon's registry and the links that stop it with the service.
+struct ComposedSessions {
+    sessions: Arc<HostSessions>,
+    _links: Vec<crate::protocol::time::CancelSubscription>,
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_elected_impl<R>(
     paths: &NodePaths,
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
     config: ServiceConfig,
-    host_choice: HostChoice,
-    // Builds the host for `Hint`/`Remembered`; `None` (fixtures) refuses them.
-    host_factory: Option<HostFactory>,
+    // The startup hint and how hosts are built (spec §3 Startup).
+    plan: HostAttachPlan,
     // Set by `run_elected_guarded`: the state dir of the guarded handoff
     // namespace, used when the attached host has `HostGuardedStart`.
     guarded_state_dir: Option<std::path::PathBuf>,
@@ -1578,6 +1496,23 @@ where
     // One rate-limited logger for the daemon; every lane's status reports to it.
     let rate_limited_log = Arc::new(probe.lane_log(Arc::clone(&clock)));
     let lane_log: Arc<dyn crate::daemon::logs::LaneErrorLog> = rate_limited_log.clone();
+    let factory_lane_log = Arc::clone(&lane_log);
+    let HostAttachPlan {
+        hint: factory_hint,
+        factory: mut host_factory,
+    } = plan;
+    // The startup hint is the operator's explicit choice: it attaches whether
+    // or not its socket exists yet (the session then reports the server down
+    // and the observation lane reconnects), as the single-host daemon always
+    // did. Every other server attaches only once its socket exists.
+    if let Some(hint) = factory_hint.clone() {
+        let exists = Arc::clone(&host_factory.exists);
+        host_factory.exists =
+            Arc::new(move |path: &std::path::Path| path == hint.as_path() || exists(path));
+    }
+    // Filled by the factory; the stop path takes it to stop every session.
+    let sessions_slot: Arc<Mutex<Option<ComposedSessions>>> = Arc::new(Mutex::new(None));
+    let factory_sessions = Arc::clone(&sessions_slot);
     // Hook payloads the optimistic recipes could not parse: counted for
     // Health and logged through the same rate-limited logger.
     let hook_parse_failures = Arc::new(crate::daemon::logs::HookParseFailures::new(Arc::clone(
@@ -1693,22 +1628,6 @@ where
                     report.failed
                 ));
             }
-            // The host choice is resolved here, after the store exists: zero
-            // or one Herdr server is attached (its `herdr_hosts` row stamped,
-            // the descriptor's `primary_host` set; the store's host index is
-            // published once the host's workers run). `None` runs the daemon
-            // store-only.
-            let session: Option<HostSession> =
-                host_choice.attach(&context, host_factory.as_ref())?;
-            factory_primary_host.set(session.as_ref().map(|session| session.endpoint.clone()));
-            rate_limited_log.write_line(&match &session {
-                Some(session) => format!(
-                    "herdr host attached: {} (host {})",
-                    session.endpoint.display(),
-                    session.host_id
-                ),
-                None => "no Herdr server attached: store-only".to_owned(),
-            });
             factory_probe.configure_store(&context);
             // One registry per elected daemon: the store's commit hooks kick
             // through it and every lane registers its Pacer here at start.
@@ -1724,6 +1643,7 @@ where
                     .with_commit_kicks(Arc::clone(&kicks)),
             );
             factory_probe.attach_store(&sqlite);
+            let remembered_store = Arc::clone(&sqlite);
             let bootstrap_store = sqlite.clone();
             let apply_store = sqlite.clone();
             let apply_identity = Arc::clone(&identity);
@@ -1755,36 +1675,6 @@ where
                     crate::daemon::health::binding_evidence_line(report)
                 );
             }
-            // Daemon restart creates a new host connection epoch above the
-            // previous boot's durable publication before any host observation.
-            // A store-only daemon has no host epoch and reports the neutral
-            // static capabilities.
-            let (incarnation_witness, safe_prompt) = match &session {
-                Some(session) => {
-                    let persisted_epoch = store
-                        .persisted_host_epoch(
-                            crate::ports::HostId::from_row(session.host_id),
-                            &CallBudget {
-                                deadline: MonoInstant(
-                                    factory_clock.monotonic_now().0.saturating_add(2_000),
-                                ),
-                                cancellation: Cancellation::default(),
-                            },
-                        )
-                        .map_err(|error| {
-                            io::Error::other(format!(
-                                "store startup: {:?}: {}",
-                                error.code, error.detail
-                            ))
-                        })?;
-                    session.port.resume_after_epoch(persisted_epoch);
-                    (
-                        session.port.incarnation_witness(),
-                        session.port.safe_prompt_capability(),
-                    )
-                }
-                None => (CapabilityState::Unknown, CapabilityState::Unsupported),
-            };
             let writer = Arc::new(FairWriter::new(32));
             // The admission observer fills this slot; the wake lane reads poke
             // capabilities from the versions it observed.
@@ -1799,21 +1689,22 @@ where
                 factory_probe.attach_pacer(lane, &pacer);
                 pacer
             };
-            let mut workers = factory_slot
-                .lock()
-                .map_err(|_| io::Error::other("worker slot poisoned"))?;
-            let worker = start_deadline_worker(
+            // HostSessions hands its own worker handles to this slot, so the
+            // lock is held only for a push.
+            let push_worker = |handle: std::thread::JoinHandle<()>| -> io::Result<()> {
+                factory_slot
+                    .lock()
+                    .map_err(|_| io::Error::other("worker slot poisoned"))?
+                    .push(handle);
+                Ok(())
+            };
+            push_worker(start_deadline_worker(
                 Arc::clone(&store),
                 Arc::clone(&writer),
                 register_lane(Lane::Deadlines),
                 factory_stop.clone(),
                 Arc::clone(&factory_status),
-            )?;
-            workers.push(worker);
-            // Shared by the observation lane (writer) and the wake lane: the
-            // wake lane freezes while Herdr is unavailable and the observation
-            // lane's first answered capture kicks it (ht-72q).
-            let reachability = Arc::new(HostReachability::default());
+            )?)?;
             // The one registry of live mod delivery channels (spec D2, D7),
             // shared by the wake lane (routing), the domain service (digest
             // flag and watch registration) and setup-status. It is the sole
@@ -1842,37 +1733,93 @@ where
             let mod_channels: Arc<dyn crate::ports::ModChannels> = mod_registry.clone();
             let delivery_pull =
                 Arc::new(crate::service::delivery_pull::DeliveryPullState::default());
-            // Host workers (wake dispatcher, binding liveness) exist only
-            // with an attached host.
-            if let Some(session) = &session {
-                let wake_pacer = register_lane(Lane::Wakes);
-                reachability.attach_wake_pacer(Arc::clone(&wake_pacer));
-                factory_probe.attach_reachability(&reachability);
-                // Binding liveness (spec §3, decision 9): the host process table backs both the
-                // periodic re-check thread and the re-check before each wake decision.
-                let liveness = Arc::new(crate::service::liveness::LivenessWorker::new(
-                    Arc::clone(&store) as Arc<dyn crate::ports::StorePort>,
-                    Arc::clone(&writer),
-                    Arc::new(crate::host::process_table::HostProcessTable),
-                ));
-                workers.push(start_wake_worker_with_liveness(
-                    Arc::clone(&store),
-                    Arc::clone(&writer),
-                    Arc::clone(&session.port),
-                    crate::ports::HostId::from_row(session.host_id),
-                    instance.to_string(),
+            // Binding liveness (spec §3, decision 9): the host process table backs
+            // both the periodic re-check thread and the re-check before each
+            // wake decision of every session's wake worker.
+            let liveness = Arc::new(crate::service::liveness::LivenessWorker::new(
+                Arc::clone(&store) as Arc<dyn crate::ports::StorePort>,
+                Arc::clone(&writer),
+                Arc::new(crate::host::process_table::HostProcessTable),
+            ));
+            // The multi-host registry (spec §2, §3): built after the journal
+            // opened and before the listener serves. Startup attaches the plan's
+            // hint, then every remembered server whose socket exists, and starts
+            // the sweep; a failure is one log line and never fatal.
+            // Sessions stop when the service shuts down (their identities'
+            // detached compensation never holds the owner's shutdown) and when
+            // the daemon drains.
+            let session_stop = Cancellation::default();
+            let links = vec![
+                cancellation.on_cancel({
+                    let session_stop = session_stop.clone();
+                    Arc::new(move || session_stop.cancel())
+                }),
+                factory_stop.on_cancel({
+                    let session_stop = session_stop.clone();
+                    Arc::new(move || session_stop.cancel())
+                }),
+            ];
+            let host_sessions = Arc::new(HostSessions::new(
+                Arc::clone(&host_index),
+                host_factory,
+                SessionDeps {
+                    store: Arc::clone(&store),
+                    writer: Arc::clone(&writer),
+                    kicks: Arc::clone(&kicks),
+                    clock: Arc::clone(&factory_clock),
+                    node_uuid: instance.to_string(),
                     boot,
-                    config.retry_config(),
-                    wake_pacer,
-                    factory_stop.clone(),
-                    Arc::clone(&factory_wake_status),
-                    Arc::new(ObservedPokeCapabilities::new(Arc::clone(&harnesses))),
-                    Arc::clone(&reachability),
-                    Arc::clone(&mod_channels),
-                    Arc::clone(&delivery_pull) as Arc<dyn crate::ports::HookPullOutlook>,
-                    Some(Arc::clone(&liveness)),
-                )?);
-                workers.push(crate::service::liveness::start_liveness_worker(
+                    state_dir: guarded_state_dir.clone(),
+                    retry: config.retry_config(),
+                    liveness: Some(Arc::clone(&liveness)),
+                    mod_channels: Arc::clone(&mod_channels),
+                    poke_capabilities: Arc::new(ObservedPokeCapabilities::new(Arc::clone(
+                        &harnesses,
+                    ))),
+                    hook_pull: Arc::clone(&delivery_pull)
+                        as Arc<dyn crate::ports::HookPullOutlook>,
+                    worker_slot: Arc::clone(&factory_slot),
+                    stop: session_stop,
+                    log: {
+                        let log = Arc::clone(&rate_limited_log);
+                        Arc::new(move |line: &str| log.write_line(line))
+                    },
+                    lane_log: Some(Arc::clone(&factory_lane_log)),
+                    remembered: Arc::new(move |budget: &CallBudget| {
+                        let db = remembered_store.context().open_query(budget.clone())?;
+                        crate::store::hosts::remembered(&db, usize::MAX)
+                    }),
+                    sweep_interval: factory_probe.host_sweep_interval(),
+                    // Production attaches only a locator that is its own
+                    // canonical path on disk; fake locators are not on disk.
+                    check_canonical: cfg!(not(any(test, feature = "test-support"))),
+                },
+            ));
+            *factory_sessions
+                .lock()
+                .map_err(|_| io::Error::other("host sessions slot poisoned"))? =
+                Some(ComposedSessions {
+                    sessions: Arc::clone(&host_sessions),
+                    _links: links,
+                });
+            factory_probe.attach_host_sessions(&host_sessions);
+            host_sessions.attach_startup(factory_hint.as_ref())?;
+            // Interim until ht-5fr.2.12 routes by claim host: the service,
+            // Health and archival follow the startup session (`None` when no
+            // server is attached at startup: store-only).
+            let primary = host_sessions.startup_primary(factory_hint.as_ref());
+            factory_primary_host
+                .set(primary.as_ref().map(|session| std::path::PathBuf::from(session.locator())));
+            rate_limited_log.write_line(&match &primary {
+                Some(session) => format!(
+                    "herdr host attached: {} (host {})",
+                    session.locator().as_str(),
+                    session.host_id().get()
+                ),
+                None => "no Herdr server attached: store-only".to_owned(),
+            });
+            if primary.is_some() {
+                push_worker(crate::service::liveness::start_liveness_worker(
                     liveness,
                     Arc::new(Pacer::new(
                         "liveness",
@@ -1884,17 +1831,9 @@ where
                         let log = Arc::clone(&rate_limited_log);
                         Arc::new(move |line: &str| log.write_line(line))
                     },
-                )?);
+                )?)?;
             }
-            let observation_pacer = Arc::new(Pacer::new(
-                Lane::Observation.name(),
-                Arc::clone(&factory_clock),
-                factory_stop.clone(),
-            ));
-            if session.is_some() {
-                kicks.register(Lane::Observation, Arc::clone(&observation_pacer));
-            }
-            workers.push(start_mod_channel_worker(
+            push_worker(start_mod_channel_worker(
                 Arc::clone(&mod_registry),
                 Arc::new(Pacer::new(
                     "mod-channels",
@@ -1907,33 +1846,18 @@ where
                     let log = Arc::clone(&rate_limited_log);
                     Arc::new(move |line: &str| log.write_line(line))
                 },
-            )?);
+            )?)?;
             // The identity resolver is the service's only way to the host
             // (`DomainService::attached_host`); a store-only daemon has none.
-            let identity = session.as_ref().map(|session| {
-                Arc::new(
-                    crate::identity::repair::OrdinaryIdentity::new(
-                        instance.to_string(),
-                        crate::ports::HostId::from_row(session.host_id),
-                        Arc::clone(&store),
-                        Arc::clone(&session.port),
-                        Arc::clone(&factory_clock),
-                        Arc::clone(&writer),
-                    )
-                    // Detached invalidation compensation outlives request cancellation
-                    // but never the owner: shutdown cancels its bounded wait.
-                    .with_service_cancellation(cancellation.clone())
-                    .with_observation_pacer(Arc::clone(&observation_pacer)),
-                )
-            });
-            workers.push(start_retention_lane(
+            let identity = primary.as_ref().map(|session| Arc::clone(session.identity()));
+            push_worker(start_retention_lane(
                 &kicks,
                 Arc::clone(&factory_clock),
                 factory_stop.clone(),
                 Arc::clone(&store),
                 Arc::clone(&writer),
                 Arc::clone(&factory_retention_status),
-            )?);
+            )?)?;
             // The Apply lane applies ingested journal entries. Its post-commit
             // hook brings the identity cache and node.json up to a tag the
             // pass moved (the node kinds own the effect).
@@ -1961,7 +1885,7 @@ where
                     }
                 })
             };
-            workers.push(start_apply_lane(
+            push_worker(start_apply_lane(
                 &kicks,
                 Arc::clone(&factory_clock),
                 factory_stop.clone(),
@@ -1969,7 +1893,7 @@ where
                 post_commit,
                 Arc::clone(&writer),
                 Arc::clone(&factory_apply_status),
-            )?);
+            )?)?;
             // The harness version manifest: cache, embedded fallback and the
             // detached fetch policy. One log line per fetch outcome (at most
             // one fetch per harness per day, so no extra rate limit).
@@ -1998,7 +1922,7 @@ where
             );
             #[cfg(any(test, feature = "test-support"))]
             let admission_fault = factory_probe.admission_fault();
-            workers.extend(admission_handle(
+            if let Some(handle) = admission_handle(
                 start_admission_observer(
                     move |budget| {
                         #[cfg(any(test, feature = "test-support"))]
@@ -2037,18 +1961,20 @@ where
                     Arc::clone(&factory_admission_status),
                 ),
                 &factory_admission_status,
-            ));
-            if let Some(session) = &session {
+            ) {
+                push_worker(handle)?;
+            }
+            if let Some(session) = &primary {
                 let archival_context = crate::protocol::output::ContinuationContext {
                     state_dir: Some(archival_paths.state_dir.to_string_lossy().into_owned()),
-                    host: Some(session.endpoint.to_string_lossy().into_owned()),
+                    host: Some(session.locator().as_str().to_owned()),
                 };
-                workers.push(crate::service::archival::start(
+                push_worker(crate::service::archival::start(
                     crate::service::archival::ArchivalWorker {
                         store: Arc::clone(&store),
-                        host: Arc::clone(&session.port),
+                        host: Arc::clone(session.port()),
                         writer: Arc::clone(&writer),
-                        reachability: Arc::clone(&reachability),
+                        reachability: Arc::clone(session.reachability()),
                         source: crate::archival_legacy::Source::new(
                             &archival_paths,
                             instance.to_string(),
@@ -2060,27 +1986,21 @@ where
                     },
                     register_lane(Lane::Archival),
                     Arc::clone(&factory_archival_status),
-                )?);
+                )?)?;
             }
-            if let Some(identity) = &identity {
-                workers.push(start_observation_worker(
-                    Arc::clone(identity),
-                    Arc::clone(&store),
-                    Arc::clone(&writer),
-                    factory_stop,
-                    Arc::clone(&factory_observation_status),
-                    Arc::clone(&factory_host_evidence),
-                    observation_pacer,
-                    reachability,
-                )?);
-            }
-            drop(workers);
             // In `Lane::ALL` order. A lane that never started (host lanes of a
-            // store-only daemon) has an untouched status and reports ready.
+            // store-only daemon) has an untouched status and reports ready; the
+            // host lanes report the startup session's (per-host Health: ht-5fr.2.10).
             let lane_statuses = vec![
                 factory_status.clone(),
-                factory_wake_status.clone(),
-                factory_observation_status.clone(),
+                primary.as_ref().map_or_else(
+                    || factory_wake_status.clone(),
+                    |session| Arc::clone(session.wake().status()),
+                ),
+                primary.as_ref().map_or_else(
+                    || factory_observation_status.clone(),
+                    |session| Arc::clone(session.observation().status()),
+                ),
                 factory_retention_status.clone(),
                 factory_admission_status.clone(),
                 factory_archival_status.clone(),
@@ -2108,38 +2028,17 @@ where
             .with_mod_channels(Arc::clone(&mod_channels))
             .with_delivery_pull(Arc::clone(&delivery_pull));
             // Guarded bootstrap needs an attached host with `HostGuardedStart`.
-            let bootstrap = session.as_ref().and_then(|session| {
-                (session.port.native_launch_capability()
-                    == crate::ports::NativeLaunchCapability::HostGuardedStart)
-                    .then(|| {
-                        guarded_state_dir.as_ref().map(|state_dir| {
-                            (
-                                state_dir.clone(),
-                                session.endpoint.clone(),
-                                Arc::clone(&session.observer),
-                            )
-                        })
-                    })
-                    .flatten()
-            });
-            if let Some((state_dir, host_endpoint, observer)) = &bootstrap {
+            let bootstrap = primary
+                .as_ref()
+                .and_then(|session| session.bootstrap().cloned());
+            if let Some(runtime) = &bootstrap {
                 domain = domain
                     .with_bootstrap_runtime(
-                        crate::protocol::handoff::HandoffNamespace {
-                            instance: instance.to_string(),
-                            state_dir: state_dir.clone(),
-                            host_endpoint: host_endpoint.clone(),
-                        },
-                        observer.clone(),
+                        runtime.canonical.clone(),
+                        Arc::clone(&runtime.observer),
                         bootstrap_store,
                     )
                     .map_err(|error| io::Error::other(error.detail))?;
-            }
-            // The host's workers run: claims naming its server now resolve.
-            if let Some(session) = &session
-                && let Err(error) = publish_session(&host_index, session)
-            {
-                rate_limited_log.write_line(&format!("host not addressable: {error}"));
             }
             let stop = StopController::new(instance, boot, cancellation);
             let provider = elected_health_provider(
@@ -2149,15 +2048,12 @@ where
                 health_clock,
                 health_store,
                 lane_statuses,
-                ElectedHostEvidence {
-                    status: factory_host_evidence.clone(),
-                    incarnation_witness,
-                    safe_prompt,
+                ElectedHostEvidence::of_sessions(
+                    &host_sessions,
+                    primary.as_deref(),
+                    factory_host_evidence.clone(),
                     harnesses,
-                    release: HostReleaseSource(
-                        session.as_ref().map(|session| Arc::clone(&session.port)),
-                    ),
-                },
+                ),
             );
             let log_path = factory_log_path.clone();
             let health_harnesses = Arc::clone(&states_harnesses);
@@ -2240,12 +2136,21 @@ where
         on_ready,
         move || async move {
             worker_stop.cancel();
+            let sessions = sessions_slot
+                .lock()
+                .map_err(|_| io::Error::other("host sessions slot poisoned"))?
+                .take();
             let workers = std::mem::take(
                 &mut *worker_slot
                     .lock()
                     .map_err(|_| io::Error::other("worker slot poisoned"))?,
             );
             let joined = tokio::task::spawn_blocking(move || {
+                // Sessions stop and join their own threads first; the slot
+                // then holds only the daemon's lanes.
+                if let Some(composed) = sessions {
+                    composed.sessions.stop_all();
+                }
                 let mut failed = false;
                 for worker in workers {
                     failed |= worker.join().is_err();
@@ -2787,258 +2692,6 @@ pub(crate) mod health_v2_observer_tests {
             serde_json::to_string(&legacy).unwrap(),
             r#"{"codex":"unsupported","claude":"cooperative"}"#
         );
-    }
-}
-
-#[cfg(test)]
-mod host_choice_tests {
-    use super::*;
-    use crate::{
-        ports::{
-            AgentComposerState, ComposerObservation, HostCallContext, HostObservation,
-            HostSnapshot, NativeLaunchOutcome, NativeLaunchRequest, PromptOutcome, SafeWakeTarget,
-        },
-        protocol::{
-            ids::{HostTargetId, SeatId},
-            results::ApiError,
-        },
-        test_support::isolation::TestIsolation,
-    };
-    use std::{
-        os::unix::net::UnixListener,
-        path::{Path, PathBuf},
-        sync::atomic::{AtomicI64, AtomicUsize, Ordering},
-    };
-
-    /// Every host call is refused; the counter proves the host was built.
-    struct StubHost;
-
-    fn refused<T>() -> Result<T, ApiError> {
-        Err(ApiError::unsupported("stub host"))
-    }
-
-    impl HostPort for StubHost {
-        fn native_launch_capability(&self) -> crate::ports::NativeLaunchCapability {
-            crate::ports::NativeLaunchCapability::Unsupported
-        }
-        fn observe_current_target(
-            &self,
-            _: &HostTargetId,
-            _: &HostCallContext,
-        ) -> Result<HostObservation, ApiError> {
-            refused()
-        }
-        fn observe_current_target_for_archival(
-            &self,
-            _: &HostTargetId,
-            _: &HostCallContext,
-        ) -> Result<ComposerObservation, ApiError> {
-            refused()
-        }
-        fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
-            refused()
-        }
-        fn safe_wake_target(&self, _: &SeatId, _: &HostObservation) -> Option<SafeWakeTarget> {
-            None
-        }
-        fn submit_prompt(
-            &self,
-            _: &SafeWakeTarget,
-            _: &str,
-            _: &HostCallContext,
-        ) -> Result<PromptOutcome, ApiError> {
-            refused()
-        }
-        fn launch_native(
-            &self,
-            _: NativeLaunchRequest,
-            _: &HostCallContext,
-        ) -> Result<NativeLaunchOutcome, ApiError> {
-            refused()
-        }
-        fn pane_agent_state(
-            &self,
-            _: &SafeWakeTarget,
-            _: &HostCallContext,
-        ) -> Result<AgentComposerState, ApiError> {
-            refused()
-        }
-        fn send_submit_key(&self, _: &SafeWakeTarget, _: &HostCallContext) -> Result<(), ApiError> {
-            refused()
-        }
-    }
-
-    /// Every reading, across contexts, is later than the last, so attach
-    /// stamps order by attach order.
-    struct SteppingClock;
-
-    static NOW: AtomicI64 = AtomicI64::new(1_000);
-
-    impl Clock for SteppingClock {
-        fn utc_now(&self) -> UtcMillis {
-            UtcMillis(NOW.fetch_add(1_000, Ordering::SeqCst))
-        }
-        fn monotonic_now(&self) -> MonoInstant {
-            MonoInstant(0)
-        }
-    }
-
-    fn context(isolation: &TestIsolation) -> StoreContext {
-        StoreContext::new(isolation.path("store.db"), Arc::new(SteppingClock))
-    }
-
-    fn rows(isolation: &TestIsolation) -> Vec<(String, Option<i64>)> {
-        let conn = rusqlite::Connection::open(isolation.path("store.db")).unwrap();
-        let mut statement = conn
-            .prepare("SELECT endpoint,last_attached_at FROM herdr_hosts ORDER BY host_id")
-            .unwrap();
-        statement
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
-    }
-
-    fn counting_factory(built: &Arc<AtomicUsize>) -> HostFactory {
-        let built = Arc::clone(built);
-        Arc::new(move |_| {
-            built.fetch_add(1, Ordering::SeqCst);
-            (Arc::new(StubHost), Arc::new(NoBootstrapObserver))
-        })
-    }
-
-    /// A bound socket file left in place after its listener drops.
-    fn socket_file(path: &Path) {
-        drop(UnixListener::bind(path).unwrap());
-    }
-
-    #[test]
-    fn hint_upserts_and_attaches_and_stamps_last_attached_at() {
-        let isolation = TestIsolation::new("hint-attach");
-        let built = Arc::new(AtomicUsize::new(0));
-        let endpoint = PathBuf::from("/herdr/hint.sock");
-        let first = context(&isolation);
-        let session = HostChoice::Hint(endpoint.clone())
-            .attach(&first, Some(&counting_factory(&built)))
-            .unwrap()
-            .expect("a hint attaches");
-        assert_eq!(session.endpoint, endpoint);
-        assert_eq!(built.load(Ordering::SeqCst), 1);
-        let stamped = rows(&isolation);
-        assert_eq!(stamped.len(), 1);
-        assert_eq!(stamped[0].0, "/herdr/hint.sock");
-        let first_stamp = stamped[0].1.expect("attach stamps last_attached_at");
-        // A second attach of the same endpoint reuses the row and restamps it.
-        let second = context(&isolation);
-        let again = HostChoice::Hint(endpoint)
-            .attach(&second, Some(&counting_factory(&built)))
-            .unwrap()
-            .unwrap();
-        assert_eq!(again.host_id, session.host_id);
-        let restamped = rows(&isolation);
-        assert_eq!(restamped.len(), 1);
-        assert!(restamped[0].1.unwrap() > first_stamp, "{restamped:?}");
-    }
-
-    #[test]
-    fn remembered_picks_latest_live_socket() {
-        let isolation = TestIsolation::new("remembered-live");
-        let older = isolation.socket_path("older.sock");
-        let newer = isolation.socket_path("newer.sock");
-        // Attach older first, then newer: newer has the greater stamp.
-        for path in [&older, &newer] {
-            context(&isolation)
-                .attach_host(&path.to_string_lossy())
-                .unwrap();
-        }
-        let built = Arc::new(AtomicUsize::new(0));
-        // Only the older one is a live socket: it wins despite being older.
-        socket_file(&older);
-        std::fs::write(&newer, b"not a socket").unwrap();
-        let chosen = HostChoice::Remembered
-            .attach(&context(&isolation), Some(&counting_factory(&built)))
-            .unwrap()
-            .expect("the live row attaches");
-        assert_eq!(chosen.endpoint, older);
-        // Swap liveness; the older row was just restamped, so only liveness
-        // can make newer win.
-        std::fs::remove_file(&newer).unwrap();
-        socket_file(&newer);
-        std::fs::remove_file(&older).unwrap();
-        std::fs::write(&older, b"not a socket").unwrap();
-        let swapped = HostChoice::Remembered
-            .attach(&context(&isolation), Some(&counting_factory(&built)))
-            .unwrap()
-            .expect("the live row attaches");
-        assert_eq!(swapped.endpoint, newer);
-        // Both live: the greatest last_attached_at (newer, just stamped) wins.
-        std::fs::remove_file(&older).unwrap();
-        socket_file(&older);
-        let both = HostChoice::Remembered
-            .attach(&context(&isolation), Some(&counting_factory(&built)))
-            .unwrap()
-            .unwrap();
-        assert_eq!(both.endpoint, newer);
-        assert_eq!(built.load(Ordering::SeqCst), 3);
-    }
-
-    #[test]
-    fn remembered_with_no_live_socket_is_none() {
-        let isolation = TestIsolation::new("remembered-none");
-        let plain = isolation.path("plain-file");
-        std::fs::write(&plain, b"x").unwrap();
-        for endpoint in [
-            plain.to_string_lossy().into_owned(),
-            "/does/not/exist.sock".into(),
-        ] {
-            context(&isolation).attach_host(&endpoint).unwrap();
-        }
-        let before = rows(&isolation);
-        let built = Arc::new(AtomicUsize::new(0));
-        let ctx = context(&isolation);
-        let session = HostChoice::Remembered
-            .attach(&ctx, Some(&counting_factory(&built)))
-            .unwrap();
-        assert!(session.is_none());
-        assert_eq!(built.load(Ordering::SeqCst), 0, "no host is built");
-        assert!(ctx.hosts().ids().is_empty(), "nothing is published");
-        assert_eq!(rows(&isolation), before, "nothing is stamped");
-    }
-
-    #[test]
-    fn attach_leaves_publishing_to_the_composition() {
-        let isolation = TestIsolation::new("publish-step");
-        let ctx = context(&isolation);
-        let session = HostChoice::given(Arc::new(StubHost))
-            .attach(&ctx, None)
-            .unwrap()
-            .unwrap();
-        assert!(ctx.hosts().ids().is_empty(), "attach publishes nothing");
-        assert_eq!(
-            session.endpoint,
-            PathBuf::from(crate::store::schema::UNNAMED_HOST_ENDPOINT)
-        );
-        publish_session(ctx.hosts(), &session).unwrap();
-        let locator =
-            crate::protocol::ids::HostLocator::parse(crate::store::schema::UNNAMED_HOST_ENDPOINT)
-                .unwrap();
-        assert_eq!(
-            ctx.hosts().attached_id(&locator).unwrap(),
-            crate::ports::HostId::from_row(session.host_id)
-        );
-    }
-
-    #[test]
-    fn hint_and_remembered_without_a_factory_are_refused() {
-        let isolation = TestIsolation::new("no-factory");
-        let seed = context(&isolation);
-        let live = isolation.socket_path("live.sock");
-        seed.attach_host(&live.to_string_lossy()).unwrap();
-        socket_file(&live);
-        for choice in [HostChoice::Hint(live.clone()), HostChoice::Remembered] {
-            let error = choice.attach(&context(&isolation), None).err().unwrap();
-            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        }
     }
 }
 

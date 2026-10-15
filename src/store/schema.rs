@@ -217,8 +217,7 @@ pub(crate) fn binding_evidence_lacking(conn: &Connection, seat: &str) -> rusqlit
 /// The endpoint recorded for an attached Herdr host that was composed without
 /// a socket path (an in-process host given directly), and the locator claims
 /// name it by. A canonical locator so the composition publishes it into the
-/// host index like any socket path. Interim: ht-5fr.1.7's `HostChoice`
-/// replaces the single-host composition that needs it.
+/// host index like any socket path.
 pub const UNNAMED_HOST_ENDPOINT: &str = "/host.sock";
 
 /// The identity a fresh node store is created with: the `local_node` row and

@@ -536,7 +536,7 @@ impl Rig {
                     clock,
                     daemon_stop,
                     config,
-                    herdr_threads::app::HostChoice::given_at(host, endpoint),
+                    herdr_threads::test_support::single_host_plan_at(host, endpoint),
                     probe,
                     move |descriptor| {
                         ready_tx

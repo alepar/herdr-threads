@@ -1,6 +1,6 @@
 //! Model-free elected/public composition against an owned real native UDS peer.
 use herdr_threads::{
-    app::{HostChoice, SystemClock, run_elected, run_elected_guarded},
+    app::{SystemClock, run_elected, run_elected_guarded},
     client::local::LocalSocketClient,
     daemon::{
         ownership::OwnerLock,
@@ -391,12 +391,11 @@ impl Fixture {
                             daemon_clock,
                             daemon_stop,
                             ServiceConfig::default(),
-                            HostChoice::Given(
+                            herdr_threads::test_support::single_host_plan_with_observer(
                                 native.clone(),
                                 native.clone(),
-                                daemon_context.require_host().unwrap().to_path_buf(),
+                                daemon_context.require_host().unwrap(),
                             ),
-                            Arc::new(move |_| (native.clone(), native.clone())),
                             ready,
                         )
                         .await
@@ -406,9 +405,9 @@ impl Fixture {
                             daemon_clock,
                             daemon_stop,
                             ServiceConfig::default(),
-                            HostChoice::given_at(
+                            herdr_threads::test_support::single_host_plan_at(
                                 native,
-                                daemon_context.require_host().unwrap().to_path_buf(),
+                                daemon_context.require_host().unwrap(),
                             ),
                             ready,
                         )

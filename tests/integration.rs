@@ -63,6 +63,10 @@ mod hermes_enrollment_smoke;
 #[cfg(feature = "test-support")]
 #[path = "integration/hermes_enrollment_sweep.rs"]
 mod hermes_enrollment_sweep;
+/// ht-5fr.2.8: the daemon composes HostSessions: startup attach, sweep, stop.
+#[cfg(feature = "test-support")]
+#[path = "integration/host_sessions_daemon.rs"]
+mod host_sessions_daemon;
 /// ht-p03.1: the isolated named Herdr test-session fixture's self-test.
 #[cfg(feature = "test-support")]
 #[path = "integration/isolated_herdr_fixture.rs"]

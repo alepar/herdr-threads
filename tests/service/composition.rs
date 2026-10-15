@@ -1018,14 +1018,14 @@ fn elected_service_fixture(custom_settings: bool) {
     }
     // Elected composition of the observation worker's WorkerStatus: the
     // host socket never exists, so the real observation worker started by
-    // `app.rs` records `Frozen(HostUnavailable)`: Herdr is unavailable, so
+    // `HostSessions` records `Frozen(HostUnavailable)`: Herdr is unavailable, so
     // nothing is invalidated (TRUST-POLICY C4, ht-yms). It must reach the
     // Health builder through the *same* shared WorkerStatus, rendered only
     // as its redacted class, with no private path text anywhere in Health.
     //
-    // Kills: passing a fresh `WorkerStatus` (instead of
-    // `factory_observation_status`) to `start_observation_worker` in
-    // `src/app.rs`: the observation lane's failure is then absent from
+    // Kills: composing the health lane statuses from a fresh `WorkerStatus`
+    // instead of the startup session's observation status in `src/app.rs`:
+    // the observation lane's failure is then absent from
     // elected Health and this wait times out.
     let observation_deadline = Instant::now() + Duration::from_secs(8);
     let root_text = root.to_str().unwrap().to_owned();
@@ -1442,7 +1442,7 @@ impl herdr_threads::ports::HostPort for HungWakeHost {
     }
 }
 
-/// `HostChoice::Remembered` on a store with no remembered live host: the
+/// An empty host plan on a store with no remembered live host: the
 /// daemon binds, publishes a descriptor with no `primary_host`, answers Health
 /// and Stop, spawns no host workers (wake, observation, archival lanes are
 /// never registered, the deadline lane is) and refuses host-bound commands
@@ -1491,7 +1491,7 @@ fn store_only_daemon_serves_without_host_workers() {
                 daemon_clock,
                 shutdown,
                 ServiceConfig::default(),
-                herdr_threads::app::HostChoice::Remembered,
+                herdr_threads::test_support::fake_host_plan(&[], None),
                 daemon_lanes,
                 move |descriptor| {
                     ready_tx.send(descriptor.clone()).unwrap();
@@ -1618,7 +1618,7 @@ fn elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined() {
                 daemon_clock,
                 shutdown,
                 ServiceConfig::default(),
-                herdr_threads::app::HostChoice::given(host),
+                herdr_threads::test_support::single_host_plan(host),
                 move |descriptor: &herdr_threads::daemon::ownership::EndpointDescriptor| {
                     ready_tx.send(descriptor.clone()).unwrap();
                     Ok(())
@@ -1950,7 +1950,7 @@ impl ActualNativeFixture {
                     thread_clock,
                     thread_stop,
                     ServiceConfig::default(),
-                    herdr_threads::app::HostChoice::given(host),
+                    herdr_threads::test_support::single_host_plan(host),
                     thread_lanes,
                     move |descriptor| {
                         ready.send(descriptor.clone()).unwrap();
@@ -2038,7 +2038,7 @@ impl ActualNativeFixture {
                     clock,
                     stop,
                     ServiceConfig::default(),
-                    herdr_threads::app::HostChoice::given(host),
+                    herdr_threads::test_support::single_host_plan(host),
                     lanes,
                     move |descriptor| {
                         ready.send(descriptor.clone()).unwrap();
@@ -2689,7 +2689,7 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
                 thread_clock,
                 thread_stop,
                 ServiceConfig::default(),
-                herdr_threads::app::HostChoice::given(host),
+                herdr_threads::test_support::single_host_plan(host),
                 move |descriptor| {
                     ready.send(descriptor.clone()).unwrap();
                     Ok(())
