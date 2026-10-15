@@ -219,6 +219,131 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         ".wait_timeout(",
         "test support: search-barrier gate wait to a test deadline",
     ),
+    (
+        "src/sync/discovery.rs",
+        "tokio::time::sleep(Duration::from_millis(5)).await",
+        "unit test in discovery.rs polling for a worker pass, 5 s cap; not daemon code",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "tokio::time::interval(HOUSEKEEPING_TICK)",
+        "housekeeping (link pings, request failover, penalty and pin expiry, flushes) must keep running while the sync lane Pacer backs off, so it is a tokio timer, which coordinator tests pause",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "tokio::time::sleep(CLOSE_WRITE_TIMEOUT)",
+        "the actor's one bounded wait at shutdown for link tasks to report their end after close; not periodic",
+    ),
+    (
+        "src/sync/dialer.rs",
+        "Some(wait) => sleep(wait).await,",
+        "a dial task's one-shot wait until its own next attempt time (FullJitter backoff on the injected clock), ended early by cancellation or a row change; per target, not a periodic loop",
+    ),
+    (
+        "src/sync/incarnations/worker.rs",
+        "tokio::time::interval(Duration::from_secs(1))",
+        "the incarnations worker's 1 s request-table and pull timer, a tokio interval by design (incarnations spec section 13) so tests run it on paused time; its jobs wake it through the sink",
+    ),
+    (
+        "src/test_support/multinode.rs",
+        "std::thread::sleep(Duration::from_millis(25))",
+        "test-support only: the multi-node cluster's bounded condition polls (wait_until, waiting for endpoint.json); never in a release daemon",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "tokio::time::sleep(Duration::from_millis(10))",
+        "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "tokio::time::sleep(Duration::from_millis(200))",
+        "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "tokio::time::sleep(Duration::from_secs(28))",
+        "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "tokio::time::sleep(Duration::from_secs(3))",
+        "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "tokio::time::sleep(Duration::from_secs(31))",
+        "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "tokio::time::sleep(Duration::from_secs(11))",
+        "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "tokio::time::sleep(Duration::from_secs(1))",
+        "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "std::thread::sleep(Duration::from_millis(1))",
+        "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "tokio::time::sleep(Duration::from_millis(50))",
+        "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "tokio::time::sleep(Duration::from_millis(step))",
+        "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "tokio::time::sleep(Duration::from_secs(5))",
+        "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "tokio::time::sleep(Duration::from_millis(100))",
+        "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "tokio::time::sleep(Duration::from_millis(500))",
+        "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "tokio::time::sleep(Duration::from_secs(2))",
+        "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "tokio::time::sleep(Duration::from_secs(25))",
+        "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
+    ),
+    (
+        "src/sync/dialer.rs",
+        "sleep(Duration::from_millis(10))",
+        "dialer unit test: polls a condition or lets reloads settle; not daemon code",
+    ),
+    (
+        "src/sync/dialer.rs",
+        "sleep(Duration::from_millis(100))",
+        "dialer unit test: polls a condition or lets reloads settle; not daemon code",
+    ),
+    (
+        "src/sync/dialer.rs",
+        "sleep(Duration::from_millis(80))",
+        "dialer unit test: polls a condition or lets reloads settle; not daemon code",
+    ),
+    (
+        "src/sync/dialer.rs",
+        "sleep(Duration::from_millis(50))",
+        "dialer unit test: polls a condition or lets reloads settle; not daemon code",
+    ),
 ];
 
 /// Files whose loops were converted onto a Pacer or to event-driven waits
