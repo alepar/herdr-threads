@@ -4636,3 +4636,298 @@ fn attach_host_is_idempotent_and_stamps_last_attached_at() {
         .unwrap();
     assert_eq!(next, first + 1);
 }
+
+// Journal-core guards (ht-5fr.3.4): raw-SQL fixtures valid under every CHECK.
+const PEER_NODE: &str = "0123456789abcdef0123456789abcdef";
+
+fn hash_blob(byte: u8) -> Vec<u8> {
+    vec![byte; 32]
+}
+
+/// A fresh store with one self log (`log_ix` 1) and one peer log (`log_ix` 2).
+fn journal_db() -> Connection {
+    let db = fresh_db();
+    db.execute(
+        "INSERT INTO sync_logs(log_ix,node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) \
+         SELECT 1,id,1,1,zeroblob(32),zeroblob(32),5,zeroblob(32),0 FROM local_node",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO sync_logs(log_ix,node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) \
+         VALUES (2,?1,1,0,zeroblob(32),zeroblob(32),5,zeroblob(32),0)",
+        [PEER_NODE],
+    )
+    .unwrap();
+    db
+}
+
+fn insert_journal(
+    db: &Connection,
+    counter: i64,
+    state: &str,
+    applied_seq: Option<i64>,
+    parked_on: Option<&str>,
+) -> rusqlite::Result<usize> {
+    db.execute(
+        "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,ingested_at,apply_state,applied_seq,parked_on) \
+         VALUES (2,?1,?2,?3,10,'k',1,x'',x'00',zeroblob(64),0,?4,?5,?6)",
+        params![counter, hash_blob(1), hash_blob(2), state, applied_seq, parked_on],
+    )
+}
+
+fn abort_message(result: rusqlite::Result<usize>) -> String {
+    result.unwrap_err().to_string()
+}
+
+#[test]
+fn journal_core_objects_verify() {
+    let db = journal_db();
+    schema::verify_baseline(&db).unwrap();
+    insert_journal(&db, 1, "pending", None, None).unwrap();
+    db.execute(
+        "INSERT INTO thread_registers(thread_id,field,value,hlc,node_uuid,src_ingest_seq) VALUES ('t','topic','x',1,?1,1)",
+        [PEER_NODE],
+    )
+    .unwrap();
+    db.execute("UPDATE local_node SET active_log_ix=1", [])
+        .unwrap();
+    let ix: Option<i64> = db
+        .query_row("SELECT active_log_ix FROM local_node", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(ix, Some(1));
+}
+
+#[test]
+fn journal_payload_update_aborts() {
+    let db = journal_db();
+    insert_journal(&db, 1, "pending", None, None).unwrap();
+    let message = abort_message(db.execute("UPDATE journal SET payload=x'01'", []));
+    assert!(message.contains("journal_envelope_immutable"), "{message}");
+    let message = abort_message(db.execute("UPDATE journal SET ingested_at=9", []));
+    assert!(message.contains("journal_envelope_immutable"), "{message}");
+    // The apply bookkeeping columns stay writable while not applied.
+    db.execute(
+        "UPDATE journal SET apply_state='failed', apply_error='e'",
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
+fn journal_delete_aborts() {
+    let db = journal_db();
+    insert_journal(&db, 1, "pending", None, None).unwrap();
+    let message = abort_message(db.execute("DELETE FROM journal", []));
+    assert!(message.contains("journal_append_only"), "{message}");
+}
+
+#[test]
+fn journal_applied_to_pending_aborts() {
+    let db = journal_db();
+    insert_journal(&db, 1, "applied", Some(1), None).unwrap();
+    let message = abort_message(db.execute(
+        "UPDATE journal SET apply_state='pending', applied_seq=NULL",
+        [],
+    ));
+    assert!(message.contains("journal_applied_terminal"), "{message}");
+}
+
+#[test]
+fn sync_logs_contiguous_regression_aborts() {
+    let db = journal_db();
+    let message = abort_message(db.execute(
+        "UPDATE sync_logs SET contiguous_counter=4 WHERE log_ix=2",
+        [],
+    ));
+    assert!(message.contains("sync_logs_monotone"), "{message}");
+    db.execute(
+        "UPDATE sync_logs SET contiguous_counter=6 WHERE log_ix=2",
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
+fn sync_logs_applied_regression_aborts() {
+    let db = journal_db();
+    db.execute("UPDATE sync_logs SET applied_through=3 WHERE log_ix=2", [])
+        .unwrap();
+    let message =
+        abort_message(db.execute("UPDATE sync_logs SET applied_through=2 WHERE log_ix=2", []));
+    assert!(message.contains("sync_logs_monotone"), "{message}");
+}
+
+#[test]
+fn sync_logs_unfreeze_aborts() {
+    let db = journal_db();
+    db.execute(
+        "UPDATE sync_logs SET state='frozen', frozen_at_counter=3 WHERE log_ix=2",
+        [],
+    )
+    .unwrap();
+    let message = abort_message(db.execute(
+        "UPDATE sync_logs SET state='active', frozen_at_counter=NULL WHERE log_ix=2",
+        [],
+    ));
+    assert!(message.contains("sync_logs_monotone"), "{message}");
+}
+
+#[test]
+fn sync_logs_self_flag_mismatch_aborts() {
+    let db = journal_db();
+    // A peer uuid flagged self, and the local uuid flagged not-self.
+    let message = abort_message(db.execute(
+        "INSERT INTO sync_logs(log_ix,node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) \
+         VALUES (3,?1,2,1,zeroblob(32),zeroblob(32),0,zeroblob(32),0)",
+        [PEER_NODE],
+    ));
+    assert!(message.contains("sync_logs_self_flag"), "{message}");
+    let message = abort_message(db.execute(
+        "INSERT INTO sync_logs(log_ix,node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) \
+         SELECT 3,id,2,0,zeroblob(32),zeroblob(32),0,zeroblob(32),0 FROM local_node",
+        [],
+    ));
+    assert!(message.contains("sync_logs_self_flag"), "{message}");
+}
+
+#[test]
+fn sync_logs_identity_update_aborts() {
+    let db = journal_db();
+    for assignment in [
+        "incarnation=2",
+        "is_self=1",
+        "pubkey=zeroblob(32)",
+        "genesis_hash=zeroblob(32)",
+        "node_uuid='fedcba9876543210fedcba9876543210'",
+    ] {
+        let message = abort_message(db.execute(
+            &format!("UPDATE sync_logs SET {assignment} WHERE log_ix=2"),
+            [],
+        ));
+        assert!(
+            message.contains("sync_logs_identity_immutable"),
+            "{assignment}: {message}"
+        );
+    }
+    let message = abort_message(db.execute("DELETE FROM sync_logs WHERE log_ix=2", []));
+    assert!(message.contains("sync_logs_append_only"), "{message}");
+}
+
+#[test]
+fn thread_registers_regression_aborts() {
+    let db = journal_db();
+    insert_journal(&db, 1, "pending", None, None).unwrap();
+    db.execute(
+        "INSERT INTO thread_registers(thread_id,field,value,hlc,node_uuid,src_ingest_seq) VALUES ('t','topic','x',5,?1,1)",
+        [PEER_NODE],
+    )
+    .unwrap();
+    // Equal and lower stamps both lose; a higher node_uuid at equal hlc wins.
+    for (hlc, node) in [
+        (5, PEER_NODE),
+        (4, "ffffffffffffffffffffffffffffffff"),
+        (5, "00000000000000000000000000000000"),
+    ] {
+        let message = abort_message(db.execute(
+            "UPDATE thread_registers SET value='y', hlc=?1, node_uuid=?2",
+            params![hlc, node],
+        ));
+        assert!(
+            message.contains("thread_registers_lww"),
+            "{hlc} {node}: {message}"
+        );
+    }
+    db.execute(
+        "UPDATE thread_registers SET value='y', hlc=5, node_uuid='ffffffffffffffffffffffffffffffff'",
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
+fn thread_registers_delete_aborts() {
+    let db = journal_db();
+    insert_journal(&db, 1, "pending", None, None).unwrap();
+    db.execute(
+        "INSERT INTO thread_registers(thread_id,field,value,hlc,node_uuid,src_ingest_seq) VALUES ('t','name','x',5,?1,1)",
+        [PEER_NODE],
+    )
+    .unwrap();
+    let message = abort_message(db.execute("DELETE FROM thread_registers", []));
+    assert!(
+        message.contains("thread_registers_append_only"),
+        "{message}"
+    );
+}
+
+fn insert_forked(db: &Connection) {
+    db.execute(
+        "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,source_node,received_at) \
+         VALUES (2,3,zeroblob(32),zeroblob(32),1,'k',1,x'',x'00',zeroblob(64),NULL,0)",
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
+fn journal_forked_update_aborts() {
+    let db = journal_db();
+    insert_forked(&db);
+    for assignment in ["payload=x'01'", "received_at=9", "source_node=NULL"] {
+        let message =
+            abort_message(db.execute(&format!("UPDATE journal_forked SET {assignment}"), []));
+        assert!(
+            message.contains("journal_forked_immutable"),
+            "{assignment}: {message}"
+        );
+    }
+}
+
+#[test]
+fn journal_forked_delete_aborts() {
+    let db = journal_db();
+    insert_forked(&db);
+    let message = abort_message(db.execute("DELETE FROM journal_forked", []));
+    assert!(message.contains("journal_forked_append_only"), "{message}");
+}
+
+#[test]
+fn bad_node_uuid_refused() {
+    let db = journal_db();
+    for bad in [
+        "short",
+        "0123456789ABCDEF0123456789abcdef",
+        "0123456789abcdef0123456789abcdeg",
+    ] {
+        let result = db.execute(
+            "INSERT INTO sync_logs(log_ix,node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) \
+             VALUES (9,?1,1,0,zeroblob(32),zeroblob(32),0,zeroblob(32),0)",
+            [bad],
+        );
+        let message = abort_message(result);
+        assert!(
+            message.contains("CHECK constraint failed"),
+            "{bad}: {message}"
+        );
+    }
+}
+
+#[test]
+fn applied_without_applied_seq_refused() {
+    let db = journal_db();
+    let message = abort_message(insert_journal(&db, 1, "applied", None, None));
+    assert!(message.contains("CHECK constraint failed"), "{message}");
+    let message = abort_message(insert_journal(&db, 2, "pending", Some(7), None));
+    assert!(message.contains("CHECK constraint failed"), "{message}");
+}
+
+#[test]
+fn parked_dep_without_parked_on_refused() {
+    let db = journal_db();
+    let message = abort_message(insert_journal(&db, 1, "parked_dep", None, None));
+    assert!(message.contains("CHECK constraint failed"), "{message}");
+    let message = abort_message(insert_journal(&db, 2, "pending", None, Some("k")));
+    assert!(message.contains("CHECK constraint failed"), "{message}");
+    insert_journal(&db, 3, "parked_dep", None, Some("k")).unwrap();
+}

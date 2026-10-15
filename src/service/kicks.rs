@@ -184,6 +184,12 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "herdr_hosts",
     "local_node",
     "node_directory",
+    // Journal core (ht-5fr.3.4): ht-5fr.3.12 maps `journal` to Lane::Apply and
+    // ht-5fr.5 re-maps `sync_logs`/`journal` for Lane::Sync.
+    "journal",
+    "journal_forked",
+    "sync_logs",
+    "thread_registers",
     // Passive inbox progress never schedules attention or deadlines.
     "lazy_recipients",
     "membership_intervals",
