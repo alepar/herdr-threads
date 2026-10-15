@@ -999,6 +999,14 @@ impl Actor {
                     self.deps.clock.clone(),
                     self.link_cancel.clone(),
                 );
+                (self.deps.log)(&format!(
+                    "sync: link up {} ({})",
+                    uuid8(&node),
+                    match &origin {
+                        Origin::Inbound => "inbound",
+                        Origin::Dialed { .. } => "dialed",
+                    }
+                ));
                 if let Origin::Dialed { report, .. } = &origin {
                     let _ = report.try_send(DialReport::Established { node_uuid: node });
                 }
@@ -1752,6 +1760,12 @@ impl Actor {
             return;
         };
         let node = entry.handle.peer().node;
+        (self.deps.log)(&format!(
+            "sync: link down {} after {} s: {}",
+            uuid8(&node),
+            up_for.as_secs(),
+            why
+        ));
         self.probes.remove(&link_id);
         let was_ranked = self.by_node.get_mut(&node).is_some_and(|ids| {
             let before = ids.len();

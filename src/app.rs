@@ -1438,6 +1438,16 @@ struct ComposedSessions {
     _links: Vec<crate::protocol::time::CancelSubscription>,
 }
 
+/// The running coordinator: its facade (idle exit and the deadline lane's
+/// `signals()` reach it here) and the actor task the stop path awaits.
+struct ComposedSync {
+    handle: crate::sync::coordinator::SyncHandle,
+    join: tokio::task::JoinHandle<()>,
+}
+
+/// How long shutdown waits for the coordinator to close its links.
+const SYNC_STOP_BOUND: Duration = Duration::from_secs(3);
+
 #[allow(clippy::too_many_arguments)]
 async fn run_elected_impl<R>(
     paths: &NodePaths,
@@ -1491,6 +1501,7 @@ where
     let factory_retention_status = Arc::new(WorkerStatus::default());
     let factory_apply_status = Arc::new(WorkerStatus::default());
     let factory_archival_status = Arc::new(WorkerStatus::default());
+    let factory_sync_status = Arc::new(WorkerStatus::default());
     let admission_status = Arc::new(WorkerStatus::default());
     let factory_admission_status = Arc::clone(&admission_status);
     // One rate-limited logger for the daemon; every lane's status reports to it.
@@ -1512,6 +1523,12 @@ where
     }
     // Filled by the factory; the stop path takes it to stop every session.
     let sessions_slot: Arc<Mutex<Option<ComposedSessions>>> = Arc::new(Mutex::new(None));
+    // The sync coordinator: filled by the factory, awaited by the stop path.
+    // The intake and gauge reach the accept loop through `peers`.
+    let sync_slot: Arc<Mutex<Option<ComposedSync>>> = Arc::new(Mutex::new(None));
+    let factory_sync_slot = Arc::clone(&sync_slot);
+    let peers = crate::daemon::transport::PeerWiring::default();
+    let factory_peers = peers.clone();
     let factory_sessions = Arc::clone(&sessions_slot);
     // Hook payloads the optimistic recipes could not parse: counted for
     // Health and logged through the same rate-limited logger.
@@ -1527,6 +1544,7 @@ where
         &factory_archival_status,
         &admission_status,
         &factory_apply_status,
+        &factory_sync_status,
     ] {
         status.set_error_log(Arc::clone(&lane_log));
     }
@@ -1540,6 +1558,7 @@ where
     run_elected_late_host(
         paths,
         primary_host,
+        peers,
         clock,
         shutdown,
         move |instance, boot, cancellation| {
@@ -1601,6 +1620,26 @@ where
                         error.code, error.detail
                     ))
                 })?;
+                // Once per start: a local upgrade resets targets stopped by
+                // an older version (a foreground writer turn).
+                {
+                    let sync_error = |error: crate::protocol::results::ApiError| {
+                        io::Error::other(format!(
+                            "store startup: sync dial targets: {:?}: {}",
+                            error.code, error.detail
+                        ))
+                    };
+                    let tx = conn
+                        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                        .map_err(|error| io::Error::other(format!("store startup: {error}")))?;
+                    crate::store::sync_dial_targets::clear_stale_stops(
+                        &tx,
+                        env!("CARGO_PKG_VERSION"),
+                    )
+                    .map_err(sync_error)?;
+                    tx.commit()
+                        .map_err(|error| io::Error::other(format!("store startup: {error}")))?;
+                }
                 // A crash between a retag's commit and its node.json
                 // regeneration left the identity behind the committed tag.
                 let budget = crate::protocol::time::CallBudget {
@@ -1632,6 +1671,9 @@ where
             // One registry per elected daemon: the store's commit hooks kick
             // through it and every lane registers its Pacer here at start.
             let kicks = Arc::new(CommitKicks::default());
+            // The one background-turn admission: the store's sync-table writes
+            // wait on it like every other lane's.
+            let writer = Arc::new(FairWriter::new(32));
             let sqlite = Arc::new(
                 SqliteStore::new(context, instance.to_string(), config.store_settings(boot))
                     .map_err(|error| {
@@ -1640,13 +1682,16 @@ where
                             error.code, error.detail
                         ))
                     })?
-                    .with_commit_kicks(Arc::clone(&kicks)),
+                    .with_commit_kicks(Arc::clone(&kicks))
+                    .with_sync_admission(Arc::clone(&writer)),
             );
             factory_probe.attach_store(&sqlite);
             let remembered_store = Arc::clone(&sqlite);
             let bootstrap_store = sqlite.clone();
             let apply_store = sqlite.clone();
             let apply_identity = Arc::clone(&identity);
+            let sync_identity = Arc::clone(&identity);
+            let sync_store = sqlite.clone();
             let apply_node_json = identity_paths.node_json_path.clone();
             let store: Arc<dyn StorePort> = sqlite;
             // The manifest policy, logged after election (stderr is the daemon
@@ -1675,7 +1720,6 @@ where
                     crate::daemon::health::binding_evidence_line(report)
                 );
             }
-            let writer = Arc::new(FairWriter::new(32));
             // The admission observer fills this slot; the wake lane reads poke
             // capabilities from the versions it observed.
             let harnesses = Arc::new(Mutex::new(HarnessObservations::default()));
@@ -1894,6 +1938,52 @@ where
                 Arc::clone(&writer),
                 Arc::clone(&factory_apply_status),
             )?)?;
+            // The sync runtime (peer-link spec §15): after the journal, the
+            // host sessions and the Apply lane, before the listener serves.
+            // The coordinator builds its Dialer; the intake goes to the
+            // accept loop through the wiring.
+            let sync_pacer = register_lane(Lane::Sync);
+            factory_sync_status.attach_pacer(Arc::clone(&sync_pacer));
+            let sync_log: crate::sync::coordinator::LogFn = {
+                let log = Arc::clone(&rate_limited_log);
+                Arc::new(move |line: &str| log.write_line(line))
+            };
+            let own_history = Arc::clone(
+                sync_store
+                    .context()
+                    .sync()
+                    .map_err(|error| {
+                        io::Error::other(format!("store startup: sync state: {}", error.detail))
+                    })?
+                    .own_history_hold(),
+            );
+            let (sync_handle, peer_intake, sync_join) = crate::sync::coordinator::SyncCoordinator::start(
+                crate::sync::coordinator::CoordinatorDeps {
+                    journal: sync_store.clone(),
+                    sync_store,
+                    identity: sync_identity,
+                    boot,
+                    writer: Arc::clone(&writer),
+                    clock: Arc::clone(&factory_clock),
+                    pacer: sync_pacer,
+                    status: Arc::clone(&factory_sync_status),
+                    log: sync_log.clone(),
+                    fork_sink: Arc::new(crate::sync::coordinator::LogOnlyForkSink::new(
+                        sync_log,
+                        Arc::clone(&factory_clock),
+                    )),
+                    own_history,
+                    dial: crate::sync::dialer::DialConfig::from(&config),
+                    cancel: factory_stop.clone(),
+                },
+            );
+            factory_peers.set_intake(peer_intake);
+            *factory_sync_slot
+                .lock()
+                .map_err(|_| io::Error::other("sync slot poisoned"))? = Some(ComposedSync {
+                handle: sync_handle,
+                join: sync_join,
+            });
             // The harness version manifest: cache, embedded fallback and the
             // detached fetch policy. One log line per fetch outcome (at most
             // one fetch per harness per day, so no extra rate limit).
@@ -2005,6 +2095,7 @@ where
                 factory_admission_status.clone(),
                 factory_archival_status.clone(),
                 factory_apply_status.clone(),
+                factory_sync_status.clone(),
             ];
             factory_probe.attach_registry(&kicks, lane_statuses.clone());
             let health_store = Arc::clone(&store);
@@ -2136,6 +2227,24 @@ where
         on_ready,
         move || async move {
             worker_stop.cancel();
+            // The coordinator closes its links (1 s), cancels its dial tasks
+            // and flushes contacts on the cancel; a task still running at the
+            // bound is aborted and logged.
+            let sync = sync_slot
+                .lock()
+                .map_err(|_| io::Error::other("sync slot poisoned"))?
+                .take();
+            if let Some(ComposedSync { handle, mut join }) = sync {
+                drop(handle);
+                if tokio::time::timeout(SYNC_STOP_BOUND, &mut join).await.is_err() {
+                    join.abort();
+                    let _ = join.await;
+                    eprintln!(
+                        "sync: coordinator still running after {} s; aborted",
+                        SYNC_STOP_BOUND.as_secs()
+                    );
+                }
+            }
             let sessions = sessions_slot
                 .lock()
                 .map_err(|_| io::Error::other("host sessions slot poisoned"))?

@@ -683,6 +683,7 @@ where
     run_owner_late_host(
         paths,
         PrimaryHost::new(primary_host),
+        transport::PeerWiring::default(),
         clock,
         shutdown,
         sink,
@@ -696,12 +697,14 @@ where
 
 /// [`run_owner_attached`] whose `primary_host` is filled by `make_service`
 /// (the elected daemon attaches its Herdr server after its store opens) and
-/// read when the descriptor is published.
-// Allowed: run_owner_attached's inputs with a shared primary-host slot.
+/// read when the descriptor is published. `peers` is the sync runtime's seam:
+/// `make_service` fills its intake and the accept loop serves with it.
+// Allowed: run_owner_attached's inputs with a shared primary-host slot and peer wiring.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_owner_late_host<S, F, R, D, Fut>(
     paths: &NodePaths,
     primary_host: PrimaryHost,
+    peers: transport::PeerWiring,
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
     sink: S,
@@ -773,13 +776,16 @@ where
                 let listener = bound.take().expect("bound listener").into_async();
                 match listener {
                     Ok(listener) => {
-                        let serve_result = transport::serve(
+                        let serve_result = transport::serve_with_gate(
                             listener,
                             descriptor.node_uuid,
                             handler.clone(),
                             clock,
                             effective_uid(),
                             shutdown,
+                            Arc::new(crate::service::live_gate::LiveServiceGate::new()),
+                            peers.intake(),
+                            peers.gauge(),
                         )
                         .await;
                         match serve_result {

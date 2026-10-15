@@ -74,6 +74,37 @@ impl ConnectionGauge {
     }
 }
 
+/// The sync runtime's seam into the accept loop: the elected daemon's service
+/// factory fills the peer intake (the coordinator starts there, after the
+/// listener is bound) and the owner lifecycle reads it when it starts serving.
+/// The gauge is created with the wiring so idle exit can read the same count
+/// the accept loop writes.
+#[derive(Clone, Default)]
+pub struct PeerWiring {
+    intake: Arc<std::sync::Mutex<Option<PeerIntake>>>,
+    gauge: ConnectionGauge,
+}
+
+impl PeerWiring {
+    /// Publish the coordinator's intake (once, at composition).
+    pub fn set_intake(&self, intake: PeerIntake) {
+        *self.intake.lock().unwrap_or_else(|e| e.into_inner()) = Some(intake);
+    }
+
+    /// The intake, `None` until composition (and for daemons without sync).
+    pub fn intake(&self) -> Option<PeerIntake> {
+        self.intake
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// The connection gauge the accept loop counts into.
+    pub fn gauge(&self) -> ConnectionGauge {
+        self.gauge.clone()
+    }
+}
+
 /// Decrements its [`ConnectionGauge`] when dropped (or earlier via `release`).
 #[derive(Debug)]
 pub struct GaugeGuard(Option<Arc<AtomicUsize>>);

@@ -397,10 +397,14 @@ where
 
 /// [`run_elected_attached`] whose `primary_host` is filled by `make_service`
 /// once the daemon has attached (or not) a Herdr server, and read when the
-/// descriptor is published.
+/// descriptor is published. `peers` carries the sync coordinator's intake from
+/// `make_service` to the accept loop.
+// Allowed: run_elected_attached's inputs with a shared primary-host slot and peer wiring.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_elected_late_host<F, R, D, Fut>(
     paths: &NodePaths,
     primary_host: PrimaryHost,
+    peers: transport::PeerWiring,
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
     make_service: F,
@@ -416,6 +420,7 @@ where
     run_owner_late_host(
         paths,
         primary_host,
+        peers,
         clock,
         shutdown,
         ChildOwnedLogSink::new(paths),

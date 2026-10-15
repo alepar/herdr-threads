@@ -1,10 +1,14 @@
 //! ht-5fr.5.9: `herdr-threads peer --stdio`, the stateless ssh-side pump,
 //! against a real store-only daemon it starts itself. Each test runs the
 //! installed executable under an isolated state root and stops its daemon.
+use herdr_threads::node::NodeIdentity;
+use herdr_threads::sync::frame::Role;
+use herdr_threads::sync::link::{LocalHello, handshake, read_preamble as await_preamble};
 use herdr_threads::test_support::{
     isolation::TestIsolation,
     spawn::{OwnedChild, SpawnOwned},
 };
+use std::sync::Arc;
 use std::{
     fs,
     io::Read,
@@ -135,4 +139,95 @@ fn no_daemon_startable_exits_3_no_stdout() {
         "{stderr}"
     );
     assert_eq!(stderr.trim_end().lines().count(), 1, "{stderr}");
+}
+
+/// The uuid of the key the daemon under `state` runs with.
+fn daemon_node(state: &Path) -> herdr_threads::node::NodeUuid {
+    let seed: [u8; 32] = fs::read(state.join("node").join("node.key"))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    NodeIdentity::from_seed(seed).uuid()
+}
+
+/// Runs a dialer-role handshake over the pump's stdio with a test identity and
+/// returns the peer it met; the link is dropped (stdin EOF) before it returns.
+fn dial_through(child: &mut OwnedChild) -> herdr_threads::sync::link::PeerInfo {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _guard = runtime.enter();
+    let stdout = tokio::process::ChildStdout::from_std(child.stdout.take().unwrap()).unwrap();
+    let stdin = tokio::process::ChildStdin::from_std(child.stdin.take().unwrap()).unwrap();
+    runtime.block_on(async {
+        let mut io = tokio::io::join(stdout, stdin);
+        let deadline = tokio::time::Instant::now() + WAIT;
+        let noise = await_preamble(&mut io, deadline).await.unwrap();
+        assert_eq!(noise, 0, "nothing precedes the preamble");
+        let me = LocalHello::new(
+            Arc::new(NodeIdentity::from_seed([7; 32])),
+            uuid::Uuid::new_v4(),
+        );
+        let established = handshake(io, &me, Role::Dialer, None, deadline)
+            .await
+            .unwrap();
+        established.peer
+    })
+}
+
+fn daemon_log(state: &Path) -> String {
+    fs::read_to_string(state.join("node").join("daemon.log")).unwrap_or_default()
+}
+
+fn wait_for_log(state: &Path, needle: &str) -> String {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let log = daemon_log(state);
+        if log.contains(needle) {
+            return log;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon log never said {needle:?}:\n{log}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn dialer_role_link_over_pump_completes_handshake() {
+    let iso = TestIsolation::new("peer-stdio-handshake");
+    let state = iso.path("state");
+    let _stop = StopDaemon(&iso, &state);
+    let mut child = pump(&iso, &state);
+    let peer = dial_through(&mut child);
+    assert_eq!(
+        peer.role,
+        Role::Dialed,
+        "the daemon answers as the dialed side"
+    );
+    assert_eq!(peer.node, daemon_node(&state));
+    wait_for_log(&state, "sync: link up ");
+}
+
+#[test]
+fn stdin_eof_logs_link_down() {
+    let iso = TestIsolation::new("peer-stdio-link-down");
+    let state = iso.path("state");
+    let _stop = StopDaemon(&iso, &state);
+    let mut child = pump(&iso, &state);
+    // `dial_through` drops the pump's stdin when it returns: the pump shuts
+    // the socket's write side and the daemon's link ends.
+    let peer = dial_through(&mut child);
+    let node = peer.node.to_string();
+    let log = wait_for_log(&state, "sync: link down ");
+    // The link is the test identity's, not the daemon's own.
+    let ours = NodeIdentity::from_seed([7; 32]).uuid().to_string();
+    assert!(
+        log.contains(&format!("sync: link up {}", &ours[..8])),
+        "{log}"
+    );
+    assert_ne!(node, ours);
+    assert_eq!(wait_exit(&mut child).code(), Some(0));
 }
