@@ -45,7 +45,7 @@ use crate::sync::envelope::{
 };
 use crate::sync::facts::{FactKind, FactRegistry, GenesisPayload, NodeGenesis};
 use crate::sync::hlc::{Fold, Hlc, HlcStamp};
-use crate::sync::journal_port::{ForkEvidence, IngestOutcome};
+use crate::sync::journal_port::{ApplyProgress, ForkEvidence, IngestOutcome};
 use crate::sync::{BatchLimits, EntityKey, LogHead, LogKey, LogState, Vector};
 
 /// Longest genesis `host_label`, in bytes.
@@ -548,6 +548,52 @@ fn author_with<K: FactKind>(
             format!("fact payload encode: {e}"),
         )
     })?;
+    let mut needs = K::needs(payload);
+    needs.sort();
+    needs.dedup();
+    author_encoded(
+        tx,
+        sync,
+        decision,
+        (K::NAME, K::MAJOR),
+        bytes,
+        K::creates(payload),
+        needs,
+        floor,
+    )
+}
+
+/// Authors a follow-up a handler queued: the same path as [`author`], over the
+/// kind, payload bytes, `creates` and `needs` captured when it was queued.
+pub(crate) fn author_queued(
+    tx: &Transaction<'_>,
+    sync: &SyncState,
+    decision: DecisionInstant,
+    fact: &apply::QueuedFact,
+) -> Result<Authored, ApiError> {
+    author_encoded(
+        tx,
+        sync,
+        decision,
+        (fact.kind, fact.major),
+        fact.payload.clone(),
+        fact.creates.clone(),
+        fact.needs.clone(),
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn author_encoded(
+    tx: &Transaction<'_>,
+    sync: &SyncState,
+    decision: DecisionInstant,
+    (kind, major): (&str, u32),
+    bytes: Vec<u8>,
+    creates: Option<EntityKey>,
+    needs: Vec<EntityKey>,
+    floor: Option<HlcStamp>,
+) -> Result<Authored, ApiError> {
     if bytes.len() > PAYLOAD_MAX {
         return Err(api_error(
             ErrorCode::InvalidRequest,
@@ -571,24 +617,21 @@ fn author_with<K: FactKind>(
         &active.key,
     )
     .map_err(|e| api_error(ErrorCode::InvalidRequest, format!("fact deps: {e}")))?;
-    let mut needs = K::needs(payload);
-    needs.sort();
-    needs.dedup();
     let unsigned = UnsignedEnvelope {
         log: active.key,
         counter,
         prev_hash: active.head_hash,
         hlc,
-        kind: K::NAME.to_owned(),
-        kind_version: K::MAJOR,
+        kind: kind.to_owned(),
+        kind_version: major,
         deps,
-        creates: K::creates(payload),
+        creates,
         needs,
         payload: bytes,
     };
     unsigned
         .validate_shape()
-        .map_err(|e| api_error(ErrorCode::InvalidRequest, format!("fact {}: {e}", K::NAME)))?;
+        .map_err(|e| api_error(ErrorCode::InvalidRequest, format!("fact {kind}: {e}")))?;
     let envelope = unsigned.seal(&sync.identity);
     let ingest_seq = insert_pending(tx, active.log_ix, &envelope, decision)?;
     tx.execute(
@@ -1292,6 +1335,62 @@ pub fn freeze(tx: &Transaction<'_>, log: &LogKey, at: u64) -> Result<FreezeOutco
     )
     .map_err(store_error)?;
     Ok(outcome)
+}
+
+/// The sync layer's view of the store: reads on query connections, writes on
+/// the serialized writer. Callers hold a `FairWriter` background turn for
+/// `ingest` and `apply_pending`.
+impl crate::sync::journal_port::JournalPort for crate::store::SqliteStore {
+    fn vector(&self, budget: &CallBudget) -> Result<Vector, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        vector(&db)
+    }
+
+    fn stored_hash(
+        &self,
+        log: &LogKey,
+        counter: u64,
+        budget: &CallBudget,
+    ) -> Result<Option<[u8; 32]>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        stored_hash(&db, log, counter)
+    }
+
+    fn serve(
+        &self,
+        log: &LogKey,
+        from: u64,
+        limits: BatchLimits,
+        budget: &CallBudget,
+    ) -> Result<Vec<Envelope>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        serve(&db, log, from, limits)
+    }
+
+    /// `ingest` opens its own `BEGIN IMMEDIATE` (it keeps a valid prefix on a
+    /// stop), so it runs on the writer turn directly rather than inside
+    /// `execute_budgeted_decision`.
+    fn ingest(
+        &self,
+        log: &LogKey,
+        entries: Vec<Envelope>,
+        budget: &CallBudget,
+    ) -> Result<IngestOutcome, ApiError> {
+        let mut writer = self.writer(budget)?;
+        ingest(&self.context, &mut writer, log, entries, budget)
+    }
+
+    fn apply_pending(&self, budget: &CallBudget) -> Result<ApplyProgress, ApiError> {
+        let mut writer = self.writer(budget)?;
+        self.context.execute_budgeted_decision(
+            &mut writer,
+            budget,
+            |_| Ok(()),
+            |tx, decision, ()| {
+                apply::apply_pass(tx, &self.context, decision, apply::ApplyLimits::default())
+            },
+        )
+    }
 }
 
 #[cfg(test)]
