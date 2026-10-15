@@ -26,7 +26,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
@@ -326,6 +326,8 @@ pub fn open(
         branch_walk_bound: AtomicU64::new(BRANCH_WALK_MAX_STEPS),
         incarnation_rng: std::sync::Mutex::new(ctx.new_incarnation_rng()),
         skew_logged: std::sync::Mutex::default(),
+        // The first Apply pass after start replays and drains regardless.
+        apply_hint: AtomicBool::new(true),
     };
     let active: Option<i64> = tx
         .query_row("SELECT active_log_ix FROM local_node", [], |r| r.get(0))
@@ -1391,6 +1393,11 @@ fn ingest_batch(
         LogRow::head,
     );
     tx.commit().map_err(store_error)?;
+    if stored > 0 {
+        // After the commit, before the writer turn drops and kicks the Apply
+        // lane, so the kicked pass sees it.
+        sync.set_apply_hint();
+    }
     if let Some(ahead_ms) = max_ahead {
         log_skew(sync, log, ahead_ms, wall);
     }
@@ -1623,6 +1630,58 @@ impl crate::sync::journal_port::JournalPort for crate::store::SqliteStore {
                 apply::apply_pass(tx, &self.context, decision, apply::ApplyLimits::default())
             },
         )
+    }
+}
+
+/// What the Apply lane worker needs beyond [`JournalPort`](crate::sync::journal_port::JournalPort):
+/// the startup replay, the apply hint and a passive WAL checkpoint. The worker
+/// holds the concrete store, not the sync seam. Callers hold a `FairWriter`
+/// background turn for `replay_startup` and `checkpoint_passive`.
+impl crate::store::SqliteStore {
+    /// One bounded `ReplayScope::Startup` pass: `parked_unknown` entries the
+    /// registry now knows and `parked_dep` entries whose creator applied.
+    pub fn replay_startup(&self, budget: &CallBudget) -> Result<ApplyProgress, ApiError> {
+        let mut writer = self.writer(budget)?;
+        self.context.execute_budgeted_decision(
+            &mut writer,
+            budget,
+            |_| Ok(()),
+            |tx, decision, ()| {
+                apply::replay(
+                    tx,
+                    &self.context,
+                    decision,
+                    apply::ReplayScope::Startup,
+                    apply::ApplyLimits::default(),
+                )
+            },
+        )
+    }
+
+    /// Clears the apply hint and returns whether it was set (`false` before
+    /// the journal opens).
+    pub fn take_apply_hint(&self) -> bool {
+        self.context.sync().is_ok_and(|sync| sync.take_apply_hint())
+    }
+
+    /// Marks entries as possibly waiting to apply.
+    pub fn set_apply_hint(&self) {
+        if let Ok(sync) = self.context.sync() {
+            sync.set_apply_hint();
+        }
+    }
+
+    /// `PRAGMA wal_checkpoint(PASSIVE)` on the writer connection: copies WAL
+    /// frames into the database without blocking readers or the writer.
+    pub fn checkpoint_passive(&self, budget: &CallBudget) -> Result<(), ApiError> {
+        let writer = self.writer(budget)?;
+        writer
+            .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))
+            .map_err(store_error)?;
+        #[cfg(any(test, feature = "test-support"))]
+        self.checkpoints
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
     }
 }
 

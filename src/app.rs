@@ -25,9 +25,9 @@ use crate::{
         mod_channels::ModChannelRegistry,
         pacer::Pacer,
         workers::{
-            WorkerStatus, admission_handle, start_admission_observer, start_deadline_worker,
-            start_mod_channel_worker, start_observation_worker, start_retention_worker,
-            start_wake_worker_with_liveness,
+            ApplyPostCommit, WorkerStatus, admission_handle, start_admission_observer,
+            start_apply_worker, start_deadline_worker, start_mod_channel_worker,
+            start_observation_worker, start_retention_worker, start_wake_worker_with_liveness,
         },
     },
     store::{SqliteStore, connection::StoreContext},
@@ -655,6 +655,23 @@ pub(crate) fn start_retention_lane(
     let pacer = Arc::new(Pacer::new(Lane::Retention.name(), clock, stop.clone()));
     kicks.register(Lane::Retention, Arc::clone(&pacer));
     start_retention_worker(store, writer, pacer, stop, status)
+}
+
+/// Starts the Apply lane as the elected factory does: its Pacer is registered
+/// with the commit-kick registry (`journal` commits kick it) and attached to
+/// `status` so Health shows its backoff.
+pub(crate) fn start_apply_lane(
+    kicks: &CommitKicks,
+    clock: Arc<dyn Clock>,
+    stop: Cancellation,
+    store: Arc<SqliteStore>,
+    post_commit: ApplyPostCommit,
+    writer: Arc<FairWriter>,
+    status: Arc<WorkerStatus>,
+) -> io::Result<std::thread::JoinHandle<()>> {
+    let pacer = Arc::new(Pacer::new(Lane::Apply.name(), clock, stop.clone()));
+    kicks.register(Lane::Apply, Arc::clone(&pacer));
+    start_apply_worker(store, post_commit, writer, pacer, stop, status)
 }
 
 /// Test-only view of one elected daemon's lanes: the store's per-origin commit
@@ -1529,6 +1546,7 @@ where
     let wake_status = Arc::new(WorkerStatus::default());
     let factory_wake_status = Arc::clone(&wake_status);
     let factory_retention_status = Arc::new(WorkerStatus::default());
+    let factory_apply_status = Arc::new(WorkerStatus::default());
     let factory_archival_status = Arc::new(WorkerStatus::default());
     let admission_status = Arc::new(WorkerStatus::default());
     let factory_admission_status = Arc::clone(&admission_status);
@@ -1548,6 +1566,7 @@ where
         &factory_retention_status,
         &factory_archival_status,
         &admission_status,
+        &factory_apply_status,
     ] {
         status.set_error_log(Arc::clone(&lane_log));
     }
@@ -1680,6 +1699,9 @@ where
             );
             factory_probe.attach_store(&sqlite);
             let bootstrap_store = sqlite.clone();
+            let apply_store = sqlite.clone();
+            let apply_identity = Arc::clone(&identity);
+            let apply_node_json = identity_paths.node_json_path.clone();
             let store: Arc<dyn StorePort> = sqlite;
             // The manifest policy, logged after election (stderr is the daemon
             // log from here on).
@@ -1885,6 +1907,42 @@ where
                 Arc::clone(&writer),
                 Arc::clone(&factory_retention_status),
             )?);
+            // The Apply lane applies ingested journal entries. Its post-commit
+            // hook brings the identity cache and node.json up to a tag the
+            // pass moved (the node kinds own the effect).
+            let post_commit: ApplyPostCommit = {
+                let store = Arc::clone(&apply_store);
+                let identity = Arc::clone(&apply_identity);
+                let node_json = apply_node_json.clone();
+                let clock = Arc::clone(&factory_clock);
+                let log = Arc::clone(&rate_limited_log);
+                Box::new(move |progress| {
+                    if progress.self_tag_k.is_none() {
+                        return;
+                    }
+                    let budget = CallBudget {
+                        deadline: MonoInstant(clock.monotonic_now().0.saturating_add(5_000)),
+                        cancellation: Cancellation::default(),
+                    };
+                    if let Err(error) = crate::sync::facts::publish_committed_tag(
+                        store.context(),
+                        &identity,
+                        &node_json,
+                        &budget,
+                    ) {
+                        log.write_line(&format!("apply: publish committed tag: {error}"));
+                    }
+                })
+            };
+            workers.push(start_apply_lane(
+                &kicks,
+                Arc::clone(&factory_clock),
+                factory_stop.clone(),
+                apply_store,
+                post_commit,
+                Arc::clone(&writer),
+                Arc::clone(&factory_apply_status),
+            )?);
             // The harness version manifest: cache, embedded fallback and the
             // detached fetch policy. One log line per fetch outcome (at most
             // one fetch per harness per day, so no extra rate limit).
@@ -1999,8 +2057,7 @@ where
                 factory_retention_status.clone(),
                 factory_admission_status.clone(),
                 factory_archival_status.clone(),
-                // Apply has no worker yet (ht-5fr.3.15 registers it).
-                Arc::new(WorkerStatus::default()),
+                factory_apply_status.clone(),
             ];
             factory_probe.attach_registry(&kicks, lane_statuses.clone());
             let health_store = Arc::clone(&store);

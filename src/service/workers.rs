@@ -16,6 +16,7 @@ use crate::service::fair_writer::FairWriter;
 use crate::service::host_reachability::HostReachability;
 use crate::service::kicks::{self, Lane};
 use crate::service::pacer::{Pacer, Wake};
+use crate::sync::journal_port::{ApplyProgress, JournalPort};
 use crate::{
     notification::{dispatch::NativeWakeDispatcher, policy::RetryConfig},
     ports::{
@@ -1082,6 +1083,122 @@ pub fn start_retention_worker(
         })
 }
 
+/// Safety tick of the Apply lane. A tick pass runs only when the apply hint is
+/// set, so an idle daemon takes no writer turn on it.
+const APPLY_TICK: Duration = Duration::from_secs(60);
+/// Entries applied since the last checkpoint that make a drained lane run
+/// `PRAGMA wal_checkpoint(PASSIVE)`.
+const APPLY_CHECKPOINT_ENTRIES: usize = 1024;
+
+/// Called by the Apply lane after each committed pass, outside the writer
+/// turn. The daemon builds it around the node kinds' post-commit helper, so
+/// retag effects stay owned by those kinds.
+pub type ApplyPostCommit = Box<dyn Fn(&ApplyProgress) + Send>;
+
+/// The Apply lane (journal-core spec section 13): runs the ApplyEngine over
+/// ingested entries on a `Pacer` kicked by `journal` commits. The first pass
+/// replays (`ReplayScope::Startup`) and drains; later passes run only when the
+/// store's apply hint is set (a sync ingest stored a pending row, or the
+/// previous pass hit its limit), since local authoring applies inline and its
+/// lane kick would find nothing. Each pass takes one background writer turn
+/// with a 5 s budget; `has_more` continues the drain, and a drain that applied
+/// at least [`APPLY_CHECKPOINT_ENTRIES`] entries since the last checkpoint ends
+/// with a passive WAL checkpoint. `post_commit` runs after each committed pass.
+/// A failed pass re-sets the hint, backs off on the Pacer and is reported
+/// through `WorkerStatus::record_failure` (the existing one-line lane format).
+/// It takes the concrete store, not `JournalPort`: that seam serves sync.
+pub fn start_apply_worker(
+    store: Arc<crate::store::SqliteStore>,
+    post_commit: ApplyPostCommit,
+    writer: Arc<FairWriter>,
+    pacer: Arc<Pacer>,
+    cancellation: Cancellation,
+    status: Arc<WorkerStatus>,
+) -> std::io::Result<thread::JoinHandle<()>> {
+    status.attach_pacer(Arc::clone(&pacer));
+    thread::Builder::new()
+        .name("herdr-apply".into())
+        .spawn(move || {
+            // Commits made on this thread are Apply-origin and never kick Apply.
+            let _origin = kicks::enter_lane(Lane::Apply);
+            let _guard = status.lane_guard(&cancellation);
+            let new_budget = || {
+                let clock = StorePort::clock(store.as_ref());
+                CallBudget {
+                    deadline: crate::protocol::time::MonoInstant(
+                        clock.monotonic_now().0.saturating_add(5_000),
+                    ),
+                    cancellation: cancellation.clone(),
+                }
+            };
+            let pass = |replay: bool| -> Result<ApplyProgress, ApiError> {
+                let budget = new_budget();
+                let _turn = writer.enter_background(&budget, StorePort::clock(store.as_ref()))?;
+                if replay {
+                    store.replay_startup(&budget)
+                } else {
+                    store.apply_pending(&budget)
+                }
+            };
+            let checkpoint = || -> Result<(), ApiError> {
+                let budget = new_budget();
+                let _turn = writer.enter_background(&budget, StorePort::clock(store.as_ref()))?;
+                store.checkpoint_passive(&budget)
+            };
+            let mut replayed = false;
+            let mut since_checkpoint = 0usize;
+            while !cancellation.is_cancelled() {
+                // Always taken, so the startup hint does not trigger a second pass.
+                let hinted = store.take_apply_hint();
+                if hinted || !replayed {
+                    let mut drained = true;
+                    while !cancellation.is_cancelled() {
+                        match pass(!replayed) {
+                            Ok(progress) => {
+                                pacer.on_success();
+                                status.record_success(StorePort::clock(store.as_ref()).utc_now());
+                                post_commit(&progress);
+                                since_checkpoint += progress.applied;
+                                if progress.has_more {
+                                    store.set_apply_hint();
+                                } else if !replayed {
+                                    replayed = true;
+                                } else {
+                                    break;
+                                }
+                            }
+                            Err(_) if cancellation.is_cancelled() => break,
+                            Err(error) => {
+                                pacer.on_failure();
+                                status.record_failure(Lane::Apply, &error);
+                                store.set_apply_hint();
+                                drained = false;
+                                break;
+                            }
+                        }
+                    }
+                    if drained
+                        && since_checkpoint >= APPLY_CHECKPOINT_ENTRIES
+                        && !cancellation.is_cancelled()
+                    {
+                        match checkpoint() {
+                            Ok(()) => since_checkpoint = 0,
+                            Err(_) if cancellation.is_cancelled() => break,
+                            Err(error) => {
+                                pacer.on_failure();
+                                status.record_failure(Lane::Apply, &error);
+                            }
+                        }
+                    }
+                }
+                if cancellation.is_cancelled() || pacer.wait_blocking(APPLY_TICK) == Wake::Cancelled
+                {
+                    break;
+                }
+            }
+        })
+}
+
 /// The admission observer's safety tick: a swapped `claude` or `codex` binary
 /// is noticed within a minute, and one pass costs one `--version` run per
 /// harness. Never below 5 s (nested spec D2).
@@ -2096,6 +2213,10 @@ mod tests;
 #[cfg(test)]
 #[path = "../../tests/service/retention_lane.rs"]
 mod retention_lane_tests;
+
+#[cfg(test)]
+#[path = "../../tests/service/apply_lane.rs"]
+mod apply_lane_tests;
 
 #[cfg(test)]
 #[path = "../../tests/service/observation_lane.rs"]

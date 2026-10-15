@@ -28,6 +28,9 @@ pub struct FairWriter {
     queued_limit: usize,
     state: Mutex<WriterState>,
     changed: Condvar,
+    /// Admissions granted so far (test observation).
+    #[cfg(any(test, feature = "test-support"))]
+    turns: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -48,7 +51,15 @@ impl FairWriter {
             queued_limit,
             state: Mutex::new(WriterState::default()),
             changed: Condvar::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            turns: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// Test hook: how many writer turns (either class) were granted.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn turns(&self) -> u64 {
+        self.turns.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn waiting(&self) -> (usize, usize) {
@@ -129,6 +140,8 @@ impl FairWriter {
                     }
                 }
                 state.active = true;
+                #[cfg(any(test, feature = "test-support"))]
+                self.turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 return Ok(WriterGuard { lane: self, class });
             }
             state = self
