@@ -8,7 +8,7 @@ use crate::{
         paths::NodePaths,
         run_elected_late_host,
     },
-    node::{NodeIdentity, NodeJson, NodeKeyError},
+    node::{NodeIdentity, NodeKeyError},
     ports::{HostPort, LocalService, StorePort},
     protocol::{
         authority::Harness,
@@ -1424,26 +1424,7 @@ fn load_node_identity(paths: &NodePaths) -> io::Result<NodeIdentity> {
 /// Writes `node.json` from the identity's current tag and `tag_k`, keeping the
 /// recorded `created_at` of an earlier hint for the same node.
 fn publish_node_json(paths: &NodePaths, identity: &NodeIdentity) -> io::Result<()> {
-    let created_at = crate::node::json::read_hint(&paths.node_json_path)
-        .filter(|hint| hint.node_uuid == identity.uuid())
-        .map_or_else(
-            || {
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_or(0, |elapsed| elapsed.as_millis() as i64)
-            },
-            |hint| hint.created_at,
-        );
-    crate::node::json::write_if_differs(
-        &paths.node_json_path,
-        &NodeJson::new(
-            identity.uuid(),
-            identity.tag(),
-            identity.tag_k(),
-            created_at,
-        ),
-    )
-    .map(|_| ())
+    crate::node::json::publish_identity(&paths.node_json_path, identity).map(|_| ())
 }
 
 /// The start check of the node's identity against its store (Daemon start
@@ -1640,6 +1621,23 @@ where
                         "store startup: journal open: {:?}: {}",
                         error.code, error.detail
                     ))
+                })?;
+                // A crash between a retag's commit and its node.json
+                // regeneration left the identity behind the committed tag.
+                let budget = crate::protocol::time::CallBudget {
+                    deadline: crate::protocol::time::MonoInstant(
+                        context.clock().monotonic_now().0.saturating_add(5_000),
+                    ),
+                    cancellation: crate::protocol::time::Cancellation::default(),
+                };
+                crate::sync::facts::publish_committed_tag(
+                    &context,
+                    &identity,
+                    &identity_paths.node_json_path,
+                    &budget,
+                )
+                .map_err(|error| {
+                    io::Error::other(format!("store startup: publish committed tag: {error}"))
                 })?;
                 rate_limited_log.write_line(&format!(
                     "journal open: log {:?} counter {} bootstrapped {} parked_unknown {} parked_dep {} failed {}",

@@ -6,13 +6,14 @@
 //! incarnation it replaces (if any) and a free-text host label. Applying it
 //! records the node in the node directory. It creates and needs nothing.
 //!
-//! The tag-collision check and the adoption of a predecessor freeze belong to
-//! later work (ht-5fr.4, ht-5fr.6); this handler only validates the payload
-//! against the origin and upserts the directory row.
+//! A genesis from another node also runs the tag-collision check
+//! (`node_retag::collision_check`). The adoption of a predecessor freeze
+//! belongs to later work (ht-5fr.6).
 
 use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
 
+use super::node_retag::collision_check;
 use super::{ApplyContext, FactError, FactKind};
 use crate::node::{NodeTag, tag_for};
 use crate::protocol::results::{ApiError, ErrorCode};
@@ -100,6 +101,9 @@ impl FactKind for NodeGenesis {
                 },
             )
             .map_err(from_sqlite)?;
+            if !ctx.is_local_origin() {
+                collision_check(tx, ctx, ctx.origin.node, tag)?;
+            }
         }
         Ok(())
     }

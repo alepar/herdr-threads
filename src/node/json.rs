@@ -18,6 +18,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use super::identity::NodeIdentity;
 use super::tag::{NodeTag, NodeUuid};
 
 /// File name inside the node directory.
@@ -65,6 +66,32 @@ pub fn write_if_differs(path: &Path, want: &NodeJson) -> io::Result<bool> {
     bytes.push(b'\n');
     atomic_write(path, &bytes)?;
     Ok(true)
+}
+
+/// Regenerates the hint from `identity`'s current tag and `tag_k`, keeping the
+/// recorded `created_at` of an earlier hint for the same node. Returns whether
+/// it wrote. The one place the hint is derived from an identity: daemon start
+/// and the post-commit retag update both call it.
+pub fn publish_identity(path: &Path, identity: &NodeIdentity) -> io::Result<bool> {
+    let created_at = read_hint(path)
+        .filter(|hint| hint.node_uuid == identity.uuid())
+        .map_or_else(
+            || {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_millis() as i64)
+            },
+            |hint| hint.created_at,
+        );
+    write_if_differs(
+        path,
+        &NodeJson::new(
+            identity.uuid(),
+            identity.tag(),
+            identity.tag_k(),
+            created_at,
+        ),
+    )
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
