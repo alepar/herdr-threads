@@ -1860,6 +1860,10 @@ where
                     .push(handle);
                 Ok(())
             };
+            // Filled once the sync runtime is composed below; until then (and
+            // for at most 60 s) the lane holds overdue emission (spec §7).
+            let deadline_sync_hold: Arc<crate::scheduler::deadlines::SyncHoldSlot> =
+                Arc::default();
             push_worker(start_deadline_worker_ticking(
                 Arc::clone(&store),
                 Arc::clone(&writer),
@@ -1869,6 +1873,7 @@ where
                 config.lane_tick(Duration::from_millis(
                     crate::scheduler::deadlines::TICK_MILLIS,
                 )),
+                Some(Arc::clone(&deadline_sync_hold)),
             )?)?;
             // The one registry of live mod delivery channels (spec D2, D7),
             // shared by the wake lane (routing), the domain service (digest
@@ -2121,6 +2126,7 @@ where
                 },
             );
             factory_peers.set_intake(peer_intake);
+            let _ = deadline_sync_hold.set(Arc::new(sync_handle.clone()));
             let incarnations_stop = Cancellation::default();
             let discovery_status = Arc::new(crate::sync::discovery::DiscoveryStatus::default());
             let sync_admin = Arc::new(crate::service::sync_admin::SyncAdmin {

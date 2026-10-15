@@ -2,8 +2,9 @@ use super::*;
 use crate::ports::DuePhaseCursor;
 use crate::protocol::ids::SeatId;
 use crate::protocol::time::{Cancellation, MonoInstant, UtcMillis};
-use std::sync::Mutex;
+use crate::sync::signals::RoundState;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 fn due_progress(
     request: DueScanRequest,
@@ -1404,4 +1405,161 @@ fn retained_retirement_quantum_error_is_reported_and_backed_off() {
     port.clock.mono.store(1_001, Ordering::SeqCst);
     assert_eq!(driver.drive(&budget()).unwrap().retirement_job, None);
     assert_eq!(port.advance_calls.load(Ordering::SeqCst), calls);
+}
+
+// ---- sync-aware overdue hold (spec §7, ht-5fr.13) ----
+
+struct FakeSync {
+    state: Mutex<RoundState>,
+    target: std::sync::atomic::AtomicBool,
+    requests: Mutex<Vec<u64>>,
+}
+impl FakeSync {
+    fn new(state: RoundState, target: bool) -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(state),
+            target: std::sync::atomic::AtomicBool::new(target),
+            requests: Mutex::new(Vec::new()),
+        })
+    }
+    fn set(&self, state: RoundState) {
+        *self.state.lock().unwrap() = state;
+    }
+}
+impl SyncReadiness for FakeSync {
+    fn request_round(&self, at: MonoInstant) {
+        self.requests.lock().unwrap().push(at.0);
+    }
+    fn round_state(&self, _since: MonoInstant) -> RoundState {
+        *self.state.lock().unwrap()
+    }
+    fn has_enabled_target(&self) -> bool {
+        self.target.load(Ordering::SeqCst)
+    }
+}
+
+fn held_driver<'a>(port: &'a FakePort, sync: &Arc<FakeSync>) -> DeadlineDriver<'a, FakePort> {
+    let slot = Arc::new(SyncHoldSlot::new());
+    let _ = slot.set(sync.clone() as Arc<dyn SyncReadiness>);
+    DeadlineDriver::new(port)
+        .with_tick_millis(1_000)
+        .with_sync_hold(slot)
+}
+
+/// Advances both clocks by `millis`.
+fn advance(port: &FakePort, millis: u64) {
+    port.clock.mono.fetch_add(millis, Ordering::SeqCst);
+    port.clock.utc.fetch_add(millis as i64, Ordering::SeqCst);
+}
+
+// Kills: an overdue scan that runs before the first round with the peer
+// completes, or one that keeps running after the round settled the receipt.
+#[test]
+fn cold_start_holds_until_round_complete_then_no_warning_when_settled() {
+    let port = FakePort::default();
+    port.deadline.store(0, Ordering::SeqCst); // already overdue
+    let sync = FakeSync::new(RoundState::Pending { links: 1 }, true);
+    let mut driver = held_driver(&port, &sync);
+    for _ in 0..5 {
+        let out = driver.drive(&budget()).unwrap();
+        assert!(out.due_held && out.due_warnings_added == 0);
+        advance(&port, 1_000);
+    }
+    assert_eq!(
+        port.due_calls.load(Ordering::SeqCst),
+        0,
+        "no scan while held"
+    );
+    assert_eq!(
+        *sync.requests.lock().unwrap(),
+        vec![0],
+        "one round requested at start"
+    );
+    // The round completes and the settlement applied: the receipt is no
+    // longer pending, so the scan finds nothing.
+    sync.set(RoundState::Complete);
+    port.deadline.store(i64::MAX, Ordering::SeqCst);
+    let out = driver.drive(&budget()).unwrap();
+    assert!(!out.due_held);
+    assert_eq!(out.due_warnings_added, 0);
+    assert_eq!(port.warnings.load(Ordering::SeqCst), 0);
+    assert_eq!(port.due_calls.load(Ordering::SeqCst), 1);
+}
+
+// Kills: a hold with no bound (an unreachable peer would silence warnings).
+#[test]
+fn cold_start_unreachable_peer_warns_after_60s() {
+    let port = FakePort::default();
+    port.deadline.store(0, Ordering::SeqCst);
+    let sync = FakeSync::new(RoundState::Pending { links: 1 }, true);
+    let mut driver = held_driver(&port, &sync);
+    let mut elapsed = 0;
+    while elapsed < 59_000 {
+        assert!(
+            driver.drive(&budget()).unwrap().due_held,
+            "held at {elapsed}"
+        );
+        advance(&port, 1_000);
+        elapsed += 1_000;
+    }
+    assert_eq!(port.warnings.load(Ordering::SeqCst), 0);
+    advance(&port, 1_000);
+    let out = driver.drive(&budget()).unwrap();
+    assert!(!out.due_held);
+    assert_eq!(out.due_warnings_added, 1, "warned once the 60 s passed");
+}
+
+// Kills: a wall-jump detector that ignores a jump (or fires on a normal tick).
+#[test]
+fn wall_jump_holds_same_shape() {
+    let port = FakePort::default();
+    port.deadline.store(i64::MAX, Ordering::SeqCst);
+    let sync = FakeSync::new(RoundState::Complete, true);
+    let mut driver = held_driver(&port, &sync);
+    assert!(
+        !driver.drive(&budget()).unwrap().due_held,
+        "complete round: no hold"
+    );
+    advance(&port, 1_000);
+    assert!(
+        !driver.drive(&budget()).unwrap().due_held,
+        "ordinary tick: no re-arm"
+    );
+    assert_eq!(sync.requests.lock().unwrap().len(), 1);
+    // Sleep: the wall clock leaps an hour, the monotonic clock one tick.
+    port.clock.utc.fetch_add(3_600_000, Ordering::SeqCst);
+    port.clock.mono.fetch_add(1_000, Ordering::SeqCst);
+    port.deadline.store(0, Ordering::SeqCst);
+    sync.set(RoundState::Pending { links: 2 });
+    let out = driver.drive(&budget()).unwrap();
+    assert!(out.due_held && out.due_warnings_added == 0);
+    assert_eq!(
+        sync.requests.lock().unwrap().len(),
+        2,
+        "a fresh round is requested"
+    );
+    advance(&port, 1_000);
+    sync.set(RoundState::Complete);
+    port.deadline.store(i64::MAX, Ordering::SeqCst);
+    let out = driver.drive(&budget()).unwrap();
+    assert!(!out.due_held && out.due_warnings_added == 0);
+}
+
+// Kills: a hold on a node with nothing to sync with.
+#[test]
+fn no_links_no_targets_emits_at_once() {
+    let port = FakePort::default();
+    port.deadline.store(0, Ordering::SeqCst);
+    let sync = FakeSync::new(RoundState::NoLinks, false);
+    let mut driver = held_driver(&port, &sync);
+    let out = driver.drive(&budget()).unwrap();
+    assert!(!out.due_held);
+    assert_eq!(out.due_warnings_added, 1);
+    // With an enabled dial target, no link yet still holds.
+    let port = FakePort::default();
+    port.deadline.store(0, Ordering::SeqCst);
+    let sync = FakeSync::new(RoundState::NoLinks, true);
+    let mut driver = held_driver(&port, &sync);
+    let out = driver.drive(&budget()).unwrap();
+    assert!(out.due_held && out.due_warnings_added == 0);
 }

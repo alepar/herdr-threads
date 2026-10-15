@@ -993,6 +993,7 @@ pub fn start_deadline_worker(
         cancellation,
         status,
         Duration::from_millis(TICK_MILLIS),
+        None,
     )
 }
 
@@ -1005,6 +1006,7 @@ pub fn start_deadline_worker_ticking(
     cancellation: Cancellation,
     status: Arc<WorkerStatus>,
     tick: Duration,
+    sync_hold: Option<Arc<crate::scheduler::deadlines::SyncHoldSlot>>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("herdr-deadlines".into())
@@ -1015,6 +1017,9 @@ pub fn start_deadline_worker_ticking(
             let port = ScheduledStore::new(store, writer);
             let mut driver = DeadlineDriver::new(&port)
                 .with_tick_millis(u64::try_from(tick.as_millis()).unwrap_or(TICK_MILLIS));
+            if let Some(slot) = sync_hold {
+                driver = driver.with_sync_hold(slot);
+            }
             // The first pass runs at boot, before the first wait.
             let mut waited = false;
             while !cancellation.is_cancelled() {

@@ -351,6 +351,7 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
             for participant in &page.items {
                 participant_row(participant, &mut out);
             }
+            unreachable_lines(&page.items, &mut out);
             next("next", page, &mut out);
         }
         CommandResult::Thread(details) => thread(details, &mut out),
@@ -775,6 +776,19 @@ fn participant_row(participant: &Participant, out: &mut String) {
     out.push('\n');
 }
 
+/// `node TAG unreachable since TIME` (`node TAG unreachable` when no contact
+/// was ever recorded), one per unreachable home node, after the seat rows;
+/// about 40 bytes each and nothing when every home node is reachable.
+fn unreachable_lines(items: &[Participant], out: &mut String) {
+    for home in items.iter().filter_map(|p| p.home_unreachable.as_ref()) {
+        out.push_str(&format!("node {} unreachable", home.tag));
+        if let Some(since) = home.since {
+            out.push_str(&format!(" since {}", clock(since)));
+        }
+        out.push('\n');
+    }
+}
+
 fn thread(details: &ThreadDetails, out: &mut String) {
     let summary = &details.summary;
     out.push_str(&format!(
@@ -828,6 +842,7 @@ fn thread(details: &ThreadDetails, out: &mut String) {
     for participant in &details.participants.items {
         participant_row(participant, out);
     }
+    unreachable_lines(&details.participants.items, out);
     next("participants.next", &details.participants, out);
 }
 

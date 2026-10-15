@@ -87,6 +87,10 @@ fn page() -> PageRequest {
 /// connected binding, a pending invitation: a due wake candidate) and the
 /// remote seat `remote` with a pending invitation of its own.
 fn fixture() -> Fixture {
+    fixture_at(Arc::new(Fixed))
+}
+
+fn fixture_at(clock: Arc<dyn Clock>) -> Fixture {
     let directory = Directory(herdr_threads::test_support::scratch::temp_path(format!(
         "remote-seats-{}",
         uuid::Uuid::new_v4()
@@ -98,12 +102,7 @@ fn fixture() -> Fixture {
         minimum_wake_delay_ms: 120_000,
         ..StoreSettings::default()
     };
-    let store = SqliteStore::new(
-        StoreContext::new(path.clone(), Arc::new(Fixed)),
-        NODE,
-        settings,
-    )
-    .unwrap();
+    let store = SqliteStore::new(StoreContext::new(path.clone(), clock), NODE, settings).unwrap();
     let host = store
         .attach_host(&HostLocator::parse(SOCKET).unwrap(), 0, &budget())
         .unwrap()
@@ -633,4 +632,131 @@ fn pane_listings_omit_remote() {
         local.target.as_ref().map(HostTargetId::as_str),
         Some("pane")
     );
+}
+
+/// Reads at a late time so a contact at 0 is stale (`now` > 180 s).
+struct Late;
+impl Clock for Late {
+    fn utc_now(&self) -> UtcMillis {
+        UtcMillis(1_000_000)
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        MonoInstant(100)
+    }
+}
+
+const OTHER_NODE: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+/// Two more remote members: `remote2` on the same foreign node as `remote`,
+/// `remote3` on another node.
+fn crowd(f: &Fixture) {
+    thread_with_both_members(f);
+    remote_seat(&f.db, "remote2");
+    f.db.execute(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,host_id,published) \
+         VALUES ('remote3',?1,'remote','native',0,0,?2,0,'agent',NULL,1)",
+        params![NODE, OTHER_NODE],
+    )
+    .unwrap();
+    for seat in ["remote2", "remote3"] {
+        f.db.execute(
+            "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t-both',?1,'joined',5)",
+            [seat],
+        )
+        .unwrap();
+    }
+}
+
+fn contact(f: &Fixture, node: &str, at: i64) {
+    f.db.execute(
+        "INSERT INTO sync_node_contact(node_uuid,last_contact_at,via,updated_at) VALUES (?1,?2,'direct',0)",
+        params![node, at],
+    )
+    .unwrap();
+}
+
+fn show_text(f: &Fixture) -> (String, String) {
+    let participants = query(
+        f,
+        Command::Participants(ParticipantsQuery {
+            thread: ThreadId::new("t-both"),
+            page: page(),
+            caller: None,
+        }),
+    );
+    let thread = query(
+        f,
+        Command::Thread(ThreadQuery {
+            thread: ThreadId::new("t-both"),
+            page: page(),
+            caller: None,
+        }),
+    );
+    (
+        text(&participants, OutputFormat::Text),
+        text(&thread, OutputFormat::Text),
+    )
+}
+
+fn node_lines(rendered: &str) -> Vec<&str> {
+    rendered
+        .lines()
+        .filter(|l| l.starts_with("node "))
+        .collect()
+}
+
+// Kills: a marker per seat instead of per home node, a marker for a reachable
+// node, a tag that ignores the directory, a `since` that is not the last contact.
+#[test]
+fn participants_and_show_add_one_line_per_unreachable_home_node() {
+    let f = fixture_at(Arc::new(Late));
+    crowd(&f);
+    f.db.execute(
+        "INSERT INTO node_directory(node_uuid,tag,tag_k,first_seen_at) VALUES (?1,'Abc',0,0)",
+        [FOREIGN_NODE],
+    )
+    .unwrap();
+    contact(&f, FOREIGN_NODE, 0);
+    let (participants, thread) = show_text(&f);
+    for rendered in [&participants, &thread] {
+        let lines = node_lines(rendered);
+        assert_eq!(
+            lines.len(),
+            2,
+            "one line per home node, two seats share one: {rendered}"
+        );
+        assert!(
+            lines[0].starts_with("node Abc unreachable since "),
+            "{lines:?}"
+        );
+        assert_eq!(lines[1], "node bbbbbbbb unreachable", "{lines:?}");
+        let seat_rows_end = rendered.rfind("remote3 joined").unwrap();
+        assert!(
+            rendered.find("node Abc").unwrap() > seat_rows_end,
+            "marker lines follow the seat rows: {rendered}"
+        );
+    }
+}
+
+// Kills: a marker line (or any byte) when every home node is reachable.
+#[test]
+fn zero_bytes_when_all_reachable() {
+    let f = fixture_at(Arc::new(Late));
+    crowd(&f);
+    contact(&f, FOREIGN_NODE, 999_000);
+    contact(&f, OTHER_NODE, 1_000_000);
+    let (participants, thread) = show_text(&f);
+    assert!(node_lines(&participants).is_empty(), "{participants}");
+    assert!(node_lines(&thread).is_empty(), "{thread}");
+    assert!(!participants.contains("unreachable"), "{participants}");
+}
+
+// Kills: rendering "since <time>" for a node with no recorded contact.
+#[test]
+fn unknown_since_renders_without_time() {
+    let f = fixture();
+    thread_with_both_members(&f);
+    let (participants, _) = show_text(&f);
+    let lines = node_lines(&participants);
+    assert_eq!(lines, ["node aaaaaaaa unreachable"], "{participants}");
 }
