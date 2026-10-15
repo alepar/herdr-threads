@@ -4,7 +4,7 @@
 use crate::{
     app::SystemClock,
     cli::{LazyConnection, RunError, commands::parse_argv, run_caller_scoped},
-    daemon::paths::InstancePaths,
+    daemon::paths::NodePaths,
     ports::LocalClient,
     protocol::{
         commands::Command,
@@ -153,21 +153,21 @@ fn run(argv: &[&str], seats: Vec<SeatSummary>) -> Run {
         DaemonVintage::Current,
     ));
     let root = std::env::temp_dir().join(format!("read-cost-unused-{}", uuid::Uuid::new_v4()));
-    let paths = InstancePaths {
-        instance_dir: root.clone(),
-        socket_path: root.join("sock"),
+    let paths = NodePaths {
+        state_dir: root.clone(),
+        node_dir: root.clone(),
+        key_path: root.join("k"),
+        node_json_path: root.join("nj"),
+        database_path: root.join("db"),
         lock_path: root.join("lock"),
         descriptor_path: root.join("descriptor"),
-        locator_path: root.join("locator"),
-        namespace_path: root.join("namespace"),
-        database_path: root.join("db"),
-        locator: String::new(),
+        socket_path: root.join("sock"),
     };
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     // The one place this test's CLI opens a connection.
     let connection = LazyConnection::new(|| {
         fake.connect();
-        Ok((uuid::Uuid::nil(), Shared(Arc::clone(&fake))))
+        Ok((crate::node::NodeUuid::nil(), Shared(Arc::clone(&fake))))
     });
     let budget = || CallBudget {
         deadline: MonoInstant(u64::MAX),

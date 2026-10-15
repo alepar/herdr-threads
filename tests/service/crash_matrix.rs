@@ -96,7 +96,7 @@ impl Matrix {
     /// The shipped CLI names instances by UUID (its private context journal
     /// and claims carry `uuid::Uuid`), so CLI-driven rows use one.
     fn with_uuid_instance() -> Self {
-        Self::with_instance(uuid::Uuid::new_v4().to_string())
+        Self::with_instance(crate::node::NodeUuid::new_v4().to_string())
     }
 
     fn with_instance(instance: String) -> Self {
@@ -1936,8 +1936,8 @@ impl Matrix {
 /// The shipped CLI for one seat's pane: `run_selected`, its context gate and
 /// the seat's private lifecycle-context journal, over this composed service.
 struct CliSeat {
-    paths: crate::daemon::paths::InstancePaths,
-    instance: uuid::Uuid,
+    paths: crate::daemon::paths::NodePaths,
+    instance: crate::node::NodeUuid,
     selection: crate::cli::commands::CooperativeSelection,
 }
 
@@ -1980,8 +1980,8 @@ impl Matrix {
         )
         .unwrap();
         CliSeat {
-            paths: crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap(),
-            instance: uuid::Uuid::parse_str(&self.instance).expect("UUID instance"),
+            paths: crate::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap(),
+            instance: crate::node::NodeUuid::parse_str(&self.instance).expect("UUID instance"),
             selection: crate::cli::commands::CooperativeSelection {
                 seat: claim.seat.clone(),
                 target: claim.target.clone(),
@@ -2487,8 +2487,10 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
             && sample.reason == Some(UnresolvedReason::HostInvalidation)),
         "{summary:?}"
     );
-    let mut inputs =
-        crate::daemon::health::HealthInputs::unknown(uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    let mut inputs = crate::daemon::health::HealthInputs::unknown(
+        crate::node::NodeUuid::new_v4(),
+        uuid::Uuid::new_v4(),
+    );
     inputs.unresolved = Some(summary);
     let health = inputs.assemble();
     assert_eq!(health.unresolved_seats, Some(3));
@@ -2610,7 +2612,7 @@ fn startup_evidence_health_recomputes_after_operator_repair_and_reregistration()
     assert_eq!(m.seat_states(), "resolved:- unresolved:host_invalidation");
     let healthy = |report| {
         let mut inputs = crate::daemon::health::HealthInputs::unknown(
-            uuid::Uuid::new_v4(),
+            crate::node::NodeUuid::new_v4(),
             uuid::Uuid::new_v4(),
         );
         inputs.database = crate::daemon::health::ComponentStatus::Ready;
@@ -2691,7 +2693,7 @@ fn failpoints_cannot_be_armed_through_requests_or_foreign_scopes() {
     let base = WireRequest {
         version: PROTOCOL_VERSION,
         request_id: "r".into(),
-        expected_instance: uuid::Uuid::new_v4().to_string(),
+        expected_instance: crate::node::NodeUuid::new_v4().to_string(),
         expected_boot: None,
         output: None,
         command: Command::SendMessage(SendMessage {

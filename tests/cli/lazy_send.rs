@@ -46,7 +46,7 @@ impl Fixture {
         }
         let context = OccupantContext {
             format_version: 1,
-            instance: uuid::Uuid::from_u128(1),
+            instance: herdr_threads::node::NodeUuid::from_u128(1),
             seat: "seat-1".into(),
             target: "pane-1".into(),
             harness: Harness::Codex,

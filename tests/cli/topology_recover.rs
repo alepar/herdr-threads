@@ -185,8 +185,8 @@ impl Env {
             None,
         )
         .unwrap();
-        let paths = crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
-        let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+        let paths = crate::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap();
+        let journal = Journal::open(paths.node_dir.join("intents")).unwrap();
         let (mut db, mut identity, guard) = canonical_fixture(&runtime.host_endpoint);
         identity.payload.handoff.namespace.state_dir = runtime.state_dir;
         identity.payload.handoff.namespace.host_endpoint = runtime.host_endpoint;

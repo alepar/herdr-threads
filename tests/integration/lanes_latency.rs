@@ -10,7 +10,7 @@
 //! log and lane Pacer idle counts without changing its behaviour.
 use herdr_threads::{
     app::{KickRecord, LaneProbe, SystemClock, run_elected_probed},
-    daemon::paths::{InstancePaths, RuntimeContext},
+    daemon::paths::{NodePaths, RuntimeContext},
     host::native::NativeCli,
     ports::HostPort,
     protocol::time::{Cancellation, Clock},
@@ -74,7 +74,7 @@ impl Session {
         let state = herdr.root().join("plugin-state");
         fs::create_dir_all(&state).unwrap();
         let context = RuntimeContext::explicit(state.clone(), herdr.socket_path(), None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let host: Arc<dyn HostPort> =
             Arc::new(NativeCli::new(herdr.socket_path(), Arc::clone(&clock)));
@@ -285,8 +285,10 @@ impl Session {
     }
 
     pub(crate) fn db(&self) -> rusqlite::Connection {
-        let paths = InstancePaths::resolve(
-            &RuntimeContext::explicit(self.state.clone(), self.herdr.socket_path(), None).unwrap(),
+        let paths = NodePaths::resolve(
+            &RuntimeContext::explicit(self.state.clone(), self.herdr.socket_path(), None)
+                .unwrap()
+                .state_dir,
         )
         .unwrap();
         let db = rusqlite::Connection::open(&paths.database_path).unwrap();
@@ -330,7 +332,7 @@ impl Drop for Session {
         if std::thread::panicking()
             && let Ok(context) =
                 RuntimeContext::explicit(self.state.clone(), self.herdr.socket_path(), None)
-            && let Ok(paths) = InstancePaths::resolve(&context)
+            && let Ok(paths) = NodePaths::resolve(&context.state_dir)
             && let Ok(bytes) = fs::read(herdr_threads::daemon::logs::daemon_log_path(&paths))
         {
             let tail = &bytes[bytes.len().saturating_sub(16 * 1024)..];

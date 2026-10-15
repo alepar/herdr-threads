@@ -85,7 +85,7 @@ pub const HEALTH_LINE_BUDGET: usize = 12;
 pub const LANE_LINES_BEFORE_FOLD: usize = 2;
 
 pub struct HealthInputs {
-    pub instance: Uuid,
+    pub instance: crate::node::NodeUuid,
     pub boot: Uuid,
     pub database: ComponentStatus,
     pub schema: ComponentStatus,
@@ -440,7 +440,7 @@ pub fn unresolved_seat_line(sample: &crate::ports::UnresolvedSeatSample) -> Stri
 }
 
 impl HealthInputs {
-    pub fn unknown(instance: Uuid, boot: Uuid) -> Self {
+    pub fn unknown(instance: crate::node::NodeUuid, boot: Uuid) -> Self {
         Self {
             instance,
             boot,

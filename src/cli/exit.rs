@@ -106,7 +106,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     /// An unsafe state root surfacing as a local Io error (for example from
-    /// the cooperative path's `prepare_instance_dir`) is invalid local
+    /// the cooperative path's `prepare_node_dir`) is invalid local
     /// context, status 2. Kills: dropping the typed unsafe-state check from
     /// `io_exit_code` (PermissionDenied would then fall through to status 1).
     #[test]

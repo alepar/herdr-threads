@@ -71,7 +71,7 @@ fn page<T>(items: Vec<T>) -> Page<T> {
 struct Production {
     _dir: ScratchDir,
     clock: Arc<TestClock>,
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     store: Arc<dyn StorePort>,
     health: Box<dyn Fn(&CallBudget) -> HealthInputs>,
 }
@@ -79,7 +79,7 @@ impl Production {
     fn new(workers: [Arc<WorkerStatus>; 3]) -> Self {
         let dir = ScratchDir::new();
         let clock = Arc::new(TestClock(AtomicU64::new(10_000)));
-        let instance = uuid::Uuid::new_v4();
+        let instance = crate::node::NodeUuid::new_v4();
         let store: Arc<dyn StorePort> = Arc::new(
             crate::store::SqliteStore::new(
                 crate::store::connection::StoreContext::new(dir.0.join("db"), clock.clone()),
@@ -1538,7 +1538,7 @@ fn transitions_refused_reaches_health() {
     use crate::service::host_evidence::HostEvidenceStatus;
     let dir = ScratchDir::new();
     let clock = Arc::new(TestClock(AtomicU64::new(10_000)));
-    let instance = uuid::Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let store: Arc<dyn StorePort> = Arc::new(
         crate::store::SqliteStore::new(
             crate::store::connection::StoreContext::new(dir.0.join("db"), clock.clone()),

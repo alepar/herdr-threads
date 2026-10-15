@@ -30,7 +30,7 @@ fn message() -> WatchMessage {
 
 fn claim(role: CallerRole) -> CallerClaim {
     CallerClaim {
-        instance: "11111111-1111-4111-8111-111111111111".into(),
+        instance: "11111111111141118111111111111111".into(),
         seat: SeatId::new("s1"),
         binding_generation: 1,
         role,
@@ -253,7 +253,7 @@ fn watch_wire_request_is_disjoint_from_other_first_frames() {
     let request = WatchWireRequest {
         version: PROTOCOL_VERSION,
         request_id: "r1".into(),
-        expected_instance: "11111111-1111-4111-8111-111111111111".into(),
+        expected_instance: "11111111111141118111111111111111".into(),
         expected_boot: None,
         watch: WatchRequest {
             claim: claim(CallerRole::TopLevel),

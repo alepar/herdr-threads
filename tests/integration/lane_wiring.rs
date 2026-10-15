@@ -16,7 +16,7 @@ use herdr_threads::{
     daemon::{
         logs::daemon_log_path,
         ownership::EndpointDescriptor,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
         remedy::{RemedyContext, remedy},
     },
     host::native::NativeCli,
@@ -67,7 +67,7 @@ impl Session {
         let state = herdr.root().join("plugin-state");
         fs::create_dir_all(&state).unwrap();
         let context = RuntimeContext::explicit(state.clone(), herdr.socket_path(), None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
         let log = daemon_log_path(&paths);
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let host: Arc<dyn HostPort> =
@@ -260,8 +260,10 @@ impl Session {
     }
 
     pub(crate) fn db(&self) -> rusqlite::Connection {
-        let paths = InstancePaths::resolve(
-            &RuntimeContext::explicit(self.state.clone(), self.herdr.socket_path(), None).unwrap(),
+        let paths = NodePaths::resolve(
+            &RuntimeContext::explicit(self.state.clone(), self.herdr.socket_path(), None)
+                .unwrap()
+                .state_dir,
         )
         .unwrap();
         let db = rusqlite::Connection::open(&paths.database_path).unwrap();
@@ -715,7 +717,7 @@ fn spawn_blocking_revoke_counts_as_request_origin() {
     let client = PersistentServiceClient::new(
         s.descriptor.endpoint.clone(),
         Arc::clone(&clock),
-        s.descriptor.instance_uuid,
+        s.descriptor.node_uuid,
         Some(s.descriptor.boot_id),
         ServiceIntentJournal::open(s.herdr.root().join("intents")).unwrap(),
     );
@@ -757,7 +759,7 @@ fn spawn_blocking_revoke_counts_as_request_origin() {
     let ordinary = LocalSocketClient::new(
         s.descriptor.endpoint.clone(),
         Arc::clone(&clock),
-        s.descriptor.instance_uuid,
+        s.descriptor.node_uuid,
         Some(s.descriptor.boot_id),
     );
     let CommandResult::ServiceDisconnected(revoked) = ordinary

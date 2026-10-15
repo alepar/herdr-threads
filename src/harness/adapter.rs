@@ -776,7 +776,7 @@ pub struct LocalEvidenceRequest<'a> {
     pub input: &'a HookInput,
     /// The hook process's HOME (the harness's own environment).
     pub home: Option<&'a std::ffi::OsStr>,
-    /// `<instance_dir>/adapter-state/<id>/` (read-only here).
+    /// `<node_dir>/adapter-state/<id>/` (read-only here).
     pub state_dir: Option<&'a std::path::Path>,
     /// Lazy client-local hint (A2: selects what to ask, never authorizes): the native session of
     /// the pane's current context for this harness, or None.
@@ -828,7 +828,7 @@ pub struct HookStepContext<'a> {
     pub claim: Option<crate::protocol::authority::CallerClaim>,
     /// A running daemon of this instance, or None. Never starts one.
     pub daemon: Option<&'a dyn HookStepDaemon>,
-    /// `<instance_dir>/adapter-state/<id>/`, created 0700 by the runner on first use.
+    /// `<node_dir>/adapter-state/<id>/`, created 0700 by the runner on first use.
     pub state_dir: Option<std::path::PathBuf>,
     /// `cli::hook::cli_prefix` argv for commands printed to the model.
     pub command_prefix: Vec<String>,

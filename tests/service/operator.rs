@@ -3,7 +3,7 @@ use herdr_threads::{
     client::local::LocalSocketClient,
     daemon::{
         ownership::{EndpointDescriptor, OwnerLock},
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
     },
     ports::*,
     protocol::{
@@ -178,7 +178,7 @@ impl HostPort for Host {
 }
 struct Fixture {
     root: PathBuf,
-    paths: InstancePaths,
+    paths: NodePaths,
     host: Arc<Host>,
     clock: Arc<dyn Clock>,
     descriptor: EndpointDescriptor,
@@ -195,9 +195,9 @@ impl Fixture {
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let runtime =
             RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
-        let paths = InstancePaths::resolve(&runtime).unwrap();
-        let owner = OwnerLock::acquire(&paths).unwrap();
-        let instance = owner.instance_uuid().to_string();
+        let paths = NodePaths::resolve(&runtime.state_dir).unwrap();
+        let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+        let instance = owner.node_uuid().unwrap().to_string();
         drop(owner);
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let store = Arc::new(
@@ -300,8 +300,7 @@ impl Fixture {
             Err(error) => {
                 stop.cancel();
                 let outcome = daemon.join();
-                let log =
-                    fs::read_to_string(paths.instance_dir.join("daemon.log")).unwrap_or_default();
+                let log = fs::read_to_string(paths.node_dir.join("daemon.log")).unwrap_or_default();
                 let _ = fs::remove_dir_all(&root);
                 panic!("private operator daemon not ready: {error}; {outcome:?}; {log}");
             }
@@ -321,7 +320,7 @@ impl Fixture {
         let client = LocalSocketClient::new(
             self.descriptor.endpoint.clone(),
             self.clock.clone(),
-            self.descriptor.instance_uuid,
+            self.descriptor.node_uuid,
             Some(self.descriptor.boot_id),
         );
         client.call(
@@ -355,9 +354,9 @@ impl Drop for Fixture {
 fn elected_operator_rebind_and_fresh_preserve_history_and_replay_without_host() {
     let f = Fixture::new();
     let history = f.db();
-    history.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('history',?1,'original topic','original goal',0,0,2)",[f.descriptor.instance_uuid.to_string()]).unwrap();
+    history.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('history',?1,'original topic','original goal',0,0,2)",[f.descriptor.node_uuid.to_string()]).unwrap();
     history.execute_batch("INSERT INTO memberships(thread_id,seat_id,state,episode) VALUES ('history','saved','invited',1);").unwrap();
-    history.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('old-message',?1,'history',1,'ordinary','unresolved history',1,0)",[f.descriptor.instance_uuid.to_string()]).unwrap();
+    history.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('old-message',?1,'history',1,'ordinary','unresolved history',1,0)",[f.descriptor.node_uuid.to_string()]).unwrap();
     history.execute_batch("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('old-message','history','saved','pending',90000);").unwrap();
     let rebind = Command::OperatorRebind(OperatorRebind {
         seat: SeatId::new("saved"),
@@ -375,7 +374,7 @@ fn elected_operator_rebind_and_fresh_preserve_history_and_replay_without_host() 
         )
         .unwrap();
     use std::os::unix::fs::MetadataExt;
-    let uid = fs::metadata(&f.paths.instance_dir).unwrap().uid();
+    let uid = fs::metadata(&f.paths.node_dir).unwrap().uid();
     assert_eq!(label, format!("operator:local-user:{uid}"));
     assert_eq!(
         db.query_row("SELECT count(*) FROM occupant_bindings", [], |r| r
@@ -435,7 +434,7 @@ fn elected_operator_rebind_and_fresh_preserve_history_and_replay_without_host() 
 fn elected_operator_orphan_invites_atomically_without_join_or_target_capture() {
     let f = Fixture::new();
     let db = f.db();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('thread',?1,'topic','goal',0,0)",[f.descriptor.instance_uuid.to_string()]).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('thread',?1,'topic','goal',0,0)",[f.descriptor.node_uuid.to_string()]).unwrap();
     let invite = OperatorOrphanInvite {
         thread: ThreadId::new("thread"),
         seat: SeatId::new("saved"),
@@ -659,7 +658,7 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
     assert_eq!(rebound["result"]["kind"], "operator_rebound");
     assert_eq!(rebound["result"]["data"], "saved");
     use std::os::unix::fs::MetadataExt;
-    let uid = fs::metadata(&f.paths.instance_dir).unwrap().uid();
+    let uid = fs::metadata(&f.paths.node_dir).unwrap().uid();
     let labels: Vec<String> = f
         .db()
         .prepare("SELECT operator_label FROM allocation_decisions ORDER BY kind")
@@ -1137,7 +1136,7 @@ fn operator_label_for_daemon(f: &Fixture) -> String {
     use std::os::unix::fs::MetadataExt;
     format!(
         "operator:local-user:{}",
-        fs::metadata(&f.paths.instance_dir).unwrap().uid()
+        fs::metadata(&f.paths.node_dir).unwrap().uid()
     )
 }
 

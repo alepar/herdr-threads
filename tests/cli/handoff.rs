@@ -878,7 +878,7 @@ fn automatic_launched_pane_live_retry_requires_original_current_caller() {
         crate::cli::topology_runtime::try_completed(
             &parsed_retry,
             &journal,
-            uuid::Uuid::parse_str(&namespace.instance).unwrap(),
+            crate::node::NodeUuid::parse_str(&namespace.instance).unwrap(),
             &selected,
             &client,
             &TestClock,
@@ -1022,7 +1022,7 @@ fn task48_progress_unknown_and_oversized_tails_fail_before_begin() {
 
 fn claim() -> CallerClaim {
     CallerClaim {
-        instance: "00000000-0000-0000-0000-0000000000b1".into(),
+        instance: "000000000000000000000000000000b1".into(),
         seat: SeatId::new("sender"),
         binding_generation: 1,
         role: CallerRole::TopLevel,
@@ -1268,7 +1268,7 @@ fn reference(journal: &Journal) -> IntentRef {
 }
 fn scope() -> IntentScope {
     IntentScope::Cooperative {
-        instance: "00000000-0000-0000-0000-0000000000b1".into(),
+        instance: "000000000000000000000000000000b1".into(),
         seat: SeatId::new("sender"),
     }
 }
@@ -1421,7 +1421,7 @@ fn handoff_broken_output_replays_report_without_relaunch_or_wrong_scope() {
     );
     let reference = reference(&journal);
     let wrong = IntentScope::Cooperative {
-        instance: "00000000-0000-0000-0000-0000000000b1".into(),
+        instance: "000000000000000000000000000000b1".into(),
         seat: SeatId::new("other"),
     };
     assert!(
@@ -1790,7 +1790,7 @@ fn handoff_bootstrap_binds_hook_preference_to_frozen_expected_instance_and_pair(
     let expected: serde_json::Value = serde_json::from_str(record).unwrap();
     assert_eq!(
         expected,
-        serde_json::json!({"instance":"00000000-0000-0000-0000-0000000000b1", "state_dir":state.display().to_string(), "host_endpoint":host.display().to_string()})
+        serde_json::json!({"instance":"000000000000000000000000000000b1", "state_dir":state.display().to_string(), "host_endpoint":host.display().to_string()})
     );
 }
 struct FencedClient {
@@ -2205,7 +2205,7 @@ fn handoff_bootstrap_is_one_native_shell_argument() {
     let prompt = bootstrap(
         &ThreadId::new("tReview01"),
         &crate::protocol::output::ContinuationContext::default(),
-        "00000000-0000-0000-0000-0000000000b1",
+        "000000000000000000000000000000b1",
     );
     assert!(
         !prompt.contains(['\n', '\r']),
@@ -4656,14 +4656,14 @@ fn frozen_v1_prompt_literals_bind_routing_quoting_and_thread() {
         "/nonexistent-ht-v1/a \"b\" 'c'",
         "/nonexistent-ht-v1/h\u{1}\u{200b}.sock",
     );
-    let instance = "00000000000040008000000000000ABC";
+    let instance = "00000000000040008000000000000abc";
     let prompts = bootstrap_v1::retained_prompts("t9", &context, instance);
     let fallback = r#"herdr-threads --state-dir '/nonexistent-ht-v1/a "b" '\''c'\''' --host-endpoint $'/nonexistent-ht-v1/h\x01\xe2\x80\x8b.sock' inbox"#;
     assert_eq!(
         prompts,
         vec![
             format!(
-                "Expected handoff command routing (JSON data): {{\"instance\":\"00000000-0000-4000-8000-000000000abc\",\"state_dir\":\"/nonexistent-ht-v1/a \\\"b\\\" 'c'\",\"host_endpoint\":\"/nonexistent-ht-v1/h\\u0001\u{200b}.sock\"}}{V1_INSTRUCTION}{fallback}`. The task for thread t9{V1_SUFFIX}"
+                "Expected handoff command routing (JSON data): {{\"instance\":\"00000000000040008000000000000abc\",\"state_dir\":\"/nonexistent-ht-v1/a \\\"b\\\" 'c'\",\"host_endpoint\":\"/nonexistent-ht-v1/h\\u0001\u{200b}.sock\"}}{V1_INSTRUCTION}{fallback}`. The task for thread t9{V1_SUFFIX}"
             ),
             format!(
                 "Expected handoff command routing (JSON data): null{V1_INSTRUCTION}{fallback}`. The task for thread t9{V1_SUFFIX}"
@@ -4678,11 +4678,13 @@ fn frozen_v1_prompt_literals_bind_routing_quoting_and_thread() {
         bootstrap(&ThreadId::new("t9"), &context, instance),
         prompts[1]
     );
-    assert_eq!(
-        bootstrap_v1::retained_prompts("t9", &context, "not-a-uuid"),
-        prompts[1..].to_vec(),
-        "an invalid UUID admits only the null-routing form"
-    );
+    for invalid in ["not-a-uuid", "00000000000040008000000000000ABC"] {
+        assert_eq!(
+            bootstrap_v1::retained_prompts("t9", &context, invalid),
+            prompts[1..].to_vec(),
+            "{invalid}: a non-canonical node uuid admits only the null-routing form"
+        );
+    }
     // Baseline golden (not a RED): the V1 producer and today's unperturbed
     // renderer agree for an existing canonical pair.
     let (_temp, journal) = journal();

@@ -28,8 +28,8 @@ use crate::{
     client::local::LocalSocketClient,
     daemon::{
         lifecycle::ensure_running,
-        ownership::{read_descriptor, read_existing_namespace},
-        paths::{InstancePaths, RuntimeContext},
+        ownership::{read_descriptor, read_node_uuid_hint},
+        paths::{NodePaths, RuntimeContext},
     },
     harness::{
         Capability, LifecycleEvent, NextActions, OverviewRows, RecoveryRows, bridge,
@@ -529,7 +529,7 @@ pub(crate) fn event_budget(
 /// or an unknown daemon UUID cannot establish a handoff target match.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct CommandRouting {
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     state_dir: String,
     host_endpoint: String,
 }
@@ -541,7 +541,7 @@ impl CommandRouting {
         let host = Path::new(context.host.as_deref()?);
         let endpoint = host.parent()?.canonicalize().ok()?.join(host.file_name()?);
         Some(Self {
-            instance: uuid::Uuid::parse_str(instance).ok()?,
+            instance: instance.parse::<crate::node::NodeUuid>().ok()?,
             state_dir: state.to_str()?.to_owned(),
             host_endpoint: endpoint.to_str()?.to_owned(),
         })
@@ -1395,10 +1395,10 @@ fn report_parse_failure_to_daemon(
     else {
         return;
     };
-    let Ok(paths) = InstancePaths::resolve(&context) else {
+    let Ok(paths) = NodePaths::resolve(&context.state_dir) else {
         return;
     };
-    let Ok(Some(instance)) = read_existing_namespace(&paths) else {
+    let Ok(Some(instance)) = read_node_uuid_hint(&paths) else {
         return;
     };
     let Ok(descriptor) = read_descriptor(&paths, instance) else {
@@ -1609,17 +1609,17 @@ fn bridge_failure(error: bridge::BridgeError) -> Failure {
 /// The client of an already running daemon of this instance: namespace, descriptor, protocol
 /// check, socket client. It never starts a daemon.
 fn connect_existing(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     clock: Arc<dyn Clock>,
 ) -> Result<
     (
-        uuid::Uuid,
+        crate::node::NodeUuid,
         LocalSocketClient,
         super::hook_inbox::CompletionLink,
     ),
     Failure,
 > {
-    let instance = read_existing_namespace(paths)
+    let instance = read_node_uuid_hint(paths)
         .map_err(|e| Failure::Unavailable(format!("daemon namespace: {:?}", e.kind())))?
         .ok_or_else(|| Failure::Unavailable("daemon namespace unavailable".into()))?;
     let descriptor = read_descriptor(paths, instance)
@@ -1657,8 +1657,8 @@ enum Enroll {
 /// One hook invocation's checked connection to the daemon for one pane.
 struct Connected {
     context: RuntimeContext,
-    paths: InstancePaths,
-    instance: uuid::Uuid,
+    paths: NodePaths,
+    instance: crate::node::NodeUuid,
     target: HostTargetId,
     client: LocalSocketClient,
     link: super::hook_inbox::CompletionLink,
@@ -1687,7 +1687,7 @@ fn connect_pane(
     let context =
         RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
             .map_err(|e| Failure::Quiet(format!("runtime context: {e}")))?;
-    let paths = InstancePaths::resolve(&context)
+    let paths = NodePaths::resolve(&context.state_dir)
         .map_err(|e| Failure::Unavailable(format!("state paths: {:?}", e.kind())))?;
     if let Some(executable) = ensure_executable {
         // Startup may ensure the daemon (design: 5 s startup budget). The result
@@ -1740,7 +1740,7 @@ fn enroll_pane(
     {
         return Err(Failure::Unavailable(detail));
     }
-    let journal = super::journal::Journal::open(paths.instance_dir.join("intents"))
+    let journal = super::journal::Journal::open(paths.node_dir.join("intents"))
         .map_err(|_| Failure::Unavailable("seat enrollment journal unavailable".into()))?;
     let resolved = super::launch::resolve_seat(
         &client,
@@ -1940,9 +1940,9 @@ fn hook_fingerprint(
 /// One hook invocation's connection to the daemon for one pane.
 struct PaneCall<'a> {
     context: &'a RuntimeContext,
-    paths: &'a InstancePaths,
+    paths: &'a NodePaths,
     client: &'a dyn LocalClient,
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     target: &'a HostTargetId,
     deadline: Instant,
     current_deadline: CurrentDeadline,
@@ -2033,7 +2033,7 @@ impl RetryWindow for HookDeadline {
 
 impl PaneCall<'_> {
     fn journal(&self) -> Option<super::journal::Journal> {
-        super::journal::Journal::open(self.paths.instance_dir.join("intents")).ok()
+        super::journal::Journal::open(self.paths.node_dir.join("intents")).ok()
     }
 
     /// Submit a recorded continuity intent under its operation key until the
@@ -2764,7 +2764,7 @@ fn lifecycle_check_in(
     event: &LifecycleEvent,
     turn: Option<&crate::harness::context::QualifiedTurn>,
     contexts: crate::harness::context::ContextJournal,
-    paths: &InstancePaths,
+    paths: &NodePaths,
     client: &dyn LocalClient,
     seat: &SeatId,
     output: &OutputSpec,
@@ -2775,7 +2775,7 @@ fn lifecycle_check_in(
     prefix: Vec<String>,
     routing: &bridge::RecipientRouting<'_>,
 ) -> Result<CheckedIn, Failure> {
-    let journal = super::journal::Journal::open(paths.instance_dir.join("intents"))
+    let journal = super::journal::Journal::open(paths.node_dir.join("intents"))
         .map_err(|e| Failure::Unavailable(format!("intent journal: {:?}", e.kind())))?;
     let owned = contexts;
     let contexts = &owned;
@@ -3145,7 +3145,7 @@ fn decode_refined(
     evidence.refine(&mut decoded);
     Ok(decoded)
 }
-/// `<instance_dir>/adapter-state/<id>/`. With `create`, every missing level is made private
+/// `<node_dir>/adapter-state/<id>/`. With `create`, every missing level is made private
 /// (0700); a level that is not a private directory yields `None`.
 fn adapter_state_dir(
     args: &HookArgs,
@@ -3155,15 +3155,14 @@ fn adapter_state_dir(
     let context =
         RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
             .ok()?;
-    let instance_dir = crate::daemon::paths::instance_dir(&context);
-    let dir = instance_dir
+    let node_dir = crate::daemon::paths::node_dir(&context.state_dir);
+    let dir = node_dir
         .join("adapter-state")
         .join(registration.metadata().id);
     if create {
         for level in [
-            context.state_dir.join("instances"),
-            instance_dir.clone(),
-            instance_dir.join("adapter-state"),
+            node_dir.clone(),
+            node_dir.join("adapter-state"),
             dir.clone(),
         ] {
             crate::daemon::paths::ensure_private_dir(&level).ok()?;
@@ -3216,7 +3215,7 @@ fn run_hook_step(
     let connected =
         RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
             .ok()
-            .and_then(|context| InstancePaths::resolve_read_only(&context).ok())
+            .and_then(|context| NodePaths::resolve_read_only(&context.state_dir).ok())
             .and_then(|paths| connect_existing(&paths, Arc::new(SystemClock::new())).ok())
             .map(|(_, client, link)| (client, link));
     let daemon = connected.as_ref().map(|(client, _)| HookStepClient {
@@ -3323,10 +3322,10 @@ fn child_endpoint_available(args: &HookArgs) -> bool {
     else {
         return false;
     };
-    let Ok(paths) = InstancePaths::resolve(&context) else {
+    let Ok(paths) = NodePaths::resolve(&context.state_dir) else {
         return false;
     };
-    let Ok(Some(instance)) = read_existing_namespace(&paths) else {
+    let Ok(Some(instance)) = read_node_uuid_hint(&paths) else {
         return false;
     };
     read_descriptor(&paths, instance)
@@ -3344,9 +3343,9 @@ fn pane_context_journal(
     let context =
         RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
             .ok()?;
-    let paths = InstancePaths::resolve_read_only(&context).ok()?;
-    let instance = read_existing_namespace(&paths).ok()??;
-    let entries = std::fs::read_dir(paths.instance_dir.join("contexts")).ok()?;
+    let paths = NodePaths::resolve_read_only(&context.state_dir).ok()?;
+    let instance = read_node_uuid_hint(&paths).ok()??;
+    let entries = std::fs::read_dir(paths.node_dir.join("contexts")).ok()?;
     let mut matching = None;
     for (index, entry) in entries.enumerate() {
         if index >= 256 || Instant::now() >= deadline {

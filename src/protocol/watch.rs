@@ -55,7 +55,7 @@ use super::{
     ids::{MessageId, SeatId, ThreadId},
     summary::{AuthorRole, UserIntent},
     time::UtcMillis,
-    wire::{PROTOCOL_VERSION, valid_uuid, valid_wire_id},
+    wire::{PROTOCOL_VERSION, valid_instance, valid_uuid, valid_wire_id},
 };
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -227,7 +227,7 @@ impl<'de> Deserialize<'de> for WatchWireRequest {
         if raw.version != PROTOCOL_VERSION {
             return Err(serde::de::Error::custom("unknown wire version"));
         }
-        if !valid_wire_id(&raw.request_id) || !valid_uuid(&raw.expected_instance) {
+        if !valid_wire_id(&raw.request_id) || !valid_instance(&raw.expected_instance) {
             return Err(serde::de::Error::custom("invalid request or instance id"));
         }
         if raw

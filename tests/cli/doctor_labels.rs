@@ -327,7 +327,7 @@ fn doctor_text_prints_the_daemon_log_path() {
         "protocol_version": 1,
         "context": {"ok": true, "state_dir": "/s", "source": {}, "host_endpoint": "/h"},
         "state_dir": {"exists": true, "safe": true},
-        "instance_dir": "/s/instances/i",
+        "node_dir": "/s/instances/i",
         "daemon_log": "/s/instances/i/logs/daemon.log",
         "daemon": {"state": "degraded"},
         "hooks": {"claude": {"setup": {}, "installed": {}}, "codex": {"setup": {}, "installed": {}}},
@@ -530,7 +530,7 @@ fn task3_versionless_doctor_metadata_unknown_is_informational_not_repairable() {
 /// reconciliation), or once the startup bound passed.
 fn boot_health(since_start_ms: u64, reconciled: bool) -> crate::protocol::results::Health {
     use crate::daemon::health::{ComponentStatus, HealthInputs};
-    let mut inputs = HealthInputs::unknown(uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    let mut inputs = HealthInputs::unknown(crate::node::NodeUuid::new_v4(), uuid::Uuid::new_v4());
     inputs.database = ComponentStatus::Ready;
     inputs.schema = ComponentStatus::Ready;
     inputs.scheduler = ComponentStatus::Ready;

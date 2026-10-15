@@ -4931,7 +4931,7 @@ mod contract_adapter_tests {
     }
     fn health() -> CommandResult {
         let mut health = Health::unknown(
-            "00000000-0000-4000-8000-000000000001".into(),
+            "00000000000040008000000000000001".into(),
             "00000000-0000-4000-8000-000000000002".into(),
             "test".into(),
             1,

@@ -333,12 +333,12 @@ fn recover(
 pub(crate) fn pre_executor_error(
     error: RunError,
     parsed: &super::commands::ParsedCli,
-    paths: &crate::daemon::paths::InstancePaths,
+    paths: &crate::daemon::paths::NodePaths,
 ) -> RunError {
     let super::commands::CliAction::Retry(reference) = &parsed.action else {
         return error;
     };
-    let root = paths.instance_dir.join("intents");
+    let root = paths.node_dir.join("intents");
     if super::retry::preflight_original_actor(
         &root,
         reference.as_str(),

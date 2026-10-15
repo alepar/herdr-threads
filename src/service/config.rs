@@ -2,7 +2,7 @@
 
 use crate::protocol::summary::SummarySettings;
 use crate::{
-    daemon::paths::{InstancePaths, effective_uid},
+    daemon::paths::{NodePaths, effective_uid},
     scheduler::config::SchedulerTiming,
     store::{StoreSettings, messages::MessageLimits},
 };
@@ -67,38 +67,27 @@ impl ServiceConfig {
 
     /// Load optional, private settings for one resolved host instance. A restart
     /// applies edits; the running owner keeps its validated in-memory values.
-    pub fn load(paths: &InstancePaths) -> io::Result<Self> {
-        let instance_dir = &paths.instance_dir;
-        let instance = match fs::symlink_metadata(instance_dir) {
+    pub fn load(paths: &NodePaths) -> io::Result<Self> {
+        let node_dir = &paths.node_dir;
+        let node = match fs::symlink_metadata(node_dir) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(error) => return Err(error),
         };
-        let instances = instance_dir.parent().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "missing instances directory")
-        })?;
-        let state = instances.parent().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "missing state directory")
-        })?;
         // Herdr may supply a 0755 state root; only directories this plugin
         // creates below it must be exactly 0700.
-        crate::daemon::paths::check_owned_state_root(state)?;
-        let directories = [
-            (instances, fs::symlink_metadata(instances)?),
-            (instance_dir.as_path(), instance),
-        ];
-        for (_, metadata) in &directories {
-            if !metadata.file_type().is_dir()
-                || metadata.uid() != effective_uid()
-                || metadata.permissions().mode() & 0o777 != 0o700
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "unsafe instance settings directory",
-                ));
-            }
+        crate::daemon::paths::check_owned_state_root(&paths.state_dir)?;
+        if !node.file_type().is_dir()
+            || node.uid() != effective_uid()
+            || node.permissions().mode() & 0o777 != 0o700
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "unsafe node settings directory",
+            ));
         }
-        let path = instance_dir.join("settings.json");
+        let directories = [(node_dir.as_path(), node)];
+        let path = node_dir.join("settings.json");
         let before = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
@@ -170,7 +159,7 @@ impl ServiceConfig {
             {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
-                    "instance settings directory changed",
+                    "node settings directory changed",
                 ));
             }
         }

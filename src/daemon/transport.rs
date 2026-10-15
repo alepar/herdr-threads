@@ -3,6 +3,7 @@
 mod service_connection;
 mod watch_connection;
 
+use crate::node::NodeUuid;
 use crate::protocol::{
     authority::PeerIdentity,
     commands::Command,
@@ -25,7 +26,6 @@ use tokio::{
     sync::Semaphore,
     task::JoinSet,
 };
-use uuid::Uuid;
 
 pub const MAX_FRAME_BYTES: usize = MAX_WIRE_FRAME_BYTES - 4;
 pub const MAX_CONNECTIONS: usize = 32;
@@ -158,7 +158,7 @@ fn encode_response_scoped(response: &WireResponse, automatic: bool) -> io::Resul
 /// binds or removes a socket path and cannot elect a daemon owner.
 pub async fn serve(
     listener: OwnedAsyncListener,
-    instance_uuid: Uuid,
+    instance_uuid: NodeUuid,
     handler: Arc<dyn LocalService>,
     clock: Arc<dyn Clock>,
     owner_uid: u32,
@@ -180,7 +180,7 @@ pub async fn serve(
 /// The default `serve` path owns a fresh gate per daemon boot.
 pub(crate) async fn serve_with_gate(
     listener: OwnedAsyncListener,
-    instance_uuid: Uuid,
+    instance_uuid: NodeUuid,
     handler: Arc<dyn LocalService>,
     clock: Arc<dyn Clock>,
     owner_uid: u32,

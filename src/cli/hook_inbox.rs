@@ -283,7 +283,7 @@ pub fn append_presented(
 #[derive(Clone)]
 pub struct CompletionLink {
     pub endpoint: PathBuf,
-    pub instance: uuid::Uuid,
+    pub instance: crate::node::NodeUuid,
     pub boot: Option<uuid::Uuid>,
     pub clock: Arc<dyn Clock>,
 }

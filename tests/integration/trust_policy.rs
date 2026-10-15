@@ -291,14 +291,14 @@ impl World {
             _scratch: scratch,
         };
         if let Some(delay) = wake_batch_delay_ms {
-            use herdr_threads::daemon::paths::{InstancePaths, RuntimeContext};
+            use herdr_threads::daemon::paths::{NodePaths, RuntimeContext};
             use std::os::unix::fs::PermissionsExt;
             let context =
                 RuntimeContext::explicit(world.state.clone(), world.herdr.socket.clone(), None)
                     .unwrap();
-            let paths = InstancePaths::resolve(&context).unwrap();
-            paths.prepare_instance_dir().unwrap();
-            let settings_path = paths.instance_dir.join("settings.json");
+            let paths = NodePaths::resolve(&context.state_dir).unwrap();
+            paths.prepare_node_dir().unwrap();
+            let settings_path = paths.node_dir.join("settings.json");
             fs::write(
                 &settings_path,
                 serde_json::to_vec(&json!({"wake_batch_delay_ms": delay})).unwrap(),
@@ -492,7 +492,7 @@ impl World {
         walk(&self.state, name)
     }
     fn database(&self) -> rusqlite::Connection {
-        let path = self.find("threads.sqlite3").expect("daemon database");
+        let path = self.find("herdr-threads.db").expect("daemon database");
         let db = rusqlite::Connection::open_with_flags(
             &path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,

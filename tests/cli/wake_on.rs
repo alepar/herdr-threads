@@ -109,8 +109,8 @@ impl LocalClient for Client {
 
 struct Fixture {
     root: std::path::PathBuf,
-    paths: InstancePaths,
-    instance: uuid::Uuid,
+    paths: NodePaths,
+    instance: crate::node::NodeUuid,
     selection: CooperativeSelection,
     client: Client,
 }
@@ -125,9 +125,9 @@ impl Fixture {
         )
         .unwrap();
         let fixture = Self {
-            paths: InstancePaths::resolve(&runtime).unwrap(),
+            paths: NodePaths::resolve(&runtime.state_dir).unwrap(),
             root,
-            instance: uuid::Uuid::from_u128(1),
+            instance: crate::node::NodeUuid::from_u128(1),
             selection: CooperativeSelection {
                 seat: SeatId::new("seat"),
                 target: HostTargetId::new("pane"),

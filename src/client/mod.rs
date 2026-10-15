@@ -132,7 +132,7 @@ mod tests {
         let client = super::local::LocalSocketClient::new(
             path.clone(),
             Arc::clone(&clock),
-            uuid::Uuid::new_v4(),
+            crate::node::NodeUuid::new_v4(),
             None,
         );
         let denied =
@@ -141,7 +141,7 @@ mod tests {
         let missing = super::local::LocalSocketClient::new(
             dir.join("absent.sock"),
             Arc::clone(&clock),
-            uuid::Uuid::new_v4(),
+            crate::node::NodeUuid::new_v4(),
             None,
         );
         let absent =

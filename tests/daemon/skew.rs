@@ -16,7 +16,7 @@ use herdr_threads::{
         control::request_stop,
         lifecycle::ensure_running_with_timeout,
         ownership::{OwnerLock, read_descriptor},
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
         remedy::{RemedyContext, remedy},
     },
     protocol::{
@@ -65,8 +65,8 @@ fn fake_other_version_daemon_main() {
     });
     let context =
         RuntimeContext::explicit(PathBuf::from(state), PathBuf::from(host), None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    let lock = OwnerLock::acquire(&paths).unwrap();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let lock = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let listener = lock.bind_socket().unwrap();
     lock.publish_endpoint(&listener, FAKE_SOFTWARE, OLD_PROTOCOL)
         .unwrap();
@@ -97,8 +97,8 @@ impl Scratch {
     fn context(&self) -> RuntimeContext {
         RuntimeContext::explicit(self.state.clone(), self.host.clone(), None).unwrap()
     }
-    fn paths(&self) -> InstancePaths {
-        InstancePaths::resolve(&self.context()).unwrap()
+    fn paths(&self) -> NodePaths {
+        NodePaths::resolve(&self.context().state_dir).unwrap()
     }
     /// This CLI with the scratch context (isolated HOME and harness config).
     fn cli(&self, args: &[&str]) -> Output {
@@ -163,7 +163,7 @@ impl Fake {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             if let Ok(Some(instance)) =
-                herdr_threads::daemon::ownership::read_existing_namespace(&paths)
+                herdr_threads::daemon::ownership::read_node_uuid_hint(&paths)
                 && let Ok(descriptor) = read_descriptor(&paths, instance)
                 && descriptor.pid == fake.0.id()
             {
@@ -226,7 +226,7 @@ fn ensure(
 }
 
 fn lock_free(scratch: &Scratch) -> bool {
-    OwnerLock::acquire(&scratch.paths()).is_ok()
+    OwnerLock::acquire_with_test_hint(&scratch.paths()).is_ok()
 }
 
 /// Kills: decoding the other version's descriptor or reply before comparing
@@ -284,7 +284,7 @@ fn old_cli_gets_a_decodable_skew_error() {
     let exchange = |version: u16, request_id: &str, extra: &str, kind: &str| {
         let body = format!(
             r#"{{"version":{version},"request_id":"{request_id}","expected_instance":"{}"{extra},"command":{{"kind":"{kind}","args":{{"unrecognized_old_payload":true}}}}}}"#,
-            descriptor.instance_uuid
+            descriptor.node_uuid
         );
         let mut stream = UnixStream::connect(&descriptor.endpoint).unwrap();
         stream
@@ -303,7 +303,7 @@ fn old_cli_gets_a_decodable_skew_error() {
         let response: WireResponse = serde_json::from_slice(&reply).expect("decodable");
         assert_eq!(response.version, version, "echoes the sender's version");
         assert_eq!(response.request_id, request_id);
-        assert_eq!(response.instance, descriptor.instance_uuid.to_string());
+        assert_eq!(response.instance, descriptor.node_uuid.to_string());
         let error = response.result.unwrap_err();
         assert_eq!(error.code, ErrorCode::UnknownWireVersion);
         assert!(error.detail.contains("daemon stop"), "{}", error.detail);
@@ -405,7 +405,7 @@ fn stop_refuses_a_pid_whose_boot_id_does_not_match() {
     let scratch = Scratch::new();
     let mut fake = Fake::start(&scratch);
     let paths = scratch.paths();
-    let instance = herdr_threads::daemon::ownership::read_existing_namespace(&paths)
+    let instance = herdr_threads::daemon::ownership::read_node_uuid_hint(&paths)
         .unwrap()
         .unwrap();
     let published = read_descriptor(&paths, instance).unwrap();

@@ -1,6 +1,6 @@
 use herdr_threads::{
     archival_legacy::Source,
-    daemon::paths::{InstancePaths, RuntimeContext},
+    daemon::paths::{NodePaths, RuntimeContext},
     protocol::output::ContinuationContext,
 };
 pub(super) struct Temp(std::path::PathBuf);
@@ -14,14 +14,14 @@ impl Drop for Temp {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
-pub(super) fn source() -> (Temp, InstancePaths, Source) {
+pub(super) fn source() -> (Temp, NodePaths, Source) {
     let dir = Temp(std::env::temp_dir().join(format!("ht-archive-{}", uuid::Uuid::new_v4())));
     std::fs::create_dir(&dir.0).unwrap();
     let context =
         RuntimeContext::explicit(dir.path().to_owned(), dir.path().join("host.sock"), None)
             .unwrap();
-    let paths = InstancePaths::resolve_read_only(&context).unwrap();
-    std::fs::create_dir_all(&paths.instance_dir).unwrap();
+    let paths = NodePaths::resolve_read_only(&context.state_dir).unwrap();
+    std::fs::create_dir_all(&paths.node_dir).unwrap();
     let source = Source::new(
         &paths,
         "i".into(),
@@ -63,10 +63,10 @@ fn archival_legacy_absence_and_orphan_progress_are_covered_read_only() {
         .coverage
         .expect("absence is covered");
     assert!(source.validate(&first));
-    assert!(!paths.instance_dir.join("intents").exists());
-    std::fs::create_dir(paths.instance_dir.join("intents")).unwrap();
+    assert!(!paths.node_dir.join("intents").exists());
+    std::fs::create_dir(paths.node_dir.join("intents")).unwrap();
     std::fs::write(
-        paths.instance_dir.join("intents/handoff-orphan.progress"),
+        paths.node_dir.join("intents/handoff-orphan.progress"),
         b"broken",
     )
     .unwrap();
@@ -94,7 +94,7 @@ fn archival_legacy_absence_and_orphan_progress_are_covered_read_only() {
 #[test]
 fn archival_legacy_noncompound_and_malformed_veto_until_fresh_absence() {
     let (_dir, paths, mut source) = source();
-    let root = paths.instance_dir.join("intents");
+    let root = paths.node_dir.join("intents");
     std::fs::create_dir(&root).unwrap();
     let file = root.join("00000000000000000001-op.intent");
     for bytes in [
@@ -108,39 +108,30 @@ malformed tail"#,
     std::fs::remove_file(file).unwrap();
     assert!(complete_scan(&mut source).coverage.is_some());
 }
-fn context(paths: &InstancePaths) -> ContinuationContext {
+fn context(paths: &NodePaths) -> ContinuationContext {
     ContinuationContext {
-        state_dir: Some(
-            paths
-                .instance_dir
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .to_string_lossy()
-                .into(),
-        ),
-        host: Some(paths.locator.clone()),
+        state_dir: Some(paths.state_dir.to_string_lossy().into()),
+        host: Some(paths.state_dir.join("host.sock").to_string_lossy().into()),
     }
 }
-pub(super) fn compound(paths: &InstancePaths) -> herdr_threads::cli::journal::IntentRef {
+pub(super) fn compound(paths: &NodePaths) -> herdr_threads::cli::journal::IntentRef {
     compound_in(paths, context(paths))
 }
 fn compound_in(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     context: ContinuationContext,
 ) -> herdr_threads::cli::journal::IntentRef {
     legacy_compound(paths, context, false)
 }
 fn legacy_compound(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     context: ContinuationContext,
     new_thread: bool,
 ) -> herdr_threads::cli::journal::IntentRef {
     legacy_compound_with_body(paths, context, new_thread, "body".into())
 }
 fn legacy_compound_with_body(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     context: ContinuationContext,
     new_thread: bool,
     body: String,
@@ -180,7 +171,7 @@ fn legacy_compound_with_body(
         invite_key: id.invite_key,
         send_key: id.send_key,
     };
-    Journal::open(paths.instance_dir.join("intents"))
+    Journal::open(paths.node_dir.join("intents"))
         .unwrap()
         .record(
             IntentScope::Cooperative {
@@ -216,13 +207,13 @@ fn archival_legacy_aliases_preserve_frozen_bytes_and_digest() {
         host: Some(alias.join("host.sock").to_string_lossy().into()),
     };
     let reference = compound_in(&paths, aliased.clone());
-    let file = paths.instance_dir.join("intents").join(format!(
+    let file = paths.node_dir.join("intents").join(format!(
         "{:020}-{}.intent",
         reference.ordinal,
         reference.operation.as_str()
     ));
     let original = std::fs::read(&file).unwrap();
-    let header = Journal::open(paths.instance_dir.join("intents"))
+    let header = Journal::open(paths.node_dir.join("intents"))
         .unwrap()
         .load(&reference)
         .unwrap()
@@ -282,7 +273,7 @@ fn archival_legacy_unknown_or_distinct_full_namespaces_veto() {
             host: current.host.clone(),
         });
     }
-    let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+    let journal = Journal::open(paths.node_dir.join("intents")).unwrap();
     for frozen in cases {
         let reference = compound_in(&paths, frozen.clone());
         let scan = complete_scan(&mut source);
@@ -301,7 +292,7 @@ fn archival_legacy_unknown_or_distinct_full_namespaces_veto() {
 fn archival_legacy_valid_noncompound_is_a_transient_coverage_veto() {
     use herdr_threads::cli::journal::{IntentScope, Journal, SemanticMutation};
     let (_dir, paths, mut source) = source();
-    let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+    let journal = Journal::open(paths.node_dir.join("intents")).unwrap();
     let id = super::handoff_fences::identity();
     let reference = journal
         .record(
@@ -339,7 +330,7 @@ fn archival_legacy_valid_noncompound_is_a_transient_coverage_veto() {
 #[test]
 fn archival_legacy_partial_pages_and_cancel_never_claim_coverage() {
     let (_dir, paths, mut source) = source();
-    let root = paths.instance_dir.join("intents");
+    let root = paths.node_dir.join("intents");
     std::fs::create_dir(&root).unwrap();
     for n in 0..100 {
         std::fs::write(root.join(format!("handoff-{n}.progress")), b"orphan").unwrap();
@@ -362,7 +353,7 @@ fn archival_legacy_partial_pages_and_cancel_never_claim_coverage() {
 fn archival_legacy_unsafe_roots_files_and_caps_veto() {
     use std::os::unix::fs::symlink;
     let (dir, paths, mut source) = source();
-    let root = paths.instance_dir.join("intents");
+    let root = paths.node_dir.join("intents");
     symlink(dir.path(), &root).unwrap();
     assert!(source.scan(|| false).is_err());
     std::fs::remove_file(&root).unwrap();
@@ -385,7 +376,7 @@ fn archival_legacy_unsafe_roots_files_and_caps_veto() {
 fn archival_legacy_false_kind_digest_and_malformed_compound_tails_veto() {
     let (_dir, paths, mut source) = source();
     let reference = compound(&paths);
-    let path = paths.instance_dir.join("intents").join(format!(
+    let path = paths.node_dir.join("intents").join(format!(
         "{:020}-{}.intent",
         reference.ordinal,
         reference.operation.as_str()
@@ -456,14 +447,14 @@ fn archival_legacy_captured_hint_cannot_revive_completion() {
 }
 
 pub(super) fn modern_compound(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     bootstrap: bool,
     new_thread: bool,
 ) -> herdr_threads::cli::journal::IntentRef {
     modern_compound_with_body(paths, bootstrap, new_thread, "work".into())
 }
 fn modern_compound_with_body(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     bootstrap: bool,
     new_thread: bool,
     body: String,
@@ -497,7 +488,7 @@ fn modern_compound_with_body(
             recipient: herdr_threads::protocol::ids::SeatId::new("recipient"),
         }))
     };
-    Journal::open(paths.instance_dir.join("intents"))
+    Journal::open(paths.node_dir.join("intents"))
         .unwrap()
         .record(
             id.scope,
@@ -512,7 +503,7 @@ fn archival_legacy_bootstrap_existing_and_new_thread_are_bounded_readonly_hints(
     for new_thread in [false, true] {
         let (_dir, paths, mut source) = source();
         let reference = modern_compound(&paths, true, new_thread);
-        let file = paths.instance_dir.join("intents").join(format!(
+        let file = paths.node_dir.join("intents").join(format!(
             "{:020}-{}.intent",
             reference.ordinal,
             reference.operation.as_str()
@@ -558,7 +549,7 @@ fn maximum_escaped_handoff_bodies_survive_real_archival_origin_and_terminal_load
             "delivery" => modern_compound_with_body(&paths, false, false, body),
             _ => modern_compound_with_body(&paths, true, false, body),
         };
-        let file = paths.instance_dir.join("intents").join(format!(
+        let file = paths.node_dir.join("intents").join(format!(
             "{:020}-{}.intent",
             reference.ordinal,
             reference.operation.as_str()
@@ -586,7 +577,7 @@ fn maximum_escaped_handoff_bodies_survive_real_archival_origin_and_terminal_load
 }
 
 pub(super) fn scanner_store(
-    paths: &InstancePaths,
+    paths: &NodePaths,
 ) -> (herdr_threads::store::SqliteStore, rusqlite::Connection) {
     use herdr_threads::store::{SqliteStore, StoreSettings, connection::StoreContext};
     let store = SqliteStore::new(
@@ -740,7 +731,7 @@ fn archival_legacy_selected_source_cannot_import_into_another_database() {
 }
 
 fn delivery_terminal(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     reference: &herdr_threads::cli::journal::IntentRef,
 ) -> (std::path::PathBuf, Vec<u8>) {
     use herdr_threads::protocol::{
@@ -749,7 +740,7 @@ fn delivery_terminal(
         results::CommandResult,
     };
     use sha2::{Digest, Sha256};
-    let original_path = paths.instance_dir.join("intents").join(format!(
+    let original_path = paths.node_dir.join("intents").join(format!(
         "{:020}-{}.intent",
         reference.ordinal,
         reference.operation.as_str()
@@ -769,7 +760,7 @@ fn delivery_terminal(
         serde_json::to_string(&report_digest).unwrap()
     );
     let terminal = serde_json::json!({"version":1,"original":original,"completed":HandoffResult {compound:OperationId::new("bootstrap"),thread:Some(ThreadId::new("t")),state:HandoffState::Completed},"progress":progress,"progress_digest":format!("{:x}",Sha256::digest(progress_bytes.as_bytes()))});
-    let path = paths.instance_dir.join("intents").join(format!(
+    let path = paths.node_dir.join("intents").join(format!(
         "delivery-{:020}-{}.terminal",
         reference.ordinal,
         reference.operation.as_str()
@@ -857,7 +848,7 @@ fn archival_legacy_missing_bootstrap_cannot_be_forgotten_between_pages() {
     for n in 0..2 {
         std::fs::write(
             paths
-                .instance_dir
+                .node_dir
                 .join("intents")
                 .join(format!("handoff-orphan-{n}.progress")),
             b"orphan",
@@ -908,7 +899,7 @@ fn archival_legacy_modern_frozen_claim_namespace_digest_and_progress_are_strict(
     for bootstrap in [false, true] {
         let (dir, paths, mut source) = source();
         let reference = modern_compound(&paths, bootstrap, false);
-        let path = paths.instance_dir.join("intents").join(format!(
+        let path = paths.node_dir.join("intents").join(format!(
             "{:020}-{}.intent",
             reference.ordinal,
             reference.operation.as_str()
@@ -954,7 +945,7 @@ fn archival_legacy_modern_frozen_claim_namespace_digest_and_progress_are_strict(
         );
         std::fs::write(&path, &original).unwrap();
         let progress = paths
-            .instance_dir
+            .node_dir
             .join("intents")
             .join(format!("handoff-{}.progress", reference.operation.as_str()));
         for bytes in [
@@ -1003,7 +994,7 @@ fn archival_legacy_delivery_terminal_malformed_or_contradictory_records_veto() {
     }
     std::fs::write(&path, &original).unwrap();
     let progress = paths
-        .instance_dir
+        .node_dir
         .join("intents")
         .join(format!("handoff-{}.progress", reference.operation.as_str()));
     std::fs::write(&progress, b"{}").unwrap();
@@ -1020,7 +1011,7 @@ fn archival_legacy_delivery_terminal_malformed_or_contradictory_records_veto() {
 }
 
 fn linked_archival_fixture(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     source: &mut Source,
     new_thread: bool,
 ) -> (
@@ -1059,7 +1050,7 @@ fn linked_archival_fixture(
     }
     id.payload.handoff_key = child_reference.operation.clone();
     id.digest = id.semantic_digest().unwrap();
-    Journal::open(paths.instance_dir.join("intents"))
+    Journal::open(paths.node_dir.join("intents"))
         .unwrap()
         .record(
             id.scope.clone(),
@@ -1243,7 +1234,7 @@ fn archival_legacy_bootstrap_known_progress_is_bounded_exact_and_never_authority
     let reference = modern_compound(&paths, true, false);
     let id = bootstrap_hint(&complete_scan(&mut source));
     let path = paths
-        .instance_dir
+        .node_dir
         .join("intents")
         .join(format!("handoff-{}.progress", reference.operation.as_str()));
     let mut created = super::topology_handoff::created();
@@ -1539,7 +1530,7 @@ fn archival_legacy_many_bootstraps_have_no_cardinality_cap_and_terminal_during_s
     for n in 0..100 {
         std::fs::write(
             paths
-                .instance_dir
+                .node_dir
                 .join("intents")
                 .join(format!("handoff-{n}.progress")),
             b"orphan",
@@ -1550,7 +1541,7 @@ fn archival_legacy_many_bootstraps_have_no_cardinality_cap_and_terminal_during_s
     assert!(first.pending);
     assert!(first.coverage.is_none());
     let original =
-        herdr_threads::cli::journal::Journal::open(paths.instance_dir.join("intents")).unwrap();
+        herdr_threads::cli::journal::Journal::open(paths.node_dir.join("intents")).unwrap();
     let reference = original.resolve_recovery_ref("local:1").unwrap();
     let pending = original.load(&reference).unwrap();
     let herdr_threads::cli::journal::SemanticMutation::Frozen { claim, mutation } =
@@ -1601,7 +1592,7 @@ fn archival_legacy_completed_bootstrap_requires_its_exact_canonical_completed_ch
     .unwrap();
     tx.commit().unwrap();
     let journal =
-        herdr_threads::cli::journal::Journal::open(paths.instance_dir.join("intents")).unwrap();
+        herdr_threads::cli::journal::Journal::open(paths.node_dir.join("intents")).unwrap();
     let child = journal.resolve_recovery_ref("local:1").unwrap();
     journal.complete(&child).unwrap();
     let scan = complete_scan(&mut source);
@@ -1636,7 +1627,7 @@ fn archival_legacy_unconfirmed_delivery_terminal_cannot_be_forgotten_between_pag
     for n in 0..2 {
         std::fs::write(
             paths
-                .instance_dir
+                .node_dir
                 .join("intents")
                 .join(format!("handoff-orphan-{n}.progress")),
             b"orphan",
@@ -1694,7 +1685,7 @@ fn archival_legacy_ordinary_import_error_stays_vetoed_across_pages() {
     for n in 0..2 {
         std::fs::write(
             paths
-                .instance_dir
+                .node_dir
                 .join("intents")
                 .join(format!("handoff-orphan-{n}.progress")),
             b"orphan",
@@ -1727,7 +1718,7 @@ fn archival_legacy_queued_final_coverage_observes_earlier_deciding_veto() {
     for n in 0..2 {
         std::fs::write(
             paths
-                .instance_dir
+                .node_dir
                 .join("intents")
                 .join(format!("handoff-orphan-{n}.progress")),
             b"orphan",
@@ -1770,7 +1761,7 @@ fn archival_legacy_queued_final_coverage_observes_earlier_deciding_veto() {
         .unwrap(),
         "queued final coverage must observe the earlier deciding veto"
     );
-    std::fs::remove_dir_all(paths.instance_dir.join("intents")).unwrap();
+    std::fs::remove_dir_all(paths.node_dir.join("intents")).unwrap();
     let fresh_absence = source.scan(|| false).unwrap();
     assert!(fresh_absence.coverage.is_some());
     import_scan(&store, &fresh_absence).unwrap();
@@ -1824,7 +1815,7 @@ fn archival_legacy_fresh_traversal_rechecks_terminal_and_generation_without_clea
         .unwrap(),
         "old samples can only veto"
     );
-    std::fs::remove_dir_all(paths.instance_dir.join("intents")).unwrap();
+    std::fs::remove_dir_all(paths.node_dir.join("intents")).unwrap();
     let absent = complete_scan(&mut source);
     assert_ne!(absent.coverage, Some(generation));
     import_scan(&store, &absent).unwrap();
@@ -1892,7 +1883,7 @@ fn archival_legacy_modern_header_rejects_nonjournal_reference() {
         for malformed in ["ordinal", "operation"] {
             let (_dir, paths, mut source) = source();
             let reference = modern_compound(&paths, bootstrap, false);
-            let original = paths.instance_dir.join("intents").join(format!(
+            let original = paths.node_dir.join("intents").join(format!(
                 "{:020}-{}.intent",
                 reference.ordinal,
                 reference.operation.as_str()
@@ -1914,7 +1905,7 @@ fn archival_legacy_modern_header_rejects_nonjournal_reference() {
                 header["reference"]["ordinal"].as_u64().unwrap(),
                 header["reference"]["operation"].as_str().unwrap()
             );
-            std::fs::write(paths.instance_dir.join("intents").join(filename), changed).unwrap();
+            std::fs::write(paths.node_dir.join("intents").join(filename), changed).unwrap();
             let scan = complete_scan(&mut source);
             assert!(
                 scan.coverage.is_none(),
@@ -1929,7 +1920,7 @@ fn archival_legacy_modern_header_rejects_nonjournal_reference() {
 fn archival_legacy_main539_join_intent_vetoes_without_authorizing_or_rewriting() {
     use herdr_threads::cli::journal::{IntentScope, Journal, SemanticMutation};
     let (_dir, paths, mut source) = source();
-    let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+    let journal = Journal::open(paths.node_dir.join("intents")).unwrap();
     let id = super::handoff_fences::identity();
     let reference = journal
         .record(
@@ -1947,7 +1938,7 @@ fn archival_legacy_main539_join_intent_vetoes_without_authorizing_or_rewriting()
             0,
         )
         .unwrap();
-    let path = paths.instance_dir.join("intents").join(format!(
+    let path = paths.node_dir.join("intents").join(format!(
         "{:020}-{}.intent",
         reference.ordinal,
         reference.operation.as_str()

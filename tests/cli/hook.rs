@@ -1971,7 +1971,7 @@ fn unavailable_daemon_is_reported_only_for_top_level_lifecycle() {
 fn hook_refuses_previous_protocol_daemon_before_send() {
     use crate::daemon::{
         ownership::OwnerLock,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
     };
     use crate::protocol::wire::PROTOCOL_VERSION;
     let root = private_root();
@@ -1986,8 +1986,8 @@ fn hook_refuses_previous_protocol_daemon_before_send() {
         None,
     )
     .unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    let lock = OwnerLock::acquire(&paths).unwrap();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let lock = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     // Bound but never accepted: a client that sent anyway would block.
     let listener = lock.bind_socket().unwrap();
     lock.publish_endpoint(&listener, "0.0.1", PROTOCOL_VERSION - 1)
@@ -2614,7 +2614,7 @@ mod parse_failure_report {
     fn parse_failure_report_skips_a_previous_protocol_daemon() {
         use crate::daemon::{
             ownership::OwnerLock,
-            paths::{InstancePaths, RuntimeContext},
+            paths::{NodePaths, RuntimeContext},
         };
         use crate::protocol::wire::PROTOCOL_VERSION;
         let root = private_root();
@@ -2629,8 +2629,8 @@ mod parse_failure_report {
             None,
         )
         .unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
-        let lock = OwnerLock::acquire(&paths).unwrap();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        let lock = OwnerLock::acquire_with_test_hint(&paths).unwrap();
         // Bound but never accepted: a client that sent anyway would block.
         let listener = lock.bind_socket().unwrap();
         lock.publish_endpoint(&listener, "0.0.1", PROTOCOL_VERSION - 1)
@@ -2876,9 +2876,9 @@ mod continuity_gate {
 
     struct Pane {
         dir: PathBuf,
-        paths: InstancePaths,
+        paths: NodePaths,
         target: HostTargetId,
-        instance: uuid::Uuid,
+        instance: crate::node::NodeUuid,
         context: RuntimeContext,
     }
     impl Pane {
@@ -2891,13 +2891,13 @@ mod continuity_gate {
             std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
             let context =
                 RuntimeContext::explicit(dir.join("state"), dir.join("host.sock"), None).unwrap();
-            let paths = InstancePaths::resolve(&context).unwrap();
-            paths.prepare_instance_dir().unwrap();
+            let paths = NodePaths::resolve(&context.state_dir).unwrap();
+            paths.prepare_node_dir().unwrap();
             Self {
                 dir,
                 paths,
                 target: HostTargetId::new("w1:p1"),
-                instance: uuid::Uuid::new_v4(),
+                instance: crate::node::NodeUuid::new_v4(),
                 context,
             }
         }
@@ -2931,7 +2931,7 @@ mod continuity_gate {
                 .unwrap()
         }
         fn journal(&self) -> Journal {
-            Journal::open(self.paths.instance_dir.join("intents")).unwrap()
+            Journal::open(self.paths.node_dir.join("intents")).unwrap()
         }
         fn pending(&self) -> Option<crate::cli::journal::PendingIntent> {
             self.journal()
@@ -3304,7 +3304,7 @@ mod continuity_gate {
     fn a_committed_reattachment_whose_install_fails_says_so() {
         let pane = Pane::new();
         // A regular file where the seats' `contexts` directory must go.
-        std::fs::write(pane.paths.instance_dir.join("contexts"), b"in the way").unwrap();
+        std::fs::write(pane.paths.node_dir.join("contexts"), b"in the way").unwrap();
         let daemon = Daemon::new(vec![reattached("saved", 2)]);
         let result = pane
             .call(&daemon)
@@ -3425,7 +3425,7 @@ mod continuity_gate {
     fn continuity_request_carries_the_hook_fingerprint() {
         let pane = Pane::new();
         // The install fails, so the recorded intent stays to be inspected.
-        std::fs::write(pane.paths.instance_dir.join("contexts"), b"in the way").unwrap();
+        std::fs::write(pane.paths.node_dir.join("contexts"), b"in the way").unwrap();
         let daemon = Daemon::new(vec![reattached("saved", 2)]);
         let result = pane
             .call(&daemon)
@@ -3791,7 +3791,7 @@ mod continuity_gate {
     fn tool_event_never_scans_or_replays_continuity_intents() {
         let pane = Pane::new();
         let (reference, _) = pane.record("S-1");
-        let path = pane.paths.instance_dir.join("intents");
+        let path = pane.paths.node_dir.join("intents");
         let intent_file = std::fs::read_dir(&path)
             .unwrap()
             .map(|entry| entry.unwrap().path())
@@ -4678,8 +4678,8 @@ fn child_lifecycle_context(harness: Harness, native_event: &str) -> String {
         None,
     )
     .unwrap();
-    let paths = InstancePaths::resolve(&runtime).unwrap();
-    let lock = OwnerLock::acquire(&paths).unwrap();
+    let paths = NodePaths::resolve(&runtime.state_dir).unwrap();
+    let lock = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let listener = lock.bind_socket().unwrap();
     lock.publish_endpoint(&listener, env!("CARGO_PKG_VERSION"), PROTOCOL_VERSION)
         .unwrap();
@@ -4801,7 +4801,7 @@ fn concise_native_context_explains_verified_recipient_routing() {
         .concat();
         let actions = next_actions(&prefix, None);
         let routing = CommandRouting::from_context(
-            "00000000-0000-0000-0000-0000000000a1",
+            "000000000000000000000000000000a1",
             &ContinuationContext {
                 state_dir: Some(target.display().to_string()),
                 host: Some(host.display().to_string()),
@@ -4933,8 +4933,8 @@ fn two_installed_state_targets_share_endpoint_but_have_distinct_command_routing_
     let mut groups = Vec::new();
     let mut configs: Vec<std::path::PathBuf> = Vec::new();
     for (state, id, profile) in [
-        (&state_a, "00000000-0000-0000-0000-0000000000a1", "claude-a"),
-        (&state_b, "00000000-0000-0000-0000-0000000000b1", "claude-b"),
+        (&state_a, "000000000000000000000000000000a1", "claude-a"),
+        (&state_b, "000000000000000000000000000000b1", "claude-b"),
     ] {
         let target = ContinuationContext {
             state_dir: Some(state.display().to_string()),
@@ -5005,7 +5005,7 @@ fn two_installed_state_targets_share_endpoint_but_have_distinct_command_routing_
             serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
         assert_eq!(config["hooks"]["SessionStart"].as_array().unwrap().len(), 1);
     }
-    let expected_b = serde_json::json!({"instance":"00000000-0000-0000-0000-0000000000b1", "state_dir":state_b.display().to_string(), "host_endpoint":host.display().to_string()});
+    let expected_b = serde_json::json!({"instance":"000000000000000000000000000000b1", "state_dir":state_b.display().to_string(), "host_endpoint":host.display().to_string()});
     assert_ne!(
         groups[0], expected_b,
         "a verified ordinary A group cannot supersede B"
@@ -5025,7 +5025,7 @@ fn two_installed_state_targets_share_endpoint_but_have_distinct_command_routing_
         host: Some(host.display().to_string()),
     };
     let b_routing =
-        CommandRouting::from_context("00000000-0000-0000-0000-0000000000b1", &target_b).unwrap();
+        CommandRouting::from_context("000000000000000000000000000000b1", &target_b).unwrap();
     assert_eq!(
         serde_json::to_value(&b_routing).unwrap(),
         expected_b,
@@ -5066,7 +5066,7 @@ fn two_installed_state_targets_share_endpoint_but_have_distinct_command_routing_
         host: Some(host.display().to_string()),
     };
     let same_uuid_other_pair =
-        CommandRouting::from_context("00000000-0000-0000-0000-0000000000b1", &target_a).unwrap();
+        CommandRouting::from_context("000000000000000000000000000000b1", &target_a).unwrap();
     assert_ne!(
         serde_json::to_value(same_uuid_other_pair).unwrap(),
         expected_b,
@@ -5090,12 +5090,10 @@ fn unresolved_or_oversized_routing_metadata_never_claims_a_matching_group() {
         host: None,
         ..target.clone()
     };
-    assert!(
-        CommandRouting::from_context("00000000-0000-0000-0000-0000000000a1", &missing).is_none()
-    );
+    assert!(CommandRouting::from_context("000000000000000000000000000000a1", &missing).is_none());
     assert!(CommandRouting::from_context("unknown", &target).is_none());
     let long = CommandRouting {
-        instance: uuid::Uuid::nil(),
+        instance: crate::node::NodeUuid::nil(),
         state_dir: "s".repeat(5000),
         host_endpoint: "h".repeat(5000),
     };
@@ -5168,7 +5166,8 @@ fn routing_metadata_yields_to_escaped_main_thread_commands() {
             let prefix = prefix(&root);
             let actions = next_actions(&prefix, Some(&digest));
             let routing = CommandRouting {
-                instance: uuid::Uuid::parse_str("00000000-0000-0000-0000-0000000000a1").unwrap(),
+                instance: crate::node::NodeUuid::parse_str("000000000000000000000000000000a1")
+                    .unwrap(),
                 state_dir: root,
                 host_endpoint: "/private/tmp/herdr.sock".to_owned(),
             };
@@ -5360,9 +5359,9 @@ mod mod_channel_live {
 
     struct Pane {
         dir: PathBuf,
-        paths: InstancePaths,
+        paths: NodePaths,
         target: HostTargetId,
-        instance: uuid::Uuid,
+        instance: crate::node::NodeUuid,
         context: RuntimeContext,
     }
     impl Pane {
@@ -5375,13 +5374,13 @@ mod mod_channel_live {
             std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
             let context =
                 RuntimeContext::explicit(dir.join("state"), dir.join("host.sock"), None).unwrap();
-            let paths = InstancePaths::resolve(&context).unwrap();
-            paths.prepare_instance_dir().unwrap();
+            let paths = NodePaths::resolve(&context.state_dir).unwrap();
+            paths.prepare_node_dir().unwrap();
             Self {
                 dir,
                 paths,
                 target: HostTargetId::new("w1:p1"),
-                instance: uuid::Uuid::new_v4(),
+                instance: crate::node::NodeUuid::new_v4(),
                 context,
             }
         }
@@ -6124,7 +6123,7 @@ fn hermes_codec_keeps_canonical_routing_and_immutable_prepared_kind() {
         host: Some(root.join("herdr.sock").display().to_string()),
     };
     let routing =
-        CommandRouting::from_context("00000000-0000-0000-0000-0000000000a1", &target).unwrap();
+        CommandRouting::from_context("000000000000000000000000000000a1", &target).unwrap();
     let standing = render_context(Role::TopLevel, &[], true).unwrap();
     let context = compose_context(
         &event,
@@ -6154,7 +6153,7 @@ fn hermes_codec_keeps_canonical_routing_and_immutable_prepared_kind() {
         .find_map(|line| line.strip_prefix("Hook command routing (JSON data): "))
         .unwrap();
     let actual: serde_json::Value = serde_json::from_str(line).unwrap();
-    assert_eq!(actual["instance"], "00000000-0000-0000-0000-0000000000a1");
+    assert_eq!(actual["instance"], "000000000000000000000000000000a1");
     assert_eq!(actual["state_dir"], routing.state_dir);
     assert_eq!(actual["host_endpoint"], routing.host_endpoint);
     assert!(context.contains("No permissions granted."));
@@ -6572,9 +6571,9 @@ mod enum_callback {
             None,
         )
         .unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
-        let owner = OwnerLock::acquire(&paths).unwrap();
-        let instance = owner.instance_uuid();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+        let instance = owner.node_uuid().unwrap();
         let listener = owner.bind_socket().unwrap();
         owner
             .publish_endpoint(
@@ -7366,7 +7365,7 @@ mod registered_resume {
     }
     #[derive(serde::Serialize, serde::Deserialize)]
     struct WorkerConfig {
-        instance: uuid::Uuid,
+        instance: crate::node::NodeUuid,
         resolved: bool,
         mode: String,
     }
@@ -7394,9 +7393,9 @@ mod registered_resume {
         let config: WorkerConfig = read_fixture_json(&root.join("worker.json"), 4096).unwrap();
         let context =
             RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
-        let owner = OwnerLock::acquire(&paths).unwrap();
-        assert_eq!(owner.instance_uuid(), config.instance);
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+        assert_eq!(owner.node_uuid().unwrap(), config.instance);
         assert!(
             std::fs::symlink_metadata(&paths.socket_path)
                 .is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
@@ -7467,8 +7466,8 @@ mod registered_resume {
     }
     struct Fixture {
         root: FixtureRoot,
-        paths: InstancePaths,
-        instance: uuid::Uuid,
+        paths: NodePaths,
+        instance: crate::node::NodeUuid,
         service: Arc<Service>,
         boot: Option<uuid::Uuid>,
         proof: Option<EndpointDescriptor>,
@@ -7494,7 +7493,7 @@ mod registered_resume {
                 .unwrap();
             let context =
                 RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
-            let paths = InstancePaths::resolve(&context).unwrap();
+            let paths = NodePaths::resolve(&context.state_dir).unwrap();
             assert!(
                 std::fs::symlink_metadata(&paths.socket_path)
                     .is_err_and(|e| e.kind() == io::ErrorKind::NotFound),
@@ -7504,8 +7503,8 @@ mod registered_resume {
                 !paths.descriptor_path.exists(),
                 "refuse preexisting descriptor"
             );
-            let owner = OwnerLock::acquire(&paths).unwrap();
-            let instance = owner.instance_uuid();
+            let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+            let instance = owner.node_uuid().unwrap();
             drop(owner);
             let mut f = Self {
                 root,
@@ -7556,7 +7555,7 @@ mod registered_resume {
             f
         }
         fn remember_proof(&mut self, proof: EndpointDescriptor) -> io::Result<()> {
-            if proof.instance_uuid != self.instance || proof.endpoint != self.paths.socket_path {
+            if proof.node_uuid != self.instance || proof.endpoint != self.paths.socket_path {
                 return Err(io::Error::other("fixture endpoint namespace/path drift"));
             }
             if self
@@ -7569,7 +7568,7 @@ mod registered_resume {
             fixture_diagnostic!(
                 "registered fixture endpoint: {} state={} instance={} boot={} device={} inode={}",
                 proof.endpoint.display(),
-                self.paths.instance_dir.display(),
+                self.paths.node_dir.display(),
                 self.instance,
                 proof.boot_id,
                 proof.socket_device,
@@ -7684,8 +7683,8 @@ mod registered_resume {
                 if self.paths.descriptor_path.exists() {
                     let actual = read_descriptor(&self.paths, self.instance)?;
                     self.remember_proof(actual)?;
-                    let owner = OwnerLock::acquire(&self.paths)?;
-                    if owner.instance_uuid() != self.instance {
+                    let owner = OwnerLock::acquire_with_test_hint(&self.paths)?;
+                    if owner.node_uuid().unwrap() != self.instance {
                         return Err(io::Error::other("fixture namespace drift"));
                     }
                     let elected = read_descriptor(&self.paths, self.instance)?;
@@ -7738,8 +7737,8 @@ mod registered_resume {
     // exact endpoint after the finite injected worker has stopped.
     struct EndpointRecovery {
         _root: FixtureRoot,
-        paths: InstancePaths,
-        instance: uuid::Uuid,
+        paths: NodePaths,
+        instance: crate::node::NodeUuid,
         boot: uuid::Uuid,
         delayed: Option<std::thread::JoinHandle<()>>,
     }
@@ -7749,8 +7748,8 @@ mod registered_resume {
                 let _ = worker.join();
             }
             if self.paths.socket_path.exists()
-                && let Ok(owner) = OwnerLock::acquire(&self.paths)
-                && owner.instance_uuid() == self.instance
+                && let Ok(owner) = OwnerLock::acquire_with_test_hint(&self.paths)
+                && owner.node_uuid().unwrap() == self.instance
             {
                 let outcome = owner.remove_owned_endpoint(self.boot);
                 fixture_diagnostic!("regression recovery: {outcome:?}");
@@ -7845,8 +7844,7 @@ mod registered_resume {
         )
     }
     fn assert_no_enrollment_intents(f: &Fixture) {
-        let journal =
-            crate::cli::journal::Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+        let journal = crate::cli::journal::Journal::open(f.paths.node_dir.join("intents")).unwrap();
         let page = journal
             .page(&crate::protocol::pagination::PageRequest {
                 cursor: None,
@@ -8127,8 +8125,7 @@ mod registered_resume {
             )
             .to_string()
         );
-        let journal =
-            crate::cli::journal::Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+        let journal = crate::cli::journal::Journal::open(f.paths.node_dir.join("intents")).unwrap();
         assert!(
             journal
                 .pending_continuity(&f.instance.to_string(), &c.target)
@@ -8376,8 +8373,7 @@ mod registered_resume {
         ));
         assert!(f.service.requests().is_empty());
         assert!(f.service.seen.lock().unwrap().is_empty());
-        let journal =
-            crate::cli::journal::Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+        let journal = crate::cli::journal::Journal::open(f.paths.node_dir.join("intents")).unwrap();
         assert!(
             journal
                 .pending_continuity(&f.instance.to_string(), &target)
@@ -8402,7 +8398,7 @@ mod registered_resume {
             let (_, d) = decode(r, &i);
             assert_eq!(d.context_event().unwrap().kind, kind);
             let target = HostTargetId::new("w9:p1");
-            let journal = Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+            let journal = Journal::open(f.paths.node_dir.join("intents")).unwrap();
             let planted = journal
                 .record(
                     IntentScope::Continuity {

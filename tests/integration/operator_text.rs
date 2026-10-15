@@ -5,7 +5,7 @@
 use herdr_threads::{
     daemon::{
         logs::daemon_log_path,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
         remedy::{RemedyContext, remedy},
     },
     protocol::results::ErrorClass,
@@ -65,11 +65,11 @@ impl Scratch {
             .output()
             .unwrap()
     }
-    fn paths(&self) -> InstancePaths {
+    fn paths(&self) -> NodePaths {
         let context =
             RuntimeContext::explicit(self.state.clone(), self.host.clone(), None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
-        paths.prepare_instance_dir().unwrap();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        paths.prepare_node_dir().unwrap();
         paths
     }
 }
@@ -101,7 +101,7 @@ fn ensure_startup_failure_prints_remedy_and_attempt_log() {
     let ensure = scratch.cli(&["daemon", "ensure"]);
     let stderr = text(&ensure.stderr);
     assert_eq!(ensure.status.code(), Some(3), "{stderr}");
-    let files: Vec<_> = fs::read_dir(paths.instance_dir.join("logs"))
+    let files: Vec<_> = fs::read_dir(paths.node_dir.join("logs"))
         .unwrap()
         .flatten()
         .collect();

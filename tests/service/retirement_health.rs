@@ -3,8 +3,8 @@ use herdr_threads::{
     app::SystemClock,
     client::local::LocalSocketClient,
     daemon::{
-        ownership::{OwnerLock, read_descriptor, read_existing_namespace},
-        paths::{InstancePaths, RuntimeContext},
+        ownership::{OwnerLock, read_descriptor, read_node_uuid_hint},
+        paths::{NodePaths, RuntimeContext},
     },
     ports::LocalClient,
     protocol::{
@@ -39,9 +39,9 @@ fn elected_health_sees_late_retirement_and_keeps_exact_error_on_seat_inspect() {
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let context =
         RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    let owner = OwnerLock::acquire(&paths).unwrap();
-    let instance = owner.instance_uuid();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+    let instance = owner.node_uuid().unwrap();
     drop(owner);
     let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()));
     let db = setup.open_writer().unwrap();
@@ -80,7 +80,7 @@ fn elected_health_sees_late_retirement_and_keeps_exact_error_on_seat_inspect() {
     );
     let deadline = Instant::now() + Duration::from_secs(5);
     let descriptor = loop {
-        if let Some(instance) = read_existing_namespace(&paths).unwrap()
+        if let Some(instance) = read_node_uuid_hint(&paths).unwrap()
             && let Ok(descriptor) = read_descriptor(&paths, instance)
         {
             break descriptor;
@@ -92,7 +92,7 @@ fn elected_health_sees_late_retirement_and_keeps_exact_error_on_seat_inspect() {
     let client = LocalSocketClient::new(
         descriptor.endpoint,
         Arc::clone(&clock),
-        descriptor.instance_uuid,
+        descriptor.node_uuid,
         Some(descriptor.boot_id),
     );
     let budget = || CallBudget {

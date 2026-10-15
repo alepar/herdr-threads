@@ -10,7 +10,7 @@ use herdr_threads::{
     client::local::LocalSocketClient,
     daemon::{
         ownership::EndpointDescriptor,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
     },
     ports::LocalClient,
     protocol::{
@@ -34,7 +34,7 @@ struct World {
     root: PathBuf,
     state: PathBuf,
     socket: PathBuf,
-    paths: InstancePaths,
+    paths: NodePaths,
     _host: FakeHost,
     _scratch: Scratch,
 }
@@ -51,13 +51,15 @@ impl World {
         sender["label"] = json!("sender");
         let host = FakeHost::start(&socket, vec![sender, pane("w1:p2", "terminal-b")]);
         let state = root.join("custom-state");
-        let paths = InstancePaths::resolve(
-            &RuntimeContext::explicit(state.clone(), socket.clone(), None).unwrap(),
+        let paths = NodePaths::resolve(
+            &RuntimeContext::explicit(state.clone(), socket.clone(), None)
+                .unwrap()
+                .state_dir,
         )
         .unwrap();
-        paths.prepare_instance_dir().unwrap();
+        paths.prepare_node_dir().unwrap();
         if disabled {
-            let path = paths.instance_dir.join("settings.json");
+            let path = paths.node_dir.join("settings.json");
             fs::write(&path, r#"{"auto_archive_after_ms":0}"#).unwrap();
             fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
         }
@@ -145,7 +147,7 @@ impl World {
         let client = LocalSocketClient::new(
             descriptor.endpoint,
             clock.clone(),
-            descriptor.instance_uuid,
+            descriptor.node_uuid,
             Some(descriptor.boot_id),
         );
         client
@@ -161,14 +163,7 @@ impl World {
 }
 impl Drop for World {
     fn drop(&mut self) {
-        self.state = self
-            .paths
-            .instance_dir
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
+        self.state = self.paths.state_dir.clone();
         let _ = self.command(None, &["daemon", "stop"]).output();
     }
 }
@@ -243,7 +238,7 @@ fn channel_activation_cli_complete_removal_failure_archived_binding_retry_is_cle
             .as_str()
             .unwrap(),
     );
-    let journal_root = w.paths.instance_dir.join("intents");
+    let journal_root = w.paths.node_dir.join("intents");
     let journal = Journal::open(&journal_root).unwrap();
     let key = || OperationId::new(uuid::Uuid::new_v4().to_string());
     // This is a historical journal spelling, not merely a later CLI selector.
@@ -410,18 +405,21 @@ fn channel_activation_cli_complete_removal_failure_archived_binding_retry_is_cle
     // A copied UUID/database in a distinct root cannot authorize historical cleanup.
     let original_state = w.state.clone();
     let copied_state = w.root.join("copied-state");
-    let copied_paths = InstancePaths::resolve(
-        &RuntimeContext::explicit(copied_state.clone(), w.socket.clone(), None).unwrap(),
+    let copied_paths = NodePaths::resolve(
+        &RuntimeContext::explicit(copied_state.clone(), w.socket.clone(), None)
+            .unwrap()
+            .state_dir,
     )
     .unwrap();
-    copied_paths.prepare_instance_dir().unwrap();
+    copied_paths.prepare_node_dir().unwrap();
     db.execute(
         "VACUUM INTO ?1",
         [copied_paths.database_path.to_str().unwrap()],
     )
     .unwrap();
-    fs::copy(&w.paths.namespace_path, &copied_paths.namespace_path).unwrap();
-    let copied_journal = copied_paths.instance_dir.join("intents");
+    fs::copy(&w.paths.node_json_path, &copied_paths.node_json_path).unwrap();
+    fs::copy(&w.paths.key_path, &copied_paths.key_path).unwrap();
+    let copied_journal = copied_paths.node_dir.join("intents");
     fs::DirBuilder::new()
         .mode(0o700)
         .create(&copied_journal)

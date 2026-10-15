@@ -132,7 +132,7 @@ fn child_adapter_cannot_publish_even_with_frozen_top_level_request() {
     }
     let j = ContextJournal::open(
         &path,
-        uuid::Uuid::new_v4(),
+        crate::node::NodeUuid::new_v4(),
         "seat",
         std::time::Duration::from_millis(5),
     )
@@ -194,7 +194,7 @@ fn claude_same_session_resume_and_clear_use_fresh_external_execution() {
     assert_ne!(clear.native_session, startup.native_session);
     let current = OccupantContext {
         format_version: 1,
-        instance: uuid::Uuid::new_v4(),
+        instance: crate::node::NodeUuid::new_v4(),
         seat: "seat".into(),
         target: "pane".into(),
         harness: Harness::Claude,
@@ -240,7 +240,7 @@ fn claude_lifecycle_declared_child_is_suppressed_without_native_role_attestation
     }
     let journal = ContextJournal::open(
         &path,
-        uuid::Uuid::new_v4(),
+        crate::node::NodeUuid::new_v4(),
         "seat",
         std::time::Duration::from_millis(5),
     )

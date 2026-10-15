@@ -12,7 +12,7 @@ use crate::protocol::{
 use crate::{app::SystemClock, protocol::results::CommandResult, test_support::unserved};
 use std::sync::Mutex;
 
-const INSTANCE: &str = "6f0e5c1e-7c25-4c6a-9d77-0d3c2f5f1a01";
+const INSTANCE: &str = "6f0e5c1e7c254c6a9d770d3c2f5f1a01";
 const BOOT: &str = "6f0e5c1e-7c25-4c6a-9d77-0d3c2f5f1a02";
 
 struct Recorder(Mutex<Vec<&'static str>>);

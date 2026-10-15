@@ -45,8 +45,8 @@ use crate::{
     daemon::{
         control::stop_and_wait,
         lifecycle::ensure_running,
-        ownership::{read_descriptor, read_existing_namespace},
-        paths::{InstancePaths, RuntimeContext},
+        ownership::{read_descriptor, read_node_uuid_hint},
+        paths::{NodePaths, RuntimeContext},
     },
     ports::LocalClient,
     protocol::{
@@ -115,9 +115,15 @@ pub(crate) fn daemon_unavailable() -> RunError {
 /// or removed by `daemon stop`) is the stable exit-3 unavailable error rather
 /// than a raw Io NotFound.
 fn published_endpoint(
-    paths: &InstancePaths,
-) -> Result<(uuid::Uuid, crate::daemon::ownership::EndpointDescriptor), RunError> {
-    let instance = read_existing_namespace(paths)?.ok_or_else(daemon_unavailable)?;
+    paths: &NodePaths,
+) -> Result<
+    (
+        crate::node::NodeUuid,
+        crate::daemon::ownership::EndpointDescriptor,
+    ),
+    RunError,
+> {
+    let instance = read_node_uuid_hint(paths)?.ok_or_else(daemon_unavailable)?;
     match read_descriptor(paths, instance) {
         Ok(descriptor) => Ok((instance, descriptor)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Err(daemon_unavailable()),
@@ -130,8 +136,8 @@ fn published_endpoint(
 /// owner is gone is just an unavailable daemon. `daemon stop` skips this
 /// guard (it is skew-tolerant) and so is not routed through [`connect`].
 fn skew_guard(
-    paths: &InstancePaths,
-    instance: uuid::Uuid,
+    paths: &NodePaths,
+    instance: crate::node::NodeUuid,
     descriptor: &crate::daemon::ownership::EndpointDescriptor,
 ) -> Result<(), RunError> {
     if descriptor.protocol_version == crate::protocol::wire::PROTOCOL_VERSION {
@@ -145,11 +151,11 @@ fn skew_guard(
 
 /// Connect to the published daemon endpoint (see [`published_endpoint`]).
 fn connect(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     clock: &Arc<dyn Clock>,
 ) -> Result<
     (
-        uuid::Uuid,
+        crate::node::NodeUuid,
         crate::daemon::ownership::EndpointDescriptor,
         LocalSocketClient,
     ),
@@ -248,7 +254,7 @@ pub(crate) fn seat_generation<C: LocalClient + ?Sized>(
 /// its context is derived from the environment at `generation` and never saved.
 pub(crate) fn caller_journal(
     contexts: crate::harness::context::ContextJournal,
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     selection: &CooperativeSelection,
     generation: u64,
 ) -> Result<crate::harness::context::ContextJournal, RunError> {
@@ -546,9 +552,9 @@ fn run_parsed_in_pane<W: Write>(
         };
     }
     let original_actor = if let CliAction::Retry(recovery) = &parsed.action {
-        let paths = InstancePaths::resolve_read_only(&context)?;
+        let paths = NodePaths::resolve_read_only(&context.state_dir)?;
         let original = retry::load_original_for_actor(
-            &journal::Journal::read_only(paths.instance_dir.join("intents"))?,
+            &journal::Journal::read_only(paths.node_dir.join("intents"))?,
             recovery.as_str(),
         )?;
         if direct_send::plan(&original.semantic).is_some() {
@@ -558,7 +564,7 @@ fn run_parsed_in_pane<W: Write>(
             };
         }
         Some(retry::preflight_original_actor(
-            paths.instance_dir.join("intents"),
+            paths.node_dir.join("intents"),
             recovery.as_str(),
             parsed.actor,
             &crate::protocol::output::ContinuationContext {
@@ -575,7 +581,7 @@ fn run_parsed_in_pane<W: Write>(
             journal::OriginalActor::HumanOrOperator => actor_route::InvocationActor::Human,
         })
     });
-    let paths = InstancePaths::resolve(&context)?;
+    let paths = NodePaths::resolve(&context.state_dir)?;
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let budget = || CallBudget {
         deadline: MonoInstant(clock.monotonic_now().0.saturating_add(5_000)),
@@ -596,7 +602,7 @@ fn run_parsed_in_pane<W: Write>(
     let try_completed = |parsed: &commands::ParsedCli, writer: &mut W| -> Result<bool, RunError> {
         let (instance, _, client) = connect(&paths, &clock)
             .map_err(|error| direct_send::pre_executor_error(error, parsed, &paths))?;
-        let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+        let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
         let selected_context = crate::protocol::output::ContinuationContext {
             state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
             host: Some(context.host_endpoint.to_string_lossy().into_owned()),
@@ -860,7 +866,7 @@ fn run_parsed_in_pane<W: Write>(
             let client = LocalSocketClient::new(
                 descriptor.endpoint,
                 Arc::clone(&clock),
-                descriptor.instance_uuid,
+                descriptor.node_uuid,
                 Some(descriptor.boot_id),
             );
             client.call(Command::Health, &budget())?
@@ -890,7 +896,7 @@ fn run_parsed_in_pane<W: Write>(
             })
         }
         CliAction::PendingOps(page) => {
-            let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+            let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
             let mut prefix = Vec::new();
             if let Some(state) = &parsed.output.context.state_dir {
                 prefix.extend(["--state-dir".to_owned(), state.clone()]);
@@ -906,7 +912,7 @@ fn run_parsed_in_pane<W: Write>(
         }
         CliAction::Mutation(MutationSpec::Resolve(target)) => {
             let (instance, _, client) = connect(&paths, &clock)?;
-            let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+            let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
             retry::run_new_api_to_writer_discarding_rejection(
                 &journal,
                 IntentScope::ServiceAllocation {
@@ -937,7 +943,7 @@ fn run_parsed_in_pane<W: Write>(
             // Retry needs the daemon; report it unavailable (exit 3, intent
             // kept) before inspecting the local journal.
             let (instance, _, client) = connect(&paths, &clock)?;
-            let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+            let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
             let reference = journal.resolve_recovery_ref(recovery.as_str())?;
             let pending = journal.load(&reference)?;
             commands::reject_inert_handoff(&pending.semantic)?;
@@ -1057,10 +1063,10 @@ fn caller_needs_identity(action: &CliAction) -> bool {
 /// invocation never connects twice.
 struct LazyConnection<C, F> {
     open: F,
-    slot: std::cell::OnceCell<(uuid::Uuid, C)>,
+    slot: std::cell::OnceCell<(crate::node::NodeUuid, C)>,
 }
 
-impl<C, F: Fn() -> Result<(uuid::Uuid, C), RunError>> LazyConnection<C, F> {
+impl<C, F: Fn() -> Result<(crate::node::NodeUuid, C), RunError>> LazyConnection<C, F> {
     fn new(open: F) -> Self {
         Self {
             open,
@@ -1068,7 +1074,7 @@ impl<C, F: Fn() -> Result<(uuid::Uuid, C), RunError>> LazyConnection<C, F> {
         }
     }
 
-    fn get(&self) -> Result<&(uuid::Uuid, C), RunError> {
+    fn get(&self) -> Result<&(crate::node::NodeUuid, C), RunError> {
         if self.slot.get().is_none() {
             let opened = (self.open)()?;
             let _ = self.slot.set(opened);
@@ -1086,7 +1092,7 @@ fn run_caller_scoped<C, F, W>(
     mut parsed: commands::ParsedCli,
     caller_pane: Option<&str>,
     context: &RuntimeContext,
-    paths: &InstancePaths,
+    paths: &NodePaths,
     connection: &LazyConnection<C, F>,
     clock: &Arc<dyn Clock>,
     budget: &dyn Fn() -> CallBudget,
@@ -1094,7 +1100,7 @@ fn run_caller_scoped<C, F, W>(
 ) -> Result<Option<commands::ParsedCli>, RunError>
 where
     C: LocalClient,
-    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+    F: Fn() -> Result<(crate::node::NodeUuid, C), RunError>,
     W: Write,
 {
     if matches!(
@@ -1381,13 +1387,13 @@ fn advance_over_body_read<C: LocalClient + ?Sized>(
 fn body_reader_claim<C, F>(
     output: &OutputSpec,
     caller_pane: Option<&str>,
-    paths: &InstancePaths,
+    paths: &NodePaths,
     connection: &LazyConnection<C, F>,
     clock: &dyn Clock,
 ) -> Option<crate::protocol::authority::CallerClaim>
 where
     C: LocalClient,
-    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+    F: Fn() -> Result<(crate::node::NodeUuid, C), RunError>,
 {
     let Some(caller::CallerOrigin::Agent(env)) = caller::active() else {
         return None;
@@ -1395,7 +1401,7 @@ where
     let pane = parse_pane(caller_pane.filter(|pane| !pane.is_empty())?).ok()?;
     let (_, client) = connection.get().ok()?;
     let seat = pane_seat(client, output, &pane, clock).ok().flatten()?;
-    let instance = read_existing_namespace(paths).ok().flatten()?;
+    let instance = read_node_uuid_hint(paths).ok().flatten()?;
     let selection = CooperativeSelection {
         seat,
         target: pane,
@@ -2208,7 +2214,7 @@ fn ordinary_retry_claim(
 fn replay_selection(
     selection: &CooperativeSelection,
     claim: &crate::protocol::authority::CallerClaim,
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
 ) -> Option<CooperativeSelection> {
     use crate::protocol::authority::CallerRole;
     if selection.seat != claim.seat
@@ -2231,8 +2237,8 @@ fn replay_selection(
 pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
     parsed: commands::ParsedCli,
     selection: &CooperativeSelection,
-    paths: &InstancePaths,
-    instance: uuid::Uuid,
+    paths: &NodePaths,
+    instance: crate::node::NodeUuid,
     client: &C,
     clock: &dyn Clock,
     writer: &mut W,
@@ -2241,7 +2247,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         harness::context::{OccupantContext, SessionReference},
         protocol::{commands::SeatInspectQuery, pagination::PageRequest, results::CommandResult},
     };
-    let replay = ordinary_retry_claim(&parsed, &paths.instance_dir.join("intents"))?;
+    let replay = ordinary_retry_claim(&parsed, &paths.node_dir.join("intents"))?;
     let historical = replay
         .as_ref()
         .and_then(|claim| replay_selection(selection, claim, instance));
@@ -2266,7 +2272,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
     if historical.is_some()
         && let CliAction::Retry(recovery) = &parsed.action
     {
-        let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+        let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
         let reference = journal.resolve_recovery_ref(recovery.as_str())?;
         let pending = journal.load(&reference)?;
         if direct_send::plan(&pending.semantic).is_some() {
@@ -2287,7 +2293,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
     };
     let generation = selected_generation(selection, &inspection)?;
     let mut contexts = seat_contexts(paths, instance, &selection.seat)?;
-    let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+    let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
     let mut current = contexts.current().map_err(context_run_error)?;
     let lifecycle = matches!(
         &parsed.action,
@@ -2433,8 +2439,8 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
 /// Private per-seat cooperative context journal shared by explicit cooperative
 /// CLI calls and native hook entrypoints.
 pub(crate) fn seat_contexts(
-    paths: &InstancePaths,
-    instance: uuid::Uuid,
+    paths: &NodePaths,
+    instance: crate::node::NodeUuid,
     seat: &crate::protocol::ids::SeatId,
 ) -> Result<crate::harness::context::ContextJournal, RunError> {
     crate::harness::context::ContextJournal::open(
@@ -2453,7 +2459,7 @@ pub(crate) fn seat_contexts(
 fn exact_check_in_replay(
     action: &CliAction,
     selection: &CooperativeSelection,
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     journal: &journal::Journal,
     contexts: &crate::harness::context::ContextJournal,
 ) -> Result<bool, RunError> {
@@ -2604,7 +2610,7 @@ fn operator_semantic(mutation: &MutationSpec) -> Option<SemanticMutation> {
 fn run_operator<W: Write>(
     semantic: SemanticMutation,
     parsed: &commands::ParsedCli,
-    paths: &InstancePaths,
+    paths: &NodePaths,
     clock: &Arc<dyn Clock>,
     writer: &mut W,
 ) -> Result<(), RunError> {
@@ -2614,7 +2620,7 @@ fn run_operator<W: Write>(
         ));
     }
     let (instance, _, client) = connect(paths, clock)?;
-    let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+    let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
     retry::run_new_api_to_writer(
         &journal,
         IntentScope::Operator {
@@ -2639,9 +2645,9 @@ fn run_operator<W: Write>(
     Ok(())
 }
 
-pub(crate) fn seat_context_dir(paths: &InstancePaths, seat: &str) -> Result<PathBuf, RunError> {
-    paths.prepare_instance_dir()?;
-    let contexts_root = paths.instance_dir.canonicalize()?.join("contexts");
+pub(crate) fn seat_context_dir(paths: &NodePaths, seat: &str) -> Result<PathBuf, RunError> {
+    paths.prepare_node_dir()?;
+    let contexts_root = paths.node_dir.canonicalize()?.join("contexts");
     crate::daemon::paths::ensure_private_dir(&contexts_root)?;
     let context_dir = contexts_root.join(format!("{:x}", Sha256::digest(seat.as_bytes())));
     crate::daemon::paths::ensure_private_dir(&context_dir)?;
@@ -2672,10 +2678,7 @@ enum CallerNeed {
     SelfMarker,
 }
 
-fn caller_need(
-    parsed: &commands::ParsedCli,
-    paths: &InstancePaths,
-) -> Result<CallerNeed, RunError> {
+fn caller_need(parsed: &commands::ParsedCli, paths: &NodePaths) -> Result<CallerNeed, RunError> {
     if parsed.caller_read_default && !matches!(parsed.action, CliAction::Wire(Command::Inbox(_))) {
         return Ok(CallerNeed::SeatDefault { required: true });
     }
@@ -2713,7 +2716,7 @@ fn caller_need(
             // Retry needs the daemon; report it unavailable (exit 3, intent
             // kept) before inspecting the local journal.
             published_endpoint(paths)?;
-            let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+            let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
             if matches!(
                 retry::load_original_for_actor(&journal, recovery.as_str())?
                     .header
@@ -2783,13 +2786,13 @@ pub(crate) fn require_handoff_capabilities<C: LocalClient + ?Sized>(
 /// Recipient pane selection never changes the caller's cooperative claim.
 fn resolve_recipient_seats<C, F>(
     parsed: &mut commands::ParsedCli,
-    paths: &InstancePaths,
+    paths: &NodePaths,
     connection: &LazyConnection<C, F>,
     clock: &Arc<dyn Clock>,
 ) -> Result<(), RunError>
 where
     C: LocalClient,
-    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+    F: Fn() -> Result<(crate::node::NodeUuid, C), RunError>,
 {
     let recipient = matches!(
         parsed.action,
@@ -2827,7 +2830,7 @@ where
         )?;
     }
     let allocate = |target: crate::protocol::ids::HostTargetId| -> Result<crate::protocol::ids::SeatId, RunError> {
-        let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+        let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
         let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
             &journal, IntentScope::ServiceAllocation { instance: instance.to_string(), target: target.clone() },
             SemanticMutation::ResolveSeat { target }, clock.utc_now().0,
@@ -2904,18 +2907,18 @@ fn derive_caller<C, F>(
     parsed: &mut commands::ParsedCli,
     caller_pane: Option<&str>,
     context: &RuntimeContext,
-    paths: &InstancePaths,
+    paths: &NodePaths,
     connection: &LazyConnection<C, F>,
     clock: &Arc<dyn Clock>,
 ) -> Result<Option<CooperativeSelection>, RunError>
 where
     C: LocalClient,
-    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+    F: Fn() -> Result<(crate::node::NodeUuid, C), RunError>,
 {
-    let replay = ordinary_retry_claim(parsed, &paths.instance_dir.join("intents"))?;
+    let replay = ordinary_retry_claim(parsed, &paths.node_dir.join("intents"))?;
     if let Some(selection) = &parsed.cooperative {
         let instance = match replay {
-            Some(_) => read_existing_namespace(paths)?,
+            Some(_) => read_node_uuid_hint(paths)?,
             None => None,
         };
         if let Some(historical) = replay
@@ -3109,15 +3112,15 @@ fn derive_selection<C, F>(
     parsed: &commands::ParsedCli,
     caller_pane: Option<&str>,
     runtime: &RuntimeContext,
-    paths: &InstancePaths,
+    paths: &NodePaths,
     connection: &LazyConnection<C, F>,
     clock: &Arc<dyn Clock>,
 ) -> Result<CooperativeSelection, RunError>
 where
     C: LocalClient,
-    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+    F: Fn() -> Result<(crate::node::NodeUuid, C), RunError>,
 {
-    let replay = ordinary_retry_claim(parsed, &paths.instance_dir.join("intents"))?;
+    let replay = ordinary_retry_claim(parsed, &paths.node_dir.join("intents"))?;
     let pane = caller_pane.filter(|pane| !pane.is_empty()).ok_or_else(|| {
         caller_not_located(&format!("this command acts as a seat: {CALLER_HELP}"))
     })?;
@@ -3125,7 +3128,7 @@ where
     let (_, client) = connection.get()?;
     let seat = pane_seat(client, &parsed.output, &pane, clock.as_ref())?
         .ok_or_else(|| no_seat_for_pane(&pane))?;
-    let instance = read_existing_namespace(paths)?.ok_or_else(daemon_unavailable)?;
+    let instance = read_node_uuid_hint(paths)?.ok_or_else(daemon_unavailable)?;
     let origin = caller::active();
     if let Some(caller::CallerOrigin::Agent(env)) = &origin {
         // An agent's identity is its harness session: no saved context is read or required.
@@ -3254,7 +3257,7 @@ fn run_launch<W: Write>(
     request: &launch::LaunchRequest,
     parsed: &commands::ParsedCli,
     context: &RuntimeContext,
-    paths: &InstancePaths,
+    paths: &NodePaths,
     clock: &Arc<dyn Clock>,
     writer: &mut W,
 ) -> Result<(), RunError> {
@@ -3268,7 +3271,7 @@ fn run_launch<W: Write>(
     env.state_dir = Some(context.state_dir.clone());
     env.host_endpoint = Some(context.host_endpoint.clone());
     let (instance, _, client) = connect(paths, clock)?;
-    let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+    let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
     let host =
         crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(clock));
     // Without `--name`, the agent is named after the pane's Herdr label. Best
@@ -3293,7 +3296,7 @@ fn run_launch<W: Write>(
             seats: &seats,
             handoff: &client,
             clock: clock.as_ref(),
-            record_dir: Some(&paths.instance_dir),
+            record_dir: Some(&paths.node_dir),
             shell_probe: &shell_probe,
         },
     )?;
@@ -4091,16 +4094,17 @@ mod topology_contract_retry_tests {
     fn topology_contract_retry_refuses_unavailable_or_unconfigured_runtime_before_presentation() {
         let root = std::env::temp_dir().join(format!("topology-retry-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
-        let paths = InstancePaths::resolve(
+        let paths = NodePaths::resolve(
             &crate::daemon::paths::RuntimeContext::explicit(
                 root.join("state"),
                 root.join("host.sock"),
                 None,
             )
-            .unwrap(),
+            .unwrap()
+            .state_dir,
         )
         .unwrap();
-        let journal = journal::Journal::open(paths.instance_dir.join("intents")).unwrap();
+        let journal = journal::Journal::open(paths.node_dir.join("intents")).unwrap();
         for bootstrap in [true, false] {
             for frozen in [true, false] {
                 let semantic = if bootstrap {
@@ -4190,7 +4194,7 @@ mod topology_contract_retry_tests {
                     .unwrap();
                 let contexts = crate::harness::context::ContextJournal::open(
                     &root.join("contexts").canonicalize().unwrap(),
-                    uuid::Uuid::from_u128(1),
+                    crate::node::NodeUuid::from_u128(1),
                     "sender",
                     std::time::Duration::from_millis(20),
                 )

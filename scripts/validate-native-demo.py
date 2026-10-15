@@ -2168,13 +2168,13 @@ class Driver:
 
     # ----- verification -----
     def db_path(self):
-        found = sorted(self.state.glob("**/threads.sqlite3"))
+        found = sorted(self.state.glob("node/herdr-threads.db")) or sorted(self.state.glob("**/threads.sqlite3"))
         return found[0] if found else None
 
     def query(self, sql, params=()):
         path = self.db_path()
         if not path:
-            raise RuntimeError("no threads.sqlite3 under state dir")
+            raise RuntimeError("no herdr-threads.db under state dir")
         connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
         connection.row_factory = sqlite3.Row
         try:

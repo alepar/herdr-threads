@@ -1253,7 +1253,7 @@ pub(crate) mod topology_contract_tests {
             let response = crate::protocol::wire::WireResponse {
                 version: crate::protocol::wire::PROTOCOL_VERSION,
                 request_id: "maximum-body".into(),
-                instance: "00000000-0000-4000-8000-000000000001".into(),
+                instance: "00000000000040008000000000000001".into(),
                 daemon_boot: "00000000-0000-4000-8000-000000000002".into(),
                 result: Ok(crate::protocol::results::CommandResult::Bootstrap(
                     Box::new(result),

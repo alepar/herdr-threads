@@ -11,7 +11,7 @@ use serde_json::json;
 
 fn claim(role: CallerRole) -> CallerClaim {
     CallerClaim {
-        instance: "11111111-1111-4111-8111-111111111111".into(),
+        instance: "11111111111141118111111111111111".into(),
         seat: SeatId::new("s1"),
         binding_generation: 1,
         role,
@@ -429,7 +429,7 @@ fn presentation_confirmation_maximum_valid_controls_fit_actual_framed_wrapper_re
     let response = WireResponse {
         version: PROTOCOL_VERSION,
         request_id: "\"".repeat(128),
-        instance: uuid::Uuid::from_u128(1).to_string(),
+        instance: crate::node::NodeUuid::from_u128(1).to_string(),
         daemon_boot: uuid::Uuid::from_u128(2).to_string(),
         result: Ok(result),
     };

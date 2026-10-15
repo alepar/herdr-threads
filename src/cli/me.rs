@@ -24,7 +24,7 @@ use super::{
     run_selected, seat_contexts, selected_generation,
 };
 use crate::{
-    daemon::paths::{InstancePaths, RuntimeContext},
+    daemon::paths::{NodePaths, RuntimeContext},
     harness::context::{CheckInMode, Harness, Role},
     protocol::{
         commands::{Command, SeatInspectQuery},
@@ -48,12 +48,12 @@ fn budget(clock: &dyn Clock, millis: u64) -> CallBudget {
 /// allocated with service allocation provenance (never an operator act).
 fn resolve_seat(
     client: &crate::client::local::LocalSocketClient,
-    paths: &InstancePaths,
-    instance: uuid::Uuid,
+    paths: &NodePaths,
+    instance: crate::node::NodeUuid,
     pane: &HostTargetId,
     clock: &dyn Clock,
 ) -> Result<SeatId, RunError> {
-    let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+    let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
     let output = OutputSpec::default();
     let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
         &journal,
@@ -166,7 +166,7 @@ pub(crate) fn run_me_init<W: Write>(
     operator: bool,
     caller_pane: Option<&str>,
     context: &RuntimeContext,
-    paths: &InstancePaths,
+    paths: &NodePaths,
     clock: &Arc<dyn Clock>,
     writer: &mut W,
 ) -> Result<(), RunError> {
@@ -224,7 +224,7 @@ pub(crate) fn run_me_init<W: Write>(
     };
     let generation = selected_generation(&selection, &inspection)?;
     let contexts = seat_contexts(paths, instance, &seat)?;
-    let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+    let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
     if operator {
         discard_pending_human_event(&journal, &contexts)?;
     }

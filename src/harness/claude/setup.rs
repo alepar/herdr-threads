@@ -1129,7 +1129,7 @@ fn mod_daemon_status(env: &SetupEnv) -> Value {
     else {
         return unavailable("the Herdr instance could not be resolved");
     };
-    let Ok(paths) = crate::daemon::paths::InstancePaths::resolve_read_only(&context) else {
+    let Ok(paths) = crate::daemon::paths::NodePaths::resolve_read_only(&context.state_dir) else {
         return unavailable("the daemon's paths could not be resolved");
     };
     let clock: std::sync::Arc<dyn crate::protocol::time::Clock> =

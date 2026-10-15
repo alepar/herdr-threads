@@ -1243,7 +1243,7 @@ fn health_v2_fourth_adapter_is_cached_and_domains_have_no_legacy_projection() {
     let response = WireResponse {
         version: PROTOCOL_VERSION,
         request_id: "fourth".into(),
-        instance: uuid::Uuid::new_v4().to_string(),
+        instance: crate::node::NodeUuid::new_v4().to_string(),
         daemon_boot: uuid::Uuid::new_v4().to_string(),
         result: Ok(CommandResult::HarnessHealthV2(report)),
     };
@@ -1718,7 +1718,7 @@ fn hermes_registry_presence_preserves_healthy_legacy_only_health() {
         crate::harness::adapter::DaemonObservation,
     >| {
         let mut inputs = ready_inputs();
-        inputs.instance = uuid::Uuid::from_u128(1);
+        inputs.instance = crate::node::NodeUuid::from_u128(1);
         inputs.boot = uuid::Uuid::from_u128(2);
         inputs.set_harness("claude", cached["claude"].status.clone());
         inputs.set_harness("codex", cached["codex"].status.clone());

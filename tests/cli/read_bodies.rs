@@ -147,19 +147,24 @@ fn fixture(daemon: Daemon, vintage: DaemonVintage) -> Fixture {
         vintage,
     ));
     let root = std::path::PathBuf::from("/nonexistent-herdr-threads-read-cost");
-    let paths = InstancePaths {
-        instance_dir: root.clone(),
-        socket_path: root.join("s"),
+    let paths = NodePaths {
+        state_dir: root.clone(),
+        node_dir: root.clone(),
+        key_path: root.join("k"),
+        node_json_path: root.join("nj"),
+        database_path: root.join("db"),
         lock_path: root.join("l"),
         descriptor_path: root.join("d"),
-        locator_path: root.join("loc"),
-        namespace_path: root.join("n"),
-        database_path: root.join("db"),
-        locator: "test".into(),
+        socket_path: root.join("s"),
     };
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     // Every author is an `actor_label`, so no seat or pane lookup happens.
-    let cache = NickCache::with_pane_source(Box::new(NoPanes), &paths, uuid::Uuid::nil(), &clock);
+    let cache = NickCache::with_pane_source(
+        Box::new(NoPanes),
+        &paths,
+        crate::node::NodeUuid::nil(),
+        &clock,
+    );
     Fixture {
         fake,
         cache,

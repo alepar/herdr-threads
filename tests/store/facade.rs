@@ -34,7 +34,7 @@ impl Clock for FixedClock {
 
 #[test]
 fn service_recovery_audit_is_durable_and_uses_a_reserved_operation_scope() {
-    let instance = uuid::Uuid::new_v4().to_string();
+    let instance = crate::node::NodeUuid::new_v4().to_string();
     let boot = uuid::Uuid::new_v4();
     let path =
         std::env::temp_dir().join(format!("herdr-recovery-audit-{}.db", uuid::Uuid::new_v4()));

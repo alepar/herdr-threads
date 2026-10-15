@@ -1924,7 +1924,7 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
             serde_json::to_vec(&crate::protocol::wire::WireRequest {
                 version: crate::protocol::wire::PROTOCOL_VERSION,
                 request_id: "capacity".into(),
-                expected_instance: "00000000-0000-4000-8000-000000000001".into(),
+                expected_instance: "00000000000040008000000000000001".into(),
                 expected_boot: Some("00000000-0000-4000-8000-000000000002".into()),
                 output: None,
                 command: crate::protocol::commands::Command::AutomaticBootstrap(Box::new(
@@ -2086,7 +2086,7 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
         let wire = serde_json::to_vec(&crate::protocol::wire::WireResponse {
             version: crate::protocol::wire::PROTOCOL_VERSION,
             request_id: "capacity".into(),
-            instance: "00000000-0000-4000-8000-000000000001".into(),
+            instance: "00000000000040008000000000000001".into(),
             daemon_boot: "00000000-0000-4000-8000-000000000002".into(),
             result: Ok(result),
         })

@@ -82,7 +82,7 @@ impl<'de> Deserialize<'de> for WireRequest {
         if raw.version != PROTOCOL_VERSION {
             return Err(serde::de::Error::custom("unknown wire version"));
         }
-        if !valid_wire_id(&raw.request_id) || !valid_uuid(&raw.expected_instance) {
+        if !valid_wire_id(&raw.request_id) || !valid_instance(&raw.expected_instance) {
             return Err(serde::de::Error::custom("invalid request or instance id"));
         }
         if raw
@@ -129,6 +129,10 @@ pub(crate) fn valid_wire_id(value: &str) -> bool {
 pub(crate) fn valid_uuid(value: &str) -> bool {
     uuid::Uuid::parse_str(value).is_ok_and(|id| id.hyphenated().to_string() == value)
 }
+/// A node uuid on the wire: the canonical 32 lowercase hex form.
+pub(crate) fn valid_instance(value: &str) -> bool {
+    value.parse::<crate::node::NodeUuid>().is_ok()
+}
 impl WireRequest {
     pub fn decode(bytes: &[u8]) -> Result<Self, serde_json::Error> {
         serde_json::from_slice(bytes)
@@ -157,7 +161,7 @@ impl<'de> Deserialize<'de> for WireResponse {
         }
         let raw = Raw::deserialize(deserializer)?;
         if !valid_wire_id(&raw.request_id)
-            || !valid_uuid(&raw.instance)
+            || !valid_instance(&raw.instance)
             || !valid_uuid(&raw.daemon_boot)
             || !result_identity_valid(&raw.result, &raw.instance, &raw.daemon_boot)
         {
@@ -179,7 +183,7 @@ impl WireResponse {
             && self.instance == request.expected_instance
             && expected_boot.is_none_or(|boot| self.daemon_boot == boot)
             && valid_wire_id(&self.request_id)
-            && valid_uuid(&self.instance)
+            && valid_instance(&self.instance)
             && valid_uuid(&self.daemon_boot)
     }
 
@@ -306,7 +310,7 @@ mod thread_name_wire_tests {
         for version in [4, 5] {
             for kind in ["create_thread", "invite", "send_message"] {
                 let error = serde_json::from_value::<WireRequest>(serde_json::json!({
-                    "version":version,"request_id":"request","expected_instance":"00000000-0000-4000-8000-000000000001",
+                    "version":version,"request_id":"request","expected_instance":"00000000000040008000000000000001",
                     "command":{"kind":kind,"args":{"user_intent":"invalid"}}
                 })).unwrap_err();
                 assert!(

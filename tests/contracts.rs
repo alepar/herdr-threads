@@ -18,7 +18,7 @@ fn scrubbed_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Comma
     command
 }
 
-const WIRE_FIXTURE_INSTANCE: &str = "00000000-0000-4000-8000-000000000001";
+const WIRE_FIXTURE_INSTANCE: &str = "00000000000040008000000000000001";
 
 fn wire_fixture(command: serde_json::Value) -> serde_json::Value {
     serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r1","expected_instance":WIRE_FIXTURE_INSTANCE,"command":command})
@@ -135,7 +135,7 @@ fn wake_attention_cursor_roundtrips_all_source_high_waters_under_wire_cap() {
 fn health_settings_are_typed_and_unknown_until_resolved() {
     use herdr_threads::protocol::results::{Health, HealthSettings};
     let mut health = Health::unknown(
-        uuid::Uuid::new_v4().to_string(),
+        herdr_threads::node::NodeUuid::new_v4().to_string(),
         uuid::Uuid::new_v4().to_string(),
         "v".into(),
         1,
@@ -246,7 +246,7 @@ fn wire_instance_mismatch_and_uuid_boot_are_typed() {
     let request = WireRequest {
         version: PROTOCOL_VERSION,
         request_id: "r".into(),
-        expected_instance: "00000000-0000-4000-8000-000000000001".into(),
+        expected_instance: "00000000000040008000000000000001".into(),
         expected_boot: None,
         output: None,
         command: Command::Health,
@@ -270,7 +270,7 @@ fn wire_instance_mismatch_and_uuid_boot_are_typed() {
 fn wire_request_expected_boot_is_optional_validated_and_typed() {
     let base = |boot: &str| {
         format!(
-            r#"{{"version":{PROTOCOL_VERSION},"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001"{boot},"command":{{"kind":"health"}}}}"#
+            r#"{{"version":{PROTOCOL_VERSION},"request_id":"r","expected_instance":"00000000000040008000000000000001"{boot},"command":{{"kind":"health"}}}}"#
         )
     };
     let absent: WireRequest = serde_json::from_str(&base("")).unwrap();
@@ -496,11 +496,11 @@ fn omitted_topic_and_preview_keep_exact_detail_routes() {
 #[test]
 fn command_bounds_goal_operator_deadline_and_search_work() {
     let claim = serde_json::json!({"instance":"i","seat":"s1","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n","execution":"e","target":"p"});
-    let create = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"create_thread","args":{"topic":"topic","goal":"x".repeat(1025),"operation":"o","claim":claim}}});
+    let create = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000000040008000000000000001","command":{"kind":"create_thread","args":{"topic":"topic","goal":"x".repeat(1025),"operation":"o","claim":claim}}});
     assert!(WireRequest::decode(create.to_string().as_bytes()).is_err());
-    let orphan = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"operator_orphan_invite","args":{"thread":"t","seat":"s","deadline_millis":1000,"operation":"o"}}});
+    let orphan = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000000040008000000000000001","command":{"kind":"operator_orphan_invite","args":{"thread":"t","seat":"s","deadline_millis":1000,"operation":"o"}}});
     assert!(WireRequest::decode(orphan.to_string().as_bytes()).is_ok());
-    let search = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"search","args":{"literal":"word","thread":null,"page":{"cursor":null,"limit":20,"max_bytes":16384},"max_candidates":101}}});
+    let search = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000000040008000000000000001","command":{"kind":"search","args":{"literal":"word","thread":null,"page":{"cursor":null,"limit":20,"max_bytes":16384},"max_candidates":101}}});
     assert!(WireRequest::decode(search.to_string().as_bytes()).is_err());
 }
 
@@ -520,7 +520,7 @@ fn compound_and_range_read_commands_have_strict_wire_shapes() {
             serde_json::json!({"thread":"t","page":page,"initial":{"kind":"after","sequence":3}}),
         ),
     ] {
-        let request = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":kind,"args":args}});
+        let request = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000000040008000000000000001","command":{"kind":kind,"args":args}});
         assert!(
             WireRequest::decode(request.to_string().as_bytes()).is_ok(),
             "rejected {kind}"
@@ -702,15 +702,15 @@ fn selected_output_context_is_bounded_and_json_is_the_direct_default() {
 
 #[test]
 fn wire_request_carries_expected_instance_without_granting_authority() {
-    let valid = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"health"}});
+    let valid = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000000040008000000000000001","command":{"kind":"health"}});
     let request = WireRequest::decode(valid.to_string().as_bytes()).unwrap();
     assert_eq!(
         request.expected_instance,
-        "00000000-0000-4000-8000-000000000001"
+        "00000000000040008000000000000001"
     );
     let missing = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","command":{"kind":"health"}});
     assert!(WireRequest::decode(missing.to_string().as_bytes()).is_err());
-    let too_long = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r".repeat(129),"expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"health"}});
+    let too_long = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r".repeat(129),"expected_instance":"00000000000040008000000000000001","command":{"kind":"health"}});
     assert!(WireRequest::decode(too_long.to_string().as_bytes()).is_err());
 }
 
@@ -720,7 +720,7 @@ fn wire_response_is_bounded_and_correlates_actual_identity() {
     let request = WireRequest {
         version: PROTOCOL_VERSION,
         request_id: "r".into(),
-        expected_instance: "00000000-0000-4000-8000-000000000001".into(),
+        expected_instance: "00000000000040008000000000000001".into(),
         expected_boot: None,
         output: None,
         command: Command::Health,
@@ -728,11 +728,11 @@ fn wire_response_is_bounded_and_correlates_actual_identity() {
     let response = WireResponse {
         version: PROTOCOL_VERSION,
         request_id: "r".into(),
-        instance: "00000000-0000-4000-8000-000000000001".into(),
+        instance: "00000000000040008000000000000001".into(),
         daemon_boot: "00000000-0000-4000-8000-000000000002".into(),
         result: Ok(herdr_threads::protocol::results::CommandResult::Health(
             Health::unknown(
-                "00000000-0000-4000-8000-000000000001".into(),
+                "00000000000040008000000000000001".into(),
                 "00000000-0000-4000-8000-000000000002".into(),
                 "1".into(),
                 1,
@@ -1020,7 +1020,7 @@ fn request_wire_rejects_authority_and_unknown_versions() {
     let good = WireRequest {
         version: PROTOCOL_VERSION,
         request_id: "r1".into(),
-        expected_instance: "00000000-0000-4000-8000-000000000001".into(),
+        expected_instance: "00000000000040008000000000000001".into(),
         expected_boot: None,
         output: None,
         command: Command::Health,
@@ -1284,7 +1284,7 @@ fn wire_rejects_malformed_cursor_in_page_command() {
 #[test]
 fn health_distinguishes_software_protocol_boot_and_mismatch() {
     let mut health = Health::unknown(
-        "00000000-0000-4000-8000-000000000001".into(),
+        "00000000000040008000000000000001".into(),
         "00000000-0000-4000-8000-000000000002".into(),
         "0.1.0".into(),
         1,
@@ -1499,7 +1499,7 @@ fn all_command_variants_round_trip_without_actor_fields() {
         if let Some(args) = args {
             command["args"] = args;
         }
-        let raw = json!({"version":PROTOCOL_VERSION,"request_id":"r1","expected_instance":"00000000-0000-4000-8000-000000000001","command":command});
+        let raw = json!({"version":PROTOCOL_VERSION,"request_id":"r1","expected_instance":"00000000000040008000000000000001","command":command});
         let parsed: WireRequest =
             serde_json::from_value(raw.clone()).unwrap_or_else(|e| panic!("{kind}: {e}"));
         let out = serde_json::to_value(&parsed).unwrap();
@@ -1670,7 +1670,7 @@ fn all_result_variants_round_trip_with_compact_payloads() {
         (
             "health",
             serde_json::to_value(Health::unknown(
-                "00000000-0000-4000-8000-000000000001".into(),
+                "00000000000040008000000000000001".into(),
                 "00000000-0000-4000-8000-000000000002".into(),
                 "0.1.0".into(),
                 1,
@@ -1891,7 +1891,7 @@ fn body_continuation_is_message_scoped_and_diagnostics_has_distinct_scope() {
     .unwrap();
     let request = |message: &str, cursor: &str, max_bytes: u32| {
         json!({
-            "version":PROTOCOL_VERSION,"request_id":"r1","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"message","args":{
+            "version":PROTOCOL_VERSION,"request_id":"r1","expected_instance":"00000000000040008000000000000001","command":{"kind":"message","args":{
                 "message":message,"body":{"cursor":cursor,"offset":null,"max_bytes":max_bytes}
             }}
         })
@@ -2281,7 +2281,7 @@ fn health_v2_command_is_strict_and_preserves_frozen_health_commands() {
         r#"{"kind":"harness_health_v2","extra":true}"#,
     ] {
         let request = format!(
-            r#"{{"version":{},"request_id":"health-v2","expected_instance":"00000000-0000-4000-8000-000000000001","command":{bad}}}"#,
+            r#"{{"version":{},"request_id":"health-v2","expected_instance":"00000000000040008000000000000001","command":{bad}}}"#,
             herdr_threads::protocol::wire::PROTOCOL_VERSION
         );
         assert!(

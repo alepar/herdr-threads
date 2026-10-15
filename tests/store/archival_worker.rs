@@ -159,8 +159,9 @@ fn worker_fixture_from_store(
         None,
     )
     .unwrap();
-    let paths = herdr_threads::daemon::paths::InstancePaths::resolve_read_only(&context).unwrap();
-    std::fs::create_dir_all(&paths.instance_dir).unwrap();
+    let paths =
+        herdr_threads::daemon::paths::NodePaths::resolve_read_only(&context.state_dir).unwrap();
+    std::fs::create_dir_all(&paths.node_dir).unwrap();
     let source =
         herdr_threads::archival_legacy::Source::new(&paths, "i".into(), Default::default());
     let reachability = Arc::new(HostReachability::default());
@@ -667,7 +668,7 @@ type JournalWorkerFixture = (
     Arc<Host>,
     rusqlite::Connection,
     super::archival_legacy::Temp,
-    herdr_threads::daemon::paths::InstancePaths,
+    herdr_threads::daemon::paths::NodePaths,
 );
 fn journal_worker_fixture() -> JournalWorkerFixture {
     let (directory, paths, source) = super::archival_legacy::source();
@@ -703,10 +704,10 @@ fn journal_worker_fixture() -> JournalWorkerFixture {
     };
     (worker, host, db, directory, paths)
 }
-fn distinct_journals(paths: &herdr_threads::daemon::paths::InstancePaths) {
+fn distinct_journals(paths: &herdr_threads::daemon::paths::NodePaths) {
     use herdr_threads::cli::journal::{Journal, SemanticMutation};
     let reference = super::archival_legacy::compound(paths);
-    let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+    let journal = Journal::open(paths.node_dir.join("intents")).unwrap();
     let pending = journal.load(&reference).unwrap();
     let SemanticMutation::Frozen { claim, mutation } = pending.semantic else {
         panic!("frozen")
@@ -969,7 +970,7 @@ fn archival_worker_consumed_page_preserves_deadline_cancel_runtime_and_rollback_
 #[test]
 fn archival_worker_fresh_absence_recovers_after_consumed_runtime_failure() {
     let (mut worker, host, db, _directory, paths) = journal_worker_fixture();
-    assert!(!paths.instance_dir.join("intents").exists());
+    assert!(!paths.node_dir.join("intents").exists());
     worker.after_ms = u64::MAX;
     assert_eq!(
         worker.run_page().unwrap_err().code,

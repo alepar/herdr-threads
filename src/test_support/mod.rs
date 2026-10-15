@@ -720,3 +720,40 @@ pub fn bootstrap_attachment_guard(
 }
 #[cfg(feature = "test-support")]
 pub mod archival_composer_fixture;
+
+/// Write the `node.json` hint for `node_uuid` (tag derived at `tag_k` 0): what
+/// the elected daemon publishes from its loaded key, for fixtures that make a
+/// node visible to the CLI without running a daemon.
+pub fn write_node_hint(paths: &crate::daemon::paths::NodePaths, node_uuid: crate::node::NodeUuid) {
+    paths.prepare_node_dir().expect("node dir");
+    crate::node::json::write_if_differs(
+        &paths.node_json_path,
+        &crate::node::NodeJson::new(node_uuid, crate::node::tag_for(node_uuid, 0), 0, 0),
+    )
+    .expect("node hint");
+}
+
+/// Load (or create) the node key under `paths` and write its `node.json`
+/// hint, as the elected daemon does before it publishes anything. Returns the
+/// node's uuid; a daemon started later on the same state directory loads the
+/// same key.
+pub fn seed_node_identity(
+    paths: &crate::daemon::paths::NodePaths,
+) -> std::io::Result<crate::node::NodeUuid> {
+    paths.prepare_node_dir()?;
+    let identity = crate::node::NodeIdentity::load_or_create(paths, false)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    crate::node::json::write_if_differs(
+        &paths.node_json_path,
+        &crate::node::NodeJson::new(identity.uuid(), identity.tag(), identity.tag_k(), 0),
+    )?;
+    Ok(identity.uuid())
+}
+
+/// [`NodePaths::resolve`] for a state directory whose node key and
+/// `node.json` hint are already in place, as when the elected daemon starts.
+pub fn resolve_seeded(state_dir: &std::path::Path) -> crate::daemon::paths::NodePaths {
+    let paths = crate::daemon::paths::NodePaths::resolve(state_dir).expect("node paths");
+    seed_node_identity(&paths).expect("seed node identity");
+    paths
+}

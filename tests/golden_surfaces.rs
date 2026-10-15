@@ -21,7 +21,7 @@ use herdr_threads::{
     app::SystemClock,
     daemon::{
         ownership::OwnerLock,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
     },
     harness::context::{ContextJournal, Harness, OccupantContext, Role, SessionReference},
     host::native::NativeCli,
@@ -1019,8 +1019,8 @@ struct Topology {
     host: Host,
     iso: TestIsolation,
     context: RuntimeContext,
-    paths: InstancePaths,
-    instance: uuid::Uuid,
+    paths: NodePaths,
+    instance: herdr_threads::node::NodeUuid,
 }
 impl Topology {
     fn new() -> Self {
@@ -1039,9 +1039,9 @@ impl Topology {
         let state = iso.path("state");
         fs::create_dir_all(&state).unwrap();
         let context = RuntimeContext::explicit(state, socket, None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
-        let owner = OwnerLock::acquire(&paths).unwrap();
-        let instance = owner.instance_uuid();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+        let instance = owner.node_uuid().unwrap();
         drop(owner);
         Self::seed(&paths, &context, instance);
         let mut cmd = iso.command(BIN);
@@ -1072,7 +1072,7 @@ impl Topology {
         }
     }
 
-    fn seed(paths: &InstancePaths, context: &RuntimeContext, instance: uuid::Uuid) {
+    fn seed(paths: &NodePaths, context: &RuntimeContext, instance: herdr_threads::node::NodeUuid) {
         Self::seed_with_store_clock(paths, context, instance, Arc::new(SystemClock::new()));
     }
 
@@ -1080,9 +1080,9 @@ impl Topology {
     /// writer quantum and budgets read; the host call keeps the system clock.
     /// Returns how many writer turns staged the snapshot's targets.
     fn seed_with_store_clock(
-        paths: &InstancePaths,
+        paths: &NodePaths,
         context: &RuntimeContext,
-        instance: uuid::Uuid,
+        instance: herdr_threads::node::NodeUuid,
         store_clock: Arc<dyn Clock>,
     ) -> usize {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
@@ -1163,7 +1163,7 @@ impl Topology {
         let process = herdr_threads::protocol::authority::LivenessFingerprint::current_process();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES('sender',1,'w4:p1',?1,1,1,'codex','session',?2,'cooperative_top_level',0,0,'term_1',?1,?3,?4)",params![observation.host_boot.as_str(),execution.to_string(),i64::from(process.pid),process.start as i64]).unwrap();
         let contexts = paths
-            .instance_dir
+            .node_dir
             .join("contexts")
             .join(format!("{:x}", Sha256::digest(b"sender")));
         fs::DirBuilder::new()
@@ -1355,9 +1355,9 @@ fn seeding_stages_the_rest_after_a_spent_writer_quantum() {
     let state = iso.path("state");
     fs::create_dir_all(&state).unwrap();
     let context = RuntimeContext::explicit(state, socket, None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    let owner = OwnerLock::acquire(&paths).unwrap();
-    let instance = owner.instance_uuid();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+    let instance = owner.node_uuid().unwrap();
     drop(owner);
     let clock: Arc<dyn Clock> = Arc::new(SteppingClock(std::sync::atomic::AtomicU64::new(1)));
     let turns = Topology::seed_with_store_clock(&paths, &context, instance, clock);

@@ -2686,7 +2686,7 @@ fn codex_legacy_registration_rerun_warns_about_retrust() {
 /// Scope refusals happen during argument validation, and status is read-only
 /// even when every local native directory and daemon instance is absent.
 #[test]
-fn local_profile_refusals_and_status_leave_native_and_instance_directories_absent() {
+fn local_profile_refusals_and_status_leave_native_and_node_directories_absent() {
     let s = Scratch::new();
     for args in [
         vec!["setup", "--profile", "work"],

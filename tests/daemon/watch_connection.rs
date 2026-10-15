@@ -394,11 +394,11 @@ fn guarded_listener() -> (
     OwnedAsyncListener,
     std::path::PathBuf,
     std::path::PathBuf,
-    uuid::Uuid,
+    crate::node::NodeUuid,
 ) {
     use crate::daemon::{
         ownership::OwnerLock,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
     };
     use std::os::unix::fs::PermissionsExt;
     let root = std::env::temp_dir().join(format!("herdr-watch-{}", uuid::Uuid::new_v4()));
@@ -406,25 +406,22 @@ fn guarded_listener() -> (
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
     let host = root.join("host-placeholder.sock");
     let context = RuntimeContext::explicit(root.clone(), host, None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    let owner = OwnerLock::acquire(&paths).unwrap();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let bound = owner.bind_socket().unwrap();
     let socket = bound.path().to_owned();
     let listener = bound.into_async().unwrap();
     drop(owner);
-    let instance = uuid::Uuid::parse_str(
-        std::fs::read_to_string(&paths.namespace_path)
-            .unwrap()
-            .trim(),
-    )
-    .unwrap();
+    let instance = crate::daemon::ownership::read_node_uuid_hint(&paths)
+        .unwrap()
+        .unwrap();
     (listener, socket, root, instance)
 }
 
 struct Daemon {
     path: std::path::PathBuf,
     root: std::path::PathBuf,
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     boot: uuid::Uuid,
     shutdown: Cancellation,
     fake: Arc<WatchFake>,

@@ -3,8 +3,8 @@
 use super::sweep::{FakeHost, pane};
 use herdr_threads::{
     daemon::{
-        ownership::{read_descriptor, read_existing_namespace},
-        paths::{InstancePaths, RuntimeContext},
+        ownership::{read_descriptor, read_node_uuid_hint},
+        paths::{NodePaths, RuntimeContext},
     },
     test_support::{isolation::TestIsolation, spawn::SpawnOwned},
 };
@@ -51,12 +51,14 @@ impl World {
         let binary = fourth.join("ht-synthetic-fourth");
         fs::write(&binary, b"synthetic fourth fixture\n").unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
-        let paths = InstancePaths::resolve(
-            &RuntimeContext::explicit(state.clone(), endpoint.clone(), None).unwrap(),
+        let paths = NodePaths::resolve(
+            &RuntimeContext::explicit(state.clone(), endpoint.clone(), None)
+                .unwrap()
+                .state_dir,
         )
         .unwrap();
-        paths.prepare_instance_dir().unwrap();
-        let settings = paths.instance_dir.join("settings.json");
+        paths.prepare_node_dir().unwrap();
+        let settings = paths.node_dir.join("settings.json");
         // Use the actual settings filename, not an ineffective environment hint.
         let settings = settings.with_file_name(herdr_threads::daemon::settings::SETTINGS_FILE);
         fs::write(&settings, br#"{"harness_manifest":"off"}"#).unwrap();
@@ -78,9 +80,11 @@ impl World {
         world.json(&["daemon", "ensure"]);
         world
     }
-    fn paths(&self) -> InstancePaths {
-        InstancePaths::resolve(
-            &RuntimeContext::explicit(self.state.clone(), self.endpoint.clone(), None).unwrap(),
+    fn paths(&self) -> NodePaths {
+        NodePaths::resolve(
+            &RuntimeContext::explicit(self.state.clone(), self.endpoint.clone(), None)
+                .unwrap()
+                .state_dir,
         )
         .unwrap()
     }
@@ -325,7 +329,7 @@ struct Proxy {
 impl Proxy {
     fn new(w: &World) -> Self {
         let paths = w.paths();
-        let ns = read_existing_namespace(&paths).unwrap().unwrap();
+        let ns = read_node_uuid_hint(&paths).unwrap().unwrap();
         read_descriptor(&paths, ns).unwrap();
         let original = fs::read(&paths.descriptor_path).unwrap();
         let real = w.isolation.socket_path("upstream.sock");

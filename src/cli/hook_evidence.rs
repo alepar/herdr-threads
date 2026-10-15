@@ -41,8 +41,8 @@ use super::hook::HookArgs;
 use crate::{
     client::local::LocalSocketClient,
     daemon::{
-        ownership::{read_descriptor, read_existing_namespace},
-        paths::{InstancePaths, RuntimeContext},
+        ownership::{read_descriptor, read_node_uuid_hint},
+        paths::{NodePaths, RuntimeContext},
     },
     harness::{
         attribution::{Attribution, attribute_payload},
@@ -955,8 +955,8 @@ fn connect_running(
     let context =
         RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
             .ok()?;
-    let paths = InstancePaths::resolve(&context).ok()?;
-    let instance = read_existing_namespace(&paths).ok().flatten()?;
+    let paths = NodePaths::resolve(&context.state_dir).ok()?;
+    let instance = read_node_uuid_hint(&paths).ok().flatten()?;
     let descriptor = read_descriptor(&paths, instance).ok()?;
     crate::daemon::lifecycle::check_protocol(&descriptor).ok()?;
     let client = LocalSocketClient::new(

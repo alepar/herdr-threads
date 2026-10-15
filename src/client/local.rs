@@ -26,7 +26,7 @@ use uuid::Uuid;
 pub struct LocalSocketClient {
     path: PathBuf,
     clock: Arc<dyn Clock>,
-    expected_instance: Uuid,
+    expected_instance: crate::node::NodeUuid,
     expected_boot: Option<Uuid>,
     capabilities: OnceLock<Capabilities>,
 }
@@ -34,7 +34,7 @@ impl LocalSocketClient {
     pub fn new(
         path: PathBuf,
         clock: Arc<dyn Clock>,
-        expected_instance: Uuid,
+        expected_instance: crate::node::NodeUuid,
         expected_boot: Option<Uuid>,
     ) -> Self {
         Self {

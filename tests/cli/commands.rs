@@ -120,7 +120,7 @@ fn overdue_uses_global_context_and_typed_diagnostics_read_without_operation_key(
         ) -> Result<CommandResult, ApiError> {
             self.0 = Some((command, output.clone()));
             Ok(CommandResult::Health(Health::unknown(
-                "00000000-0000-4000-8000-000000000001".into(),
+                "00000000000040008000000000000001".into(),
                 "00000000-0000-4000-8000-000000000002".into(),
                 "test".into(),
                 1,
@@ -478,7 +478,7 @@ fn documented_read_table_dispatches_to_stub_client() {
         ) -> Result<CommandResult, crate::protocol::results::ApiError> {
             self.0.push(command);
             Ok(CommandResult::Health(Health::unknown(
-                "00000000-0000-4000-8000-000000000001".into(),
+                "00000000000040008000000000000001".into(),
                 "00000000-0000-4000-8000-000000000002".into(),
                 "test".into(),
                 1,
@@ -895,7 +895,7 @@ fn documented_mutations_dispatch_exact_typed_command_to_stub() {
         fn call(&mut self, command: Command, _: &OutputSpec) -> Result<CommandResult, ApiError> {
             self.0.push(command);
             Ok(CommandResult::Health(Health::unknown(
-                "00000000-0000-4000-8000-000000000001".into(),
+                "00000000000040008000000000000001".into(),
                 "00000000-0000-4000-8000-000000000002".into(),
                 "test".into(),
                 1,
@@ -1125,7 +1125,7 @@ fn local_command_table_uses_local_backend_without_wire_call() {
         ) -> Result<CommandResult, ApiError> {
             self.0.push(action);
             Ok(CommandResult::Health(Health::unknown(
-                "00000000-0000-4000-8000-000000000001".into(),
+                "00000000000040008000000000000001".into(),
                 "00000000-0000-4000-8000-000000000002".into(),
                 "test".into(),
                 1,

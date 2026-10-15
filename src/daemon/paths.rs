@@ -1,4 +1,4 @@
-//! Scoped runtime paths for one local Herdr instance.
+//! Runtime paths of this machine+user's node, resolved from the state directory.
 
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -104,117 +104,94 @@ impl RuntimeContext {
     }
 }
 
+/// Every path of this machine+user's node, resolved from the state directory
+/// alone (no Herdr host input): `<state>/node/{node.key, node.json,
+/// herdr-threads.db, owner.lock, endpoint.json, daemon.sock, settings.json,
+/// logs/, daemon.log}`.
+///
+/// Owns: the node layout under `<state>/node`, the socket-length fallback and
+/// the private-directory preparation. Does not: open or create anything under
+/// the legacy `instances/` tree (only [`legacy_instances_dir`] names it, so
+/// diagnostics can report it) or know which Herdr servers the daemon talks
+/// to. A new node file is a new field here, resolved from `node_dir`.
 #[derive(Debug, Clone)]
-pub struct InstancePaths {
-    pub instance_dir: PathBuf,
-    pub socket_path: PathBuf,
+pub struct NodePaths {
+    pub state_dir: PathBuf,
+    pub node_dir: PathBuf,
+    pub key_path: PathBuf,
+    pub node_json_path: PathBuf,
+    pub database_path: PathBuf,
     pub lock_path: PathBuf,
     pub descriptor_path: PathBuf,
-    pub locator_path: PathBuf,
-    pub namespace_path: PathBuf,
-    pub database_path: PathBuf,
-    pub locator: String,
+    pub socket_path: PathBuf,
 }
 
-/// The store database's file name inside an instance directory.
-pub const DATABASE_FILE: &str = "threads.sqlite3";
+/// The store database's file name inside the node directory.
+pub const DATABASE_FILE: &str = "herdr-threads.db";
 
-/// Whether `state_dir` holds a store: some `instances/<id>/` directory contains the store
-/// database. A state directory that only ever held a socket, a lock or setup manifests (a
-/// leftover from an uninstalled plugin) does not.
+/// The pre-node-layout store file name, looked for only under `instances/*/`
+/// so a state directory that holds user data is still preferred.
+const LEGACY_DATABASE_FILE: &str = "threads.sqlite3";
+
+/// The legacy per-host `instances/` directory of a state root. Reported by
+/// diagnostics, never opened or created by the daemon.
+pub fn legacy_instances_dir(state_dir: &Path) -> PathBuf {
+    state_dir.join("instances")
+}
+
+/// Whether `state_dir` holds a store: `node/herdr-threads.db`, or some legacy
+/// `instances/<id>/threads.sqlite3`. A state directory that only ever held a
+/// socket, a lock or setup manifests (a leftover from an uninstalled plugin)
+/// does not.
 pub fn holds_store(state_dir: &Path) -> bool {
-    std::fs::read_dir(state_dir.join("instances")).is_ok_and(|entries| {
-        entries
-            .flatten()
-            .any(|entry| entry.path().join(DATABASE_FILE).is_file())
-    })
+    node_dir(state_dir).join(DATABASE_FILE).is_file()
+        || std::fs::read_dir(legacy_instances_dir(state_dir)).is_ok_and(|entries| {
+            entries
+                .flatten()
+                .any(|entry| entry.path().join(LEGACY_DATABASE_FILE).is_file())
+        })
 }
 
-impl InstancePaths {
-    pub fn resolve(context: &RuntimeContext) -> io::Result<Self> {
-        Self::resolve_with_runtime_dir(context, true)
+impl NodePaths {
+    pub fn resolve(state_dir: &Path) -> io::Result<Self> {
+        Self::resolve_with_runtime_dir(state_dir, true)
     }
 
     /// Compute paths for diagnostics without creating the fallback socket
     /// directory. An existing fallback directory must still be private.
-    pub fn resolve_read_only(context: &RuntimeContext) -> io::Result<Self> {
-        Self::resolve_with_runtime_dir(context, false)
+    pub fn resolve_read_only(state_dir: &Path) -> io::Result<Self> {
+        Self::resolve_with_runtime_dir(state_dir, false)
     }
 
-    fn resolve_with_runtime_dir(
-        context: &RuntimeContext,
-        create_runtime_dir: bool,
-    ) -> io::Result<Self> {
-        let locator = context.host_endpoint.to_string_lossy().into_owned();
-        let instance_dir = instance_dir(context);
-        let socket_path = stable_socket_path(&instance_dir)?;
-        if !socket_path.starts_with(&instance_dir) {
+    fn resolve_with_runtime_dir(state_dir: &Path, create_runtime_dir: bool) -> io::Result<Self> {
+        let node_dir = node_dir(state_dir);
+        let socket_path = stable_socket_path(&node_dir)?;
+        if !socket_path.starts_with(&node_dir) {
             verify_runtime_dir(socket_path.parent().unwrap(), create_runtime_dir)?;
         }
         Ok(Self {
-            lock_path: instance_dir.join("owner.lock"),
-            descriptor_path: instance_dir.join("endpoint.json"),
-            locator_path: instance_dir.join("locator"),
-            namespace_path: instance_dir.join("namespace"),
-            database_path: instance_dir.join(DATABASE_FILE),
-            instance_dir,
+            state_dir: state_dir.to_path_buf(),
+            key_path: node_dir.join(crate::node::identity::KEY_FILE),
+            node_json_path: node_dir.join(crate::node::json::NODE_JSON_FILE),
+            database_path: node_dir.join(DATABASE_FILE),
+            lock_path: node_dir.join("owner.lock"),
+            descriptor_path: node_dir.join("endpoint.json"),
+            node_dir,
             socket_path,
-            locator,
         })
     }
 
-    /// The per-boot pathname builds before ht-910 bound
-    /// (`<base stem>-<boot_id>.sock`, with the base chosen by the old length
-    /// rule). A descriptor published by such a daemon is still read, so a
-    /// running older daemon stays reachable and stoppable and a crashed one's
-    /// socket is cleaned up by the next owner; new owners bind only
-    /// [`Self::socket_path`]. Computed only; `None` if it would not fit.
-    pub fn legacy_boot_socket_path(&self, boot_id: uuid::Uuid) -> Option<PathBuf> {
-        let natural_boot = self
-            .instance_dir
-            .join(format!("daemon-{}.sock", uuid::Uuid::nil()));
-        let base = if natural_boot.as_os_str().as_bytes().len() < SOCKET_PATH_LIMIT {
-            self.instance_dir.join("daemon.sock")
-        } else {
-            let fallback = stable_socket_path(&self.instance_dir).ok()?;
-            if fallback.starts_with(&self.instance_dir) {
-                // The new rule keeps a natural path the old rule sent to the
-                // private runtime directory: rebuild the old fallback name.
-                let digest = format!(
-                    "{:x}",
-                    Sha256::digest(self.instance_dir.as_os_str().as_bytes())
-                );
-                runtime_socket_dir().join(format!("{}.sock", &digest[..16]))
-            } else {
-                fallback
-            }
-        };
-        let stem = base.file_stem()?.to_os_string();
-        let mut name = stem;
-        name.push(format!("-{boot_id}.sock"));
-        let path = base.with_file_name(name);
-        (path.as_os_str().as_bytes().len() < SOCKET_PATH_LIMIT).then_some(path)
-    }
-
-    /// Whether a published descriptor's endpoint belongs to this instance:
-    /// the stable pathname, the pre-ht-910 per-boot pathname for `boot_id`,
-    /// or the runtime socket relocated to another runtime directory (see
-    /// [`relocated_endpoint_matches`]).
-    pub fn accepts_descriptor_endpoint(&self, endpoint: &Path, boot_id: uuid::Uuid) -> bool {
+    /// Whether a published descriptor's endpoint is this node's socket.
+    pub fn accepts_descriptor_endpoint(&self, endpoint: &Path) -> bool {
         endpoint == self.socket_path
-            || Some(endpoint) == self.legacy_boot_socket_path(boot_id).as_deref()
-            || relocated_endpoint_matches(&self.instance_dir, &self.socket_path, endpoint, boot_id)
     }
 
     /// The state root may be supplied by Herdr (0755 under the plugin state
     /// tree); it must be ours and not writable by others. Everything this
     /// plugin creates below it is a 0700 private directory.
-    pub fn prepare_instance_dir(&self) -> io::Result<()> {
-        let instances = self.instance_dir.parent().unwrap();
-        let state = instances.parent().unwrap();
-        ensure_owned_state_root(state)?;
-        ensure_private_dir(instances)?;
-        ensure_private_dir(&self.instance_dir)
+    pub fn prepare_node_dir(&self) -> io::Result<()> {
+        ensure_owned_state_root(&self.state_dir)?;
+        ensure_private_dir(&self.node_dir)
     }
 }
 
@@ -288,79 +265,28 @@ fn select_runtime_socket_dir(
     }
 }
 
-/// Whether a descriptor's `endpoint` names this instance's runtime socket in
-/// a directory another rule chose: on Linux an older build's `/private/tmp`
-/// directory (picked whenever `/private/tmp` existed) versus today's `/tmp`,
-/// in either direction. The check is platform-neutral, so it relaxes
-/// acceptance on macOS too, where the chosen paths are unchanged.
-///
-/// The runtime socket's file name identifies the instance wherever the
-/// socket lives: `<digest>.sock` (`digest` = sha256 of the instance
-/// directory, first 16 hex) or the pre-ht-910 per-boot `<digest>-<boot_id>.sock`
-/// while today's socket is in a runtime directory; and, when today's natural
-/// `daemon.sock` fits, only the per-boot `<digest>-<boot_id>.sock`, and only
-/// if the old per-boot natural pathname (`<instance>/daemon-<boot>.sock`)
-/// did not fit, which is when the old rule sent it to a runtime directory. A
-/// relocated `daemon.sock` is never accepted. The descriptor is the owner's
-/// private record and the socket is still verified (not a symlink, owner,
-/// mode, recorded inode) before use.
-fn relocated_endpoint_matches(
-    instance_dir: &Path,
-    socket_path: &Path,
-    endpoint: &Path,
-    boot_id: uuid::Uuid,
-) -> bool {
-    if !endpoint.is_absolute()
-        || endpoint.as_os_str().as_bytes().len() >= SOCKET_PATH_LIMIT
-        || endpoint.parent().is_none_or(|dir| dir.parent().is_none())
-    {
-        return false;
-    }
-    let Some(name) = endpoint.file_name() else {
-        return false;
-    };
-    if socket_path.starts_with(instance_dir) {
-        let historical_natural = instance_dir.join(format!("daemon-{}.sock", uuid::Uuid::nil()));
-        let digest = format!("{:x}", Sha256::digest(instance_dir.as_os_str().as_bytes()));
-        historical_natural.as_os_str().as_bytes().len() >= SOCKET_PATH_LIMIT
-            && name == format!("{}-{boot_id}.sock", &digest[..16]).as_str()
-    } else {
-        // Today's runtime socket is `<digest>.sock`: its stem is the digest.
-        let Some(stem) = socket_path.file_stem() else {
-            return false;
-        };
-        let mut per_boot = stem.to_os_string();
-        per_boot.push(format!("-{boot_id}.sock"));
-        Some(name) == socket_path.file_name() || name == per_boot
-    }
+/// The node directory of a state root: `<state>/node`.
+pub fn node_dir(state_dir: &Path) -> PathBuf {
+    state_dir.join("node")
 }
 
-/// The instance directory for a runtime context: `<state>/instances/<sha256(host endpoint)>`.
-pub fn instance_dir(context: &RuntimeContext) -> PathBuf {
-    let digest = format!(
-        "{:x}",
-        Sha256::digest(context.host_endpoint.as_os_str().as_bytes())
-    );
-    context.state_dir.join("instances").join(digest)
-}
-
-/// The daemon socket pathname of one instance, computed without touching
-/// the filesystem. It is the same for every daemon boot of that instance
-/// (state root + host endpoint), so a sandbox allowlist naming it (for
+/// The daemon socket pathname of the node, computed without touching
+/// the filesystem. It is the same for every daemon boot of the node
+/// (state root), so a sandbox allowlist naming it (for
 /// example Codex's `features.network_proxy.unix_sockets`) survives daemon
 /// restarts. Boot identity is fenced by the endpoint descriptor and the
 /// correlated boot ID of every response, never by the filename.
 ///
-/// `<instance dir>/daemon.sock` when that fits the Unix limit; otherwise
-/// `<runtime dir>/<sha256(instance dir)[..16]>.sock` in a private per-user
+/// `<node dir>/daemon.sock` when that fits the Unix limit; otherwise
+/// `<runtime dir>/<sha256(node dir)[..16]>.sock` in a private per-user
 /// runtime directory (see [`select_runtime_socket_dir`]).
-pub fn stable_socket_path(instance_dir: &Path) -> io::Result<PathBuf> {
-    let natural = instance_dir.join("daemon.sock");
+pub fn stable_socket_path(node_dir: &Path) -> io::Result<PathBuf> {
+    let natural = node_dir.join("daemon.sock");
     let socket_path = if natural.as_os_str().as_bytes().len() < SOCKET_PATH_LIMIT {
         natural
     } else {
         let private = runtime_socket_dir();
-        let digest = format!("{:x}", Sha256::digest(instance_dir.as_os_str().as_bytes()));
+        let digest = format!("{:x}", Sha256::digest(node_dir.as_os_str().as_bytes()));
         private.join(format!("{}.sock", &digest[..16]))
     };
     if socket_path.as_os_str().as_bytes().len() >= SOCKET_PATH_LIMIT {
@@ -466,6 +392,138 @@ pub(crate) fn effective_uid() -> u32 {
 mod tests {
     use super::*;
 
+    struct Scratch(PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    fn scratch() -> Scratch {
+        let dir = std::env::temp_dir().join(format!("ht-paths-{}", uuid::Uuid::new_v4()));
+        fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+        Scratch(dir)
+    }
+
+    /// The signature takes the state directory only, so neither a host
+    /// endpoint nor `HERDR_SOCKET_PATH` (read here, in the ambient process
+    /// environment, to prove it differs from anything the paths contain) can
+    /// reach the layout.
+    #[test]
+    fn resolve_ignores_host_and_env() {
+        let state = Path::new("/tmp/ht-state");
+        let first = NodePaths::resolve_read_only(state).unwrap();
+        let ambient = std::env::var("HERDR_SOCKET_PATH").unwrap_or_default();
+        let second = NodePaths::resolve_read_only(state).unwrap();
+        let third = NodePaths::resolve_read_only(state).unwrap();
+        for path in [&first.node_dir, &first.socket_path] {
+            assert!(
+                ambient.is_empty() || !path.to_string_lossy().contains(&ambient),
+                "{path:?} derives from HERDR_SOCKET_PATH"
+            );
+        }
+        for other in [&second, &third] {
+            assert_eq!(first.node_dir, other.node_dir);
+            assert_eq!(first.socket_path, other.socket_path);
+            assert_eq!(first.database_path, other.database_path);
+        }
+        for path in [
+            &first.node_dir,
+            &first.key_path,
+            &first.node_json_path,
+            &first.database_path,
+            &first.lock_path,
+            &first.descriptor_path,
+            &first.socket_path,
+        ] {
+            assert!(path.starts_with("/tmp/ht-state/node"), "{path:?}");
+        }
+    }
+
+    #[test]
+    fn resolve_layout_fields() {
+        let paths = NodePaths::resolve_read_only(Path::new("/tmp/ht-s")).unwrap();
+        let at = |name: &str| PathBuf::from("/tmp/ht-s/node").join(name);
+        assert_eq!(paths.node_dir, PathBuf::from("/tmp/ht-s/node"));
+        assert_eq!(paths.key_path, at("node.key"));
+        assert_eq!(paths.node_json_path, at("node.json"));
+        assert_eq!(paths.database_path, at("herdr-threads.db"));
+        assert_eq!(paths.lock_path, at("owner.lock"));
+        assert_eq!(paths.descriptor_path, at("endpoint.json"));
+        assert_eq!(paths.socket_path, at("daemon.sock"));
+        assert_eq!(
+            legacy_instances_dir(Path::new("/tmp/ht-s")),
+            PathBuf::from("/tmp/ht-s/instances")
+        );
+    }
+
+    #[test]
+    fn long_state_dir_uses_stable_socket_fallback() {
+        let state = PathBuf::from(format!("/tmp/{}", "s".repeat(90)));
+        assert!(node_dir(&state).join("daemon.sock").as_os_str().len() >= SOCKET_PATH_LIMIT);
+        let paths = NodePaths::resolve_read_only(&state).unwrap();
+        assert!(!paths.socket_path.starts_with(&paths.node_dir));
+        assert!(paths.socket_path.as_os_str().len() < SOCKET_PATH_LIMIT);
+        assert_eq!(
+            paths.socket_path,
+            stable_socket_path(&paths.node_dir).unwrap()
+        );
+        assert_eq!(
+            paths.socket_path.parent().unwrap().file_name().unwrap(),
+            format!("herdr-threads-{}", effective_uid()).as_str()
+        );
+        assert!(paths.socket_path.extension().is_some_and(|e| e == "sock"));
+    }
+
+    #[test]
+    fn holds_store_node_only_legacy_only_and_empty() {
+        let empty = scratch();
+        assert!(!holds_store(&empty.0));
+
+        let node_only = scratch();
+        fs::create_dir_all(node_only.0.join("node")).unwrap();
+        assert!(!holds_store(&node_only.0), "a node dir without a database");
+        fs::write(node_only.0.join("node").join(DATABASE_FILE), b"").unwrap();
+        assert!(holds_store(&node_only.0));
+
+        let legacy_only = scratch();
+        let instance = legacy_instances_dir(&legacy_only.0).join("abc");
+        fs::create_dir_all(&instance).unwrap();
+        assert!(!holds_store(&legacy_only.0), "an instance dir without data");
+        fs::write(instance.join("threads.sqlite3"), b"").unwrap();
+        assert!(holds_store(&legacy_only.0));
+        // The new database name under instances/ is not a legacy store.
+        let wrong = scratch();
+        let instance = legacy_instances_dir(&wrong.0).join("abc");
+        fs::create_dir_all(&instance).unwrap();
+        fs::write(instance.join(DATABASE_FILE), b"").unwrap();
+        assert!(!holds_store(&wrong.0));
+    }
+
+    #[test]
+    fn accepts_descriptor_endpoint_is_exact_socket_path() {
+        let paths = NodePaths::resolve_read_only(Path::new("/tmp/ht-s")).unwrap();
+        assert!(paths.accepts_descriptor_endpoint(&paths.socket_path));
+        for other in [
+            "/tmp/ht-s/node/other.sock",
+            "/tmp/herdr-threads-1000/0123456789abcdef.sock",
+            "/tmp/ht-s/node/daemon.sock.bak",
+        ] {
+            assert!(
+                !paths.accepts_descriptor_endpoint(Path::new(other)),
+                "{other}"
+            );
+        }
+    }
+
+    #[test]
+    fn prepare_node_dir_creates_only_node_dir() {
+        let state = scratch();
+        let paths = NodePaths::resolve_read_only(&state.0).unwrap();
+        paths.prepare_node_dir().unwrap();
+        check_private_dir(&paths.node_dir).unwrap();
+        assert!(!legacy_instances_dir(&state.0).exists());
+    }
+
     /// Run the selection with a fixed environment and set of existing
     /// directories; record every environment variable read and path probed.
     fn select(
@@ -547,115 +605,6 @@ mod tests {
                 .any(|path| path.starts_with("/run/user") || path.starts_with("$env")),
             "probed {probed:?}"
         );
-    }
-
-    /// Review I1: a pre-ht-910 daemon whose per-boot natural pathname
-    /// (`<instance>/daemon-<boot>.sock`) did not fit bound
-    /// `<runtime>/<digest>-<boot>.sock`, under `/private/tmp` on Linux when
-    /// it existed; today's natural `daemon.sock` fits. That exact historical
-    /// basename is accepted in any absolute runtime directory; a relocated
-    /// `daemon.sock` or `<digest>.sock` is not, nor another boot's name, nor
-    /// anything once the historical natural pathname would have fit.
-    #[test]
-    fn historical_per_boot_runtime_endpoint_is_accepted_when_natural_now_fits() {
-        let instance = PathBuf::from(format!("/tmp/ht/instances/{}", "a".repeat(64)));
-        let natural = instance.join("daemon.sock");
-        assert_eq!(natural.as_os_str().len(), 94);
-        let historical_natural = instance.join(format!("daemon-{}.sock", uuid::Uuid::nil()));
-        assert_eq!(historical_natural.as_os_str().len(), 131);
-        let boot = uuid::Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap();
-        let digest = format!("{:x}", Sha256::digest(instance.as_os_str().as_bytes()));
-        let name = format!("{}-{boot}.sock", &digest[..16]);
-        let accepts = |instance: &Path, endpoint: &str, boot_id| {
-            relocated_endpoint_matches(
-                instance,
-                &instance.join("daemon.sock"),
-                Path::new(endpoint),
-                boot_id,
-            )
-        };
-        for dir in ["/private/tmp/herdr-threads-1000", "/tmp/herdr-threads-1000"] {
-            let endpoint = format!("{dir}/{name}");
-            assert!(endpoint.len() < SOCKET_PATH_LIMIT);
-            assert!(accepts(&instance, &endpoint, boot), "{endpoint}");
-            assert!(
-                !accepts(&instance, &endpoint, uuid::Uuid::new_v4()),
-                "{endpoint}"
-            );
-            for other in [
-                "daemon.sock".to_owned(),
-                format!("daemon-{boot}.sock"),
-                format!("{}.sock", &digest[..16]),
-            ] {
-                assert!(
-                    !accepts(&instance, &format!("{dir}/{other}"), boot),
-                    "{other}"
-                );
-            }
-        }
-        // Boundary: once the historical natural per-boot pathname fits
-        // (99 bytes), the old rule kept it natural; no runtime form exists.
-        let short = PathBuf::from(format!("/tmp/ht/instances/{}", "a".repeat(32)));
-        assert_eq!(
-            short
-                .join(format!("daemon-{}.sock", uuid::Uuid::nil()))
-                .as_os_str()
-                .len(),
-            99
-        );
-        let digest = format!("{:x}", Sha256::digest(short.as_os_str().as_bytes()));
-        let endpoint = format!(
-            "/private/tmp/herdr-threads-1000/{}-{boot}.sock",
-            &digest[..16]
-        );
-        assert!(!accepts(&short, &endpoint, boot));
-        let just_over = PathBuf::from(format!("/tmp/ht/instances/{}", "a".repeat(33)));
-        let digest = format!("{:x}", Sha256::digest(just_over.as_os_str().as_bytes()));
-        let endpoint = format!(
-            "/private/tmp/herdr-threads-1000/{}-{boot}.sock",
-            &digest[..16]
-        );
-        assert!(accepts(&just_over, &endpoint, boot));
-    }
-
-    /// A descriptor names a socket in a runtime directory chosen by another
-    /// rule (an older Linux daemon under `/private/tmp`): the same instance
-    /// file name is accepted wherever it lives; nothing else is.
-    #[test]
-    fn relocated_runtime_endpoint_is_accepted_by_instance_file_name_only() {
-        let instance = Path::new("/state/instances/abc");
-        let boot = uuid::Uuid::new_v4();
-        let runtime = Path::new("/tmp/herdr-threads-1000/0123456789abcdef.sock");
-        let accepts = |socket: &Path, endpoint: &str, boot_id| {
-            relocated_endpoint_matches(instance, socket, Path::new(endpoint), boot_id)
-        };
-        for endpoint in [
-            "/tmp/herdr-threads-1000/0123456789abcdef.sock",
-            "/private/tmp/herdr-threads-1000/0123456789abcdef.sock",
-            "/elsewhere/herdr-threads-1000/0123456789abcdef.sock",
-        ] {
-            assert!(accepts(runtime, endpoint, boot), "{endpoint}");
-        }
-        let per_boot = format!("/private/tmp/herdr-threads-1000/0123456789abcdef-{boot}.sock");
-        assert!(accepts(runtime, &per_boot, boot));
-        assert!(!accepts(runtime, &per_boot, uuid::Uuid::new_v4()));
-        for endpoint in [
-            "/tmp/herdr-threads-1000/fedcba9876543210.sock",
-            "tmp/herdr-threads-1000/0123456789abcdef.sock",
-            "/0123456789abcdef.sock",
-        ] {
-            assert!(!accepts(runtime, endpoint, boot), "{endpoint}");
-        }
-        let too_long = format!("/{}/0123456789abcdef.sock", "x".repeat(SOCKET_PATH_LIMIT));
-        assert!(!accepts(runtime, &too_long, boot));
-        // A natural socket inside the instance directory is matched exactly
-        // by the caller; no relocated form is accepted for it.
-        let natural = instance.join("daemon.sock");
-        assert!(!accepts(
-            &natural,
-            "/tmp/herdr-threads-1000/daemon.sock",
-            boot
-        ));
     }
 
     #[test]

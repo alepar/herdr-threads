@@ -1,7 +1,7 @@
 //! Supported wire6 capability and lost-reply emulator. No historical binary claim.
 use herdr_threads::daemon::{
-    ownership::{read_descriptor, read_existing_namespace},
-    paths::InstancePaths,
+    ownership::{read_descriptor, read_node_uuid_hint},
+    paths::NodePaths,
 };
 use serde_json::{Value, json};
 use std::{
@@ -43,8 +43,8 @@ pub(crate) fn write_frame(s: &mut UnixStream, b: &[u8]) {
     s.write_all(b).unwrap();
 }
 impl Proxy {
-    pub(crate) fn new(p: InstancePaths, private_root: &Path) -> Self {
-        let instance = read_existing_namespace(&p).unwrap().unwrap();
+    pub(crate) fn new(p: NodePaths, private_root: &Path) -> Self {
+        let instance = read_node_uuid_hint(&p).unwrap().unwrap();
         read_descriptor(&p, instance).unwrap();
         let socket = p.socket_path;
         let real = private_root.join("real.sock");

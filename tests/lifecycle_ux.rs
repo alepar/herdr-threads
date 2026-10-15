@@ -379,8 +379,8 @@ fn ensure_accepts_herdr_0755_state_root_and_degraded_daemon() {
         "{}",
         text(&ensure.stdout)
     );
-    let instances = fs::metadata(state.join("instances")).unwrap();
-    assert_eq!(instances.permissions().mode() & 0o777, 0o700);
+    let node = fs::metadata(state.join("node")).unwrap();
+    assert_eq!(node.permissions().mode() & 0o777, 0o700);
     assert_eq!(
         fs::metadata(&state).unwrap().permissions().mode() & 0o777,
         0o755,
@@ -393,6 +393,77 @@ fn ensure_accepts_herdr_0755_state_root_and_degraded_daemon() {
     let stop = run(&state, &host, &["daemon", "stop"], None);
     assert_eq!(stop.status.code(), Some(0), "{}", text(&stop.stderr));
     assert!(text(&stop.stdout).contains("stop_accepted"));
+}
+
+/// The node layout is resolved from the state directory alone: a started
+/// daemon leaves `node.key`, `node.json` and the descriptor under `node/`, the
+/// descriptor names the key's `node_uuid`, and nothing under `instances/` is
+/// created or opened. Kills: a daemon that still hashes the host endpoint into
+/// an `instances/<digest>` directory, a descriptor keyed by a random
+/// per-directory uuid instead of the node key.
+#[test]
+fn daemon_never_creates_instances_dir() {
+    let scratch = Scratch::new();
+    let state = scratch.0.join("state");
+    fs::create_dir(&state).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    let host = long_host(&scratch.0);
+    let _guard = DaemonGuard {
+        state: state.clone(),
+        host: host.clone(),
+    };
+    let ensure = run(&state, &host, &["daemon", "ensure"], None);
+    assert_eq!(ensure.status.code(), Some(0), "{}", text(&ensure.stderr));
+    let node = state.join("node");
+    for name in ["node.key", "node.json", "endpoint.json", "herdr-threads.db"] {
+        assert!(node.join(name).is_file(), "{name} missing under node/");
+    }
+    assert_eq!(
+        fs::metadata(node.join("node.key")).unwrap().len(),
+        32,
+        "the key is the raw 32-byte seed"
+    );
+    let hint: serde_json::Value =
+        serde_json::from_slice(&fs::read(node.join("node.json")).unwrap()).unwrap();
+    let descriptor = endpoint_json(&state);
+    assert_eq!(descriptor["node_uuid"], hint["node_uuid"]);
+    assert!(descriptor.get("instance_uuid").is_none(), "{descriptor}");
+    assert_eq!(hint["node_uuid"].as_str().unwrap().len(), 32, "{hint}");
+    let stop = run(&state, &host, &["daemon", "stop"], None);
+    assert_eq!(stop.status.code(), Some(0), "{}", text(&stop.stderr));
+    assert!(!state.join("instances").exists(), "instances/ was created");
+}
+
+/// A node key the daemon refuses (here: group/other-readable) is a start
+/// failure that names the `NodeKeyError` variant and the key path, and the key
+/// is neither repaired nor rewritten. Kills: a daemon that regenerates or
+/// chmods a key it cannot trust, or a refusal that surfaces only as a timeout.
+#[test]
+fn refused_node_key_is_a_start_failure_naming_the_variant() {
+    let scratch = Scratch::new();
+    let state = scratch.0.join("state");
+    let host = scratch.0.join("host.sock");
+    let paths = prepared_instance(&state, &host);
+    fs::write(&paths.key_path, [7u8; 32]).unwrap();
+    fs::set_permissions(&paths.key_path, fs::Permissions::from_mode(0o644)).unwrap();
+    let _guard = DaemonGuard {
+        state: state.clone(),
+        host: host.clone(),
+    };
+    let ensure = run(&state, &host, &["daemon", "ensure"], None);
+    let stderr = text(&ensure.stderr);
+    assert_eq!(ensure.status.code(), Some(3), "{stderr}");
+    assert!(
+        stderr.contains("node key refused (Permissions)"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("node.key"), "{stderr}");
+    assert_eq!(fs::read(&paths.key_path).unwrap(), vec![7u8; 32]);
+    assert_eq!(
+        fs::metadata(&paths.key_path).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+    assert!(!paths.descriptor_path.exists());
 }
 
 /// Kills: operational admission invoking an executable that hangs, or
@@ -832,7 +903,7 @@ fn assert_daemon_unavailable(label: &str, output: &Output) {
     );
 }
 
-/// After `daemon stop` unlinks the endpoint descriptor (the namespace stays),
+/// After `daemon stop` unlinks the endpoint descriptor (node.json stays),
 /// every CLI path that reads the descriptor reports the documented exit-3
 /// daemon-unavailable result instead of a raw Io NotFound with exit 1.
 /// Kills: reverting any one of the cooperative-selection, `seat resolve` or
@@ -850,12 +921,7 @@ fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
     };
     let ensure = run(&state, &host, &["daemon", "ensure"], None);
     assert_eq!(ensure.status.code(), Some(0), "{}", text(&ensure.stderr));
-    let instance_dir = fs::read_dir(state.join("instances"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
+    let node_dir = state.join("node");
     // Missing local state is rejected before any descriptor read, even while
     // the daemon is live. Seed genuine intents to reach the retry read below.
     let missing = run(&state, &host, &["retry", "local:1"], None);
@@ -873,8 +939,11 @@ fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
             ids::*,
         },
     };
-    let instance = fs::read_to_string(instance_dir.join("namespace")).unwrap();
-    let journal = Journal::open(instance_dir.join("intents")).unwrap();
+    let instance = herdr_threads::node::json::read_hint(&node_dir.join("node.json"))
+        .expect("node hint")
+        .node_uuid
+        .to_string();
+    let journal = Journal::open(node_dir.join("intents")).unwrap();
     let ordinary = journal
         .record(
             IntentScope::ServiceAllocation {
@@ -957,13 +1026,13 @@ fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
             0,
         )
         .unwrap();
-    let progress = instance_dir
+    let progress = node_dir
         .join("intents")
         .join(format!("handoff-{}.progress", terminal.operation.as_str()));
     let completed_progress = br#"{"thread":"t","invitation":null,"message":null,"possible_start":true,"launch":{"outcome":"started"}}"#;
     fs::write(&progress, completed_progress).unwrap();
     // Capture real journal paths without depending on their private filename format.
-    let before: Vec<_> = fs::read_dir(instance_dir.join("intents"))
+    let before: Vec<_> = fs::read_dir(node_dir.join("intents"))
         .unwrap()
         .map(|entry| {
             let path = entry.unwrap().path();
@@ -974,8 +1043,8 @@ fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
     assert_eq!(stop.status.code(), Some(0), "{}", text(&stop.stderr));
 
     assert!(
-        instance_dir.join("namespace").exists(),
-        "stop keeps the namespace, so only the descriptor read can fail"
+        node_dir.join("node.json").exists(),
+        "stop keeps the node hint, so only the descriptor read can fail"
     );
 
     let cooperative = run(
@@ -1093,8 +1162,8 @@ fn bare_invocation_prints_usage_with_status_two() {
     assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 0);
 }
 
-/// An unsafe plugin-created private directory (`instances/` or the instance
-/// directory changed to 0755 under a safe root) is invalid local context:
+/// An unsafe plugin-created private directory (the node directory changed to
+/// 0755 under a safe root) is invalid local context:
 /// `daemon ensure` and `doctor` agree on status 2 and `unsafe_state_dir`,
 /// and doctor does not tell the operator to run `daemon ensure`.
 /// Kills: "doctor ignores private-directory safety" (doctor only checks the
@@ -1108,7 +1177,8 @@ fn unsafe_private_dir_gives_same_status_from_ensure_and_doctor() {
     // whatever harness launchers the invoking user has installed (about 2 s
     // per doctor run), which this private-directory check does not exercise.
     let path = Path::new("/usr/bin:/bin");
-    for level in ["instances", "instance"] {
+    {
+        let level = "node";
         let scratch = Scratch::new();
         let state = scratch.0.join("state");
         fs::create_dir(&state).unwrap();
@@ -1120,19 +1190,14 @@ fn unsafe_private_dir_gives_same_status_from_ensure_and_doctor() {
         };
         let probe = run_with_path(&state, &host, &["--json", "doctor"], path);
         let report: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
-        let instance_dir = PathBuf::from(report["doctor"]["instance_dir"].as_str().unwrap());
-        let instances = state.join("instances");
-        assert_eq!(instance_dir.parent().unwrap(), instances);
+        let node_dir = PathBuf::from(report["doctor"]["node_dir"].as_str().unwrap());
+        assert_eq!(node_dir, state.join("node"));
         fs::DirBuilder::new()
             .mode(0o700)
             .recursive(true)
-            .create(&instance_dir)
+            .create(&node_dir)
             .unwrap();
-        let unsafe_dir = if level == "instances" {
-            &instances
-        } else {
-            &instance_dir
-        };
+        let unsafe_dir = &node_dir;
         fs::set_permissions(unsafe_dir, fs::Permissions::from_mode(0o755)).unwrap();
 
         let ensure = run_with_path(&state, &host, &["daemon", "ensure"], path);
@@ -1242,11 +1307,8 @@ fn unmapped_pane_and_missing_context_are_invalid_request() {
     let unmapped_inbox = run_in_pane(&state, &host, Some(pane), &["inbox"], None);
     assert_caller_not_located("unmapped pane: inbox", &unmapped_inbox, "--seat SEAT");
 
-    let database = fs::read_dir(state.join("instances"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path().join("threads.sqlite3"))
-        .find(|path| path.exists())
-        .expect("instance database");
+    let database = state.join("node").join("herdr-threads.db");
+    assert!(database.exists(), "node database");
     let db = rusqlite::Connection::open(&database).unwrap();
     db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
     let instance: String = db
@@ -1299,13 +1361,7 @@ fn unmapped_pane_and_missing_context_are_invalid_request() {
 }
 
 fn endpoint_json(state: &Path) -> serde_json::Value {
-    let instance_dir = fs::read_dir(state.join("instances"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    serde_json::from_slice(&fs::read(instance_dir.join("endpoint.json")).unwrap()).unwrap()
+    serde_json::from_slice(&fs::read(state.join("node").join("endpoint.json")).unwrap()).unwrap()
 }
 
 /// Kills: setup adding networking/socket/root allowances, mutating a valid
@@ -1670,15 +1726,17 @@ fn legacy_codex_allowance_warns_with_unavailable_runtime_and_preserves_foreign_b
 
 /// The instance paths a `--state-dir`/`--host-endpoint` pair resolves to, with
 /// the instance directory prepared (so a test can plant files in it).
-fn prepared_instance(state: &Path, host: &Path) -> herdr_threads::daemon::paths::InstancePaths {
+fn prepared_instance(state: &Path, host: &Path) -> herdr_threads::daemon::paths::NodePaths {
     let context = herdr_threads::daemon::paths::RuntimeContext::explicit(
         state.to_path_buf(),
         host.to_path_buf(),
         None,
     )
     .unwrap();
-    let paths = herdr_threads::daemon::paths::InstancePaths::resolve(&context).unwrap();
-    paths.prepare_instance_dir().unwrap();
+    let paths = herdr_threads::daemon::paths::NodePaths::resolve(&context.state_dir).unwrap();
+    paths.prepare_node_dir().unwrap();
+    // The node key exists before the store is touched, as after any earlier start.
+    herdr_threads::test_support::seed_node_identity(&paths).unwrap();
     paths
 }
 
@@ -1700,7 +1758,7 @@ fn ensure_prints_the_startup_log_tail_when_the_daemon_fails_before_election() {
     let ensure = run(&state, &host, &["daemon", "ensure"], None);
     let stderr = text(&ensure.stderr);
     assert_eq!(ensure.status.code(), Some(3), "{stderr}");
-    let logs = paths.instance_dir.join("logs");
+    let logs = paths.node_dir.join("logs");
     let files: Vec<_> = fs::read_dir(&logs).unwrap().flatten().collect();
     assert_eq!(files.len(), 1, "{files:?}");
     let file = files[0].path();
@@ -1725,7 +1783,7 @@ fn ensure_falls_back_to_piped_stderr_when_the_logs_dir_is_unusable() {
         b"this is not a sqlite database at all",
     )
     .unwrap();
-    fs::write(paths.instance_dir.join("logs"), b"in the way").unwrap();
+    fs::write(paths.node_dir.join("logs"), b"in the way").unwrap();
 
     let ensure = run(&state, &host, &["daemon", "ensure"], None);
     let stderr = text(&ensure.stderr);
@@ -1745,7 +1803,7 @@ fn fallback_daemon_survives_starter_exit() {
     let state = scratch.0.join("state");
     let host = scratch.0.join("host.sock");
     let paths = prepared_instance(&state, &host);
-    fs::write(paths.instance_dir.join("logs"), b"in the way").unwrap();
+    fs::write(paths.node_dir.join("logs"), b"in the way").unwrap();
     let _guard = DaemonGuard {
         state: state.clone(),
         host: host.clone(),
@@ -1755,7 +1813,7 @@ fn fallback_daemon_survives_starter_exit() {
     assert_eq!(ensure.status.code(), Some(0), "{}", text(&ensure.stderr));
     // The starter has exited. The host endpoint does not exist, so the
     // observation lane fails and logs through the daemon's stderr.
-    let log = paths.instance_dir.join("daemon.log");
+    let log = paths.node_dir.join("daemon.log");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     loop {
         let logged = fs::read_to_string(&log).unwrap_or_default();

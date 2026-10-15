@@ -13,7 +13,7 @@ use super::{
     hook::cli_prefix,
     human::one_line,
 };
-use crate::daemon::paths::InstancePaths;
+use crate::daemon::paths::NodePaths;
 use crate::ports::LocalClient;
 use crate::{
     harness::{context::Role, shell_word},
@@ -60,8 +60,8 @@ fn invalid(detail: impl AsRef<str>) -> RunError {
 pub(crate) fn run<C: LocalClient + ?Sized, W: Write>(
     parsed: ParsedCli,
     selection: &CooperativeSelection,
-    paths: &InstancePaths,
-    instance: uuid::Uuid,
+    paths: &NodePaths,
+    instance: crate::node::NodeUuid,
     client: &C,
     clock: &dyn Clock,
     writer: &mut W,
@@ -103,8 +103,8 @@ fn read_submission(input: &mut dyn Read) -> Result<serde_json::Value, RunError> 
 pub(crate) fn run_with_input<C: LocalClient + ?Sized, W: Write>(
     parsed: ParsedCli,
     selection: &CooperativeSelection,
-    paths: &InstancePaths,
-    instance: uuid::Uuid,
+    paths: &NodePaths,
+    instance: crate::node::NodeUuid,
     client: &C,
     clock: &dyn Clock,
     input: &mut dyn Read,

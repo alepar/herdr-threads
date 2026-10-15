@@ -297,7 +297,7 @@ fn commit(offer: &InboxOffer, lazy: Vec<MessageId>, displayed: Vec<MessageId>) -
         invitations: Vec::new(),
         link: CompletionLink {
             endpoint: PathBuf::from("/unused"),
-            instance: uuid::Uuid::nil(),
+            instance: crate::node::NodeUuid::nil(),
             boot: None,
             clock: Arc::new(StepClock),
         },
@@ -607,7 +607,7 @@ fn cli_inbox_prints_first_contact_once() {
     let directory = private("contexts");
     let context = OccupantContext {
         format_version: 1,
-        instance: uuid::Uuid::from_u128(1),
+        instance: crate::node::NodeUuid::from_u128(1),
         seat: "seat-1".into(),
         target: "pane-1".into(),
         harness: ContextHarness::Codex,

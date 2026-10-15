@@ -55,7 +55,7 @@ fn invitation_relevance_output_exposes_goal_or_exact_read_only_inspection() {
 #[test]
 fn json_is_versioned_exact_utf8_and_newline_terminated() {
     let mut health = Health::unknown(
-        "00000000-0000-4000-8000-000000000001".into(),
+        "00000000000040008000000000000001".into(),
         "00000000-0000-4000-8000-000000000002".into(),
         "v\"\n雪".into(),
         1,

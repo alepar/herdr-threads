@@ -5,9 +5,10 @@ use crate::{
         control::{ControlService, StopController},
         health::{ComponentStatus, HarnessStatus, HealthInputs, RetirementHealth},
         ownership::EndpointDescriptor,
-        paths::InstancePaths,
+        paths::NodePaths,
         run_elected_with_diagnostics,
     },
+    node::{NodeIdentity, NodeJson, NodeKeyError},
     ports::{HostPort, LocalService, StorePort},
     protocol::{
         authority::Harness,
@@ -97,7 +98,7 @@ pub(crate) fn health_summary_budget(request: &CallBudget, clock: &dyn Clock) -> 
 /// `host` supplies the host fields: they come only from evidence the
 /// observation lane observed, under the adapter's incarnation witness.
 pub(crate) fn elected_health_provider(
-    instance: Uuid,
+    instance: crate::node::NodeUuid,
     boot: Uuid,
     settings: HealthSettings,
     clock: Arc<dyn Clock>,
@@ -187,7 +188,7 @@ impl HarnessObservations {
 }
 
 struct ElectedHealth {
-    instance: Uuid,
+    instance: crate::node::NodeUuid,
     boot: Uuid,
     settings: HealthSettings,
     clock: Arc<dyn Clock>,
@@ -1135,7 +1136,7 @@ impl LaneProbe {
 /// The lifecycle calls the factory only after ownership election and socket
 /// bind. The matching instance and boot are injected into SQLite and control.
 pub async fn run_elected<R>(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
     config: ServiceConfig,
@@ -1152,6 +1153,7 @@ where
         config,
         host,
         None,
+        None,
         LaneProbe::default(),
         on_ready,
     )
@@ -1163,7 +1165,7 @@ where
 /// log and each lane's idle count.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn run_elected_probed<R>(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
     config: ServiceConfig,
@@ -1174,13 +1176,16 @@ pub async fn run_elected_probed<R>(
 where
     R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
 {
-    run_elected_impl(paths, clock, shutdown, config, host, None, probe, on_ready).await
+    run_elected_impl(
+        paths, clock, shutdown, config, host, None, None, probe, on_ready,
+    )
+    .await
 }
 
 /// Production native composition retains its required scoped observer before erasure.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_elected_guarded<R>(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     context: &crate::daemon::paths::RuntimeContext,
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
@@ -1192,10 +1197,8 @@ pub async fn run_elected_guarded<R>(
 where
     R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
 {
-    let selected_paths = InstancePaths::resolve_read_only(context)?;
-    if selected_paths.instance_dir.as_os_str() != paths.instance_dir.as_os_str()
-        || selected_paths.locator != paths.locator
-    {
+    let selected_paths = NodePaths::resolve_read_only(&context.state_dir)?;
+    if selected_paths.node_dir.as_os_str() != paths.node_dir.as_os_str() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "guarded runtime paths differ from selected context",
@@ -1209,6 +1212,7 @@ where
             config,
             host,
             None,
+            Some(context.host_endpoint.clone()),
             LaneProbe::default(),
             on_ready,
         )
@@ -1226,15 +1230,53 @@ where
         config,
         host,
         Some(selected),
+        Some(context.host_endpoint.clone()),
         LaneProbe::default(),
         on_ready,
     )
     .await
 }
 
+/// Load or create the node key and publish the `node.json` hint. A refused
+/// key is a one-line start failure naming the `NodeKeyError` variant.
+fn load_node_identity(paths: &NodePaths) -> io::Result<NodeIdentity> {
+    paths.prepare_node_dir()?;
+    let identity =
+        NodeIdentity::load_or_create(paths, paths.database_path.exists()).map_err(|error| {
+            let kind = match error {
+                NodeKeyError::Unreadable { .. } => io::ErrorKind::Other,
+                _ => io::ErrorKind::InvalidData,
+            };
+            io::Error::new(
+                kind,
+                format!("node key refused ({}): {error}", error.variant()),
+            )
+        })?;
+    let created_at = crate::node::json::read_hint(&paths.node_json_path)
+        .filter(|hint| hint.node_uuid == identity.uuid())
+        .map_or_else(
+            || {
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_millis() as i64)
+            },
+            |hint| hint.created_at,
+        );
+    crate::node::json::write_if_differs(
+        &paths.node_json_path,
+        &NodeJson::new(
+            identity.uuid(),
+            identity.tag(),
+            identity.tag_k(),
+            created_at,
+        ),
+    )?;
+    Ok(identity)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_elected_impl<R>(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
     config: ServiceConfig,
@@ -1244,22 +1286,30 @@ async fn run_elected_impl<R>(
         std::path::PathBuf,
         Arc<dyn crate::ports::BootstrapObserver>,
     )>,
+    // The selected Herdr endpoint, kept only as the legacy handoff
+    // namespace's host in archival continuation context; no path uses it.
+    legacy_host_endpoint: Option<std::path::PathBuf>,
     probe: LaneProbe,
     on_ready: R,
 ) -> io::Result<bool>
 where
     R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
 {
+    // The node's identity comes from its key, loaded (or created for a new
+    // node) before election; the descriptor and the store `instance` string
+    // carry its uuid. node.json is a derived hint, written here so clients
+    // can find the daemon (ht-5fr.1.10 moves this after the store read).
+    let identity = load_node_identity(paths)?;
     // Instance settings and the offline switch are read once, here: the
     // manifest fetch policy is fixed for this daemon's lifetime. An invalid
     // settings file refuses the start with a message naming the file.
-    let instance_settings = crate::daemon::settings::load(&paths.instance_dir)
+    let instance_settings = crate::daemon::settings::load(&paths.node_dir)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
     let manifest_policy = crate::harness::manifest::policy_from(
         &instance_settings,
         std::env::var_os("HERDR_THREADS_OFFLINE").as_deref(),
     );
-    let manifest_cache_dir = crate::harness::manifest::cache_dir(&paths.instance_dir);
+    let manifest_cache_dir = crate::harness::manifest::cache_dir(&paths.node_dir);
     let mod_delivery = instance_settings.mod_delivery;
     let database_path = paths.database_path.clone();
     let archival_paths = paths.clone();
@@ -1306,6 +1356,11 @@ where
         clock,
         shutdown,
         move |instance, boot, cancellation| {
+            if instance != identity.uuid() {
+                return Err(io::Error::other(
+                    "node.json hint does not match the loaded node key",
+                ));
+            }
             let context = StoreContext::new(database_path, Arc::clone(&factory_clock));
             factory_probe.configure_store(&context);
             // One registry per elected daemon: the store's commit hooks kick
@@ -1575,12 +1630,10 @@ where
             ));
             {
                 let archival_context = crate::protocol::output::ContinuationContext {
-                    state_dir: archival_paths
-                        .instance_dir
-                        .parent()
-                        .and_then(|p| p.parent())
-                        .map(|p| p.to_string_lossy().into_owned()),
-                    host: Some(archival_paths.locator.clone()),
+                    state_dir: Some(archival_paths.state_dir.to_string_lossy().into_owned()),
+                    host: legacy_host_endpoint
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().into_owned()),
                 };
                 workers.push(crate::service::archival::start(
                     crate::service::archival::ArchivalWorker {

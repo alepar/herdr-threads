@@ -1,7 +1,7 @@
 use herdr_threads::{
     app::{SystemClock, run_elected_guarded},
     cli,
-    daemon::paths::{InstancePaths, RuntimeContext},
+    daemon::paths::{NodePaths, RuntimeContext},
     protocol::time::{Cancellation, Clock},
     service::config::ServiceConfig,
 };
@@ -27,7 +27,7 @@ fn detached_child(args: &[OsString]) -> io::Result<()> {
         PathBuf::from(&args[6]),
         std::env::var_os("HERDR_BIN_PATH").map(PathBuf::from),
     )?;
-    let paths = InstancePaths::resolve(&context)?;
+    let paths = NodePaths::resolve(&context.state_dir)?;
     let config = ServiceConfig::load(&paths)?;
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let runtime = tokio::runtime::Builder::new_current_thread()

@@ -7,7 +7,7 @@ use crate::daemon::{
     ownership::{
         EndpointDescriptor, owner_lock_identity, previous_owner_released, read_descriptor,
     },
-    paths::InstancePaths,
+    paths::NodePaths,
 };
 use crate::ports::{LocalClient, LocalService, ServiceAuthorityGate, ServiceConnectionAuthority};
 use crate::protocol::{
@@ -36,13 +36,13 @@ use uuid::Uuid;
 /// instance. Rechecking both identities here fences an old boot before it can
 /// cancel the current owner. Cancellation is observed by lifecycle admission.
 pub struct StopController {
-    instance: Uuid,
+    instance: crate::node::NodeUuid,
     boot: Uuid,
     shutdown: Cancellation,
 }
 
 impl StopController {
-    pub fn new(instance: Uuid, boot: Uuid, shutdown: Cancellation) -> Self {
+    pub fn new(instance: crate::node::NodeUuid, boot: Uuid, shutdown: Cancellation) -> Self {
         Self {
             instance,
             boot,
@@ -50,7 +50,11 @@ impl StopController {
         }
     }
 
-    pub fn request_stop(&self, instance: Uuid, boot: Uuid) -> Result<(), ApiError> {
+    pub fn request_stop(
+        &self,
+        instance: crate::node::NodeUuid,
+        boot: Uuid,
+    ) -> Result<(), ApiError> {
         if instance != self.instance || boot != self.boot {
             return Err(ApiError::instance_mismatch(
                 "stop target is not this daemon boot",
@@ -409,7 +413,7 @@ const SKEW_STOP_WAIT: Duration = Duration::from_secs(10);
 /// descriptor's `socket_device`/`socket_inode`). Any mismatch refuses and no
 /// signal is sent. `Ok(false)` means no owner holds the lock: nothing to stop.
 fn confirm_skewed_owner(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     descriptor: &EndpointDescriptor,
 ) -> Result<bool, ApiError> {
     use std::os::unix::fs::MetadataExt;
@@ -432,7 +436,7 @@ fn confirm_skewed_owner(
     if previous_owner_released(paths, lock).map_err(io_failure)? {
         return Ok(false);
     }
-    match read_descriptor(paths, descriptor.instance_uuid) {
+    match read_descriptor(paths, descriptor.node_uuid) {
         Ok(current) if &current == descriptor => {}
         Ok(_) => return refuse("the published descriptor changed (pid or boot_id differs)"),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -453,12 +457,7 @@ fn confirm_skewed_owner(
         .output()
         .map_err(io_failure)?;
     let command = String::from_utf8_lossy(&command.stdout).into_owned();
-    let state = paths
-        .instance_dir
-        .parent()
-        .and_then(std::path::Path::parent)
-        .map(|dir| dir.display().to_string())
-        .unwrap_or_default();
+    let state = paths.state_dir.display().to_string();
     let words: Vec<&str> = command.split_whitespace().collect();
     let runs_daemon = words.windows(2).any(|pair| pair == ["daemon", "run"]);
     let this_state = words
@@ -484,7 +483,7 @@ fn confirm_skewed_owner(
 /// follows either way.
 pub fn request_stop(
     client: &dyn LocalClient,
-    paths: &InstancePaths,
+    paths: &NodePaths,
     descriptor: &EndpointDescriptor,
     budget: &CallBudget,
 ) -> Result<(), ApiError> {
@@ -527,7 +526,7 @@ pub fn request_stop(
 /// skew stop waits up to ten seconds for the SIGTERMed owner regardless.
 pub fn stop_and_wait(
     client: &dyn LocalClient,
-    paths: &InstancePaths,
+    paths: &NodePaths,
     descriptor: &EndpointDescriptor,
     clock: &dyn Clock,
     budget: &CallBudget,
@@ -548,7 +547,7 @@ pub fn stop_and_wait(
         SKEW_STOP_WAIT
     };
     wait_for_stop_with_probe(wait, &budget.cancellation, || {
-        match read_descriptor(paths, descriptor.instance_uuid) {
+        match read_descriptor(paths, descriptor.node_uuid) {
             Ok(current) if current.boot_id != descriptor.boot_id => Ok(true),
             Ok(_) => previous_owner_released(paths, prior_lock),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {

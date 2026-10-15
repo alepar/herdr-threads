@@ -72,7 +72,7 @@ pub fn valid_conversation_id(id: &str) -> bool {
 }
 
 /// ht-poh.5's per-conversation state file: `<state>/conversations/<first 32 hex of sha256(id)>.json`.
-/// `state` is `<instance_dir>/adapter-state/agy/`; the content and pruning belong to ht-poh.5.
+/// `state` is `<node_dir>/adapter-state/agy/`; the content and pruning belong to ht-poh.5.
 /// A delivery cache only: never a lifecycle or role input (ht-poh.30).
 pub fn conversation_state(state: &Path, conversation_id: &str) -> PathBuf {
     let digest = Sha256::digest(conversation_id.as_bytes());

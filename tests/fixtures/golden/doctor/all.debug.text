@@ -5,8 +5,8 @@ state_dir.source: --state-dir
 state_dir.status: ok
 host_endpoint: <root>/host.sock (missing)
 host_endpoint.source: --host-endpoint
-instance_dir: <root>/state/instances/<hash64>
-daemon_log: <root>/state/instances/<hash64>/daemon.log
+node_dir: <root>/state/node
+daemon_log: <root>/state/node/daemon.log
 harness states unavailable: the daemon is not running
 harness manifest: auto
 manifest cache: never fetched (using the embedded copy)

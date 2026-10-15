@@ -742,7 +742,7 @@ mod activation {
 
     impl Observer {
         fn start(fx: &continuity::Fixture, fault: Fault) -> Self {
-            let descriptor_path = fx.instance_dir.join("endpoint.json");
+            let descriptor_path = fx.node_dir.join("endpoint.json");
             let original_descriptor = fs::read(&descriptor_path).unwrap();
             let mut descriptor: EndpointDescriptor =
                 serde_json::from_slice(&original_descriptor).unwrap();
@@ -1062,11 +1062,11 @@ mod activation {
             }
         }
         fn adapter_state(&self) -> PathBuf {
-            self.fx.instance_dir.join("adapter-state/agy")
+            self.fx.node_dir.join("adapter-state/agy")
         }
         fn downgrade(&self, age_ms: u64) {
             let state = self.adapter_state();
-            for directory in [self.fx.instance_dir.join("adapter-state"), state.clone()] {
+            for directory in [self.fx.node_dir.join("adapter-state"), state.clone()] {
                 if let Err(error) = fs::DirBuilder::new().mode(0o700).create(&directory) {
                     assert_eq!(
                         error.kind(),

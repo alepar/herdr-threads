@@ -328,6 +328,7 @@ mod session_capability_tests;
 mod send_tests {
     use super::*;
     use crate::protocol::ids::ServiceAuthorId;
+    use uuid::Uuid;
 
     fn reply(result: Result<ServiceResult, ApiError>) -> ServiceWireResponse {
         let daemon_boot = match &result {
@@ -337,7 +338,7 @@ mod send_tests {
         ServiceWireResponse {
             version: PROTOCOL_VERSION,
             request_id: "registered-send".into(),
-            instance: Uuid::new_v4().to_string(),
+            instance: crate::node::NodeUuid::new_v4().to_string(),
             daemon_boot,
             result,
         }
