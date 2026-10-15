@@ -116,6 +116,16 @@ impl OrdinaryIdentity {
         }
     }
 
+    /// The Herdr server this identity acts on.
+    pub fn host_id(&self) -> HostId {
+        self.host_id
+    }
+
+    /// The port of the Herdr server this identity acts on.
+    pub fn host_port(&self) -> &Arc<dyn HostPort> {
+        &self.host
+    }
+
     /// Gate background retries on the observation lane's Pacer backoff.
     pub fn with_observation_pacer(mut self, pacer: Arc<Pacer>) -> Self {
         self.observation_pacer = Some(pacer);

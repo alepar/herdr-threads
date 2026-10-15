@@ -195,19 +195,6 @@ pub fn begin_host_observation(
     )
 }
 
-pub fn persisted_host_epoch(conn: &Connection, host: HostId) -> Result<u64, ApiError> {
-    let epoch: Option<i64> = conn
-        .query_row(
-            "SELECT host_epoch FROM herdr_hosts WHERE host_id=?1",
-            [host.get()],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(store_error)?;
-    u64::try_from(epoch.unwrap_or(0))
-        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative persisted host epoch"))
-}
-
 /// Commit one explicit current-target read under the store-issued observation
 /// admission. A late or superseded host call never rewrites a newer row.
 pub fn publish_current_target_observation(

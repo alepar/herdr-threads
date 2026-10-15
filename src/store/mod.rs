@@ -2355,14 +2355,6 @@ impl StorePort for SqliteStore {
             other => other,
         }
     }
-    fn persisted_host_epoch(
-        &self,
-        host: crate::ports::HostId,
-        budget: &CallBudget,
-    ) -> Result<u64, ApiError> {
-        let writer = self.writer(budget)?;
-        seats::persisted_host_epoch(&writer, host)
-    }
     fn attach_host(
         &self,
         locator: &crate::protocol::ids::HostLocator,

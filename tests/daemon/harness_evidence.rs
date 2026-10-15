@@ -2166,13 +2166,6 @@ mod publication_order {
         ) -> Result<CommandResult, ApiError> {
             self.inner.register_available(request, permit, budget)
         }
-        fn persisted_host_epoch(
-            &self,
-            _host: crate::ports::HostId,
-            _budget: &CallBudget,
-        ) -> Result<u64, ApiError> {
-            self.inner.persisted_host_epoch(_host, _budget)
-        }
         fn attach_host(
             &self,
             locator: &crate::protocol::ids::HostLocator,

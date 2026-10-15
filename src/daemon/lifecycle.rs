@@ -9,8 +9,8 @@ use crate::daemon::logs::{
     startup_log_path, startup_logs_dir, startup_tail_text,
 };
 use crate::daemon::ownership::{
-    EndpointDescriptor, OwnerLock, PrimaryHost, owner_lock_identity, previous_owner_released,
-    read_descriptor, read_node_uuid_hint,
+    EndpointDescriptor, OwnerLock, owner_lock_identity, previous_owner_released, read_descriptor,
+    read_node_uuid_hint,
 };
 use crate::daemon::paths::{NodePaths, RuntimeContext, effective_uid};
 use crate::daemon::remedy::{RemedyContext, remedy};
@@ -139,38 +139,6 @@ pub(crate) fn check_protocol(descriptor: &EndpointDescriptor) -> Result<(), ApiE
             descriptor.protocol_version,
         ))
     }
-}
-
-/// INTERIM single-host guard, deleted by ht-5fr.2 (per-seat host routing) in
-/// this one place.
-///
-/// Responsibility: refuse, client-side, a call that carries a claim host
-/// (`claim`) when the daemon it reached serves another Herdr server, or none
-/// (a store-only daemon, `primary_host: None`) while the call `needs_host`.
-/// A call with no claim host passes: it needs no Herdr server. Does not read
-/// the descriptor or start a daemon; the caller supplies the descriptor.
-/// Model-visible text: one line, about 90 bytes plus the paths.
-pub(crate) fn check_claim_host(
-    claim: Option<&Path>,
-    needs_host: bool,
-    descriptor: &EndpointDescriptor,
-) -> Result<(), ApiError> {
-    let Some(claim) = claim else {
-        return Ok(());
-    };
-    let served = match descriptor.primary_host.as_deref() {
-        Some(served) if served == claim => return Ok(()),
-        Some(served) => served.display().to_string(),
-        None if !needs_host => return Ok(()),
-        None => "no Herdr server".to_owned(),
-    };
-    Err(api_error(
-        ErrorCode::HostUnavailable,
-        format!(
-            "node daemon serves Herdr server {served}; {} is not attached (herdr-threads daemon stop)",
-            claim.display()
-        ),
-    ))
 }
 
 fn io_error(error: io::Error) -> ApiError {
@@ -530,7 +498,6 @@ pub async fn ensure_running_with_timeout(
         .await
         {
             Ok(Some(descriptor)) => {
-                check_claim_host(context.host_endpoint.as_deref(), true, &descriptor)?;
                 return Ok(descriptor);
             }
             Ok(None) => {}
@@ -644,45 +611,8 @@ where
     D: FnOnce() -> Fut,
     Fut: Future<Output = io::Result<()>>,
 {
-    run_owner_attached(
+    run_owner_with_peers(
         paths,
-        None,
-        clock,
-        shutdown,
-        sink,
-        limits,
-        make_service,
-        on_ready,
-        on_drained,
-    )
-    .await
-}
-
-/// [`run_owner_with_factory`] publishing `primary_host` (the attached Herdr
-/// endpoint, `None` for a store-only daemon) in the endpoint descriptor.
-// Allowed: run_owner_with_factory's inputs plus the descriptor's primary host.
-#[allow(clippy::too_many_arguments)]
-pub async fn run_owner_attached<S, F, R, D, Fut>(
-    paths: &NodePaths,
-    primary_host: Option<PathBuf>,
-    clock: Arc<dyn Clock>,
-    shutdown: Cancellation,
-    sink: S,
-    limits: BufferLimits,
-    make_service: F,
-    on_ready: R,
-    on_drained: D,
-) -> io::Result<bool>
-where
-    S: DiagnosticSink,
-    F: FnOnce(NodeUuid, Uuid, Cancellation) -> io::Result<Arc<dyn LocalService>>,
-    R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
-    D: FnOnce() -> Fut,
-    Fut: Future<Output = io::Result<()>>,
-{
-    run_owner_late_host(
-        paths,
-        PrimaryHost::new(primary_host),
         transport::PeerWiring::default(),
         clock,
         shutdown,
@@ -695,15 +625,12 @@ where
     .await
 }
 
-/// [`run_owner_attached`] whose `primary_host` is filled by `make_service`
-/// (the elected daemon attaches its Herdr server after its store opens) and
-/// read when the descriptor is published. `peers` is the sync runtime's seam:
-/// `make_service` fills its intake and the accept loop serves with it.
-// Allowed: run_owner_attached's inputs with a shared primary-host slot and peer wiring.
+/// [`run_owner_with_factory`] with the sync runtime's seam: `make_service` fills
+/// the `peers` intake and the accept loop serves with it.
+// Allowed: run_owner_with_factory's inputs with peer wiring.
 #[allow(clippy::too_many_arguments)]
-pub async fn run_owner_late_host<S, F, R, D, Fut>(
+pub async fn run_owner_with_peers<S, F, R, D, Fut>(
     paths: &NodePaths,
-    primary_host: PrimaryHost,
     peers: transport::PeerWiring,
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
@@ -721,7 +648,7 @@ where
     Fut: Future<Output = io::Result<()>>,
 {
     let lease = match OwnerLock::acquire(paths) {
-        Ok(lease) => lease.with_primary_host_slot(primary_host),
+        Ok(lease) => lease,
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(false),
         Err(error) => return Err(error),
     };

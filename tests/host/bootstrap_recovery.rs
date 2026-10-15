@@ -297,7 +297,7 @@ mod bootstrap_recovery {
             )
             .with_operator_owner(501)
             .with_cooperative_owner(501, fair_writer)
-            .with_bootstrap_runtime(
+            .with_prebuilt_bootstrap(
                 id.payload.handoff.namespace.clone(),
                 observer.clone(),
                 store.clone(),

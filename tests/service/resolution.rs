@@ -1202,11 +1202,8 @@ fn real_cli_resolve_journals_before_submission_and_exact_retry_survives_output_f
         "--state-dir".into(),
         fixture.root.join("state").to_string_lossy().into_owned(),
         "--host-endpoint".into(),
-        fixture
-            .root
-            .join("host.sock")
-            .to_string_lossy()
-            .into_owned(),
+        // The server the fixture daemon attaches.
+        herdr_threads::test_support::TEST_HOST_ENDPOINT.to_owned(),
         "--json".into(),
         "seat".into(),
         "resolve".into(),
@@ -1244,11 +1241,8 @@ fn real_cli_resolve_journals_before_submission_and_exact_retry_survives_output_f
         "--state-dir".into(),
         fixture.root.join("state").to_string_lossy().into_owned(),
         "--host-endpoint".into(),
-        fixture
-            .root
-            .join("host.sock")
-            .to_string_lossy()
-            .into_owned(),
+        // The server the fixture daemon attaches.
+        herdr_threads::test_support::TEST_HOST_ENDPOINT.to_owned(),
         "--json".into(),
         "retry".into(),
         "local:1".into(),
@@ -1284,11 +1278,8 @@ fn real_cli_resolve_discards_intent_only_after_correlated_definitive_rejection()
     use herdr_threads::cli::{self, journal::Journal};
     let fixture = Fixture::new(false);
     let state = fixture.root.join("state").to_string_lossy().into_owned();
-    let host = fixture
-        .root
-        .join("host.sock")
-        .to_string_lossy()
-        .into_owned();
+    // The server the fixture daemon attaches.
+    let host = herdr_threads::test_support::TEST_HOST_ENDPOINT.to_owned();
     let argv = |tail: &[&str]| {
         let mut argv = vec![
             "herdr-threads".to_owned(),

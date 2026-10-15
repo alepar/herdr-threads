@@ -1443,7 +1443,7 @@ impl herdr_threads::ports::HostPort for HungWakeHost {
 }
 
 /// An empty host plan on a store with no remembered live host: the
-/// daemon binds, publishes a descriptor with no `primary_host`, answers Health
+/// daemon binds, publishes a descriptor, answers Health
 /// and Stop, spawns no host workers (wake, observation, archival lanes are
 /// never registered, the deadline lane is) and refuses host-bound commands
 /// with `HostUnavailable`.
@@ -1506,7 +1506,6 @@ fn store_only_daemon_serves_without_host_workers() {
             panic!("store-only daemon not ready: {error}; {:?}", daemon.join());
         }
     };
-    assert_eq!(descriptor.primary_host, None);
     let client = LocalSocketClient::new(
         descriptor.endpoint.clone(),
         Arc::clone(&clock),

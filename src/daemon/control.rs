@@ -168,18 +168,20 @@ impl<H> ControlService<H, crate::service::dispatch::DomainService>
 where
     H: Fn(&CallBudget) -> HealthInputs + Send + Sync,
 {
-    /// Only the concrete fully equipped domain can enable this capability.
+    /// Only the concrete fully equipped domain can enable this capability:
+    /// the server at `host` must be attached and serve guarded bootstrap.
     pub fn new_guarded(
         stop: StopController,
         health: H,
         domain: crate::service::dispatch::DomainService,
+        host: &crate::protocol::ids::HostLocator,
     ) -> Result<Self, ApiError> {
-        if !domain.bootstrap_available() {
+        if !domain.bootstrap_available(host) {
             return Err(ApiError::unsupported(
                 "bootstrap runtime composition incomplete",
             ));
         }
-        let automatic_guarded = domain.automatic_available();
+        let automatic_guarded = domain.automatic_available(host);
         let mut service = Self::new(stop, health, domain);
         service.automatic_guarded = automatic_guarded;
         service.bootstrap_guarded = true;

@@ -626,7 +626,7 @@ impl Fixture {
         )
         .with_operator_owner(unsafe { libc::geteuid() })
         .with_cooperative_owner(unsafe { libc::geteuid() }, writer)
-        .with_bootstrap_runtime(namespace, host, store)
+        .with_prebuilt_bootstrap(namespace, host, store)
         .unwrap()
     }
     fn db(&self) -> rusqlite::Connection {

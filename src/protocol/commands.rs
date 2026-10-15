@@ -1157,29 +1157,38 @@ impl Command {
             Self::OperatorRebind(v) => Some(&v.host),
             Self::OperatorFreshSeat(v) => Some(&v.host),
             Self::OperatorReplace(v) => Some(&v.host),
-            Self::DeliveryPull(v) => Some(&v.claim.host),
-            Self::DeliveryPullV2(v) => Some(&v.claim.host),
-            Self::DeliveryPresentationConfirmV2(v) => Some(&v.claim.host),
-            Self::DeliveryConfirm(v) => Some(&v.claim.host),
-            Self::AdvanceCursors(v) => Some(&v.claim.host),
-            Self::BindingEvent(v) => Some(&v.claim.host),
-            Self::Summary(v) => Some(&v.claim.host),
-            Self::SummaryJob(v) => Some(&v.claim.host),
-            Self::SummarySubmit(v) => Some(&v.claim.host),
-            Self::HandoffDelivery(v) => Some(&v.claim.host),
-            Self::AutomaticHandoffDelivery(v) => Some(&v.claim.host),
-            Self::AutomaticBootstrap(v) => Some(&v.identity.claim.host),
-            Self::BeginBootstrap(v) => Some(&v.identity.claim.host),
-            Self::ReserveBootstrapAttempt(v) => Some(&v.identity.claim.host),
-            Self::RecordBootstrapCreated(v) => Some(&v.identity.claim.host),
-            Self::RecordBootstrapNotSubmitted(v) => Some(&v.identity.claim.host),
-            Self::AttachBootstrapHandoff(v) => Some(&v.identity.claim.host),
-            Self::CompleteLinkedBootstrap(v) => Some(&v.identity.claim.host),
-            Self::CheckBootstrapSubmission(v) => Some(&v.identity.claim.host),
-            Self::BootstrapStatus(v) => Some(&v.identity.claim.host),
-            Self::ResolveBootstrapSeat(v) => Some(&v.identity.claim.host),
-            Self::RecoverBootstrap(v) => Some(&v.identity.claim.host),
-            other => other.accountable_claim().map(|claim| &claim.host),
+            other => other.host_claim().map(|claim| &claim.host),
+        }
+    }
+
+    /// The claim whose `host` [`Self::host_locator`] answers: every claim-bearing command's
+    /// claim, including the ones [`Self::accountable_claim`] leaves out (reads and handoff or
+    /// bootstrap commands, which carry a claim without being accountable mutations).
+    pub fn host_claim(&self) -> Option<&CallerClaim> {
+        match self {
+            Self::DeliveryPull(v) => Some(&v.claim),
+            Self::DeliveryPullV2(v) => Some(&v.claim),
+            Self::DeliveryPresentationConfirmV2(v) => Some(&v.claim),
+            Self::DeliveryConfirm(v) => Some(&v.claim),
+            Self::AdvanceCursors(v) => Some(&v.claim),
+            Self::BindingEvent(v) => Some(&v.claim),
+            Self::Summary(v) => Some(&v.claim),
+            Self::SummaryJob(v) => Some(&v.claim),
+            Self::SummarySubmit(v) => Some(&v.claim),
+            Self::HandoffDelivery(v) => Some(&v.claim),
+            Self::AutomaticHandoffDelivery(v) => Some(&v.claim),
+            Self::AutomaticBootstrap(v) => Some(&v.identity.claim),
+            Self::BeginBootstrap(v) => Some(&v.identity.claim),
+            Self::ReserveBootstrapAttempt(v) => Some(&v.identity.claim),
+            Self::RecordBootstrapCreated(v) => Some(&v.identity.claim),
+            Self::RecordBootstrapNotSubmitted(v) => Some(&v.identity.claim),
+            Self::AttachBootstrapHandoff(v) => Some(&v.identity.claim),
+            Self::CompleteLinkedBootstrap(v) => Some(&v.identity.claim),
+            Self::CheckBootstrapSubmission(v) => Some(&v.identity.claim),
+            Self::BootstrapStatus(v) => Some(&v.identity.claim),
+            Self::ResolveBootstrapSeat(v) => Some(&v.identity.claim),
+            Self::RecoverBootstrap(v) => Some(&v.identity.claim),
+            other => other.accountable_claim(),
         }
     }
 

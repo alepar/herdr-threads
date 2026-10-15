@@ -71,7 +71,7 @@ impl Fixture {
         )
         .with_operator_owner(501)
         .with_cooperative_owner(501, writer)
-        .with_bootstrap_runtime(super::topology_handoff::namespace(), host, concrete.clone())
+        .with_prebuilt_bootstrap(super::topology_handoff::namespace(), host, concrete.clone())
         .unwrap();
         Self {
             service,
@@ -264,6 +264,7 @@ fn actual_guarded_domain_capability_requires_concrete_composition_and_handler() 
             panic!("health outside capability probe")
         },
         f.service,
+        &herdr_threads::protocol::ids::HostLocator::parse("/host.sock").unwrap(),
     )
     .unwrap();
     let CommandResult::Capabilities(caps) = control
@@ -1509,7 +1510,7 @@ fn automatic_generic_selected_runtime_defaults_refuse_without_effects() {
     ));
     f.service = f
         .service
-        .with_bootstrap_runtime(
+        .with_prebuilt_bootstrap(
             super::topology_handoff::namespace(),
             host,
             Arc::new(GenericBootstrap),
@@ -2152,7 +2153,7 @@ fn automatic_canonical_descriptor_requires_the_concrete_automatic_runtime() {
             ));
             f.service = f
                 .service
-                .with_bootstrap_runtime(
+                .with_prebuilt_bootstrap(
                     super::topology_handoff::namespace(),
                     host,
                     Arc::new(GenericBootstrap),
@@ -2171,6 +2172,7 @@ fn automatic_canonical_descriptor_requires_the_concrete_automatic_runtime() {
             ),
             |_| -> herdr_threads::daemon::health::HealthInputs { panic!("health") },
             f.service,
+            &herdr_threads::protocol::ids::HostLocator::parse("/host.sock").unwrap(),
         )
         .unwrap();
         let CommandResult::Capabilities(caps) = service

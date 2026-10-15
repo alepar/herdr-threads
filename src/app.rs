@@ -6,7 +6,7 @@ use crate::{
         health::{ComponentStatus, HarnessStatus, HealthInputs, RetirementHealth},
         ownership::EndpointDescriptor,
         paths::NodePaths,
-        run_elected_late_host,
+        run_elected_with_peers,
     },
     node::{NodeIdentity, NodeKeyError},
     ports::{LocalService, StorePort},
@@ -1603,13 +1603,8 @@ where
     let host_evidence = Arc::new(HostEvidenceStatus::default());
     let factory_host_evidence = Arc::clone(&host_evidence);
     let factory_probe = probe;
-    // Filled by the factory once the host is attached (after the store
-    // opens); read when the descriptor is published.
-    let primary_host = crate::daemon::ownership::PrimaryHost::default();
-    let factory_primary_host = primary_host.clone();
-    run_elected_late_host(
+    run_elected_with_peers(
         paths,
-        primary_host,
         peers,
         clock,
         shutdown,
@@ -1945,12 +1940,10 @@ where
                 });
             factory_probe.attach_host_sessions(&host_sessions);
             host_sessions.attach_startup(factory_hint.as_ref())?;
-            // Interim until ht-5fr.2.12 routes by claim host: the service,
-            // Health and archival follow the startup session (`None` when no
-            // server is attached at startup: store-only).
+            // The service routes by claim host (`DomainService::attached_host`);
+            // Health and archival still follow the startup session (`None`
+            // when no server is attached at startup: store-only).
             let primary = host_sessions.startup_primary(factory_hint.as_ref());
-            factory_primary_host
-                .set(primary.as_ref().map(|session| std::path::PathBuf::from(session.locator())));
             rate_limited_log.write_line(&match &primary {
                 Some(session) => format!(
                     "herdr host attached: {} (host {})",
@@ -1959,21 +1952,21 @@ where
                 ),
                 None => "no Herdr server attached: store-only".to_owned(),
             });
-            if primary.is_some() {
-                push_worker(crate::service::liveness::start_liveness_worker(
-                    liveness,
-                    Arc::new(Pacer::new(
-                        "liveness",
-                        Arc::clone(&factory_clock),
-                        factory_stop.clone(),
-                    )),
+            // Sessions attach lazily on the request path, so the liveness
+            // re-check runs whether or not a server attached at startup.
+            push_worker(crate::service::liveness::start_liveness_worker(
+                liveness,
+                Arc::new(Pacer::new(
+                    "liveness",
+                    Arc::clone(&factory_clock),
                     factory_stop.clone(),
-                    {
-                        let log = Arc::clone(&rate_limited_log);
-                        Arc::new(move |line: &str| log.write_line(line))
-                    },
-                )?)?;
-            }
+                )),
+                factory_stop.clone(),
+                {
+                    let log = Arc::clone(&rate_limited_log);
+                    Arc::new(move |line: &str| log.write_line(line))
+                },
+            )?)?;
             push_worker(start_mod_channel_worker(
                 Arc::clone(&mod_registry),
                 Arc::new(Pacer::new(
@@ -1988,9 +1981,6 @@ where
                     Arc::new(move |line: &str| log.write_line(line))
                 },
             )?)?;
-            // The identity resolver is the service's only way to the host
-            // (`DomainService::attached_host`); a store-only daemon has none.
-            let identity = primary.as_ref().map(|session| Arc::clone(session.identity()));
             push_worker(start_retention_lane(
                 &kicks,
                 Arc::clone(&factory_clock),
@@ -2331,36 +2321,23 @@ where
             let evidence_store = Arc::clone(&store);
             let states_store = Arc::clone(&store);
             let health_clock = Arc::clone(&factory_clock);
-            // Service host seam: with a host the service is composed with its
-            // identity resolver; store-only it has none and `attached_host`
-            // answers `HostUnavailable`.
-            let mut domain = match identity {
-                Some(identity) => DomainService::with_identity(
-                    instance.to_string(),
-                    store,
-                    Arc::clone(&factory_clock),
-                    identity,
-                ),
-                None => DomainService::new(instance.to_string(), store, Arc::clone(&factory_clock)),
-            }
-            .with_operator_owner(crate::daemon::paths::effective_uid())
-            .with_cooperative_owner(crate::daemon::paths::effective_uid(), writer)
-            .with_mod_channels(Arc::clone(&mod_channels))
-            .with_sync_admin(sync_admin)
-            .with_delivery_pull(Arc::clone(&delivery_pull));
-            // Guarded bootstrap needs an attached host with `HostGuardedStart`.
-            let bootstrap = primary
+            // The service reaches Herdr servers only through the registry
+            // (`DomainService::attached_host`): a store-only daemon attaches
+            // one when a command first names it.
+            let domain = DomainService::new(instance.to_string(), store, Arc::clone(&factory_clock))
+                .with_sessions(Arc::clone(&host_sessions))
+                .with_operator_owner(crate::daemon::paths::effective_uid())
+                .with_cooperative_owner(crate::daemon::paths::effective_uid(), writer)
+                .with_mod_channels(Arc::clone(&mod_channels))
+                .with_sync_admin(sync_admin)
+                .with_delivery_pull(Arc::clone(&delivery_pull))
+                .with_bootstrap_store(bootstrap_store);
+            // Guarded bootstrap is advertised when the startup server has a
+            // bootstrap runtime.
+            let guarded_host = primary
                 .as_ref()
-                .and_then(|session| session.bootstrap().cloned());
-            if let Some(runtime) = &bootstrap {
-                domain = domain
-                    .with_bootstrap_runtime(
-                        runtime.canonical.clone(),
-                        Arc::clone(&runtime.observer),
-                        bootstrap_store,
-                    )
-                    .map_err(|error| io::Error::other(error.detail))?;
-            }
+                .filter(|session| session.bootstrap().is_some())
+                .map(|session| session.locator().clone());
             let stop = StopController::new(instance, boot, cancellation);
             let provider = elected_health_provider(
                 instance,
@@ -2438,8 +2415,8 @@ where
                 .with_rich_manifest_source(Arc::clone(&manifest)
                     as Arc<dyn crate::daemon::harness_evidence::RichManifestSource>),
             );
-            let control = if bootstrap.is_some() {
-                ControlService::new_guarded(stop, health, domain)
+            let control = if let Some(locator) = &guarded_host {
+                ControlService::new_guarded(stop, health, domain, locator)
                     .map_err(|error| io::Error::other(error.detail))?
             } else {
                 ControlService::new(stop, health, domain)

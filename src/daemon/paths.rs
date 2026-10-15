@@ -91,8 +91,8 @@ impl RuntimeContext {
     /// error. Every consumer that needs a pane or a Herdr server (hook claim,
     /// `me`, `launch`, handoff, `panes`, setup) reads the claim host through
     /// this instead of the field. Does not: decide whether a call needs a host
-    /// (the caller does) or compare it with the daemon's (the interim guard
-    /// `lifecycle::check_claim_host`).
+    /// (the caller does) or attach it (the daemon attaches the claim host
+    /// lazily, `DomainService::attached_host`).
     pub fn require_host(&self) -> io::Result<&Path> {
         self.host_endpoint.as_deref().ok_or_else(|| {
             io::Error::new(

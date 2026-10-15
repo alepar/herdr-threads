@@ -15,9 +15,9 @@ pub mod transport;
 
 use crate::daemon::{
     diagnostics::{BufferLimits, DiagnosticSink, DiagnosticSource},
-    lifecycle::{run_owner_attached, run_owner_late_host},
+    lifecycle::{run_owner_with_factory, run_owner_with_peers},
     logs::RotatingLogSink,
-    ownership::{EndpointDescriptor, PrimaryHost},
+    ownership::EndpointDescriptor,
     paths::NodePaths,
 };
 use crate::ports::LocalService;
@@ -353,38 +353,8 @@ where
     D: FnOnce() -> Fut,
     Fut: Future<Output = io::Result<()>>,
 {
-    run_elected_attached(
+    run_owner_with_factory(
         paths,
-        None,
-        clock,
-        shutdown,
-        make_service,
-        on_ready,
-        on_drained,
-    )
-    .await
-}
-
-/// [`run_elected_with_diagnostics`] publishing `primary_host` (the attached
-/// Herdr endpoint; `None` for a store-only daemon) in the descriptor.
-pub async fn run_elected_attached<F, R, D, Fut>(
-    paths: &NodePaths,
-    primary_host: Option<std::path::PathBuf>,
-    clock: Arc<dyn Clock>,
-    shutdown: Cancellation,
-    make_service: F,
-    on_ready: R,
-    on_drained: D,
-) -> io::Result<bool>
-where
-    F: FnOnce(crate::node::NodeUuid, Uuid, Cancellation) -> io::Result<Arc<dyn LocalService>>,
-    R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
-    D: FnOnce() -> Fut,
-    Fut: Future<Output = io::Result<()>>,
-{
-    run_owner_attached(
-        paths,
-        primary_host,
         clock,
         shutdown,
         ChildOwnedLogSink::new(paths),
@@ -396,15 +366,12 @@ where
     .await
 }
 
-/// [`run_elected_attached`] whose `primary_host` is filled by `make_service`
-/// once the daemon has attached (or not) a Herdr server, and read when the
-/// descriptor is published. `peers` carries the sync coordinator's intake from
-/// `make_service` to the accept loop.
-// Allowed: run_elected_attached's inputs with a shared primary-host slot and peer wiring.
+/// [`run_elected_with_diagnostics`] with the sync runtime's seam: `make_service`
+/// fills the `peers` intake and the accept loop serves with it.
+// Allowed: run_elected_with_diagnostics's inputs with peer wiring.
 #[allow(clippy::too_many_arguments)]
-pub async fn run_elected_late_host<F, R, D, Fut>(
+pub async fn run_elected_with_peers<F, R, D, Fut>(
     paths: &NodePaths,
-    primary_host: PrimaryHost,
     peers: transport::PeerWiring,
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
@@ -418,9 +385,8 @@ where
     D: FnOnce() -> Fut,
     Fut: Future<Output = io::Result<()>>,
 {
-    run_owner_late_host(
+    run_owner_with_peers(
         paths,
-        primary_host,
         peers,
         clock,
         shutdown,

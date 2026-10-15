@@ -598,7 +598,7 @@ impl StoreContext {
     /// Only `cooperative_claim` and C1 continuity resolve a locator through
     /// it; every other query takes its host from the seat row or from the
     /// worker that owns the host. Read-only here; only `HostSessions` (and
-    /// the interim single-host composition) publishes into it.
+    /// the fixture compositions of `DomainService`) publishes into it.
     pub fn hosts(&self) -> &Arc<super::hosts::HostIndex> {
         &self.hosts
     }
