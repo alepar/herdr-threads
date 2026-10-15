@@ -990,6 +990,7 @@ mod domain {
         WatchRequest {
             presentation_v2: false,
             claim: CallerClaim {
+                host: crate::test_support::test_host_locator(),
                 instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 seat: seat("s"),
                 binding_generation: 1,

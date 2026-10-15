@@ -46,7 +46,7 @@ const OLD_PROTOCOL: u16 = 3;
 /// Kills: a protocol bump that leaves the skew tests on a synthetic pair.
 #[test]
 fn skew_tests_use_the_real_release_pair() {
-    assert_eq!(PROTOCOL_VERSION, 7);
+    assert_eq!(PROTOCOL_VERSION, 8);
     const { assert!(OLD_PROTOCOL < PROTOCOL_VERSION) };
 }
 

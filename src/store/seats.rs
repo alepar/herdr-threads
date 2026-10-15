@@ -3004,6 +3004,7 @@ fn resolve_bootstrap_seat_impl(
         .ok_or_else(|| api_error(ErrorCode::Conflict, "bootstrap creation missing"))?;
     let ordinary = crate::protocol::commands::ResolveSeat {
         target: created.root_pane,
+        host: request.identity.claim.host.clone(),
         operation: request.operation.clone(),
     };
     let digest = ordinary_resolution_digest(&canonical.instance, &ordinary)?;
@@ -3893,6 +3894,7 @@ pub fn decide_continuity(
             // one at the seat's read position; both run the enroll hooks.
             let claim = crate::protocol::authority::CallerClaim {
                 instance: instance.clone(),
+                host: command.host.clone(),
                 seat: seat.clone(),
                 binding_generation: u64::try_from(new_generation)
                     .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative seat generation"))?,
@@ -4478,6 +4480,7 @@ pub(crate) fn decide_cooperative_fence(
     let fence = crate::protocol::authority::CooperativeDecisionFence {
         now: at.monotonic,
         instance: instance.into(),
+        host: claim.host.clone(),
         seat: claim.seat.clone(),
         target: claim.target.clone(),
         mapping_revision: mapping.revision,

@@ -30,6 +30,7 @@ impl Clock for TestClock {
 
 fn claim() -> CallerClaim {
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "i".into(),
         seat: SeatId::new("s"),
         binding_generation: 1,

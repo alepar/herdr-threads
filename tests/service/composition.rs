@@ -617,6 +617,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
             // The execution is no longer part of a call's identity (ht-54r.3); a claim from a
             // different mapping generation is what the daemon fences.
             claim: herdr_threads::protocol::authority::CallerClaim {
+                host: herdr_threads::test_support::test_host_locator(),
                 binding_generation: prior.binding_generation + 1,
                 ..prior.clone()
             },
@@ -676,11 +677,13 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
         "recipient",
         Duration::from_secs(1),
     )
+    .map(|journal| journal.with_host(herdr_threads::test_support::test_host_locator()))
     .unwrap();
     // An agent's identity is its harness environment: the CLI saved no context for it.
     assert!(contexts.current().unwrap().is_none());
     // Another caller advances the service: a direct lifecycle CheckIn of a different session.
     let next_claim = herdr_threads::protocol::authority::CallerClaim {
+        host: herdr_threads::test_support::test_host_locator(),
         native_session: herdr_threads::protocol::ids::NativeSessionId::new("direct-successor"),
         execution: herdr_threads::protocol::ids::ExecutionId::new(Uuid::new_v4().to_string()),
         // Its own (live) process: sharing the CLI session's fingerprint would supersede it.
@@ -1326,7 +1329,7 @@ fn elected_service_fixture(custom_settings: bool) {
     assert!(view.starts_with("herdr-threads view\n"));
     assert!(view.contains("health"));
     let error = herdr_threads::ports::LocalClient::call(&client, Command::CheckIn(
-        serde_json::from_value(serde_json::json!({"claim":{"instance":"unconfigured-fixture","seat":"s","binding_generation":0,"role":"top_level","harness":"codex","native_session":"s","execution":"e","target":"p"},"mode":{"kind":"current"},"operation":"op"})).unwrap()
+        serde_json::from_value(serde_json::json!({"claim":{"instance":"unconfigured-fixture","host":"/host.sock","seat":"s","binding_generation":0,"role":"top_level","harness":"codex","native_session":"s","execution":"e","target":"p"},"mode":{"kind":"current"},"operation":"op"})).unwrap()
     ), &budget()).unwrap_err();
     assert_eq!(error.code, ErrorCode::CallerUnverified);
     // A liveness bound for the shutdown: the daemon is a subprocess, and a
@@ -1526,6 +1529,7 @@ fn store_only_daemon_serves_without_host_workers() {
     let refused = herdr_threads::ports::LocalClient::call(
         &client,
         Command::ResolveSeat(ResolveSeat {
+            host: herdr_threads::test_support::test_host_locator(),
             target: HostTargetId::new("p"),
             operation: OperationId::new("op"),
         }),
@@ -2051,6 +2055,7 @@ impl ActualNativeFixture {
         herdr_threads::ports::LocalClient::call(
             &self.client(),
             Command::ResolveSeat(herdr_threads::protocol::commands::ResolveSeat {
+                host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new(pane),
                 operation: herdr_threads::protocol::ids::OperationId::new(operation),
             }),
@@ -2509,6 +2514,7 @@ fn request_with_previous_boot_after_restart_is_daemon_boot_changed() {
     assert_ne!(fixture.descriptor.boot_id, old_boot);
     let resolve = || {
         Command::ResolveSeat(herdr_threads::protocol::commands::ResolveSeat {
+            host: herdr_threads::test_support::test_host_locator(),
             target: HostTargetId::new("w4:p1"),
             operation: herdr_threads::protocol::ids::OperationId::new("stale-boot"),
         })

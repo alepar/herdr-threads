@@ -221,7 +221,7 @@ fn automatic_launched_oversized_original_refuses_before_recipient_allocation() {
     let mut launcher = AutomaticLauncher::default();
     let mut output = OutputSpec::default();
     output.context.state_dir = Some("/tmp/automatic-state".into());
-    output.context.host = Some("/tmp/automatic-host.sock".into());
+    output.context.host = Some("/host.sock".into());
     let mut original_claim = claim();
     original_claim.harness = Harness::Codex;
     assert!(
@@ -274,7 +274,7 @@ fn automatic_launched_maximum_escaped_body_is_frozen_and_retries_without_relaunc
     };
     let mut presentation = Vec::new();
     output.context.state_dir = Some("/tmp/automatic-state".into());
-    output.context.host = Some("/tmp/automatic-host.sock".into());
+    output.context.host = Some("/host.sock".into());
     let mut original_claim = claim();
     original_claim.harness = Harness::Codex;
     let result = start(
@@ -329,7 +329,7 @@ fn automatic_launched_maximum_escaped_body_is_frozen_and_retries_without_relaunc
         &crate::protocol::handoff::HandoffNamespace {
             instance: claim().instance,
             state_dir: "/tmp/automatic-state".into(),
-            host_endpoint: "/tmp/automatic-host.sock".into(),
+            host_endpoint: "/host.sock".into(),
         },
         &client,
         Some(&mut launcher),
@@ -366,7 +366,7 @@ fn automatic_launched_noncompletion_keeps_exact_artifact_and_bounded_progress() 
     };
     let mut output = OutputSpec::default();
     output.context.state_dir = Some("/tmp/automatic-state".into());
-    output.context.host = Some("/tmp/automatic-host.sock".into());
+    output.context.host = Some("/host.sock".into());
     let mut original_claim = claim();
     original_claim.harness = Harness::Codex;
     assert!(
@@ -410,7 +410,7 @@ fn automatic_launched_noncompletion_keeps_exact_artifact_and_bounded_progress() 
             &crate::protocol::handoff::HandoffNamespace {
                 instance: claim().instance,
                 state_dir: "/tmp/automatic-state".into(),
-                host_endpoint: "/tmp/automatic-host.sock".into()
+                host_endpoint: "/host.sock".into()
             },
             &client,
             Some(&mut launcher),
@@ -446,7 +446,7 @@ fn automatic_launched_pane_uses_ensure_send_and_one_start() {
     let mut launcher = AutomaticLauncher::default();
     let mut output = OutputSpec::default();
     output.context.state_dir = Some("/tmp/automatic-state".into());
-    output.context.host = Some("/tmp/automatic-host.sock".into());
+    output.context.host = Some("/host.sock".into());
     let mut bytes = vec![];
     let mut original_claim = claim();
     original_claim.harness = Harness::Codex;
@@ -492,7 +492,7 @@ fn automatic_launched_pane_lost_ensure_then_reject_preserves_original_without_se
     let mut launcher = AutomaticLauncher::default();
     let mut output = OutputSpec::default();
     output.context.state_dir = Some("/tmp/automatic-state".into());
-    output.context.host = Some("/tmp/automatic-host.sock".into());
+    output.context.host = Some("/host.sock".into());
     let mut original_claim = claim();
     original_claim.harness = Harness::Codex;
     let mut first_output = vec![];
@@ -525,7 +525,7 @@ fn automatic_launched_pane_lost_ensure_then_reject_preserves_original_without_se
     let namespace = crate::protocol::handoff::HandoffNamespace {
         instance: original_claim.instance.clone(),
         state_dir: "/tmp/automatic-state".into(),
-        host_endpoint: "/tmp/automatic-host.sock".into(),
+        host_endpoint: "/host.sock".into(),
     };
     *client.rejected.lock().unwrap() = true;
     let mut retry_output = vec![];
@@ -593,7 +593,7 @@ fn automatic_launched_pane_unsupported_refuses_before_journal_and_start() {
     let mut launcher = AutomaticLauncher::default();
     let mut output = OutputSpec::default();
     output.context.state_dir = Some("/tmp/automatic-state".into());
-    output.context.host = Some("/tmp/automatic-host.sock".into());
+    output.context.host = Some("/host.sock".into());
     let mut original_claim = claim();
     original_claim.harness = Harness::Codex;
     let result = start(
@@ -640,7 +640,7 @@ fn automatic_launched_pane_lost_start_never_resubmits_on_retry() {
     };
     let mut output = OutputSpec::default();
     output.context.state_dir = Some("/tmp/automatic-state".into());
-    output.context.host = Some("/tmp/automatic-host.sock".into());
+    output.context.host = Some("/host.sock".into());
     let mut original_claim = claim();
     original_claim.harness = Harness::Codex;
     let mut first_bytes = vec![];
@@ -671,7 +671,7 @@ fn automatic_launched_pane_lost_start_never_resubmits_on_retry() {
         &crate::protocol::handoff::HandoffNamespace {
             instance: claim().instance,
             state_dir: "/tmp/automatic-state".into(),
-            host_endpoint: "/tmp/automatic-host.sock".into(),
+            host_endpoint: "/host.sock".into(),
         },
         &client,
         Some(&mut launcher),
@@ -708,7 +708,7 @@ fn automatic_launched_pane_lost_complete_retries_terminal_without_relaunch() {
     let mut launcher = AutomaticLauncher::default();
     let mut output = OutputSpec::default();
     output.context.state_dir = Some("/tmp/automatic-state".into());
-    output.context.host = Some("/tmp/automatic-host.sock".into());
+    output.context.host = Some("/host.sock".into());
     let mut original_claim = claim();
     original_claim.harness = Harness::Codex;
     let first = start(
@@ -736,7 +736,7 @@ fn automatic_launched_pane_lost_complete_retries_terminal_without_relaunch() {
         &crate::protocol::handoff::HandoffNamespace {
             instance: claim().instance,
             state_dir: "/tmp/automatic-state".into(),
-            host_endpoint: "/tmp/automatic-host.sock".into(),
+            host_endpoint: "/host.sock".into(),
         },
         &client,
         None,
@@ -792,6 +792,11 @@ fn automatic_launched_pane_live_retry_requires_original_current_caller() {
     let mut launcher = AutomaticLauncher::default();
     let mut original_claim = claim();
     original_claim.harness = Harness::Codex;
+    // The claim's host is the namespace's: the pane's Herdr server.
+    original_claim.host = crate::protocol::ids::HostLocator::parse(
+        selected.host_endpoint.as_ref().unwrap().to_str().unwrap(),
+    )
+    .unwrap();
     let first = start(
         &journal,
         request,
@@ -1029,6 +1034,7 @@ fn task48_progress_unknown_and_oversized_tails_fail_before_begin() {
 
 fn claim() -> CallerClaim {
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "000000000000000000000000000000b1".into(),
         seat: SeatId::new("sender"),
         binding_generation: 1,
@@ -1275,6 +1281,7 @@ fn reference(journal: &Journal) -> IntentRef {
 }
 fn scope() -> IntentScope {
     IntentScope::Cooperative {
+        host: crate::test_support::test_host_locator(),
         instance: "000000000000000000000000000000b1".into(),
         seat: SeatId::new("sender"),
     }
@@ -1428,6 +1435,7 @@ fn handoff_broken_output_replays_report_without_relaunch_or_wrong_scope() {
     );
     let reference = reference(&journal);
     let wrong = IntentScope::Cooperative {
+        host: crate::test_support::test_host_locator(),
         instance: "000000000000000000000000000000b1".into(),
         seat: SeatId::new("other"),
     };
@@ -5271,7 +5279,7 @@ fn automatic_presentation_admission_counts_exact_local_root() {
     let namespace = crate::protocol::handoff::HandoffNamespace {
         instance: claim().instance,
         state_dir: "/tmp/automatic-state".into(),
-        host_endpoint: "/tmp/automatic-host.sock".into(),
+        host_endpoint: "/host.sock".into(),
     };
     let selection = crate::protocol::results::DirectThreadEnsured::admission_witness(
         ThreadId::new("t"),

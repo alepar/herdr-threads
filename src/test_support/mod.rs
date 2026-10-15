@@ -57,6 +57,13 @@ pub fn test_node() -> String {
     test_node_seed().uuid.to_string()
 }
 
+/// A fixed canonical host locator for fixture claims: never touches the filesystem. It is the
+/// `host_endpoint` the handoff fixtures' namespaces carry, so a fixture claim and its namespace
+/// agree.
+pub fn test_host_locator() -> crate::protocol::ids::HostLocator {
+    crate::protocol::ids::HostLocator::parse("/host.sock").expect("canonical locator")
+}
+
 /// The endpoint of the host row a fixture attaches; it is also the endpoint a
 /// daemon records for a host composed without a socket path, so a fixture row
 /// is the row such a daemon attaches.

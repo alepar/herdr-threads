@@ -127,6 +127,7 @@ impl Fx {
 
     fn claim(&self, seat: &str, role: CallerRole) -> CallerClaim {
         CallerClaim {
+            host: crate::test_support::test_host_locator(),
             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new(seat),
             binding_generation: 1,

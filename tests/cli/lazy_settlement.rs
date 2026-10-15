@@ -38,6 +38,7 @@ impl Fixture {
             "seat",
             std::time::Duration::from_millis(20),
         )
+        .map(|journal| journal.with_host(herdr_threads::test_support::test_host_locator()))
         .unwrap();
         let execution = uuid::Uuid::from_u128(2);
         contexts
@@ -61,9 +62,11 @@ impl Fixture {
         // Existing partial ordinary proof lets selective cleanup be observed;
         // legacy whole-body ordinary display itself does not persist a file.
         if !human {
-            let claim =
-                herdr_threads::harness::bridge::caller_claim(&contexts.current().unwrap().unwrap())
-                    .unwrap();
+            let claim = herdr_threads::harness::bridge::caller_claim(
+                &contexts.current().unwrap().unwrap(),
+                herdr_threads::test_support::test_host_locator(),
+            )
+            .unwrap();
             journal
                 .record_displayed_chunk(&claim, &MessageId::new("ordinary"), 0, 2, 4)
                 .unwrap();
@@ -495,10 +498,13 @@ fn lazy_frozen_actor_completed_retry_preflight() {
     let runtime = RuntimeContext::explicit(state.clone(), host.clone(), None).unwrap();
     let paths = NodePaths::resolve_read_only(&runtime.state_dir).unwrap();
     let journal = Journal::open(paths.node_dir.join("intents")).unwrap();
-    let claim =
-        herdr_threads::harness::bridge::caller_claim(&f.contexts.current().unwrap().unwrap())
-            .unwrap();
+    let claim = herdr_threads::harness::bridge::caller_claim(
+        &f.contexts.current().unwrap().unwrap(),
+        herdr_threads::test_support::test_host_locator(),
+    )
+    .unwrap();
     let scope = IntentScope::Cooperative {
+        host: herdr_threads::test_support::test_host_locator(),
         instance: claim.instance.clone(),
         seat: claim.seat.clone(),
     };
@@ -669,10 +675,13 @@ fn lazy_completion_listing_and_batch_bounds() {
     use herdr_threads::cli::journal::IntentScope;
     use herdr_threads::protocol::{pagination::PageRequest, results::IntentKind};
     let f = Fixture::new(false);
-    let claim =
-        herdr_threads::harness::bridge::caller_claim(&f.contexts.current().unwrap().unwrap())
-            .unwrap();
+    let claim = herdr_threads::harness::bridge::caller_claim(
+        &f.contexts.current().unwrap().unwrap(),
+        herdr_threads::test_support::test_host_locator(),
+    )
+    .unwrap();
     let scope = IntentScope::Cooperative {
+        host: herdr_threads::test_support::test_host_locator(),
         instance: claim.instance.clone(),
         seat: claim.seat.clone(),
     };

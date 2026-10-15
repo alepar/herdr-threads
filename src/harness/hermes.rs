@@ -2035,6 +2035,7 @@ mod adapter_tests {
             "fixture-seat",
             Duration::from_millis(50),
         )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
         .unwrap();
         let current = OccupantContext {
             format_version: 1,
@@ -2155,6 +2156,7 @@ mod adapter_tests {
             "fixture-seat",
             Duration::from_millis(50),
         )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
         .unwrap();
         let current = OccupantContext {
             format_version: 1,
@@ -2260,6 +2262,7 @@ mod adapter_tests {
             "fixture-seat",
             Duration::from_millis(50),
         )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
         .unwrap();
         assert_eq!(
             journal
@@ -2548,6 +2551,7 @@ mod adapter_tests {
             "fixture-seat",
             Duration::from_millis(50),
         )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
         .unwrap();
         let r = registration();
         let mut seed = OccupantContext {
@@ -2935,6 +2939,7 @@ mod adapter_tests {
             "fixture-seat",
             Duration::from_millis(50),
         )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
         .unwrap();
         let harness: super::super::context::Harness =
             super::super::registry::OccupantHarness::Agent(

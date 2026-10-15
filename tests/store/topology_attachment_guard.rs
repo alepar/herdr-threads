@@ -82,6 +82,7 @@ fn attachment_fixture_inner(real_writer: bool, retain_legacy: bool) -> Attachmen
     id.claim.execution = ExecutionId::new("00000000-0000-4000-8000-000000000001");
     id.digest = id.semantic_digest().unwrap();
     let request = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: created.root_pane.clone(),
         operation: id.payload.resolve_key.clone(),
     };
@@ -171,6 +172,7 @@ fn attachment_guard(
     .unwrap();
     BootstrapAttachmentGuard::try_new(
         &ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: current.target.clone(),
             operation: operation.clone(),
         },
@@ -199,6 +201,7 @@ fn topology_attachment_uses_real_resolution_and_fresh_guard_without_allocating()
     .unwrap();
     let wrong_boot_guard = BootstrapAttachmentGuard::try_new(
         &ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: observation.target.clone(),
             operation: a.resolve_operation.clone(),
         },
@@ -337,6 +340,7 @@ fn topology_attachment_refuses_stale_or_held_evidence_and_missing_or_changed_res
                 .unwrap();
                 guard = BootstrapAttachmentGuard::try_new(
                     &ResolveSeat {
+                        host: crate::test_support::test_host_locator(),
                         target: current.target.clone(),
                         operation: a.resolve_operation.clone(),
                     },
@@ -403,6 +407,7 @@ fn new_thread_fixture_with_policy(
     id.payload.handoff.policy = policy;
     id.claim = claim("s1");
     id.scope = crate::cli::journal::IntentScope::Cooperative {
+        host: crate::test_support::test_host_locator(),
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s1"),
     };
@@ -1654,6 +1659,7 @@ fn automatic_linked_created_recovery_uses_fresh_guard_and_replays_before_current
         store
             .resolve_seat(
                 ResolveSeat {
+                    host: crate::test_support::test_host_locator(),
                     target: a.created.root_pane,
                     operation: id.plan.payload.keys.resolve.clone()
                 },

@@ -443,8 +443,8 @@ fn skewed_protocol_version_still_yields_the_stop_then_ensure_report() {
     let mut skewed = published.clone();
     skewed["software_version"] = json!(software);
     // Immediate previous relay wire contract against the fenced-handoff CLI.
-    const OLD_PROTOCOL: u16 = 6;
-    assert_eq!(PROTOCOL_VERSION, 7);
+    const OLD_PROTOCOL: u16 = 7;
+    assert_eq!(PROTOCOL_VERSION, 8);
     assert_eq!(OLD_PROTOCOL, PROTOCOL_VERSION - 1);
     skewed["protocol_version"] = json!(OLD_PROTOCOL);
     write_private(

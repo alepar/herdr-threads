@@ -234,6 +234,7 @@ impl DomainService {
             {
                 let resolving = crate::protocol::commands::ResolveSeat {
                     target: evidence.root_pane.clone(),
+                    host: request.identity.claim.host.clone(),
                     operation: request.identity.plan.payload.keys.resolve.clone(),
                 };
                 return self.attached_host()?.with_bootstrap_observation(
@@ -295,6 +296,7 @@ impl DomainService {
                 .ok_or_else(|| error(ErrorCode::Conflict, "automatic creation unavailable"))?;
             let resolving = crate::protocol::commands::ResolveSeat {
                 target: creation.root_pane,
+                host: request.identity.claim.host.clone(),
                 operation: request.identity.plan.payload.keys.resolve.clone(),
             };
             return self.attached_host()?.with_bootstrap_observation(
@@ -580,6 +582,7 @@ impl DomainService {
             {
                 let resolving = crate::protocol::commands::ResolveSeat {
                     target: evidence.root_pane.clone(),
+                    host: request.identity.claim.host.clone(),
                     operation: request.identity.payload.resolve_key.clone(),
                 };
                 return self.attached_host()?.with_bootstrap_observation(
@@ -652,6 +655,7 @@ impl DomainService {
                 .ok_or_else(|| error(ErrorCode::Conflict, "bootstrap creation unavailable"))?;
             let resolving = crate::protocol::commands::ResolveSeat {
                 target: creation.root_pane,
+                host: identity.claim.host.clone(),
                 operation: identity.payload.resolve_key.clone(),
             };
             return self.attached_host()?.with_bootstrap_observation(
@@ -961,6 +965,7 @@ impl DomainService {
             AckModDelivered {
                 claim: CallerClaim {
                     instance: self.instance.clone(),
+                    host: request.claim.host.clone(),
                     seat: seat.clone(),
                     binding_generation: binding.generation,
                     role: CallerRole::TopLevel,
@@ -1490,6 +1495,7 @@ mod operator_tests {
         .with_operator_owner(501);
         let result = domain.handle(
             Command::OperatorFreshSeat(OperatorFreshSeat {
+                host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("p"),
                 operation: OperationId::new("op"),
             }),
@@ -1545,14 +1551,17 @@ mod operator_tests {
         assert_eq!(direct.detail, "no Herdr server attached");
         for command in [
             Command::ResolveSeat(ResolveSeat {
+                host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("p"),
                 operation: OperationId::new("op"),
             }),
             Command::OperatorFreshSeat(OperatorFreshSeat {
+                host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("p"),
                 operation: OperationId::new("op"),
             }),
             Command::ContinuityCheckIn(ContinuityCheckIn {
+                host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("p"),
                 harness: Harness::Codex,
                 native_session: NativeSessionId::new("n"),
@@ -1604,6 +1613,7 @@ mod operator_tests {
         )
         .with_cooperative_owner(501, Arc::new(FairWriter::new(8)));
         let claim = CallerClaim {
+            host: crate::test_support::test_host_locator(),
             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("s"),
             binding_generation: 0,
@@ -1690,6 +1700,7 @@ mod operator_tests {
                 Command::Summary(SummaryRequest {
                     thread: ThreadId::new("t"),
                     claim: CallerClaim {
+                        host: crate::test_support::test_host_locator(),
                         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                         seat: SeatId::new("s"),
                         binding_generation: 0,

@@ -13,6 +13,7 @@ pub(super) fn identity() -> HandoffIdentity {
         compound: OperationId::new("compound"),
         digest: "a".repeat(64),
         claim: CallerClaim {
+            host: herdr_threads::test_support::test_host_locator(),
             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("s"),
             target: HostTargetId::new("p"),

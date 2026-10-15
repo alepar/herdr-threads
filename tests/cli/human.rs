@@ -521,7 +521,13 @@ impl HumanLifecycle {
         }
     }
     fn contexts(&self) -> crate::harness::context::ContextJournal {
-        crate::cli::seat_contexts(&self.paths, self.instance, &self.selection.seat).unwrap()
+        crate::cli::seat_contexts(
+            &self.paths,
+            self.instance,
+            &crate::test_support::test_host_locator(),
+            &self.selection.seat,
+        )
+        .unwrap()
     }
     fn run(&self, args: &[&str], operator: bool) -> Result<(), crate::cli::RunError> {
         let mut argv = vec!["ht", "human"];
@@ -541,6 +547,7 @@ impl HumanLifecycle {
             &self.selection,
             &self.paths,
             self.instance,
+            &crate::test_support::test_host_locator(),
             &self.client,
             &crate::app::SystemClock::new(),
             &mut Vec::new(),
@@ -616,7 +623,11 @@ fn human_namespace_communication_preserves_claim() {
         let f = HumanLifecycle::new();
         f.init();
         let context = f.contexts().current().unwrap().unwrap();
-        let expected = crate::harness::bridge::caller_claim(&context).unwrap();
+        let expected = crate::harness::bridge::caller_claim(
+            &context,
+            crate::test_support::test_host_locator(),
+        )
+        .unwrap();
         assert_eq!(expected.harness.cooperative_provenance(), "operator_human");
         assert!(f.run(args, false).is_err());
         let journal = Journal::open(f.paths.node_dir.join("intents")).unwrap();
@@ -640,6 +651,7 @@ fn human_namespace_communication_preserves_claim() {
         assert_eq!(
             saved.header.scope,
             IntentScope::Cooperative {
+                host: crate::test_support::test_host_locator(),
                 instance: f.instance.to_string(),
                 seat: f.selection.seat.clone()
             }

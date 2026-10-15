@@ -630,6 +630,7 @@ pub(crate) fn observation_ticket_with_registry(
     };
     let claim = CallerClaim {
         instance: instance.into(),
+        host: super::hosts::primary_claim_host(db),
         seat: SeatId::new(seat),
         binding_generation: generation as u64,
         role: CallerRole::TopLevel,

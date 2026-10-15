@@ -798,7 +798,7 @@ mod contract_tests {
                 "thread": "thread-1", "invitation": "invite-1",
                 "requirement": "requirement-1", "expected_revision": 4,
                 "operation": "accept-1", "claim": {
-                    "instance": INSTANCE, "seat": "seat-1", "binding_generation": 1,
+                    "instance": INSTANCE, "host": "/host.sock", "seat": "seat-1", "binding_generation": 1,
                     "role": "top_level", "harness": "codex", "native_session": "native-1",
                     "execution": "execution-1", "target": "target-1"
                 }
@@ -900,6 +900,7 @@ mod contract_tests {
             expected_revision: 1,
             operation: OperationId::new("accept-1"),
             claim: CallerClaim {
+                host: crate::test_support::test_host_locator(),
                 instance: INSTANCE.into(),
                 seat: current.seat.clone(),
                 binding_generation: 1,

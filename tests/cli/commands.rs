@@ -407,6 +407,7 @@ fn claim() -> crate::protocol::authority::CallerClaim {
         ids::*,
     };
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "i".into(),
         seat: SeatId::new("legacy-fixture"),
         binding_generation: 0,
@@ -674,7 +675,7 @@ fn ordinary_seat_resolution_requires_durable_mutation_key() {
     };
     assert_eq!(pane.as_str(), "p1");
     let command = MutationSpec::Resolve(pane)
-        .into_command(None, crate::protocol::ids::OperationId::new("op-resolve"))
+        .into_command(Some(claim()), crate::protocol::ids::OperationId::new("op-resolve"))
         .unwrap();
     assert!(
         matches!(command, crate::protocol::commands::Command::ResolveSeat(resolve) if
@@ -3708,6 +3709,7 @@ fn stamp_agent_id_sets_only_the_claim_agent_id() {
     use crate::protocol::{authority::*, ids::*};
     let parsed = parse_argv(["herdr-threads", "--agent-id=a1", "thread", "list"]).unwrap();
     let claim = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "i".into(),
         seat: SeatId::new("s"),
         binding_generation: 0,

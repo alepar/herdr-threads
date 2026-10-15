@@ -110,6 +110,27 @@ pub fn remembered(conn: &Connection, limit: usize) -> Result<Vec<HostRow>, ApiEr
     Ok(out)
 }
 
+/// The claim host of a claim the store builds itself from a binding row (archival ticket, mod
+/// presentation refresh): the primary host row's endpoint when it is a canonical locator, else the
+/// interim unnamed host's placeholder locator. Internal claims never leave the store and are not
+/// compared with a fence, so this names the server, it does not route.
+pub(crate) fn primary_claim_host(db: &Connection) -> HostLocator {
+    let endpoint: Option<String> = db
+        .query_row(
+            "SELECT endpoint FROM herdr_hosts WHERE host_id=primary_host()",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    endpoint
+        .and_then(|endpoint| HostLocator::parse(endpoint).ok())
+        .unwrap_or_else(|| {
+            HostLocator::parse("/unnamed-host").expect("the placeholder is a canonical locator")
+        })
+}
+
 /// HostIndex: the store's read view of which Herdr servers are attached.
 ///
 /// Owns: the `HostLocator -> HostId` map of attached hosts and

@@ -1994,6 +1994,7 @@ fn current_main_registered_original_caller_preserves_bootstrap_and_delivery_clai
         )
         .unwrap();
     let expected = CallerClaim {
+        host: f.context.claim_host().unwrap(),
         instance: f.instance.to_string(),
         seat: SeatId::new("sender"),
         target: HostTargetId::new("w4:p1"),
@@ -2215,6 +2216,7 @@ fn elected_generic_refuses_fresh_and_saved_recovery_before_publication_or_effect
     let f = Fixture::new_runtime(false);
     let execution: String = f.db().query_row("SELECT execution_id FROM occupant_bindings WHERE seat_id='sender' AND ended_at IS NULL", [], |r| r.get(0)).unwrap();
     let claim = CallerClaim {
+        host: f.context.claim_host().unwrap(),
         instance: f.instance.to_string(),
         seat: SeatId::new("sender"),
         binding_generation: 1,
@@ -2268,6 +2270,7 @@ fn elected_generic_refuses_fresh_and_saved_recovery_before_publication_or_effect
         linked_complete_key: OperationId::new("task21-linked"),
     };
     let scope = IntentScope::Cooperative {
+        host: claim.host.clone(),
         instance: f.instance.to_string(),
         seat: claim.seat.clone(),
     };

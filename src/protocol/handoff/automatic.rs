@@ -420,6 +420,7 @@ impl AutomaticDeliveryMutation {
         if self.version != AUTOMATIC_PLAN_VERSION
             || self.claim.role != CallerRole::TopLevel
             || self.claim.instance != plan.payload.namespace.instance
+            || self.claim.host.as_path() != plan.payload.namespace.host_endpoint.as_path()
             || self.claim.seat == plan.recipient
             || self.digest != self.original.digest(&self.claim)?
             || classify_original_actor(&self.scope, &self.original.semantic(self.claim.clone()))

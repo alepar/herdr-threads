@@ -811,6 +811,7 @@ pub fn start<C: LocalClient + ?Sized, W: Write>(
     };
     let scope = IntentScope::Cooperative {
         instance: claim.instance.clone(),
+        host: claim.host.clone(),
         seat: claim.seat.clone(),
     };
     let semantic = SemanticMutation::freeze(SemanticMutation::Handoff(Box::new(plan)), claim)?;
@@ -1308,6 +1309,7 @@ pub(crate) fn try_completed_retry<C: LocalClient + ?Sized, W: Write>(
     };
     let scope = IntentScope::Cooperative {
         instance: instance.into(),
+        host: claim.host.clone(),
         seat: claim.seat.clone(),
     };
     let frozen_routing = super::hook::CommandRouting::from_context(&claim.instance, &plan.context);
@@ -2138,6 +2140,7 @@ fn retry_automatic_live<C: LocalClient + ?Sized, W: Write>(
     if original.header.scope
         != (IntentScope::Cooperative {
             instance: current_claim.instance.clone(),
+            host: current_claim.host.clone(),
             seat: current_claim.seat.clone(),
         })
         || original.semantic.frozen_claim() != Some(current_claim)
@@ -2185,6 +2188,7 @@ pub(crate) fn run<W: Write>(
             let reference = original.header.reference;
             let scope = IntentScope::Cooperative {
                 instance: claim.instance.clone(),
+                host: claim.host.clone(),
                 seat: claim.seat.clone(),
             };
             return resume(
@@ -2227,7 +2231,13 @@ pub(crate) fn run<W: Write>(
         host_endpoint: claim_host.clone(),
     };
     let host = crate::host::native::NativeCli::new(claim_host, Arc::clone(&clock));
-    let seats = super::launch::DaemonSeatResolver::new(&client, journal, instance, clock.as_ref());
+    let seats = super::launch::DaemonSeatResolver::new(
+        &client,
+        journal,
+        instance,
+        runtime.claim_host()?,
+        clock.as_ref(),
+    );
     let shell = super::launch::SystemShellProbe::from_process();
     let mut launcher = NativeLauncher {
         registry: crate::harness::registry::builtins(),
@@ -2291,6 +2301,7 @@ pub(crate) fn run<W: Write>(
             let reference = original.header.reference;
             let scope = IntentScope::Cooperative {
                 instance: claim.instance,
+                host: claim.host.clone(),
                 seat: claim.seat,
             };
             resume(

@@ -1188,6 +1188,7 @@ fn public_facade_operator_fresh_and_rebind_keep_provenance_without_receipt_autho
     let fresh_observation = observe("fresh", 2);
     publish(&fresh_observation);
     let fresh = OperatorFreshSeat {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("fresh"),
         operation: OperationId::new("operator-fresh"),
     };
@@ -1226,6 +1227,7 @@ fn public_facade_operator_fresh_and_rebind_keep_provenance_without_receipt_autho
     let rebind_observation = observe("repair", 3);
     publish(&rebind_observation);
     let rebind = OperatorRebind {
+        host: crate::test_support::test_host_locator(),
         seat: SeatId::new("saved"),
         target: HostTargetId::new("repair"),
         operation: OperationId::new("operator-rebind"),
@@ -1670,6 +1672,7 @@ fn budget() -> CallBudget {
 
 fn fixture_claim(seat: &str, target: &str) -> CallerClaim {
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new(seat),
         binding_generation: 1,
@@ -2075,6 +2078,7 @@ fn invalid_inbox_completion_writes_no_state() {
         .query_row("PRAGMA data_version", [], |r| r.get(0))
         .unwrap();
     let claim = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("a"),
         binding_generation: 1,
@@ -2593,6 +2597,7 @@ fn public_join_cli_journal_recovers_committed_response_loss_without_rejoining() 
     let temp = std::env::temp_dir().join(format!("public-join-journal-{}", uuid::Uuid::new_v4()));
     let journal = Journal::open(&temp).unwrap();
     let scope = IntentScope::Cooperative {
+        host: crate::test_support::test_host_locator(),
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: accept.claim.seat.clone(),
     };

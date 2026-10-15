@@ -136,6 +136,7 @@ fn child_adapter_cannot_publish_even_with_frozen_top_level_request() {
         "seat",
         std::time::Duration::from_millis(5),
     )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
     .unwrap();
     let e = codex::parse_event_for_version(CHILD_START, "event", &pinned()).unwrap();
     let response = check_in_event(&e, &j, None, &mut |_: &PendingCheckIn| {
@@ -244,6 +245,7 @@ fn claude_lifecycle_declared_child_is_suppressed_without_native_role_attestation
         "seat",
         std::time::Duration::from_millis(5),
     )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
     .unwrap();
     assert_eq!(
         check_in_event(&event, &journal, None, &mut |_: &PendingCheckIn| panic!(

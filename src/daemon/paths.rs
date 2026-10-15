@@ -102,6 +102,18 @@ impl RuntimeContext {
         })
     }
 
+    /// The claim host as the wire locator every `CallerClaim` and target-bearing command carries:
+    /// [`RuntimeContext::require_host`], canonical by construction, parsed without touching the
+    /// filesystem. A path `HostLocator::parse` refuses is an `InvalidInput` error.
+    pub fn claim_host(&self) -> io::Result<crate::protocol::ids::HostLocator> {
+        let host = self.require_host()?;
+        let text = host.to_str().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "host endpoint is not UTF-8")
+        })?;
+        crate::protocol::ids::HostLocator::parse(text)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.detail))
+    }
+
     /// Explicit values take precedence. The state directory is required; the
     /// claim host is optional (see [`RuntimeContext::require_host`]).
     pub fn from_environment(

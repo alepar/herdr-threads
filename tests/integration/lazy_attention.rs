@@ -95,6 +95,7 @@ impl Fixture {
     fn claim(&self, seat: &str) -> CallerClaim {
         let (generation, harness, saved_execution): (i64,String,String) = self.db.query_row("SELECT generation,harness,execution_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",[seat],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
         CallerClaim {
+            host: herdr_threads::test_support::test_host_locator(),
             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new(seat),
             binding_generation: generation as u64,
@@ -1169,6 +1170,7 @@ fn a_sibling_lifecycle_check_in_resets_only_its_own_in_turn_service() {
     let claim_a = f.claim("agent");
     assert_eq!(claim_a.native_session.as_str(), "session-agent");
     let claim_b = CallerClaim {
+        host: herdr_threads::test_support::test_host_locator(),
         native_session: NativeSessionId::new("session-agent-b"),
         execution: ExecutionId::new("00000000-0000-4000-8000-0000000000b2"),
         ..claim_a.clone()
@@ -1241,6 +1243,7 @@ fn in_turn_timed_invitation_service_ignores_unseen_lazy_backlog_per_binding() {
     f.check("outsider", "mixed-current-a", false);
     let a = f.claim("outsider");
     let b = CallerClaim {
+        host: herdr_threads::test_support::test_host_locator(),
         native_session: NativeSessionId::new("session-outsider-b"),
         execution: ExecutionId::new("00000000-0000-4000-8000-0000000000b2"),
         liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint {

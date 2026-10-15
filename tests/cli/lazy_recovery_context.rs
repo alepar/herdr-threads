@@ -44,6 +44,7 @@ fn claim(w: &World, who: usize) -> CallerClaim {
         )
         .unwrap();
     CallerClaim {
+        host: HostLocator::parse(w.host.to_str().unwrap()).unwrap(),
         instance: instance.to_string(),
         seat: SeatId::new(w.seats[who].clone()),
         binding_generation: generation as u64,
@@ -213,10 +214,12 @@ fn recovery_case(human: bool, second_record_failure: bool, remove_ambient: bool)
         let frozen_a = claim(&a, who);
         let frozen_b = claim(&b, who);
         let scope_a = IntentScope::Cooperative {
+            host: frozen_a.host.clone(),
             instance: frozen_a.instance.clone(),
             seat: frozen_a.seat.clone(),
         };
         let scope_b = IntentScope::Cooperative {
+            host: frozen_b.host.clone(),
             instance: frozen_b.instance.clone(),
             seat: frozen_b.seat.clone(),
         };

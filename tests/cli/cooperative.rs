@@ -195,7 +195,13 @@ fn selected_first_lifecycle_fixture(replace_human: bool) {
         calls: Default::default(),
         generation: std::sync::atomic::AtomicU64::new(1),
     };
-    let contexts = crate::cli::seat_contexts(&paths, instance, &selection.seat).unwrap();
+    let contexts = crate::cli::seat_contexts(
+        &paths,
+        instance,
+        &crate::test_support::test_host_locator(),
+        &selection.seat,
+    )
+    .unwrap();
     if replace_human {
         let execution = uuid::Uuid::new_v4();
         contexts
@@ -225,6 +231,7 @@ fn selected_first_lifecycle_fixture(replace_human: bool) {
         &selection,
         &paths,
         instance,
+        &crate::test_support::test_host_locator(),
         &client,
         &crate::app::SystemClock::new(),
         &mut output,
@@ -243,6 +250,7 @@ fn selected_first_lifecycle_fixture(replace_human: bool) {
             &selection,
             &paths,
             instance,
+            &crate::test_support::test_host_locator(),
             &client,
             &crate::app::SystemClock::new(),
             &mut Vec::new(),
@@ -262,6 +270,7 @@ fn selected_first_lifecycle_fixture(replace_human: bool) {
         &selection,
         &paths,
         instance,
+        &crate::test_support::test_host_locator(),
         &client,
         &crate::app::SystemClock::new(),
         &mut Vec::new(),
@@ -452,6 +461,7 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
             selection,
             paths,
             crate::node::NodeUuid::from_u128(1),
+            &crate::test_support::test_host_locator(),
             client,
             &crate::app::SystemClock::new(),
             writer,
@@ -479,6 +489,7 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
             &selection,
             &paths,
             crate::node::NodeUuid::from_u128(1),
+            &crate::test_support::test_host_locator(),
             &client,
             &crate::app::SystemClock::new(),
             &mut Vec::new()
@@ -492,6 +503,7 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
             &selection,
             &paths,
             crate::node::NodeUuid::from_u128(1),
+            &crate::test_support::test_host_locator(),
             &client,
             &crate::app::SystemClock::new(),
             &mut Vec::new()
@@ -525,6 +537,7 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
             &selection,
             &paths,
             crate::node::NodeUuid::from_u128(1),
+            &crate::test_support::test_host_locator(),
             &client,
             &crate::app::SystemClock::new(),
             &mut Vec::new()
@@ -582,6 +595,7 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
             &selection,
             &paths,
             crate::node::NodeUuid::from_u128(1),
+            &crate::test_support::test_host_locator(),
             &client,
             &crate::app::SystemClock::new(),
             &mut Vec::new()
@@ -621,6 +635,7 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
         &selection,
         &paths,
         crate::node::NodeUuid::from_u128(1),
+        &crate::test_support::test_host_locator(),
         &client,
         &crate::app::SystemClock::new(),
         &mut recovered,
@@ -669,6 +684,7 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
 }
 fn claim() -> CallerClaim {
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "instance".into(),
         seat: SeatId::new("seat"),
         binding_generation: 7,
@@ -687,6 +703,7 @@ fn cooperative_ack_retry_retains_claim_key_after_output_loss_and_restart() {
     let j = Journal::open(&dir).unwrap();
     let c = claim();
     let scope = IntentScope::Cooperative {
+        host: crate::test_support::test_host_locator(),
         instance: c.instance.clone(),
         seat: c.seat.clone(),
     };
@@ -749,6 +766,7 @@ fn displayed_ack_keeps_frozen_intent_after_uncertain_submission() {
     let journal = Journal::open(&dir).unwrap();
     let claim = claim();
     let scope = IntentScope::Cooperative {
+        host: crate::test_support::test_host_locator(),
         instance: claim.instance.clone(),
         seat: claim.seat.clone(),
     };
@@ -823,6 +841,7 @@ fn cooperative_scope_rejects_child_operator_and_wrong_instance() {
     assert!(
         SemanticMutation::freeze(
             SemanticMutation::OperatorFreshSeat {
+                host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("p")
             },
             claim()
@@ -839,6 +858,7 @@ fn cooperative_scope_rejects_child_operator_and_wrong_instance() {
     assert!(
         j.record(
             IntentScope::Cooperative {
+                host: crate::test_support::test_host_locator(),
                 instance: "other".into(),
                 seat: SeatId::new("seat")
             },
@@ -856,6 +876,7 @@ fn required_acceptance_journal_retains_revision_across_recovery() {
     let journal = Journal::open(&dir).unwrap();
     let c = claim();
     let scope = IntentScope::Cooperative {
+        host: crate::test_support::test_host_locator(),
         instance: c.instance.clone(),
         seat: c.seat.clone(),
     };
@@ -890,6 +911,7 @@ fn lifecycle_intent_recovers_original_claim_and_cas_before_context_publication()
     let j = Journal::open(&dir).unwrap();
     let c = claim();
     let scope = IntentScope::Cooperative {
+        host: crate::test_support::test_host_locator(),
         instance: c.instance.clone(),
         seat: c.seat.clone(),
     };
@@ -947,6 +969,7 @@ fn allocator_lock_wait_is_bounded_before_context_factory() {
     let c = claim();
     let result = j.record_check_in(
         IntentScope::Cooperative {
+            host: crate::test_support::test_host_locator(),
             instance: c.instance.clone(),
             seat: c.seat.clone(),
         },
@@ -1002,6 +1025,7 @@ fn model_ack_runner_requires_current_context_and_child_cannot_mutate() {
         "seat",
         std::time::Duration::from_millis(20),
     )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
     .unwrap();
     struct Never;
     impl crate::ports::LocalClient for Never {
@@ -1076,6 +1100,7 @@ fn cooperative_reader_enforces_selected_page_budget_before_writing() {
         "seat",
         std::time::Duration::from_millis(20),
     )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
     .unwrap();
     let parsed =
         crate::cli::commands::parse_argv(["herdr-threads", "inbox", "--max-bytes", "256"]).unwrap();
@@ -1303,6 +1328,7 @@ fn inbox_empty_work_flush_before_ack(v2: bool, lazy: bool) {
         "seat-test",
         std::time::Duration::from_millis(20),
     )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
     .unwrap();
     let execution = uuid::Uuid::from_u128(2);
     contexts
@@ -1551,6 +1577,7 @@ fn cooperative_retry_without_any_context_is_invalid_request() {
     let j = Journal::open(dir.join("intents")).unwrap();
     let c = claim();
     let scope = IntentScope::Cooperative {
+        host: crate::test_support::test_host_locator(),
         instance: c.instance.clone(),
         seat: c.seat.clone(),
     };
@@ -1570,6 +1597,7 @@ fn cooperative_retry_without_any_context_is_invalid_request() {
         "seat",
         std::time::Duration::from_millis(20),
     )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
     .unwrap();
     assert!(contexts.current().unwrap().is_none());
     assert!(contexts.pending().unwrap().is_none());
@@ -2037,7 +2065,13 @@ fn recipient_panes_reads_do_not_allocate_and_invite_uses_guarded_resolution() {
             || panic!("direct IDs"),
         )
         .unwrap();
-        crate::cli::resolve_recipient_seats(&mut parsed, &paths, &connection, &clock).unwrap();
+        let runtime = crate::daemon::paths::RuntimeContext {
+            state_dir: paths.state_dir.clone(),
+            host_endpoint: Some(std::path::PathBuf::from("/tmp/herdr-test.sock")),
+            herdr_bin: None,
+        };
+        crate::cli::resolve_recipient_seats(&mut parsed, &runtime, &paths, &connection, &clock)
+            .unwrap();
         assert!(
             parsed.cooperative.is_none(),
             "recipient must not become caller"
@@ -2347,6 +2381,7 @@ mod scoped_runtime {
             crate::cli::seat_contexts(
                 &self.paths,
                 self._lock.node_uuid().unwrap(),
+                &crate::test_support::test_host_locator(),
                 &SeatId::new("recipient"),
             )
             .unwrap()
@@ -2412,6 +2447,7 @@ mod scoped_runtime {
         let contexts = crate::cli::seat_contexts(
             &runtime.paths,
             runtime._lock.node_uuid().unwrap(),
+            &crate::test_support::test_host_locator(),
             &SeatId::new("recipient"),
         )
         .unwrap();
@@ -2941,6 +2977,7 @@ fn actor_prerequisite_human_and_operator_retry_refuses_before_context_or_transpo
         "seat",
         std::time::Duration::from_millis(20),
     )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
     .unwrap();
     struct Never;
     impl crate::ports::LocalClient for Never {
@@ -2958,6 +2995,7 @@ fn actor_prerequisite_human_and_operator_retry_refuses_before_context_or_transpo
     let cases = [
         (
             IntentScope::Cooperative {
+                host: crate::test_support::test_host_locator(),
                 instance: human.instance.clone(),
                 seat: human.seat.clone(),
             },
@@ -3042,6 +3080,7 @@ fn actor_prerequisite_agent_fresh_action_refuses_selected_human_context() {
         "seat-1",
         std::time::Duration::from_millis(20),
     )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
     .unwrap();
     struct Never;
     impl crate::ports::LocalClient for Never {
@@ -3118,6 +3157,7 @@ fn actor_prerequisite_all_unfrozen_handoffs_refuse_before_dispatch() {
             "sender",
             std::time::Duration::from_millis(20),
         )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
         .unwrap();
         struct Never;
         impl crate::ports::LocalClient for Never {
@@ -3171,6 +3211,7 @@ fn actor_prerequisite_public_retry_refuses_before_daemon_state_or_connect() {
     let reference = journal
         .record(
             IntentScope::Cooperative {
+                host: crate::test_support::test_host_locator(),
                 instance: human.instance.clone(),
                 seat: human.seat.clone(),
             },
@@ -3285,6 +3326,7 @@ fn actor_current_ack_fixture(human_route: bool, human_current: bool) {
         "seat-1",
         std::time::Duration::from_millis(20),
     )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
     .unwrap();
     let mut current = human_context("current-pane");
     if !human_current {
@@ -3305,6 +3347,7 @@ fn actor_current_ack_fixture(human_route: bool, human_current: bool) {
     };
     // Literal full claim for current, independent of bridge::caller_claim.
     let expected = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "00000000000000000000000000000001".into(),
         seat: SeatId::new("seat-1"),
         binding_generation: 1,
@@ -3348,6 +3391,7 @@ fn actor_current_ack_fixture(human_route: bool, human_current: bool) {
             assert_eq!(
                 pending.header.scope,
                 IntentScope::Cooperative {
+                    host: crate::test_support::test_host_locator(),
                     instance: self.expected.instance.clone(),
                     seat: SeatId::new("seat-1"),
                 }
@@ -3427,6 +3471,7 @@ fn actor_prerequisite_false_default_plain_inbox_reads_without_acknowledging_huma
         "seat-1",
         std::time::Duration::from_millis(20),
     )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
     .unwrap();
     let human = human_context("current-pane");
     contexts.install_reattached(human.clone()).unwrap();
@@ -3527,6 +3572,7 @@ fn actor_prerequisite_lifecycle_guard_uses_its_selected_initial_seed() {
         "seat-1",
         std::time::Duration::from_millis(20),
     )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
     .unwrap();
     let human = human_context("pane");
     contexts.install_reattached(human.clone()).unwrap();
@@ -3699,6 +3745,7 @@ fn actor_boundary_selected(human_route: bool) {
         &selection,
         &paths,
         crate::node::NodeUuid::from_u128(1),
+        &crate::test_support::test_host_locator(),
         &client,
         &crate::app::SystemClock::new(),
         &mut output,
@@ -3740,6 +3787,7 @@ fn lazy_selected_human_retry_root_refuses_before_client() {
     let reference = journal
         .record(
             IntentScope::Cooperative {
+                host: crate::test_support::test_host_locator(),
                 instance: saved.instance.clone(),
                 seat: saved.seat.clone(),
             },
@@ -3789,6 +3837,7 @@ fn lazy_selected_human_retry_root_refuses_before_client() {
         &selection,
         &paths,
         crate::node::NodeUuid::from_u128(1),
+        &crate::test_support::test_host_locator(),
         &NoClient,
         &crate::app::SystemClock::new(),
         &mut output,
@@ -4227,6 +4276,7 @@ fn public_join_cli_capability_refusal_precedes_journal_submission() {
         "seat-test",
         std::time::Duration::from_millis(20),
     )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
     .unwrap();
     let execution = uuid::Uuid::from_u128(2);
     contexts
@@ -4278,9 +4328,13 @@ fn public_join_cli_capability_refusal_precedes_journal_submission() {
             .collect();
         assert_eq!(after, before);
     }
-    let claim =
-        crate::harness::bridge::caller_claim(&contexts.current().unwrap().unwrap()).unwrap();
+    let claim = crate::harness::bridge::caller_claim(
+        &contexts.current().unwrap().unwrap(),
+        crate::test_support::test_host_locator(),
+    )
+    .unwrap();
     let scope = IntentScope::Cooperative {
+        host: crate::test_support::test_host_locator(),
         instance: instance.to_string(),
         seat: SeatId::new("seat-test"),
     };
@@ -4404,6 +4458,7 @@ mod main539_composition {
                 "seat-test",
                 std::time::Duration::from_millis(20),
             )
+            .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
             .unwrap();
             contexts
                 .install_reattached(OccupantContext {
@@ -4422,8 +4477,11 @@ mod main539_composition {
                     role: Role::TopLevel,
                 })
                 .unwrap();
-            let claim = crate::harness::bridge::caller_claim(&contexts.current().unwrap().unwrap())
-                .unwrap();
+            let claim = crate::harness::bridge::caller_claim(
+                &contexts.current().unwrap().unwrap(),
+                crate::test_support::test_host_locator(),
+            )
+            .unwrap();
             let clock: Arc<dyn Clock> = Arc::new(crate::app::SystemClock::new());
             let context =
                 crate::store::connection::StoreContext::new(root.join("state.db"), clock.clone())
@@ -4470,6 +4528,7 @@ mod main539_composition {
             self.journal
                 .record(
                     IntentScope::Cooperative {
+                        host: crate::test_support::test_host_locator(),
                         instance: self.claim.instance.clone(),
                         seat: self.claim.seat.clone(),
                     },
@@ -4716,6 +4775,7 @@ mod main539_composition {
             .journal
             .record(
                 IntentScope::Cooperative {
+                    host: crate::test_support::test_host_locator(),
                     instance: f.claim.instance.clone(),
                     seat: f.claim.seat.clone(),
                 },
@@ -4960,6 +5020,7 @@ mod main539_composition {
         let reference = journal
             .record(
                 IntentScope::Cooperative {
+                    host: crate::test_support::test_host_locator(),
                     instance: f.claim.instance.clone(),
                     seat: f.claim.seat.clone(),
                 },
@@ -5028,6 +5089,7 @@ mod main539_composition {
             .journal
             .record(
                 IntentScope::Cooperative {
+                    host: crate::test_support::test_host_locator(),
                     instance: f.claim.instance.clone(),
                     seat: f.claim.seat.clone(),
                 },
@@ -5040,6 +5102,7 @@ mod main539_composition {
             &f.journal,
             &reference,
             &IntentScope::Cooperative {
+                host: crate::test_support::test_host_locator(),
                 instance: f.claim.instance.clone(),
                 seat: f.claim.seat.clone(),
             },
@@ -5105,6 +5168,7 @@ fn current_main_human_selected_registered_agent_refuses_before_effects() {
         "seat-1",
         std::time::Duration::from_millis(20),
     )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
     .unwrap();
     let mut current = human_context("current-pane");
     current.harness = ContextHarness::from(crate::harness::registry::OccupantHarness::Agent(
@@ -5281,7 +5345,13 @@ impl OrdinaryHumanRetryFixture {
             panic!("check-in result")
         };
         let original = result.context;
-        let contexts = crate::cli::seat_contexts(&paths, instance, &original.seat).unwrap();
+        let contexts = crate::cli::seat_contexts(
+            &paths,
+            instance,
+            &crate::test_support::test_host_locator(),
+            &original.seat,
+        )
+        .unwrap();
         let context_for = |claim: &CallerClaim, harness| OccupantContext {
             format_version: 1,
             instance,
@@ -5315,6 +5385,7 @@ impl OrdinaryHumanRetryFixture {
         let reference = journal
             .record(
                 IntentScope::Cooperative {
+                    host: crate::test_support::test_host_locator(),
                     instance: original.instance.clone(),
                     seat: original.seat.clone(),
                 },
@@ -5418,6 +5489,7 @@ impl OrdinaryHumanRetryFixture {
             &selection,
             &self.paths,
             crate::node::NodeUuid::parse_str(&self.original.instance).unwrap(),
+            &crate::test_support::test_host_locator(),
             &self.client,
             self.clock.as_ref(),
             writer,
@@ -5785,6 +5857,7 @@ fn subagent_own_inbox_displays_advances_only_its_cursor_and_machine_read_carries
         "seat-test",
         std::time::Duration::from_millis(20),
     )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
     .unwrap()
     .with_agent_caller(context, LivenessFingerprint::TEST)
     .unwrap();
@@ -5964,6 +6037,7 @@ fn subagent_text_inbox_without_binding_cursors_is_a_read_only_read() {
         "seat-test",
         std::time::Duration::from_millis(20),
     )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
     .unwrap()
     .with_agent_caller(context, LivenessFingerprint::TEST)
     .unwrap();

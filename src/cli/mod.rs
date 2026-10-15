@@ -823,18 +823,18 @@ fn run_parsed_in_pane<W: Write>(
     }
     // Canonical thread and recipient selectors precede both caller composition
     // and the operator branch's durable intent.
-    if matches!(&parsed.action, CliAction::Mutation(mutation) if operator_semantic(mutation).is_some())
-    {
+    if matches!(&parsed.action, CliAction::Mutation(mutation) if is_operator_mutation(mutation)) {
         if parsed.cooperative.is_some() {
             return Err(invalid_request(
                 "--operator cannot be combined with --cooperative-* caller selection: operator repair is attributed to the local user, never to a seat",
             ));
         }
-        resolve_recipient_seats(&mut parsed, &paths, &connection, &clock)?;
+        resolve_recipient_seats(&mut parsed, &context, &paths, &connection, &clock)?;
         let CliAction::Mutation(mutation) = &parsed.action else {
             unreachable!()
         };
-        let semantic = operator_semantic(mutation).expect("operator mutation selected above");
+        let semantic =
+            operator_semantic(mutation, &context).expect("operator mutation selected above")?;
         return run_operator(semantic, &parsed, &paths, &clock, writer);
     }
     let seat_labels =
@@ -942,6 +942,7 @@ fn run_parsed_in_pane<W: Write>(
         }
         CliAction::Mutation(MutationSpec::Resolve(target)) => {
             let (instance, _, client) = connect(&paths, &clock)?;
+            let host = context.claim_host().map_err(context_error)?;
             let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
             retry::run_new_api_to_writer_discarding_rejection(
                 &journal,
@@ -949,7 +950,7 @@ fn run_parsed_in_pane<W: Write>(
                     instance: instance.to_string(),
                     target: target.clone(),
                 },
-                SemanticMutation::ResolveSeat { target },
+                SemanticMutation::ResolveSeat { target, host },
                 clock.utc_now().0,
                 || {
                     Err(io::Error::new(
@@ -983,7 +984,9 @@ fn run_parsed_in_pane<W: Write>(
                         instance: recorded,
                         target,
                     },
-                    SemanticMutation::ResolveSeat { target: requested },
+                    SemanticMutation::ResolveSeat {
+                        target: requested, ..
+                    },
                 ) if recorded == &instance.to_string() && target == requested => {}
                 (
                     IntentScope::Operator {
@@ -1197,18 +1200,20 @@ where
     let selected = derive_caller(&mut parsed, caller_pane, context, paths, connection, clock);
     let selection =
         selected.map_err(|error| direct_send::pre_executor_error(error, &parsed, paths))?;
-    resolve_recipient_seats(&mut parsed, paths, connection, clock)?;
+    resolve_recipient_seats(&mut parsed, context, paths, connection, clock)?;
     let _inbox =
         output::InboxInvocationGuard::enter(&parsed, selection.as_ref().map(|s| s.seat.clone()));
     if let Some(selection) = selection {
         let (instance, client) = connection
             .get()
             .map_err(|error| direct_send::pre_executor_error(error, &parsed, paths))?;
+        let host = context.claim_host().map_err(context_error)?;
         run_selected(
             parsed,
             &selection,
             paths,
             *instance,
+            &host,
             client,
             clock.as_ref(),
             writer,
@@ -1226,6 +1231,7 @@ where
                 && let Some(claim) = body_reader_claim(
                     &parsed.output,
                     caller_pane,
+                    context,
                     paths,
                     connection,
                     clock.as_ref(),
@@ -1421,6 +1427,7 @@ fn advance_over_body_read<C: LocalClient + ?Sized>(
 fn body_reader_claim<C, F>(
     output: &OutputSpec,
     caller_pane: Option<&str>,
+    context: &RuntimeContext,
     paths: &NodePaths,
     connection: &LazyConnection<C, F>,
     clock: &dyn Clock,
@@ -1443,8 +1450,9 @@ where
         role: caller::role_of(env.role),
     };
     let generation = seat_generation(client, output, &selection, clock).ok()?;
+    let host = context.claim_host().ok()?;
     let contexts = caller_journal(
-        seat_contexts(paths, instance, &selection.seat).ok()?,
+        seat_contexts(paths, instance, &host, &selection.seat).ok()?,
         instance,
         &selection,
         generation,
@@ -2144,6 +2152,7 @@ fn settle_displayed_ack<C: LocalClient + ?Sized>(
     }
     let scope = IntentScope::Cooperative {
         instance: claim.instance.clone(),
+        host: claim.host.clone(),
         seat: claim.seat.clone(),
     };
     let displayed_claim = claim.clone();
@@ -2273,6 +2282,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
     selection: &CooperativeSelection,
     paths: &NodePaths,
     instance: crate::node::NodeUuid,
+    host: &crate::protocol::ids::HostLocator,
     client: &C,
     clock: &dyn Clock,
     writer: &mut W,
@@ -2298,10 +2308,14 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         selection
     };
     if matches!(&parsed.action, CliAction::Summary(_)) {
-        return summary::run(parsed, selection, paths, instance, client, clock, writer);
+        return summary::run(
+            parsed, selection, paths, instance, host, client, clock, writer,
+        );
     }
     if matches!(&parsed.action, CliAction::WakeOn(_)) {
-        return wake_on::run(parsed, selection, paths, instance, client, clock, writer);
+        return wake_on::run(
+            parsed, selection, paths, instance, host, client, clock, writer,
+        );
     }
     if historical.is_some()
         && let CliAction::Retry(recovery) = &parsed.action
@@ -2326,7 +2340,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         return Err(mapping_error("service returned no seat inspection"));
     };
     let generation = selected_generation(selection, &inspection)?;
-    let mut contexts = seat_contexts(paths, instance, &selection.seat)?;
+    let mut contexts = seat_contexts(paths, instance, host, &selection.seat)?;
     let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
     let mut current = contexts.current().map_err(context_run_error)?;
     let lifecycle = matches!(
@@ -2475,6 +2489,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
 pub(crate) fn seat_contexts(
     paths: &NodePaths,
     instance: crate::node::NodeUuid,
+    host: &crate::protocol::ids::HostLocator,
     seat: &crate::protocol::ids::SeatId,
 ) -> Result<crate::harness::context::ContextJournal, RunError> {
     crate::harness::context::ContextJournal::open(
@@ -2483,6 +2498,7 @@ pub(crate) fn seat_contexts(
         seat.as_str(),
         Duration::from_secs(1),
     )
+    .map(|contexts| contexts.with_host(host.clone()))
     .map_err(context_run_error)
 }
 
@@ -2517,6 +2533,7 @@ fn exact_check_in_replay(
     };
     let scope = IntentScope::Cooperative {
         instance: instance.to_string(),
+        host: contexts.claim_host().map_err(context_run_error)?.clone(),
         seat: selection.seat.clone(),
     };
     let (intent, supplied_native) = match action {
@@ -2542,9 +2559,12 @@ fn exact_check_in_replay(
                 // The daemon echoes the frozen claim, liveness fingerprint included.
                 let mut echoed = check.context.clone();
                 echoed.liveness = None;
-                return Ok(
-                    echoed == bridge::caller_claim(&response.context).map_err(context_run_error)?
-                );
+                return Ok(echoed
+                    == bridge::caller_claim(
+                        &response.context,
+                        contexts.claim_host().map_err(context_run_error)?.clone(),
+                    )
+                    .map_err(context_run_error)?);
             }
             (
                 journal.find_check_in(&scope, event_id)?,
@@ -2658,36 +2678,58 @@ fn host_context_error(error: io::Error) -> ApiError {
 
 /// The three documented administrative forms. Their authority is the kernel
 /// peer UID the daemon observes on the private socket; nothing here asserts it.
-fn operator_semantic(mutation: &MutationSpec) -> Option<SemanticMutation> {
+fn is_operator_mutation(mutation: &MutationSpec) -> bool {
+    matches!(
+        mutation,
+        MutationSpec::FreshSeat(_)
+            | MutationSpec::Retire(_)
+            | MutationSpec::Replace { .. }
+            | MutationSpec::Rebind { .. }
+            | MutationSpec::Invite { operator: true, .. }
+    )
+}
+
+/// The operator form of `mutation`. The target-bearing forms carry the pane's Herdr server from
+/// `context` (an error when none resolved); retire and orphan invite name no pane.
+fn operator_semantic(
+    mutation: &MutationSpec,
+    context: &RuntimeContext,
+) -> Option<Result<SemanticMutation, RunError>> {
+    let host = || context.claim_host().map_err(context_error);
     Some(match mutation {
-        MutationSpec::FreshSeat(target) => SemanticMutation::OperatorFreshSeat {
+        MutationSpec::FreshSeat(target) => host().map(|host| SemanticMutation::OperatorFreshSeat {
             target: target.clone(),
-        },
-        MutationSpec::Retire(seat) => SemanticMutation::OperatorRetire { seat: seat.clone() },
+            host,
+        }),
+        MutationSpec::Retire(seat) => Ok(SemanticMutation::OperatorRetire { seat: seat.clone() }),
         MutationSpec::Replace {
             seat,
             pane,
             replace,
-        } => SemanticMutation::OperatorReplace {
+        } => host().map(|host| SemanticMutation::OperatorReplace {
             seat: seat.clone(),
             target: pane.clone(),
+            host,
             replace: replace.clone(),
-        },
-        MutationSpec::Rebind { seat, pane } => SemanticMutation::OperatorRebind {
-            seat: seat.clone(),
-            target: pane.clone(),
-        },
+        }),
+        MutationSpec::Rebind { seat, pane } => {
+            host().map(|host| SemanticMutation::OperatorRebind {
+                seat: seat.clone(),
+                target: pane.clone(),
+                host,
+            })
+        }
         MutationSpec::Invite {
             thread,
             seat,
             deadline_millis,
             operator: true,
             ..
-        } => SemanticMutation::OperatorOrphanInvite {
+        } => Ok(SemanticMutation::OperatorOrphanInvite {
             thread: thread.clone(),
             seat: seat.clone(),
             deadline_millis: *deadline_millis,
-        },
+        }),
         _ => return None,
     })
 }
@@ -2871,6 +2913,7 @@ pub(crate) fn require_handoff_capabilities<C: LocalClient + ?Sized>(
 /// Recipient pane selection never changes the caller's cooperative claim.
 fn resolve_recipient_seats<C, F>(
     parsed: &mut commands::ParsedCli,
+    context: &RuntimeContext,
     paths: &NodePaths,
     connection: &LazyConnection<C, F>,
     clock: &Arc<dyn Clock>,
@@ -2915,10 +2958,11 @@ where
         )?;
     }
     let allocate = |target: crate::protocol::ids::HostTargetId| -> Result<crate::protocol::ids::SeatId, RunError> {
+        let host = context.claim_host().map_err(context_error)?;
         let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
         let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
             &journal, IntentScope::ServiceAllocation { instance: instance.to_string(), target: target.clone() },
-            SemanticMutation::ResolveSeat { target }, clock.utc_now().0,
+            SemanticMutation::ResolveSeat { target, host }, clock.utc_now().0,
             || Err(io::Error::new(io::ErrorKind::PermissionDenied, "recipient resolution has no caller claim")),
             |command| client.call_definitive(command, &cooperative_budget(clock.as_ref())),
             &parsed.output, &mut io::sink(),
@@ -3233,7 +3277,8 @@ where
         }
         return Ok(selection);
     }
-    let contexts = seat_contexts(paths, instance, &seat)?;
+    let host = runtime.claim_host().map_err(context_error)?;
+    let contexts = seat_contexts(paths, instance, &host, &seat)?;
     let context = match contexts.current().map_err(context_run_error)? {
         Some(context) => context,
         None => contexts
@@ -3371,7 +3416,13 @@ fn run_launch<W: Write>(
             .ok()
             .and_then(|panes| launch::pane_label(&request.target, &panes));
     }
-    let seats = launch::DaemonSeatResolver::new(&client, &journal, instance, clock.as_ref());
+    let seats = launch::DaemonSeatResolver::new(
+        &client,
+        &journal,
+        instance,
+        context.claim_host().map_err(context_error)?,
+        clock.as_ref(),
+    );
     let shell_probe = launch::SystemShellProbe::from_process();
     let outcome = launch::execute(
         &request,
@@ -3662,6 +3713,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             let claim = contexts.claim(&context).map_err(context_run_error)?;
             let scope = IntentScope::Cooperative {
                 instance: claim.instance.clone(),
+                host: claim.host.clone(),
                 seat: claim.seat.clone(),
             };
             if matches!(&mutation, MutationSpec::Join(_)) {
@@ -3737,6 +3789,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 .ok_or_else(|| caller_not_located("retry context missing"))?;
             let scope = IntentScope::Cooperative {
                 instance: seed.instance.to_string(),
+                host: contexts.claim_host().map_err(context_run_error)?.clone(),
                 seat: crate::protocol::ids::SeatId::parse(seed.seat)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
             };
@@ -4208,6 +4261,7 @@ mod topology_contract_retry_tests {
                     (
                         SemanticMutation::freeze(semantic, fixture::claim()).unwrap(),
                         IntentScope::Cooperative {
+                            host: crate::test_support::test_host_locator(),
                             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                             seat: fixture::claim().seat,
                         },

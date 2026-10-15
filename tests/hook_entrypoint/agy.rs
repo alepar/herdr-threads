@@ -1159,7 +1159,7 @@ mod activation {
                     (None, None) => None,
                     _ => panic!("canonical binding fingerprint is complete or absent"),
                 };
-                Ok(CallerClaim { instance: self.fx.instance.to_string(), seat: herdr_threads::protocol::ids::SeatId::new(row.get::<_,String>(0)?), binding_generation: u64::try_from(row.get::<_, i64>(1)?).expect("canonical binding generation is nonnegative"),
+                Ok(CallerClaim { host: herdr_threads::test_support::test_host_locator(), instance: self.fx.instance.to_string(), seat: herdr_threads::protocol::ids::SeatId::new(row.get::<_,String>(0)?), binding_generation: u64::try_from(row.get::<_, i64>(1)?).expect("canonical binding generation is nonnegative"),
                     role: herdr_threads::protocol::authority::CallerRole::TopLevel, harness: herdr_threads::protocol::authority::Harness::Claude,
                     native_session: herdr_threads::protocol::ids::NativeSessionId::new("origin-session"), execution: herdr_threads::protocol::ids::ExecutionId::new(row.get::<_,String>(2)?), target: herdr_threads::protocol::ids::HostTargetId::new("w9:p2"), agent_id: None, liveness })
             }).unwrap();
@@ -1542,6 +1542,24 @@ mod activation {
     #[test]
     fn activation_v2_registered_agy_user_hook_round_trip() {
         round_trip(true);
+    }
+
+    // Kills: an agy `hook-event` claim without the pane's Herdr server (or carrying a default
+    // one): the claim the hook sends names the server the pane belongs to.
+    #[test]
+    fn agy_hook_event_claim_carries_pane_host() {
+        let elected = Elected::start();
+        let host = elected.fx.host.canonicalize().unwrap_or_else(|_| {
+            elected
+                .fx
+                .host
+                .parent()
+                .unwrap()
+                .canonicalize()
+                .unwrap()
+                .join(elected.fx.host.file_name().unwrap())
+        });
+        assert_eq!(elected.recipient.host.as_str(), host.to_str().unwrap());
     }
 
     // Kills: public Ensure loses its Lazy selection, registered Hook falls back,

@@ -63,6 +63,73 @@ fn old_installed_argv_selects_node_and_claim_host() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+// Kills: a hook claim that ignores the installed `--host-endpoint` when the pane names no
+// server (the claim would carry no host), or one that spells it other than canonically.
+#[test]
+fn installed_host_used_without_pane_env() {
+    let (dir, _) = scratch_pane();
+    let host = dir.join("herdr.sock");
+    let args = HookArgs {
+        state_dir: Some(dir.join("state")),
+        host_endpoint: Some(host.clone()),
+        harness: Harness::Claude,
+        event: None,
+    };
+    let context = hook_runtime_context_with(&args, None).unwrap();
+    let claim_host = context.claim_host().unwrap();
+    assert_eq!(claim_host.as_str(), host.to_str().unwrap());
+    // An installed spelling through a dotted directory is the canonical locator.
+    let dotted = HookArgs {
+        host_endpoint: Some(dir.join(".").join("herdr.sock")),
+        ..args
+    };
+    let context = hook_runtime_context_with(&dotted, None).unwrap();
+    assert_eq!(context.claim_host().unwrap(), claim_host);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+// Kills: the installed (setup-baked) host winning over the pane's own server, which would claim
+// the wrong server from a pane of another Herdr; and a hook that stays silent in such a pane.
+#[test]
+fn pane_env_wins_over_installed_host_and_not_foreign() {
+    let (dir, _) = scratch_pane();
+    let (installed, pane_host) = (dir.join("h1.sock"), dir.join("h2.sock"));
+    let args = HookArgs {
+        state_dir: Some(dir.join("state")),
+        host_endpoint: Some(installed.clone()),
+        harness: Harness::Claude,
+        event: None,
+    };
+    let context = hook_runtime_context_with(&args, Some(pane_host.clone())).unwrap();
+    assert_eq!(
+        context.claim_host().unwrap().as_str(),
+        pane_host.to_str().unwrap()
+    );
+    // The installed host is still the fallback without a pane server.
+    let context = hook_runtime_context_with(&args, None).unwrap();
+    assert_eq!(
+        context.claim_host().unwrap().as_str(),
+        installed.to_str().unwrap()
+    );
+    // A pane is never foreign for the server it belongs to; only a non-pane session is.
+    assert_eq!(foreign_session(&herdr()), None);
+    assert_eq!(
+        foreign_session(&HookEnv {
+            herdr_env: true,
+            pane: None
+        }),
+        Some("HERDR_PANE_ID missing")
+    );
+    assert_eq!(
+        foreign_session(&HookEnv {
+            herdr_env: false,
+            pane: Some("w1:p1".into())
+        }),
+        Some("not running inside a Herdr pane")
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 // Kills: dropping the `hook` interception (setup's installed argv would reach
 // clap and exit 2), or a parser that swallows ordinary subcommands.
 #[test]
@@ -1220,7 +1287,7 @@ fn startup_offer_with_topic(
     digest.receipts.has_more = false;
     // The demo-1 body shape: ~2.3 KB of escaped check-in data per thread.
     let mut offer = format!(
-        "{instruction}\nOriginal cached CheckIn offer (selected data):\nchecked_in\ncontext: {{\"binding_generation\":2,\"execution\":\"{}\",\"instance\":\"{}\",\"seat\":\"seat-{}\"}}\n",
+        "{instruction}\nOriginal cached CheckIn offer (selected data):\nchecked_in\ncontext: {{\"binding_generation\":2,\"execution\":\"{}\",\"instance\":\"{}\",\"host\":\"/host.sock\",\"seat\":\"seat-{}\"}}\n",
         uuid(),
         uuid(),
         uuid()
@@ -2974,10 +3041,15 @@ mod continuity_gate {
             }
         }
         fn saved_context(&self, seat: &str) -> Option<OccupantContext> {
-            crate::cli::seat_contexts(&self.paths, self.instance, &SeatId::new(seat))
-                .unwrap()
-                .current()
-                .unwrap()
+            crate::cli::seat_contexts(
+                &self.paths,
+                self.instance,
+                &crate::test_support::test_host_locator(),
+                &SeatId::new(seat),
+            )
+            .unwrap()
+            .current()
+            .unwrap()
         }
         fn journal(&self) -> Journal {
             Journal::open(self.paths.node_dir.join("intents")).unwrap()
@@ -3012,6 +3084,7 @@ mod continuity_gate {
                         target: self.target.clone(),
                     },
                     SemanticMutation::ContinuityCheckIn {
+                        host: crate::test_support::test_host_locator(),
                         target: self.target.clone(),
                         harness: WireHarness::Claude,
                         native_session: NativeSessionId::new(session),
@@ -3096,7 +3169,13 @@ mod continuity_gate {
     ) -> Vec<(bool, u64, u64)> {
         let pane = Pane::new();
         let seat = SeatId::new("saved");
-        let contexts = crate::cli::seat_contexts(&pane.paths, pane.instance, &seat).unwrap();
+        let contexts = crate::cli::seat_contexts(
+            &pane.paths,
+            pane.instance,
+            &crate::test_support::test_host_locator(),
+            &seat,
+        )
+        .unwrap();
         if registered {
             // S-1 already checked in: its lifecycle request is a completed entry of the journal,
             // which is how a later turn of that session is known to be a Current turn.
@@ -3111,13 +3190,18 @@ mod continuity_gate {
                 session: SessionReference::Native("S-1".into()),
                 role: Role::TopLevel,
             };
-            let earlier = crate::cli::seat_contexts(&pane.paths, pane.instance, &seat)
-                .unwrap()
-                .with_agent_caller(
-                    context.clone(),
-                    crate::protocol::authority::LivenessFingerprint::TEST,
-                )
-                .unwrap();
+            let earlier = crate::cli::seat_contexts(
+                &pane.paths,
+                pane.instance,
+                &crate::test_support::test_host_locator(),
+                &seat,
+            )
+            .unwrap()
+            .with_agent_caller(
+                context.clone(),
+                crate::protocol::authority::LivenessFingerprint::TEST,
+            )
+            .unwrap();
             earlier
                 .prepare(PendingCheckIn {
                     operation_id: uuid::Uuid::new_v4(),
@@ -3580,8 +3664,13 @@ mod continuity_gate {
     #[test]
     fn reattachment_leaves_the_saved_context_of_the_seat_alone() {
         let pane = Pane::new();
-        let contexts =
-            crate::cli::seat_contexts(&pane.paths, pane.instance, &SeatId::new("saved")).unwrap();
+        let contexts = crate::cli::seat_contexts(
+            &pane.paths,
+            pane.instance,
+            &crate::test_support::test_host_locator(),
+            &SeatId::new("saved"),
+        )
+        .unwrap();
         let execution = uuid::Uuid::new_v4();
         contexts
             .install_reattached(OccupantContext {
@@ -5780,11 +5869,16 @@ mod mod_channel_live {
         }
         // Nothing about either session was saved as the pane's context.
         assert!(
-            crate::cli::seat_contexts(&pane.paths, pane.instance, &seat())
-                .unwrap()
-                .current()
-                .unwrap()
-                .is_none(),
+            crate::cli::seat_contexts(
+                &pane.paths,
+                pane.instance,
+                &crate::test_support::test_host_locator(),
+                &seat()
+            )
+            .unwrap()
+            .current()
+            .unwrap()
+            .is_none(),
             "an agent's identity is its environment, not context.json"
         );
     }
@@ -5979,7 +6073,13 @@ mod mod_channel_live {
         // Once each: B's commit did not erase A's mark, nor A's B's.
         assert_eq!(tool_call_of(&pane, &daemon, "session-A"), None);
         assert_eq!(tool_call_of(&pane, &daemon, "session-B"), None);
-        let contexts = crate::cli::seat_contexts(&pane.paths, pane.instance, &seat()).unwrap();
+        let contexts = crate::cli::seat_contexts(
+            &pane.paths,
+            pane.instance,
+            &crate::test_support::test_host_locator(),
+            &seat(),
+        )
+        .unwrap();
         for session in ["session-A", "session-B"] {
             let key = crate::harness::context::attention_mark_key("claude", session, None);
             assert!(
@@ -6076,7 +6176,13 @@ mod mod_channel_live {
             "{:?}",
             again.summary
         );
-        let contexts = crate::cli::seat_contexts(&pane.paths, pane.instance, &seat()).unwrap();
+        let contexts = crate::cli::seat_contexts(
+            &pane.paths,
+            pane.instance,
+            &crate::test_support::test_host_locator(),
+            &seat(),
+        )
+        .unwrap();
         let parent = crate::harness::context::attention_mark_key("claude", "session-A", None);
         let child =
             crate::harness::context::attention_mark_key("claude", "session-A", Some("agent-1"));
@@ -6701,8 +6807,13 @@ mod enum_callback {
         );
         assert!(calls.iter().any(|c| matches!(c, Command::SeatInspect(_))));
         drop(calls);
-        let journal =
-            crate::cli::seat_contexts(&paths, instance, &SeatId::new("callback-seat")).unwrap();
+        let journal = crate::cli::seat_contexts(
+            &paths,
+            instance,
+            &crate::test_support::test_host_locator(),
+            &SeatId::new("callback-seat"),
+        )
+        .unwrap();
         // The session is the payload's, sent on the check-in; nothing is saved as the context.
         assert!(journal.current().unwrap().is_none());
         let sent = service
@@ -7657,10 +7768,15 @@ mod registered_resume {
         /// journal's last completed check-in. An agent's identity is its environment, never a
         /// saved context (decision 15), so `context.json` holds none.
         fn saved(&self) -> Option<OccupantContext> {
-            crate::cli::seat_contexts(&self.paths, self.instance, &SeatId::new("registered-seat"))
-                .unwrap()
-                .registered_snapshot()
-                .unwrap()
+            crate::cli::seat_contexts(
+                &self.paths,
+                self.instance,
+                &crate::test_support::test_host_locator(),
+                &SeatId::new("registered-seat"),
+            )
+            .unwrap()
+            .registered_snapshot()
+            .unwrap()
         }
         fn teardown(&mut self) -> Result<(), String> {
             let mut errors = Vec::new();
@@ -8296,6 +8412,7 @@ mod registered_resume {
         assert!(outcome.diagnostic.is_some());
         // The same existing wire validator governs journal admission and daemon dispatch.
         let c = crate::protocol::commands::ContinuityCheckIn {
+            host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("w9:p1"),
             harness: OccupantHarness::Agent(d.harness),
             native_session: crate::protocol::ids::NativeSessionId::parse("fourth-resume-session")
@@ -8314,9 +8431,13 @@ mod registered_resume {
     fn continuity_human_and_unknown_identity_have_no_agent_request() {
         use sha2::{Digest, Sha256};
         let f = Fixture::new(false);
-        let contexts =
-            crate::cli::seat_contexts(&f.paths, f.instance, &SeatId::new("registered-seat"))
-                .unwrap();
+        let contexts = crate::cli::seat_contexts(
+            &f.paths,
+            f.instance,
+            &crate::test_support::test_host_locator(),
+            &SeatId::new("registered-seat"),
+        )
+        .unwrap();
         let sentinel = OccupantContext {
             format_version: 1,
             instance: f.instance,
@@ -8455,6 +8576,7 @@ mod registered_resume {
                         target: target.clone(),
                     },
                     SemanticMutation::ContinuityCheckIn {
+                        host: crate::test_support::test_host_locator(),
                         target: target.clone(),
                         harness: OccupantHarness::Agent(d.harness),
                         native_session: crate::protocol::ids::NativeSessionId::parse(
@@ -8708,9 +8830,13 @@ mod registered_resume {
         assert!(outcome.attention.is_some());
         let saved = f.saved().unwrap();
         assert_eq!(saved.session, SessionReference::Native("task52-new".into()));
-        let contexts =
-            crate::cli::seat_contexts(&f.paths, f.instance, &SeatId::new("registered-seat"))
-                .unwrap();
+        let contexts = crate::cli::seat_contexts(
+            &f.paths,
+            f.instance,
+            &crate::test_support::test_host_locator(),
+            &SeatId::new("registered-seat"),
+        )
+        .unwrap();
         assert_eq!(
             contexts.prepared_kind_for_event("pre_llm_call-3").unwrap(),
             EventKind::Clear
@@ -8736,9 +8862,13 @@ mod registered_resume {
         assert!(failed.attention.is_none());
         assert_eq!(task52_commands(&f), (2, 0));
         let saved = f.saved().unwrap();
-        let contexts =
-            crate::cli::seat_contexts(&f.paths, f.instance, &SeatId::new("registered-seat"))
-                .unwrap();
+        let contexts = crate::cli::seat_contexts(
+            &f.paths,
+            f.instance,
+            &crate::test_support::test_host_locator(),
+            &SeatId::new("registered-seat"),
+        )
+        .unwrap();
         assert!(contexts.attention_mark(&saved.mark_key()).is_none());
         assert!(
             contexts
@@ -8880,9 +9010,13 @@ mod registered_resume {
         assert!(failed.diagnostic.is_some());
         assert!(failed.attention.is_none());
         assert_eq!(f.saved(), before);
-        let contexts =
-            crate::cli::seat_contexts(&f.paths, f.instance, &SeatId::new("registered-seat"))
-                .unwrap();
+        let contexts = crate::cli::seat_contexts(
+            &f.paths,
+            f.instance,
+            &crate::test_support::test_host_locator(),
+            &SeatId::new("registered-seat"),
+        )
+        .unwrap();
         let pending = contexts.pending().unwrap().unwrap();
         assert_eq!(
             contexts.prepared_kind_for_event("pre_llm_call-3").unwrap(),

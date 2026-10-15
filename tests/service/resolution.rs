@@ -501,6 +501,7 @@ impl Fixture {
         LocalClient::call(
             &self.client(),
             Command::ResolveSeat(ResolveSeat {
+                host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new("w1:p1"),
                 operation: OperationId::new(operation),
             }),
@@ -616,6 +617,7 @@ fn first_contact_read_waits_for_the_lane_capture_it_needs() {
             LocalClient::call(
                 &client,
                 Command::ResolveSeat(ResolveSeat {
+                    host: herdr_threads::test_support::test_host_locator(),
                     target: HostTargetId::new("w1:p1"),
                     operation: OperationId::new("first-contact"),
                 }),
@@ -694,6 +696,7 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
         seat.as_str(),
         Duration::from_millis(500),
     )
+    .map(|journal| journal.with_host(herdr_threads::test_support::test_host_locator()))
     .unwrap();
     let execution = Uuid::new_v4();
     // The hook acts as the harness session its payload names (decision 15).
@@ -865,6 +868,7 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
         seat.as_str(),
         Duration::from_millis(500),
     )
+    .map(|journal| journal.with_host(herdr_threads::test_support::test_host_locator()))
     .unwrap()
     .with_agent_caller(
         seed.clone(),
@@ -985,6 +989,7 @@ fn real_ipc_late_target_read_cannot_publish_after_newer_invalidation_and_health_
         LocalClient::call(
             &client,
             Command::ResolveSeat(ResolveSeat {
+                host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new("w1:p1"),
                 operation: OperationId::new("late-read"),
             }),
@@ -1153,6 +1158,7 @@ fn real_ipc_reused_resolution_key_for_different_target_rejects_before_host_read(
     let result = LocalClient::call(
         &fixture.client(),
         Command::ResolveSeat(ResolveSeat {
+            host: herdr_threads::test_support::test_host_locator(),
             target: HostTargetId::new("w1:p2"),
             operation: OperationId::new("same-key"),
         }),
@@ -1624,6 +1630,7 @@ fn committed_resolution_with_lost_wire_response_retains_exact_intent_for_explici
     let fixture = Fixture::new(false);
     let journal = Journal::open(fixture.paths.node_dir.join("intents")).unwrap();
     let semantic = SemanticMutation::ResolveSeat {
+        host: herdr_threads::test_support::test_host_locator(),
         target: HostTargetId::new("w1:p1"),
     };
     let reference = journal
@@ -1711,6 +1718,7 @@ fn disconnected_short_budget_cannot_commit_queued_resolution_after_writer_unlock
     #[cfg(feature = "test-support")]
     let held_writer = HeldSqliteWriter(&db);
     let command = Command::ResolveSeat(ResolveSeat {
+        host: herdr_threads::test_support::test_host_locator(),
         target: HostTargetId::new("w1:p1"),
         operation: OperationId::new("expired-queued-resolution"),
     });
@@ -1848,6 +1856,7 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
         CommandResult::Health(_)
     ));
     let claim = CallerClaim {
+        host: herdr_threads::test_support::test_host_locator(),
         instance: fixture.descriptor.node_uuid.to_string(),
         seat: SeatId::new("checkin-seat"),
         binding_generation: 0,
@@ -1884,6 +1893,7 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
         messages: vec![MessageId::new("search-message")],
         operation: OperationId::new("ack-during-held-search"),
         claim: CallerClaim {
+            host: herdr_threads::test_support::test_host_locator(),
             binding_generation: 0,
             ..claim
         },
@@ -2033,6 +2043,7 @@ fn identity_final_currentness_check_uses_new_admitted_read_and_rejects_existing_
     fixture.host.overlap_allowed.store(true, Ordering::SeqCst);
     fixture.host.snapshot_held.store(true, Ordering::SeqCst);
     let request = ResolveSeat {
+        host: herdr_threads::test_support::test_host_locator(),
         target: HostTargetId::new("w1:p1"),
         operation: OperationId::new("historical-resolve"),
     };
@@ -2279,6 +2290,7 @@ fn elected_snapshot_and_target_captures_share_one_lane_and_dirty_refresh() {
             LocalClient::call(
                 &client,
                 Command::ResolveSeat(ResolveSeat {
+                    host: herdr_threads::test_support::test_host_locator(),
                     target: HostTargetId::new("w1:p1"),
                     operation: OperationId::new("ordered"),
                 }),
@@ -2466,6 +2478,7 @@ fn queued_incoherent_compensation<'w>(
     let worker = std::thread::spawn(move || {
         let _ = done.send(identity.resolve(
             ResolveSeat {
+                host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new("w1:p1"),
                 operation,
             },
@@ -2617,6 +2630,7 @@ fn elected_shutdown_is_not_held_by_invalidation_compensation() {
         let _ = answered.send(LocalClient::call(
             &client,
             Command::ResolveSeat(ResolveSeat {
+                host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new("w1:p1"),
                 operation: OperationId::new("elected-shutdown-read"),
             }),
@@ -2865,6 +2879,7 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
         &client,
         &journal,
         fixture.descriptor.node_uuid,
+        herdr_threads::test_support::test_host_locator(),
         fixture.clock.as_ref(),
     );
     // No configuration exports from this pane shell.

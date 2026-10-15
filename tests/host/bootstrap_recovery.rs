@@ -168,6 +168,14 @@ mod bootstrap_recovery {
         id.claim.target = HostTargetId::new("w4:p1");
         id.payload.workspace = HostTargetId::new("w4");
         id.payload.handoff.namespace.host_endpoint = socket.clone();
+        let socket_host =
+            crate::protocol::ids::HostLocator::parse(socket.to_str().unwrap()).unwrap();
+        id.claim.host = socket_host.clone();
+        id.scope = crate::cli::journal::IntentScope::Cooperative {
+            instance: id.claim.instance.clone(),
+            host: socket_host,
+            seat: id.claim.seat.clone(),
+        };
         id.payload.handoff.channel = HandoffChannel::New {
             name: None,
             topic: "topic".into(),
@@ -452,6 +460,7 @@ mod bootstrap_recovery {
         let result = identity.with_bootstrap_observation(
             &ReadControl { cli: cli.as_ref(), cancel: change == "cancel" },
             &ResolveSeat {
+                host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("w4:p1"),
                 operation: id.payload.resolve_key.clone(),
             },

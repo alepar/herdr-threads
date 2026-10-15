@@ -97,6 +97,7 @@ fn fixture_with_clock(
 }
 fn claim() -> CallerClaim {
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s"),
         binding_generation: 0,
@@ -1871,6 +1872,7 @@ fn subagent_stop_between_stage_and_decide_publishes_the_warning() {
         1
     );
     let sub = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         agent_id: Some(AgentId::new("agent-2")),
         ..sub
     };
@@ -1916,6 +1918,7 @@ fn plain_call_reconnect_between_stage_and_decide_drops_the_stale_warning() {
     assert!(!scenario.available());
     scenario.stage_change_decide("plain-reconnect", |s| {
         let resumed = CallerClaim {
+            host: crate::test_support::test_host_locator(),
             liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 4, start: 1 }),
             ..s.main.clone()
         };
@@ -1947,6 +1950,7 @@ fn plain_call_enrollment_between_stage_and_decide_drops_the_stale_warning() {
     assert!(!scenario.available());
     scenario.stage_change_decide("plain-enroll", |s| {
         let fresh = CallerClaim {
+            host: crate::test_support::test_host_locator(),
             native_session: NativeSessionId::new("recipient-fresh"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000005"),
             liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 5, start: 1 }),
@@ -2012,6 +2016,7 @@ fn a_one_shot_under_a_live_main_session_refuses_no_send() {
     let scenario = SendScenario::new();
     let attempts = scenario.stage_change_decide("one-shot-enroll", |s| {
         let one_shot = CallerClaim {
+            host: crate::test_support::test_host_locator(),
             native_session: NativeSessionId::new("recipient-one-shot"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000003"),
             liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 3, start: 1 }),
@@ -2087,6 +2092,7 @@ fn a_readoption_refreshing_a_stale_placement_between_stage_and_decide_is_fenced(
     assert!(!scenario.available());
     let attempts = scenario.stage_change_decide("readopt", |s| {
         let resumed = CallerClaim {
+            host: crate::test_support::test_host_locator(),
             liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 4, start: 1 }),
             ..s.main.clone()
         };
@@ -2125,6 +2131,7 @@ fn a_plain_reopen_after_a_rebind_between_stage_and_decide_is_fenced() {
     assert!(!scenario.available());
     let attempts = scenario.stage_change_decide("reopen", |s| {
         let resumed = CallerClaim {
+            host: crate::test_support::test_host_locator(),
             liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 4, start: 1 }),
             binding_generation: s.main.binding_generation + 1,
             ..s.main.clone()
@@ -2196,6 +2203,7 @@ fn an_authors_first_plain_call_enrollment_sends_in_one_attempt() {
     assert!(!author_seat_available(&scenario));
     let mut send = scenario.request("first-plain-send");
     send.claim = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         native_session: NativeSessionId::new("sender-fresh"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000006"),
         liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 6, start: 1 }),
@@ -2515,6 +2523,7 @@ fn operator_check_in_requires_human_lifecycle() {
         service.handle(command, PeerIdentity::from_kernel(uid), &budget())
     };
     let human = |claim: CallerClaim| CallerClaim {
+        host: crate::test_support::test_host_locator(),
         harness: Harness::Human,
         native_session: NativeSessionId::new("plugin_context:person"),
         ..claim
@@ -2549,6 +2558,7 @@ fn operator_check_in_requires_human_lifecycle() {
     let agent = checked(&service, lifecycle(claim(), "agent-ok"));
     let plain = lifecycle(
         human(CallerClaim {
+            host: crate::test_support::test_host_locator(),
             binding_generation: agent.context.binding_generation,
             execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
             ..claim()
@@ -2667,6 +2677,7 @@ fn lazy_inbox_fix_real_service_completion() {
             messages: vec![human.clone()],
             operation: OperationId::new("human-done"),
             claim: CallerClaim {
+                host: crate::test_support::test_host_locator(),
                 harness: Harness::Human,
                 ..recipient
             }
@@ -2681,6 +2692,7 @@ fn two_sessions_on_one_seat_both_send() {
     use crate::protocol::commands::SendMessage;
     let (service, db) = fixture();
     let session = |name: &str, execution: &str| CallerClaim {
+        host: crate::test_support::test_host_locator(),
         native_session: NativeSessionId::new(name),
         execution: ExecutionId::new(execution),
         ..claim()
@@ -2756,6 +2768,7 @@ fn two_sessions_on_one_seat_both_send() {
 /// A subagent claim of the same session: the declared role and an agent id.
 fn subagent_of(top: &CallerClaim) -> CallerClaim {
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         role: CallerRole::Subagent,
         agent_id: Some(AgentId::new("agent-1")),
         ..top.clone()
@@ -2793,6 +2806,7 @@ fn subagent_ack_send_accept_leave_invite_and_check_in_are_refused() {
     let operations = before(&db);
     // The declared-role shape and the bare agent-id shape are both recognized.
     let bare_agent = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         agent_id: Some(AgentId::new("agent-2")),
         ..top.clone()
     };
@@ -2948,6 +2962,7 @@ fn binding_states(db: &Connection) -> Vec<BindingState> {
 }
 fn with_fingerprint(claim: CallerClaim) -> CallerClaim {
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
         ..claim
     }
@@ -3034,6 +3049,7 @@ fn session_end_disconnects_the_root_and_its_subagents() {
     let top = with_fingerprint(checked(&service, lifecycle(claim(), "top")).context);
     for (n, agent) in ["agent-1", "agent-2"].into_iter().enumerate() {
         let sub = CallerClaim {
+            host: crate::test_support::test_host_locator(),
             agent_id: Some(AgentId::new(agent)),
             ..subagent_of(&top)
         };
@@ -3122,6 +3138,7 @@ fn hermes_child_start_registers_the_child_session_and_its_cli_claim_is_read_only
     let (service, db) = fixture();
     let peer = PeerIdentity::from_kernel(501);
     let parent = with_fingerprint(CallerClaim {
+        host: crate::test_support::test_host_locator(),
         harness: hermes(),
         native_session: NativeSessionId::new("hermes-parent"),
         ..claim()
@@ -3163,6 +3180,7 @@ fn hermes_child_start_registers_the_child_session_and_its_cli_claim_is_read_only
     // The child's own CLI claim (its session, no agent id) resolves to the subagent binding, so
     // a write is refused as a subagent write and no top-level binding is enrolled for it.
     let child_cli = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         native_session: NativeSessionId::new("hermes-child"),
         ..parent.clone()
     };
@@ -3218,6 +3236,7 @@ fn hermes_registered_child_call_after_subagent_stop_stays_disconnected() {
     let (service, db) = fixture();
     let peer = PeerIdentity::from_kernel(501);
     let parent = with_fingerprint(CallerClaim {
+        host: crate::test_support::test_host_locator(),
         harness: hermes(),
         native_session: NativeSessionId::new("hermes-parent"),
         ..claim()
@@ -3237,6 +3256,7 @@ fn hermes_registered_child_call_after_subagent_stop_stays_disconnected() {
     );
     // The child's next CLI claim (its session, no agent id, a fingerprint).
     let child_cli = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         native_session: NativeSessionId::new("hermes-child"),
         ..parent.clone()
     };
@@ -3285,6 +3305,7 @@ fn hermes_child_early_call_then_subagent_start(parent_lifecycle: bool) {
     let (service, db) = fixture();
     let peer = PeerIdentity::from_kernel(501);
     let parent = with_fingerprint(CallerClaim {
+        host: crate::test_support::test_host_locator(),
         harness: hermes(),
         native_session: NativeSessionId::new("hermes-parent"),
         ..claim()
@@ -3305,6 +3326,7 @@ fn hermes_child_early_call_then_subagent_start(parent_lifecycle: bool) {
     // The child's plain call, under its own session and the parent's fingerprint, before any
     // `subagent_start` registered that session.
     let child_cli = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         native_session: NativeSessionId::new("hermes-child"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000002"),
         ..parent.clone()
@@ -3468,6 +3490,7 @@ fn hermes_child_check_in_is_refused_read_only() {
     let (service, db) = fixture();
     let peer = PeerIdentity::from_kernel(501);
     let parent = with_fingerprint(CallerClaim {
+        host: crate::test_support::test_host_locator(),
         harness: hermes(),
         native_session: NativeSessionId::new("hermes-parent"),
         ..claim()
@@ -3480,6 +3503,7 @@ fn hermes_child_check_in_is_refused_read_only() {
         1
     );
     let child_cli = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         native_session: NativeSessionId::new("hermes-child"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000002"),
         ..parent.clone()
@@ -3571,6 +3595,7 @@ fn binding_event_claim_shapes_are_validated() {
         binding_event(top.clone(), SessionEnd, Some("child"), "j"),
         binding_event(
             CallerClaim {
+                host: crate::test_support::test_host_locator(),
                 liveness: Some(crate::protocol::authority::LivenessFingerprint {
                     pid: 0,
                     start: 1,

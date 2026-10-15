@@ -261,6 +261,7 @@ fn record(journal: &Journal, plan: DeliveryPlan) -> IntentRef {
     journal
         .record(
             super::super::journal::IntentScope::Cooperative {
+                host: crate::test_support::test_host_locator(),
                 instance: claim.instance.clone(),
                 seat: claim.seat.clone(),
             },
@@ -1767,6 +1768,7 @@ fn actor_prerequisite_retained_human_delivery_refuses_before_canonical_or_cleanu
     let reference = journal
         .record(
             super::super::journal::IntentScope::Cooperative {
+                host: crate::test_support::test_host_locator(),
                 instance: claim.instance.clone(),
                 seat: claim.seat.clone(),
             },

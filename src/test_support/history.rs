@@ -101,6 +101,7 @@ impl Actor {
     fn claim(&self) -> CallerClaim {
         CallerClaim {
             instance: self.instance.clone(),
+            host: crate::test_support::test_host_locator(),
             seat: self.seat.clone(),
             binding_generation: self.binding_generation,
             role: CallerRole::TopLevel,

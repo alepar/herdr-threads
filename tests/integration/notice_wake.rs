@@ -97,6 +97,7 @@ impl Fixture {
     fn claim(&self, seat: &str) -> CallerClaim {
         let (generation, execution): (i64, String) = self.db.query_row("SELECT generation,execution_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",[seat],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
         CallerClaim {
+            host: herdr_threads::test_support::test_host_locator(),
             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new(seat),
             binding_generation: generation as u64,

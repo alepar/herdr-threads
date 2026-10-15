@@ -404,13 +404,21 @@ impl MutationSpec {
                 | Self::FreshSeat(_)
                 | Self::Invite { operator: true, .. }
         );
+        // The target-bearing commands carry the caller's Herdr server next to their target; they
+        // need no claim of their own, so the invocation's claim supplies it.
+        let host = claim.as_ref().map(|claim| claim.host.clone());
         let claim = if needs_claim {
             Some(claim.ok_or_else(|| invalid("native caller context required"))?)
         } else {
             None
         };
+        let target_host = || host.clone().ok_or_else(|| invalid("host locator required"));
         let command = match self {
-            Self::Resolve(target) => WireCommand::ResolveSeat(ResolveSeat { target, operation }),
+            Self::Resolve(target) => WireCommand::ResolveSeat(ResolveSeat {
+                target,
+                host: target_host()?,
+                operation,
+            }),
             Self::Create { name, topic, goal } => WireCommand::CreateThread(CreateThread {
                 name,
                 topic,
@@ -549,6 +557,7 @@ impl MutationSpec {
             Self::Rebind { seat, pane } => WireCommand::OperatorRebind(OperatorRebind {
                 seat,
                 target: pane,
+                host: target_host()?,
                 operation,
             }),
             Self::Retire(seat) => {
@@ -564,11 +573,13 @@ impl MutationSpec {
             } => WireCommand::OperatorReplace(crate::protocol::commands::OperatorReplace {
                 seat,
                 target: pane,
+                host: target_host()?,
                 replace,
                 operation,
             }),
             Self::FreshSeat(pane) => WireCommand::OperatorFreshSeat(OperatorFreshSeat {
                 target: pane,
+                host: target_host()?,
                 operation,
             }),
         };

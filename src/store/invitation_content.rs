@@ -2927,6 +2927,7 @@ pub(super) fn refresh(
     };
     let claim = CallerClaim {
         instance: instance.into(),
+        host: super::hosts::primary_claim_host(db),
         seat: seat.clone(),
         binding_generation: generation,
         role: CallerRole::TopLevel,

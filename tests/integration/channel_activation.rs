@@ -287,6 +287,7 @@ fn channel_activation_cli_complete_removal_failure_archived_binding_retry_is_cle
     let reference = journal
         .record(
             IntentScope::Cooperative {
+                host: claim.host.clone(),
                 instance: claim.instance.clone(),
                 seat: claim.seat.clone(),
             },

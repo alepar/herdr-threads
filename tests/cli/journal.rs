@@ -20,6 +20,7 @@ fn temp() -> std::path::PathBuf {
 }
 fn claim() -> CallerClaim {
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "i".into(),
         seat: SeatId::new("legacy-fixture"),
         binding_generation: 0,
@@ -149,6 +150,7 @@ fn resolve_seat_uses_only_service_allocation_scope_and_stable_key() {
         target: target.clone(),
     };
     let semantic = SemanticMutation::ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: target.clone(),
     };
     assert!(journal.record(scope(), semantic.clone(), 1).is_err());
@@ -588,6 +590,7 @@ fn mismatched_operator_user_cannot_submit_or_remove_intent() {
         .record(
             admin.clone(),
             SemanticMutation::OperatorFreshSeat {
+                host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("target-1"),
             },
             44,
@@ -997,6 +1000,7 @@ fn new_resolution_discards_only_definitively_rejected_first_submission() {
         ApiError::new(code, "fixture")
     }
     let resolve = || SemanticMutation::ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("w4:p1"),
     };
     let allocation = || IntentScope::ServiceAllocation {
@@ -1082,6 +1086,7 @@ fn allocator_lock_leaf_symlink_is_refused() {
 
 fn continuity_semantic(target: &str, event_id: &str) -> SemanticMutation {
     SemanticMutation::ContinuityCheckIn {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new(target),
         harness: Harness::Claude,
         native_session: NativeSessionId::new("sess-1"),
@@ -1163,6 +1168,7 @@ fn continuity_intent_round_trips_and_is_found_by_instance_and_target() {
     assert_eq!(
         command,
         Command::ContinuityCheckIn(ContinuityCheckIn {
+            host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("w1:p1"),
             harness: Harness::Claude,
             native_session: NativeSessionId::new("sess-1"),
@@ -1221,6 +1227,7 @@ fn continuity_intent_refuses_foreign_scope_and_non_resume_source() {
                 continuity_scope("i1", "w1:p1"),
                 SemanticMutation::ContinuityCheckIn {
                     target,
+                    host: crate::test_support::test_host_locator(),
                     harness,
                     native_session,
                     source: "startup".into(),
@@ -1308,6 +1315,7 @@ fn scans_skip_fifo_symlink_and_garbage_entries() {
     symlink(journal.path(&real), &link_path).unwrap();
 
     let cooperative = IntentScope::Cooperative {
+        host: crate::test_support::test_host_locator(),
         instance: "i".into(),
         seat: SeatId::new("legacy-fixture"),
     };
@@ -1504,6 +1512,7 @@ fn invitation_rejection_journal_freezes_exact_id_reason_and_binding() {
     let reference = journal
         .record(
             IntentScope::Cooperative {
+                host: crate::test_support::test_host_locator(),
                 instance: "i".into(),
                 seat: claim().seat,
             },
@@ -1588,6 +1597,7 @@ fn user_intent_send_retry_preserves_recorded_claim() {
         let semantic = crate::cli::cooperative_semantic(spec).unwrap();
         let frozen = SemanticMutation::freeze(semantic, claim()).unwrap();
         let selected_scope = IntentScope::Cooperative {
+            host: crate::test_support::test_host_locator(),
             instance: "i".into(),
             seat: claim().seat,
         };
@@ -1626,9 +1636,9 @@ fn user_intent_send_retry_preserves_recorded_claim() {
 
 #[test]
 fn topology_contract_legacy_handoff_bytes_and_digest_unchanged() {
-    const BODY: &str = r#"{"kind":"frozen","claim":{"instance":"i","seat":"legacy-fixture","binding_generation":0,"role":"top_level","harness":"codex","native_session":"session-secret","execution":"execution-secret","target":"target-secret"},"mutation":{"kind":"handoff","request":{"thread":"thread-1","thread_name":null,"topic":null,"goal":null,"body":"work","launch":{"target":"target-2","harness":"Codex","harness_binary":"/bin/codex","argv":["--model","fixed"],"name":"peer","pane_label":null}},"context":{"state_dir":"/state","host":"/host.sock"},"recipient":"recipient","create_key":"create","invite_key":"invite","send_key":"send"}}"#;
-    const DIGEST: &str = r#"787970572282c2ae3f6c165411d223fb41429b4c043ee39f0163d225a15c5bad"#;
-    const COMMAND: &str = r#"{"kind":"complete_handoff","args":{"identity":{"compound":"compound","digest":"787970572282c2ae3f6c165411d223fb41429b4c043ee39f0163d225a15c5bad","claim":{"instance":"i","seat":"legacy-fixture","binding_generation":0,"role":"top_level","harness":"codex","native_session":"session-secret","execution":"execution-secret","target":"target-secret"},"thread":"thread-1","recipient":"recipient","create_key":"create","invite_key":"invite","send_key":"send"},"operation":"complete"}}"#;
+    const BODY: &str = r#"{"kind":"frozen","claim":{"instance":"i","host":"/host.sock","seat":"legacy-fixture","binding_generation":0,"role":"top_level","harness":"codex","native_session":"session-secret","execution":"execution-secret","target":"target-secret"},"mutation":{"kind":"handoff","request":{"thread":"thread-1","thread_name":null,"topic":null,"goal":null,"body":"work","launch":{"target":"target-2","harness":"Codex","harness_binary":"/bin/codex","argv":["--model","fixed"],"name":"peer","pane_label":null}},"context":{"state_dir":"/state","host":"/host.sock"},"recipient":"recipient","create_key":"create","invite_key":"invite","send_key":"send"}}"#;
+    const DIGEST: &str = r#"1a71c0a4fda0210899cfe722f6ef9b75064b74902bfe25232bb8537b3f74fcda"#;
+    const COMMAND: &str = r#"{"kind":"complete_handoff","args":{"identity":{"compound":"compound","digest":"1a71c0a4fda0210899cfe722f6ef9b75064b74902bfe25232bb8537b3f74fcda","claim":{"instance":"i","host":"/host.sock","seat":"legacy-fixture","binding_generation":0,"role":"top_level","harness":"codex","native_session":"session-secret","execution":"execution-secret","target":"target-secret"},"thread":"thread-1","recipient":"recipient","create_key":"create","invite_key":"invite","send_key":"send"},"operation":"complete"}}"#;
     const RESULT: &str = r#"{"compound":"compound","thread":"thread-1","state":"completed"}"#;
     let semantic: SemanticMutation = serde_json::from_str(BODY).unwrap();
     assert_eq!(serde_json::to_string(&semantic).unwrap(), BODY);
@@ -1646,6 +1656,7 @@ fn topology_contract_legacy_handoff_bytes_and_digest_unchanged() {
     let header = IntentHeader {
         reference: reference.clone(),
         scope: IntentScope::Cooperative {
+            host: crate::test_support::test_host_locator(),
             instance: "i".into(),
             seat: claim().seat,
         },
@@ -1685,6 +1696,7 @@ fn topology_contract_new_journal_variants_roundtrip_and_validate() {
     let journal = Journal::open(&dir).unwrap();
     let claim = fixture::claim();
     let scope = IntentScope::Cooperative {
+        host: crate::test_support::test_host_locator(),
         instance: claim.instance.clone(),
         seat: claim.seat.clone(),
     };
@@ -1740,11 +1752,24 @@ fn topology_contract_new_journal_variants_roundtrip_and_validate() {
             let plan = &mut changed["mutation"];
             match replacement {
                 "namespace" => {
-                    if plan["kind"] == "handoff_bootstrap" {
-                        plan["payload"]["handoff"]["namespace"]["host_endpoint"] =
+                    // A foreign host_endpoint no longer reaches the digest check: the frozen
+                    // claim's host must equal it, so validation refuses it first.
+                    let mut refused: serde_json::Value = serde_json::from_str(body).unwrap();
+                    let foreign_host = &mut refused["mutation"];
+                    if foreign_host["kind"] == "handoff_bootstrap" {
+                        foreign_host["payload"]["handoff"]["namespace"]["host_endpoint"] =
                             "/foreign.sock".into();
                     } else {
-                        plan["payload"]["namespace"]["host_endpoint"] = "/foreign.sock".into();
+                        foreign_host["payload"]["namespace"]["host_endpoint"] =
+                            "/foreign.sock".into();
+                    }
+                    let refused: SemanticMutation = serde_json::from_value(refused).unwrap();
+                    assert!(refused.validate().is_err(), "foreign host must be refused");
+                    if plan["kind"] == "handoff_bootstrap" {
+                        plan["payload"]["handoff"]["namespace"]["state_dir"] =
+                            "/foreign-state".into();
+                    } else {
+                        plan["payload"]["namespace"]["state_dir"] = "/foreign-state".into();
                     }
                 }
                 "body" => {
@@ -1781,6 +1806,7 @@ fn topology_contract_new_journal_variants_roundtrip_and_validate() {
         }
         fs::write(journal.path(&reference), raw).unwrap();
         let foreign = IntentScope::Cooperative {
+            host: crate::test_support::test_host_locator(),
             instance: "foreign".into(),
             seat: claim.seat.clone(),
         };
@@ -1790,7 +1816,7 @@ fn topology_contract_new_journal_variants_roundtrip_and_validate() {
     for digest in &digests {
         assert_ne!(
             digest,
-            "787970572282c2ae3f6c165411d223fb41429b4c043ee39f0163d225a15c5bad"
+            "1a71c0a4fda0210899cfe722f6ef9b75064b74902bfe25232bb8537b3f74fcda"
         );
     }
     assert_ne!(
@@ -1923,6 +1949,7 @@ fn retry_preflight_retained_human_root_refuses_before_connect() {
     let reference = journal
         .record(
             IntentScope::Cooperative {
+                host: crate::test_support::test_host_locator(),
                 instance: human.instance,
                 seat: human.seat,
             },
@@ -1979,6 +2006,7 @@ fn original_actor_frozen_agent_and_human() {
         let mut original = claim();
         original.harness = harness;
         let scope = IntentScope::Cooperative {
+            host: crate::test_support::test_host_locator(),
             instance: original.instance.clone(),
             seat: original.seat.clone(),
         };
@@ -2008,16 +2036,19 @@ fn original_actor_operator_and_native_lifecycle() {
     };
     let mutations = [
         SemanticMutation::OperatorRebind {
+            host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s"),
             target: target.clone(),
         },
         SemanticMutation::OperatorFreshSeat {
+            host: crate::test_support::test_host_locator(),
             target: target.clone(),
         },
         SemanticMutation::OperatorRetire {
             seat: SeatId::new("s"),
         },
         SemanticMutation::OperatorReplace {
+            host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s"),
             target: target.clone(),
             replace: SeatId::new("other"),
@@ -2045,6 +2076,7 @@ fn original_actor_operator_and_native_lifecycle() {
                 target: target.clone()
             },
             &SemanticMutation::ResolveSeat {
+                host: crate::test_support::test_host_locator(),
                 target: target.clone()
             }
         )
@@ -2053,6 +2085,7 @@ fn original_actor_operator_and_native_lifecycle() {
     );
     for harness in [Harness::Claude, Harness::Codex] {
         let continuity = SemanticMutation::ContinuityCheckIn {
+            host: crate::test_support::test_host_locator(),
             target: target.clone(),
             harness,
             native_session: NativeSessionId::new("session"),
@@ -2077,6 +2110,7 @@ fn original_actor_operator_and_native_lifecycle() {
         let mut human = claim();
         human.harness = Harness::Human;
         let cooperative = IntentScope::Cooperative {
+            host: crate::test_support::test_host_locator(),
             instance: human.instance.clone(),
             seat: human.seat.clone(),
         };
@@ -2102,11 +2136,13 @@ fn original_actor_rejects_scope_claim_contradictions() {
     let frozen = SemanticMutation::freeze(send(), original.clone()).unwrap();
     assert!(classify_original_actor(&scope(), &frozen).is_err());
     let wrong_seat = IntentScope::Cooperative {
+        host: crate::test_support::test_host_locator(),
         instance: original.instance.clone(),
         seat: SeatId::new("other"),
     };
     assert!(classify_original_actor(&wrong_seat, &frozen).is_err());
     let wrong_instance = IntentScope::Cooperative {
+        host: crate::test_support::test_host_locator(),
         instance: "other".into(),
         seat: original.seat.clone(),
     };
@@ -2119,6 +2155,7 @@ fn original_actor_rejects_scope_claim_contradictions() {
     let mut child = original.clone();
     child.role = crate::protocol::authority::CallerRole::Subagent;
     let scope = IntentScope::Cooperative {
+        host: crate::test_support::test_host_locator(),
         instance: original.instance,
         seat: original.seat,
     };
@@ -2128,6 +2165,7 @@ fn original_actor_rejects_scope_claim_contradictions() {
     };
     assert!(classify_original_actor(&scope, &malformed).is_err());
     let continuity = SemanticMutation::ContinuityCheckIn {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("pane"),
         harness: Harness::Human,
         native_session: NativeSessionId::new("session"),
@@ -2190,6 +2228,7 @@ fn retry_preflight_legacy_operator_preserves_replay_keys() {
         .record(
             authority.clone(),
             SemanticMutation::OperatorFreshSeat {
+                host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("pane"),
             },
             1,
@@ -2220,6 +2259,7 @@ fn retry_preflight_legacy_operator_preserves_replay_keys() {
         OriginalActor::HumanOrOperator
     );
     let command = Command::OperatorFreshSeat(crate::protocol::commands::OperatorFreshSeat {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("pane"),
         operation: reference.operation.clone(),
     });
@@ -2326,6 +2366,7 @@ fn human_guidance_original_retry_ignores_opposite_rendering_view() {
         let mut original = claim();
         original.harness = harness;
         let authority = IntentScope::Cooperative {
+            host: crate::test_support::test_host_locator(),
             instance: original.instance.clone(),
             seat: original.seat.clone(),
         };

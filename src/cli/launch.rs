@@ -258,6 +258,7 @@ pub struct DaemonSeatResolver<'a> {
     client: &'a LocalSocketClient,
     journal: &'a Journal,
     instance: crate::node::NodeUuid,
+    host: crate::protocol::ids::HostLocator,
     clock: &'a dyn Clock,
 }
 
@@ -266,12 +267,14 @@ impl<'a> DaemonSeatResolver<'a> {
         client: &'a LocalSocketClient,
         journal: &'a Journal,
         instance: crate::node::NodeUuid,
+        host: crate::protocol::ids::HostLocator,
         clock: &'a dyn Clock,
     ) -> Self {
         Self {
             client,
             journal,
             instance,
+            host,
             clock,
         }
     }
@@ -283,6 +286,7 @@ pub(crate) fn resolve_seat(
     client: &LocalSocketClient,
     journal: &Journal,
     instance: crate::node::NodeUuid,
+    host: &crate::protocol::ids::HostLocator,
     target: &HostTargetId,
     clock: &dyn Clock,
     budget: &CallBudget,
@@ -296,6 +300,7 @@ pub(crate) fn resolve_seat(
         },
         SemanticMutation::ResolveSeat {
             target: target.clone(),
+            host: host.clone(),
         },
         clock.utc_now().0,
         || {
@@ -353,6 +358,7 @@ impl LaunchSeatResolver for DaemonSeatResolver<'_> {
             self.client,
             self.journal,
             self.instance,
+            &self.host,
             target,
             self.clock,
             budget,

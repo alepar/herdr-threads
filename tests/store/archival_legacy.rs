@@ -39,6 +39,18 @@ pub(super) fn source() -> (Temp, NodePaths, Source) {
     );
     (dir, paths, source)
 }
+/// The original claim comes from the pane's Herdr server, the namespace's `host_endpoint`.
+fn bind_host(id: &mut herdr_threads::protocol::handoff::BootstrapIdentity) {
+    id.claim.host = herdr_threads::protocol::ids::HostLocator::parse(
+        id.payload.handoff.namespace.host_endpoint.to_str().unwrap(),
+    )
+    .unwrap();
+    id.scope = herdr_threads::cli::journal::IntentScope::Cooperative {
+        instance: id.claim.instance.clone(),
+        host: id.claim.host.clone(),
+        seat: id.claim.seat.clone(),
+    };
+}
 // Complete a bounded scan, without treating a partial page as absence or a
 // veto. Tests of the page boundary below continue to call scan directly.
 fn complete_scan(source: &mut Source) -> herdr_threads::archival_legacy::Scan {
@@ -151,7 +163,15 @@ fn legacy_compound_with_body(
         },
         protocol::ids::*,
     };
-    let id = super::handoff_fences::identity();
+    let mut id = super::handoff_fences::identity();
+    // The original claim comes from the pane's Herdr server: the context's host.
+    if let Some(host) = context
+        .host
+        .as_ref()
+        .and_then(|host| herdr_threads::protocol::ids::HostLocator::parse(host.clone()).ok())
+    {
+        id.claim.host = host;
+    }
     let plan = HandoffPlan {
         startup_input: None,
         bootstrap_input: None,
@@ -182,6 +202,7 @@ fn legacy_compound_with_body(
         .unwrap()
         .record(
             IntentScope::Cooperative {
+                host: id.claim.host.clone(),
                 instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 seat: id.claim.seat.clone(),
             },
@@ -308,6 +329,7 @@ fn archival_legacy_valid_noncompound_is_a_transient_coverage_veto() {
     let reference = journal
         .record(
             IntentScope::Cooperative {
+                host: herdr_threads::test_support::test_host_locator(),
                 instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 seat: id.claim.seat.clone(),
             },
@@ -480,6 +502,7 @@ fn modern_compound_with_body(
         state_dir: current.state_dir.unwrap().into(),
         host_endpoint: current.host.unwrap().into(),
     };
+    bind_host(&mut id);
     if new_thread {
         id.payload.handoff.channel = HandoffChannel::New {
             name: Some("literal-name".into()),
@@ -1049,6 +1072,7 @@ fn linked_archival_fixture(
         state_dir: ctx.state_dir.unwrap().into(),
         host_endpoint: ctx.host.unwrap().into(),
     };
+    bind_host(&mut id);
     if new_thread {
         id.payload.handoff.channel = HandoffChannel::New {
             name: None,
@@ -1935,6 +1959,7 @@ fn archival_legacy_main539_join_intent_vetoes_without_authorizing_or_rewriting()
     let reference = journal
         .record(
             IntentScope::Cooperative {
+                host: herdr_threads::test_support::test_host_locator(),
                 instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 seat: id.claim.seat.clone(),
             },

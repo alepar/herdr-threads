@@ -1337,6 +1337,7 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
             .unwrap()
     );
     let request = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: fresh.target.clone(),
         operation: OperationId::new("allocate-shell"),
     };

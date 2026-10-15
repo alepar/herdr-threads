@@ -426,6 +426,7 @@ impl World {
             )
             .expect("the seat's lifecycle check-in opened its binding");
         herdr_threads::protocol::authority::CallerClaim {
+            host: herdr_threads::test_support::test_host_locator(),
             instance: instance.to_string(),
             seat: SeatId::new(seat),
             binding_generation: generation as u64,

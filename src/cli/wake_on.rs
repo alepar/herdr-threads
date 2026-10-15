@@ -44,11 +44,14 @@ pub fn render(state: &WakeOnState, set: bool) -> String {
 }
 
 /// Run `wake-on` as the selected seat.
+// Allowed: the parsed action and selected seat, node paths and instance, claim host, client, clock and writer.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run<C: LocalClient + ?Sized, W: Write>(
     parsed: ParsedCli,
     selection: &CooperativeSelection,
     paths: &NodePaths,
     instance: crate::node::NodeUuid,
+    host: &crate::protocol::ids::HostLocator,
     client: &C,
     clock: &dyn Clock,
     writer: &mut W,
@@ -72,7 +75,7 @@ pub(crate) fn run<C: LocalClient + ?Sized, W: Write>(
                     "subagents cannot set wake-on; only the top-level agent does",
                 ));
             }
-            let claim = current_claim(selection, paths, instance, client, &parsed, clock)?;
+            let claim = current_claim(selection, paths, instance, host, client, &parsed, clock)?;
             Command::SetWakeOn(SetWakeOn {
                 value: *value,
                 operation: OperationId::new(uuid::Uuid::new_v4().to_string()),
@@ -103,6 +106,7 @@ fn current_claim<C: LocalClient + ?Sized>(
     selection: &CooperativeSelection,
     paths: &NodePaths,
     instance: crate::node::NodeUuid,
+    host: &crate::protocol::ids::HostLocator,
     client: &C,
     parsed: &ParsedCli,
     clock: &dyn Clock,
@@ -127,7 +131,7 @@ fn current_claim<C: LocalClient + ?Sized>(
     // An agent caller acts as its harness session (decision 15): its context is derived from the
     // environment at the seat's mapping generation, never the saved pane context.
     let contexts = super::caller_journal(
-        super::seat_contexts(paths, instance, &selection.seat)?,
+        super::seat_contexts(paths, instance, host, &selection.seat)?,
         instance,
         selection,
         generation,

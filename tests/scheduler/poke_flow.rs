@@ -1098,6 +1098,7 @@ fn receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path(
             ],
             operation: crate::protocol::ids::OperationId::new("final-original-sender-ack"),
             claim: crate::protocol::authority::CallerClaim {
+                host: crate::test_support::test_host_locator(),
                 instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 seat: SeatId::new("recipient"),
                 binding_generation: 1,

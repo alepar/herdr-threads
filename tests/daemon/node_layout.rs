@@ -346,6 +346,7 @@ fn host_needing_request_on_store_only_is_host_unavailable() {
     let refused = client
         .call(
             Command::ResolveSeat(ResolveSeat {
+                host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new("p"),
                 operation: OperationId::new("op"),
             }),
