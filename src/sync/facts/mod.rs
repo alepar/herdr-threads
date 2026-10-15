@@ -25,8 +25,38 @@
 //! 5. Handlers never write `wake_work` and the other delivery tables
 //!    directly; they use DeliveryTail.
 
+//! # Module layout
+//!
+//! The v1 kinds land in six entity-grouped modules, one `FactKind` type per
+//! kind and one `.with::<K>()` per kind in [`FactRegistry::builtins`], all
+//! `MAJOR = 1`. The modules are declared here and hold no kinds yet; each leaf
+//! task adds its own.
+//!
+//! - `seat`: `seat.created`, `seat.retired`.
+//! - `thread`: `thread.created`, `thread.direct`, `thread.register`.
+//! - `invitation`: `invitation.created`, `invitation.answered`.
+//! - `membership`: `membership.joined`, `membership.left`.
+//! - `message`: `message.sent`.
+//! - `receipt`: `receipt.settled`.
+//! - `payload`: the shared payload value types and `EntityKey` builders.
+//!
+//! Every handler is the same shape: decode, build a `MaterializeInput` from
+//! the `ApplyContext` with [`with_input`], call its one materializer (a
+//! `pub` function in the table-owning `src/store` file, so `src/sync` holds no
+//! SQL), and map errors with [`FactError::from_api`] (which `with_input`
+//! does). Handlers call `materialize::require_author` first. A new kind is one
+//! type in its entity module, one registry entry and one materializer; the
+//! engine, the registry and this layout do not change.
+
+pub mod invitation;
+pub mod membership;
+pub mod message;
 mod node_genesis;
 mod node_retag;
+pub mod payload;
+pub mod receipt;
+pub mod seat;
+pub mod thread;
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -36,6 +66,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::protocol::results::{ApiError, ErrorCode};
+use crate::store::materialize::MaterializeInput;
 use crate::sync::EntityKey;
 
 pub use crate::store::apply::{ApplyContext, Provenance};
@@ -69,6 +100,41 @@ impl FactError {
             _ => FactError::Rejected(error),
         }
     }
+}
+
+/// Builds the [`MaterializeInput`] of the entry being applied from its
+/// [`ApplyContext`] and runs `f` with it, mapping the materializer's
+/// `ApiError` with [`FactError::from_api`].
+///
+/// Owns: the one translation from `ApplyContext` (`decision`, `decision_seq`,
+/// `origin.node`, `origin_ms()`, `is_local_origin()`, `provenance()`,
+/// `delivery_suppressed`) to the store-side input. Must not: decide anything
+/// itself (suppression is the context's rule) or write tables. Every kind
+/// handler goes through it, so `src/store` never reads `ApplyContext`.
+pub fn with_input<R>(
+    cx: &ApplyContext<'_>,
+    f: impl FnOnce(&MaterializeInput<'_>) -> Result<R, ApiError>,
+) -> Result<R, FactError> {
+    let out_of_range = |what: &str| {
+        FactError::Store(ApiError::new(
+            ErrorCode::StoreCorrupt,
+            format!("{what} out of range"),
+        ))
+    };
+    let decision_seq = u64::try_from(cx.decision_seq).map_err(|_| out_of_range("decision_seq"))?;
+    let origin_ms = i64::try_from(cx.origin_ms()).map_err(|_| out_of_range("origin ms"))?;
+    let provenance = cx.provenance().as_str();
+    let suppress = |tx: &Transaction<'_>, key: &EntityKey| cx.delivery_suppressed(tx, key);
+    let input = MaterializeInput {
+        decision: cx.decision,
+        decision_seq,
+        origin_node: cx.origin.node,
+        origin_ms,
+        local_origin: cx.is_local_origin(),
+        provenance: &provenance,
+        suppress: &suppress,
+    };
+    f(&input).map_err(FactError::from_api)
 }
 
 /// One replicated fact kind.
