@@ -123,6 +123,35 @@ pub struct SessionDeps {
     pub check_canonical: bool,
 }
 
+impl SessionDeps {
+    /// Node-wide pieces for a registry nothing runs in: no handoff state, no
+    /// liveness worker, no mod channels, no remembered rows, nothing logged.
+    /// Fixtures that need a registry without a daemon build on it.
+    pub fn detached(store: Arc<dyn StorePort>, clock: Arc<dyn Clock>, node_uuid: String) -> Self {
+        Self {
+            store,
+            writer: Arc::new(FairWriter::new(32)),
+            kicks: Arc::new(CommitKicks::default()),
+            clock,
+            node_uuid,
+            boot: uuid::Uuid::new_v4(),
+            state_dir: None,
+            retry: Default::default(),
+            liveness: None,
+            mod_channels: Arc::new(crate::ports::NoModChannels),
+            poke_capabilities: Arc::new(crate::ports::NoPokeCapabilities),
+            hook_pull: Arc::new(crate::ports::NoHookPullOutlook),
+            worker_slot: Arc::new(Mutex::new(Vec::new())),
+            stop: Cancellation::default(),
+            log: Arc::new(|_: &str| {}),
+            lane_log: None,
+            remembered: Arc::new(|_: &CallBudget| Ok(Vec::new())),
+            sweep_interval: DEFAULT_SWEEP_INTERVAL,
+            check_canonical: false,
+        }
+    }
+}
+
 /// One session lane: its status and its Pacer, for Health and archival.
 #[derive(Clone)]
 pub struct LaneHandle {
@@ -220,6 +249,57 @@ impl HostSession {
     pub fn is_stopped(&self) -> bool {
         self.stop.is_cancelled()
     }
+
+    /// A session over a caller-built identity, with no workers, for services
+    /// composed around one fixture host ([`HostSessions::prebuilt`]). Its
+    /// port is the identity's. A session without `bootstrap` refuses guarded
+    /// bootstrap observations.
+    pub fn prebuilt(
+        locator: HostLocator,
+        identity: Arc<OrdinaryIdentity>,
+        clock: Arc<dyn Clock>,
+        bootstrap: Option<BootstrapRuntime>,
+    ) -> Arc<Self> {
+        let stop = Cancellation::default();
+        let link = stop.on_cancel(Arc::new(|| {}));
+        let observer = bootstrap.as_ref().map_or_else(
+            || Arc::new(RefusedBootstrapObserver) as Arc<dyn BootstrapObserver>,
+            |runtime| Arc::clone(&runtime.observer),
+        );
+        let lane = |lane: Lane| LaneHandle {
+            lane,
+            status: Arc::new(WorkerStatus::default()),
+            pacer: Arc::new(Pacer::new(lane.name(), Arc::clone(&clock), stop.clone())),
+        };
+        Arc::new(Self {
+            host_id: identity.host_id(),
+            locator,
+            port: Arc::clone(identity.host_port()),
+            observer,
+            reachability: Arc::new(HostReachability::default()),
+            identity,
+            bootstrap,
+            evidence: Arc::new(HostEvidenceStatus::default()),
+            observation: lane(Lane::Observation),
+            wake: lane(Lane::Wakes),
+            stop,
+            _link: link,
+        })
+    }
+}
+
+/// The bootstrap observer of a prebuilt session that has no bootstrap
+/// runtime: every observation is refused.
+struct RefusedBootstrapObserver;
+
+impl BootstrapObserver for RefusedBootstrapObserver {
+    fn observe_bootstrap_target(
+        &self,
+        _: &crate::protocol::ids::HostTargetId,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<crate::ports::BootstrapPaneObservation, ApiError> {
+        Err(ApiError::unsupported("bootstrap observation unavailable"))
+    }
 }
 
 /// HostSessions: the registry of attached Herdr servers.
@@ -238,8 +318,8 @@ impl HostSession {
 /// session), or let one host's failure touch another's.
 /// Errors kept apart: `HostUnavailable` (no socket, cap, spawn failure),
 /// `InvalidRequest` (non-canonical), `StoreBusy` (lock wait past deadline).
-/// Role: lives for the daemon; it replaces `DomainService.current_target` and
-/// `DomainService.bootstrap`. New per-host workers go into `HostSession`.
+/// Role: lives for the daemon; `DomainService` reaches every host through it
+/// (`DomainService::attached_host`). New per-host workers go into `HostSession`.
 pub struct HostSessions {
     sessions: RwLock<BTreeMap<HostId, Arc<HostSession>>>,
     index: Arc<HostIndex>,
@@ -252,6 +332,8 @@ pub struct HostSessions {
     sweep_cursor: Mutex<Option<HostId>>,
     /// The first server `attach_startup` attached (see [`HostSessions::startup_primary`]).
     startup_first: Mutex<Option<HostId>>,
+    /// Set by [`HostSessions::prebuilt`]: the one session every locator names.
+    sole: Option<Arc<HostSession>>,
     stopped: AtomicBool,
     _sweep_link: Mutex<Option<CancelSubscription>>,
 }
@@ -282,9 +364,34 @@ impl HostSessions {
             sweep_stop,
             sweep_cursor: Mutex::new(None),
             startup_first: Mutex::new(None),
+            sole: None,
             stopped: AtomicBool::new(false),
             _sweep_link: Mutex::new(Some(link)),
         }
+    }
+
+    /// A registry over one prebuilt session, for fixtures: every locator
+    /// resolves to it and nothing attaches. The node-wide pieces are inert
+    /// (no workers, no remembered rows, nothing reachable to attach).
+    pub fn prebuilt(
+        session: Arc<HostSession>,
+        store: Arc<dyn StorePort>,
+        clock: Arc<dyn Clock>,
+        node_uuid: String,
+    ) -> Arc<Self> {
+        let deps = SessionDeps::detached(store, clock, node_uuid);
+        let factory = HostFactory {
+            build: Arc::new(|_| unreachable!("a prebuilt registry attaches nothing")),
+            exists: Arc::new(|_| false),
+        };
+        let mut sessions = Self::new(Arc::new(HostIndex::new()), factory, deps);
+        sessions
+            .sessions
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session.host_id, Arc::clone(&session));
+        sessions.sole = Some(session);
+        Arc::new(sessions)
     }
 
     pub fn get(&self, id: HostId) -> Option<Arc<HostSession>> {
@@ -340,6 +447,9 @@ impl HostSessions {
         budget: &CallBudget,
         canonical_check: bool,
     ) -> Result<Arc<HostSession>, ApiError> {
+        if let Some(sole) = &self.sole {
+            return Ok(Arc::clone(sole));
+        }
         if let Some(session) = self.by_locator(locator) {
             return Ok(session);
         }
@@ -602,8 +712,8 @@ impl HostSessions {
         self.start_sweep()
     }
 
-    /// The session the single-host service seams follow until dispatch routes by
-    /// claim host (ht-5fr.2.12): the hint's, else the first server startup
+    /// The session the node-wide seams without a claim host follow (Health,
+    /// archival, the advertised bootstrap capability): the hint's, else the first server startup
     /// attached (the most recently attached remembered one), else the lowest
     /// attached `host_id`; `None` when no server is attached.
     pub fn startup_primary(&self, hint: Option<&HostLocator>) -> Option<Arc<HostSession>> {

@@ -89,6 +89,11 @@ mod latency;
 #[cfg(feature = "test-support")]
 #[path = "integration/mod_delivery.rs"]
 mod mod_delivery;
+/// ht-5fr.2.12: dispatch by claim host over two fake Herdr servers: lazy attach, per-server
+/// wake workers and outage freeze, C1 across servers, and the hook in a pane of a second server.
+#[cfg(feature = "test-support")]
+#[path = "daemon/multi_host.rs"]
+mod multi_host;
 /// ht-p03.131: no test-spawned process outlives its run (panic, SIGTERM, SIGKILL).
 #[cfg(feature = "test-support")]
 #[path = "integration/no_leaks.rs"]

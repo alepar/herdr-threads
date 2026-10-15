@@ -1266,7 +1266,6 @@ fn compatible_old_software_stops_and_unresponsive_client_fails_without_pid_actio
         pid: std::process::id(),
         socket_device: 1,
         socket_inode: 1,
-        primary_host: None,
     };
     let budget = CallBudget {
         deadline: MonoInstant(100),

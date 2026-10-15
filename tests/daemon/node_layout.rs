@@ -11,7 +11,7 @@ use herdr_threads::{
     ports::LocalClient,
     protocol::{
         commands::{Command, ResolveSeat},
-        ids::{HostTargetId, OperationId},
+        ids::{HostLocator, HostTargetId, OperationId},
         results::{CommandResult, ErrorCode, Health},
         time::{CallBudget, Cancellation, Clock, MonoInstant},
     },
@@ -230,16 +230,53 @@ fn different_herdr_socket_paths_reach_the_same_descriptor() {
     node.stop();
 }
 
-/// Kills: the interim single-host guard letting a second claim host onto a
-/// daemon attached to another Herdr server (ht-5fr.2 removes the guard and
-/// this test with it).
+/// A Unix socket standing in for a Herdr server that exists but answers
+/// nothing: it accepts and drops every connection until dropped.
+struct SilentServer {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl SilentServer {
+    fn bind(path: &Path) -> Self {
+        let listener = std::os::unix::net::UnixListener::bind(path).expect("bind the fake server");
+        listener.set_nonblocking(true).unwrap();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            while !flag.load(std::sync::atomic::Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((connection, _)) => drop(connection),
+                    Err(_) => std::thread::sleep(Duration::from_millis(10)),
+                }
+            }
+        });
+        Self {
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for SilentServer {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Kills: a daemon (or a CLI in front of it) that serves one Herdr server and
+/// refuses a call from another, or one that attaches a second server at
+/// startup instead of when a call first names it.
 #[test]
-fn second_claim_host_gets_interim_host_unavailable() {
+fn second_claim_host_attaches_lazily() {
     let mut node = Node::new("nl-second-claim");
     let hint = node.iso.socket_path("herdr-a.sock");
     let health = node.start(Some(&hint));
     assert_eq!(health.hosts, 1, "the hinted host is attached: {health:?}");
-    // The attached host's own claim passes.
+    // The attached host's own claim and a second server's claim both pass.
     let own = node
         .iso
         .command(BIN)
@@ -254,14 +291,46 @@ fn second_claim_host_gets_interim_host_unavailable() {
         "{}",
         String::from_utf8_lossy(&own.stderr)
     );
+    let second = node.iso.socket_path("herdr-b.sock");
     let other = node.cli_from("herdr-b.sock", &["daemon", "ensure"]);
-    assert_eq!(other.status.code(), Some(3), "{other:?}");
-    let line = String::from_utf8_lossy(&other.stderr).into_owned();
-    assert!(line.contains("node daemon serves Herdr server"), "{line}");
-    assert!(line.contains("herdr-a.sock"), "{line}");
-    assert!(line.contains("herdr-b.sock is not attached"), "{line}");
-    assert!(line.contains("(host_unavailable)"), "{line}");
-    assert_eq!(line.trim().lines().count(), 1, "one line: {line}");
+    assert!(
+        other.status.success(),
+        "a second claim host is not refused: {}",
+        String::from_utf8_lossy(&other.stderr)
+    );
+    assert_eq!(
+        node.health("herdr-b.sock").expect("health").hosts,
+        1,
+        "a call that names no pane attaches nothing"
+    );
+    // The second server comes up; the first call that names it attaches it.
+    let _server = SilentServer::bind(&second);
+    let paths = NodePaths::resolve(&fs::canonicalize(&node.state).unwrap()).unwrap();
+    let descriptor = read_descriptor(&paths, node.node_json().node_uuid).unwrap();
+    let clock: Arc<dyn Clock> = Arc::new(herdr_threads::app::SystemClock::new());
+    let client = LocalSocketClient::new(
+        descriptor.endpoint.clone(),
+        Arc::clone(&clock),
+        descriptor.node_uuid,
+        Some(descriptor.boot_id),
+    );
+    let budget = CallBudget {
+        deadline: MonoInstant(clock.monotonic_now().0 + 10_000),
+        cancellation: Cancellation::default(),
+    };
+    // The silent server answers no observation, so the call itself fails; the
+    // attach before it is what this test measures.
+    let _ = client.call(
+        Command::ResolveSeat(ResolveSeat {
+            host: HostLocator::parse(second.to_string_lossy().into_owned()).unwrap(),
+            target: HostTargetId::new("p"),
+            operation: OperationId::new("op"),
+        }),
+        &budget,
+    );
+    let after = node.health("herdr-b.sock").expect("health after");
+    assert_eq!(after.hosts, 2, "{after:?}");
+    assert_eq!(after.boot_id, health.boot_id, "the same daemon served both");
     node.stop();
 }
 
@@ -316,9 +385,9 @@ fn missing_key_with_store_fails_with_remedy() {
     );
 }
 
-/// Kills: a store-only daemon answering a host-bound request with anything but
-/// `HostUnavailable` "no Herdr server attached" (the CLI's claim guard stops a
-/// CLI call earlier, so this speaks the protocol to the daemon directly).
+/// Kills: a store-only daemon answering a host-bound request for a server
+/// that is not there with anything but `HostUnavailable` naming that server
+/// (this speaks the protocol to the daemon directly).
 #[test]
 fn host_needing_request_on_store_only_is_host_unavailable() {
     let mut node = Node::new("nl-host-needed");
@@ -327,7 +396,6 @@ fn host_needing_request_on_store_only_is_host_unavailable() {
     let paths = NodePaths::resolve(&fs::canonicalize(&node.state).unwrap()).unwrap();
     let uuid = node.node_json().node_uuid;
     let descriptor = read_descriptor(&paths, uuid).unwrap();
-    assert_eq!(descriptor.primary_host, None);
     let clock: Arc<dyn Clock> = Arc::new(herdr_threads::app::SystemClock::new());
     let client = LocalSocketClient::new(
         descriptor.endpoint.clone(),
@@ -354,6 +422,12 @@ fn host_needing_request_on_store_only_is_host_unavailable() {
         )
         .unwrap_err();
     assert_eq!(refused.code, ErrorCode::HostUnavailable, "{refused:?}");
-    assert_eq!(refused.detail, "no Herdr server attached");
+    assert_eq!(
+        refused.detail,
+        format!(
+            "Herdr server {} not reachable",
+            herdr_threads::test_support::test_host_locator().as_str()
+        )
+    );
     node.stop();
 }

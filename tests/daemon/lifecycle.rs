@@ -68,41 +68,6 @@ impl LocalService for StateHealthService {
     }
 }
 
-/// [`run_owner`] attached to `host`, as the elected daemon is: its descriptor
-/// publishes `primary_host`, so a client with that claim host passes the
-/// interim guard.
-// Allowed: run_owner's inputs plus the attached host.
-#[allow(clippy::too_many_arguments)]
-async fn run_owner_on_host<S, R, D>(
-    paths: &NodePaths,
-    host: PathBuf,
-    handler: Arc<dyn LocalService>,
-    clock: Arc<dyn Clock>,
-    shutdown: Cancellation,
-    sink: S,
-    limits: BufferLimits,
-    on_ready: R,
-    on_drained: D,
-) -> io::Result<bool>
-where
-    S: DiagnosticSink,
-    R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
-    D: FnOnce() -> io::Result<()>,
-{
-    run_owner_attached(
-        paths,
-        Some(host),
-        clock,
-        shutdown,
-        sink,
-        limits,
-        move |_, _, _| Ok(handler),
-        on_ready,
-        move || async move { on_drained() },
-    )
-    .await
-}
-
 async fn ensure_against_state(state: HealthState) -> Result<EndpointDescriptor, ApiError> {
     let (root, context, paths) = fixture();
     let shutdown = Cancellation::default();
@@ -116,11 +81,9 @@ async fn ensure_against_state(state: HealthState) -> Result<EndpointDescriptor, 
     let ready = Arc::new(AtomicUsize::new(0));
     let ready_seen = ready.clone();
     let stop = shutdown.clone();
-    let host = context.host_endpoint.clone().unwrap();
     let task = tokio::spawn(async move {
-        run_owner_on_host(
+        run_owner(
             &paths,
-            host,
             service,
             Arc::new(TestClock),
             stop,
@@ -574,11 +537,9 @@ async fn healthy_matching_owner_is_reused_without_launch() {
     let ready = Arc::new(AtomicUsize::new(0));
     let ready_seen = ready.clone();
     let stop = shutdown.clone();
-    let host = context.host_endpoint.clone().unwrap();
     let task = tokio::spawn(async move {
-        run_owner_on_host(
+        run_owner(
             &paths,
-            host,
             service,
             Arc::new(TestClock),
             stop,
@@ -1071,9 +1032,8 @@ fn subprocess_owner_fixture() {
             boot: boot.clone(),
             calls: AtomicUsize::new(0),
         });
-        run_owner_on_host(
+        run_owner(
             &paths,
-            context.host_endpoint.clone().unwrap(),
             service,
             Arc::new(TestClock),
             shutdown,
@@ -1255,59 +1215,6 @@ async fn racing_ensure_callers_converge_and_crash_releases_owner() {
     assert!(!recovered.endpoint.exists());
     assert!(!paths.descriptor_path.exists());
     std::fs::remove_dir_all(root).unwrap();
-}
-
-fn descriptor_serving(primary_host: Option<&str>) -> EndpointDescriptor {
-    EndpointDescriptor {
-        software_version: env!("CARGO_PKG_VERSION").into(),
-        protocol_version: PROTOCOL_VERSION,
-        node_uuid: crate::node::NodeUuid::new_v4(),
-        boot_id: uuid::Uuid::new_v4(),
-        endpoint: "/node/daemon.sock".into(),
-        pid: 1,
-        socket_device: 1,
-        socket_inode: 1,
-        primary_host: primary_host.map(PathBuf::from),
-    }
-}
-
-#[test]
-fn claim_host_guard_passes_the_matching_host() {
-    let descriptor = descriptor_serving(Some("/herdr/a.sock"));
-    check_claim_host(Some(Path::new("/herdr/a.sock")), true, &descriptor).unwrap();
-}
-
-#[test]
-fn claim_host_guard_refuses_a_different_host_with_one_line() {
-    let descriptor = descriptor_serving(Some("/herdr/a.sock"));
-    let error = check_claim_host(Some(Path::new("/herdr/b.sock")), true, &descriptor).unwrap_err();
-    assert_eq!(error.code, ErrorCode::HostUnavailable);
-    assert_eq!(
-        error.detail,
-        "node daemon serves Herdr server /herdr/a.sock; /herdr/b.sock is not attached \
-         (herdr-threads daemon stop)"
-    );
-    assert!(!error.detail.contains('\n'));
-}
-
-#[test]
-fn claim_host_guard_refuses_a_store_only_daemon_when_a_host_is_needed() {
-    let descriptor = descriptor_serving(None);
-    let error = check_claim_host(Some(Path::new("/herdr/b.sock")), true, &descriptor).unwrap_err();
-    assert_eq!(error.code, ErrorCode::HostUnavailable);
-    assert_eq!(
-        error.detail,
-        "node daemon serves Herdr server no Herdr server; /herdr/b.sock is not attached \
-         (herdr-threads daemon stop)"
-    );
-    // A call that does not need the host passes the store-only daemon.
-    check_claim_host(Some(Path::new("/herdr/b.sock")), false, &descriptor).unwrap();
-}
-
-#[test]
-fn claim_host_guard_passes_a_call_without_a_claim_host() {
-    check_claim_host(None, true, &descriptor_serving(None)).unwrap();
-    check_claim_host(None, true, &descriptor_serving(Some("/herdr/a.sock"))).unwrap();
 }
 
 #[test]
