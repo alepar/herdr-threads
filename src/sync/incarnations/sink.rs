@@ -1,6 +1,7 @@
 //! The incarnations sink: the non-blocking front of fork repair.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -70,8 +71,12 @@ pub enum Job {
         source: NodeUuid,
         entry: Box<Envelope>,
     },
-    /// Salvage a resync plan (handled by ht-5fr.6.14).
-    Salvage,
+    /// Read the backup of a `sync resync` rebuild back into the new store;
+    /// the marker in `node_dir` is deleted when the pass ends.
+    Salvage {
+        backup_db: PathBuf,
+        node_dir: PathBuf,
+    },
     /// A clone suspicion to record.
     Clone(CloneReport),
     /// Re-run the re-issue pass (after a commit, at start, every 5 s while
@@ -87,7 +92,7 @@ impl Job {
             Self::Branch { .. } => "branch",
             Self::OwnerFork { .. } => "owner_fork",
             Self::Restore { .. } => "restore",
-            Self::Salvage => "salvage",
+            Self::Salvage { .. } => "salvage",
             Self::Clone(_) => "clone",
             Self::Reissue => "reissue",
         }
@@ -848,6 +853,13 @@ mod tests {
         assert_eq!(rig.lines().len(), 1);
     }
 
+    fn salvage_job() -> Job {
+        Job::Salvage {
+            backup_db: PathBuf::from("backup.db"),
+            node_dir: PathBuf::from("node"),
+        }
+    }
+
     #[test]
     fn full_job_queue_reports_overflow() {
         let mut queue = JobQueue::new();
@@ -857,7 +869,7 @@ mod tests {
         assert_eq!(queue.push(Job::Reissue), Err(Overflow));
         assert_eq!(queue.len(), JOB_QUEUE_SLOTS);
         assert!(queue.pop().is_some());
-        assert_eq!(queue.push(Job::Salvage), Ok(()));
+        assert_eq!(queue.push(salvage_job()), Ok(()));
 
         // Through the sink: the job is dropped, one line a minute, and a
         // dropped fork resumes its log.
@@ -866,7 +878,7 @@ mod tests {
             assert!(rig.sink.enqueue(Job::Reissue));
         }
         assert!(!rig.sink.enqueue(Job::Reissue));
-        assert!(!rig.sink.enqueue(Job::Salvage));
+        assert!(!rig.sink.enqueue(salvage_job()));
         assert_eq!(rig.lines().len(), 1, "{:?}", rig.lines());
         rig.clock.advance(60_000);
         assert!(!rig.sink.enqueue(Job::Reissue));

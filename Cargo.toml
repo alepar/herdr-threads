@@ -39,6 +39,11 @@ path = "tests/multinode.rs"
 required-features = ["test-support"]
 
 [[test]]
+name = "sync_resync"
+path = "tests/daemon/sync_resync.rs"
+required-features = ["test-support"]
+
+[[test]]
 name = "package"
 path = "tests/package.rs"
 required-features = ["test-support"]

@@ -15,8 +15,9 @@
 //!   [`JournalPort::stored_hash`].
 //! - Must not: write SQL (it names no table, connection or transaction; the
 //!   store functions are the only writers), send frames (the coordinator
-//!   drains the sink's outbox), block the sink's front, or handle
-//!   [`Job::Salvage`] (ht-5fr.6.14 fills it; here it is logged and dropped).
+//!   drains the sink's outbox) or block the sink's front. A
+//!   [`Job::Salvage`] runs the resync salvage reader
+//!   (`sync::resync::run_salvage`), one ingest batch per writer turn.
 //! - Relationships: reads jobs and shared state from [`IncarnationsSink`];
 //!   composition (`app.rs`, ht-5fr.6.15) builds [`WorkerDeps`], starts the
 //!   thread before the coordinator and cancels it after. The operator's
@@ -32,6 +33,7 @@
 //! inside the thread, so tests run it on paused time.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -76,6 +78,9 @@ const MAX_ADVERTISED_LOGS: usize = 64;
 const MAX_ADVERTISED_SOURCES: usize = 256;
 /// Most peer heads of the active self log remembered.
 const MAX_ACTIVE_HEADS: usize = 64;
+
+/// Most stopped logs a salvage summary line names.
+const SALVAGE_STOPS_LOGGED: usize = 4;
 
 /// The log line for a repair dropped by the clone gate (one per hour).
 pub const HELD_LINE: &str = "sync: repair held: clone evidence for this node; see sync status";
@@ -581,10 +586,10 @@ impl Core {
             } => self.handle_branch(*source, want, reply),
             Job::OwnerFork { proof, source } => self.owner_fork(proof, *source),
             Job::Restore { log, source, entry } => self.handle_restore(*log, *source, entry),
-            Job::Salvage => {
-                self.log("sync: salvage job dropped: not handled by this worker yet");
-                Ok(())
-            }
+            Job::Salvage {
+                backup_db,
+                node_dir,
+            } => self.handle_salvage(backup_db, node_dir),
             Job::Clone(report) => {
                 let now = self.utc();
                 quantum!(self, |tx, _ctx, _decision| store::record_clone_evidence(
@@ -615,6 +620,51 @@ impl Core {
             self.held_logged = Some(now);
             self.log(HELD_LINE);
         }
+    }
+
+    // ---- Resync salvage ------------------------------------------------------
+
+    /// Reads the backup of a `sync resync` rebuild back into the store, one
+    /// ingest batch per writer turn (`JournalPort::ingest` verifies every
+    /// entry), then ends the rebuild by deleting the marker. A store error
+    /// keeps the job for the backoff retry; ingest is idempotent.
+    fn handle_salvage(&mut self, backup_db: &Path, node_dir: &Path) -> Result<(), ApiError> {
+        let cancel = self.d.cancel.clone();
+        let this = &*self;
+        let mut ingest = |log: &LogKey, entries: Vec<Envelope>| {
+            let (_origin, _turn, _budget) = this.turn()?;
+            this.d.journal.ingest(log, entries, &this.read_budget())
+        };
+        let report = crate::sync::resync::run_salvage(node_dir, backup_db, &mut ingest, &|| {
+            cancel.is_cancelled()
+        })?;
+        let mut line = format!(
+            "sync: resync salvage: {} logs, {} entries read back",
+            report.logs, report.entries
+        );
+        if let Some(why) = &report.unreadable {
+            line.push_str(&format!("; backup unreadable: {why}"));
+        }
+        for stop in report.stopped.iter().take(SALVAGE_STOPS_LOGGED) {
+            line.push_str(&format!(
+                "; log {} stopped: {}",
+                uuid8(&stop.log.node),
+                stop.why
+            ));
+        }
+        if report.stopped.len() > SALVAGE_STOPS_LOGGED {
+            line.push_str(&format!(
+                "; {} more logs stopped",
+                report.stopped.len() - SALVAGE_STOPS_LOGGED
+            ));
+        }
+        line.push_str(if report.interrupted {
+            "; interrupted, marker kept"
+        } else {
+            "; marker removed"
+        });
+        self.log(&line);
+        Ok(())
     }
 
     // ---- Third-party and owner paths ---------------------------------------
@@ -1283,7 +1333,7 @@ impl Job {
             Self::Branch { .. } => "branch",
             Self::OwnerFork { .. } => "owner_fork",
             Self::Restore { .. } => "restore",
-            Self::Salvage => "salvage",
+            Self::Salvage { .. } => "salvage",
             Self::Clone(_) => "clone",
             Self::Reissue => "reissue",
         }
