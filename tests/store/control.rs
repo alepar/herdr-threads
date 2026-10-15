@@ -3989,6 +3989,7 @@ fn joined_member_changes_topic_with_scoped_revision_and_audit() {
     };
     let hash = cooperative_payload_hash("set_topic", &command).unwrap();
     // The converted command reaches replicated tables only through the fact.
+    #[cfg(feature = "test-support")]
     let _guard = crate::test_support::write_guard::arm(&conn);
     assert_eq!(
         set_topic(
@@ -4296,6 +4297,7 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
     let hash = cooperative_payload_hash("archive", &archive_request).unwrap();
     {
         // The converted command reaches replicated tables only through the fact.
+        #[cfg(feature = "test-support")]
         let _guard = crate::test_support::write_guard::arm(&conn);
         archive(
             &context,
