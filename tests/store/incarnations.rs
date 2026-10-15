@@ -11,6 +11,7 @@ use crate::protocol::time::{CallBudget, Clock, MonoInstant, UtcMillis};
 use crate::store::connection::{DecisionInstant, XorShift};
 use crate::store::journal::{self, FreezeOutcome};
 use crate::sync::envelope::{Deps, Envelope, UnsignedEnvelope};
+use crate::sync::facts::Predecessor;
 use crate::sync::facts::{FactKind, FactRegistry};
 use crate::sync::hlc::HlcStamp;
 use crate::sync::{EntityKey, LogKey};
@@ -54,6 +55,8 @@ impl Drop for Store {
 #[derive(Serialize, Deserialize)]
 struct Put {
     id: String,
+    #[serde(default)]
+    fail: Option<String>,
 }
 
 struct PutKind;
@@ -70,9 +73,15 @@ impl FactKind for PutKind {
     fn apply(
         _: &Transaction<'_>,
         _: &mut crate::sync::facts::ApplyContext<'_>,
-        _: Put,
+        p: Put,
     ) -> Result<(), crate::sync::facts::FactError> {
-        Ok(())
+        match p.fail {
+            Some(detail) => Err(crate::sync::facts::FactError::Rejected(ApiError::new(
+                ErrorCode::NotFound,
+                detail,
+            ))),
+            None => Ok(()),
+        }
     }
 }
 
@@ -118,6 +127,7 @@ fn chain_of_a(store: &Store, puts: usize) -> (LogKey, Vec<Envelope>) {
                     d,
                     &Put {
                         id: format!("a{i}"),
+                        fail: None,
                     },
                 )
             },
@@ -468,4 +478,410 @@ fn append_only_and_immutable_triggers_abort_by_name() {
     assert!(message.contains("sync_reissues_immutable"), "{message}");
     assert_eq!(count(&tx, "SELECT COUNT(*) FROM sync_forks"), 1);
     assert_eq!(count(&tx, "SELECT COUNT(*) FROM sync_reissues"), 1);
+}
+
+// ---- reissue_pass (ht-5fr.6.6) ----------------------------------------------
+
+fn decision() -> DecisionInstant {
+    DecisionInstant {
+        utc: FixedClock.utc_now(),
+        monotonic: FixedClock.monotonic_now(),
+    }
+}
+
+/// Node A's store whose first log holds genesis and `puts` entries and has
+/// been rotated away: the old log is frozen at `frozen_at`, a fresh
+/// incarnation is active.
+struct Owner {
+    _store: Store,
+    ctx: StoreContext,
+    conn: Connection,
+    old: LogKey,
+    /// The old log's `journal` entries, counters `1..`.
+    entries: Vec<Envelope>,
+}
+
+fn owner(puts: usize, frozen_at: u64) -> Owner {
+    let store = Store::new();
+    let (old, entries) = chain_of_a(&store, puts);
+    let ctx = StoreContext::new(store.path.clone(), Arc::new(FixedClock));
+    let mut conn = ctx.open_writer().unwrap();
+    journal::open(&ctx, &mut conn, identity_a(), "a-host", registry()).unwrap();
+    let tx = conn.transaction().unwrap();
+    journal::begin_incarnation(
+        &tx,
+        &ctx,
+        decision(),
+        900,
+        Some(Predecessor {
+            incarnation: old.incarnation,
+            frozen_at: Some(frozen_at),
+        }),
+        "a-host",
+    )
+    .unwrap();
+    journal::freeze(&tx, &old, frozen_at).unwrap();
+    tx.commit().unwrap();
+    Owner {
+        _store: store,
+        ctx,
+        conn,
+        old,
+        entries,
+    }
+}
+
+impl Owner {
+    /// Stores a forked entry of the old log and returns it.
+    fn fork(&mut self, counter: u64, prev: [u8; 32], payload: &str) -> Envelope {
+        let entry = signed_entry(self.old, counter, prev, payload);
+        let tx = self.conn.transaction().unwrap();
+        journal::store_forked(&tx, &self.old, std::slice::from_ref(&entry), None).unwrap();
+        tx.commit().unwrap();
+        entry
+    }
+
+    fn pass(&mut self, limits: ReissueLimits) -> ReissueProgress {
+        run_pass(&self.ctx, &mut self.conn, limits)
+    }
+
+    /// Source hashes in the order their copies were authored.
+    fn reissued_order(&self) -> Vec<[u8; 32]> {
+        reissued_order(&self.conn)
+    }
+}
+
+fn run_pass(ctx: &StoreContext, conn: &mut Connection, limits: ReissueLimits) -> ReissueProgress {
+    ctx.execute_decision(
+        conn,
+        |_| Ok(()),
+        |tx, d, ()| reissue_pass(tx, ctx, d, limits),
+    )
+    .unwrap()
+}
+
+fn reissued_order(conn: &Connection) -> Vec<[u8; 32]> {
+    let mut statement = conn
+        .prepare("SELECT source_hash FROM sync_reissues ORDER BY target_ingest_seq")
+        .unwrap();
+    statement
+        .query_map([], |r| r.get::<_, Vec<u8>>(0))
+        .unwrap()
+        .map(|hash| hash.unwrap().try_into().unwrap())
+        .collect()
+}
+
+const ALL: ReissueLimits = ReissueLimits {
+    entries: 64,
+    wall_ms: 100,
+};
+
+// Kills: an order by counter alone (branches of one counter unordered), a
+// per-branch drain (all of one branch before the next), or a branch whose own
+// order is reversed.
+#[test]
+fn interleave_by_counter_keeps_branch_order() {
+    let mut o = owner(3, 2); // journal tail: counters 3 and 4
+    let prev2 = o.entries[1].hash;
+    let x3 = o.fork(3, prev2, r#"{"id":"x3"}"#);
+    let x4 = o.fork(4, x3.hash, r#"{"id":"x4"}"#);
+    let y3 = o.fork(3, prev2, r#"{"id":"y3"}"#);
+
+    let progress = o.pass(ALL);
+    assert_eq!(
+        progress,
+        ReissueProgress {
+            reissued: 5,
+            waiting: 0,
+            has_more: false
+        }
+    );
+    assert_eq!(
+        o.reissued_order(),
+        vec![
+            o.entries[2].hash,
+            x3.hash,
+            y3.hash,
+            o.entries[3].hash,
+            x4.hash
+        ],
+        "counter 3 (journal, then forked in arrival order), then counter 4"
+    );
+    // The copies keep the payload bytes in that order.
+    let payloads: Vec<String> = {
+        let mut st = o
+            .conn
+            .prepare(
+                "SELECT j.payload FROM journal j JOIN local_node n ON n.active_log_ix=j.log_ix \
+                 WHERE j.counter>1 ORDER BY j.counter",
+            )
+            .unwrap();
+        st.query_map([], |r| r.get::<_, Vec<u8>>(0))
+            .unwrap()
+            .map(|p| String::from_utf8(p.unwrap()).unwrap())
+            .collect()
+    };
+    assert_eq!(payloads.len(), 5);
+    assert_eq!(payloads[1], r#"{"id":"x3"}"#);
+    assert_eq!(payloads[4], r#"{"id":"x4"}"#);
+}
+
+// Kills: a candidate query that re-issues the frozen log's genesis (it sits
+// above a freeze at 0), which would put a second node.genesis on the active
+// log.
+#[test]
+fn node_genesis_skipped() {
+    let mut o = owner(2, 0); // everything including genesis is above the freeze
+    let progress = o.pass(ALL);
+    assert_eq!(progress.reissued, 2, "the two puts, not the genesis");
+    assert_eq!(
+        count(
+            &o.conn,
+            "SELECT COUNT(*) FROM sync_reissues WHERE source_counter=1"
+        ),
+        0
+    );
+    assert_eq!(
+        count(
+            &o.conn,
+            "SELECT COUNT(*) FROM journal j JOIN local_node n ON n.active_log_ix=j.log_ix \
+             WHERE j.kind='node.genesis'"
+        ),
+        1,
+        "only the active log's own genesis"
+    );
+}
+
+// Kills: a forked row re-issued ahead of its predecessor, a pass that stops at
+// the first waiting row, and a `waiting` count that is not reported.
+#[test]
+fn forked_row_waits_for_predecessor_counted_in_waiting() {
+    let mut o = owner(3, 2);
+    let prev2 = o.entries[1].hash;
+    let z3 = signed_entry(o.old, 3, prev2, r#"{"id":"z3"}"#);
+    let z4 = o.fork(4, z3.hash, r#"{"id":"z4"}"#); // z3 not stored yet
+
+    let first = o.pass(ALL);
+    assert_eq!(
+        first,
+        ReissueProgress {
+            reissued: 2,
+            waiting: 1,
+            has_more: false
+        },
+        "the journal tail proceeds, z4 waits"
+    );
+    assert!(!o.reissued_order().contains(&z4.hash));
+
+    let tx = o.conn.transaction().unwrap();
+    journal::store_forked(&tx, &o.old, std::slice::from_ref(&z3), None).unwrap();
+    tx.commit().unwrap();
+    let second = o.pass(ALL);
+    assert_eq!(
+        second,
+        ReissueProgress {
+            reissued: 2,
+            waiting: 0,
+            has_more: false
+        },
+        "z3 then z4 in one pass: z4 became ready when z3 was re-issued"
+    );
+    let order = o.reissued_order();
+    assert_eq!(&order[2..], &[z3.hash, z4.hash]);
+}
+
+// Kills: a candidate list that ignores `sync_reissues` (a second pass would
+// author every copy again).
+#[test]
+fn second_pass_noop() {
+    let mut o = owner(3, 2);
+    let prev2 = o.entries[1].hash;
+    o.fork(3, prev2, r#"{"id":"x3"}"#);
+    assert_eq!(o.pass(ALL).reissued, 3);
+    let journal_rows = count(&o.conn, "SELECT COUNT(*) FROM journal");
+    let reissues = count(&o.conn, "SELECT COUNT(*) FROM sync_reissues");
+
+    assert_eq!(o.pass(ALL), ReissueProgress::default());
+    assert_eq!(count(&o.conn, "SELECT COUNT(*) FROM journal"), journal_rows);
+    assert_eq!(
+        count(&o.conn, "SELECT COUNT(*) FROM sync_reissues"),
+        reissues
+    );
+}
+
+// Kills: a pass that aborts on a handler rejection (the whole quantum would
+// roll back and the job never advance), or that skips the sync_reissues row
+// of a failed copy (it would be re-issued forever).
+#[test]
+fn handler_rejection_recorded_failed_no_abort() {
+    let mut o = owner(2, 2); // journal tail: counter 3
+    let prev2 = o.entries[1].hash;
+    let bad = o.fork(3, prev2, r#"{"id":"bad","fail":"nope"}"#);
+    let good = o.fork(4, bad.hash, r#"{"id":"after"}"#);
+
+    let progress = o.pass(ALL);
+    assert_eq!(progress.reissued, 3, "rejection does not stop the pass");
+    let (state, error): (String, Option<String>) = o
+        .conn
+        .query_row(
+            "SELECT j.apply_state,j.apply_error FROM sync_reissues r \
+             JOIN journal j ON j.ingest_seq=r.target_ingest_seq WHERE r.source_hash=?1",
+            [bad.hash.as_slice()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, "failed");
+    assert!(error.unwrap().contains("nope"));
+    let after: String = o
+        .conn
+        .query_row(
+            "SELECT j.apply_state FROM sync_reissues r \
+             JOIN journal j ON j.ingest_seq=r.target_ingest_seq WHERE r.source_hash=?1",
+            [good.hash.as_slice()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(after, "applied", "the branch continues past the rejection");
+    assert_eq!(o.pass(ALL), ReissueProgress::default(), "failed is done");
+}
+
+// Kills: a pass whose journal writes and sync_reissues rows can diverge: a
+// rolled-back quantum that leaves either, a limit that is not resumable, and a
+// restart that repeats or skips a copy.
+#[test]
+fn crash_between_passes_resumes_consistently() {
+    let mut o = owner(4, 2); // journal tail: counters 3, 4, 5
+    let prev2 = o.entries[1].hash;
+    let x3 = o.fork(3, prev2, r#"{"id":"x3"}"#);
+    o.fork(4, x3.hash, r#"{"id":"x4"}"#);
+    let expected_total = 5;
+
+    // A quantum that never commits leaves nothing behind.
+    {
+        let ctx = &o.ctx;
+        let tx = o.conn.transaction().unwrap();
+        let progress = reissue_pass(&tx, ctx, decision(), ALL).unwrap();
+        assert_eq!(progress.reissued, expected_total);
+        drop(tx);
+    }
+    assert_eq!(count(&o.conn, "SELECT COUNT(*) FROM sync_reissues"), 0);
+
+    let first = o.pass(ReissueLimits {
+        entries: 2,
+        wall_ms: 100,
+    });
+    assert_eq!(
+        first,
+        ReissueProgress {
+            reissued: 2,
+            waiting: 0,
+            has_more: true
+        }
+    );
+    let committed = o.reissued_order();
+    assert_eq!(committed.len(), 2);
+
+    // The process dies here: reopen the same file with a fresh context.
+    let Owner {
+        _store,
+        ctx,
+        conn,
+        old,
+        entries,
+    } = o;
+    drop(conn);
+    drop(ctx);
+    let ctx = StoreContext::new(_store.path.clone(), Arc::new(FixedClock));
+    let mut conn = ctx.open_writer().unwrap();
+    journal::open(&ctx, &mut conn, identity_a(), "a-host", registry()).unwrap();
+    assert_eq!(
+        reissued_order(&conn),
+        committed,
+        "state survived the restart"
+    );
+
+    let rest = run_pass(&ctx, &mut conn, ALL);
+    assert_eq!(
+        rest,
+        ReissueProgress {
+            reissued: 3,
+            waiting: 0,
+            has_more: false
+        }
+    );
+    let order = reissued_order(&conn);
+    assert_eq!(&order[..2], committed.as_slice(), "no copy repeated");
+    assert_eq!(order.len(), expected_total);
+    let mut distinct = order.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(distinct.len(), expected_total, "no source re-issued twice");
+    assert_eq!(order[0], entries[2].hash);
+    // journal and sync_reissues agree: one active-log entry per reissue row.
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM journal j JOIN local_node n ON n.active_log_ix=j.log_ix WHERE j.counter>1"
+        ),
+        expected_total as i64
+    );
+    assert_eq!(old.node, identity_a().uuid());
+}
+
+// Kills: a sync_reissues row whose target is not on the active log (I3), one
+// naming a source outside a frozen own log, or an active-log entry with no row.
+#[test]
+fn i3_holds() {
+    let mut o = owner(3, 2);
+    let prev2 = o.entries[1].hash;
+    o.fork(3, prev2, r#"{"id":"x3"}"#);
+    o.pass(ALL);
+
+    assert_eq!(count(&o.conn, "SELECT COUNT(*) FROM sync_reissues"), 3);
+    assert_eq!(
+        count(
+            &o.conn,
+            "SELECT COUNT(*) FROM sync_reissues r \
+             JOIN journal t ON t.ingest_seq=r.target_ingest_seq \
+             JOIN local_node n ON n.active_log_ix=t.log_ix"
+        ),
+        3,
+        "every target entry is authored on the active log"
+    );
+    assert_eq!(
+        count(
+            &o.conn,
+            "SELECT COUNT(*) FROM sync_reissues r JOIN sync_logs s ON s.log_ix=r.source_log_ix \
+             WHERE s.is_self=1 AND s.state='frozen'"
+        ),
+        3,
+        "every source is on a frozen own log"
+    );
+    assert_eq!(
+        count(
+            &o.conn,
+            "SELECT COUNT(*) FROM journal j JOIN local_node n ON n.active_log_ix=j.log_ix \
+             WHERE j.counter>1 AND j.ingest_seq NOT IN (SELECT target_ingest_seq FROM sync_reissues)"
+        ),
+        0
+    );
+}
+
+// Kills: a wall limit that stalls the job (zero re-issued) or one that is
+// ignored (everything re-issued).
+#[test]
+fn wall_limit_still_makes_progress() {
+    let mut o = owner(3, 2);
+    let progress = o.pass(ReissueLimits {
+        entries: 64,
+        wall_ms: 0,
+    });
+    assert_eq!(
+        progress,
+        ReissueProgress {
+            reissued: 1,
+            waiting: 0,
+            has_more: true
+        }
+    );
 }

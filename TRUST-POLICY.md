@@ -1636,6 +1636,10 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
 - **Forked-log same-key facts.** Two branches of one key holder that decided one key differently (a seat's created
   kind or retire reason, a same-ordinal membership transition, an invitation answer, a receipt settlement) resolve
   on each node to whichever it applied first; the seat's next membership transition re-converges membership.
+- **Re-issued facts keep their identity.** A re-issued fact keeps its fact ID and HLC (the re-issue never ticks the
+  clock) and is re-signed by the owner, so a receiver attributes it `replicated_from:<owner node_uuid>` (A3): never
+  to a node that merely held the branch it came from, and never as a new act. On the owner itself the re-applied
+  copy is own history and is recorded `local_journal`, because the original binding is not known here.
 - **Dead fork owner.** When a forked log's owner never returns, the facts on divergent tails stay only on the nodes
   that hold each branch.
 - **Catch-up suppression reach.** Suppression is settled-only for every origin, own old incarnations included: an

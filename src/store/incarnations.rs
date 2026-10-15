@@ -12,7 +12,7 @@
 //! (candidate order, branch readiness, `waiting` counts, idempotence through
 //! `sync_reissues`), `adopt_declared_freeze`, `status` (including
 //! `own_unknown_newer`), and invariants I2 and I3. Landed so far:
-//! `record_fork` and `next_incarnation`. It is the only owner of
+//! `record_fork`, `next_incarnation` and `reissue_pass`. It is the only owner of
 //! `sync_forks`, `sync_branches` and `sync_reissues`, and the single place
 //! where repair decisions become rows.
 //!
@@ -42,8 +42,11 @@ use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::node::NodeUuid;
 use crate::protocol::results::{ApiError, ErrorCode};
+use crate::store::connection::DecisionInstant;
 use crate::store::connection::{StoreContext, api_error, store_error};
-use crate::store::journal;
+use crate::store::journal::{self, ReissueSource};
+use crate::sync::LogKey;
+use crate::sync::envelope::GENESIS_KIND;
 use crate::sync::incarnations::Proof;
 
 /// What [`record_fork`] decided.
@@ -166,6 +169,201 @@ pub fn next_incarnation(tx: &Transaction<'_>, ctx: &StoreContext) -> Result<u32,
         ErrorCode::Conflict,
         "no unused incarnation after repeated draws",
     ))
+}
+
+/// What one [`reissue_pass`] may do before it reports `has_more`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReissueLimits {
+    /// Entries re-issued per pass.
+    pub entries: usize,
+    /// Monotonic milliseconds per pass.
+    pub wall_ms: u64,
+}
+
+impl Default for ReissueLimits {
+    fn default() -> Self {
+        Self {
+            entries: 64,
+            wall_ms: 100,
+        }
+    }
+}
+
+/// The tally of one [`reissue_pass`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReissueProgress {
+    /// Entries re-issued this pass, including those whose handler rejected or
+    /// parked (the outcome is recorded; the entry is still re-issued).
+    pub reissued: usize,
+    /// `journal_forked` candidates seen but not yet ready: their predecessor
+    /// is neither a `journal` row nor an already re-issued forked row. Only
+    /// candidates reached before a limit stopped the pass are counted.
+    pub waiting: usize,
+    /// A limit stopped the pass while candidates remained: run it again.
+    pub has_more: bool,
+}
+
+/// One re-issue candidate: an entry of a frozen own log above its freeze, or
+/// any `journal_forked` entry of one.
+struct Candidate {
+    log: LogKey,
+    log_ix: i64,
+    counter: i64,
+    hash: Vec<u8>,
+    prev_hash: Vec<u8>,
+    forked: bool,
+}
+
+/// Every not-yet-re-issued candidate, interleaved: by the log's first sight,
+/// then `log_ix`, then counter (so each branch keeps its own order and the
+/// branches of one counter are adjacent), the `journal` branch before the
+/// forked ones, and a forked branch's rows by arrival. `node.genesis` never
+/// qualifies.
+const CANDIDATES: &str = "\
+SELECT log_ix,node_uuid,incarnation,counter,hash,prev_hash,src FROM (\
+ SELECT l.first_seen_at AS seen,l.log_ix AS log_ix,l.node_uuid AS node_uuid,l.incarnation AS incarnation,\
+        j.counter AS counter,j.hash AS hash,j.prev_hash AS prev_hash,0 AS src,j.ingest_seq AS seq \
+ FROM sync_logs l JOIN journal j ON j.log_ix=l.log_ix \
+ WHERE l.is_self=1 AND l.state='frozen' AND j.counter>l.frozen_at_counter AND j.kind<>?1 \
+   AND NOT EXISTS(SELECT 1 FROM sync_reissues r WHERE r.source_log_ix=j.log_ix AND r.source_counter=j.counter AND r.source_hash=j.hash) \
+ UNION ALL \
+ SELECT l.first_seen_at,l.log_ix,l.node_uuid,l.incarnation,f.counter,f.hash,f.prev_hash,1,f.forked_ix \
+ FROM sync_logs l JOIN journal_forked f ON f.log_ix=l.log_ix \
+ WHERE l.is_self=1 AND l.state='frozen' AND f.kind<>?1 \
+   AND NOT EXISTS(SELECT 1 FROM sync_reissues r WHERE r.source_log_ix=f.log_ix AND r.source_counter=f.counter AND r.source_hash=f.hash)\
+) ORDER BY seen,log_ix,counter,src,seq";
+
+/// Re-issues the union of every branch tail of the frozen own logs into the
+/// active self log, in the caller's transaction, until `limits` stop it.
+///
+/// Kind-agnostic and idempotent: the work list is the candidates not yet in
+/// `sync_reissues`, and each re-issue and its `sync_reissues` row are written
+/// together, so a rolled-back quantum leaves neither and a committed one is
+/// never repeated (invariant I3: every `sync_reissues` row names an entry on
+/// the active log). A handler rejection is recorded by `journal::reissue` and
+/// does not stop the pass.
+///
+/// A forked candidate is ready only when its `prev_hash` names the `journal`
+/// row at `counter - 1` or a forked row already re-issued (this pass or an
+/// earlier one); otherwise it is skipped and counted in `waiting`, and the
+/// other branches go on. At least one candidate is re-issued per call, so a
+/// zero limit cannot stall the job. The clone gate sits in front of this call
+/// (ht-5fr.6.7).
+pub fn reissue_pass(
+    tx: &Transaction<'_>,
+    ctx: &StoreContext,
+    decision: DecisionInstant,
+    limits: ReissueLimits,
+) -> Result<ReissueProgress, ApiError> {
+    let candidates = {
+        let mut statement = tx.prepare(CANDIDATES).map_err(store_error)?;
+        let rows = statement
+            .query_map([GENESIS_KIND], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, u32>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, Vec<u8>>(4)?,
+                    r.get::<_, Vec<u8>>(5)?,
+                    r.get::<_, i64>(6)?,
+                ))
+            })
+            .map_err(store_error)?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (log_ix, node, incarnation, counter, hash, prev_hash, src) =
+                row.map_err(store_error)?;
+            out.push(Candidate {
+                log: LogKey {
+                    node: node.parse().map_err(|_| {
+                        api_error(ErrorCode::StoreCorrupt, "malformed own node uuid")
+                    })?,
+                    incarnation,
+                },
+                log_ix,
+                counter,
+                hash,
+                prev_hash,
+                forked: src == 1,
+            });
+        }
+        out
+    };
+
+    let started = ctx.clock().monotonic_now();
+    let mut progress = ReissueProgress::default();
+    let total = candidates.len();
+    for (seen, candidate) in candidates.into_iter().enumerate() {
+        if candidate.forked && !forked_ready(tx, &candidate)? {
+            progress.waiting += 1;
+            continue;
+        }
+        let hash: [u8; 32] = candidate
+            .hash
+            .as_slice()
+            .try_into()
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "stored hash is not 32 bytes"))?;
+        let counter = u64::try_from(candidate.counter)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "stored counter"))?;
+        let source = journal::serve_branch(
+            tx,
+            &candidate.log,
+            (counter, hash),
+            counter,
+            crate::sync::BatchLimits {
+                entries: 1,
+                bytes: 1 << 20,
+            },
+        )?
+        .and_then(|mut entries| entries.pop())
+        .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "re-issue source entry missing"))?;
+        let authored = journal::reissue(
+            tx,
+            ctx,
+            decision,
+            &source,
+            if candidate.forked {
+                ReissueSource::Forked
+            } else {
+                ReissueSource::Journal
+            },
+        )?;
+        tx.execute(
+            "INSERT INTO sync_reissues(source_log_ix,source_counter,source_hash,target_ingest_seq,reissued_at) \
+             VALUES (?1,?2,?3,?4,?5)",
+            params![
+                candidate.log_ix,
+                candidate.counter,
+                candidate.hash,
+                authored.ingest_seq,
+                decision.utc.0,
+            ],
+        )
+        .map_err(store_error)?;
+        progress.reissued += 1;
+        let spent = ctx.clock().monotonic_now().0.saturating_sub(started.0);
+        if seen + 1 < total && (progress.reissued >= limits.entries || spent >= limits.wall_ms) {
+            progress.has_more = true;
+            break;
+        }
+    }
+    Ok(progress)
+}
+
+/// Whether a forked candidate's predecessor is in place: the `journal` row at
+/// `counter - 1` with its `prev_hash`, or a forked row of that hash already
+/// re-issued.
+fn forked_ready(tx: &Transaction<'_>, candidate: &Candidate) -> Result<bool, ApiError> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM journal WHERE log_ix=?1 AND counter=?2-1 AND hash=?3) \
+             OR EXISTS(SELECT 1 FROM journal_forked f JOIN sync_reissues r \
+                       ON r.source_log_ix=f.log_ix AND r.source_counter=f.counter AND r.source_hash=f.hash \
+                       WHERE f.log_ix=?1 AND f.counter=?2-1 AND f.hash=?3)",
+        params![candidate.log_ix, candidate.counter, candidate.prev_hash],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
 }
 
 #[cfg(test)]
