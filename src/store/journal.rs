@@ -332,6 +332,7 @@ pub fn open(
         // The first Apply pass after start replays and drains regardless.
         own_history_hold: Arc::new(OwnHistoryHold::new(Arc::clone(&apply_hint))),
         apply_hint,
+        rotated_since_start: AtomicBool::new(false),
     };
     let active: Option<i64> = tx
         .query_row("SELECT active_log_ix FROM local_node", [], |r| r.get(0))
@@ -370,14 +371,12 @@ pub fn begin_incarnation(
     predecessor: Option<Predecessor>,
     host_label: &str,
 ) -> Result<Authored, ApiError> {
-    begin_incarnation_with(
-        tx,
-        ctx.sync()?,
-        decision,
-        incarnation,
-        predecessor,
-        host_label,
-    )
+    let sync = ctx.sync()?;
+    let authored =
+        begin_incarnation_with(tx, sync, decision, incarnation, predecessor, host_label)?;
+    sync.rotated_since_start
+        .store(true, std::sync::atomic::Ordering::Release);
+    Ok(authored)
 }
 
 fn begin_incarnation_with(

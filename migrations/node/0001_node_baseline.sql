@@ -270,6 +270,27 @@ CREATE TABLE sync_reissues (
     PRIMARY KEY(source_log_ix, source_counter, source_hash)
 ) STRICT, WITHOUT ROWID;
 
+-- Clone reports and own_unknown_newer / lineage_branch logs (ht-5fr.6.7, incarnations
+-- design section 2). Rows are never deleted; a repeat report of an open row advances
+-- only last_seen_at, and clearing sets cleared_at/cleared_by once.
+CREATE TABLE sync_clone_evidence (
+    ev_ix INTEGER PRIMARY KEY,
+    subject TEXT NOT NULL CHECK(length(subject) = 32),
+    kind TEXT NOT NULL CHECK(kind IN ('handshake','peer_close','third_party','own_unknown_newer','lineage_branch')),
+    log_ix INTEGER REFERENCES sync_logs(log_ix),
+    detail TEXT NOT NULL CHECK(length(detail) <= 512),
+    source_node TEXT CHECK(source_node IS NULL OR length(source_node) = 32),
+    detected_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    cleared_at INTEGER,
+    cleared_by TEXT CHECK(cleared_by IS NULL OR length(cleared_by) <= 128),
+    CHECK((kind IN ('own_unknown_newer','lineage_branch')) = (log_ix IS NOT NULL)),
+    CHECK((cleared_at IS NULL) = (cleared_by IS NULL))
+) STRICT;
+
+CREATE UNIQUE INDEX sync_clone_evidence_open ON sync_clone_evidence(subject, kind, coalesce(log_ix, -1))
+WHERE cleared_at IS NULL;
+
 CREATE INDEX journal_forked_creates ON journal_forked(creates) WHERE creates IS NOT NULL;
 
 CREATE TRIGGER sync_logs_freeze_lowers_only BEFORE UPDATE OF frozen_at_counter ON sync_logs
@@ -278,6 +299,18 @@ BEGIN SELECT RAISE(ABORT, 'sync_logs_freeze_lowers_only'); END;
 
 CREATE TRIGGER sync_forks_append_only BEFORE DELETE ON sync_forks
 BEGIN SELECT RAISE(ABORT, 'sync_forks_append_only'); END;
+
+CREATE TRIGGER sync_clone_evidence_append_only BEFORE DELETE ON sync_clone_evidence
+BEGIN SELECT RAISE(ABORT, 'sync_clone_evidence_append_only'); END;
+
+-- Only last_seen_at (forward) on an open row and the one-time clear may change.
+CREATE TRIGGER sync_clone_evidence_set_once BEFORE UPDATE ON sync_clone_evidence
+WHEN OLD.cleared_at IS NOT NULL
+  OR NEW.ev_ix IS NOT OLD.ev_ix OR NEW.subject IS NOT OLD.subject OR NEW.kind IS NOT OLD.kind
+  OR NEW.log_ix IS NOT OLD.log_ix OR NEW.detail IS NOT OLD.detail
+  OR NEW.source_node IS NOT OLD.source_node OR NEW.detected_at IS NOT OLD.detected_at
+  OR NEW.last_seen_at < OLD.last_seen_at
+BEGIN SELECT RAISE(ABORT, 'sync_clone_evidence_set_once'); END;
 
 CREATE TRIGGER sync_reissues_append_only BEFORE DELETE ON sync_reissues
 BEGIN SELECT RAISE(ABORT, 'sync_reissues_append_only'); END;
