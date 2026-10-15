@@ -445,6 +445,7 @@ fn prepare_send_step_impl(
         high_water,
         explicit: &explicit,
         ack: &ack,
+        legacy_receipts: legacy_receipt_audience(&tx, &prep_id, count, &ack)?,
         priority: resolved_priority(request),
         exclude: Some(&seat),
         duration,
@@ -520,6 +521,9 @@ pub(super) struct AudienceWalk<'a> {
     /// The explicit ACK recipients (D9). Every other audience member, and a human explicit
     /// recipient, gets a delivery row at `priority`.
     pub ack: &'a [&'a SeatId],
+    /// A pre-upgrade preparation resumed in its whole-audience receipt shape
+    /// ([`legacy_receipt_audience`]): every non-human audience member gets a receipt.
+    pub legacy_receipts: bool,
     pub priority: DeliveryPriority,
     /// The sender, never its own recipient. `None` for a service author.
     pub exclude: Option<&'a SeatId>,
@@ -531,9 +535,35 @@ impl AudienceWalk<'_> {
         Staging {
             duration: self.duration,
             priority: self.priority,
-            ack: self.ack.iter().any(|seat| seat.as_str() == recipient),
+            ack: self.legacy_receipts || self.ack.iter().any(|seat| seat.as_str() == recipient),
         }
     }
+}
+
+/// Whether a resumed preparation already holds a receipt for a seat outside the explicit ACK set.
+/// Only a preparation staged before the v47 upgrade can: v0.11 staged a nudge-class send's whole
+/// audience as receipts (every agent owed an ACK). Such a preparation then finishes in that one
+/// shape, its remaining agent recipients staged as receipts too, never a mixed audience of receipts
+/// and priority-0 rows (ht-yha.66). A v47 preparation never matches. One check per step, skipped
+/// while nothing is staged (`count` is the staged receipt count); the scan stops at the first
+/// non-ACK row, so it reads at most the ACK set's rows plus one.
+pub(super) fn legacy_receipt_audience(
+    tx: &Transaction<'_>,
+    prep_id: &str,
+    count: i64,
+    ack: &[&SeatId],
+) -> Result<bool, ApiError> {
+    if count == 0 {
+        return Ok(false);
+    }
+    let ack = serde_json::to_string(&ack.iter().map(|seat| seat.as_str()).collect::<Vec<_>>())
+        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "ACK recipient list encoding"))?;
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM prepared_recipients WHERE preparation_id=?1 AND seat_id NOT IN (SELECT value FROM json_each(?2)))",
+        params![prep_id, ack],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
 }
 
 /// How one audience member is staged: a receipt (`ack`) or a delivery row at `priority`.

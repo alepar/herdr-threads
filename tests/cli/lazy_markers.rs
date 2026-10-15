@@ -124,12 +124,13 @@ impl LocalClient for Client {
                 q.messages
                     .into_iter()
                     .map(|message| {
-                        let lazy = message.as_str() != "msg-1";
-                        // msg-1 is p1 (silent), msg-2 p0, msg-3 p5, others p1.
+                        let lazy = !matches!(message.as_str(), "msg-1" | "msg-4");
+                        // msg-1 is p1 (silent), msg-2 p0, msg-3 p5, msg-4 p0 recorded
+                        // ordinary (pre-upgrade or explicit ACK: no marker), others p1.
                         // `delivery_mode` stays the legacy column (msg-2 is recorded lazy).
                         let priority = Some({
                             let n = match message.as_str() {
-                                "msg-2" => 0,
+                                "msg-2" | "msg-4" => 0,
                                 "msg-3" => 5,
                                 _ => 1,
                             };
@@ -251,6 +252,33 @@ fn priority_markers_mark_every_non_default_priority() {
     let client = Client::new(true, 3);
     let (text, _) = run(&["read", "t"], &client);
     assert!(text.starts_with("[p0] msg-2\n[p5] msg-3\n"), "{text}");
+}
+// Kills (ht-yha.66 M2): a `[p0]` row for a recorded-ordinary message, whose p0 is implied by its
+// mode (pre-upgrade) or shown by its ACK line (explicit ACK recipients), in read/body/search.
+#[test]
+fn priority_markers_skip_recorded_ordinary_messages() {
+    for argv in [
+        vec!["read", "t"],
+        vec!["body", "msg-4"],
+        vec!["search", "body"],
+    ] {
+        let client = Client::new(true, 4);
+        let (text, _) = run(&argv, &client);
+        assert!(!text.contains("] msg-4\n"), "{argv:?}: {text}");
+        assert!(text.contains("canonical passive body"), "{text}");
+        if argv[0] != "body" {
+            assert!(text.starts_with("[p0] msg-2\n[p5] msg-3\n"), "{text}");
+        }
+        assert!(
+            client
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| matches!(c, Command::MessageDeliveryModes(q) if q.messages.contains(&MessageId::new("msg-4")))),
+            "msg-4's recorded mode is looked up"
+        );
+    }
 }
 #[test]
 fn lazy_markers_lookup_only_selected_ids_at_most100() {
@@ -411,8 +439,8 @@ fn lazy_markers_real_store_preserves_pending_delivery_and_ready_cached_summary()
     for n in 1..=10 {
         db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode,author_role) VALUES(?1,'i','t',?2,'ordinary','s',?3,?2,0,'lazy','agent')",rusqlite::params![format!("msg-{n}"),n,full_body]).unwrap();
     }
-    db.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-2','i','scope','op',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy');
-        INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-2','msg-2','t','s');
+    db.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES('prep-2','i','scope','op',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',0);
+        INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES('prep-2','msg-2','t','s',0);
         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('prep-2','msg-2','i','t',2,0,2,0,1,0);").unwrap();
     let claim = CallerClaim {
         instance: "i".into(),
@@ -890,8 +918,18 @@ fn lazy_markers_manifest_warning_history_and_body_render_readonly() {
     let (history, _) = history_result.unwrap();
     assert!(history.contains("warn-id"), "{history}");
     assert!(history.contains("ordinary control"), "{history}");
-    assert!(history.contains("[p0] ordinary-id"), "{history}");
+    // ht-yha.66 M2: a recorded-ordinary p0 message gets no marker row; p1 lazy-id none either.
+    assert!(!history.contains("] ordinary-id\n"), "{history}");
     assert!(!history.contains("] lazy-id\n"), "{history}");
+    assert!(
+        client
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| matches!(c, Command::MessageDeliveryModes(_))),
+        "the mode lookup ran for the history read"
+    );
     let (body, _) = body_result.unwrap();
     assert!(body.contains("warn-id"), "{body}");
     assert!(!body.contains("[p"), "{body}");

@@ -328,7 +328,7 @@ fn lazy_row_changes_the_fingerprint_when_it_publishes_not_when_it_stages() {
         "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',0,'p','b',0,'codex','lazy-session','e','cooperative_top_level',0,'tm','inc');\
          INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t2','s','joined');\
          INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t2','s',1,1);\
-         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-1','i','scope','prep-1',zeroblob(32),'t2',0,0,0,0,0,0,0,'building','lazy');",
+         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES('prep-1','i','scope','prep-1',zeroblob(32),'t2',0,0,0,0,0,0,0,'building','lazy',1);",
     )
     .unwrap();
     let staged_from = fp(&store);
@@ -342,7 +342,7 @@ fn lazy_row_changes_the_fingerprint_when_it_publishes_not_when_it_stages() {
         &store,
         &conn,
         "lazy row publication",
-        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('msg-1','i','t2',1,'ordinary',7,'passive',0,'lazy');\
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES('msg-1','i','t2',1,'ordinary',7,'passive',0,'lazy',1);\
          INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('prep-1','msg-1','i','t2',7,0,1,0,1,0);",
     );
     let published = fp(&store);
@@ -595,8 +595,8 @@ fn seed_stall_row(
     body_len: usize,
 ) {
     conn.execute(
-        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES(?1,'i','scope',?1,zeroblob(32),'t2',0,0,0,0,0,0,0,'building','lazy')",
-        [format!("prep-{n}")],
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES(?1,'i','scope',?1,zeroblob(32),'t2',0,0,0,0,0,0,0,'building','lazy',?2)",
+        rusqlite::params![format!("prep-{n}"), priority],
     )
     .unwrap();
     conn.execute(
@@ -605,8 +605,8 @@ fn seed_stall_row(
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES(?1,'i','t2',?2,'ordinary',?3,?4,?5,'lazy')",
-        rusqlite::params![format!("msg-{n}"), n, decision_seq, "x".repeat(body_len), decision_at],
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES(?1,'i','t2',?2,'ordinary',?3,?4,?5,'lazy',?6)",
+        rusqlite::params![format!("msg-{n}"), n, decision_seq, "x".repeat(body_len), decision_at, priority],
     )
     .unwrap();
     conn.execute(

@@ -49,9 +49,10 @@ fn lazy_in(db: &Connection, thread: &str, n: i64, priority: i64) {
         [],
     )
     .unwrap();
-    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES(?1,'i','scope',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy')",params![format!("prep-{n}"),thread]).unwrap();
+    // The row, its preparation and its message carry one priority (lazy_recipient_source, lazy_manifest_source).
+    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES(?1,'i','scope',?1,zeroblob(32),?3,0,0,0,0,0,0,0,'building','lazy',?2)",params![format!("prep-{n}"),priority,thread]).unwrap();
     db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES(?1,?2,?4,'s',?3)",params![format!("prep-{n}"),format!("msg-{n}"),priority,thread]).unwrap();
-    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,actor_seat_id) VALUES(?1,'i',?3,?2,'ordinary',?2,'passive',0,'lazy','a')",params![format!("msg-{n}"),n,thread]).unwrap();
+    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,actor_seat_id,priority) VALUES(?1,'i',?4,?2,'ordinary',?2,'passive',0,'lazy','a',?3)",params![format!("msg-{n}"),n,priority,thread]).unwrap();
     db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'i',?4,?3,0,?3,0,1,0)",params![format!("prep-{n}"),format!("msg-{n}"),n,thread]).unwrap();
 }
 

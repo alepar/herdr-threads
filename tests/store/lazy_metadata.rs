@@ -40,8 +40,8 @@ fn setup(iso: &TestIsolation) -> (SqliteStore, Connection) {
     db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('fm','foreign','ft',1,'ordinary',1,'foreign',0,'lazy');
         INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at) VALUES('block','i','t','v1',0,0,1,2,'hash','cached narrative','s','model','prompt',0);
         INSERT INTO summary_jobs(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,created_at,lease_seat_id,lease_token,lease_until) VALUES('summary-job','i','t','v1',0,1,3,4,0,'s','lease',9000);
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-2','i','scope','op',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy');
-        INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-2','msg-2','t','s');
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES('prep-2','i','scope','op',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',0);
+        INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES('prep-2','msg-2','t','s',0);
         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('prep-2','msg-2','i','t',2,0,2,0,1,0);").unwrap();
     (
         SqliteStore::new(context, "i", StoreSettings::default()).unwrap(),

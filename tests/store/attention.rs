@@ -2647,7 +2647,7 @@ fn relevance_publish_unrelated_lazy(db: &mut Connection, n: u32) {
     let tx = db.transaction().unwrap();
     let preparation = format!("prep-relevance-churn-{n}");
     let operation = format!("relevance-churn-{n}");
-    tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'i','seat:o',?2,zeroblob(32),'relevance-unrelated',0,0,0,0,0,0,0,'building','lazy')",params![preparation,operation]).unwrap();
+    tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES (?1,'i','seat:o',?2,zeroblob(32),'relevance-unrelated',0,0,0,0,0,0,0,'building','lazy',1)",params![preparation,operation]).unwrap();
     let (mut recipients, mut warnings) = (0, 0);
     stage_recipient(
         &tx,
@@ -3922,9 +3922,9 @@ fn presentation_capacity_due_exact_keys_have_bounded_actual_sql_plans_and_vm() {
         }
         db.execute_batch("UPDATE host_instances SET decision_seq=5000 WHERE id='i';
             UPDATE seats SET nudge_threshold=-1 WHERE id='s';
-            INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES ('prep-due-lazy','i','scope','lazy-op',zeroblob(32),'t3',0,0,0,0,0,0,0,'building','lazy'),('prep-due-unpublished','i','scope','unpublished-op',zeroblob(32),'t3',0,0,0,0,0,0,0,'building','lazy');
+            INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES ('prep-due-lazy','i','scope','lazy-op',zeroblob(32),'t3',0,0,0,0,0,0,0,'building','lazy',1),('prep-due-unpublished','i','scope','unpublished-op',zeroblob(32),'t3',0,0,0,0,0,0,0,'building','lazy',1);
             INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES ('prep-due-lazy','msg-due-lazy','t3','s'),('prep-due-unpublished','msg-due-unpublished','t3','s');
-            INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,delivery_mode) VALUES ('msg-due-lazy','i','t3',50,'ordinary','lazy body',0,30,'lazy'),('msg-due-unpublished','i','t3',51,'ordinary','not published',0,32,'lazy'),('future-message','i','t3',52,'ordinary','future',0,9999,'ordinary');
+            INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,delivery_mode,priority) VALUES ('msg-due-lazy','i','t3',50,'ordinary','lazy body',0,30,'lazy',1),('msg-due-unpublished','i','t3',51,'ordinary','not published',0,32,'lazy',1),('future-message','i','t3',52,'ordinary','future',0,9999,'ordinary',0);
             INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('prep-due-lazy','msg-due-lazy','i','t3',30,0,50,0,1,0);").unwrap();
         let binding = crate::protocol::ids::BindingId::new(db.query_row("SELECT binding_id FROM occupant_bindings WHERE seat_id='s' AND native_session='due-session'", [], |r|r.get::<_,String>(0)).unwrap());
         db.execute(
@@ -4141,9 +4141,9 @@ fn presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settl
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t3','s','joined');
         INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES ('replay-A','t3',50),('replay-B','t3',0);
         INSERT INTO receipt_state(message_id,seat_id,state,acked_at,ack_actor_seat_id,ack_generation,ack_observation,ack_binding_id) VALUES ('m3','s','acked',1,'s',1,'cooperative_top_level','replay-A');
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES ('prep-replay-lazy','i','scope','prep-replay-lazy',zeroblob(32),'t3',0,0,0,0,0,0,0,'building','lazy');
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES ('prep-replay-lazy','i','scope','prep-replay-lazy',zeroblob(32),'t3',0,0,0,0,0,0,0,'building','lazy',1);
         INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,state,legacy_pending) VALUES ('prep-replay-lazy','msg-replay-lazy','t3','s','pending',0);
-        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,delivery_mode) VALUES ('msg-replay-lazy','i','t3',50,'ordinary','lazy body',0,30,'lazy');
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,delivery_mode,priority) VALUES ('msg-replay-lazy','i','t3',50,'ordinary','lazy body',0,30,'lazy',1);
         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('prep-replay-lazy','msg-replay-lazy','i','t3',30,0,50,0,1,0);
         UPDATE lazy_recipients SET state='displayed' WHERE message_id='msg-replay-lazy';").unwrap();
     let seat = SeatId::new("s");

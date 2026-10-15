@@ -361,3 +361,43 @@ fn read_modes_annotation_len_is_the_prepended_bytes() {
     assert_eq!(modes.annotation_len(), 11 + 13);
     assert_eq!(ReadModes::default().annotation_len(), 0);
 }
+
+// Kills (ht-yha.66 M2): a `[p0] <id>` row for a recorded-ordinary message (pre-upgrade, its p0
+// implied by its mode; or with explicit ACK recipients, whose ACK line already marks it), a
+// marker for a default-priority delivery-row send, or an annotation length that counts the
+// dropped rows.
+#[test]
+fn read_modes_mark_only_delivery_row_sends_with_a_non_default_priority() {
+    use crate::protocol::{
+        commands::DeliveryMode, ids::MessageId, priority::DeliveryPriority,
+        results::MessageDeliveryMode,
+    };
+    let mode = |id: &str, delivery_mode, priority| MessageDeliveryMode {
+        message: MessageId::new(id),
+        delivery_mode,
+        priority: Some(DeliveryPriority::new(priority).unwrap()),
+    };
+    let modes = ReadModes {
+        marked: ReadModes::rows(vec![
+            mode("msg-old", DeliveryMode::Ordinary, 0),
+            mode("msg-ack", DeliveryMode::Ordinary, 0),
+            mode("msg-p0", DeliveryMode::Lazy, 0),
+            mode("msg-p3", DeliveryMode::Lazy, 3),
+            mode("msg-p1", DeliveryMode::Lazy, 1),
+        ])
+        .collect(),
+        enforce_final_bound: false,
+    };
+    assert_eq!(
+        modes.marked,
+        vec![
+            (MessageId::new("msg-p0"), "[p0]"),
+            (MessageId::new("msg-p3"), "[p3]"),
+        ]
+    );
+    assert_eq!(
+        modes.annotate(b"x".to_vec()),
+        b"[p0] msg-p0\n[p3] msg-p3\nx".to_vec()
+    );
+    assert_eq!(modes.annotation_len(), 12 + 12);
+}

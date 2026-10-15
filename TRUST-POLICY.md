@@ -23,6 +23,9 @@ no delivery or wake decision reads the seat-wide delivery-row state (A8).
 Amended 2026-10-14 for connected-only pending views (ht-yha.57): every disconnect, process exit included, drops
 the binding's view and its next connected transition re-seeds it from its cursors and display marks; a
 disconnected binding costs publication nothing (A8).
+Amended 2026-10-15 for pre-upgrade preparations resumed after the priority upgrade (ht-yha.66): a v0.11
+preparation that already staged a receipt for a non-ACK audience member finishes in that whole-audience receipt
+shape, never a mixed one; the recorded `delivery_mode` also decides whether a read shows a `[pN]` row (A8).
 
 ## Abstract
 
@@ -803,8 +806,15 @@ cannot be combined with explicit ACK recipients (the daemon refuses it, as it re
 ACK recipients). Receipts, deadlines, overdue warnings and ACK obligations therefore exist only for explicit ACK
 recipients; the old rule that every joined agent owes an ACK for an ordinary message ended. A priority-0 row-only
 send keeps the send-time unavailable-recipient warning (sender feedback, not an obligation); a priority above 0
-produces none. The recorded `delivery_mode` column is audit only, written `ordinary` iff the send has explicit
-ACK recipients and `lazy` otherwise, and is never read for decisions; an old client's modes map `ordinary` to
+produces none. The one exception is a preparation staged before the upgrade (v0.11, every joined agent owed an
+ACK) and resumed after it: when it already holds a receipt for a seat outside its explicit ACK set, its remaining
+non-human audience members are staged as receipts too, so it publishes in that recorded shape and never as a mixed
+audience of receipts and rows; a preparation staged after the upgrade never holds such a receipt. A pre-upgrade
+preparation without explicit ACK recipients cannot resume at all (its frozen receipt duration no longer matches),
+so it is discarded and restaged under D9. The recorded `delivery_mode` column is audit only, written `ordinary`
+iff the send has explicit ACK recipients and `lazy` otherwise, and is never read for delivery decisions (the text
+read annotation reads it only to omit the `[pN]` row of an `ordinary` message, whose ACK line or pre-upgrade mode
+already marks it); an old client's modes map `ordinary` to
 priority 0 and `lazy` to priority 1 (a request's own priority wins; its payload digest covers the priority only
 when carried, so journaled old-shape intents retry unchanged). A delivery audience is frozen by canonical
 preparation and publication; recipient identity is immutable, and its pending/displayed progress is monotonic.

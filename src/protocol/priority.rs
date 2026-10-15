@@ -80,6 +80,17 @@ impl DeliveryPriority {
         (!text.is_empty()).then_some(text)
     }
 
+    /// The history/search/read/follow annotation of a published message: [`Self::marker`] only when
+    /// its recorded mode is `lazy` (a delivery-row send). A recorded-`ordinary` message is either
+    /// pre-upgrade (its p0 is implied by its mode) or carries explicit ACK recipients (its ACK line
+    /// already marks it), so it gets no marker row.
+    pub fn read_marker(self, recorded: DeliveryMode) -> Option<&'static str> {
+        match recorded {
+            DeliveryMode::Lazy => self.marker(),
+            DeliveryMode::Ordinary => None,
+        }
+    }
+
     pub fn is_default(&self) -> bool {
         *self == Self::DEFAULT
     }

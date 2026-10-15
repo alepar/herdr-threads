@@ -73,7 +73,7 @@ fn publish_lazy(store: &SqliteStore, n: i64, decision_at: i64) {
 fn stage_lazy(store: &SqliteStore, n: i64) {
     let db = store.context.open_writer().unwrap();
     db.execute(
-        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES(?1,'i','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy')",
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES(?1,'i','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',1)",
         [format!("prep-{n}")],
     )
     .unwrap();
@@ -89,7 +89,7 @@ fn stage_lazy(store: &SqliteStore, n: i64) {
 fn publish_staged(store: &SqliteStore, n: i64, decision_seq: i64, decision_at: i64) {
     let db = store.context.open_writer().unwrap();
     db.execute(
-        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES(?1,'i','t',?2,'ordinary',?3,'passive',?4,'lazy')",
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES(?1,'i','t',?2,'ordinary',?3,'passive',?4,'lazy',1)",
         params![format!("msg-{n}"), n, decision_seq, decision_at],
     )
     .unwrap();
@@ -342,7 +342,7 @@ fn publication_sets_the_reason_bit_only_for_recipients_whose_threshold_admits_th
     let mut db = store.context.open_writer().unwrap();
     db.execute_batch(
         "INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('n','i','unresolved','native',1,0);\
-         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-1','i','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy');\
+         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES('prep-1','i','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',1);\
          INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-1','msg-1','t','s');\
          INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-1','msg-1','t','n');",
     )

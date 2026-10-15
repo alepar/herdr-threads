@@ -187,7 +187,7 @@ fn unpublished_backlog_is_never_visited() {
     let mut db = db();
     enroll_binding(&db, "sess-A", None);
     db.execute("INSERT OR IGNORE INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('a','i','resolved','native',1,0)", []).unwrap();
-    db.execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10000) INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) SELECT 'prep-stg'||i,'i','scope','prep-stg'||i,zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy' FROM n", []).unwrap();
+    db.execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10000) INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) SELECT 'prep-stg'||i,'i','scope','prep-stg'||i,zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',1 FROM n", []).unwrap();
     db.execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10000) INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) SELECT 'prep-stg'||i,'msg-stg'||i,'t','s' FROM n", []).unwrap();
     let staged: i64 = db
         .query_row(
