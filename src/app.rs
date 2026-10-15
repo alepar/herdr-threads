@@ -1465,6 +1465,19 @@ async fn run_elected_impl<R>(
 where
     R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
 {
+    // Step 0: a pending `sync resync` backs up and moves the damaged store
+    // aside, so every later step runs against a missing store (the key is
+    // loaded, not created). The plan is held for the rebuild's composition
+    // (pinned rx source, dial targets, salvage); until then only its
+    // presence is logged.
+    let resync_plan = crate::sync::resync::resume_at_start(paths, clock.as_ref())?;
+    if let Some(plan) = &resync_plan {
+        eprintln!(
+            "resync: rebuilding from {}; backup at {}",
+            plan.from,
+            plan.backup_db.display()
+        );
+    }
     // The node's identity comes from its key, loaded (or created for a new
     // node) before election; the descriptor and the store `instance` string
     // carry its uuid. node.json is a derived hint, written here so clients

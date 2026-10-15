@@ -1430,6 +1430,45 @@ impl crate::sync::sync_store::SyncStorePort for SqliteStore {
     }
 }
 
+impl crate::sync::resync::ResyncStore for SqliteStore {
+    fn peer_tag(
+        &self,
+        node: crate::node::NodeUuid,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::node::NodeTag>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        let is_self: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM local_node WHERE id = ?1)",
+                [node.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(store_error)?;
+        if is_self {
+            return Ok(None);
+        }
+        Ok(node_directory::get(&db, node)
+            .map_err(store_error)?
+            .map(|row| row.tag))
+    }
+
+    fn targets_reaching(
+        &self,
+        node: crate::node::NodeUuid,
+        budget: &CallBudget,
+    ) -> Result<Vec<sync_dial_targets::DialTarget>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        Ok(sync_dial_targets::enabled(&db)?
+            .into_iter()
+            .filter(|target| target.learned_node == Some(node))
+            .collect())
+    }
+}
+
 impl StorePort for SqliteStore {
     fn presentation_render_selection(
         &self,
