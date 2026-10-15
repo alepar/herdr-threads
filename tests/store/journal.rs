@@ -1248,7 +1248,8 @@ fn ingest_own_active_log_is_ahead_of_self() {
     let (ctx, mut conn) = opened_b(&sb, 77);
     let own = load_envelope(&conn, 1);
     let rows = journal_rows(&conn);
-    let outcome = ingest_into(&ctx, &mut conn, &own.log, std::slice::from_ref(&own)).unwrap();
+    let ahead = signed_entry(&identity_b(), own.log, 2, own.hash, r#"{"id":"ahead"}"#);
+    let outcome = ingest_into(&ctx, &mut conn, &own.log, std::slice::from_ref(&ahead)).unwrap();
     assert_eq!(
         outcome,
         IngestOutcome::Fork {
@@ -1256,8 +1257,45 @@ fn ingest_own_active_log_is_ahead_of_self() {
             evidence: ForkEvidence::AheadOfSelf {
                 log: own.log,
                 my_head: head(1, own.hash),
-                entry: Box::new(own),
+                entry: Box::new(ahead),
             },
+        }
+    );
+    assert_eq!(journal_rows(&conn), rows);
+}
+
+#[test]
+fn ingest_own_active_log_redelivered_is_duplicate() {
+    let sb = Store::new();
+    let (ctx, mut conn) = opened_b(&sb, 77);
+    let own = load_envelope(&conn, 1);
+    let rows = journal_rows(&conn);
+    let outcome = ingest_into(&ctx, &mut conn, &own.log, std::slice::from_ref(&own)).unwrap();
+    assert_eq!(
+        outcome,
+        IngestOutcome::Stored {
+            stored: 0,
+            duplicates: 1,
+            head: head(1, own.hash),
+        }
+    );
+    assert_eq!(journal_rows(&conn), rows);
+}
+
+#[test]
+fn ingest_own_active_log_forged_is_corrupt() {
+    let sb = Store::new();
+    let (ctx, mut conn) = opened_b(&sb, 77);
+    let own = load_envelope(&conn, 1);
+    let rows = journal_rows(&conn);
+    let forged = signed_entry(&identity(), own.log, 2, own.hash, r#"{"id":"forged"}"#);
+    let outcome = ingest_into(&ctx, &mut conn, &own.log, std::slice::from_ref(&forged)).unwrap();
+    assert_eq!(
+        outcome,
+        IngestOutcome::Corrupt {
+            log: own.log,
+            counter: 2,
+            reason: EnvelopeError::BadSignature,
         }
     );
     assert_eq!(journal_rows(&conn), rows);

@@ -151,7 +151,7 @@ Invariants that the store functions keep, and that `sync verify` (ht-5fr.8) and 
 
 `Proof { log, x, held: Envelope, conflicting: Envelope }`. "Held" is whichever entry this node stores in `journal`; when it stores neither, held is the lower `(counter, hash)`. The freeze bound is `x - 1`.
 
-`classify_ahead_of_self(my_head: (u64, [u8;32]), my_hash_at: impl Fn(u64) -> Option<[u8;32]>, pubkey, entry) -> AheadClass` covers `ForkEvidence::AheadOfSelf`. Journal's ChainRules raises that variant before verifying, so this function verifies first:
+`classify_ahead_of_self(my_head: (u64, [u8;32]), my_hash_at: impl Fn(u64) -> Option<[u8;32]>, pubkey, entry) -> AheadClass` covers `ForkEvidence::AheadOfSelf`. Journal's ChainRules dedupes and verifies the self log before raising that variant; this function still verifies first because it is also called on Have-time and forwarded fork references that never passed through ingest:
 - `entry.verify` fails → `Corrupt`;
 - `entry.counter ≤ my_head.0`: an equal stored hash gives `NotFork`; otherwise `Fork(Proof{x: entry.counter})`, with held being my entry at that counter;
 - `entry.counter == my_head.0 + 1`: `entry.prev_hash == my_head.1` gives `Restore`; otherwise `Fork(Proof{x: my_head.0})`, with held being my head entry (a prev-link proof);
@@ -485,7 +485,7 @@ Order: 1 → 2 → (3, 4) → 5 → 6 → 7 → 8 → 9.
 - Owns: the rule that a proof is two validly signed entries proven distinct at one counter (same counter, or a prev-link mismatch), the choice of held versus conflicting entry, the proof counter `x` and so the freeze bound `x - 1`, and the corrupt-versus-fork split (a bad signature is never a fork).
 - Hides: the order of the verify, counter-distance and prev-link checks.
 - Must not: touch the store, the clock or the network, act on a verdict, or read payloads.
-- Relationships: a sibling of ChainRules, which raises `AheadOfSelf` before verifying, so this verifies first. It depends only on Envelope and LogKey. Its callers are `IncarnationsSink::on_fork` (synchronously, for `AheadOfSelf`), the worker (ingest `Conflict`, Have-time and forwarded `ForkRef` replies), and the re-check inside `owner_rotate`/`restore_rotate`. Those pure functions are the only part of `sync::incarnations` that `store::incarnations` uses.
+- Relationships: a sibling of ChainRules, which dedupes and verifies the self log before raising `AheadOfSelf`; this still verifies first because it is also called on Have-time and forwarded fork references that never passed through ingest. It depends only on Envelope and LogKey. Its callers are `IncarnationsSink::on_fork` (synchronously, for `AheadOfSelf`), the worker (ingest `Conflict`, Have-time and forwarded `ForkRef` replies), and the re-check inside `owner_rotate`/`restore_rotate`. Those pure functions are the only part of `sync::incarnations` that `store::incarnations` uses.
 - Errors: none of its own. `Corrupt{which, err}` carries the `EnvelopeError`, and callers `match` every variant.
 
 **IncarnationStore (`store::incarnations`)** — new store module, the only owner of `sync_forks`, `sync_branches` and `sync_reissues`, and the single place where repair decisions become rows.

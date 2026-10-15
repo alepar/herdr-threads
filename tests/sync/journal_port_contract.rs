@@ -501,14 +501,34 @@ mod cases {
                 }
             }
         );
-        // Even an entry the node holds is evidence, not a duplicate.
-        assert!(matches!(
+        // An own entry the node already holds is a duplicate, not evidence.
+        assert_eq!(
             ingest(s, &own, &genesis),
-            IngestOutcome::Fork {
+            IngestOutcome::Stored {
                 stored: 0,
-                evidence: ForkEvidence::AheadOfSelf { .. }
+                duplicates: 1,
+                head: stored_head(1, &genesis)
             }
-        ));
+        );
+        assert_eq!(head(s, &own), Some(stored_head(1, &genesis)));
+    }
+
+    pub fn ingest_self_log_forged_is_corrupt(s: &dyn Subject) {
+        let own = s.self_log();
+        let genesis = s
+            .port()
+            .serve(&own, 1, BatchLimits::default(), &budget())
+            .unwrap();
+        let id = own_identity();
+        let forged = seal(&id, &remote(), own, 2, genesis[0].hash, r#"{"n":2}"#.into());
+        assert_eq!(
+            ingest(s, &own, &[forged]),
+            IngestOutcome::Corrupt {
+                log: own,
+                counter: 2,
+                reason: EnvelopeError::BadSignature
+            }
+        );
         assert_eq!(head(s, &own), Some(stored_head(1, &genesis)));
     }
 
@@ -1064,6 +1084,7 @@ contract!(
     ingest_gap,
     ingest_fork_conflict,
     ingest_fork_ahead_of_self,
+    ingest_self_log_forged_is_corrupt,
     ingest_frozen,
     ingest_corrupt_hash_mismatch,
     ingest_corrupt_bad_signature,

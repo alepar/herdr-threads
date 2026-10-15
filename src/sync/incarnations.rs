@@ -12,8 +12,10 @@
 //! Must not: touch the store, the clock or the network, act on a verdict, or
 //! read payloads.
 //!
-//! Role: a sibling of the chain rules, which raise `AheadOfSelf` before
-//! verifying, so these verify first. Depends only on [`Envelope`] and
+//! Role: a sibling of the chain rules, which dedupe and verify the self log
+//! before raising `AheadOfSelf`; these still verify first because they are
+//! also called on Have-time and forwarded fork references that never passed
+//! through ingest. Depends only on [`Envelope`] and
 //! [`LogKey`]. Callers: the incarnations sink (synchronously, for
 //! `AheadOfSelf`), the worker (ingest conflicts, Have-time and forwarded
 //! fork references) and the re-check inside owner/restore rotation. A new

@@ -256,7 +256,9 @@ Kicks (`src/service/kicks.rs`): `journal` maps to `Lane::Apply`. `sync_logs`, `j
 
 | Situation | ChainStep | Action |
 |---|---|---|
-| `log` is this node's active self log | `AheadOfSelf` | stop; `Fork{evidence: AheadOfSelf{log, my_head, entry}}` |
+| `log` is this node's active self log, `counter ≤ contiguous`, same hash as stored | `Duplicate` | skip |
+| `log` is this node's active self log, `verify` fails | `Corrupt(err)` | roll back the whole transaction |
+| `log` is this node's active self log, validly signed, not held | `AheadOfSelf` | stop; `Fork{evidence: AheadOfSelf{log, my_head, entry}}` |
 | no row, `counter != 1` | `Gap{expected: 1}` | stop |
 | no row, `counter == 1` | `Genesis` | `genesis_pubkey` + `verify` (failure → Corrupt); insert `sync_logs` row; store |
 | `counter ≤ contiguous`, same hash as stored | `Duplicate` | skip |
@@ -267,7 +269,7 @@ Kicks (`src/service/kicks.rs`): `journal` maps to `Lane::Apply`. `sync_logs`, `j
 | `counter == contiguous+1`, `verify` fails | `Corrupt(err)` | roll back the whole transaction |
 | `counter == contiguous+1`, valid | `Append` | store |
 
-   A different-hash or prev-mismatch entry whose signature does not verify is `Corrupt`, not a fork. Store means: insert the journal row with `apply_state='pending'` and `ingested_at = decision.utc`, `Hlc::fold`, and advance `contiguous_counter`/`head_hash`. After the loop, update `skew_ahead_ms` and commit. The stored prefix stays committed on `Gap`, `Fork` and `Frozen`.
+   A different-hash or prev-mismatch entry whose signature does not verify is `Corrupt`, not a fork; the same holds for entries of the active self log, which are deduplicated and verified before they count as `AheadOfSelf` evidence. Store means: insert the journal row with `apply_state='pending'` and `ingested_at = decision.utc`, `Hlc::fold`, and advance `contiguous_counter`/`head_hash`. After the loop, update `skew_ahead_ms` and commit. The stored prefix stays committed on `Gap`, `Fork` and `Frozen`.
 3. **Outcome** `IngestOutcome`:
    - `Stored{stored, duplicates, head}`
    - `Gap{stored, expected}`
@@ -497,7 +499,7 @@ All store-level tests build stores with test identities: `NodeIdentity::from_see
   - a flipped byte gives `Corrupt` with nothing stored;
   - a foreign key gives `Corrupt(BadSignature)`;
   - two validly signed entries at one counter give `Fork{Conflict}` with the prefix kept;
-  - an entry for B's own active log gives `Fork{AheadOfSelf}`;
+  - a validly signed unheld entry for B's own active log gives `Fork{AheadOfSelf}`; a re-delivered held one is a duplicate and a forged one is `Corrupt`;
   - a frozen log gives `Frozen`;
   - headroom set to `u64::MAX` gives `Headroom` with nothing opened;
   - ingesting B's own old incarnation is ordinary ingest;
