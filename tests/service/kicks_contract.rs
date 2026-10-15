@@ -90,7 +90,8 @@ fn lane_set_is_a_set_over_all_lanes() {
             "retention",
             "admission-observer",
             "archival",
-            "apply"
+            "apply",
+            "sync"
         ]
     );
 }
@@ -152,11 +153,39 @@ fn retention_origin_discards_all() {
 }
 
 #[test]
-fn journal_kicks_apply() {
-    assert_eq!(lanes_for_table("journal"), LaneSet::EMPTY.with(Lane::Apply));
+fn journal_kicks_apply_and_sync() {
+    assert_eq!(
+        lanes_for_table("journal"),
+        LaneSet::EMPTY.with(Lane::Apply).with(Lane::Sync)
+    );
     assert!(!KNOWN_UNMAPPED.contains(&"journal"));
     assert!(mapped_tables().any(|table| table == "journal"));
     assert_eq!(Lane::Apply.name(), "apply");
+    assert_eq!(Lane::Sync.name(), "sync");
+}
+
+#[test]
+fn sync_logs_kicks_sync() {
+    assert_eq!(
+        lanes_for_table("sync_logs"),
+        LaneSet::EMPTY.with(Lane::Sync)
+    );
+    assert!(!KNOWN_UNMAPPED.contains(&"sync_logs"));
+    assert!(mapped_tables().any(|table| table == "sync_logs"));
+}
+
+#[test]
+fn sync_and_apply_origin_keep_sync() {
+    let sealed = LaneSet::EMPTY.with(Lane::Apply).with(Lane::Sync);
+    assert_eq!(
+        kicks_for_commit(Some(Lane::Apply), sealed),
+        LaneSet::EMPTY.with(Lane::Sync)
+    );
+    assert_eq!(kicks_for_commit(Some(Lane::Sync), sealed), sealed);
+    assert_eq!(
+        kicks_for_commit(Some(Lane::Retention), sealed),
+        LaneSet::EMPTY
+    );
 }
 
 #[test]
@@ -171,21 +200,20 @@ fn apply_origin_drops_apply() {
 
 #[test]
 fn lane_set_holds_eight_lanes_without_overflow() {
-    assert_eq!(Lane::COUNT, 7);
+    assert_eq!(Lane::COUNT, 8);
     assert_eq!(Lane::ALL.len(), Lane::COUNT);
-    // Every defined lane survives a bits round trip, including bit 6.
+    // Every defined lane survives a bits round trip, including bits 6 and 7.
     let all = Lane::ALL
         .into_iter()
         .fold(LaneSet::EMPTY, |set, lane| set.with(lane));
-    assert_eq!(all.to_bits(), 0b0111_1111);
+    assert_eq!(all.to_bits(), 0b1111_1111);
     assert_eq!(LaneSet::from_bits(all.to_bits()), all);
-    // An eighth lane (bit 7, ht-5fr.5's Sync) fits the u16 set; undefined
-    // high bits are masked off, never carried.
-    assert_eq!(LaneSet::from_bits(0xFFFF).to_bits(), 0b0111_1111);
-    assert_eq!(LaneSet::from_bits(1 << 7).to_bits(), 0);
+    // Undefined high bits are masked off, never carried.
+    assert_eq!(LaneSet::from_bits(0xFFFF).to_bits(), 0b1111_1111);
+    assert_eq!(LaneSet::from_bits(1 << 8).to_bits(), 0);
     assert_eq!(
-        LaneSet::from_bits(1 << 6).iter().collect::<Vec<_>>(),
-        [Lane::Apply]
+        LaneSet::from_bits(1 << 7).iter().collect::<Vec<_>>(),
+        [Lane::Sync]
     );
 }
 
