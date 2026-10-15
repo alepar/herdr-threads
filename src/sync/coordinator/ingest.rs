@@ -242,6 +242,8 @@ impl Actor {
             }
             IngestOutcome::Headroom => self.on_headroom(),
         }
+        // A pause, penalty or freeze can make the rest of a round unwantable.
+        self.update_rounds();
     }
 
     /// `Unwant` the log on its rx source and forget the source.
@@ -263,6 +265,20 @@ impl Actor {
         {
             src.last_progress = now;
         }
+        // Contact: the link's node is alive; the log's author is relayed
+        // (not directly heard) unless it is the link's node.
+        let wall = self.wall();
+        let link_node = self.links.get(&link_id).map(|l| l.handle.peer().node);
+        if let Some(node) = link_node {
+            self.contacts.record_direct(node, wall);
+        }
+        if link_node != Some(log.node) {
+            let author = SeenAge {
+                node: log.node,
+                age_ms: 0,
+            };
+            self.contacts.merge_seen(&[author], wall);
+        }
         self.retry_logs.remove(&log);
         if self.retry_logs.is_empty() && self.deps.pacer.attempts() > 0 {
             self.deps.pacer.on_success();
@@ -281,6 +297,7 @@ impl Actor {
         self.reselect_log(log);
         self.update_own_history();
         self.flush_have_deltas(now);
+        self.update_rounds();
     }
 
     /// The batch skipped ahead: ask the same source again from `expected`,

@@ -1,4 +1,5 @@
-//! Reachability gossip: the in-memory contact book.
+//! Reachability gossip (the in-memory contact book) and the round-complete
+//! signal ([`SyncSignals`]).
 //!
 //! Responsibility (ContactBook)
 //! - Owns: `node -> (last_contact_wall_ms, Direct | Relayed)`. It records
@@ -17,9 +18,13 @@
 //!   rules go in `store::sync_contacts::reach`, not here.
 
 use std::collections::BTreeMap;
+use std::sync::{Mutex, PoisonError};
+
+use tokio::sync::Notify;
 
 use super::frame::{MAX_SEEN_AGES, SeenAge};
 use crate::node::NodeUuid;
+use crate::protocol::time::MonoInstant;
 use crate::store::sync_contacts::{ContactVia, NodeContact, UNREACHABLE_AFTER_MS};
 
 /// A row is rewritten once its contact advanced this far past the stored one.
@@ -178,6 +183,133 @@ impl ContactBook {
                 contact.persisted = Some(row.last_contact_at);
             }
         }
+    }
+
+    /// Every row whose last contact is not what the store holds, regardless
+    /// of the advance and spacing rules: the final best-effort flush at
+    /// shutdown. Pass the accepted rows to [`Self::flushed`].
+    pub fn unflushed(&self) -> Vec<NodeContact> {
+        self.contacts
+            .iter()
+            .filter(|(_, contact)| contact.persisted != Some(contact.last_contact))
+            .map(|(node, contact)| NodeContact {
+                node: *node,
+                last_contact_at: contact.last_contact,
+                via: contact.via,
+            })
+            .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SyncSignals
+// ---------------------------------------------------------------------------
+
+/// Whether the first sync round is done, as [`SyncSignals::round_state`]
+/// answers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoundState {
+    /// No link is active (yet).
+    NoLinks,
+    /// Every active link completed a round that started at or after `since`.
+    Complete,
+    /// This many active links have not.
+    Pending { links: u32 },
+}
+
+/// One active link's round, as the actor publishes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LinkRound {
+    /// When the round started (the coordinator's monotonic clock).
+    pub started: MonoInstant,
+    pub complete: bool,
+}
+
+#[derive(Default)]
+struct Inner {
+    links: BTreeMap<u64, LinkRound>,
+    requested: Option<MonoInstant>,
+}
+
+/// The in-memory "first sync round complete" signal.
+///
+/// Responsibility (SyncSignals)
+/// - Owns: per active link the round start and completion, `request_round(at)`
+///   and `round_state(since) -> RoundState::{NoLinks, Complete, Pending{links}}`.
+/// - Hides: the completion rule (a full `Have` after the start, and every
+///   advertised-ahead log caught up or unwantable), which the actor applies
+///   before it publishes.
+/// - Must not: persist anything or block; it is a lock-protected snapshot the
+///   actor writes and the deadline lane reads.
+/// - Relationships: written only by the SyncCoordinator actor;
+///   `SyncHandle::signals()` hands the `Arc` to the deadline-lane composition
+///   in `app.rs` (ht-5fr.13). `request_round` records the request and wakes the
+///   actor, which sends `Have{full, ask: true}` on every active link.
+/// - Lifecycle: created by `SyncCoordinator::start`, shared as `Arc` for the
+///   daemon's life.
+/// - Role: new sync readiness signals go here; readers never inspect
+///   coordinator link state to decide whether sync caught up.
+#[derive(Default)]
+pub struct SyncSignals {
+    inner: Mutex<Inner>,
+    wake: Notify,
+}
+
+impl SyncSignals {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Ask for a fresh round at `at` on every active link: the request is
+    /// recorded (the latest wins) and the actor woken. Never waits. With no
+    /// active link the request waits for the first activation, whose round
+    /// starts later than `at`.
+    pub fn request_round(&self, at: MonoInstant) {
+        {
+            let mut inner = self.lock();
+            inner.requested = Some(inner.requested.map_or(at, |held| held.max(at)));
+        }
+        self.wake.notify_one();
+    }
+
+    /// `Complete` when every active link completed a round that started at or
+    /// after `since`.
+    pub fn round_state(&self, since: MonoInstant) -> RoundState {
+        let inner = self.lock();
+        if inner.links.is_empty() {
+            return RoundState::NoLinks;
+        }
+        let pending = inner
+            .links
+            .values()
+            .filter(|round| !(round.complete && round.started >= since))
+            .count();
+        match u32::try_from(pending) {
+            Ok(0) => RoundState::Complete,
+            Ok(links) => RoundState::Pending { links },
+            Err(_) => RoundState::Pending { links: u32::MAX },
+        }
+    }
+
+    // The actor's side.
+
+    /// Resolves when a round was requested since the last wake.
+    pub(super) async fn requested(&self) {
+        self.wake.notified().await;
+    }
+
+    /// Takes the recorded request, if any.
+    pub(super) fn take_request(&self) -> Option<MonoInstant> {
+        self.lock().requested.take()
+    }
+
+    /// Replaces the published rounds with the actor's current ones.
+    pub(super) fn publish(&self, rounds: BTreeMap<u64, LinkRound>) {
+        self.lock().links = rounds;
     }
 }
 
@@ -368,5 +500,92 @@ mod tests {
     #[test]
     fn nothing_is_due_without_contacts() {
         assert!(book().due_for_flush(1_000_000).is_empty());
+    }
+
+    #[test]
+    fn unflushed_lists_every_changed_row_ignoring_spacing() {
+        let mut book = book();
+        book.record_direct(node(2), 1_000);
+        let rows = book.due_for_flush(1_000);
+        book.flushed(&rows);
+        assert!(book.unflushed().is_empty(), "everything written");
+        book.record_direct(node(2), 2_000);
+        book.record_direct(node(3), 2_500);
+        let rows = book.unflushed();
+        assert_eq!(rows.len(), 2, "a 1 s advance and a new node both count");
+        assert!(
+            book.due_for_flush(3_000).is_empty(),
+            "the ordinary rules still hold"
+        );
+    }
+
+    fn round(started: u64, complete: bool) -> LinkRound {
+        LinkRound {
+            started: MonoInstant(started),
+            complete,
+        }
+    }
+
+    fn publish(signals: &SyncSignals, rounds: &[(u64, LinkRound)]) {
+        signals.publish(rounds.iter().copied().collect());
+    }
+
+    #[test]
+    fn round_state_no_links_pending_complete() {
+        let signals = SyncSignals::new();
+        assert_eq!(signals.round_state(MonoInstant(0)), RoundState::NoLinks);
+        publish(&signals, &[(1, round(10, false)), (2, round(10, true))]);
+        assert_eq!(
+            signals.round_state(MonoInstant(0)),
+            RoundState::Pending { links: 1 }
+        );
+        publish(&signals, &[(1, round(10, true)), (2, round(10, true))]);
+        assert_eq!(signals.round_state(MonoInstant(10)), RoundState::Complete);
+        publish(&signals, &[]);
+        assert_eq!(signals.round_state(MonoInstant(0)), RoundState::NoLinks);
+    }
+
+    #[test]
+    fn round_started_before_since_is_pending_even_when_complete() {
+        let signals = SyncSignals::new();
+        publish(&signals, &[(1, round(10, true)), (2, round(30, true))]);
+        assert_eq!(
+            signals.round_state(MonoInstant(11)),
+            RoundState::Pending { links: 1 },
+            "link 1 completed a round older than `since`"
+        );
+        assert_eq!(signals.round_state(MonoInstant(10)), RoundState::Complete);
+    }
+
+    #[test]
+    fn request_round_is_recorded_once_with_the_latest_time() {
+        let signals = SyncSignals::new();
+        assert_eq!(signals.take_request(), None);
+        signals.request_round(MonoInstant(5));
+        signals.request_round(MonoInstant(9));
+        signals.request_round(MonoInstant(7));
+        assert_eq!(signals.take_request(), Some(MonoInstant(9)));
+        assert_eq!(signals.take_request(), None, "taken");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn request_round_wakes_a_waiting_actor_and_leaves_a_permit_otherwise() {
+        let signals = std::sync::Arc::new(SyncSignals::new());
+        // A request made before anyone waits is not lost.
+        signals.request_round(MonoInstant(1));
+        tokio::time::timeout(std::time::Duration::from_secs(1), signals.requested())
+            .await
+            .expect("the stored permit resolves the wait");
+        // A waiter is woken by a later request.
+        let waiter = {
+            let signals = signals.clone();
+            tokio::spawn(async move { signals.requested().await })
+        };
+        tokio::task::yield_now().await;
+        signals.request_round(MonoInstant(2));
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+            .await
+            .expect("woken")
+            .unwrap();
     }
 }
