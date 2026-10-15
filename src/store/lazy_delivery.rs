@@ -1035,7 +1035,7 @@ pub fn cleanup_unpublished(
     let last_inspected = candidates.last().copied().unwrap_or(after);
     let published: bool = tx
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=?1)",
+            "SELECT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=?1) OR EXISTS(SELECT 1 FROM send_preparations WHERE id=?1 AND origin='replicated')",
             [preparation],
             |r| r.get(0),
         )

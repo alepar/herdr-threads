@@ -40,12 +40,12 @@ use crate::facts_seat::{Node, registry};
 use crate::facts_thread::sync_all;
 
 /// The hand-moved clock's UTC reading.
-const SENT_AT: i64 = 1_700_000_000_000;
-const FIVE_MIN: i64 = 300_000;
+pub const SENT_AT: i64 = 1_700_000_000_000;
+pub const FIVE_MIN: i64 = 300_000;
 
 // ---- payload helpers --------------------------------------------------------
 
-fn spec(seat: &SeatId, receipt: ReceiptObligation, deadline_at: Option<i64>) -> RecipientSpec {
+pub fn spec(seat: &SeatId, receipt: ReceiptObligation, deadline_at: Option<i64>) -> RecipientSpec {
     RecipientSpec {
         seat: seat.clone(),
         receipt,
@@ -53,7 +53,7 @@ fn spec(seat: &SeatId, receipt: ReceiptObligation, deadline_at: Option<i64>) -> 
     }
 }
 
-fn sent(
+pub fn sent(
     message: &MessageId,
     thread: &ThreadId,
     author: &SeatId,
@@ -88,7 +88,7 @@ impl Node {
     /// leaves one: `acks` are `(seat, frozen duration, eligible)` rows,
     /// `lazy` the staged lazy recipients. Returns the message ID the
     /// preparation derives.
-    fn stage_prep(
+    pub fn stage_prep(
         &self,
         thread: &ThreadId,
         mode: &str,
@@ -129,7 +129,7 @@ impl Node {
     }
 
     /// Authors `message.sent` on the journal route.
-    fn author_sent(&self, payload: &MessageSentPayload) -> Result<(), ApiError> {
+    pub fn author_sent(&self, payload: &MessageSentPayload) -> Result<(), ApiError> {
         self.run(|tx, d| {
             FactRoute::Journal
                 .emit::<MessageSent>(tx, self.ctx(), d, payload, None, |_, _, _| Ok(()))
@@ -139,16 +139,16 @@ impl Node {
 
     /// Authors `message.sent` a second time straight through the journal (a
     /// second entry carrying the same payload).
-    fn author_sent_again(&self, payload: &MessageSentPayload) -> Result<(), ApiError> {
+    pub fn author_sent_again(&self, payload: &MessageSentPayload) -> Result<(), ApiError> {
         self.run(|tx, d| journal::author::<MessageSent>(tx, self.ctx(), d, payload).map(|_| ()))
     }
 
-    fn count(&self, sql: &str) -> i64 {
+    pub fn count(&self, sql: &str) -> i64 {
         self.query(sql, |r| r.get(0))[0]
     }
 
     /// The rows one publication touches, as one comparable string.
-    fn publication_rows(&self) -> String {
+    pub fn publication_rows(&self) -> String {
         format!(
             "messages={} manifests={} jobs={} wake_work={} lazy={} prepared={} next_seq={:?} timeline={:?} events={}",
             self.count("SELECT count(*) FROM messages"),
@@ -186,7 +186,7 @@ impl Node {
     }
 
     /// Whether the staging table holds no leftover attribution.
-    fn staging_empty(&self) -> bool {
+    pub fn staging_empty(&self) -> bool {
         self.count("SELECT count(*) FROM fact_attribution_staging") == 0
     }
 }
@@ -629,9 +629,9 @@ fn staged_audience_mismatch_aborts_nothing_committed() {
 }
 
 #[test]
-fn message_without_a_preparation_is_not_yet_supported() {
-    // Until the synthesized branch lands (ht-5fr.4.16) a fact with no local
-    // preparation is refused with a clear, non-corrupt rejection.
+fn message_without_a_preparation_synthesizes_one() {
+    // No local preparation (an own old incarnation after a wipe): the
+    // synthesized branch builds a `replicated` one from the payload.
     let f = Fixture::new(86);
     let message = MessageId::new(
         send_message_id_for_preparation(&generate_public_id(
@@ -641,14 +641,16 @@ fn message_without_a_preparation_is_not_yet_supported() {
         .unwrap(),
     );
     let payload = f.ordinary_payload(&message);
-    let error = f.node.author_sent(&payload).unwrap_err();
-    assert_eq!(error.code, ErrorCode::Unsupported);
-    assert!(
-        error.detail.contains("without a local preparation"),
-        "{}",
-        error.detail
+    f.node.author_sent(&payload).unwrap();
+    assert_eq!(f.node.count_kind("message.sent"), 1);
+    assert_eq!(
+        f.node.count(&format!(
+            "SELECT count(*) FROM send_preparations WHERE origin='replicated' AND operation_key='{}'",
+            message.as_str()
+        )),
+        1
     );
-    assert_eq!(f.node.count_kind("message.sent"), 0);
+    assert!(f.node.message_row(&message).is_some());
 }
 
 // ---- origin authority --------------------------------------------------------
@@ -1139,4 +1141,144 @@ fn local_only_route_for_a_journal_less_thread_journals_nothing() {
         ),
         1
     );
+}
+
+// ---- remote recipients in the prep phase and the author build ---------------
+
+impl Sender {
+    /// Brings an agent seat and a human seat of a peer node into the store
+    /// (through `seat.created`, so the `needs` of a `message.sent` naming them
+    /// are met) and makes both members of the thread.
+    fn add_remote_members(&self) -> (SeatId, SeatId) {
+        let peer = Node::with(201, FactRegistry::builtins());
+        let (agent, human) = (peer.local_seat(), peer.local_seat());
+        peer.enroll(&agent, "codex", "peer-agent").unwrap();
+        peer.enroll(&human, "human", "peer-human").unwrap();
+        peer.publish(&agent).unwrap();
+        peer.publish(&human).unwrap();
+        fact_exchange::sync(&self.store, &peer.store);
+        let db = self.db();
+        for id in [&agent, &human] {
+            let kind: Option<String> = db
+                .query_row(
+                    "SELECT remote_kind FROM seats WHERE id=?1 AND is_local=0",
+                    [id.as_str()],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(kind.is_some(), "the peer seat arrived as a remote row");
+            db.execute(
+                "INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES (?1,?2,'joined','joined',1)",
+                params![self.thread.as_str(), id.as_str()],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,1,1)",
+                params![self.thread.as_str(), id.as_str()],
+            )
+            .unwrap();
+        }
+        db.execute(
+            "UPDATE threads SET membership_revision=membership_revision+2 WHERE id=?1",
+            [self.thread.as_str()],
+        )
+        .unwrap();
+        (agent, human)
+    }
+
+    fn sent_payload(&self) -> MessageSentPayload {
+        serde_json::from_slice(
+            &self
+                .db()
+                .query_row::<Vec<u8>, _, _>(
+                    "SELECT payload FROM journal WHERE kind='message.sent'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap(),
+        )
+        .unwrap()
+    }
+}
+
+#[test]
+fn remote_recipients_staged_without_availability_evidence() {
+    let s = Sender::new();
+    let (remote_agent, remote_human) = s.add_remote_members();
+    let request = s.request("op-remote", DeliveryMode::Ordinary, None);
+    let CommandResult::MessageSent(message) = s.send(&request).expect("the send") else {
+        panic!("not a MessageSent result")
+    };
+    let payload = s.sent_payload();
+    assert_eq!(payload.message, message);
+    let mut expected = vec![
+        spec(&s.acker, ReceiptObligation::Ack, Some(SENT_AT + FIVE_MIN)),
+        spec(&s.human, ReceiptObligation::None, None),
+        // The sender has no availability evidence for another node's agent:
+        // it owes a timed receipt from the send.
+        spec(
+            &remote_agent,
+            ReceiptObligation::Ack,
+            Some(SENT_AT + FIVE_MIN),
+        ),
+        // A remote human owes nothing, like a local one.
+        spec(&remote_human, ReceiptObligation::None, None),
+    ];
+    expected.sort_by(|a, b| a.seat.cmp(&b.seat));
+    assert_eq!(payload.recipients, expected);
+    let db = s.db();
+    let staged: Vec<(String, Option<String>, bool)> = db
+        .prepare("SELECT seat_id,availability_provenance,eligible_at_snapshot FROM prepared_recipients WHERE seat_id IN (?1,?2) ORDER BY seat_id")
+        .unwrap()
+        .query_map(params![remote_agent.as_str(), remote_human.as_str()], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        staged,
+        vec![(
+            remote_agent.as_str().to_owned(),
+            Some("remote".into()),
+            true
+        )],
+        "only the remote agent is staged, as remote and eligible"
+    );
+    assert_eq!(
+        s.count("SELECT warning_count FROM send_manifests"),
+        0,
+        "no unavailable warning for a remote seat"
+    );
+    assert_eq!(
+        s.count("SELECT count(*) FROM prepared_unavailable_warnings"),
+        0
+    );
+    assert_no_local_delivery_for_remote(&db);
+}
+
+#[test]
+fn lazy_send_lists_remote_members_but_stages_no_row_for_them() {
+    let s = Sender::new();
+    let (remote_agent, remote_human) = s.add_remote_members();
+    let request = s.request("op-remote-lazy", DeliveryMode::Lazy, None);
+    s.send(&request).expect("the send");
+    let payload = s.sent_payload();
+    let mut seats: Vec<&SeatId> = payload.recipients.iter().map(|r| &r.seat).collect();
+    seats.sort();
+    let mut want = vec![&s.acker, &s.human, &remote_agent, &remote_human];
+    want.sort();
+    assert_eq!(seats, want, "the audience names the remote members");
+    assert!(
+        payload
+            .recipients
+            .iter()
+            .all(|r| r.receipt == ReceiptObligation::None)
+    );
+    assert_eq!(
+        s.count("SELECT count(*) FROM lazy_recipients"),
+        2,
+        "only the two local members hold a lazy row"
+    );
+    assert_no_local_delivery_for_remote(&s.db());
 }

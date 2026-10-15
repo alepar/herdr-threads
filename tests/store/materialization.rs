@@ -859,6 +859,36 @@ fn send_attention_completion_stamps_completed_at() {
 }
 
 #[test]
+fn project_receipt_retired_ack_recipient_is_recipient_retired() {
+    // The recipient's retirement applied before the message did: the receipt
+    // projects `recipient_retired` at the seat's `retired_at`, not `pending`.
+    let mut db = fixture();
+    db.execute_batch("\
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq,home_node,is_local,remote_kind,published) VALUES('sr','34750f98bd59fcfc946da45aaabe933b','retired','native',0,0,777,5,'abababababababababababababababab',0,'agent',1);\
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,status) VALUES('p','34750f98bd59fcfc946da45aaabe933b','a','o',zeroblob(32),'t',0,0,0,0,0,0,1,2,'sealed');\
+        INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('p','t','s1',1,300,1),('p','t','sr',2,300,1);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','m','t',1,'ordinary','body',1000,10);\
+        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('34750f98bd59fcfc946da45aaabe933b','p','m','t',10,1000,1,0,2,0);\
+        INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('send','send_attention','p',3);\
+    ").unwrap();
+    drive(&mut db, "send");
+    let row = |seat: &str| -> (String, Option<i64>) {
+        db.query_row(
+            "SELECT state,retired_at FROM receipt_state WHERE message_id='m' AND seat_id=?1",
+            [seat],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!(row("sr"), ("recipient_retired".into(), Some(777)));
+    assert_eq!(
+        row("s1"),
+        ("pending".into(), None),
+        "a live recipient stays pending"
+    );
+}
+
+#[test]
 fn unavailable_send_materializes_due_deadline_without_availability() {
     let mut db = fixture();
     db.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('p','34750f98bd59fcfc946da45aaabe933b','a','o',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed'); INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('p','t','s1',1,300,0); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','m','t',1,'ordinary','body',1000,10); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('34750f98bd59fcfc946da45aaabe933b','p','m','t',10,1000,1,0,1,0); INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('send','send_attention','p',2);").unwrap();

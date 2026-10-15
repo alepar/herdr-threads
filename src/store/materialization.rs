@@ -727,7 +727,12 @@ fn project_receipt(
         EffectiveReceiptState::NotRequired => "pending",
     };
     let ack_required = i64::from(effective.state != EffectiveReceiptState::NotRequired);
-    tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_required) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(message_id,seat_id) DO UPDATE SET available_at=COALESCE(receipt_state.available_at,excluded.available_at),deadline_at=COALESCE(receipt_state.deadline_at,excluded.deadline_at),ack_required=MIN(receipt_state.ack_required,excluded.ack_required) WHERE receipt_state.state='pending'",params![message,seat,physical_state,effective.available_at,effective.deadline_at,ack_required]).map_err(store_error)?;
+    // An ack recipient already retired when the message applies (its retirement
+    // fact came first) is projected `recipient_retired` at the seat's `retired_at`.
+    let retired_at = (effective.state == EffectiveReceiptState::RecipientRetired)
+        .then_some(effective.retired_at)
+        .flatten();
+    tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_required,retired_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(message_id,seat_id) DO UPDATE SET available_at=COALESCE(receipt_state.available_at,excluded.available_at),deadline_at=COALESCE(receipt_state.deadline_at,excluded.deadline_at),ack_required=MIN(receipt_state.ack_required,excluded.ack_required) WHERE receipt_state.state='pending'",params![message,seat,physical_state,effective.available_at,effective.deadline_at,ack_required,retired_at]).map_err(store_error)?;
     if attend && effective.state == EffectiveReceiptState::Pending && prior.is_none() {
         DeliveryTail::attention(tx, seat, 0)?;
     }
@@ -789,7 +794,7 @@ fn cleanup_unit(
         }
         return Ok((position, true));
     }
-    let safe:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM send_preparations p WHERE p.id=?1 AND p.status='discarded' AND NOT EXISTS(SELECT 1 FROM send_manifests sm WHERE sm.preparation_id=p.id))",[preparation],|r|r.get(0)).map_err(store_error)?;
+    let safe:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM send_preparations p WHERE p.id=?1 AND p.origin='local' AND p.status='discarded' AND NOT EXISTS(SELECT 1 FROM send_manifests sm WHERE sm.preparation_id=p.id))",[preparation],|r|r.get(0)).map_err(store_error)?;
     if !safe {
         return Err(api_error(
             ErrorCode::Conflict,
