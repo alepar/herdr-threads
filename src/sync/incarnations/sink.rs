@@ -351,6 +351,12 @@ impl IncarnationsSink {
         self.state().requests.penalize(source, log, now);
     }
 
+    /// Whether `(source, log)` is avoided for branch pulls right now.
+    pub fn is_penalized(&self, source: NodeUuid, log: LogKey) -> bool {
+        let now = self.now();
+        self.state().requests.is_penalized(source, log, now)
+    }
+
     /// The worker's 1 s timer: fail over requests unanswered for 30 s,
     /// queueing the new sends. Returns the branches left with no source.
     pub fn sweep(&self) -> Vec<BranchKey> {
@@ -1059,7 +1065,9 @@ mod tests {
         rig.clock.advance(30_000);
         assert!(rig.sink.sweep().is_empty());
         assert_eq!(rig.sink.outbox().sends, vec![(b, want.clone())]);
-        // A reply from b clears it; a penalty on a then leaves only b.
+        // A reply from b answers it, and the branch stays held until the
+        // worker has handled the reply (`clear_request`); a penalty on b then
+        // leaves only a.
         rig.sink.on_branch(
             b,
             BranchReply::None {
@@ -1068,6 +1076,8 @@ mod tests {
                 tip_hash: hex(5),
             },
         );
+        assert_eq!(rig.sink.request_branch(want.clone()), None);
+        rig.sink.clear_request(&BranchKey::of(&want));
         rig.sink.penalize(b, log);
         assert_eq!(rig.sink.request_branch(want.clone()), Some(a));
         rig.sink.clear_request(&BranchKey::of(&want));

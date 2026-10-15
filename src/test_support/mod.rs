@@ -23,6 +23,8 @@ pub mod server_completion;
 pub mod slow_clock;
 pub mod spawn;
 #[cfg(feature = "test-support")]
+pub mod sync_node;
+#[cfg(feature = "test-support")]
 pub mod write_guard;
 
 pub use fake_hosts::{

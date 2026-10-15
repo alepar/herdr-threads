@@ -1365,6 +1365,7 @@ pub fn branch_progress(
         ],
     )
     .map_err(store_error)?;
+    complete_covered_siblings(tx, &branch, branch_ix, entries)?;
     Ok(BranchVerdict::Progress {
         stored,
         skipped: common,
@@ -1373,6 +1374,40 @@ pub fn branch_progress(
         frozen_at,
         short: !complete && !more,
     })
+}
+
+/// Marks `complete` every other `pulling` row of the same log whose tip is an
+/// entry this reply just carried (verified, contiguous) and whose remaining
+/// range lies inside the reply: the proof's own conflicting entry is such a
+/// tip when a later head of the same branch is pulled, and nothing would ever
+/// request it again (no source advertises an ancestor), which would keep the
+/// own-history `Branches` flag set for good.
+fn complete_covered_siblings(
+    tx: &Transaction<'_>,
+    branch: &BranchRow,
+    branch_ix: i64,
+    entries: &[Envelope],
+) -> Result<(), ApiError> {
+    let Some(first) = entries.first() else {
+        return Ok(());
+    };
+    for entry in entries {
+        tx.execute(
+            "UPDATE sync_branches SET state='complete', next_from=tip_counter+1, \
+             updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 \
+             WHERE log_ix=?1 AND branch_ix<>?2 AND state='pulling' \
+               AND tip_counter=?3 AND tip_hash=?4 AND next_from>=?5",
+            params![
+                branch.log_ix,
+                branch_ix,
+                i64::try_from(entry.counter).unwrap_or(i64::MAX),
+                entry.hash.as_slice(),
+                i64::try_from(first.counter).unwrap_or(i64::MAX),
+            ],
+        )
+        .map_err(store_error)?;
+    }
+    Ok(())
 }
 
 // ---- Declared freeze, status and invariants (ht-5fr.6.12) ----------------------

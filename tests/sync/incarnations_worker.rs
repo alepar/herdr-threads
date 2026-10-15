@@ -980,6 +980,31 @@ fn stops_on_cancel() {
 
 // ---- Clone gate -----------------------------------------------------------------
 
+// Kills: an answered request that stops holding its branch before the worker
+// handled the reply (any pull in between repeats the same `from`, and the
+// duplicate reply is then rejected as corrupt, penalizing the only source).
+#[test]
+fn answered_request_holds_the_branch_until_the_reply_is_handled() {
+    let w = world();
+    let mut core = w.a.core();
+    let s = peer(11);
+    w.a.sink.enqueue(w.owner_fork(s));
+    core.work();
+    assert_eq!(w.a.sink.outbox().sends, vec![(s, w.b3_want())]);
+
+    // The reply is in the sink (answered) and waits in the job queue.
+    w.a.sink.on_branch(s, w.b3_reply());
+    core.schedule_pulls().expect("schedule pulls");
+    assert!(
+        w.a.sink.outbox().sends.is_empty(),
+        "no second request for the branch while its reply is unhandled"
+    );
+
+    core.work();
+    assert_eq!(w.a.reissues(), 2, "the reply was handled once");
+    assert!(w.a.lines().iter().all(|l| !l.contains("rejected")));
+}
+
 // Kills: a source that holds less than the tip being treated as done (the
 // pull never moves to another source).
 #[test]

@@ -74,7 +74,7 @@ pub fn budget() -> CallBudget {
 /// One journal-open store with a hand-moved clock and (optionally) an attached
 /// Herdr host.
 pub struct Node {
-    pub store: SqliteStore,
+    pub store: Arc<SqliteStore>,
     pub id: NodeUuid,
     pub clock: Arc<TestClock>,
     _isolation: TestIsolation,
@@ -89,13 +89,44 @@ impl Node {
         registry: &'static FactRegistry,
         host: bool,
     ) -> Self {
-        Self::open_inner(seed, incarnation_seed, registry, host, false)
+        Self::open_inner(seed, incarnation_seed, registry, host, false, None)
     }
 
     /// A node whose host is the fixture host (`with_test_host`), so a real
     /// command's claim (host locator `/host.sock`) resolves on it.
     pub fn open_commands(seed: u8, incarnation_seed: u64, registry: &'static FactRegistry) -> Self {
-        Self::open_inner(seed, incarnation_seed, registry, true, true)
+        Self::open_inner(seed, incarnation_seed, registry, true, true, None)
+    }
+
+    /// A node (command-capable with `test_host`) restored from `snapshot` (a `VACUUM INTO` copy of
+    /// an earlier store of node `seed`): the same key, the old rows, and an
+    /// incarnation draw fixed by `incarnation_seed` (use another seed than the
+    /// original's, as a real restart re-seeds from the OS).
+    pub fn open_restored(
+        seed: u8,
+        incarnation_seed: u64,
+        registry: &'static FactRegistry,
+        snapshot: &std::path::Path,
+        test_host: bool,
+    ) -> Self {
+        Self::open_inner(
+            seed,
+            incarnation_seed,
+            registry,
+            true,
+            test_host,
+            Some(snapshot),
+        )
+    }
+
+    /// A `VACUUM INTO` copy of the store as it is now (a consistent backup,
+    /// taken while the node runs), in this node's scratch directory.
+    pub fn snapshot(&self, name: &str) -> std::path::PathBuf {
+        let path = self._isolation.path(name);
+        self.raw()
+            .execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])
+            .expect("back the store up");
+        path
     }
 
     fn open_inner(
@@ -104,8 +135,12 @@ impl Node {
         registry: &'static FactRegistry,
         host: bool,
         test_host: bool,
+        snapshot: Option<&std::path::Path>,
     ) -> Self {
         let isolation = TestIsolation::new("facts-seat");
+        if let Some(snapshot) = snapshot {
+            std::fs::copy(snapshot, isolation.path("store.db")).expect("restore the snapshot");
+        }
         let clock = Arc::new(TestClock(AtomicU64::new(1)));
         let mut ctx = StoreContext::new(isolation.path("store.db"), clock.clone())
             .with_journal_seed([seed; 32]);
@@ -126,8 +161,10 @@ impl Node {
             };
             ctx.attach_host(endpoint).expect("attach a host");
         }
-        let store = SqliteStore::new(ctx, id.to_string(), StoreSettings::default())
-            .expect("open the store");
+        let store = Arc::new(
+            SqliteStore::new(ctx, id.to_string(), StoreSettings::default())
+                .expect("open the store"),
+        );
         Self {
             store,
             id,

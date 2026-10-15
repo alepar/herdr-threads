@@ -2093,6 +2093,56 @@ fn branch_progress_skips_common_stores_off_chain_lowers_freeze() {
     );
 }
 
+// Kills: a pulling row for an ancestor of an already pulled tip (the proof's
+// own conflicting entry) that nothing ever requests again, which would keep
+// the own-history `Branches` flag set; and a sibling completed although part
+// of its range lies below the reply.
+#[test]
+fn branch_progress_completes_sibling_rows_the_reply_covers() {
+    let mut o = owner(3, 4);
+    let chain = branch(&o, 3, 5, o.entries[1].hash, "b"); // 3', 4', 5'
+    let (ancestor, tip) = (chain[1].clone(), chain[2].clone());
+    let ancestor_ix = tip_row(&mut o, &ancestor);
+    let tip_ix = tip_row(&mut o, &tip);
+    assert_ne!(ancestor_ix, tip_ix);
+    o.conn
+        .execute(
+            "UPDATE sync_branches SET next_from=3 WHERE branch_ix=?1",
+            [tip_ix],
+        )
+        .unwrap();
+
+    // The reply for the tip starts at 3: it covers the ancestor's range 3..=4.
+    let verdict = progress(&mut o, tip_ix, &chain, false);
+    assert!(matches!(
+        verdict,
+        BranchVerdict::Progress { complete: true, .. }
+    ));
+    let (state, next_from, ..) = branch_row(&o.conn, ancestor_ix);
+    assert_eq!((state.as_str(), next_from), ("complete", 5));
+    assert!(
+        due_branches(&o.conn, UtcMillis(i64::MAX))
+            .unwrap()
+            .is_empty()
+    );
+
+    // A sibling that still needs entries below the reply stays pulling.
+    let mut o = owner(3, 4);
+    let chain = branch(&o, 3, 5, o.entries[1].hash, "b");
+    let (ancestor, tip) = (chain[1].clone(), chain[2].clone());
+    let ancestor_ix = tip_row(&mut o, &ancestor);
+    let tip_ix = tip_row(&mut o, &tip);
+    o.conn
+        .execute(
+            "UPDATE sync_branches SET next_from=CASE branch_ix WHEN ?1 THEN 2 ELSE 3 END",
+            [ancestor_ix],
+        )
+        .unwrap();
+    progress(&mut o, tip_ix, &chain, false);
+    let (state, next_from, ..) = branch_row(&o.conn, ancestor_ix);
+    assert_eq!((state.as_str(), next_from), ("pulling", 2));
+}
+
 // Kills: a first entry that does not chain accepted as a branch, a span that
 // does not double, a search that does not clamp at counter 1, and a short
 // source that completes the branch.
