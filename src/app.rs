@@ -731,6 +731,13 @@ pub(crate) fn start_apply_lane(
 ) -> io::Result<std::thread::JoinHandle<()>> {
     let pacer = Arc::new(Pacer::new(Lane::Apply.name(), clock, stop.clone()));
     kicks.register(Lane::Apply, Arc::clone(&pacer));
+    // When the own-history hold lifts, the entries it held apply at once, not at
+    // the lane's 60 s safety tick.
+    if let Ok(sync) = store.context().sync() {
+        let kick = Arc::clone(&pacer);
+        sync.own_history_hold()
+            .set_release_kick(Arc::new(move || kick.kick()));
+    }
     start_apply_worker(store, post_commit, writer, pacer, stop, status)
 }
 

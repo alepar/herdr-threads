@@ -942,11 +942,47 @@ fn quanta_kick_the_sync_pacer() {
         .enable_time()
         .build()
         .unwrap()
-        .block_on(tokio::time::timeout(
-            Duration::from_secs(5),
-            pacer.wait(Duration::from_secs(60)),
-        ));
+        .block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), pacer.wait(Duration::from_secs(60))).await
+        });
     assert_eq!(wake.ok(), Some(crate::service::pacer::Wake::Kicked));
+}
+
+// Kills: a daemon that never installs the own-history hold's release kick on
+// the Apply lane: the entries the hold held would then wait for the lane's 60 s
+// safety tick (after a restore, a minute of redelivery-free but unapplied history).
+#[test]
+fn own_history_release_kicks_the_apply_lane() {
+    let node = Node::new(SEED_A, 600, ManualClock::new(T0));
+    let stop = Cancellation::default();
+    let kicks = crate::service::kicks::CommitKicks::default();
+    let lane = crate::app::start_apply_lane(
+        &kicks,
+        node.clock.clone(),
+        stop.clone(),
+        node.store.clone(),
+        Box::new(|_| {}),
+        node.writer.clone(),
+        Arc::new(WorkerStatus::default()),
+    )
+    .expect("start the apply lane");
+    let sync = node.store.context().sync().expect("journal open");
+    let hold = sync.own_history_hold();
+    // Let the lane finish its startup replay and wait; its tick never elapses on
+    // the manual clock, so only a kick can wake it from here.
+    std::thread::sleep(Duration::from_millis(500));
+    hold.set(HoldSource::Links, true, node.clock.monotonic_now());
+    hold.set(HoldSource::Links, false, node.clock.monotonic_now());
+    // The release asks for a pass; the lane takes the hint.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while sync.apply_hint.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let taken = !sync.apply_hint.load(Ordering::Acquire);
+    stop.cancel();
+    kicks.kick(crate::service::kicks::LaneSet::EMPTY.with(Lane::Apply));
+    lane.join().expect("the apply lane stops");
+    assert!(taken, "the lane ran a pass after the hold lifted");
 }
 
 // Kills: a reply to a request the branch row has moved past judged against the

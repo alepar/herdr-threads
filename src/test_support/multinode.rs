@@ -86,6 +86,9 @@ pub struct ClusterOptions {
     pub discover: Vec<usize>,
     /// `(node, name, value)` environment of a node's daemon.
     pub env: Vec<(usize, String, String)>,
+    /// Route every dial through a relay that can hold a node's frames back
+    /// ([`Cluster::hold_frames_from`]). Needs `python3`.
+    pub gated: bool,
 }
 
 /// The seed of node `index` when the options give none: distinct per index,
@@ -119,6 +122,68 @@ pub struct Seat {
     pub host: usize,
     session: String,
 }
+
+/// The relay a gated cluster's dials run through: `relay.py ROOT FROM TO --
+/// CMD...` runs the pump `CMD` and forwards both directions frame by frame. The
+/// first four frames of each direction (`FREE`) pass at once (hello,
+/// auth, accept, the full `have`); after that a frame of node `X` waits while
+/// `ROOT/hold/X` exists. A link therefore completes its handshake and both
+/// sides learn each other's vectors, but a held node's `want`s and entries do
+/// not move.
+const RELAY: &str = r#"import os, subprocess, sys, threading, time
+root, frm, to = sys.argv[1:4]
+cmd = sys.argv[5:]
+FREE = 4
+child = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
+
+def read_exact(fd, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = os.read(fd, n - len(buf))
+        if not chunk:
+            return None
+        buf += chunk
+    return buf
+
+def write_all(fd, data):
+    while data:
+        data = data[os.write(fd, data):]
+
+def pump(src, dst, who, skip, close_dst):
+    try:
+        if skip:
+            head = read_exact(src, skip)
+            if head is None:
+                return
+            write_all(dst, head)
+        passed = 0
+        while True:
+            head = read_exact(src, 4)
+            if head is None:
+                break
+            body = read_exact(src, int.from_bytes(head, "big"))
+            if body is None:
+                break
+            if passed >= FREE:
+                while os.path.exists(root + "/hold/" + who):
+                    time.sleep(0.02)
+            passed += 1
+            write_all(dst, head + body)
+    except OSError:
+        pass
+    finally:
+        if close_dst:
+            try:
+                os.close(dst)
+            except OSError:
+                pass
+
+threading.Thread(target=pump, args=(0, child.stdin.fileno(), frm, 0, True), daemon=True).start()
+out = threading.Thread(target=pump, args=(child.stdout.fileno(), 1, to, 8, False), daemon=True)
+out.start()
+child.wait()
+out.join(timeout=1)
+"#;
 
 /// A copy of one node's `node/` directory (key, store, settings), taken with
 /// its daemon stopped: what [`Cluster::backup`] returns and
@@ -222,18 +287,23 @@ impl Cluster {
             0o700,
             format!(
                 "#!/bin/sh\n\
-                 base={}\n\
+                 base={base}\n\
                  root=\"$1\"; from=\"$2\"; dest=\"$3\"; to=$(basename \"$dest\")\n\
                  case \"$dest\" in \"$base\"/n[0-9]*) ;; *) echo \"not a cluster node: $dest\" >&2; exit 75;; esac\n\
                  [ -e \"$root/cut/$from-$to\" ] && {{ echo \"partitioned $from-$to\" >&2; exit 75; }}\n\
                  echo $$ > \"$root/pids/$from-$to\"\n\
                  [ -e \"$root/cut/$from-$to\" ] && {{ echo \"partitioned $from-$to\" >&2; exit 75; }}\n\
-                 exec {} --state-dir \"$dest\" peer --stdio\n",
-                sh_quote(&iso.state_root().to_string_lossy()),
-                sh_quote(&bin.to_string_lossy()),
+                 [ -e \"$root/relay.py\" ] && exec python3 \"$root/relay.py\" \"$root\" \"$from\" \"$to\" -- {bin} --state-dir \"$dest\" peer --stdio\n\
+                 exec {bin} --state-dir \"$dest\" peer --stdio\n",
+                base = sh_quote(&iso.state_root().to_string_lossy()),
+                bin = sh_quote(&bin.to_string_lossy()),
             )
             .as_bytes(),
         );
+        if options.gated {
+            private_dir(&root.join("hold"));
+            write_private(&root.join("relay.py"), 0o600, RELAY.as_bytes());
+        }
         let mut nodes = Vec::new();
         for index in 0..n {
             let name = format!("n{index}");
@@ -701,6 +771,33 @@ impl Cluster {
         for (from, to) in [(a, b), (b, a)] {
             self.kill_pump(from, to);
         }
+    }
+
+    /// Holds back `node`'s frames on every link (after each link's handshake
+    /// and first `have`) until [`Cluster::release_frames_from`]. Needs
+    /// [`ClusterOptions::gated`] and applies to links dialed afterwards or
+    /// already up alike.
+    pub fn hold_frames_from(&self, node: usize) {
+        let flag = self
+            .iso
+            .path("cluster")
+            .join("hold")
+            .join(&self.nodes[node].name);
+        assert!(
+            flag.parent().is_some_and(Path::exists),
+            "hold_frames_from needs ClusterOptions::gated"
+        );
+        fs::write(flag, b"").expect("set the hold flag");
+    }
+
+    /// Lifts [`Cluster::hold_frames_from`]; the held frames flow.
+    pub fn release_frames_from(&self, node: usize) {
+        let _ = fs::remove_file(
+            self.iso
+                .path("cluster")
+                .join("hold")
+                .join(&self.nodes[node].name),
+        );
     }
 
     /// Lifts [`Cluster::partition`]; the dialers reconnect on their next attempt.

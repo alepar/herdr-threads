@@ -4,7 +4,8 @@
 //! branches converges; `sync resync --from <peer>` then rebuilds the store and
 //! the vectors converge again.
 
-use crate::support::{self, P1};
+use crate::support::{self, P1, P2, P3};
+use herdr_threads::test_support::multinode::{Cluster, ClusterOptions};
 
 fn tag(cluster: &herdr_threads::test_support::multinode::Cluster, node: usize) -> String {
     cluster
@@ -124,4 +125,171 @@ fn restore_from_backup_forks_is_reissued_and_resync_converges() {
         });
     }
     cluster.wait_converged(crate::WAIT);
+}
+
+/// Configuration 4a (spec §13, root §10 "restore older than a rotation"): B is
+/// backed up, authors a tail (one message settled, one left unsettled), rotates
+/// by `sync resync`, and is then restored from the pre-rotation backup. It
+/// adopts its later incarnation as restore successor, with no clone evidence,
+/// and pulls its lineage back: the settled message wakes nothing, the unsettled
+/// one is offered once the own-history hold lifts, and the vectors converge.
+#[test]
+fn restore_older_than_a_rotation_adopts_the_successor() {
+    let mut cluster = Cluster::start(
+        "mn-restore-old",
+        crate::BIN,
+        2,
+        ClusterOptions {
+            links: vec![(0, 1), (1, 0)],
+            gated: true,
+            ..Default::default()
+        },
+    );
+    cluster.add_host(0, &[P1, P2, P3]);
+    cluster.add_host(1, &[P1, P2, P3]);
+    let _a = cluster.seat(0, P1);
+    let b1 = cluster.seat(1, P1);
+    let b2 = cluster.seat(1, P2);
+    let b3 = cluster.seat(1, P3);
+    for node in [0, 1] {
+        support::wait_seats(&cluster, node, 4);
+    }
+    // A message to B's second seat that is pending when the backup is taken.
+    let (_, pre) = support::send(
+        &cluster,
+        &b1,
+        &[
+            "--seat",
+            &b2.id,
+            "--body",
+            "pending at backup",
+            "--require-ack",
+            &b2.id,
+        ],
+    );
+    support::wait_receipt(&cluster, 1, &pre, &b2, "pending");
+    // Its wake is done before the backup, so the backup records it.
+    support::wait_wakes(&cluster, 1, P2, 1);
+    cluster.wait_converged(crate::WAIT);
+    let backup = cluster.backup(1);
+
+    // The tail: that message is settled, another is sent and left unsettled.
+    support::ack(&cluster, &b2, &pre);
+    let (_, open) = support::send(
+        &cluster,
+        &b1,
+        &[
+            "--seat",
+            &b3.id,
+            "--body",
+            "unsettled in the tail",
+            "--require-ack",
+            &b3.id,
+        ],
+    );
+    support::wait_receipt(&cluster, 1, &open, &b3, "pending");
+    cluster.wait_converged(crate::WAIT);
+
+    // B rotates: a resync from A rebuilds it under a new incarnation.
+    let a_tag = cluster
+        .scalar(0, "SELECT tag FROM local_node", &[])
+        .expect("A's tag");
+    let out = cluster.resync(1, &a_tag);
+    assert!(out.status.success(), "{out:?}");
+    cluster.wait_until("B to hold the tail again", crate::WAIT, || {
+        (support::receipt(&cluster, 1, &open, &b3).as_deref() == Some("pending")).then_some(())
+    });
+    cluster.wait_converged(crate::WAIT);
+    let rotations = incarnations(&cluster, 1, 1);
+    assert!(rotations >= 2, "B has rotated: {rotations}");
+
+    // The pre-rotation backup comes back.
+    let wakes_before = cluster.host(1).prompts().len();
+    // B's frames are held back after each handshake: it hears what its peer
+    // holds of its own lineage, but cannot ask for it. That is the own-history
+    // hold, for as long as the test keeps it.
+    cluster.hold_frames_from(1);
+    cluster.restore(1, &backup);
+    cluster.wait_until(
+        "A to advertise B's lineage beyond the restored store",
+        crate::WAIT,
+        || {
+            let (_, status, _) = cluster.text_as(None, 1, &["sync", "status"]);
+            status
+                .lines()
+                .filter(|l| l.starts_with("log ") && l.contains(" self "))
+                .any(|l| {
+                    l.split(' ')
+                        .find_map(|f| f.strip_prefix("lag="))
+                        .and_then(|n| n.parse::<u64>().ok())
+                        .is_some_and(|n| n > 0)
+                })
+                .then_some(())
+        },
+    );
+    // During the hold the ACK of a message the tail already settled is refused
+    // as retryable, and nothing was authored.
+    let (code, value, stderr) = cluster.run_as(Some(&b2), 1, &["ack", &pre]);
+    assert_ne!(code, 0, "an ACK during the hold is refused: {value}");
+    assert!(
+        stderr.contains("own history catching up"),
+        "{stderr}{value}"
+    );
+    assert_eq!(
+        support::receipt(&cluster, 1, &pre, &b2).as_deref(),
+        Some("pending"),
+        "the refused ACK left the receipt pending"
+    );
+    cluster.release_frames_from(1);
+    cluster.wait_until("B to pull its lineage back", crate::WAIT, || {
+        (support::receipt(&cluster, 1, &open, &b3).is_some()
+            && support::receipt(&cluster, 1, &pre, &b2).as_deref() == Some("acked"))
+        .then_some(())
+    });
+    cluster.wait_converged(crate::WAIT);
+
+    // A restore successor, not a clone.
+    let (code, status, _) = cluster.text_as(None, 1, &["sync", "status"]);
+    assert_eq!(code, 0);
+    assert!(
+        !status.contains("clone_evidence") && !status.contains("remedy:"),
+        "no clone evidence:\n{status}"
+    );
+    for node in [0, 1] {
+        assert_eq!(
+            cluster.scalar(
+                node,
+                "SELECT count(*) FROM sync_dial_targets WHERE stopped_reason = 'node_collision'",
+                &[]
+            ),
+            Some("0".into()),
+            "node {node}: no node_collision"
+        );
+    }
+    // Settled history wakes nobody; the unsettled message is offered.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(
+        cluster
+            .host(1)
+            .prompts()
+            .iter()
+            .skip(wakes_before)
+            .all(|(pane, _)| pane != P2),
+        "the settled message wakes nothing: {:?}",
+        cluster.host(1).prompts()
+    );
+    assert!(
+        support::inbox_ids(&cluster, &b3).contains(&open),
+        "the unsettled message is offered once the hold lifts"
+    );
+    // After the hold the same ACK goes through (here: the tail already holds it).
+    let (code, value, stderr) = cluster.run_as(Some(&b2), 1, &["ack", &pre]);
+    assert_eq!(code, 0, "an ACK after the hold: {stderr}{value}");
+    support::ack(&cluster, &b3, &open);
+    support::wait_receipt(&cluster, 0, &open, &b3, "acked");
+    cluster.wait_converged(crate::WAIT);
+    assert!(
+        incarnations(&cluster, 1, 1) > rotations,
+        "B rotated once more, naming the newest log of its lineage"
+    );
 }
