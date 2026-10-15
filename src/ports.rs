@@ -303,6 +303,29 @@ impl Drop for ServiceDecisionTransaction<'_, '_> {
 pub const RETIREMENT_MAX_UNITS: usize = 16;
 pub const RETIREMENT_WORK_MILLIS: u64 = 5;
 
+/// HostId: the node-local key of one attached Herdr server
+/// (`herdr_hosts.host_id`).
+///
+/// Owns: the one key every per-host row, worker scope and session lookup uses.
+/// Must not: be serialized to a client, printed to an agent, or put in a
+/// replicated payload (remote seats have no host); it has no serde impls.
+/// Role: produced only by `StorePort::attach_host` and returned by
+/// `cooperative_claim`. Observation, wake scope, archival evidence and
+/// `HostSessions` are keyed by it. New per-host rows and scopes key on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HostId(i64);
+
+impl HostId {
+    /// Wraps a `herdr_hosts.host_id` read from the store.
+    pub(crate) fn from_row(value: i64) -> Self {
+        Self(value)
+    }
+
+    pub(crate) fn get(self) -> i64 {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadContext {
     pub instance: String,
@@ -3178,6 +3201,14 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     /// for this instance (0 when none). Used only to start a new epoch above
     /// it at daemon boot; it grants no observation authority.
     fn persisted_host_epoch(&self, _instance: &str, _budget: &CallBudget) -> Result<u64, ApiError>;
+    /// Upserts the `herdr_hosts` row of `locator`, stamping `last_attached_at`
+    /// to `now`; returns its id and the persisted host epoch (0 for a new row).
+    fn attach_host(
+        &self,
+        locator: &crate::protocol::ids::HostLocator,
+        now: i64,
+        budget: &CallBudget,
+    ) -> Result<(HostId, i64), ApiError>;
     /// Reserve durable ordering before a host capture. This sequence fences
     /// late failed reads; it does not certify coherent enumeration.
     fn begin_host_observation(

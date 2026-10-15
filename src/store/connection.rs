@@ -100,6 +100,8 @@ pub struct StoreContext {
     /// The attached Herdr host's `herdr_hosts.host_id`, set once (see
     /// [`StoreContext::primary_host`]).
     primary_host: Arc<OnceLock<i64>>,
+    /// The store's view of attached hosts (see [`StoreContext::hosts`]).
+    hosts: Arc<super::hosts::HostIndex>,
     /// The identity a fresh store is created with; an existing store keeps its
     /// own. Production sets it from the loaded node key; test builds default to
     /// the fixed test node.
@@ -214,10 +216,21 @@ impl StoreContext {
     }
 
     pub fn new(path: PathBuf, clock: Arc<dyn Clock>) -> Self {
+        Self::with_host_index(path, clock, Arc::default())
+    }
+
+    /// [`StoreContext::new`] sharing `hosts` with `HostSessions`, the only
+    /// writer of the index. `new` gives the context a private, empty index.
+    pub fn with_host_index(
+        path: PathBuf,
+        clock: Arc<dyn Clock>,
+        hosts: Arc<super::hosts::HostIndex>,
+    ) -> Self {
         Self {
             path,
             clock,
             primary_host: Arc::new(OnceLock::new()),
+            hosts,
             #[cfg(any(test, feature = "test-support"))]
             node_seed: Some(crate::test_support::test_node_seed()),
             #[cfg(not(any(test, feature = "test-support")))]
@@ -242,6 +255,12 @@ impl StoreContext {
             #[cfg(test)]
             rollback_journal: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// The store's read view of attached hosts. Read-only here; only
+    /// `HostSessions` publishes into it.
+    pub fn hosts(&self) -> &Arc<super::hosts::HostIndex> {
+        &self.hosts
     }
 
     /// The identity a fresh store file is created with. An existing store

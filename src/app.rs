@@ -1365,12 +1365,18 @@ where
                     "node.json hint does not match the loaded node key",
                 ));
             }
-            let context = StoreContext::new(database_path, Arc::clone(&factory_clock))
-                .with_node_seed(crate::store::schema::NodeSeed {
-                    uuid: identity.uuid(),
-                    tag: crate::node::tag_for(identity.uuid(), 0),
-                    tag_k: 0,
-                });
+            // Created before the context; HostSessions will publish into it.
+            let host_index = Arc::new(crate::store::hosts::HostIndex::new());
+            let context = StoreContext::with_host_index(
+                database_path,
+                Arc::clone(&factory_clock),
+                host_index,
+            )
+            .with_node_seed(crate::store::schema::NodeSeed {
+                uuid: identity.uuid(),
+                tag: crate::node::tag_for(identity.uuid(), 0),
+                tag_k: 0,
+            });
             // Interim single-host attach (ht-5fr.1.7's HostChoice replaces it):
             // the one host this daemon was composed with gets its
             // `herdr_hosts` row and becomes the store's primary host before

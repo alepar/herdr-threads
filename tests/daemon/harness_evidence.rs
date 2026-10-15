@@ -2173,6 +2173,14 @@ mod publication_order {
         ) -> Result<u64, ApiError> {
             self.inner.persisted_host_epoch(_instance, _budget)
         }
+        fn attach_host(
+            &self,
+            locator: &crate::protocol::ids::HostLocator,
+            now: i64,
+            budget: &CallBudget,
+        ) -> Result<(crate::ports::HostId, i64), ApiError> {
+            self.inner.attach_host(locator, now, budget)
+        }
         fn begin_host_observation(
             &self,
             instance: &str,

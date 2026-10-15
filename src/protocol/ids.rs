@@ -289,6 +289,68 @@ pub fn is_direct_thread_id(value: &str) -> bool {
         })
 }
 
+/// HostLocator: the wire name of one Herdr server, its canonical socket path.
+///
+/// Owns: the parse rules (absolute, 1..=4096 bytes, no NUL, no empty, `.` or
+/// `..` component, no trailing `/`), string serde, and conversion to a path for
+/// attach and handoff-namespace comparison.
+/// Hides: that a server is identified by a filesystem path.
+/// Must not: canonicalize through the filesystem (the CLI's
+/// `RuntimeContext::require_host` and the attach check do that), or be compared
+/// as a raw string anywhere outside its own equality.
+/// Role: leaf type. `CallerClaim.host`, the target-bearing commands,
+/// `CooperativeDecisionFence`, `IntentScope::Cooperative`, `HostIndex` and
+/// `HostSessions` depend on it. New host addressing rules go in `parse`; callers
+/// never compare raw socket-path strings or canonicalize ad hoc.
+/// Errors: `parse` returns `InvalidRequest` with one fixed message.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct HostLocator(String);
+
+/// The one message every rejected locator carries.
+const HOST_LOCATOR_INVALID: &str = "host locator is not a canonical absolute path";
+const HOST_LOCATOR_MAX_BYTES: usize = 4096;
+
+impl HostLocator {
+    pub fn parse(value: impl Into<String>) -> Result<Self, crate::protocol::results::ApiError> {
+        let value = value.into();
+        let canonical = !value.is_empty()
+            && value.len() <= HOST_LOCATOR_MAX_BYTES
+            && !value.contains('\0')
+            && value.strip_prefix('/').is_some_and(|rest| {
+                // A trailing slash (and the bare root) leaves an empty component.
+                rest.split('/')
+                    .all(|part| !part.is_empty() && part != "." && part != "..")
+            });
+        if !canonical {
+            return Err(crate::protocol::results::ApiError::new(
+                crate::protocol::results::ErrorCode::InvalidRequest,
+                HOST_LOCATOR_INVALID,
+            ));
+        }
+        Ok(Self(value))
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    pub fn as_path(&self) -> &std::path::Path {
+        std::path::Path::new(&self.0)
+    }
+}
+
+impl From<&HostLocator> for std::path::PathBuf {
+    fn from(locator: &HostLocator) -> Self {
+        locator.as_path().to_path_buf()
+    }
+}
+
+impl<'de> Deserialize<'de> for HostLocator {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(|error| serde::de::Error::custom(error.detail))
+    }
+}
+
 #[cfg(test)]
 mod public_id_tests {
     use super::*;
@@ -475,5 +537,58 @@ mod public_id_tests {
             direct_thread_id(&seat("ab"), &seat("c")).unwrap(),
             direct_thread_id(&seat("a"), &seat("bc")).unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod host_locator_tests {
+    use super::*;
+    use crate::protocol::results::ErrorCode;
+
+    #[test]
+    fn host_locator_accepts_canonical_absolute() {
+        let locator = HostLocator::parse("/run/user/1000/herdr.sock").unwrap();
+        assert_eq!(locator.as_str(), "/run/user/1000/herdr.sock");
+        assert_eq!(
+            std::path::PathBuf::from(&locator),
+            std::path::PathBuf::from("/run/user/1000/herdr.sock")
+        );
+        assert!(HostLocator::parse(format!("/{}", "a".repeat(4095))).is_ok());
+    }
+
+    #[test]
+    fn host_locator_rejects_bad_forms() {
+        let too_long = format!("/{}", "a".repeat(4096));
+        assert_eq!(too_long.len(), 4097);
+        for bad in [
+            "",
+            "/",
+            "relative/path",
+            "/a/../b",
+            "/a/./b",
+            "/a//b",
+            "/a/b/",
+            "//a",
+            "/a/\0b",
+            "/..",
+            "/.",
+            too_long.as_str(),
+        ] {
+            let error = HostLocator::parse(bad).expect_err(bad);
+            assert_eq!(error.code, ErrorCode::InvalidRequest, "{bad:?}");
+            assert_eq!(
+                error.detail, "host locator is not a canonical absolute path",
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn host_locator_serde_is_string() {
+        let locator = HostLocator::parse("/tmp/h.sock").unwrap();
+        let json = serde_json::to_string(&locator).unwrap();
+        assert_eq!(json, "\"/tmp/h.sock\"");
+        assert_eq!(serde_json::from_str::<HostLocator>(&json).unwrap(), locator);
+        assert!(serde_json::from_str::<HostLocator>("\"a/b\"").is_err());
     }
 }
