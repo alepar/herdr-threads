@@ -2,8 +2,11 @@
 //! binding-unread rows and explicit-ACK receipts.
 //!
 //! Owns: window collection from the three existing walks, key building (`DeliveryOrderKey`) for
-//! each item, the sort, and the re-collected-vs-fresh skip rule (a re-collected window skips keys
-//! <= the last emitted key, a fresh window skips nothing), bounded by `DEADLINE_WINDOW` items and
+//! each item from immutable facts only (an item's key never changes between pages: an unread
+//! row's deadline is its receipt's whatever the receipt's state), the sort, and the
+//! re-collected-vs-fresh skip rule (a re-collected window skips keys <= the last key emitted from
+//! that same window, `DeadlineCursor::window_last`; a fresh window skips nothing; ht-yha.63),
+//! bounded by `DEADLINE_WINDOW` items and
 //! `WINDOW_VISITS` visits so every page advances. The three walks seek only pending, published
 //! items (invitations and receipts through their pending projections, unread through its unread
 //! predicate), so settled and unpublished history costs no visit.
@@ -51,6 +54,8 @@ pub(super) struct DeadlineItem {
 pub(super) struct DeadlineWindow {
     items: Vec<DeadlineItem>,
     next: usize,
+    /// The last key emitted from this window (carried over from the cursor on a re-collect).
+    last: Option<DeliveryOrderKey>,
     end: DeadlineWalks,
     walks_exhausted: bool,
 }
@@ -89,8 +94,9 @@ fn unavailable(detail: &str) -> ApiError {
 
 impl DeadlineWindow {
     /// Collect one window from `cursor`: re-collect `window_start..window_end` when
-    /// `cursor.window_end` is `Some` (skipping keys <= `last`), otherwise a fresh window from
-    /// `cursor.window_start` (skipping nothing). Every visited candidate is added to `*visits`.
+    /// `cursor.window_end` is `Some` (skipping keys <= `cursor.window_last`, the last key emitted
+    /// from this window), otherwise a fresh window from `cursor.window_start` (skipping nothing).
+    /// Every visited candidate is added to `*visits`.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn collect(
         db: &Connection,
@@ -99,7 +105,6 @@ impl DeadlineWindow {
         current_agent: bool,
         cursor: &DeadlineCursor,
         decision: u64,
-        last: Option<&DeliveryOrderKey>,
         visits: &mut usize,
         hold: &mut Option<HoldCache<'_>>,
     ) -> Result<Self, ApiError> {
@@ -111,16 +116,20 @@ impl DeadlineWindow {
         let more = |items: &[DeadlineItem], spent: usize| {
             items.len() < DEADLINE_WINDOW && spent < WINDOW_VISITS
         };
+        // A re-collected window walks exactly its original range: each walk is bounded by the
+        // window's end, not only by the high water, so a row that left a walk since the first
+        // collection (displayed, settled) never pulls a later row into this window (ht-yha.63).
+        let (invitation_high, physical_high, manifest_high) = match &stop {
+            Some(e) => (e.invitation_after, e.physical_after, e.manifest_after),
+            None => (high.invitation, high.physical, high.manifest),
+        };
 
         // Invitations.
-        while more(&items, spent)
-            && at.invitation_after < high.invitation
-            && stop.is_none_or(|e| at.invitation_after < e.invitation_after)
-        {
+        while more(&items, spent) && at.invitation_after < invitation_high {
             let Some(step) =
-                next_invitation(db, seat, at.invitation_after, high.invitation, decision)?
+                next_invitation(db, seat, at.invitation_after, invitation_high, decision)?
             else {
-                at.invitation_after = high.invitation;
+                at.invitation_after = invitation_high;
                 break;
             };
             spent += 1;
@@ -152,17 +161,13 @@ impl DeadlineWindow {
             let mut after = at
                 .unread_after
                 .ok_or_else(|| unavailable("missing unread position"))?;
-            let stop_unread = match &stop {
-                Some(e) => Some(
-                    e.unread_after
-                        .ok_or_else(|| unavailable("missing unread position"))?,
-                ),
-                None => None,
+            let high_unread = match &stop {
+                Some(e) => e
+                    .unread_after
+                    .ok_or_else(|| unavailable("missing unread position"))?,
+                None => high_unread,
             };
-            while more(&items, spent)
-                && after < high_unread
-                && stop_unread.is_none_or(|e| after < e)
-            {
+            while more(&items, spent) && after < high_unread {
                 let Some((ordinal, id, decision_seq)) = next_unread(
                     db,
                     seat,
@@ -189,23 +194,25 @@ impl DeadlineWindow {
                         continue;
                     }
                 }
-                let receipt = crate::store::effective::effective_receipt(db, &id, seat.as_str())?
-                    .filter(|r| {
-                        r.state == EffectiveReceiptState::Pending
-                            && r.decision_seq.unwrap_or(0) <= decision as i64
-                    });
+                // The key's deadline is the receipt's whatever its state, so an item ACKed between
+                // pages keeps its key; only the ACK offer needs a pending receipt.
+                let receipt = crate::store::effective::effective_receipt(db, &id, seat.as_str())?;
+                let pending = receipt.as_ref().is_some_and(|r| {
+                    r.state == EffectiveReceiptState::Pending
+                        && r.decision_seq.unwrap_or(0) <= decision as i64
+                });
                 items.push(DeadlineItem {
                     key: DeliveryOrderKey {
                         priority: DeliveryPriority::p0(),
                         deadline: receipt.as_ref().and_then(|r| r.deadline_at).map(UtcMillis),
                         decision_seq: decision_seq.max(0) as u64,
-                        rank: SourceRank::Receipt,
+                        rank: SourceRank::Unread,
                         ordinal: ordinal.max(0) as u64,
                     },
                     item: DeadlineRef::Unread {
                         message: MessageId::new(id),
                         ordinal,
-                        ack: current_agent && receipt.is_some(),
+                        ack: current_agent && pending,
                     },
                 });
             }
@@ -214,10 +221,7 @@ impl DeadlineWindow {
 
         // Receipts.
         while more(&items, spent)
-            && (at.physical_after < high.physical || at.manifest_after < high.manifest)
-            && stop.is_none_or(|e| {
-                at.physical_after < e.physical_after || at.manifest_after < e.manifest_after
-            })
+            && (at.physical_after < physical_high || at.manifest_after < manifest_high)
         {
             let step = next_receipt(
                 db,
@@ -226,8 +230,8 @@ impl DeadlineWindow {
                 ReceiptScanPosition {
                     physical_after: at.physical_after,
                     manifest_after: at.manifest_after,
-                    physical_high_water: high.physical,
-                    manifest_high_water: high.manifest,
+                    physical_high_water: physical_high,
+                    manifest_high_water: manifest_high,
                     next_manifest: at.next_manifest,
                 },
                 decision,
@@ -236,8 +240,8 @@ impl DeadlineWindow {
             at.manifest_after = step.position.manifest_after;
             at.next_manifest = step.position.next_manifest;
             if step.visited == 0 {
-                at.physical_after = high.physical;
-                at.manifest_after = high.manifest;
+                at.physical_after = physical_high;
+                at.manifest_after = manifest_high;
                 break;
             }
             spent += step.visited;
@@ -270,16 +274,18 @@ impl DeadlineWindow {
         }
 
         *visits += spent;
-        // Keys are total (ordinals are unique per source), so an unstable-free stable sort is exact.
+        // Keys are total (ordinals are unique per source and each source has its own rank), so
+        // the sort is exact.
         items.sort_by(|a, b| a.key.cmp(&b.key));
-        if stop.is_some()
-            && let Some(last) = last
-        {
+        // Only a re-collected window skips, and only what it emitted itself.
+        let last = stop.and(cursor.window_last);
+        if let Some(last) = &last {
             items.retain(|i| i.key > *last);
         }
         Ok(Self {
             items,
             next: 0,
+            last,
             walks_exhausted: exhausted(&at, high),
             end: at,
         })
@@ -290,7 +296,8 @@ impl DeadlineWindow {
     }
 
     pub(super) fn advance(&mut self) {
-        if self.next < self.items.len() {
+        if let Some(head) = self.items.get(self.next) {
+            self.last = Some(head.key);
             self.next += 1;
         }
     }
@@ -307,6 +314,7 @@ impl DeadlineWindow {
         })?;
         if at == self.next {
             let key = self.items[at].key;
+            self.last = Some(key);
             self.next += 1;
             Some(key)
         } else {
@@ -322,20 +330,24 @@ impl DeadlineWindow {
     }
 
     /// Write back: a fully emitted window moves `window_start` to its end and clears
-    /// `window_end` (and sets `done` when the walks are exhausted); a partly emitted one stores
-    /// `window_end = end` so the next call re-collects exactly this window.
+    /// `window_end` and `window_last` (and sets `done` when the walks are exhausted); a partly
+    /// emitted one stores `window_end = end` and the last key emitted from it, so the next call
+    /// re-collects exactly this window and skips exactly what it already emitted.
     pub(super) fn persist(&self, cursor: &mut DeadlineCursor) {
         if self.next >= self.items.len() {
             cursor.window_start = self.end;
             cursor.window_end = None;
+            cursor.window_last = None;
             cursor.done = self.walks_exhausted;
         } else {
             cursor.window_end = Some(self.end);
+            cursor.window_last = self.last;
         }
     }
 
-    /// Write back a window whose head is only partly shown: re-collect exactly this window, even
-    /// when the head is its last item.
+    /// Write back a window whose head is only partly shown into `cursor`, the state before that
+    /// head: re-collect exactly this window, even when the head is its last item. `window_last`
+    /// stays the cursor's own (the head is not emitted yet).
     pub(super) fn persist_partial(&self, cursor: &mut DeadlineCursor) {
         cursor.window_end = Some(self.end);
     }

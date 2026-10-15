@@ -87,6 +87,7 @@ fn cursor(db: &Connection, bound: bool) -> DeadlineCursor {
             next_manifest: false,
         },
         window_end: None,
+        window_last: None,
         done: false,
     }
 }
@@ -95,7 +96,6 @@ fn collect(
     db: &Connection,
     bound: bool,
     cursor: &DeadlineCursor,
-    last: Option<&DeliveryOrderKey>,
     visits: &mut usize,
 ) -> DeadlineWindow {
     let reading = bound.then(|| binding(db));
@@ -106,7 +106,6 @@ fn collect(
         true,
         cursor,
         DECISION,
-        last,
         visits,
         &mut None,
     )
@@ -145,7 +144,7 @@ fn window_orders_exactly_when_backlog_fits() {
     invitation(&db, "inv-lazy", 2, Some("lazy"), 50);
     let cursor = cursor(&db, true);
     let mut visits = 0;
-    let mut window = collect(&db, true, &cursor, None, &mut visits);
+    let mut window = collect(&db, true, &cursor, &mut visits);
     assert!(!window.done());
     let (order, _) = emit(&mut window, 10);
     assert_eq!(order, ["r2", "inv-ack", "r3", "r1", "inv-lazy"]);
@@ -162,7 +161,7 @@ fn seventy_receipts_exact_within_each_window_nothing_lost_or_repeated() {
     }
     let mut cursor = cursor(&db, false);
     let mut visits = 0;
-    let mut window = collect(&db, false, &cursor, None, &mut visits);
+    let mut window = collect(&db, false, &cursor, &mut visits);
     let deadlines: Vec<i64> = window
         .items
         .iter()
@@ -175,19 +174,27 @@ fn seventy_receipts_exact_within_each_window_nothing_lost_or_repeated() {
     let (mut seen, last) = emit(&mut window, 10);
     window.persist(&mut cursor);
     assert!(cursor.window_end.is_some());
+    assert_eq!(
+        cursor.window_last, last,
+        "the window's own last emitted key"
+    );
     assert_eq!(cursor.window_start.physical_after, 0);
 
-    let mut window = collect(&db, false, &cursor, last.as_ref(), &mut visits);
+    let mut window = collect(&db, false, &cursor, &mut visits);
     assert_eq!(window.items.len(), size - 10);
     assert!(window.items.iter().all(|i| i.key > last.unwrap()));
     let (rest, _) = emit(&mut window, 100);
     seen.extend(rest);
     window.persist(&mut cursor);
     assert!(cursor.window_end.is_none());
+    assert!(
+        cursor.window_last.is_none(),
+        "a fully emitted window clears it"
+    );
     assert!(!cursor.done);
     assert_eq!(cursor.window_start.physical_after, size as i64);
 
-    let mut window = collect(&db, false, &cursor, None, &mut visits);
+    let mut window = collect(&db, false, &cursor, &mut visits);
     assert_eq!(window.items.len(), 70 - size);
     let (tail, _) = emit(&mut window, 100);
     seen.extend(tail);
@@ -213,7 +220,7 @@ fn settled_physical_receipts_cost_no_visit() {
     }
     let mut cursor = cursor(&db, false);
     let mut visits = 0;
-    let mut window = collect(&db, false, &cursor, None, &mut visits);
+    let mut window = collect(&db, false, &cursor, &mut visits);
     assert_eq!(visits, 3, "only the three pending receipts are visited");
     let (items, _) = emit(&mut window, 100);
     assert_eq!(items, ["r201", "r202", "r203"]);
@@ -251,7 +258,7 @@ fn unpublished_preparations_cost_no_visit() {
     manifest_receipt(&db, 151, 151, true, false);
     let cursor = cursor(&db, false);
     let mut visits = 0;
-    let window = collect(&db, false, &cursor, None, &mut visits);
+    let window = collect(&db, false, &cursor, &mut visits);
     assert_eq!(window.items.iter().map(label).collect::<Vec<_>>(), ["u151"]);
     assert_eq!(visits, 1);
 }
@@ -265,7 +272,7 @@ fn settled_manifest_receipts_cost_no_visit() {
     manifest_receipt(&db, 201, 201, true, false);
     let cursor = cursor(&db, false);
     let mut visits = 0;
-    let window = collect(&db, false, &cursor, None, &mut visits);
+    let window = collect(&db, false, &cursor, &mut visits);
     assert_eq!(window.items.iter().map(label).collect::<Vec<_>>(), ["u201"]);
     assert_eq!(visits, 1);
 }
@@ -280,7 +287,7 @@ fn read_settled_history_costs_the_unread_walk_no_visit() {
     manifest_receipt(&db, 201, 201, true, false);
     let cursor = cursor(&db, true);
     let mut visits = 0;
-    let window = collect(&db, true, &cursor, None, &mut visits);
+    let window = collect(&db, true, &cursor, &mut visits);
     assert_eq!(window.items.iter().map(label).collect::<Vec<_>>(), ["u201"]);
     assert!(matches!(
         window.items[0].item,
@@ -300,7 +307,7 @@ fn settled_invitations_cost_no_visit() {
     invitation(&db, "inv201", 201, Some("require_ack"), 100);
     let cursor = cursor(&db, false);
     let mut visits = 0;
-    let window = collect(&db, false, &cursor, None, &mut visits);
+    let window = collect(&db, false, &cursor, &mut visits);
     assert_eq!(
         window.items.iter().map(label).collect::<Vec<_>>(),
         ["inv201"]
@@ -385,7 +392,7 @@ fn deadline_less_legacy_invitation_sorts_after_deadlined_p0_items() {
     invitation(&db, "inv-legacy", 1, None, 10);
     receipt(&db, 1, 9_000, "pending");
     let cursor = cursor(&db, false);
-    let mut window = collect(&db, false, &cursor, None, &mut 0);
+    let mut window = collect(&db, false, &cursor, &mut 0);
     assert_eq!(window.items[1].key.deadline, None);
     let (order, _) = emit(&mut window, 10);
     assert_eq!(order, ["r1", "inv-legacy"]);
@@ -403,7 +410,7 @@ fn receipt_unread_dedupe_preserved() {
     .unwrap();
     receipt(&db, 50, 400, "pending");
     let cursor = cursor(&db, true);
-    let mut window = collect(&db, true, &cursor, None, &mut 0);
+    let mut window = collect(&db, true, &cursor, &mut 0);
     let (order, _) = emit(&mut window, 10);
     assert_eq!(order, ["r50", "u1"], "the manifest receipt is listed once");
     assert!(matches!(
@@ -426,15 +433,17 @@ fn fresh_window_skips_nothing() {
         rank: SourceRank::DeliveryRow,
         ordinal: u64::MAX,
     };
-    let fresh = collect(&db, false, &cursor, Some(&high), &mut 0);
+    let mut cursor = cursor;
+    cursor.window_last = Some(high);
+    let fresh = collect(&db, false, &cursor, &mut 0);
     assert_eq!(fresh.items.len(), 2, "a fresh window skips nothing");
     let mut recollect = cursor;
     recollect.window_end = Some(fresh.end);
-    let again = collect(&db, false, &recollect, Some(&high), &mut 0);
+    let again = collect(&db, false, &recollect, &mut 0);
     assert_eq!(
         again.items.iter().map(label).collect::<Vec<_>>(),
         ["r2"],
-        "a re-collected window skips keys <= last"
+        "a re-collected window skips keys <= its own last emitted key"
     );
 }
 

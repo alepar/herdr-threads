@@ -177,6 +177,7 @@ pub(super) fn capture(
                 next_manifest: false,
             },
             window_end: None,
+            window_last: None,
             done: false,
         },
         // The global logical scan needs its two positions and the frozen informational offer

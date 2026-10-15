@@ -241,8 +241,12 @@ pub struct DeadlineCursor {
     /// Where the current (or next) window starts collecting.
     pub window_start: DeadlineWalks,
     /// `Some` while a collected window is only partly emitted: re-collect exactly start..end and
-    /// skip keys <= the last emitted key. `None`: the next window is fresh.
+    /// skip keys <= `window_last`. `None`: the next window is fresh.
     pub window_end: Option<DeadlineWalks>,
+    /// The last key emitted from the current window (`None`: nothing of it yet). Window-relative,
+    /// never the merge-global `last`: an earlier window's keys may sort above this one's, so
+    /// only this window's own progress may skip its items (ht-yha.63). Requires `window_end`.
+    pub window_last: Option<DeliveryOrderKey>,
     pub done: bool,
 }
 
@@ -284,7 +288,8 @@ const FV2_START_NEXT_MANIFEST: u16 = 1 << 8;
 const FV2_END_NEXT_MANIFEST: u16 = 1 << 9;
 const FV2_BOUND: u16 = 1 << 10;
 const FV2_BODY: u16 = 1 << 11;
-const FV2_ALL: u16 = (1 << 12) - 1;
+const FV2_WINDOW_LAST: u16 = 1 << 12;
+const FV2_ALL: u16 = (1 << 13) - 1;
 const V2_BAD_POSITION: &str = "invalid v2 position";
 
 fn v2_source_byte(source: InboxBatchV2Source) -> u8 {
@@ -463,6 +468,11 @@ impl InboxBatchV2CursorState {
         } else {
             None
         };
+        let window_last = if has(FV2_WINDOW_LAST) {
+            Some(DeliveryOrderKey::read_compact(&mut input.0)?)
+        } else {
+            None
+        };
         let warnings = WarningsCursor {
             physical_after: input.signed()?,
             manifest_after: input.signed()?,
@@ -508,6 +518,7 @@ impl InboxBatchV2CursorState {
                 },
                 window_start,
                 window_end,
+                window_last,
                 done: has(FV2_DEADLINE_DONE),
             },
             warnings,
@@ -540,6 +551,7 @@ impl InboxBatchV2CursorState {
             ),
             (d.high.unread.is_some(), FV2_BOUND),
             (self.body.is_some(), FV2_BODY),
+            (d.window_last.is_some(), FV2_WINDOW_LAST),
         ] {
             if on {
                 flags |= flag;
@@ -581,6 +593,9 @@ impl InboxBatchV2CursorState {
             }
             out.unsigned((e.physical_after - s.physical_after) as u64);
             out.unsigned((e.manifest_after - s.manifest_after) as u64);
+        }
+        if let Some(last) = &d.window_last {
+            last.write_compact(&mut out.0);
         }
         out.signed(self.warnings.physical_after);
         out.signed(self.warnings.manifest_after);
@@ -627,6 +642,8 @@ impl InboxBatchV2CursorState {
             })
             || self.rows.after.is_some_and(|p| p.decision_seq > dh)
             || self.last.is_some_and(|k| k.decision_seq > dh)
+            || (d.window_last.is_some() && d.window_end.is_none())
+            || d.window_last.is_some_and(|k| k.decision_seq > dh)
             || self.warnings.physical_after < 0
             || self.warnings.physical_after > dh as i64
             // The event offset is independent of the decision sequence: no upper bound.

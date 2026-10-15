@@ -316,3 +316,7 @@ From v0.11.0: reason `lazy` counts as seat attention for the one-process compose
 ### 2026-10-14, connected-only pending views (ht-yha.57)
 
 User decision ("SGTM"): a binding holds a pending view only while connected; every disconnect, process exit included, drops it, and the next connected transition re-seeds it from its cursors and display marks at a cost proportional to its own backlog, so a disconnected session costs only its cursor and marks.
+
+### 2026-10-15, deadline-class order across windows (ht-yha.63)
+
+Pending deadline-class items are presented in exact `DeliveryOrderKey` order within one window of up to `DEADLINE_WINDOW` (64) items (and `WINDOW_VISITS` visits); windows are taken in walk order (invitations, then binding-unread rows, then receipts, each by ordinal), so with more such items than one window holds an item of a later window can sort before one already shown from an earlier window. Across windows and pages every item is shown exactly once: a re-collected window walks exactly its original range and skips only the keys it emitted itself (`DeadlineCursor::window_last`), item keys are built from immutable facts (an unread row keeps its receipt's deadline whatever the receipt's state), Unread has its own source rank, and a receipt-bearing row displayed above a blocked cursor gets the binding's display mark.

@@ -145,10 +145,16 @@ fn order_key_tiebreaks() {
     assert!(key(0, Some(100), 9, Receipt, 9) < key(0, Some(200), 1, Receipt, 1));
     // equal deadline -> decision_seq
     assert!(key(0, Some(100), 3, DeliveryRow, 9) < key(0, Some(100), 4, Invitation, 1));
-    // equal decision_seq -> rank (Invitation 0 < Warning 1 < Receipt 2 < DeliveryRow 3)
+    // equal decision_seq -> rank (Invitation 0 < Warning 1 < Receipt 2 < Unread 3 < DeliveryRow 4)
     assert!(key(0, None, 5, Invitation, 9) < key(0, None, 5, Warning, 1));
     assert!(key(0, None, 5, Warning, 9) < key(0, None, 5, Receipt, 1));
-    assert!(key(0, None, 5, Receipt, 9) < key(0, None, 5, DeliveryRow, 1));
+    assert!(key(0, None, 5, Receipt, 9) < key(0, None, 5, Unread, 1));
+    assert!(key(0, None, 5, Unread, 9) < key(0, None, 5, DeliveryRow, 1));
+    // M13 (ht-yha.63): an unread key and a receipt key with equal fields never tie
+    assert_ne!(
+        key(0, Some(7), 5, Receipt, 3).cmp(&key(0, Some(7), 5, Unread, 3)),
+        std::cmp::Ordering::Equal
+    );
     // equal rank -> ordinal
     assert!(key(0, None, 5, DeliveryRow, 1) < key(0, None, 5, DeliveryRow, 2));
     assert_eq!(
@@ -192,13 +198,44 @@ fn order_key_continuation_round_trip_and_canonical() {
         assert_eq!(DeliveryOrderKey::read_compact(&mut input).unwrap(), k);
         assert_eq!(input, b"tail", "reader consumes exactly the key");
     }
-    // header bit 7 set, priority nibble 10, and truncated input are rejected
-    for bad in [&[0x80u8, 0, 0][..], &[0x0a, 0, 0][..], &[0x00][..], &[][..]] {
+    // rank 5..=7, priority nibble 10, and truncated input are rejected
+    for bad in [
+        &[0x50u8, 0, 0][..],
+        &[0x60, 0, 0][..],
+        &[0x70, 0, 0][..],
+        &[0xd0, 0, 0, 0][..],
+        &[0x0a, 0, 0][..],
+        &[0x00][..],
+        &[][..],
+    ] {
         let mut input = bad;
         assert!(
             DeliveryOrderKey::read_compact(&mut input).is_err(),
             "{bad:?}"
         );
+    }
+    // every rank round-trips with and without a deadline; bits 4-6 carry the rank, bit 7 the
+    // deadline flag
+    for (rank, bits) in [
+        (Invitation, 0u8),
+        (Warning, 1),
+        (Receipt, 2),
+        (Unread, 3),
+        (DeliveryRow, 4),
+    ] {
+        for deadline in [None, Some(42)] {
+            let k = key(3, deadline, 7, rank, 9);
+            let mut bytes = Vec::new();
+            k.write_compact(&mut bytes);
+            assert_eq!(
+                bytes[0],
+                3 | (bits << 4) | (u8::from(deadline.is_some()) << 7),
+                "{k:?}"
+            );
+            let mut input = bytes.as_slice();
+            assert_eq!(DeliveryOrderKey::read_compact(&mut input).unwrap(), k);
+            assert!(input.is_empty());
+        }
     }
     // an overlong varint (0 encoded as 0x80 0x00) is noncanonical
     let mut input: &[u8] = &[0x30, 0x80, 0x00, 0x00];
