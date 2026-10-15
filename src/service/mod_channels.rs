@@ -668,6 +668,10 @@ impl ModChannelRegistry {
         version: u64,
         now: UtcMillis,
     ) -> bool {
+        // The caller's `now` can predate the store read whose fingerprint this push announces (the worker reads
+        // its clock before `pass`). The stall rule counts only items published at or before the recorded push,
+        // so the record is taken no earlier than the push itself (ht-yha.58).
+        let pushed_at = UtcMillis(now.0.max(self.clock.utc_now().0));
         let mut state = self.lock();
         let Some(entry) = state.entries.get_mut(binding) else {
             return false;
@@ -682,7 +686,7 @@ impl ModChannelRegistry {
             return false;
         };
         if sink.push(WatchFrame::Attention { version }) {
-            entry.last_attention_push = Some(now);
+            entry.last_attention_push = Some(pushed_at);
             true
         } else {
             if mode == ModChannelMode::PresentationV2 {
