@@ -19,13 +19,22 @@ use crate::sync::facts::FactRegistry;
 use crate::sync::journal_port::IngestOutcome;
 use crate::sync::{BatchLimits, Vector};
 
-struct FixedClock;
+/// A paused clock: the monotonic reading moves only through `set`.
+struct FixedClock(std::sync::atomic::AtomicU64);
+impl FixedClock {
+    fn new() -> Self {
+        Self(std::sync::atomic::AtomicU64::new(1))
+    }
+    fn set(&self, ms: u64) {
+        self.0.store(ms, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 impl Clock for FixedClock {
     fn utc_now(&self) -> UtcMillis {
         UtcMillis(1_700_000_000_000)
     }
     fn monotonic_now(&self) -> MonoInstant {
-        MonoInstant(1)
+        MonoInstant(self.0.load(std::sync::atomic::Ordering::SeqCst))
     }
 }
 
@@ -287,6 +296,78 @@ fn rich() -> &'static FactRegistry {
     })
 }
 
+// ---- delivery kinds ---------------------------------------------------------
+
+#[derive(Serialize, Deserialize)]
+struct Msg {
+    id: String,
+}
+
+/// A message-like kind: always records what it saw in `test_seen`, and writes
+/// a lazy row and a wake row only when `delivery_suppressed` is false.
+struct MsgKind;
+impl FactKind for MsgKind {
+    const NAME: &'static str = "test.msg";
+    const MAJOR: u32 = 1;
+    type Payload = Msg;
+    fn creates(p: &Msg) -> Option<EntityKey> {
+        key(format!("m:{}", p.id))
+    }
+    fn needs(_: &Msg) -> Vec<EntityKey> {
+        Vec::new()
+    }
+    fn apply(tx: &Transaction<'_>, cx: &mut ApplyContext<'_>, p: Msg) -> Result<(), FactError> {
+        let fail = |e: rusqlite::Error| FactError::from_api(store_error(e));
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS test_seen(id TEXT, suppressed INTEGER);\
+             CREATE TABLE IF NOT EXISTS test_lazy(id TEXT);\
+             CREATE TABLE IF NOT EXISTS test_wake(id TEXT);",
+        )
+        .map_err(fail)?;
+        let settle = key(format!("s:{}", p.id)).expect("key");
+        let suppressed = cx
+            .delivery_suppressed(tx, &settle)
+            .map_err(FactError::from_api)?;
+        tx.execute(
+            "INSERT INTO test_seen(id,suppressed) VALUES (?1,?2)",
+            params![p.id, suppressed],
+        )
+        .map_err(fail)?;
+        if !suppressed {
+            tx.execute("INSERT INTO test_lazy(id) VALUES (?1)", [&p.id])
+                .map_err(fail)?;
+            tx.execute("INSERT INTO test_wake(id) VALUES (?1)", [&p.id])
+                .map_err(fail)?;
+        }
+        Ok(())
+    }
+}
+
+/// The settlement of `Msg { id }`.
+struct SettleKind;
+impl FactKind for SettleKind {
+    const NAME: &'static str = "test.settle";
+    const MAJOR: u32 = 1;
+    type Payload = Msg;
+    fn creates(p: &Msg) -> Option<EntityKey> {
+        key(format!("s:{}", p.id))
+    }
+    fn needs(_: &Msg) -> Vec<EntityKey> {
+        Vec::new()
+    }
+    fn apply(tx: &Transaction<'_>, _: &mut ApplyContext<'_>, _: Msg) -> Result<(), FactError> {
+        bump(tx)
+    }
+}
+
+fn msg(id: &str) -> Msg {
+    Msg { id: id.into() }
+}
+
+fn delivery() -> &'static FactRegistry {
+    FactRegistry::builtins_plus(|b| b.with::<PutKind>().with::<MsgKind>().with::<SettleKind>())
+}
+
 // ---- nodes ------------------------------------------------------------------
 
 /// One node: a store file, its context and writer, and its active log.
@@ -296,30 +377,43 @@ struct Node {
     ctx: StoreContext,
     conn: Connection,
     log: LogKey,
+    clock: Arc<FixedClock>,
 }
 
 impl Node {
     fn new(seed: u8, registry: &'static FactRegistry) -> Self {
+        Self::with_incarnations(seed, u64::from(seed), registry)
+    }
+
+    /// A node with identity `seed` whose incarnation draws start from
+    /// `incarnation_seed`: the same identity with another value is the same
+    /// node after a wipe (a new incarnation).
+    fn with_incarnations(seed: u8, incarnation_seed: u64, registry: &'static FactRegistry) -> Self {
         let path = std::env::temp_dir().join(format!("ht-apply-{}.db", uuid::Uuid::new_v4()));
-        let (ctx, conn, report) = Self::open_at(&path, seed, registry);
+        let clock = Arc::new(FixedClock::new());
+        let (ctx, conn, report) =
+            Self::open_at(&path, seed, incarnation_seed, registry, Arc::clone(&clock));
         Self {
             path,
             seed,
             ctx,
             conn,
             log: report.self_log,
+            clock,
         }
     }
 
     fn open_at(
         path: &Path,
         seed: u8,
+        incarnation_seed: u64,
         registry: &'static FactRegistry,
+        clock: Arc<FixedClock>,
     ) -> (StoreContext, Connection, OpenReport) {
         let identity = Arc::new(NodeIdentity::from_seed([seed; 32]));
-        let ctx = StoreContext::new(path.to_path_buf(), Arc::new(FixedClock))
+        let ctx = StoreContext::new(path.to_path_buf(), clock)
             .with_node_seed(crate::test_support::node_seed_for(identity.uuid()));
-        ctx.seed_incarnations(u64::from(seed));
+        ctx.seed_incarnations(incarnation_seed);
         let mut conn = ctx.open_writer().unwrap();
         let report = jr::open(&ctx, &mut conn, identity, "host", registry).unwrap();
         (ctx, conn, report)
@@ -327,7 +421,13 @@ impl Node {
 
     /// Restarts the node with another registry (an upgrade).
     fn reopen(&mut self, registry: &'static FactRegistry) -> OpenReport {
-        let (ctx, conn, report) = Self::open_at(&self.path, self.seed, registry);
+        let (ctx, conn, report) = Self::open_at(
+            &self.path,
+            self.seed,
+            u64::from(self.seed),
+            registry,
+            Arc::clone(&self.clock),
+        );
         self.ctx = ctx;
         self.conn = conn;
         report
@@ -368,7 +468,12 @@ impl Node {
 
     /// Ingests `from`'s entries of `log` with counters `1..=upto`.
     fn ship(&mut self, from: &Node, log: LogKey, upto: u64) {
-        let entries: Vec<_> = jr::serve(&from.conn, &log, 1, BatchLimits::default())
+        self.ship_range(from, log, 1, upto);
+    }
+
+    /// Ingests `from`'s entries of `log` with counters `first..=upto`.
+    fn ship_range(&mut self, from: &Node, log: LogKey, first: u64, upto: u64) {
+        let entries: Vec<_> = jr::serve(&from.conn, &log, first, BatchLimits::default())
             .unwrap()
             .into_iter()
             .filter(|e| e.counter <= upto)
@@ -903,7 +1008,7 @@ fn sqlite_store_apply_pending_is_apply_pass() {
     a.author::<PutKind>(&put("p1"));
     let b_path = std::env::temp_dir().join(format!("ht-apply-{}.db", uuid::Uuid::new_v4()));
     let identity = Arc::new(NodeIdentity::from_seed([47; 32]));
-    let ctx = StoreContext::new(b_path.clone(), Arc::new(FixedClock))
+    let ctx = StoreContext::new(b_path.clone(), Arc::new(FixedClock::new()))
         .with_node_seed(crate::test_support::node_seed_for(identity.uuid()));
     let store = SqliteStore::new(
         ctx,
@@ -937,4 +1042,356 @@ fn sqlite_store_apply_pending_is_apply_pass() {
         name.push(suffix);
         let _ = std::fs::remove_file(name);
     }
+}
+
+// ---- ApplyContext services --------------------------------------------------
+
+impl Node {
+    fn sync_hold(&self) -> Arc<crate::store::connection::OwnHistoryHold> {
+        Arc::clone(self.ctx.sync().unwrap().own_history_hold())
+    }
+
+    fn hold(&self, source: HoldSource, on: bool, ms: u64) {
+        self.clock.set(ms);
+        self.sync_hold().set(source, on, MonoInstant(ms));
+    }
+
+    /// Runs `f` with an ApplyContext whose origin is `origin`.
+    fn with_cx<T>(
+        &mut self,
+        origin: LogKey,
+        f: impl FnOnce(&Transaction<'_>, &ApplyContext<'_>) -> T,
+    ) -> T {
+        let ctx = &self.ctx;
+        let local = ctx.sync().unwrap().identity.uuid();
+        ctx.execute_decision(
+            &mut self.conn,
+            |_| Ok(()),
+            |tx, d, ()| {
+                let cx = ApplyContext::new(origin, 1, 1, HlcStamp::from_u64(0), d, 1, local);
+                Ok(f(tx, &cx))
+            },
+        )
+        .unwrap()
+    }
+
+    fn suppressed(&mut self, origin: LogKey, settle: &str) -> bool {
+        let k = key(settle.into()).unwrap();
+        self.with_cx(origin, |tx, cx| cx.delivery_suppressed(tx, &k).unwrap())
+    }
+
+    fn seen(&self, id: &str) -> Option<bool> {
+        self.conn
+            .query_row("SELECT suppressed FROM test_seen WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .ok()
+    }
+
+    fn delivered(&self, id: &str) -> (i64, i64) {
+        let n = |table: &str| {
+            self.conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE id=?1"),
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0)
+        };
+        (n("test_lazy"), n("test_wake"))
+    }
+}
+
+use crate::store::connection::{HoldSource, OWN_HISTORY_HOLD_MAX};
+
+#[test]
+fn provenance_replicated_and_local_incl_own_old_incarnation() {
+    let mut a = Node::new(60, delivery());
+    let b = Node::new(61, delivery());
+    let a_old = Node::with_incarnations(60, 999, delivery());
+    assert_ne!(a_old.log, a.log, "another incarnation of the same node");
+
+    let replicated = a.with_cx(b.log, |_, cx| cx.provenance());
+    assert_eq!(replicated, Provenance::ReplicatedFrom(b.log.node));
+    assert_eq!(
+        replicated.as_str(),
+        format!("replicated_from:{}", b.log.node)
+    );
+    assert_eq!(replicated.as_str().len(), "replicated_from:".len() + 32);
+    let own = a.log;
+    assert_eq!(a.with_cx(own, |_, cx| cx.provenance()), Provenance::Local);
+    assert_eq!(
+        a.with_cx(a_old.log, |_, cx| cx.provenance()),
+        Provenance::Local,
+        "an own old incarnation is Local"
+    );
+    assert_eq!(Provenance::Local.as_str(), "local_journal");
+}
+
+#[test]
+fn is_local_seat_by_home() {
+    let mut a = Node::new(62, delivery());
+    let own = a.log;
+    a.conn
+        .execute_batch(
+            "INSERT INTO herdr_hosts(node_id,endpoint,created_at) \
+             VALUES ((SELECT id FROM local_node),'local',0);\
+             INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) \
+             VALUES('s-local',(SELECT id FROM local_node),'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+             INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind) \
+             VALUES('s-remote',(SELECT id FROM local_node),'remote','native',1,0,'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',0,'agent');",
+        )
+        .unwrap();
+    let check = |a: &mut Node, id: &str| {
+        let seat = crate::protocol::ids::SeatId::new(id);
+        a.with_cx(own, |tx, cx| cx.is_local_seat(tx, &seat).unwrap())
+    };
+    assert!(check(&mut a, "s-local"));
+    assert!(!check(&mut a, "s-remote"));
+    assert!(!check(&mut a, "s-unknown"));
+}
+
+#[test]
+fn delivery_suppressed_journal_and_forked_any_state() {
+    let mut x1 = Node::new(63, delivery());
+    x1.author::<PutKind>(&put("k"));
+    let mut a = Node::new(64, delivery());
+    a.author::<PutKind>(&put("foreign"));
+    let mut x2 = Node::with_incarnations(63, 500, delivery());
+    x2.author::<PutKind>(&put("live"));
+    let own = x2.log;
+
+    // x1's entry is in an own old incarnation's log, still pending.
+    x2.ship(&x1, x1.log, 2);
+    a.ship(&x1, x1.log, 2);
+    assert_eq!(x2.state(&x1.log, 2), "pending");
+    assert!(x2.suppressed(own, "e:k"), "own old log, pending");
+    assert!(x2.suppressed(own, "e:live"), "active self log, applied");
+    assert!(!x2.suppressed(own, "e:none"), "no row");
+
+    // A foreign log's row never suppresses.
+    x2.ship(&a, a.log, 2);
+    assert!(!x2.suppressed(own, "e:foreign"));
+
+    // A forked-branch row in a log of this node does.
+    let log_ix: i64 = x2
+        .conn
+        .query_row("SELECT active_log_ix FROM local_node", [], |r| r.get(0))
+        .unwrap();
+    x2.conn
+        .execute(
+            "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,payload,signature,received_at) \
+             VALUES (?1,9,zeroblob(32),zeroblob(32),1,'test.put',1,x'',?2,x'',zeroblob(64),0)",
+            params![log_ix, "e:forked"],
+        )
+        .unwrap();
+    assert!(x2.suppressed(own, "e:forked"), "journal_forked row");
+    // The same key in a foreign log's fork would not count.
+    let a_ix: i64 = x2
+        .conn
+        .query_row(
+            "SELECT log_ix FROM sync_logs WHERE node_uuid=?1",
+            [a.log.node.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    x2.conn
+        .execute(
+            "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,payload,signature,received_at) \
+             VALUES (?1,9,zeroblob(32),zeroblob(32),1,'test.put',1,x'',?2,x'',zeroblob(64),0)",
+            params![a_ix, "e:foreign-fork"],
+        )
+        .unwrap();
+    assert!(!x2.suppressed(own, "e:foreign-fork"));
+}
+
+#[test]
+fn delivery_suppressed_false_for_unsettled_own_old_origin() {
+    let mut x1 = Node::new(65, delivery());
+    x1.author::<MsgKind>(&msg("u"));
+    let mut x2 = Node::with_incarnations(65, 501, delivery());
+    x2.ship(&x1, x1.log, 2);
+    // The message itself (creates m:u) sits in the own old log; its settle
+    // key s:u has no row anywhere.
+    assert!(!x2.suppressed(x1.log, "s:u"));
+    assert!(x2.suppressed(x1.log, "m:u"), "the key it creates does");
+}
+
+// ---- own-history hold -------------------------------------------------------
+
+#[test]
+fn hold_keeps_foreign_and_own_old_heads_pending_active_self_applies() {
+    let mut a = Node::new(66, delivery());
+    a.author::<PutKind>(&put("a1"));
+    let mut x1 = Node::new(67, delivery());
+    x1.author::<PutKind>(&put("x1"));
+    let mut x2 = Node::with_incarnations(67, 502, delivery());
+    x2.ship(&a, a.log, 2);
+    x2.ship(&x1, x1.log, 2);
+    x2.hold(HoldSource::Links, true, 1_000);
+
+    let before = x2.conn.total_changes();
+    let progress = x2.pass();
+    assert_eq!(progress.applied, 0, "{progress:?}");
+    assert_eq!(x2.state(&a.log, 1), "pending");
+    assert_eq!(x2.state(&x1.log, 1), "pending");
+    assert_eq!(x2.log_row(&a.log).2, None, "no blocked_on write");
+    assert_eq!(x2.log_row(&x1.log).2, None);
+    assert_eq!(x2.conn.total_changes(), before, "nothing written");
+
+    // The active self log is unaffected: authoring applies inline.
+    let authored = x2.author::<PutKind>(&put("mine"));
+    assert_eq!(x2.state(&x2.log, authored.counter), "applied");
+    assert!(x2.sync_hold().active(MonoInstant(1_000)));
+}
+
+#[test]
+fn hold_start_not_reset_while_flag_set_rearms_after_clear() {
+    let x = Node::new(68, delivery());
+    let hold = x.sync_hold();
+    let at = |ms| MonoInstant(ms);
+    hold.set(HoldSource::Links, true, at(1_000));
+    hold.set(HoldSource::Branches, true, at(200_000)); // does not restart
+    hold.set(HoldSource::Links, false, at(250_000)); // Branches still set
+    assert!(hold.active(at(1_000 + OWN_HISTORY_HOLD_MAX - 1)));
+    assert!(
+        !hold.active(at(1_000 + OWN_HISTORY_HOLD_MAX)),
+        "the start stayed at 1000"
+    );
+    hold.set(HoldSource::Branches, false, at(310_000));
+    assert!(!hold.active(at(310_000)), "both clear");
+
+    // A new hold re-arms from its own first set.
+    hold.set(HoldSource::Links, true, at(400_000));
+    assert!(hold.active(at(400_000 + OWN_HISTORY_HOLD_MAX - 1)));
+    assert!(!hold.active(at(400_000 + OWN_HISTORY_HOLD_MAX)));
+}
+
+#[test]
+fn clearing_flag_applies_next_pass() {
+    let mut a = Node::new(69, delivery());
+    a.author::<PutKind>(&put("a1"));
+    let mut x2 = Node::with_incarnations(70, 503, delivery());
+    x2.ship(&a, a.log, 2);
+    x2.hold(HoldSource::Branches, true, 10);
+    assert_eq!(x2.pass().applied, 0);
+    let _ = x2.ctx.sync().unwrap().take_apply_hint();
+    let kicks = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let counted = Arc::clone(&kicks);
+    x2.sync_hold().set_release_kick(Arc::new(move || {
+        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }));
+
+    x2.hold(HoldSource::Branches, false, 20);
+    assert!(
+        x2.ctx.sync().unwrap().take_apply_hint(),
+        "the last flag cleared sets the hint"
+    );
+    assert_eq!(kicks.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(x2.pass().applied, 2);
+    assert_eq!(x2.state(&a.log, 2), "applied");
+}
+
+#[test]
+fn hold_expires_after_5_min_with_one_log_line() {
+    let mut a = Node::new(71, delivery());
+    a.author::<PutKind>(&put("a1"));
+    let mut x2 = Node::with_incarnations(72, 504, delivery());
+    x2.ship(&a, a.log, 2);
+    x2.hold(HoldSource::Links, true, 1_000);
+    let _ = x2.ctx.sync().unwrap().take_apply_hint();
+
+    x2.clock.set(1_000 + OWN_HISTORY_HOLD_MAX - 1);
+    assert_eq!(x2.pass().applied, 0, "one ms short of the cap");
+    assert_eq!(x2.sync_hold().expiry_logs(), 0);
+
+    x2.clock.set(1_000 + OWN_HISTORY_HOLD_MAX);
+    assert_eq!(x2.pass().applied, 2, "the cap lifts the filter");
+    assert_eq!(x2.sync_hold().expiry_logs(), 1);
+    assert!(x2.ctx.sync().unwrap().take_apply_hint(), "expiry sets it");
+    x2.pass();
+    x2.pass();
+    assert_eq!(x2.sync_hold().expiry_logs(), 1, "logged once");
+}
+
+#[test]
+fn no_flag_never_filters() {
+    let mut a = Node::new(73, delivery());
+    a.author::<PutKind>(&put("a1"));
+    let mut x2 = Node::with_incarnations(74, 505, delivery());
+    x2.ship(&a, a.log, 2);
+    x2.clock.set(10 * OWN_HISTORY_HOLD_MAX);
+    assert!(
+        !x2.sync_hold()
+            .active(MonoInstant(10 * OWN_HISTORY_HOLD_MAX))
+    );
+    assert_eq!(x2.pass().applied, 2);
+    assert_eq!(x2.sync_hold().expiry_logs(), 0);
+}
+
+// ---- catch-up suppression scenarios ------------------------------------------
+
+#[test]
+fn wipe_then_pull_settled_message_not_redelivered() {
+    let mut a = Node::new(75, delivery());
+    a.author::<MsgKind>(&msg("m1"));
+    let mut b1 = Node::new(76, delivery());
+    b1.ship(&a, a.log, 2);
+    b1.pass();
+    assert_eq!(b1.delivered("m1"), (1, 1), "delivered once before the wipe");
+    b1.author::<SettleKind>(&msg("m1")); // settle key authored by B
+
+    // B is wiped: same seed, new incarnation. A's log comes first.
+    let mut b2 = Node::with_incarnations(76, 506, delivery());
+    assert_eq!(b2.log.node, b1.log.node);
+    assert_ne!(b2.log, b1.log);
+    b2.hold(HoldSource::Links, true, 100);
+    b2.ship(&a, a.log, 2);
+    b2.ship(&b1, b1.log, 3);
+    assert_eq!(b2.pass().applied, 0);
+    assert_eq!(b2.state(&a.log, 2), "pending", "waits for the hold");
+
+    b2.hold(HoldSource::Links, false, 200);
+    b2.pass();
+    assert_eq!(b2.state(&a.log, 2), "applied");
+    assert_eq!(b2.seen("m1"), Some(true), "delivery_suppressed was true");
+    assert_eq!(b2.delivered("m1"), (0, 0), "no lazy row, no wake_work");
+}
+
+#[test]
+fn own_old_unsettled_message_delivered_after_hold() {
+    let mut b1 = Node::new(77, delivery());
+    b1.author::<MsgKind>(&msg("open"));
+    let mut b2 = Node::with_incarnations(77, 507, delivery());
+    b2.hold(HoldSource::Branches, true, 100);
+    b2.ship(&b1, b1.log, 2);
+    assert_eq!(b2.pass().applied, 0);
+    assert_eq!(b2.seen("open"), None, "held");
+
+    b2.hold(HoldSource::Branches, false, 200);
+    b2.pass();
+    assert_eq!(b2.state(&b1.log, 2), "applied");
+    assert_eq!(b2.seen("open"), Some(false));
+    assert_eq!(b2.delivered("open"), (1, 1), "lazy row and wake_work");
+}
+
+#[test]
+fn own_old_settled_message_not_delivered_even_with_later_settlement_batch() {
+    let mut b1 = Node::new(78, delivery());
+    b1.author::<MsgKind>(&msg("open")); // 2
+    b1.author::<MsgKind>(&msg("done")); // 3
+    b1.author::<SettleKind>(&msg("done")); // 4
+    let mut b2 = Node::with_incarnations(78, 508, delivery());
+    b2.hold(HoldSource::Branches, true, 100);
+    b2.ship(&b1, b1.log, 3); // both messages, no settlement yet
+    b2.ship_range(&b1, b1.log, 4, 4); // the settlement in a later batch
+    assert_eq!(b2.pass().applied, 0);
+
+    b2.hold(HoldSource::Branches, false, 200);
+    b2.pass();
+    assert_eq!(b2.state(&b1.log, 4), "applied");
+    assert_eq!(b2.seen("done"), Some(true));
+    assert_eq!(b2.delivered("done"), (0, 0));
+    assert_eq!(b2.seen("open"), Some(false));
+    assert_eq!(b2.delivered("open"), (1, 1), "the unsettled one is offered");
 }

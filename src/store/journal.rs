@@ -37,7 +37,8 @@ use crate::protocol::results::{ApiError, ErrorCode};
 use crate::protocol::time::{CallBudget, UtcMillis};
 use crate::store::apply;
 use crate::store::connection::{
-    DecisionInstant, INGEST_HEADROOM_BYTES, StoreContext, SyncState, api_error, store_error,
+    DecisionInstant, INGEST_HEADROOM_BYTES, OwnHistoryHold, StoreContext, SyncState, api_error,
+    store_error,
 };
 use crate::sync::chain::{ChainStep, HeldLog, check_next};
 use crate::sync::envelope::{
@@ -313,6 +314,7 @@ pub fn open(
         )
         .map_err(store_error)?;
     let wall = ctx.clock().utc_now();
+    let apply_hint = Arc::new(AtomicBool::new(true));
     let state = SyncState {
         identity,
         hlc: std::sync::Mutex::new(Hlc::resume(
@@ -327,7 +329,8 @@ pub fn open(
         incarnation_rng: std::sync::Mutex::new(ctx.new_incarnation_rng()),
         skew_logged: std::sync::Mutex::default(),
         // The first Apply pass after start replays and drains regardless.
-        apply_hint: AtomicBool::new(true),
+        own_history_hold: Arc::new(OwnHistoryHold::new(Arc::clone(&apply_hint))),
+        apply_hint,
     };
     let active: Option<i64> = tx
         .query_row("SELECT active_log_ix FROM local_node", [], |r| r.get(0))

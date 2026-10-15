@@ -6,8 +6,7 @@
 //! registry lookup, the `needs` check, a savepoint, one local position, the
 //! handler, the recorded outcome and the follow-ups a handler queued), the
 //! causal pass over ingested entries ([`apply_pass`]) and replay
-//! ([`replay`]). The DB-backed context methods (`provenance`,
-//! `is_local_seat`, `delivery_suppressed`) land with ht-5fr.3.16. Journal and
+//! ([`replay`]). Journal and
 //! this module call each other by design: Journal authors and hands the new
 //! row here in the same transaction, and a follow-up is authored back through
 //! Journal so its deps come after its trigger.
@@ -34,10 +33,12 @@ use std::marker::PhantomData;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::node::NodeUuid;
+use crate::protocol::ids::SeatId;
 use crate::protocol::results::{ApiError, ErrorCode};
 use crate::protocol::time::{Clock, MonoInstant};
 use crate::store::connection::{DecisionInstant, StoreContext, SyncState, api_error, store_error};
 use crate::store::journal;
+use crate::store::seats;
 use crate::sync::envelope::Deps;
 use crate::sync::facts::{FactError, FactKind};
 use crate::sync::hlc::HlcStamp;
@@ -47,12 +48,23 @@ use crate::sync::{EntityKey, LogKey};
 /// Where an applied entry came from, as handlers and attribution see it.
 ///
 /// Closed set. Any incarnation of this node's own log is `Local`; only an
-/// entry authored by another node is `ReplicatedFrom`. The `as_str` text
-/// lands with ApplyEngine (ht-5fr.3.8).
+/// entry authored by another node is `ReplicatedFrom`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Provenance {
     Local,
     ReplicatedFrom(NodeUuid),
+}
+
+impl Provenance {
+    /// The TRUST-POLICY value: `replicated_from:<node uuid hex>` for another
+    /// node's fact, `local_journal` for this node's own journal (the policy's
+    /// value for an own entry materialized with no staged local attribution).
+    pub fn as_str(&self) -> String {
+        match self {
+            Self::Local => "local_journal".to_owned(),
+            Self::ReplicatedFrom(node) => format!("replicated_from:{node}"),
+        }
+    }
 }
 
 /// A fact queued by a handler through [`ApplyContext::follow_up`]: kind name,
@@ -127,6 +139,48 @@ impl ApplyContext<'_> {
     /// True when the entry's origin node is this node, in any incarnation.
     pub fn is_local_origin(&self) -> bool {
         self.origin.node == self.local_node
+    }
+
+    /// The only source of `replicated_from` attribution: `ReplicatedFrom` of
+    /// the origin node when it is another node, `Local` for any incarnation of
+    /// this node. Handlers record this value and never derive their own; its
+    /// spelling is defined in TRUST-POLICY.md.
+    pub fn provenance(&self) -> Provenance {
+        if self.is_local_origin() {
+            Provenance::Local
+        } else {
+            Provenance::ReplicatedFrom(self.origin.node)
+        }
+    }
+
+    /// Whether `seat` exists and its home is this node (delegates to
+    /// [`seats::is_local_seat`]); an unknown seat is not local.
+    pub fn is_local_seat(&self, tx: &Transaction<'_>, seat: &SeatId) -> Result<bool, ApiError> {
+        seats::is_local_seat(tx, seat)
+    }
+
+    /// Catch-up suppression: true exactly when a `journal` or `journal_forked`
+    /// row with `creates = settle_key` exists in a log of this node, in any
+    /// apply state and whatever the entry being applied came from. The rule is
+    /// kind-agnostic: a handler asks with the key that settles its obligation
+    /// and never decides suppression itself. An entry from an own old
+    /// incarnation does not suppress by itself; only a settlement does, so an
+    /// unsettled obligation in a pulled-back own tail is still offered once
+    /// the own-history hold lifts.
+    pub fn delivery_suppressed(
+        &self,
+        tx: &Transaction<'_>,
+        settle_key: &EntityKey,
+    ) -> Result<bool, ApiError> {
+        tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM journal j JOIN sync_logs l ON l.log_ix=j.log_ix \
+                 WHERE j.creates=?1 AND l.node_uuid=?2) \
+             OR EXISTS(SELECT 1 FROM journal_forked j JOIN sync_logs l ON l.log_ix=j.log_ix \
+                 WHERE j.creates=?1 AND l.node_uuid=?2)",
+            params![settle_key.as_str(), self.local_node.to_string()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)
     }
 
     /// Queues a typed fact. Only queues: ApplyEngine authors it after the
@@ -704,7 +758,13 @@ fn unmet_dep(tx: &Transaction<'_>, head: &Head) -> Result<Option<String>, ApiErr
 
 /// The ready head with the smallest `ingest_seq`, if any. Heads passed over
 /// on the way get their `blocked_on` written, only when it changed.
-fn next_ready_head(tx: &Transaction<'_>) -> Result<Option<i64>, ApiError> {
+fn next_ready_head(tx: &Transaction<'_>, only_self_log: bool) -> Result<Option<i64>, ApiError> {
+    let active_log: Option<i64> = if only_self_log {
+        tx.query_row("SELECT active_log_ix FROM local_node", [], |r| r.get(0))
+            .map_err(store_error)?
+    } else {
+        None
+    };
     let mut statement = tx
         .prepare(
             "SELECT l.log_ix,l.node_uuid,l.incarnation,l.blocked_on,j.ingest_seq,j.deps \
@@ -728,6 +788,11 @@ fn next_ready_head(tx: &Transaction<'_>) -> Result<Option<i64>, ApiError> {
         .map_err(store_error)?;
     drop(statement);
     for (log_ix, node, incarnation, blocked_on, ingest_seq, deps) in heads {
+        // Own-history hold: every log but the active self log stays pending,
+        // with no `blocked_on` write.
+        if only_self_log && Some(log_ix) != active_log {
+            continue;
+        }
         let corrupt = |what: &str| {
             api_error(
                 ErrorCode::StoreCorrupt,
@@ -796,6 +861,8 @@ fn reattempt_parked(
 /// Repeatedly takes the ready log head with the smallest `ingest_seq` (ready
 /// per [`unmet_dep`]) and applies it, advancing `applied_through` whatever the
 /// outcome; a head that is not ready gets `blocked_on` set and is skipped.
+/// While the own-history hold is active ([`crate::store::connection::OwnHistoryHold`]) only the active
+/// self log's head is considered; other heads stay `pending`.
 /// Between heads, `parked_dep` entries whose creator has applied are
 /// re-attempted. Stops when nothing is ready, or at `limits` with
 /// `has_more` set. A `Store` error aborts the pass: the caller rolls the whole
@@ -809,12 +876,13 @@ pub fn apply_pass(
 ) -> Result<ApplyProgress, ApiError> {
     let sync = ctx.sync()?;
     let mut run = Run::new(ctx.clock(), limits);
+    let hold = sync.own_history_hold.active(ctx.clock().monotonic_now());
     loop {
         if reattempt_parked(tx, sync, decision, &mut run)? {
             run.progress.has_more = true;
             break;
         }
-        let Some(ingest_seq) = next_ready_head(tx)? else {
+        let Some(ingest_seq) = next_ready_head(tx, hold)? else {
             break;
         };
         if run.exhausted() {
