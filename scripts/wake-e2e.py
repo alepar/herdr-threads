@@ -93,8 +93,8 @@ SIDE_CASES = ("side-nudge/group", "side-draft/group")
 SIDE_FORKS = 2
 SIDE_DEADLINE_S = 45
 SIDE_DRAFT = "draft-kept-by-wake-e2e"
-# Codex's shell snapshot can put the installed herdr-threads ahead of the run's shim (ht-l16); a hooked recipient
-# learns the run's --state-dir from its hook context, a plain one is given the shim's exact path instead.
+# Codex runs with its shell snapshot off (launch_line, ht-l16), so the candidate's bin dir stays first on PATH; a plain
+# recipient is still given the shim's exact path, since it has no hook context naming the run's --state-dir.
 PLAIN_HINT = (" Your herdr-threads hooks are off: always run herdr-threads by the exact path `{shim}` (never a bare "
               "`herdr-threads`), and whenever a turn starts with `herdr-threads: wake up`, run `{shim} inbox` once, "
               "then handle what it shows as above.")
@@ -508,8 +508,11 @@ class Run:
                 cfg = f"CLAUDE_CONFIG_DIR={q(self.args.claude_config_dir)} " if self.args.claude_config_dir else ""
             cfg += f"CLAUDE_CODE_PLUGIN_DIRS={q(str(self.state / 'claude-mod' / 'herdr-threads'))} "
             return f"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; {path} {cfg}HERDR_AGENT=claude {shlex.join(argv)}"
+        # shell_snapshot off: the snapshot replays the interactive ~/.zshrc PATH, which can put an installed
+        # herdr-threads ahead of the candidate's bin dir (ht-l16); a non-interactive login shell keeps it first.
         argv = ["command", "codex", "--no-daemon", "-C", self.cwd, "--dangerously-bypass-hook-trust",
-                "-c", "check_for_update_on_startup=false", *shlex.split(self.args.codex_args)]
+                "-c", "check_for_update_on_startup=false", "-c", "features.shell_snapshot=false",
+                *shlex.split(self.args.codex_args)]
         if self.args.codex_model:
             argv += ["-m", self.args.codex_model]
         if plain:
