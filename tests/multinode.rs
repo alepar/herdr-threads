@@ -98,10 +98,18 @@ fn partition_then_heal_converges() {
         },
     );
     cluster.wait_converged(WAIT);
+    // Linked before the cut, so a later `backoff` can only be a refused dial.
+    cluster.wait_until("the dial target to link before the cut", WAIT, || {
+        (cluster.target_state(0).as_deref() == Some("linked")).then_some(())
+    });
     cluster.partition(0, 1);
     // Authored during the partition; node 0 restarts and its dials are refused.
     let (counter, _) = cluster.author_kind::<FutureKind>(0, &note("while cut"));
-    std::thread::sleep(Duration::from_secs(3));
+    // Node 0 (the dialer) tried to reach node 1 and was refused: a fixed sleep
+    // proved nothing about whether a dial had happened.
+    cluster.wait_until("node 0's dial to be refused while cut", WAIT, || {
+        (cluster.target_state(0).as_deref() == Some("backoff")).then_some(())
+    });
     assert_eq!(
         held(&cluster, 0, 0),
         counter as i64,

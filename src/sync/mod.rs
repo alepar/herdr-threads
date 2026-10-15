@@ -69,7 +69,9 @@ pub struct LogHead {
     pub counter: u64,
     pub head_hash: [u8; 32],
     pub state: LogState,
-    /// Unix ms when the log froze; `None` while active.
+    /// The counter the log is frozen at (`sync_logs.frozen_at_counter`): entries
+    /// above it are not settled history of this log; `None` while the log is
+    /// not frozen.
     pub frozen_at: Option<i64>,
 }
 

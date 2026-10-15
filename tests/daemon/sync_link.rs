@@ -531,8 +531,12 @@ fn store_only_daemon_without_target_idle_exits() {
 fn daemon_with_enabled_target_stays() {
     let solo = Solo::start("sync-idle-target", true);
     let before = boot_id(&solo.iso, &solo.state);
-    // Three periods: an idle exit would have fired after the first.
-    std::thread::sleep(Duration::from_millis(3 * IDLE_MS));
+    // The monitor samples every max(IDLE_MS / 4, 20 ms) (`IdleExit::new`) and
+    // fires at the first sample after a full period of inactivity, so an exit
+    // would land within IDLE_MS plus two sample periods of the daemon's start;
+    // the margin covers scheduling. That is the minimum that would have caught one.
+    let check_every_ms = IDLE_MS / 4;
+    std::thread::sleep(Duration::from_millis(IDLE_MS + 2 * check_every_ms + 500));
     assert!(solo.endpoint().exists(), "endpoint withdrawn");
     assert_eq!(boot_id(&solo.iso, &solo.state), before, "same daemon boot");
 }
