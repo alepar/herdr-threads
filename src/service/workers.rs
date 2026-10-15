@@ -1,13 +1,13 @@
 //! Bounded admission for work that must not occupy the domain writer.
 
 use crate::daemon::logs::{LaneErrorLog, NoopLaneErrorLog};
-use crate::ports::SnapshotGenerationId;
 use crate::ports::{
     GuardedInvalidationTransition, GuardedSeatTransition, HostInvalidationFence,
     HostInvalidationReason, HostObservation, HostObservationAdmission, InvalidationSeatPage,
     PublishedSnapshot, ReconciliationOutcome, SnapshotCleanupProgress, SnapshotHeader,
     SnapshotSeatPage, SnapshotStage, SnapshotStageProgress,
 };
+use crate::ports::{HostId, SnapshotGenerationId};
 use crate::protocol::{
     results::{ApiError, ErrorCode},
     time::{CallBudget, Clock},
@@ -153,6 +153,7 @@ pub(crate) struct ScheduledStore {
     store: Arc<dyn StorePort>,
     writer: Arc<FairWriter>,
     liveness: Option<Arc<crate::service::liveness::LivenessWorker>>,
+    host: Option<HostId>,
 }
 
 impl ScheduledStore {
@@ -161,7 +162,29 @@ impl ScheduledStore {
             store,
             writer,
             liveness: None,
+            host: None,
         }
+    }
+    /// Scopes this store's wake port to one Herdr host.
+    ///
+    /// Owns: the wake host scope. Every seat-selecting wake call (candidates,
+    /// batch seats, the poke scan, recovery pages) returns only seats of this
+    /// host, and every per-seat wake write re-checks the seat's host, so a
+    /// seat rebound to another host mid-pass answers `Conflict` and the
+    /// scheduler skips it.
+    /// Seats of a host with no attached wake worker are selected by no worker.
+    /// A new wake query that selects or writes a seat takes the `HostId` from
+    /// this scope and filters `s.host_id` in `src/store/wake.rs`; it never
+    /// reads the host from the candidate it was handed.
+    /// A store built without a scope has no wake port: wake calls fail with
+    /// `HostUnavailable` instead of serving every host.
+    pub(crate) fn for_host(mut self, host: HostId) -> Self {
+        self.host = Some(host);
+        self
+    }
+    fn wake_host(&self) -> Result<HostId, ApiError> {
+        self.host
+            .ok_or_else(|| error(ErrorCode::HostUnavailable, "wake store has no host scope"))
     }
     /// Re-checks a seat's binding liveness before each wake decision.
     pub(crate) fn with_liveness(
@@ -1370,7 +1393,7 @@ impl WakePort for ScheduledStore {
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<WakeCandidate>, ApiError> {
-        self.store.wake_candidates(page, budget)
+        self.store.wake_candidates(self.wake_host()?, page, budget)
     }
     fn wake_batch_seats(
         &self,
@@ -1378,7 +1401,8 @@ impl WakePort for ScheduledStore {
         limit: u16,
         budget: &CallBudget,
     ) -> Result<Vec<crate::protocol::ids::SeatId>, ApiError> {
-        self.store.wake_batch_seats(after, limit, budget)
+        self.store
+            .wake_batch_seats(self.wake_host()?, after, limit, budget)
     }
     fn clear_wake_batch_if_empty(
         &self,
@@ -1386,7 +1410,8 @@ impl WakePort for ScheduledStore {
         budget: &CallBudget,
     ) -> Result<bool, ApiError> {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
-        self.store.clear_wake_batch_if_empty(seat, budget)
+        self.store
+            .clear_wake_batch_if_empty(self.wake_host()?, seat, budget)
     }
     fn wake_batch_window(
         &self,
@@ -1394,7 +1419,8 @@ impl WakePort for ScheduledStore {
         budget: &CallBudget,
     ) -> Result<Option<(crate::protocol::time::UtcMillis, u64)>, ApiError> {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
-        self.store.wake_batch_window(candidate, budget)
+        self.store
+            .wake_batch_window(self.wake_host()?, candidate, budget)
     }
     fn before_wake_decision(
         &self,
@@ -1412,7 +1438,8 @@ impl WakePort for ScheduledStore {
         budget: &CallBudget,
     ) -> Result<Option<WakeReservation>, ApiError> {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
-        self.store.reserve_wake(candidate, budget)
+        self.store
+            .reserve_wake(self.wake_host()?, candidate, budget)
     }
     fn complete_wake(
         &self,
@@ -1423,14 +1450,15 @@ impl WakePort for ScheduledStore {
     ) -> Result<bool, ApiError> {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
         self.store
-            .complete_wake(attempt, outcome, refused_restore, budget)
+            .complete_wake(self.wake_host()?, attempt, outcome, refused_restore, budget)
     }
     fn wake_recovery_candidates(
         &self,
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
-        self.store.wake_recovery_candidates(page, budget)
+        self.store
+            .wake_recovery_candidates(self.wake_host()?, page, budget)
     }
     fn recover_wake_reservation(
         &self,
@@ -1438,17 +1466,18 @@ impl WakePort for ScheduledStore {
         budget: &CallBudget,
     ) -> Result<WakeRecoveryOutcome, ApiError> {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
-        self.store.recover_wake_reservation(request, budget)
+        self.store
+            .recover_wake_reservation(self.wake_host()?, request, budget)
     }
     fn poke_candidates(&self, limit: u16, budget: &CallBudget) -> Result<Vec<PokeDue>, ApiError> {
-        self.store.poke_candidates(limit, budget)
+        self.store.poke_candidates(self.wake_host()?, limit, budget)
     }
     fn poke_for_wake(
         &self,
         seat: &SeatId,
         budget: &CallBudget,
     ) -> Result<Option<PokeDue>, ApiError> {
-        self.store.poke_for_wake(seat, budget)
+        self.store.poke_for_wake(self.wake_host()?, seat, budget)
     }
     fn reserve_poke(
         &self,
@@ -1456,7 +1485,7 @@ impl WakePort for ScheduledStore {
         budget: &CallBudget,
     ) -> Result<Option<PokeReservation>, ApiError> {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
-        self.store.reserve_poke(due, budget)
+        self.store.reserve_poke(self.wake_host()?, due, budget)
     }
     fn complete_poke(
         &self,
@@ -1466,7 +1495,8 @@ impl WakePort for ScheduledStore {
         budget: &CallBudget,
     ) -> Result<(), ApiError> {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
-        self.store.complete_poke(attempt, outcome, receipts, budget)
+        self.store
+            .complete_poke(self.wake_host()?, attempt, outcome, receipts, budget)
     }
 }
 
@@ -1719,6 +1749,7 @@ pub fn start_wake_worker(
     store: Arc<dyn StorePort>,
     writer: Arc<FairWriter>,
     host: Arc<dyn HostPort>,
+    host_id: HostId,
     instance: String,
     boot: uuid::Uuid,
     retry: RetryConfig,
@@ -1734,6 +1765,7 @@ pub fn start_wake_worker(
         store,
         writer,
         host,
+        host_id,
         instance,
         boot,
         retry,
@@ -1755,6 +1787,7 @@ pub fn start_wake_worker_with_liveness(
     store: Arc<dyn StorePort>,
     writer: Arc<FairWriter>,
     host: Arc<dyn HostPort>,
+    host_id: HostId,
     instance: String,
     boot: uuid::Uuid,
     retry: RetryConfig,
@@ -1773,7 +1806,9 @@ pub fn start_wake_worker_with_liveness(
             let _origin = kicks::enter_lane(Lane::Wakes);
             status.attach_pacer(Arc::clone(&pacer));
             let _guard = status.lane_guard(&cancellation);
-            let port = ScheduledStore::new(store, writer).with_liveness(liveness);
+            let port = ScheduledStore::new(store, writer)
+                .for_host(host_id)
+                .with_liveness(liveness);
             let notifier = NativeWakeDispatcher::new(host.as_ref(), &port, port.store.clock())
                 .with_hook_pull(hook_pull.as_ref());
             let observed = ObservedWakePort::new(&port, &status);

@@ -12572,6 +12572,7 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
         let discovery = crate::store::discover_wake_candidates(
             &conn,
             "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             0,
             discovery_high,
             100,
@@ -12623,6 +12624,7 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
                 &context,
                 &mut conn,
                 "34750f98bd59fcfc946da45aaabe933b",
+                crate::test_support::test_host_id(),
                 &candidate,
                 uuid::Uuid::new_v4(),
                 30_000
@@ -12682,6 +12684,7 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
         let discovery = crate::store::discover_wake_candidates(
             &conn,
             "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             0,
             discovery_high,
             100,

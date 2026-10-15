@@ -226,7 +226,11 @@ impl Fixture {
     }
     fn candidate(&self, seat: &str) -> Option<WakeCandidate> {
         self.store
-            .wake_candidates(PageRequest::default(), &budget())
+            .wake_candidates(
+                herdr_threads::test_support::test_host_id(),
+                PageRequest::default(),
+                &budget(),
+            )
             .unwrap()
             .items
             .into_iter()

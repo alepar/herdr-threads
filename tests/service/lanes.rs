@@ -675,7 +675,12 @@ impl herdr_threads::scheduler::WakePort for HealthWakeFixture {
         herdr_threads::protocol::results::ApiError,
     > {
         self.result(3, || {
-            herdr_threads::ports::StorePort::wake_candidates(&self.store, page, budget)
+            herdr_threads::ports::StorePort::wake_candidates(
+                &self.store,
+                herdr_threads::test_support::test_host_id(),
+                page,
+                budget,
+            )
         })
     }
     fn wake_batch_seats(
@@ -686,7 +691,13 @@ impl herdr_threads::scheduler::WakePort for HealthWakeFixture {
     ) -> Result<Vec<herdr_threads::protocol::ids::SeatId>, herdr_threads::protocol::results::ApiError>
     {
         self.result(6, || {
-            herdr_threads::ports::StorePort::wake_batch_seats(&self.store, after, limit, budget)
+            herdr_threads::ports::StorePort::wake_batch_seats(
+                &self.store,
+                herdr_threads::test_support::test_host_id(),
+                after,
+                limit,
+                budget,
+            )
         })
     }
     fn clear_wake_batch_if_empty(
@@ -695,7 +706,12 @@ impl herdr_threads::scheduler::WakePort for HealthWakeFixture {
         budget: &CallBudget,
     ) -> Result<bool, herdr_threads::protocol::results::ApiError> {
         self.result(7, || {
-            herdr_threads::ports::StorePort::clear_wake_batch_if_empty(&self.store, seat, budget)
+            herdr_threads::ports::StorePort::clear_wake_batch_if_empty(
+                &self.store,
+                herdr_threads::test_support::test_host_id(),
+                seat,
+                budget,
+            )
         })
     }
     fn wake_batch_window(
@@ -707,7 +723,12 @@ impl herdr_threads::scheduler::WakePort for HealthWakeFixture {
         herdr_threads::protocol::results::ApiError,
     > {
         self.result(8, || {
-            herdr_threads::ports::StorePort::wake_batch_window(&self.store, candidate, budget)
+            herdr_threads::ports::StorePort::wake_batch_window(
+                &self.store,
+                herdr_threads::test_support::test_host_id(),
+                candidate,
+                budget,
+            )
         })
     }
     fn reserve_wake(
@@ -719,7 +740,12 @@ impl herdr_threads::scheduler::WakePort for HealthWakeFixture {
         herdr_threads::protocol::results::ApiError,
     > {
         self.result(4, || {
-            herdr_threads::ports::StorePort::reserve_wake(&self.store, candidate, budget)
+            herdr_threads::ports::StorePort::reserve_wake(
+                &self.store,
+                herdr_threads::test_support::test_host_id(),
+                candidate,
+                budget,
+            )
         })
     }
     fn complete_wake(
@@ -735,6 +761,7 @@ impl herdr_threads::scheduler::WakePort for HealthWakeFixture {
             }
             herdr_threads::ports::StorePort::complete_wake(
                 &self.store,
+                herdr_threads::test_support::test_host_id(),
                 attempt,
                 outcome,
                 refused_restore,
@@ -751,7 +778,12 @@ impl herdr_threads::scheduler::WakePort for HealthWakeFixture {
         herdr_threads::protocol::results::ApiError,
     > {
         self.result(1, || {
-            herdr_threads::ports::StorePort::wake_recovery_candidates(&self.store, page, budget)
+            herdr_threads::ports::StorePort::wake_recovery_candidates(
+                &self.store,
+                herdr_threads::test_support::test_host_id(),
+                page,
+                budget,
+            )
         })
     }
     fn recover_wake_reservation(
@@ -761,7 +793,12 @@ impl herdr_threads::scheduler::WakePort for HealthWakeFixture {
     ) -> Result<herdr_threads::ports::WakeRecoveryOutcome, herdr_threads::protocol::results::ApiError>
     {
         self.result(2, || {
-            herdr_threads::ports::StorePort::recover_wake_reservation(&self.store, request, budget)
+            herdr_threads::ports::StorePort::recover_wake_reservation(
+                &self.store,
+                herdr_threads::test_support::test_host_id(),
+                request,
+                budget,
+            )
         })
     }
 }
@@ -1976,6 +2013,7 @@ mod pacer_lanes {
             f.store.clone(),
             Arc::new(FairWriter::new(16)),
             host.clone(),
+            herdr_threads::test_support::test_host_id(),
             "34750f98bd59fcfc946da45aaabe933b".into(),
             boot(),
             RetryConfig::default(),
@@ -2191,6 +2229,7 @@ mod pacer_lanes {
                 store.clone(),
                 Arc::new(FairWriter::new(16)),
                 host.clone(),
+                herdr_threads::test_support::test_host_id(),
                 "34750f98bd59fcfc946da45aaabe933b".into(),
                 boot(),
                 RetryConfig::default(),

@@ -500,7 +500,12 @@ impl crate::scheduler::WakePort for FailingWakes {
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<crate::ports::WakeCandidate>, ApiError> {
-        StorePort::wake_candidates(&self.store, page, budget)
+        StorePort::wake_candidates(
+            &self.store,
+            crate::test_support::test_host_id(),
+            page,
+            budget,
+        )
     }
     fn reserve_wake(
         &self,
@@ -508,7 +513,12 @@ impl crate::scheduler::WakePort for FailingWakes {
         budget: &CallBudget,
     ) -> Result<Option<crate::ports::WakeReservation>, ApiError> {
         self.result(FAIL_RESERVE, || {
-            StorePort::reserve_wake(&self.store, candidate, budget)
+            StorePort::reserve_wake(
+                &self.store,
+                crate::test_support::test_host_id(),
+                candidate,
+                budget,
+            )
         })
     }
     fn complete_wake(
@@ -519,7 +529,14 @@ impl crate::scheduler::WakePort for FailingWakes {
         budget: &CallBudget,
     ) -> Result<bool, ApiError> {
         self.result(FAIL_COMPLETE, || {
-            StorePort::complete_wake(&self.store, attempt, outcome, refused_restore, budget)
+            StorePort::complete_wake(
+                &self.store,
+                crate::test_support::test_host_id(),
+                attempt,
+                outcome,
+                refused_restore,
+                budget,
+            )
         })
     }
     fn wake_recovery_candidates(
@@ -527,14 +544,24 @@ impl crate::scheduler::WakePort for FailingWakes {
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<crate::ports::WakeRecoveryCandidate>, ApiError> {
-        StorePort::wake_recovery_candidates(&self.store, page, budget)
+        StorePort::wake_recovery_candidates(
+            &self.store,
+            crate::test_support::test_host_id(),
+            page,
+            budget,
+        )
     }
     fn recover_wake_reservation(
         &self,
         request: crate::ports::WakeRecoveryRequest,
         budget: &CallBudget,
     ) -> Result<crate::ports::WakeRecoveryOutcome, ApiError> {
-        StorePort::recover_wake_reservation(&self.store, request, budget)
+        StorePort::recover_wake_reservation(
+            &self.store,
+            crate::test_support::test_host_id(),
+            request,
+            budget,
+        )
     }
 }
 struct SubmittedNotifier;
@@ -1148,6 +1175,7 @@ fn observation_worker_loop_feeds_production_health_at_both_call_sites() {
             store: production.store.clone(),
             writer,
             liveness: None,
+            host: None,
         },
         fail_admission: Default::default(),
         fail_page: Default::default(),
@@ -1930,6 +1958,7 @@ fn refusal_free_pass_records_marker_once() {
             store: production.store.clone(),
             writer,
             liveness: None,
+            host: None,
         },
         fail_admission: Default::default(),
         fail_page: Default::default(),
@@ -2002,6 +2031,7 @@ fn stale_refused_pass_skips_reconciliation_marker() {
             store: production.store.clone(),
             writer,
             liveness: None,
+            host: None,
         },
         fail_admission: Default::default(),
         fail_page: Default::default(),

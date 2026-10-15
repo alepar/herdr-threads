@@ -55,6 +55,8 @@ mod lifecycle_ux;
 mod local_endpoint;
 #[path = "store/multi_host.rs"]
 mod multi_host;
+#[path = "store/multi_host_wake.rs"]
+mod multi_host_wake;
 #[path = "cli/read_picker_pty.rs"]
 mod read_picker_pty;
 #[path = "setup_cli.rs"]

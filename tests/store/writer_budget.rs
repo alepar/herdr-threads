@@ -103,6 +103,7 @@ impl Drop for Fixture {
 fn complete(store: &SqliteStore, budget: &CallBudget) -> Result<(), ApiError> {
     StorePort::complete_wake(
         store,
+        crate::test_support::test_host_id(),
         WakeAttemptId::new("attempt"),
         WakeOutcome::Submitted,
         None,

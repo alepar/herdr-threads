@@ -305,6 +305,7 @@ fn wake_pages_round_trip_cursors_and_match_the_oracle() {
             wake_candidates_page(
                 &fixture.context,
                 INSTANCE,
+                crate::test_support::test_host_id(),
                 page_request(cursor, limit, max),
                 &budget(),
             )
@@ -417,6 +418,7 @@ fn recovery_pages_round_trip_cursors_and_match_the_oracle() {
             wake_recovery_page(
                 &fixture.context,
                 INSTANCE,
+                crate::test_support::test_host_id(),
                 Some(elected),
                 page_request(cursor, limit, max),
                 &budget(),
@@ -481,6 +483,7 @@ fn pre_rewrite_wake_cursor_is_rejected() {
     let error = wake_candidates_page(
         &fixture.context,
         INSTANCE,
+        crate::test_support::test_host_id(),
         page_request(Some(raw.clone()), 100, 16_384),
         &budget(),
     )
@@ -501,6 +504,7 @@ fn pre_rewrite_wake_cursor_is_rejected() {
     let page = wake_candidates_page(
         &fixture.context,
         INSTANCE,
+        crate::test_support::test_host_id(),
         page_request(Some(current), 100, 16_384),
         &budget(),
     )

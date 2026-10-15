@@ -271,7 +271,11 @@ impl Fixture {
         );
         let candidates = self
             .store
-            .wake_candidates(PageRequest::default(), &budget())
+            .wake_candidates(
+                herdr_threads::test_support::test_host_id(),
+                PageRequest::default(),
+                &budget(),
+            )
             .unwrap();
         assert!(
             candidates.items.iter().all(|c| !c.has_actionable_work()),
@@ -279,7 +283,7 @@ impl Fixture {
         );
         assert!(
             self.store
-                .poke_candidates(100, &budget())
+                .poke_candidates(herdr_threads::test_support::test_host_id(), 100, &budget())
                 .unwrap()
                 .is_empty()
         );
@@ -361,7 +365,11 @@ fn guide_daily_loop_reply_creates_notification_attention() {
     );
     assert!(
         f.store
-            .wake_candidates(PageRequest::default(), &budget())
+            .wake_candidates(
+                herdr_threads::test_support::test_host_id(),
+                PageRequest::default(),
+                &budget()
+            )
             .unwrap()
             .items
             .iter()
@@ -399,7 +407,11 @@ fn guide_send_passive_and_explicit_receipt_controls() {
             );
             assert!(
                 f.store
-                    .wake_candidates(PageRequest::default(), &budget())
+                    .wake_candidates(
+                        herdr_threads::test_support::test_host_id(),
+                        PageRequest::default(),
+                        &budget()
+                    )
                     .unwrap()
                     .items
                     .iter()
@@ -657,7 +669,11 @@ fn lazy_attention_moves_the_lazy_digest_marker_but_never_wake() {
     assert_eq!(wake(), wake_before);
     assert!(
         !f.store
-            .wake_candidates(PageRequest::default(), &budget())
+            .wake_candidates(
+                herdr_threads::test_support::test_host_id(),
+                PageRequest::default(),
+                &budget()
+            )
             .unwrap()
             .items
             .iter()
@@ -741,7 +757,11 @@ fn lazy_attention_mixed_ordinary_positive_controls() {
     f.send("ordinary", DeliveryMode::Ordinary);
     assert!(
         f.store
-            .wake_candidates(PageRequest::default(), &budget())
+            .wake_candidates(
+                herdr_threads::test_support::test_host_id(),
+                PageRequest::default(),
+                &budget()
+            )
             .unwrap()
             .items
             .iter()
@@ -1041,7 +1061,11 @@ fn in_turn_display_of_a_nudge_owes_no_idle_wake() {
     let f = Fixture::new();
     let wake_owed = || {
         f.store
-            .wake_candidates(PageRequest::default(), &budget())
+            .wake_candidates(
+                herdr_threads::test_support::test_host_id(),
+                PageRequest::default(),
+                &budget(),
+            )
             .unwrap()
             .items
             .iter()
@@ -1098,7 +1122,11 @@ fn in_turn_display_of_an_invitation_owes_no_idle_wake() {
     f.member("outsider", "resolved", "left", Harness::Codex);
     let wake_owed = |seat: &str| {
         f.store
-            .wake_candidates(PageRequest::default(), &budget())
+            .wake_candidates(
+                herdr_threads::test_support::test_host_id(),
+                PageRequest::default(),
+                &budget(),
+            )
             .unwrap()
             .items
             .iter()
@@ -1177,7 +1205,11 @@ fn a_sibling_lifecycle_check_in_resets_only_its_own_in_turn_service() {
     };
     let wake_owed = || {
         f.store
-            .wake_candidates(PageRequest::default(), &budget())
+            .wake_candidates(
+                herdr_threads::test_support::test_host_id(),
+                PageRequest::default(),
+                &budget(),
+            )
             .unwrap()
             .items
             .iter()
@@ -1317,7 +1349,11 @@ fn in_turn_timed_invitation_service_ignores_unseen_lazy_backlog_per_binding() {
     };
     let candidate = || {
         f.store
-            .wake_candidates(PageRequest::default(), &budget())
+            .wake_candidates(
+                herdr_threads::test_support::test_host_id(),
+                PageRequest::default(),
+                &budget(),
+            )
             .unwrap()
             .items
             .into_iter()
@@ -1361,7 +1397,11 @@ fn in_turn_timed_invitation_service_ignores_unseen_lazy_backlog_per_binding() {
     assert_eq!(initial.targets.len(), 2);
     let reservation = f
         .store
-        .reserve_wake(&initial, &budget())
+        .reserve_wake(
+            herdr_threads::test_support::test_host_id(),
+            &initial,
+            &budget(),
+        )
         .unwrap()
         .expect("reserved");
     assert_eq!(reservation.reasons, ["pending_invitation"]);

@@ -1160,13 +1160,23 @@ fn sqlite_reopen_recovers_old_boot_before_real_fake_host_attempt() {
         deadline: MonoInstant(10_000),
         cancellation: Cancellation::default(),
     };
-    let old_candidate = StorePort::wake_candidates(&old_store, PageRequest::default(), &old_budget)
-        .unwrap()
-        .items
-        .remove(0);
-    let old_reservation = StorePort::reserve_wake(&old_store, &old_candidate, &old_budget)
-        .unwrap()
-        .unwrap();
+    let old_candidate = StorePort::wake_candidates(
+        &old_store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &old_budget,
+    )
+    .unwrap()
+    .items
+    .remove(0);
+    let old_reservation = StorePort::reserve_wake(
+        &old_store,
+        crate::test_support::test_host_id(),
+        &old_candidate,
+        &old_budget,
+    )
+    .unwrap()
+    .unwrap();
     drop(old_store);
     // Recovery must clear old uncertainty even where normal candidate
     // discovery returns no work or target policy excludes the seat.
@@ -1197,7 +1207,8 @@ fn sqlite_reopen_recovers_old_boot_before_real_fake_host_attempt() {
         )
         .unwrap(),
     );
-    let ports = ScheduledStore::new(reopened.clone(), Arc::new(FairWriter::new(32)));
+    let ports = ScheduledStore::new(reopened.clone(), Arc::new(FairWriter::new(32)))
+        .for_host(crate::test_support::test_host_id());
     let due = FakeDeadlinePort {
         clock: Arc::new(FakeClock(AtomicU64::new(100_000))),
         due_calls: AtomicU64::new(0),
@@ -1227,6 +1238,7 @@ fn sqlite_reopen_recovers_old_boot_before_real_fake_host_attempt() {
     assert_eq!(
         StorePort::recover_wake_reservation(
             reopened.as_ref(),
+            crate::test_support::test_host_id(),
             WakeRecoveryRequest {
                 instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 seat: SeatId::new("seat"),
@@ -1248,6 +1260,7 @@ fn sqlite_reopen_recovers_old_boot_before_real_fake_host_attempt() {
     assert_eq!(*host.calls.lock().unwrap(), vec![MonoInstant(160_000)]);
     StorePort::complete_wake(
         reopened.as_ref(),
+        crate::test_support::test_host_id(),
         old_reservation.attempt,
         WakeOutcome::Submitted,
         None,
@@ -1286,28 +1299,48 @@ impl WakePort for FailingCompletionStore<'_> {
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<WakeCandidate>, ApiError> {
-        StorePort::wake_candidates(self.store, page, budget)
+        StorePort::wake_candidates(
+            self.store,
+            crate::test_support::test_host_id(),
+            page,
+            budget,
+        )
     }
     fn reserve_wake(
         &self,
         candidate: &WakeCandidate,
         budget: &CallBudget,
     ) -> Result<Option<WakeReservation>, ApiError> {
-        StorePort::reserve_wake(self.store, candidate, budget)
+        StorePort::reserve_wake(
+            self.store,
+            crate::test_support::test_host_id(),
+            candidate,
+            budget,
+        )
     }
     fn wake_recovery_candidates(
         &self,
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
-        StorePort::wake_recovery_candidates(self.store, page, budget)
+        StorePort::wake_recovery_candidates(
+            self.store,
+            crate::test_support::test_host_id(),
+            page,
+            budget,
+        )
     }
     fn recover_wake_reservation(
         &self,
         request: WakeRecoveryRequest,
         budget: &CallBudget,
     ) -> Result<WakeRecoveryOutcome, ApiError> {
-        StorePort::recover_wake_reservation(self.store, request, budget)
+        StorePort::recover_wake_reservation(
+            self.store,
+            crate::test_support::test_host_id(),
+            request,
+            budget,
+        )
     }
     fn complete_wake(
         &self,
@@ -1330,8 +1363,14 @@ impl WakePort for FailingCompletionStore<'_> {
             }
             return Err(completion_error());
         }
-        let matched =
-            StorePort::complete_wake(self.store, attempt, outcome, refused_restore, budget)?;
+        let matched = StorePort::complete_wake(
+            self.store,
+            crate::test_support::test_host_id(),
+            attempt,
+            outcome,
+            refused_restore,
+            budget,
+        )?;
         if self.lose_response.swap(false, Ordering::SeqCst) {
             return Err(completion_error());
         }
@@ -1808,6 +1847,7 @@ fn sqlite_actual_wake_worker_retries_completion_and_yields_to_foreground() {
         store.clone(),
         writer.clone(),
         host.clone(),
+        crate::test_support::test_host_id(),
         "34750f98bd59fcfc946da45aaabe933b".into(),
         daemon_boot(),
         RetryConfig::default(),
@@ -1933,10 +1973,15 @@ fn sqlite_initial_settlement_releases_runner_state_during_external_writer_wait()
         deadline: MonoInstant(300_000),
         cancellation: Cancellation::default(),
     };
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget)
-        .unwrap()
-        .items
-        .remove(0);
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget,
+    )
+    .unwrap()
+    .items
+    .remove(0);
     std::thread::scope(|scope| {
         let _release = ReleaseNotifierLockOnDrop(&notifier);
         let worker = scope.spawn(|| runner.try_candidate(&candidate, &budget));
@@ -1995,10 +2040,15 @@ fn sqlite_retry_settlement_releases_runner_state_during_external_writer_wait() {
         deadline: MonoInstant(300_000),
         cancellation: Cancellation::default(),
     };
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget)
-        .unwrap()
-        .items
-        .remove(0);
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget,
+    )
+    .unwrap()
+    .items
+    .remove(0);
     assert!(runner.try_candidate(&candidate, &budget).is_err());
     let db = context.open_writer().unwrap();
     db.execute_batch("BEGIN IMMEDIATE").unwrap();
@@ -2057,9 +2107,14 @@ fn sqlite_claimed_settlement_counts_toward_four_slots_during_writer_wait() {
         deadline: MonoInstant(300_000),
         cancellation: Cancellation::default(),
     };
-    let candidates = StorePort::wake_candidates(&store, PageRequest::default(), &budget)
-        .unwrap()
-        .items;
+    let candidates = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget,
+    )
+    .unwrap()
+    .items;
     assert_eq!(candidates.len(), 5);
     for candidate in &candidates[..4] {
         assert!(runner.try_candidate(candidate, &budget).is_err());
@@ -2122,9 +2177,14 @@ fn sqlite_contended_writer_cancellation_and_expiry_return_completion_claims() {
             deadline: MonoInstant(300_000),
             cancellation: Cancellation::default(),
         };
-        let candidates = StorePort::wake_candidates(&store, PageRequest::default(), &budget)
-            .unwrap()
-            .items;
+        let candidates = StorePort::wake_candidates(
+            &store,
+            crate::test_support::test_host_id(),
+            PageRequest::default(),
+            &budget,
+        )
+        .unwrap()
+        .items;
         for candidate in &candidates {
             assert!(runner.try_candidate(candidate, &budget).is_err());
         }
@@ -2220,10 +2280,15 @@ fn sqlite_external_writer_budget_errors_keep_exact_completion_retryable() {
             deadline: MonoInstant(300_000),
             cancellation: Cancellation::default(),
         };
-        let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget)
-            .unwrap()
-            .items
-            .remove(0);
+        let candidate = StorePort::wake_candidates(
+            &store,
+            crate::test_support::test_host_id(),
+            PageRequest::default(),
+            &budget,
+        )
+        .unwrap()
+        .items
+        .remove(0);
         assert!(runner.try_candidate(&candidate, &budget).is_err());
         let original = failing.completions.lock().unwrap()[0].clone();
         let db = context.open_writer().unwrap();
@@ -2609,7 +2674,8 @@ fn sqlite_completed_frontier_shortens_retry_only_after_new_logical_publication()
         )
         .unwrap(),
     );
-    let ports = ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)));
+    let ports = ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)))
+        .for_host(crate::test_support::test_host_id());
     let host = SqliteTimingHost {
         context: StoreContext::new(path.clone(), clock.clone()).with_test_host(),
         clock: clock.clone(),
@@ -2878,6 +2944,116 @@ fn failed_reservation_never_calls_host_and_remains_discoverable() {
         *events.lock().unwrap(),
         vec!["reserve", "reserve", "host", "complete"]
     );
+}
+
+/// A port whose first per-seat write answers `Conflict`, as the store does for
+/// a seat that moved to another host between discovery and reservation.
+struct ConflictFirst<'a> {
+    inner: &'a FakeWakeStore,
+    conflict_window: bool,
+    armed: AtomicBool,
+}
+impl WakePort for ConflictFirst<'_> {
+    fn clock(&self) -> &dyn Clock {
+        self.inner.clock()
+    }
+    fn wake_recovery_candidates(
+        &self,
+        page: PageRequest,
+        budget: &CallBudget,
+    ) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
+        self.inner.wake_recovery_candidates(page, budget)
+    }
+    fn recover_wake_reservation(
+        &self,
+        request: WakeRecoveryRequest,
+        budget: &CallBudget,
+    ) -> Result<WakeRecoveryOutcome, ApiError> {
+        self.inner.recover_wake_reservation(request, budget)
+    }
+    fn wake_candidates(
+        &self,
+        page: PageRequest,
+        budget: &CallBudget,
+    ) -> Result<Page<WakeCandidate>, ApiError> {
+        self.inner.wake_candidates(page, budget)
+    }
+    fn wake_batch_window(
+        &self,
+        candidate: &WakeCandidate,
+        budget: &CallBudget,
+    ) -> Result<Option<(UtcMillis, u64)>, ApiError> {
+        if self.conflict_window && self.armed.swap(false, Ordering::SeqCst) {
+            return Err(ApiError::new(ErrorCode::Conflict, "seat on another host"));
+        }
+        self.inner.wake_batch_window(candidate, budget)
+    }
+    fn reserve_wake(
+        &self,
+        candidate: &WakeCandidate,
+        budget: &CallBudget,
+    ) -> Result<Option<WakeReservation>, ApiError> {
+        if !self.conflict_window && self.armed.swap(false, Ordering::SeqCst) {
+            self.inner.events.lock().unwrap().push("reserve");
+            return Err(ApiError::new(ErrorCode::Conflict, "seat on another host"));
+        }
+        self.inner.reserve_wake(candidate, budget)
+    }
+    fn complete_wake(
+        &self,
+        attempt: WakeAttemptId,
+        outcome: WakeOutcome,
+        refused_restore: Option<&PriorLadder>,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        self.inner
+            .complete_wake(attempt, outcome, refused_restore, budget)
+    }
+}
+
+// Kills: a scheduler that propagates the per-seat `Conflict` (the whole pass
+// fails and the seat is retried as an error) or records it as a refusal (the
+// seat then backs off for the retry delay although nothing was attempted).
+#[test]
+fn conflict_seat_is_skipped_without_refusal() {
+    for conflict_window in [false, true] {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let base = FakeWakeStore {
+            clock: Arc::new(FakeClock(AtomicU64::new(0))),
+            events: events.clone(),
+            batch: None,
+            fail_reservation: AtomicBool::new(false),
+        };
+        let store = ConflictFirst {
+            inner: &base,
+            conflict_window,
+            armed: AtomicBool::new(true),
+        };
+        let notifier = FakeNotifier {
+            events: events.clone(),
+        };
+        let runner = WakeRunner::new(&store, &notifier, RetryConfig::default(), daemon_boot());
+        let budget = CallBudget {
+            deadline: MonoInstant(5_000),
+            cancellation: Cancellation::default(),
+        };
+        assert_eq!(
+            runner.try_candidate(&due_candidate(), &budget).unwrap(),
+            None,
+            "a Conflict seat is skipped, not failed (window={conflict_window})"
+        );
+        assert!(
+            !events.lock().unwrap().contains(&"host"),
+            "a skipped seat is never prompted"
+        );
+        // No refusal and no delay was recorded: the seat is attempted at once
+        // when it comes back to this host.
+        assert_eq!(
+            runner.try_candidate(&due_candidate(), &budget).unwrap(),
+            Some(WakeOutcome::Submitted)
+        );
+        assert!(events.lock().unwrap().contains(&"host"));
+    }
 }
 
 struct CancelAfterReserve<'a>(&'a FakeWakeStore);
@@ -3683,7 +3859,8 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
             )
             .unwrap(),
         );
-        let ports = ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)));
+        let ports = ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)))
+            .for_host(crate::test_support::test_host_id());
         let dispatch = NativeWakeDispatcher::new(&cli, &ports, clock.as_ref());
         let scheduler = Scheduler::new(
             "34750f98bd59fcfc946da45aaabe933b".into(),

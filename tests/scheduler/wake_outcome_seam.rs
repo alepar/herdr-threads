@@ -187,7 +187,8 @@ impl Seam {
             )
             .unwrap(),
         );
-        let ports = ScheduledStore::new(store, Arc::new(FairWriter::new(32)));
+        let ports = ScheduledStore::new(store, Arc::new(FairWriter::new(32)))
+            .for_host(crate::test_support::test_host_id());
         let dispatch = NativeWakeDispatcher::new(self.host.as_ref(), &ports, self.clock.as_ref());
         let due = FakeDeadlinePort {
             clock: Arc::new(FakeClock(AtomicU64::new(0))),

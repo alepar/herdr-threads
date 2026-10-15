@@ -3799,7 +3799,8 @@ fn departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack
         .unwrap(),
     );
     let scheduled =
-        crate::service::workers::ScheduledStore::new(wake_store, Arc::new(FairWriter::new(32)));
+        crate::service::workers::ScheduledStore::new(wake_store, Arc::new(FairWriter::new(32)))
+            .for_host(crate::test_support::test_host_id());
     let notifier = OriginNotifier(std::sync::Mutex::new(Vec::new()));
     let scheduler = crate::scheduler::Scheduler::new(
         "34750f98bd59fcfc946da45aaabe933b".into(),

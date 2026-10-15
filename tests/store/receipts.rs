@@ -3862,6 +3862,7 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
     let found = crate::store::discover_wake_candidates(
         &db,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         0,
         high,
         100,
@@ -3893,6 +3894,7 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
         let refreshed = crate::store::discover_wake_candidates(
             &db,
             "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             0,
             high,
             100,
@@ -3909,6 +3911,7 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
             &context,
             &mut db,
             "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             refreshed,
             daemon_boot,
             30000,
@@ -3924,6 +3927,7 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
             !crate::store::wake::complete(
                 &context,
                 &mut db,
+                crate::test_support::test_host_id(),
                 &reservation.attempt,
                 &daemon_boot,
                 crate::ports::WakeOutcome::Submitted,
@@ -4028,6 +4032,7 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
         let found = crate::store::discover_wake_candidates(
             &db,
             "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             0,
             high,
             100,
@@ -4480,6 +4485,7 @@ fn receipt_discovery_orphan_wrong_audience_and_service_markers_cannot_invent_ori
     let found = crate::store::discover_wake_candidates(
         &db,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         0,
         high,
         100,

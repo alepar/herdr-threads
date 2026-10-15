@@ -1421,12 +1421,17 @@ fn partial_projection_refusal_control(
         samples.push((at, snapshot));
     }));
     let candidate = || {
-        StorePort::wake_candidates(&**store, PageRequest::default(), &budget())
-            .unwrap()
-            .items
-            .into_iter()
-            .find(|c| c.seat.as_str() == target.seat)
-            .unwrap()
+        StorePort::wake_candidates(
+            &**store,
+            herdr_threads::test_support::test_host_id(),
+            PageRequest::default(),
+            &budget(),
+        )
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|c| c.seat.as_str() == target.seat)
+        .unwrap()
     };
     let first_candidate = candidate();
     let prior = PriorLadder::from_candidate(&first_candidate);
@@ -1447,9 +1452,14 @@ fn partial_projection_refusal_control(
     assert!(state.can_reserve(&seat, clock.monotonic_now()));
     let first = {
         let _origin = enter_lane(Lane::Wakes);
-        StorePort::reserve_wake(&**store, &first_candidate, &budget())
-            .unwrap()
-            .unwrap()
+        StorePort::reserve_wake(
+            &**store,
+            herdr_threads::test_support::test_host_id(),
+            &first_candidate,
+            &budget(),
+        )
+        .unwrap()
+        .unwrap()
     };
     state
         .reserved(
@@ -1508,6 +1518,7 @@ fn partial_projection_refusal_control(
         let _origin = enter_lane(Lane::Wakes);
         StorePort::complete_wake(
             &**store,
+            herdr_threads::test_support::test_host_id(),
             first.attempt,
             WakeOutcome::Cancelled,
             None,
@@ -1531,6 +1542,7 @@ fn partial_projection_refusal_control(
         let _origin = enter_lane(Lane::Wakes);
         StorePort::complete_wake(
             &**store,
+            herdr_threads::test_support::test_host_id(),
             first.attempt.clone(),
             outcome,
             Some(&prior),
@@ -1578,9 +1590,14 @@ fn partial_projection_refusal_control(
     let second_candidate = candidate();
     let second = {
         let _origin = enter_lane(Lane::Wakes);
-        StorePort::reserve_wake(&**store, &second_candidate, &budget())
-            .unwrap()
-            .unwrap()
+        StorePort::reserve_wake(
+            &**store,
+            herdr_threads::test_support::test_host_id(),
+            &second_candidate,
+            &budget(),
+        )
+        .unwrap()
+        .unwrap()
     };
     assert_ne!(first.attempt, second.attempt);
     let attempt = samples
@@ -1628,6 +1645,7 @@ fn partial_projection_refusal_control(
         let _origin = enter_lane(Lane::Wakes);
         StorePort::complete_wake(
             &**store,
+            herdr_threads::test_support::test_host_id(),
             second.attempt,
             WakeOutcome::Cancelled,
             None,
@@ -1771,17 +1789,27 @@ fn producer_ordering_control(
     }
 
     if logical_first {
-        let candidate = StorePort::wake_candidates(&*store, PageRequest::default(), &budget())
-            .unwrap()
-            .items
-            .into_iter()
-            .find(|c| c.seat.as_str() == "b")
-            .unwrap();
+        let candidate = StorePort::wake_candidates(
+            &*store,
+            herdr_threads::test_support::test_host_id(),
+            PageRequest::default(),
+            &budget(),
+        )
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|c| c.seat.as_str() == "b")
+        .unwrap();
         let reservation = {
             let _origin = enter_lane(Lane::Wakes);
-            StorePort::reserve_wake(&*store, &candidate, &budget())
-                .unwrap()
-                .expect("logical manifest is actionable before projection")
+            StorePort::reserve_wake(
+                &*store,
+                herdr_threads::test_support::test_host_id(),
+                &candidate,
+                &budget(),
+            )
+            .unwrap()
+            .expect("logical manifest is actionable before projection")
         };
         let first_at = Instant::now();
         assert_eq!(
@@ -2061,18 +2089,28 @@ fn producer_ordering_control(
             deadline: MonoInstant(clock.monotonic_now().0 + 3000),
             cancellation: Cancellation::default(),
         };
-        let candidate = StorePort::wake_candidates(&*prior_store, PageRequest::default(), &budget)
-            .unwrap()
-            .items
-            .into_iter()
-            .find(|c| c.seat.as_str() == "c")
-            .unwrap();
+        let candidate = StorePort::wake_candidates(
+            &*prior_store,
+            herdr_threads::test_support::test_host_id(),
+            PageRequest::default(),
+            &budget,
+        )
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|c| c.seat.as_str() == "c")
+        .unwrap();
         let _origin = enter_lane(Lane::Wakes);
         let _turn = prior_writer.enter_background(&budget, &clock).unwrap();
         assert!(
-            StorePort::reserve_wake(&*prior_store, &candidate, &budget)
-                .unwrap()
-                .is_some()
+            StorePort::reserve_wake(
+                &*prior_store,
+                herdr_threads::test_support::test_host_id(),
+                &candidate,
+                &budget
+            )
+            .unwrap()
+            .is_some()
         );
     });
     let mut prior_guard = PausedWriter {
@@ -2092,19 +2130,28 @@ fn producer_ordering_control(
             deadline: MonoInstant(clock.monotonic_now().0 + 3000),
             cancellation: Cancellation::default(),
         };
-        let candidate =
-            StorePort::wake_candidates(&*producer_store, PageRequest::default(), &budget)
-                .unwrap()
-                .items
-                .into_iter()
-                .find(|c| c.seat.as_str() == "b")
-                .unwrap();
+        let candidate = StorePort::wake_candidates(
+            &*producer_store,
+            herdr_threads::test_support::test_host_id(),
+            PageRequest::default(),
+            &budget,
+        )
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|c| c.seat.as_str() == "b")
+        .unwrap();
         let _origin = enter_lane(Lane::Wakes);
         let _turn = producer_writer.enter_background(&budget, &clock).unwrap();
         assert!(
-            StorePort::reserve_wake(&*producer_store, &candidate, &budget)
-                .unwrap()
-                .is_some()
+            StorePort::reserve_wake(
+                &*producer_store,
+                herdr_threads::test_support::test_host_id(),
+                &candidate,
+                &budget
+            )
+            .unwrap()
+            .is_some()
         );
     });
     let mut producer_guard = PausedWriter {

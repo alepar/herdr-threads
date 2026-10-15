@@ -17,7 +17,7 @@ use super::{
 };
 use crate::{
     notification::policy::soft_point,
-    ports::{PokeDue, PokeReceipt, PokeSource},
+    ports::{HostId, PokeDue, PokeReceipt, PokeSource},
     protocol::{
         ids::{MessageId, SeatId, ThreadId},
         results::{ApiError, ErrorCode},
@@ -50,6 +50,19 @@ pub fn due_pokes(
     })
 }
 
+/// [`due_pokes`] for the seats of one host: the wake worker's poke scan.
+pub fn due_pokes_on_host(
+    conn: &Connection,
+    host: HostId,
+    now: i64,
+    settings: &SummarySettings,
+    limit: u16,
+) -> Result<Vec<PokeDue>, ApiError> {
+    collect(conn, now, settings, Some(host), None, limit, &|receipt| {
+        receipts::effective_deadline(conn, receipt)
+    })
+}
+
 /// [`due_pokes`] with the effective deadline supplied by the caller: the seam
 /// tests use to move a deadline independently of the catch-up lifecycle.
 pub fn due_pokes_with(
@@ -59,7 +72,7 @@ pub fn due_pokes_with(
     limit: u16,
     effective: EffectiveDeadline<'_>,
 ) -> Result<Vec<PokeDue>, ApiError> {
-    collect(conn, now, settings, None, limit, effective)
+    collect(conn, now, settings, None, None, limit, effective)
 }
 
 /// The seat's due pokes, if any.
@@ -69,21 +82,25 @@ pub fn due_pokes_for_seat(
     now: i64,
     settings: &SummarySettings,
 ) -> Result<Option<PokeDue>, ApiError> {
-    Ok(collect(conn, now, settings, Some(seat), 1, &|receipt| {
-        receipts::effective_deadline(conn, receipt)
-    })?
-    .pop())
+    Ok(
+        collect(conn, now, settings, None, Some(seat), 1, &|receipt| {
+            receipts::effective_deadline(conn, receipt)
+        })?
+        .pop(),
+    )
 }
 
 fn collect(
     conn: &Connection,
     now: i64,
     settings: &SummarySettings,
+    host: Option<HostId>,
     seat: Option<&SeatId>,
     limit: u16,
     effective: EffectiveDeadline<'_>,
 ) -> Result<Vec<PokeDue>, ApiError> {
     let seat_filter = seat.map(SeatId::as_str);
+    let host_filter = host.map(HostId::get);
     let mut keys = BTreeSet::new();
     for table in ["receipt_state", "receipts"] {
         let index = if table == "receipt_state" {
@@ -97,15 +114,17 @@ fn collect(
                 "SELECT message_id, seat_id FROM {table} INDEXED BY {index} \
                  WHERE state='pending' AND ack_required=1 AND warning_message_id IS NULL \
                  AND deadline_at IS NOT NULL AND available_at IS NOT NULL \
-                 AND soft_poked_at IS NULL AND (?3 IS NULL OR seat_id=?3) AND {reservable} \
+                 AND soft_poked_at IS NULL AND (?3 IS NULL OR seat_id=?3) \
+                 AND (?4 IS NULL OR (SELECT host_id FROM seats WHERE id=seat_id)=?4) AND {reservable} \
                  AND deadline_at - (1.0-?1)*(deadline_at-available_at) - 1.0 <= ?2 \
                  ORDER BY deadline_at, message_id, seat_id LIMIT {SCAN_ROWS}"
             ))
             .map_err(store_error)?;
         let rows = statement
-            .query_map(params![settings.soft_fraction, now, seat_filter], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })
+            .query_map(
+                params![settings.soft_fraction, now, seat_filter, host_filter],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
             .map_err(store_error)?;
         for row in rows {
             keys.insert(row.map_err(store_error)?);

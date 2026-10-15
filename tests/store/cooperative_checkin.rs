@@ -2345,7 +2345,13 @@ fn builtin_warning_dedup_wake_keeps_unprojected_and_late_projected_events() {
     let empty_offer = check_in(&store, current(&first.context, "dedup-before-fanout")).unwrap();
     assert!(empty_offer.notices.is_empty());
     assert!(!crate::store::attention::seat_has_pending_notices(&conn, "s").unwrap());
-    let candidates = StorePort::wake_candidates(&*store, Default::default(), &budget()).unwrap();
+    let candidates = StorePort::wake_candidates(
+        &*store,
+        crate::test_support::test_host_id(),
+        Default::default(),
+        &budget(),
+    )
+    .unwrap();
     let candidate = candidates
         .items
         .iter()
@@ -2376,7 +2382,13 @@ fn builtin_warning_dedup_wake_keeps_unprojected_and_late_projected_events() {
         attention_after > attention_before,
         "late exact-pending attribution must kick wake work"
     );
-    let candidates = StorePort::wake_candidates(&*store, Default::default(), &budget()).unwrap();
+    let candidates = StorePort::wake_candidates(
+        &*store,
+        crate::test_support::test_host_id(),
+        Default::default(),
+        &budget(),
+    )
+    .unwrap();
     let candidate = candidates
         .items
         .iter()
@@ -2392,7 +2404,13 @@ fn builtin_warning_dedup_wake_keeps_unprojected_and_late_projected_events() {
         (names(std::slice::from_ref(&warning)), false)
     );
     assert!(!crate::store::attention::seat_has_pending_notices(&conn, "s").unwrap());
-    let candidates = StorePort::wake_candidates(&*store, Default::default(), &budget()).unwrap();
+    let candidates = StorePort::wake_candidates(
+        &*store,
+        crate::test_support::test_host_id(),
+        Default::default(),
+        &budget(),
+    )
+    .unwrap();
     let candidate = candidates
         .items
         .iter()
@@ -2446,8 +2464,13 @@ fn builtin_warning_dedup_wake_older_notice_survives_newer_covered_legacy_warning
         if projected {
             drain_warning_dedup_attribution(&mut conn, clock.as_ref(), &warning);
         }
-        let candidates =
-            StorePort::wake_candidates(&*store, Default::default(), &budget()).unwrap();
+        let candidates = StorePort::wake_candidates(
+            &*store,
+            crate::test_support::test_host_id(),
+            Default::default(),
+            &budget(),
+        )
+        .unwrap();
         let candidate = candidates
             .items
             .iter()
@@ -2464,7 +2487,13 @@ fn builtin_warning_dedup_wake_older_notice_survives_newer_covered_legacy_warning
         current(&first.context, "dedup-informational-carried"),
     )
     .unwrap();
-    let candidates = StorePort::wake_candidates(&*store, Default::default(), &budget()).unwrap();
+    let candidates = StorePort::wake_candidates(
+        &*store,
+        crate::test_support::test_host_id(),
+        Default::default(),
+        &budget(),
+    )
+    .unwrap();
     let candidate = candidates
         .items
         .iter()
