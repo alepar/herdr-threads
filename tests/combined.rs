@@ -27,6 +27,8 @@ mod fact_convergence_invitation;
 mod fact_convergence_membership;
 #[path = "store/fact_convergence_message.rs"]
 mod fact_convergence_message;
+#[path = "store/fact_convergence_receipt.rs"]
+mod fact_convergence_receipt;
 #[path = "store/fact_convergence_seat.rs"]
 mod fact_convergence_seat;
 #[path = "store/fact_convergence_thread.rs"]
@@ -37,6 +39,8 @@ mod facts_invitation;
 mod facts_membership;
 #[path = "sync/facts_message.rs"]
 mod facts_message;
+#[path = "sync/facts_receipt.rs"]
+mod facts_receipt;
 #[path = "sync/facts_seat.rs"]
 mod facts_seat;
 #[path = "sync/facts_thread.rs"]

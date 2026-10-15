@@ -11,9 +11,63 @@ use crate::protocol::{
 use crate::store::{
     connection::StoreContext,
     lazy_delivery::{self, LazyCompletion},
-    read_cursors, receipts,
+    read_cursors,
 };
 use rusqlite::{Connection, params};
+
+/// Every ACK entry point in this suite runs (in test-support builds) with the
+/// write guard armed on its connection: a settlement reaches `receipt_state`
+/// and the ACK event only through `receipt.settled`'s materializer
+/// (ht-5fr.4.12).
+mod receipts {
+    use crate::protocol::{
+        authority::MutationPermit,
+        commands::{Ack, AckModDelivered},
+        results::{ApiError, CommandResult},
+        time::CallBudget,
+    };
+    use crate::store::connection::StoreContext;
+    pub(crate) use crate::store::receipts::*;
+    use rusqlite::Connection;
+
+    #[allow(dead_code)]
+    pub(crate) fn ack(
+        context: &StoreContext,
+        conn: &mut Connection,
+        budget: &CallBudget,
+        request: &Ack,
+        permit: &mut MutationPermit,
+    ) -> Result<CommandResult, ApiError> {
+        #[cfg(feature = "test-support")]
+        let _guard = crate::test_support::write_guard::arm(conn);
+        crate::store::receipts::ack(context, conn, budget, request, permit)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn ack_displayed(
+        context: &StoreContext,
+        conn: &mut Connection,
+        budget: &CallBudget,
+        request: &Ack,
+        permit: &mut MutationPermit,
+    ) -> Result<CommandResult, ApiError> {
+        #[cfg(feature = "test-support")]
+        let _guard = crate::test_support::write_guard::arm(conn);
+        crate::store::receipts::ack_displayed(context, conn, budget, request, permit)
+    }
+
+    pub(crate) fn ack_mod_delivered(
+        context: &StoreContext,
+        conn: &mut Connection,
+        budget: &CallBudget,
+        request: &AckModDelivered,
+        permit: &mut MutationPermit,
+    ) -> Result<CommandResult, ApiError> {
+        #[cfg(feature = "test-support")]
+        let _guard = crate::test_support::write_guard::arm(conn);
+        crate::store::receipts::ack_mod_delivered(context, conn, budget, request, permit)
+    }
+}
 use std::sync::{
     Arc,
     atomic::{AtomicI64, Ordering},

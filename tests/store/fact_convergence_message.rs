@@ -88,7 +88,7 @@ impl Node {
     }
 
     /// Runs the message's `send_attention` job to completion.
-    fn drive_send(&self, message: &MessageId) {
+    pub fn drive_send(&self, message: &MessageId) {
         let mut db = self.raw();
         let job = format!("work:send:{}", message.as_str());
         for _ in 0..64 {
@@ -108,7 +108,7 @@ impl Node {
         panic!("the send job did not finish");
     }
 
-    fn receipt(&self, message: &MessageId, seat: &SeatId) -> Option<(String, Option<i64>)> {
+    pub fn receipt(&self, message: &MessageId, seat: &SeatId) -> Option<(String, Option<i64>)> {
         self.query(
             &format!(
                 "SELECT state,deadline_at FROM receipt_state WHERE message_id='{}' AND seat_id='{}'",
@@ -121,7 +121,7 @@ impl Node {
         .next()
     }
 
-    fn wake_seats(&self) -> Vec<String> {
+    pub fn wake_seats(&self) -> Vec<String> {
         self.query("SELECT seat_id FROM wake_work ORDER BY seat_id", |r| {
             r.get(0)
         })
@@ -140,7 +140,7 @@ impl Node {
         .next()
     }
 
-    fn suppressed_seats(&self, message: &MessageId) -> Option<String> {
+    pub fn suppressed_seats(&self, message: &MessageId) -> Option<String> {
         self.query(
             &format!(
                 "SELECT suppressed_seats FROM send_manifests WHERE message_id='{}'",

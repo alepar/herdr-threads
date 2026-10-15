@@ -11,8 +11,9 @@ use rusqlite::{Connection, Transaction};
 use serde::{Deserialize, Serialize};
 
 use herdr_threads::node::{NodeIdentity, NodeUuid, tag_for};
+use herdr_threads::protocol::commands::DeliveryMode;
 use herdr_threads::protocol::ids::{
-    InvitationId, NativeSessionId, SeatId, ThreadId, generate_public_id, prefix,
+    InvitationId, MessageId, NativeSessionId, SeatId, ThreadId, generate_public_id, prefix,
 };
 use herdr_threads::protocol::results::{ApiError, ErrorCode};
 use herdr_threads::protocol::time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis};
@@ -28,7 +29,10 @@ use herdr_threads::store::{SqliteStore, StoreSettings, seats};
 use herdr_threads::sync::EntityKey;
 use herdr_threads::sync::facts::invitation::{InvitationAnswered, InvitationAnsweredPayload};
 use herdr_threads::sync::facts::membership::{MembershipJoined, MembershipLeft, MembershipPayload};
-use herdr_threads::sync::facts::payload::{AnswerOutcome, ReferencedSeats, SeatKind};
+use herdr_threads::sync::facts::payload::{
+    AnswerOutcome, ReceiptObligation, ReferencedSeats, SeatKind, SettleHow,
+};
+use herdr_threads::sync::facts::receipt::{ReceiptSettled, ReceiptSettledPayload};
 use herdr_threads::sync::facts::seat::{
     RetireReason, SeatCreated, SeatCreatedPayload, SeatRetired, SeatRetiredPayload,
 };
@@ -85,10 +89,29 @@ impl Node {
         registry: &'static FactRegistry,
         host: bool,
     ) -> Self {
+        Self::open_inner(seed, incarnation_seed, registry, host, false)
+    }
+
+    /// A node whose host is the fixture host (`with_test_host`), so a real
+    /// command's claim (host locator `/host.sock`) resolves on it.
+    pub fn open_commands(seed: u8, incarnation_seed: u64, registry: &'static FactRegistry) -> Self {
+        Self::open_inner(seed, incarnation_seed, registry, true, true)
+    }
+
+    fn open_inner(
+        seed: u8,
+        incarnation_seed: u64,
+        registry: &'static FactRegistry,
+        host: bool,
+        test_host: bool,
+    ) -> Self {
         let isolation = TestIsolation::new("facts-seat");
         let clock = Arc::new(TestClock(AtomicU64::new(1)));
-        let ctx = StoreContext::new(isolation.path("store.db"), clock.clone())
+        let mut ctx = StoreContext::new(isolation.path("store.db"), clock.clone())
             .with_journal_seed([seed; 32]);
+        if test_host {
+            ctx = ctx.with_test_host();
+        }
         ctx.seed_incarnations(incarnation_seed);
         let identity = Arc::new(NodeIdentity::from_seed([seed; 32]));
         let id = identity.uuid();
@@ -96,7 +119,12 @@ impl Node {
         journal::open(&ctx, &mut writer, identity, "facts-seat", registry).expect("open journal");
         drop(writer);
         if host {
-            ctx.attach_host("test-host").expect("attach a host");
+            let endpoint = if test_host {
+                herdr_threads::test_support::TEST_HOST_ENDPOINT
+            } else {
+                "test-host"
+            };
+            ctx.attach_host(endpoint).expect("attach a host");
         }
         let store = SqliteStore::new(ctx, id.to_string(), StoreSettings::default())
             .expect("open the store");
@@ -328,11 +356,10 @@ macro_rules! test_kind {
     };
 }
 
-test_kind!(Settled, "receipt.settled");
 test_kind!(Free, "test.free");
 
 pub fn registry() -> &'static FactRegistry {
-    FactRegistry::builtins_plus(|b| b.with::<Settled>().with::<Free>())
+    FactRegistry::builtins_plus(|b| b.with::<Free>())
 }
 
 fn refs(seats: &[&SeatId]) -> Refs {
@@ -355,6 +382,36 @@ fn emit<K: FactKind<Payload = Refs>>(
         })?;
         Ok(ran)
     })
+}
+
+/// Emits the real `receipt.settled` for `seat` and `message` on `route`;
+/// returns whether the local materializer ran.
+fn emit_settled(
+    node: &Node,
+    route: FactRoute,
+    seat: &SeatId,
+    message: &MessageId,
+) -> Result<bool, ApiError> {
+    let payload = ReceiptSettledPayload {
+        message: message.clone(),
+        seat: seat.clone(),
+        how: SettleHow::Acked,
+        settled_at: 1_700_000_000_000,
+        batch: Default::default(),
+    };
+    node.run(|tx, d| {
+        let mut ran = false;
+        route.emit::<ReceiptSettled>(tx, node.ctx(), d, &payload, None, |_, _, _| {
+            ran = true;
+            Ok(())
+        })?;
+        Ok(ran)
+    })
+}
+
+/// A message ID no store holds.
+fn no_message() -> MessageId {
+    MessageId::new("mNoMessage001")
 }
 
 /// Emits the real `seat.retired` for `seat` on the journal route.
@@ -694,12 +751,13 @@ fn emit_membership<K: FactKind<Payload = MembershipPayload>>(
 fn emit_held(
     node: &Node,
     thread: &ThreadId,
+    message: &MessageId,
     payload: &Refs,
     answer: &InvitationAnsweredPayload,
 ) -> Vec<Result<bool, ApiError>> {
     let seat = &payload.seats[0];
     vec![
-        emit::<Settled>(node, FactRoute::Journal, payload),
+        emit_settled(node, FactRoute::Journal, seat, message),
         emit_membership::<MembershipJoined>(node, thread, seat, 1),
         emit_membership::<MembershipLeft>(node, thread, seat, 2),
         emit_answered(node, answer),
@@ -741,7 +799,7 @@ fn held_kinds_list_matches_the_spec() {
             "seat.retired"
         ]
     );
-    assert_eq!(Settled::NAME, HELD_KINDS[0]);
+    assert_eq!(ReceiptSettled::NAME, HELD_KINDS[0]);
 }
 
 #[test]
@@ -755,6 +813,7 @@ fn held_kinds_refused_while_hold_active() {
     for result in emit_held(
         &node,
         &ThreadId::new("tNoThread001"),
+        &no_message(),
         &refs(&[&local]),
         &answer,
     ) {
@@ -777,13 +836,14 @@ fn remote_seat_seat_created_non_held_and_local_only_unaffected() {
     node.add_remote_seat(&remote);
     hold_on(&node);
     // A held kind for a remote seat only. None is refused by the hold: the
-    // membership kinds and `seat.retired` fail only on the parked dependency
-    // (no fact created the thread or the fixture seat), not "own history
-    // catching up".
+    // settlement, the membership kinds and `seat.retired` fail only on the
+    // parked dependency (no fact created the message, the thread or the fixture
+    // seat), not "own history catching up".
     let answer = answer_of("iNoInvite001", &remote);
     let mut results = emit_held(
         &node,
         &ThreadId::new("tNoThread001"),
+        &no_message(),
         &refs(&[&remote]),
         &answer,
     );
@@ -791,8 +851,7 @@ fn remote_seat_seat_created_non_held_and_local_only_unaffected() {
     assert_eq!(retired.code, ErrorCode::Conflict);
     assert!(retired.detail.contains("not applicable"), "{retired:?}");
     let [settled, joined, left, answered]: [_; 4] = results.try_into().unwrap();
-    settled.unwrap();
-    for parked in [joined, left, answered] {
+    for parked in [settled, joined, left, answered] {
         let error = parked.unwrap_err();
         assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
         assert!(error.detail.contains("not applicable"), "{error:?}");
@@ -818,11 +877,11 @@ fn remote_seat_seat_created_non_held_and_local_only_unaffected() {
     // A non-held kind for a local seat.
     emit::<Free>(&node, FactRoute::Journal, &refs(&[&local])).unwrap();
     // The local-only route, held kind and local seat.
-    assert!(emit::<Settled>(&node, FactRoute::LocalOnly, &refs(&[&local])).unwrap());
+    assert!(emit_settled(&node, FactRoute::LocalOnly, &local, &no_message()).unwrap());
     assert_eq!(
         node.count_kind("receipt.settled"),
-        1,
-        "only the remote-seat one"
+        0,
+        "none journaled: the remote-seat one parked, the local-only one never journals"
     );
 }
 
@@ -832,16 +891,32 @@ fn held_authoring_succeeds_after_clear_or_cap() {
     let local = node.mint_seat(0);
     node.add_local_seat(&local);
     hold_on(&node);
-    assert!(emit::<Settled>(&node, FactRoute::Journal, &refs(&[&local])).is_err());
+    assert!(emit_settled(&node, FactRoute::Journal, &local, &no_message()).is_err());
     hold_off(&node);
     let thread = node.create_thread(&local, "held", None).unwrap();
     // A real invitation of a second local seat, so the answer's dependency holds.
     let guest = node.mint_seat(0);
     node.add_local_seat(&guest);
     let invitation = node.invite_fact(&thread, &local, &guest);
+    let writer = node.local_seat();
+    let message = node.stage_prep(&thread, "ordinary", &[(&local, 300_000, true)], &[]);
+    node.author_sent(&crate::facts_message::sent(
+        &message,
+        &thread,
+        &writer,
+        DeliveryMode::Ordinary,
+        300_000,
+        vec![crate::facts_message::spec(
+            &local,
+            ReceiptObligation::Ack,
+            Some(crate::facts_message::SENT_AT + 300_000),
+        )],
+    ))
+    .unwrap();
     for result in emit_held(
         &node,
         &thread,
+        &message,
         &refs(&[&local]),
         &answer_of(invitation.as_str(), &guest),
     ) {
@@ -851,9 +926,9 @@ fn held_authoring_succeeds_after_clear_or_cap() {
     let other = node.mint_seat(0);
     node.add_local_seat(&other);
     hold_on(&node);
-    assert!(emit::<Settled>(&node, FactRoute::Journal, &refs(&[&other])).is_err());
+    assert!(emit_settled(&node, FactRoute::Journal, &other, &message).is_err());
     node.clock.advance(OWN_HISTORY_HOLD_MAX);
-    emit::<Settled>(&node, FactRoute::Journal, &refs(&[&other])).unwrap();
+    emit_settled(&node, FactRoute::Journal, &other, &message).unwrap();
 }
 
 // ---- origin authority --------------------------------------------------------
