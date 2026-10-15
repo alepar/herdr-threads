@@ -977,7 +977,7 @@ pub fn has_wake_rows(conn: &Connection, seat: &str) -> Result<bool, ApiError> {
 /// untouched. One set-based statement over the preparation's recipients.
 pub fn note_published(tx: &Transaction<'_>, preparation: &str) -> Result<(), ApiError> {
     tx.execute(
-        "INSERT INTO wake_work(seat_id,reason_bits,attention_version) SELECT r.seat_id,1,1 FROM lazy_recipients r INDEXED BY lazy_recipients_preparation_ordinal JOIN seats s ON s.id=r.seat_id WHERE r.preparation_id=?1 AND s.wake_on='all' ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",
+        "INSERT INTO wake_work(seat_id,reason_bits,attention_version) SELECT r.seat_id,1,1 FROM lazy_recipients r INDEXED BY lazy_recipients_preparation_ordinal JOIN seats s ON s.id=r.seat_id WHERE r.preparation_id=?1 AND s.wake_on='all' AND s.is_local=1 ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",
         [preparation],
     )
     .map_err(store_error)?;

@@ -67,12 +67,7 @@ pub(crate) fn require_seat_on_host(
 /// wake reasons. Catch-up release (ht-1ip.6) calls it in the row-end
 /// transaction.
 pub fn note_new_attention(tx: &rusqlite::Connection, seat: &SeatId) -> Result<(), ApiError> {
-    tx.execute(
-        "INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES (?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",
-        [seat.as_str()],
-    )
-    .map_err(store_error)?;
-    Ok(())
+    super::delivery_tail::DeliveryTail::attention(tx, seat.as_str(), 1)
 }
 
 fn nonnegative(value: i64) -> Result<u64, ApiError> {

@@ -1883,7 +1883,7 @@ fn record_overdue_inner(
         )?;
         if let Some(origin) = origin {
             tx.execute("INSERT OR IGNORE INTO warning_recipients(warning_id,seat_id,generation) SELECT ?1,id,?3 FROM seats WHERE id=?2 AND state!='retired'",params![warning.as_str(),origin,event_seq]).map_err(store_error)?;
-            tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) SELECT id,4,1 FROM seats WHERE id=?1 AND state!='retired' ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|4,attention_version=attention_version+1",[origin]).map_err(store_error)?;
+            super::delivery_tail::DeliveryTail::attention_unless_retired(tx, &origin, 4)?;
         }
     }
     Ok(OverdueOutcome {

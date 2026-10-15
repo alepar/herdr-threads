@@ -924,3 +924,27 @@ pub fn spawn_node_daemon(
         .stderr(std::fs::File::create(stderr_to)?)
         .spawn_owned()
 }
+
+/// Asserts the delivery tail wrote nothing for a seat this node does not host:
+/// no `wake_work`, `lazy_recipients`, `warning_offer`, `in_turn_offer` or
+/// `catch_up` row names a seat with `is_local = 0`.
+pub fn assert_no_local_delivery_for_remote(conn: &Connection) {
+    for table in [
+        "wake_work",
+        "lazy_recipients",
+        "warning_offer",
+        "in_turn_offer",
+        "catch_up",
+    ] {
+        let rows: Vec<String> = conn
+            .prepare(&format!(
+                "SELECT t.seat_id FROM {table} t JOIN seats s ON s.id=t.seat_id WHERE s.is_local=0"
+            ))
+            .and_then(|mut stmt| {
+                stmt.query_map([], |r| r.get(0))?
+                    .collect::<Result<Vec<String>, _>>()
+            })
+            .unwrap_or_else(|e| panic!("query {table}: {e}"));
+        assert!(rows.is_empty(), "{table} names remote seats: {rows:?}");
+    }
+}
