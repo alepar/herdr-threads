@@ -12,7 +12,7 @@ use herdr_threads::store::{SqliteStore, StoreSettings, journal};
 use herdr_threads::sync::chain::{ChainStep, HeldLog, check_next};
 use herdr_threads::sync::envelope::{Deps, Envelope, EnvelopeError, UnsignedEnvelope};
 use herdr_threads::sync::hlc::HlcStamp;
-use herdr_threads::sync::journal_port::{ForkEvidence, IngestOutcome, JournalPort};
+use herdr_threads::sync::journal_port::{ForkEvidence, IngestOutcome, JournalPort, LogMeta};
 use herdr_threads::sync::memory_journal::MemoryJournal;
 use herdr_threads::sync::{BatchLimits, LogHead, LogKey, LogState};
 use herdr_threads::test_support::{TEST_NODE_SEED, isolation::TestIsolation};
@@ -26,6 +26,11 @@ trait Subject {
     fn port(&self) -> &dyn JournalPort;
     fn self_log(&self) -> LogKey;
     fn freeze(&self, log: &LogKey, at: u64);
+    /// Records forked-branch entries (the port has no write for them; the
+    /// sync layer's fork handling calls `journal::store_forked`).
+    fn store_forked(&self, log: &LogKey, entries: &[Envelope]);
+    /// Lowers the most forked entries `serve_branch` walks.
+    fn set_walk_bound(&self, steps: u64);
 }
 
 fn own_identity() -> NodeIdentity {
@@ -97,6 +102,22 @@ impl Subject for SqliteSubject {
             )
             .unwrap();
     }
+
+    fn store_forked(&self, log: &LogKey, entries: &[Envelope]) {
+        let context = self.store.context();
+        let mut conn = context.open_writer().unwrap();
+        context
+            .execute_decision(
+                &mut conn,
+                |_| Ok(()),
+                |tx, _, ()| journal::store_forked(tx, log, entries, None),
+            )
+            .unwrap();
+    }
+
+    fn set_walk_bound(&self, steps: u64) {
+        self.store.context().set_branch_walk_bound(steps);
+    }
 }
 
 struct MemorySubject(MemoryJournal);
@@ -118,6 +139,14 @@ impl Subject for MemorySubject {
 
     fn freeze(&self, log: &LogKey, at: u64) {
         self.0.freeze(log, at).unwrap();
+    }
+
+    fn store_forked(&self, log: &LogKey, entries: &[Envelope]) {
+        self.0.store_forked(log, entries).unwrap();
+    }
+
+    fn set_walk_bound(&self, steps: u64) {
+        self.0.set_branch_walk_bound(steps);
     }
 }
 
@@ -666,6 +695,334 @@ mod cases {
         assert_eq!(s.port().apply_pending(&budget()).unwrap().applied, 0);
     }
 
+    // ---- serve_branch and log_meta ----------------------------------------
+
+    /// A chain whose entries from `fork_at` on differ from `chain(id, n)`.
+    fn branch(id: &NodeIdentity, n: u64, fork_at: u64) -> Vec<Envelope> {
+        chain_with(id, n, |c| {
+            if c >= fork_at {
+                format!(r#"{{"branch":{c}}}"#)
+            } else {
+                format!(r#"{{"n":{c}}}"#)
+            }
+        })
+    }
+
+    fn tip_of(entries: &[Envelope], counter: u64) -> (u64, [u8; 32]) {
+        (counter, entries[counter as usize - 1].hash)
+    }
+
+    fn served(
+        s: &dyn Subject,
+        log: &LogKey,
+        tip: (u64, [u8; 32]),
+        from: u64,
+        limits: BatchLimits,
+    ) -> Option<Vec<Envelope>> {
+        s.port()
+            .serve_branch(log, tip, from, limits, &budget())
+            .unwrap()
+    }
+
+    fn counters(batch: Option<Vec<Envelope>>) -> Option<Vec<u64>> {
+        batch.map(|b| b.iter().map(|e| e.counter).collect())
+    }
+
+    pub fn serve_branch_journal_range(s: &dyn Subject) {
+        let id = remote();
+        let log = remote_log(&id);
+        let entries = chain(&id, 10);
+        ingest(s, &log, &entries);
+        let all = BatchLimits::default();
+        assert_eq!(
+            served(s, &log, tip_of(&entries, 10), 1, all),
+            Some(entries.clone())
+        );
+        assert_eq!(
+            served(s, &log, tip_of(&entries, 10), 4, all),
+            Some(entries[3..].to_vec())
+        );
+        // The branch ends at the tip, not at the head.
+        assert_eq!(
+            served(s, &log, tip_of(&entries, 6), 4, all),
+            Some(entries[3..6].to_vec())
+        );
+        // Counter 0 reads as 1.
+        assert_eq!(
+            counters(served(s, &log, tip_of(&entries, 3), 0, all)),
+            Some(vec![1, 2, 3])
+        );
+        // A known branch with nothing in range is empty, not `None`.
+        assert_eq!(served(s, &log, tip_of(&entries, 10), 11, all), Some(vec![]));
+    }
+
+    pub fn serve_branch_forked_walk_into_journal(s: &dyn Subject) {
+        let id = remote();
+        let log = remote_log(&id);
+        let main = chain(&id, 5);
+        ingest(s, &log, &main);
+        // The other branch shares counters 1 and 2 and differs from 3 to 6.
+        let other = branch(&id, 6, 3);
+        assert_eq!(other[..2], main[..2]);
+        s.store_forked(&log, &other[2..]);
+        let all = BatchLimits::default();
+        let tip = tip_of(&other, 6);
+        assert_eq!(served(s, &log, tip, 1, all), Some(other.clone()));
+        assert_eq!(
+            served(s, &log, tip, 3, all),
+            Some(other[2..].to_vec()),
+            "from at the first forked entry"
+        );
+        assert_eq!(
+            served(s, &log, tip, 5, all),
+            Some(other[4..].to_vec()),
+            "from inside the forked part"
+        );
+        assert_eq!(
+            served(s, &log, tip, 2, all),
+            Some(other[1..].to_vec()),
+            "from the last shared entry"
+        );
+        assert_eq!(served(s, &log, tip, 7, all), Some(vec![]));
+        // A tip inside the forked part ends there.
+        assert_eq!(
+            served(s, &log, tip_of(&other, 4), 1, all),
+            Some(other[..4].to_vec())
+        );
+        // The main branch still serves from `journal`.
+        assert_eq!(
+            served(s, &log, tip_of(&main, 5), 1, all),
+            Some(main.clone())
+        );
+    }
+
+    pub fn serve_branch_unknown_tip_none(s: &dyn Subject) {
+        let id = remote();
+        let log = remote_log(&id);
+        let main = chain(&id, 5);
+        let other = branch(&id, 6, 3);
+        let all = BatchLimits::default();
+        assert_eq!(
+            served(s, &log, tip_of(&main, 5), 1, all),
+            None,
+            "unknown log"
+        );
+        ingest(s, &log, &main);
+        assert_eq!(
+            served(s, &log, tip_of(&other, 6), 1, all),
+            None,
+            "a forked tip nobody stored"
+        );
+        assert_eq!(
+            served(s, &log, (5, other[4].hash), 1, all),
+            None,
+            "a hash that is on no branch"
+        );
+        assert_eq!(
+            served(s, &log, (9, main[4].hash), 1, all),
+            None,
+            "a counter beyond the head"
+        );
+        // A forked tip whose predecessor was never stored: a broken chain.
+        s.store_forked(&log, &other[4..]);
+        assert_eq!(served(s, &log, tip_of(&other, 6), 1, all), None);
+        assert_eq!(
+            counters(served(s, &log, tip_of(&other, 6), 5, all)),
+            Some(vec![5, 6]),
+            "the walk stops at `from` before it needs the missing entry"
+        );
+    }
+
+    pub fn serve_branch_over_walk_bound_none(s: &dyn Subject) {
+        let id = remote();
+        let log = remote_log(&id);
+        ingest(s, &log, &chain(&id, 5));
+        let other = branch(&id, 7, 3);
+        s.store_forked(&log, &other[2..]);
+        let all = BatchLimits::default();
+        let tip = tip_of(&other, 7);
+        // Five forked entries (3..=7).
+        s.set_walk_bound(4);
+        assert_eq!(served(s, &log, tip, 1, all), None, "over the bound");
+        assert_eq!(
+            counters(served(s, &log, tip, 4, all)),
+            Some(vec![4, 5, 6, 7]),
+            "a walk of four steps fits"
+        );
+        s.set_walk_bound(5);
+        assert_eq!(
+            served(s, &log, tip, 1, all),
+            Some(other.clone()),
+            "exactly at the bound"
+        );
+    }
+
+    pub fn serve_branch_limits_honoured(s: &dyn Subject) {
+        let id = remote();
+        let log = remote_log(&id);
+        let main = chain(&id, 300);
+        for batch in main.chunks(100) {
+            ingest(s, &log, batch);
+        }
+        let two = BatchLimits {
+            entries: 2,
+            bytes: BatchLimits::BYTES,
+        };
+        assert_eq!(
+            counters(served(s, &log, tip_of(&main, 300), 10, two)),
+            Some(vec![10, 11])
+        );
+        let default = served(s, &log, tip_of(&main, 300), 1, BatchLimits::default()).unwrap();
+        assert_eq!(default.len(), BatchLimits::ENTRIES, "the 256-entry limit");
+        let one_entry = main[1].canonical_bytes().len();
+        let tight = BatchLimits {
+            entries: 256,
+            bytes: one_entry * 2 + one_entry / 2,
+        };
+        assert_eq!(
+            counters(served(s, &log, tip_of(&main, 300), 2, tight)),
+            Some(vec![2, 3])
+        );
+        let tiny = BatchLimits {
+            entries: 256,
+            bytes: 1,
+        };
+        assert_eq!(
+            counters(served(s, &log, tip_of(&main, 300), 2, tiny)),
+            Some(vec![2]),
+            "at least one entry, even an oversized one"
+        );
+        // The same limits cut the forked walk, across the join.
+        let other = branch(&id, 303, 299);
+        s.store_forked(&log, &other[298..]);
+        let tip = tip_of(&other, 303);
+        assert_eq!(
+            counters(served(s, &log, tip, 297, BatchLimits::default())),
+            Some(vec![297, 298, 299, 300, 301, 302, 303])
+        );
+        let four = BatchLimits {
+            entries: 4,
+            bytes: BatchLimits::BYTES,
+        };
+        assert_eq!(
+            counters(served(s, &log, tip, 297, four)),
+            Some(vec![297, 298, 299, 300])
+        );
+        assert_eq!(
+            served(s, &log, tip, 297, four).unwrap().last().unwrap(),
+            &other[299],
+            "past the join the entries are the forked ones"
+        );
+        assert_eq!(
+            counters(served(s, &log, tip, 299, four)),
+            Some(vec![299, 300, 301, 302]),
+        );
+    }
+
+    fn meta(s: &dyn Subject, log: &LogKey) -> Option<LogMeta> {
+        s.port().log_meta(log, &budget()).unwrap()
+    }
+
+    pub fn log_meta_own_active(s: &dyn Subject) {
+        let own = s.self_log();
+        let genesis = s
+            .port()
+            .serve(&own, 1, BatchLimits::default(), &budget())
+            .unwrap();
+        assert_eq!(
+            meta(s, &own),
+            Some(LogMeta {
+                pubkey: own_identity().public_key(),
+                own: true,
+                active: true,
+                state: LogState::Active,
+                frozen_at: None,
+                contiguous: 1,
+                head: genesis[0].hash,
+            })
+        );
+    }
+
+    pub fn log_meta_own_old_incarnation(s: &dyn Subject) {
+        let id = own_identity();
+        let active = s.self_log();
+        let old = LogKey {
+            node: id.uuid(),
+            incarnation: active.incarnation + 1,
+        };
+        let mut entries: Vec<Envelope> = Vec::new();
+        for counter in 1..=2 {
+            let prev = entries.last().map_or([0; 32], |e| e.hash);
+            entries.push(seal(&id, &id, old, counter, prev, r#"{"n":2}"#.into()));
+        }
+        assert!(matches!(
+            ingest(s, &old, &entries),
+            IngestOutcome::Stored { stored: 2, .. }
+        ));
+        assert_eq!(
+            meta(s, &old),
+            Some(LogMeta {
+                pubkey: id.public_key(),
+                own: true,
+                active: false,
+                state: LogState::Active,
+                frozen_at: None,
+                contiguous: 2,
+                head: entries[1].hash,
+            })
+        );
+    }
+
+    pub fn log_meta_foreign(s: &dyn Subject) {
+        let id = remote();
+        let log = remote_log(&id);
+        let entries = chain(&id, 3);
+        ingest(s, &log, &entries);
+        assert_eq!(
+            meta(s, &log),
+            Some(LogMeta {
+                pubkey: id.public_key(),
+                own: false,
+                active: false,
+                state: LogState::Active,
+                frozen_at: None,
+                contiguous: 3,
+                head: entries[2].hash,
+            })
+        );
+    }
+
+    pub fn log_meta_frozen(s: &dyn Subject) {
+        let id = remote();
+        let log = remote_log(&id);
+        let entries = chain(&id, 4);
+        ingest(s, &log, &entries);
+        s.freeze(&log, 2);
+        assert_eq!(
+            meta(s, &log),
+            Some(LogMeta {
+                pubkey: id.public_key(),
+                own: false,
+                active: false,
+                state: LogState::Frozen,
+                frozen_at: Some(2),
+                contiguous: 4,
+                head: entries[3].hash,
+            })
+        );
+    }
+
+    pub fn log_meta_unknown_none(s: &dyn Subject) {
+        let log = remote_log(&remote());
+        assert_eq!(meta(s, &log), None);
+        let own = s.self_log();
+        let unknown_incarnation = LogKey {
+            incarnation: own.incarnation + 7,
+            ..own
+        };
+        assert_eq!(meta(s, &unknown_incarnation), None);
+    }
+
     pub fn cancelled_call_is_an_error(s: &dyn Subject) {
         let cancelled = budget();
         cancelled.cancellation.cancel();
@@ -679,6 +1036,12 @@ mod cases {
         );
         assert!(s.port().ingest(&log, vec![], &cancelled).is_err());
         assert!(s.port().apply_pending(&cancelled).is_err());
+        assert!(
+            s.port()
+                .serve_branch(&log, (1, [0; 32]), 1, BatchLimits::default(), &cancelled)
+                .is_err()
+        );
+        assert!(s.port().log_meta(&log, &cancelled).is_err());
     }
 }
 
@@ -708,6 +1071,16 @@ contract!(
     stored_hash,
     apply_pending_marks_processed,
     cancelled_call_is_an_error,
+    serve_branch_journal_range,
+    serve_branch_forked_walk_into_journal,
+    serve_branch_unknown_tip_none,
+    serve_branch_over_walk_bound_none,
+    serve_branch_limits_honoured,
+    log_meta_own_active,
+    log_meta_own_old_incarnation,
+    log_meta_foreign,
+    log_meta_frozen,
+    log_meta_unknown_none,
 );
 
 // ---- one-implementation cases ------------------------------------------------

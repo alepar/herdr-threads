@@ -45,7 +45,7 @@ use crate::sync::envelope::{
 };
 use crate::sync::facts::{FactKind, FactRegistry, GenesisPayload, NodeGenesis};
 use crate::sync::hlc::{Fold, Hlc, HlcStamp};
-use crate::sync::journal_port::{ApplyProgress, ForkEvidence, IngestOutcome};
+use crate::sync::journal_port::{ApplyProgress, ForkEvidence, IngestOutcome, LogMeta};
 use crate::sync::{BatchLimits, EntityKey, LogHead, LogKey, LogState, Vector};
 
 /// Longest genesis `host_label`, in bytes.
@@ -323,6 +323,7 @@ pub fn open(
         )),
         registry,
         headroom_bytes: AtomicU64::new(INGEST_HEADROOM_BYTES),
+        branch_walk_bound: AtomicU64::new(BRANCH_WALK_MAX_STEPS),
         incarnation_rng: std::sync::Mutex::new(ctx.new_incarnation_rng()),
         skew_logged: std::sync::Mutex::default(),
     };
@@ -942,6 +943,213 @@ pub fn serve(
     Ok(out)
 }
 
+/// Most `journal_forked` rows [`serve_branch`] walks before it answers `None`.
+pub const BRANCH_WALK_MAX_STEPS: u64 = 65_536;
+
+/// Accumulates a served batch under [`BatchLimits`]: at most `entries`
+/// entries, stopping before the entry that would take the canonical size past
+/// `bytes`, but always at least one entry, even an oversized one.
+struct Batch {
+    limits: BatchLimits,
+    out: Vec<Envelope>,
+    bytes: usize,
+}
+
+impl Batch {
+    fn new(limits: BatchLimits) -> Self {
+        Self {
+            limits,
+            out: Vec::new(),
+            bytes: 0,
+        }
+    }
+
+    /// Adds `envelope` unless a limit is hit; `false` means the batch is full.
+    fn push(&mut self, envelope: Envelope) -> bool {
+        if self.out.len() >= self.limits.entries.max(1) {
+            return false;
+        }
+        let size = envelope.canonical_bytes().len();
+        if !self.out.is_empty() && self.bytes.saturating_add(size) > self.limits.bytes {
+            return false;
+        }
+        self.bytes = self.bytes.saturating_add(size);
+        self.out.push(envelope);
+        true
+    }
+}
+
+/// Adds `journal` rows `from..=to` of `log_ix` to `batch`, in counter order,
+/// until the batch is full.
+fn batch_journal_range(
+    conn: &Connection,
+    log_ix: i64,
+    log: &LogKey,
+    from: u64,
+    to: u64,
+    batch: &mut Batch,
+) -> Result<(), ApiError> {
+    let mut statement = conn
+        .prepare(&format!(
+            "SELECT {ENVELOPE_COLUMNS} FROM journal WHERE log_ix=?1 AND counter>=?2 \
+             AND counter<=?3 ORDER BY counter"
+        ))
+        .map_err(store_error)?;
+    let rows = statement
+        .query_map(
+            params![
+                log_ix,
+                i64::try_from(from).unwrap_or(i64::MAX),
+                i64::try_from(to).unwrap_or(i64::MAX)
+            ],
+            RawEnvelope::read,
+        )
+        .map_err(store_error)?;
+    for raw in rows {
+        if !batch.push(raw.map_err(store_error)?.decode(log)?) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// The batch of the branch of `log` that ends at `tip`, starting at counter
+/// `from`, on a query connection. Read-only.
+///
+/// 1. If `journal` holds `tip.0` with hash `tip.1`, the answer is the
+///    `journal` rows `from..=tip.0`.
+/// 2. Else, if `journal_forked` holds `(tip.0, tip.1)`, the branch is walked
+///    backward by `prev_hash`: at each step the predecessor is a
+///    `journal_forked` row or a `journal` row whose hash is the `prev_hash`.
+///    The walk ends at `from` or where the branch joins `journal`; the answer
+///    is the ascending branch from `from`. The walk reads at most
+///    [`BRANCH_WALK_MAX_STEPS`] forked rows.
+/// 3. Else `None`.
+///
+/// Either way the batch obeys `limits` like [`serve`] (the first batch; at
+/// least one entry when the range is not empty). `None` means "cannot serve
+/// this branch": an unknown log, an unknown tip, a broken chain or a walk
+/// over the bound. `Some(vec![])` means the branch is known and nothing lies
+/// in range (`from` beyond the tip).
+pub fn serve_branch(
+    conn: &Connection,
+    log: &LogKey,
+    tip: (u64, [u8; 32]),
+    from: u64,
+    limits: BatchLimits,
+) -> Result<Option<Vec<Envelope>>, ApiError> {
+    serve_branch_within(conn, log, tip, from, limits, BRANCH_WALK_MAX_STEPS)
+}
+
+/// [`serve_branch`] with the walk bound given.
+fn serve_branch_within(
+    conn: &Connection,
+    log: &LogKey,
+    tip: (u64, [u8; 32]),
+    from: u64,
+    limits: BatchLimits,
+    max_steps: u64,
+) -> Result<Option<Vec<Envelope>>, ApiError> {
+    let Some(row) = load_log(conn, log)? else {
+        return Ok(None);
+    };
+    let (tip_counter, tip_hash) = tip;
+    let from = from.max(1);
+    let mut batch = Batch::new(limits);
+    if hash_at(conn, row.log_ix, tip_counter)? == Some(tip_hash) {
+        if from <= tip_counter {
+            batch_journal_range(conn, row.log_ix, log, from, tip_counter, &mut batch)?;
+        }
+        return Ok(Some(batch.out));
+    }
+    let forked_prev = |counter: u64, hash: &[u8; 32]| -> Result<Option<[u8; 32]>, ApiError> {
+        conn.query_row(
+            "SELECT prev_hash FROM journal_forked WHERE log_ix=?1 AND counter=?2 AND hash=?3",
+            params![
+                row.log_ix,
+                i64::try_from(counter).unwrap_or(i64::MAX),
+                hash.as_slice()
+            ],
+            |r| r.get::<_, Vec<u8>>(0),
+        )
+        .optional()
+        .map_err(store_error)?
+        .map(|prev| hash_from(prev, "prev_hash"))
+        .transpose()
+    };
+    // The forked part of the branch, tip first, as (counter, hash).
+    let mut path: Vec<(u64, [u8; 32])> = Vec::new();
+    let (mut counter, mut hash) = (tip_counter, tip_hash);
+    // The last `journal` counter the branch shares, if the walk reaches it.
+    let mut join: Option<u64> = None;
+    loop {
+        let Some(prev) = forked_prev(counter, &hash)? else {
+            // The tip itself, or a link below it, is unknown.
+            return Ok(None);
+        };
+        if path.len() as u64 >= max_steps {
+            return Ok(None);
+        }
+        path.push((counter, hash));
+        if counter <= from {
+            break;
+        }
+        if hash_at(conn, row.log_ix, counter - 1)? == Some(prev) {
+            join = Some(counter - 1);
+            break;
+        }
+        (counter, hash) = (counter - 1, prev);
+    }
+    if let Some(join) = join {
+        batch_journal_range(conn, row.log_ix, log, from, join, &mut batch)?;
+    }
+    for (counter, hash) in path.into_iter().rev().filter(|(c, _)| *c >= from) {
+        let raw = conn
+            .query_row(
+                &format!(
+                    "SELECT {ENVELOPE_COLUMNS} FROM journal_forked \
+                     WHERE log_ix=?1 AND counter=?2 AND hash=?3"
+                ),
+                params![
+                    row.log_ix,
+                    i64::try_from(counter).unwrap_or(i64::MAX),
+                    hash.as_slice()
+                ],
+                RawEnvelope::read,
+            )
+            .map_err(store_error)?;
+        if !batch.push(raw.decode(log)?) {
+            break;
+        }
+    }
+    Ok(Some(batch.out))
+}
+
+/// What a node knows about one log, from `sync_logs` and `local_node`, on a
+/// query connection. Read-only. `None` for a log the store does not hold, as
+/// opposed to a held log with nothing in it.
+pub fn log_meta(conn: &Connection, log: &LogKey) -> Result<Option<LogMeta>, ApiError> {
+    let Some(row) = load_log(conn, log)? else {
+        return Ok(None);
+    };
+    let own: bool = conn
+        .query_row(
+            "SELECT is_self FROM sync_logs WHERE log_ix=?1",
+            params![row.log_ix],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    Ok(Some(LogMeta {
+        pubkey: row.held.pubkey,
+        own,
+        active: row.held.is_active_self,
+        state: row.held.state,
+        frozen_at: row.held.frozen_at,
+        contiguous: row.held.contiguous,
+        head: row.held.head_hash,
+    }))
+}
+
 /// Free bytes on the filesystem holding `dir` (`f_bavail * f_frsize`), or
 /// `None` when it cannot be read (then ingest proceeds; a real shortage
 /// surfaces as SQLite `DiskFull`).
@@ -1369,6 +1577,27 @@ impl crate::sync::journal_port::JournalPort for crate::store::SqliteStore {
     ) -> Result<Vec<Envelope>, ApiError> {
         let db = self.context.open_query(budget.clone())?;
         serve(&db, log, from, limits)
+    }
+
+    fn serve_branch(
+        &self,
+        log: &LogKey,
+        tip: (u64, [u8; 32]),
+        from: u64,
+        limits: BatchLimits,
+        budget: &CallBudget,
+    ) -> Result<Option<Vec<Envelope>>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        let bound = self
+            .context
+            .sync()
+            .map_or(BRANCH_WALK_MAX_STEPS, SyncState::branch_walk_bound);
+        serve_branch_within(&db, log, tip, from, limits, bound)
+    }
+
+    fn log_meta(&self, log: &LogKey, budget: &CallBudget) -> Result<Option<LogMeta>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        log_meta(&db, log)
     }
 
     /// `ingest` opens its own `BEGIN IMMEDIATE` (it keeps a valid prefix on a

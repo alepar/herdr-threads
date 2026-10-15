@@ -2,7 +2,9 @@
 //! (journal-core design, sections 6 and 12). A contract only: nothing here
 //! touches the store.
 
-use super::{BatchLimits, LogHead, LogKey, Vector, envelope::Envelope, envelope::EnvelopeError};
+use super::{
+    BatchLimits, LogHead, LogKey, LogState, Vector, envelope::Envelope, envelope::EnvelopeError,
+};
 use crate::protocol::results::ApiError;
 use crate::protocol::time::CallBudget;
 
@@ -72,12 +74,36 @@ pub struct ApplyProgress {
     pub self_tag_k: Option<u32>,
 }
 
+/// What a node knows about one log it holds.
+///
+/// Owns: the facts a fork repair needs about a log (its public key, whether
+/// it is one of this node's own incarnations, whether it is the one this
+/// node authors into, its freeze and its head). Does not own: the log's
+/// entries, or any decision about it. Role: the value returned by
+/// [`JournalPort::log_meta`], read by the incarnations sink and worker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LogMeta {
+    /// The key that signs the log's entries (from its genesis).
+    pub pubkey: [u8; 32],
+    /// The log belongs to this node (any of its incarnations).
+    pub own: bool,
+    /// The log is the one this node authors into now.
+    pub active: bool,
+    pub state: LogState,
+    /// Last counter a frozen log accepts; `None` while active.
+    pub frozen_at: Option<u64>,
+    /// Highest contiguous counter held.
+    pub contiguous: u64,
+    /// Hash of the entry at `contiguous`.
+    pub head: [u8; 32],
+}
+
 /// The narrow seam through which the sync coordinator and the apply worker
 /// reach the journal.
 ///
-/// Owns: the four operations a peer link and the apply worker need (version
-/// vector, stored-hash lookup, serving committed ranges, ingesting a verified
-/// batch) plus one apply pass. Does not own: chain rules (see
+/// Owns: the operations a peer link and the apply worker need (version
+/// vector, stored-hash lookup, serving committed ranges and branches, log
+/// metadata, ingesting a verified batch) plus one apply pass. Does not own: chain rules (see
 /// `chain::check_next`), fork resolution, peer pacing or the store's
 /// transaction handling. Role: implemented by `SqliteStore` and by the
 /// in-memory `MemoryJournal`, which run the same chain rules and signature
@@ -106,6 +132,31 @@ pub trait JournalPort: Send + Sync {
         limits: BatchLimits,
         budget: &CallBudget,
     ) -> Result<Vec<Envelope>, ApiError>;
+
+    /// The batch of the branch of `log` that ends at `tip` (counter, hash),
+    /// starting at counter `from`, within `limits`.
+    ///
+    /// Read-only, on a query connection. The branch is either held in the main
+    /// chain, or recorded as a forked branch that walks back by `prev_hash`
+    /// (a bounded walk) into the main chain. `None` means this node cannot
+    /// serve that branch (unknown log or tip, a broken chain, or a walk over
+    /// the bound); `Some(vec![])` means the branch is known and nothing lies
+    /// in range.
+    fn serve_branch(
+        &self,
+        log: &LogKey,
+        tip: (u64, [u8; 32]),
+        from: u64,
+        limits: BatchLimits,
+        budget: &CallBudget,
+    ) -> Result<Option<Vec<Envelope>>, ApiError>;
+
+    /// The public key, ownership and state of `log`, if held.
+    ///
+    /// Read-only, on a query connection; `None` for a log this node does not
+    /// hold. The one read through which the incarnations sink and worker
+    /// learn a log's pubkey and ownership.
+    fn log_meta(&self, log: &LogKey, budget: &CallBudget) -> Result<Option<LogMeta>, ApiError>;
 
     /// Verify and store a batch of `log`'s entries.
     ///

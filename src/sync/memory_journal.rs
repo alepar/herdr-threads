@@ -9,7 +9,7 @@ use super::chain::{ChainStep, HeldLog, check_next};
 use super::envelope::{Deps, Envelope, EnvelopeError, GENESIS_KIND, UnsignedEnvelope, hex_encode};
 use super::facts::GenesisPayload;
 use super::hlc::HlcStamp;
-use super::journal_port::{ApplyProgress, ForkEvidence, IngestOutcome, JournalPort};
+use super::journal_port::{ApplyProgress, ForkEvidence, IngestOutcome, JournalPort, LogMeta};
 use super::{BatchLimits, LogHead, LogKey, LogState, Vector};
 use crate::node::NodeIdentity;
 use crate::protocol::results::{ApiError, ErrorCode};
@@ -17,6 +17,10 @@ use crate::protocol::time::CallBudget;
 
 /// Longest ingest batch, in entries (the same bound as `SqliteStore`).
 const INGEST_BATCH_MAX: usize = 256;
+
+/// Most forked entries `serve_branch` walks before it answers `None` (the
+/// same bound as `SqliteStore`).
+const BRANCH_WALK_MAX_STEPS: u64 = 65_536;
 
 /// The one incarnation of the log a `MemoryJournal` authors into.
 const SELF_INCARNATION: u32 = 1;
@@ -51,6 +55,10 @@ struct Inner {
     frozen: BTreeMap<LogKey, u64>,
     /// Highest counter `apply_pending` has marked processed.
     processed: BTreeMap<LogKey, u64>,
+    /// Entries of forked branches, by `(log, counter, hash)`.
+    forked: BTreeMap<(LogKey, u64, [u8; 32]), Envelope>,
+    /// Test hook: the walk bound of `serve_branch`; 0 means the default.
+    branch_walk_bound: u64,
 }
 
 impl MemoryJournal {
@@ -150,6 +158,43 @@ impl MemoryJournal {
             .push(entry.clone());
         inner.processed.insert(log, len);
         Ok(entry)
+    }
+
+    /// Test hook: the most forked entries `serve_branch` walks before it
+    /// answers `None` (the default is the real bound).
+    pub fn set_branch_walk_bound(&self, steps: u64) {
+        self.lock().branch_walk_bound = steps;
+    }
+
+    /// Records entries of a forked branch of `log`, ignoring exact
+    /// duplicates, like `journal::store_forked`, and returns how many were
+    /// new. The log must be known (`NotFound`); each entry must name it and
+    /// verify against its key (`InvalidRequest` otherwise).
+    pub fn store_forked(&self, log: &LogKey, entries: &[Envelope]) -> Result<usize, ApiError> {
+        let mut inner = self.lock();
+        let Some(pubkey) = inner.pubkeys.get(log).copied() else {
+            return Err(ApiError::new(ErrorCode::NotFound, "unknown log"));
+        };
+        let mut inserted = 0;
+        for entry in entries {
+            if entry.log != *log {
+                return Err(ApiError::new(
+                    ErrorCode::InvalidRequest,
+                    "forked entry names another log",
+                ));
+            }
+            entry.verify(&pubkey).map_err(|_| {
+                ApiError::new(ErrorCode::InvalidRequest, "forked entry does not verify")
+            })?;
+            if inner
+                .forked
+                .insert((*log, entry.counter, entry.hash), entry.clone())
+                .is_none()
+            {
+                inserted += 1;
+            }
+        }
+        Ok(inserted)
     }
 
     /// Closes `log` after counter `at`, lower-only, like `journal::freeze`:
@@ -260,6 +305,110 @@ impl JournalPort for MemoryJournal {
             out.push(entry.clone());
         }
         Ok(out)
+    }
+
+    fn serve_branch(
+        &self,
+        log: &LogKey,
+        tip: (u64, [u8; 32]),
+        from: u64,
+        limits: BatchLimits,
+        budget: &CallBudget,
+    ) -> Result<Option<Vec<Envelope>>, ApiError> {
+        cancelled(budget)?;
+        let inner = self.lock();
+        let Some(main) = inner.logs.get(log) else {
+            return Ok(None);
+        };
+        let from = from.max(1);
+        let held = |counter: u64| {
+            counter
+                .checked_sub(1)
+                .and_then(|ix| usize::try_from(ix).ok())
+                .and_then(|ix| main.get(ix))
+        };
+        let (tip_counter, tip_hash) = tip;
+        // The branch ascending from `from`, whole; limits apply at the end.
+        let mut branch: Vec<&Envelope> = Vec::new();
+        if held(tip_counter).is_some_and(|e| e.hash == tip_hash) {
+            branch.extend(
+                main.iter()
+                    .skip(usize::try_from(from - 1).unwrap_or(usize::MAX)),
+            );
+            branch.truncate(
+                usize::try_from(tip_counter.saturating_sub(from - 1)).unwrap_or(usize::MAX),
+            );
+        } else {
+            let bound = match inner.branch_walk_bound {
+                0 => BRANCH_WALK_MAX_STEPS,
+                bound => bound,
+            };
+            let mut forked: Vec<&Envelope> = Vec::new();
+            let mut key = (tip_counter, tip_hash);
+            let mut join = None;
+            loop {
+                let Some(entry) = inner.forked.get(&(*log, key.0, key.1)) else {
+                    return Ok(None);
+                };
+                if forked.len() as u64 >= bound {
+                    return Ok(None);
+                }
+                forked.push(entry);
+                if entry.counter <= from {
+                    break;
+                }
+                if held(entry.counter - 1).is_some_and(|e| e.hash == entry.prev_hash) {
+                    join = Some(entry.counter - 1);
+                    break;
+                }
+                key = (entry.counter - 1, entry.prev_hash);
+            }
+            if let Some(join) = join {
+                branch.extend(
+                    main.iter()
+                        .skip(usize::try_from(from - 1).unwrap_or(usize::MAX)),
+                );
+                branch
+                    .truncate(usize::try_from(join.saturating_sub(from - 1)).unwrap_or(usize::MAX));
+            }
+            branch.extend(forked.into_iter().rev().filter(|e| e.counter >= from));
+        }
+        let mut out: Vec<Envelope> = Vec::new();
+        let mut bytes = 0usize;
+        for entry in branch {
+            if out.len() >= limits.entries.max(1) {
+                break;
+            }
+            let size = entry.canonical_bytes().len();
+            if !out.is_empty() && bytes.saturating_add(size) > limits.bytes {
+                break;
+            }
+            bytes = bytes.saturating_add(size);
+            out.push(entry.clone());
+        }
+        Ok(Some(out))
+    }
+
+    fn log_meta(&self, log: &LogKey, budget: &CallBudget) -> Result<Option<LogMeta>, ApiError> {
+        cancelled(budget)?;
+        let inner = self.lock();
+        let (Some(entries), Some(pubkey)) = (inner.logs.get(log), inner.pubkeys.get(log)) else {
+            return Ok(None);
+        };
+        let frozen_at = inner.frozen.get(log).copied();
+        Ok(Some(LogMeta {
+            pubkey: *pubkey,
+            own: log.node == self.identity.uuid(),
+            active: *log == self.self_log(),
+            state: if frozen_at.is_some() {
+                LogState::Frozen
+            } else {
+                LogState::Active
+            },
+            frozen_at,
+            contiguous: entries.len() as u64,
+            head: entries.last().map_or([0u8; 32], |e| e.hash),
+        }))
     }
 
     fn ingest(

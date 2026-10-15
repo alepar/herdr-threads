@@ -119,6 +119,8 @@ pub struct SyncState {
     pub(crate) hlc: std::sync::Mutex<Hlc>,
     pub(crate) registry: &'static FactRegistry,
     pub(crate) headroom_bytes: AtomicU64,
+    /// Most `journal_forked` rows `serve_branch` walks before giving up.
+    pub(crate) branch_walk_bound: AtomicU64,
     pub(crate) incarnation_rng: std::sync::Mutex<XorShift>,
     /// When (UTC ms) the hourly skew line of each log was last written.
     pub(crate) skew_logged: std::sync::Mutex<std::collections::HashMap<crate::sync::LogKey, i64>>,
@@ -128,6 +130,12 @@ impl SyncState {
     /// The free-space floor below which ingest stores nothing.
     pub fn headroom_bytes(&self) -> u64 {
         self.headroom_bytes.load(Ordering::Relaxed)
+    }
+
+    /// The most `journal_forked` rows `serve_branch` walks before it answers
+    /// `None`.
+    pub fn branch_walk_bound(&self) -> u64 {
+        self.branch_walk_bound.load(Ordering::Relaxed)
     }
 }
 
@@ -394,6 +402,15 @@ impl StoreContext {
     pub fn set_ingest_headroom(&self, bytes: u64) {
         if let Some(state) = self.sync.get() {
             state.headroom_bytes.store(bytes, Ordering::Relaxed);
+        }
+    }
+
+    /// Test hook: the most `journal_forked` rows `serve_branch` walks before it
+    /// answers `None`. A no-op before `journal::open`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_branch_walk_bound(&self, steps: u64) {
+        if let Some(state) = self.sync.get() {
+            state.branch_walk_bound.store(steps, Ordering::Relaxed);
         }
     }
 
