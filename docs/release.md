@@ -43,8 +43,8 @@ Nothing in this repository establishes an inference-interruption guarantee, exac
 
 The `tests` job runs in three parallel shards. Each shard:
 
-1. `cargo test --locked --all-targets --all-features --no-run` and the ordinary and `test-support` release builds (the package suite compares them), before the timer.
-2. `cargo nextest run --locked --all-targets --all-features --profile ci --partition slice:N/3` (one process per test; test groups in `.config/nextest.toml`; the three slices split the sorted test list round-robin, about a third of the test time each). `--all-features` enables `test-support`. The package suite runs `check_failpoints_absent.sh`, which makes two extra release builds. Ignored tests (the package lifecycle gate and the 10^5 to 10^6 scale tests) do not run. Each shard fails at 300 s wall clock.
+1. `cargo test --locked --all-targets --all-features --no-run` and `tests/service/check_failpoints_absent.sh --prebuild` (the ordinary and `test-support` incremental release builds the package suite compares, in their persistent `target/failpoints-release` and `target/failpoints-control` directories), before the timer.
+2. `cargo nextest run --locked --all-targets --all-features --profile ci --partition slice:N/3` (one process per test; test groups in `.config/nextest.toml`; the three slices split the sorted test list round-robin, about a third of the test time each). `--all-features` enables `test-support`. The package suite runs `check_failpoints_absent.sh`, whose two incremental release builds are then no-ops. Ignored tests (the package lifecycle gate and the 10^5 to 10^6 scale tests) do not run. Each shard fails at 300 s wall clock.
 3. `scripts/check-no-leaked-processes`, even after a failure.
 
 The `deterministic` job:

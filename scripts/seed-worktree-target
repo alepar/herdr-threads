@@ -1,0 +1,34 @@
+#!/bin/sh
+# Seed a worktree's Cargo target directory from a warm one, so a new
+# worktree reuses its dependencies' build artifacts (and the release proof's
+# persistent incremental directories) instead of building them again.
+#
+# Usage: scripts/seed-worktree-target SOURCE_TARGET [DEST_WORKTREE]
+#   SOURCE_TARGET  a warm target directory, e.g. ../other-worktree/target
+#   DEST_WORKTREE  the worktree to seed (default: this checkout)
+#
+# The copy is copy-on-write where the filesystem has it (clonefile on macOS,
+# reflink elsewhere), else a plain copy; modification times are kept so
+# Cargo's freshness checks see the same tree. An existing target is never
+# overwritten. Cargo keys this workspace's crate by a path relative to the
+# workspace, so a copied build of it could look fresh against another
+# checkout's sources: its fingerprints are dropped from the copy and it
+# rebuilds once (incremental state is kept). Dependencies are reused as is.
+set -eu
+[ $# -ge 1 ] && [ $# -le 2 ] || { sed -n '6,8p' "$0" >&2; exit 2; }
+src=$(CDPATH='' cd "$1" && pwd -P)
+dest_root=${2:-$(CDPATH='' cd "$(dirname "$0")/.." && pwd -P)}
+dest="$dest_root/target"
+[ -f "$dest_root/Cargo.toml" ] || { echo "not a checkout: $dest_root" >&2; exit 2; }
+[ -d "$src/release" ] || [ -d "$src/debug" ] || { echo "not a Cargo target directory: $src" >&2; exit 2; }
+# Claim the destination atomically: an existing (or concurrently created)
+# target is left as is.
+mkdir "$dest" 2>/dev/null || { echo "exists, left as is: $dest"; exit 0; }
+trap 'rm -rf "$dest"' EXIT
+trap 'rm -rf "$dest"; exit 1' HUP INT TERM
+cp -c -R "$src/." "$dest" 2>/dev/null \
+  || { rm -rf "$dest" && mkdir "$dest" && cp -pR --reflink=auto "$src/." "$dest" 2>/dev/null; } \
+  || { rm -rf "$dest" && mkdir "$dest" && cp -pR "$src/." "$dest"; }
+find "$dest" -type d -path '*/.fingerprint/herdr-threads-*' -prune -exec rm -rf {} +
+trap - EXIT HUP INT TERM
+echo "seeded $dest from $src"
