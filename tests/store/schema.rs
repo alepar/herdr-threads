@@ -5269,3 +5269,142 @@ fn fork_tables_verify() {
     )
     .unwrap();
 }
+
+const PROBE_DELTA: schema::NodeDelta = schema::NodeDelta {
+    version: 2,
+    sql: "CREATE TABLE delta_probe(x INTEGER)",
+};
+
+fn open_with(
+    db: &Connection,
+    deltas: &[schema::NodeDelta],
+) -> Result<(), crate::protocol::results::ApiError> {
+    schema::initialize_with_deltas(
+        db,
+        || UtcMillis(0),
+        Some(&crate::test_support::test_node_seed()),
+        deltas,
+        false,
+    )
+}
+
+fn user_version(db: &Connection) -> i64 {
+    db.pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap()
+}
+
+fn table_exists(db: &Connection, name: &str) -> bool {
+    db.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        [name],
+        |r| r.get::<_, i64>(0),
+    )
+    .unwrap()
+        == 1
+}
+
+#[test]
+fn production_delta_list_is_empty_and_numbered_from_two() {
+    assert!(schema::NODE_DELTAS.is_empty());
+}
+
+#[test]
+fn test_delta_upgrades_baseline_store() {
+    let db = Connection::open_in_memory().unwrap();
+    open_with(&db, &[]).unwrap();
+    assert_eq!(user_version(&db), 1);
+    assert!(!table_exists(&db, "delta_probe"));
+    open_with(&db, &[PROBE_DELTA]).unwrap();
+    assert_eq!(user_version(&db), 2);
+    assert!(table_exists(&db, "delta_probe"));
+    // Applied delta is audited: a binary without it now sees a newer store.
+    let detail = incompatible_detail(open_with(&db, &[]));
+    assert!(detail.contains("newer than this binary"), "{detail}");
+}
+
+#[test]
+fn fresh_store_applies_every_delta() {
+    let db = Connection::open_in_memory().unwrap();
+    open_with(&db, &[PROBE_DELTA]).unwrap();
+    assert_eq!(user_version(&db), 2);
+    assert!(table_exists(&db, "delta_probe"));
+}
+
+#[test]
+fn second_delta_open_is_noop() {
+    let db = Connection::open_in_memory().unwrap();
+    open_with(&db, &[]).unwrap();
+    open_with(&db, &[PROBE_DELTA]).unwrap();
+    db.execute("INSERT INTO delta_probe(x) VALUES (7)", [])
+        .unwrap();
+    open_with(&db, &[PROBE_DELTA]).unwrap();
+    assert_eq!(user_version(&db), 2);
+    let rows: i64 = db
+        .query_row("SELECT count(*) FROM delta_probe", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 1, "a second open must not rerun the delta");
+}
+
+#[test]
+fn failing_delta_rolls_back() {
+    let db = Connection::open_in_memory().unwrap();
+    open_with(&db, &[]).unwrap();
+    let bad = schema::NodeDelta {
+        version: 2,
+        sql: "CREATE TABLE a(x); CREATE TABLE a(x);",
+    };
+    open_with(&db, &[bad]).unwrap_err();
+    assert_eq!(user_version(&db), 1);
+    assert!(
+        !table_exists(&db, "a"),
+        "the first statement must roll back"
+    );
+    open_with(&db, &[]).unwrap();
+}
+
+#[test]
+fn newer_store_refused_naming_versions() {
+    let db = Connection::open_in_memory().unwrap();
+    open_with(&db, &[]).unwrap();
+    db.pragma_update(None, "user_version", 5).unwrap();
+    let detail = incompatible_detail(open_with(&db, &[]));
+    assert!(detail.contains("newer than this binary"), "{detail}");
+    assert!(
+        detail.contains("version 5") && detail.contains("newest known 1"),
+        "{detail}"
+    );
+    assert_eq!(user_version(&db), 5, "never downgraded");
+}
+
+#[test]
+fn altered_applied_delta_object_refused() {
+    let db = Connection::open_in_memory().unwrap();
+    open_with(&db, &[PROBE_DELTA]).unwrap();
+    db.execute_batch("CREATE INDEX extra ON delta_probe(x)")
+        .unwrap();
+    let detail = incompatible_detail(open_with(&db, &[PROBE_DELTA]));
+    assert!(detail.contains("extra"), "{detail}");
+}
+
+#[test]
+fn drifted_baseline_store_is_not_upgraded() {
+    let db = Connection::open_in_memory().unwrap();
+    open_with(&db, &[]).unwrap();
+    db.execute_batch("CREATE INDEX drift_ix ON threads(topic)")
+        .unwrap();
+    let detail = incompatible_detail(open_with(&db, &[PROBE_DELTA]));
+    assert!(detail.contains("drift_ix"), "{detail}");
+    assert_eq!(user_version(&db), 1, "audit precedes any delta");
+    assert!(!table_exists(&db, "delta_probe"));
+}
+
+#[test]
+fn misnumbered_delta_list_refused() {
+    let db = Connection::open_in_memory().unwrap();
+    let skip = schema::NodeDelta {
+        version: 3,
+        sql: "CREATE TABLE s(x)",
+    };
+    let detail = incompatible_detail(open_with(&db, &[skip]));
+    assert!(detail.contains("misnumbered"), "{detail}");
+}

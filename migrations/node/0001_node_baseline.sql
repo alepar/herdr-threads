@@ -7,9 +7,11 @@
 -- is 'herdr-threads-node-v1'. No PRAGMAs here: `schema::initialize` sets
 -- application_id and user_version in the same transaction.
 --
--- Editable in place until the first `v*` release that ships the node store; after
--- that, schema changes are additive `migrations/node/000N_*.sql` files with
--- `user_version` bumps (NODE_DELTAS, owned by ht-5fr.1.13).
+-- Cutover rule: this file is edited in place until the first `v*` release tag
+-- that ships the node store. After that it is frozen: every schema change is an
+-- additive `migrations/node/NNNN_<slug>.sql` (NNNN = the `user_version` it
+-- produces, from 0002) listed in NODE_DELTAS in src/store/schema.rs, and an
+-- applied delta is never edited.
 --
 -- Herdr-scope child tables (snapshot_generations, observed_targets,
 -- recovery_baseline_releases, recovery_baseline_targets, recovery_holds,
