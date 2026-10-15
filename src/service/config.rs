@@ -41,6 +41,16 @@ impl Default for ServiceConfig {
     }
 }
 
+impl From<&ServiceConfig> for crate::sync::dialer::DialConfig {
+    /// The Dialer's transport template; no fixed jitter seed.
+    fn from(config: &ServiceConfig) -> Self {
+        Self {
+            template: config.dial_template.clone(),
+            jitter_seed: None,
+        }
+    }
+}
+
 impl ServiceConfig {
     /// The validated `sync.dial_command`, or `None` for the ssh transport.
     pub fn dial_template(&self) -> Option<&DialTemplate> {

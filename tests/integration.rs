@@ -153,6 +153,11 @@ mod sweep;
 #[cfg(feature = "test-support")]
 #[path = "integration/sweep_remaining.rs"]
 mod sweep_remaining;
+/// ht-5fr.5.10: two real daemons linked through `sync.dial_command`: genesis exchange,
+/// convergence, the composed Apply lane, backoff and reconnect, dial-child reaping.
+#[cfg(feature = "test-support")]
+#[path = "daemon/sync_link.rs"]
+mod sync_link;
 /// ht-4is.8.18: compact agent-facing machine text (short cursors, one line
 /// per message, no page blobs), measured through the installed executable.
 #[path = "integration/token_diet.rs"]
