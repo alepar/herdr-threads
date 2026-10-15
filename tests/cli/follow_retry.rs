@@ -424,7 +424,14 @@ impl CompletedRetryFixture {
         let journal = Journal::open(paths.node_dir.join("intents")).unwrap();
         let context = crate::protocol::output::ContinuationContext {
             state_dir: Some(runtime.state_dir.to_string_lossy().into_owned()),
-            host: Some(runtime.host_endpoint.to_string_lossy().into_owned()),
+            host: Some(
+                runtime
+                    .host_endpoint
+                    .clone()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
         };
         let claim = CallerClaim {
             instance: "000000000000000000000000000000b1".into(),
@@ -639,7 +646,9 @@ fn completed_agent_retry_survives_live_human_binding() {
     let fixture = CompletedRetryFixture::new(crate::protocol::authority::Harness::Codex);
     let runtime = crate::daemon::paths::RuntimeContext::explicit(
         fixture.context.state_dir.as_ref().unwrap().into(),
-        fixture.context.host.as_ref().unwrap().into(),
+        Some(std::path::PathBuf::from(
+            fixture.context.host.as_ref().unwrap(),
+        )),
         None,
     )
     .unwrap();

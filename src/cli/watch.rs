@@ -1187,7 +1187,7 @@ where
     // environment, as for the hooks) would reach decides the marker's selectors.
     let command_prefix = super::hook::cli_prefix(&super::hook::pane_selectors(
         Some(&context.state_dir),
-        Some(&context.host_endpoint),
+        context.host_endpoint.as_deref(),
         &super::hook::pane_inputs(),
     ));
     let code = run_session_marked(

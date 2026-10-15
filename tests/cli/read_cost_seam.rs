@@ -280,7 +280,7 @@ impl Invocation {
         // No pane-agent read reaches a host here (agent contexts only).
         let runtime = crate::daemon::paths::RuntimeContext {
             state_dir: self.paths.node_dir.clone(),
-            host_endpoint: self.paths.node_dir.join("host.sock"),
+            host_endpoint: Some(self.paths.node_dir.join("host.sock")),
             herdr_bin: None,
         };
         let rest = run_caller_scoped(

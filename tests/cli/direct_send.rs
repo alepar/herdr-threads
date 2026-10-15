@@ -1445,7 +1445,7 @@ fn public_completed_retry_missing_endpoint_retains_files_and_one_frozen_hint() {
     let recovery = f.recovery();
     let runtime = herdr_threads::daemon::paths::RuntimeContext::explicit(
         f.root.clone(),
-        "/isolated-host.sock".into(),
+        Some("/isolated-host.sock".into()),
         None,
     )
     .unwrap();

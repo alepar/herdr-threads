@@ -2024,7 +2024,7 @@ fn actor_prerequisite_public_retained_agent_delivery_requires_elected_daemon_wit
         "--state-dir".into(),
         runtime.state_dir.display().to_string(),
         "--host-endpoint".into(),
-        runtime.host_endpoint.display().to_string(),
+        runtime.host_endpoint.clone().unwrap().display().to_string(),
         "retry".into(),
         reference.recovery_ref(),
     ];

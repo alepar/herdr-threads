@@ -6,7 +6,7 @@ use crate::{
         health::{ComponentStatus, HarnessStatus, HealthInputs, RetirementHealth},
         ownership::EndpointDescriptor,
         paths::NodePaths,
-        run_elected_with_diagnostics,
+        run_elected_attached,
     },
     node::{NodeIdentity, NodeJson, NodeKeyError},
     ports::{HostPort, LocalService, StorePort},
@@ -1212,15 +1212,16 @@ where
             config,
             host,
             None,
-            Some(context.host_endpoint.clone()),
+            context.host_endpoint.clone(),
             LaneProbe::default(),
             on_ready,
         )
         .await;
     }
+    // Guarded native bootstrap belongs to a Herdr server: the host is required.
     let selected = (
         context.state_dir.clone(),
-        context.host_endpoint.clone(),
+        context.require_host()?.to_path_buf(),
         observer,
     );
     run_elected_impl(
@@ -1230,7 +1231,7 @@ where
         config,
         host,
         Some(selected),
-        Some(context.host_endpoint.clone()),
+        context.host_endpoint.clone(),
         LaneProbe::default(),
         on_ready,
     )
@@ -1286,8 +1287,10 @@ async fn run_elected_impl<R>(
         std::path::PathBuf,
         Arc<dyn crate::ports::BootstrapObserver>,
     )>,
-    // The selected Herdr endpoint, kept only as the legacy handoff
-    // namespace's host in archival continuation context; no path uses it.
+    // The attached Herdr endpoint: published as the descriptor's
+    // `primary_host` and kept as the legacy handoff namespace's host in
+    // archival continuation context; no path uses it. ht-5fr.1.7's HostChoice
+    // replaces it.
     legacy_host_endpoint: Option<std::path::PathBuf>,
     probe: LaneProbe,
     on_ready: R,
@@ -1351,8 +1354,9 @@ where
     let host_evidence = Arc::new(HostEvidenceStatus::default());
     let factory_host_evidence = Arc::clone(&host_evidence);
     let factory_probe = probe;
-    run_elected_with_diagnostics(
+    run_elected_attached(
         paths,
+        legacy_host_endpoint.clone(),
         clock,
         shutdown,
         move |instance, boot, cancellation| {

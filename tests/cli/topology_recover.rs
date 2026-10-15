@@ -187,9 +187,10 @@ impl Env {
         .unwrap();
         let paths = crate::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap();
         let journal = Journal::open(paths.node_dir.join("intents")).unwrap();
-        let (mut db, mut identity, guard) = canonical_fixture(&runtime.host_endpoint);
+        let (mut db, mut identity, guard) =
+            canonical_fixture(&runtime.host_endpoint.clone().unwrap());
         identity.payload.handoff.namespace.state_dir = runtime.state_dir;
-        identity.payload.handoff.namespace.host_endpoint = runtime.host_endpoint;
+        identity.payload.handoff.namespace.host_endpoint = runtime.host_endpoint.clone().unwrap();
         identity.payload.cwd = root.clone();
         identity.digest = identity.semantic_digest().unwrap();
         let semantic = SemanticMutation::freeze(

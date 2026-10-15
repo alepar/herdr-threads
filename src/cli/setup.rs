@@ -443,7 +443,7 @@ impl SetupEnv {
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             path: std::env::var_os("PATH"),
             config_roots: Default::default(),
-            host_endpoint: Some(context.host_endpoint.clone()),
+            host_endpoint: context.host_endpoint.clone(),
             instance_source: json!({"state_dir": "context", "host_endpoint": "context"}),
         };
         env.fill_default_config_roots();
@@ -478,7 +478,8 @@ impl SetupEnv {
         })?;
         let context = RuntimeContext::explicit(self.state_dir()?.to_path_buf(), host, None)
             .map_err(|error| invalid(format!("invalid host endpoint: {error}")))?;
-        Ok(context.host_endpoint)
+        // The host was just given, so the context carries it.
+        Ok(context.require_host()?.to_path_buf())
     }
 
     pub(crate) fn hook_argv(&self, harness: Harness) -> Result<Vec<String>, RunError> {

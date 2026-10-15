@@ -16,7 +16,18 @@ fn detached_child(args: &[OsString]) -> io::Result<()> {
     // Test builds: exit once the owning test process is gone (owner_watch).
     #[cfg(feature = "test-support")]
     herdr_threads::test_support::owner_watch::watch_from_env();
-    if args.len() != 7 || args[3] != "--state-dir" || args[5] != "--host-endpoint" {
+    // `daemon run --state-dir D [--host-endpoint H]`: the host is an attach hint.
+    let host = match args.len() {
+        5 => None,
+        7 if args[5] == "--host-endpoint" => Some(PathBuf::from(&args[6])),
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid detached daemon arguments",
+            ));
+        }
+    };
+    if args[3] != "--state-dir" {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "invalid detached daemon arguments",
@@ -24,7 +35,7 @@ fn detached_child(args: &[OsString]) -> io::Result<()> {
     }
     let context = RuntimeContext::explicit(
         PathBuf::from(&args[4]),
-        PathBuf::from(&args[6]),
+        host,
         std::env::var_os("HERDR_BIN_PATH").map(PathBuf::from),
     )?;
     let paths = NodePaths::resolve(&context.state_dir)?;
@@ -34,7 +45,9 @@ fn detached_child(args: &[OsString]) -> io::Result<()> {
         .enable_all()
         .build()?;
     let host = Arc::new(herdr_threads::host::native::NativeCli::new(
-        context.host_endpoint.clone(),
+        // Until HostChoice (ht-5fr.1.7) a daemon without a host hint fails
+        // start as host-missing.
+        context.require_host()?.to_path_buf(),
         Arc::clone(&clock),
     ));
     runtime.block_on(run_elected_guarded(

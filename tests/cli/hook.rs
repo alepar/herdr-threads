@@ -14,6 +14,55 @@ fn os(words: &[&str]) -> Vec<OsString> {
 const CLAUDE_START: &[u8] = br#"{"session_id":"sess-1","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"startup"}"#;
 const CLAUDE_TOOL: &[u8] = br#"{"session_id":"sess-1","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","permission_mode":"default","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"},"tool_use_id":"toolu_1"}"#;
 
+// Kills: a hook argv that treats the installed `--host-endpoint` as part of
+// the node address (the node would then not be `S/node`), or drops it as the
+// claim host.
+#[test]
+fn old_installed_argv_selects_node_and_claim_host() {
+    let (dir, _) = scratch_pane();
+    let state = dir.join("state");
+    let host = dir.join("herdr.sock");
+    let argv = installed_argv(
+        "/bin/herdr-threads",
+        state.to_str(),
+        host.to_str(),
+        Harness::Claude,
+    );
+    assert_eq!(
+        argv[1..],
+        [
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--host-endpoint",
+            host.to_str().unwrap(),
+            "hook",
+            "claude"
+        ]
+    );
+    let words: Vec<OsString> = argv.iter().map(OsString::from).collect();
+    let args = parse_hook_argv(&words).unwrap().unwrap();
+    let context =
+        RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
+            .unwrap();
+    let paths = NodePaths::resolve_read_only(&context.state_dir).unwrap();
+    assert_eq!(
+        paths.node_dir,
+        state.canonicalize().unwrap_or(state).join("node")
+    );
+    assert_eq!(context.require_host().unwrap(), host);
+    // Another host leaves the node where it was: the host is not its address.
+    let other =
+        RuntimeContext::from_environment(args.state_dir.clone(), Some(dir.join("other.sock")))
+            .unwrap();
+    assert_eq!(
+        NodePaths::resolve_read_only(&other.state_dir)
+            .unwrap()
+            .node_dir,
+        paths.node_dir
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 // Kills: dropping the `hook` interception (setup's installed argv would reach
 // clap and exit 2), or a parser that swallows ordinary subcommands.
 #[test]
