@@ -712,6 +712,21 @@ pub struct Health {
     /// a reason for `degraded`. Absent from an older daemon's Health.
     #[serde(default)]
     pub notes: Vec<String>,
+    /// How many Herdr servers the daemon has attached: 0 for a store-only
+    /// daemon, 1 with the primary host (never a `host_id`). Absent on the wire
+    /// for the single-host value 1 so a pre-change CLI's
+    /// `deny_unknown_fields` decoder still reads a hosted daemon's Health, and
+    /// read as 1 when absent (an older daemon always had its one host).
+    #[serde(default = "single_host", skip_serializing_if = "is_single_host")]
+    pub hosts: u32,
+}
+
+fn single_host() -> u32 {
+    1
+}
+
+fn is_single_host(hosts: &u32) -> bool {
+    *hosts == 1
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -854,6 +869,7 @@ impl Health {
             settings: None,
             limitations: Vec::new(),
             notes: Vec::new(),
+            hosts: 1,
         }
     }
     pub fn validate(&self) -> Result<(), &'static str> {

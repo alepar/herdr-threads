@@ -867,3 +867,33 @@ pub fn resolve_seeded(state_dir: &std::path::Path) -> crate::daemon::paths::Node
     seed_node_identity(&paths).expect("seed node identity");
     paths
 }
+
+/// A detached `daemon run --state-dir <state>` child of the real binary,
+/// started the way the CLI's own ensure starts it, but owned by the test: the
+/// 5-argument form is store-only (no Herdr server attached unless the store
+/// remembers a live one), the 7-argument form adds `--host-endpoint <hint>`.
+/// stdout is discarded; pre-election stderr (a start failure's reason) goes to
+/// `stderr_to`. The child leads its own process group and is stopped when the
+/// returned handle drops (`spawn::OwnedChild`); `isolation` supplies the
+/// scrubbed, test-owned environment (HOME and XDG under its root).
+pub fn spawn_node_daemon(
+    isolation: &isolation::TestIsolation,
+    binary: impl AsRef<std::ffi::OsStr>,
+    state_dir: &std::path::Path,
+    host_hint: Option<&std::path::Path>,
+    stderr_to: &std::path::Path,
+) -> std::io::Result<spawn::OwnedChild> {
+    use spawn::SpawnOwned;
+    let mut command = isolation.command(binary);
+    command
+        .args(["daemon", "run", "--state-dir"])
+        .arg(state_dir);
+    if let Some(hint) = host_hint {
+        command.arg("--host-endpoint").arg(hint);
+    }
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::fs::File::create(stderr_to)?)
+        .spawn_owned()
+}

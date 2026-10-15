@@ -89,6 +89,11 @@ mod mod_delivery;
 #[cfg(feature = "test-support")]
 #[path = "integration/no_leaks.rs"]
 mod no_leaks;
+/// ht-5fr.1.11: the node layout end to end (store-only start, layout modes, legacy tree
+/// untouched, restart identity, key-missing remedy) through the real binary.
+#[cfg(feature = "test-support")]
+#[path = "daemon/node_layout.rs"]
+mod node_layout;
 /// ht-p03.9.5: the observation lane's backoff and quiet Herdr-down, against an
 /// isolated Herdr stopped and restarted under the running lane.
 #[cfg(feature = "test-support")]

@@ -808,6 +808,7 @@ fn production_health_builder_pins_every_elected_field() {
         transitions_refused,
         harness_version_lines,
         since_start_ms,
+        hosts,
     } = health(&budget);
     // The version lines come from the production wiring (`run_elected`), not
     // from the provider.
@@ -815,6 +816,8 @@ fn production_health_builder_pins_every_elected_field() {
     // Measured on the provider's monotonic clock from its construction at
     // boot (this fixed clock never advances), so Health can tell `starting`.
     assert_eq!(since_start_ms, Some(0));
+    // No host was handed to the provider (a store-only composition).
+    assert_eq!(hosts, 0);
     assert!(degraded_lanes.is_empty());
     assert_eq!(transitions_refused, 0);
     assert_eq!(got_instance, instance_id);

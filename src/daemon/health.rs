@@ -140,6 +140,9 @@ pub struct HealthInputs {
     /// on its monotonic clock. None (no start time supplied) keeps the
     /// ordinary classification: never `starting`, no overdue line.
     pub since_start_ms: Option<u64>,
+    /// Herdr servers attached: 0 store-only, 1 with the primary host
+    /// (`Health::hosts`). The unknown starting point is the single-host 1.
+    pub hosts: u32,
 }
 
 /// How long after daemon start Health may report `starting` while no host
@@ -471,6 +474,7 @@ impl HealthInputs {
             transitions_refused: 0,
             harness_version_lines: Vec::new(),
             since_start_ms: None,
+            hosts: 1,
         }
     }
 
@@ -514,6 +518,7 @@ impl HealthInputs {
             PROTOCOL_VERSION,
         );
         health.settings = self.settings;
+        health.hosts = self.hosts;
         health.last_reconciliation_at = self.last_reconciliation_at;
         health.database = component("database", self.database, &mut health.limitations);
         health.schema = component("schema", self.schema, &mut health.limitations);

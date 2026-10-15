@@ -621,3 +621,57 @@ fn starting_daemon_text_relabels_pending_observation_lines_only() {
     assert!(!text.contains("pending: "), "{text}");
     assert!(text.contains(&format!("issue: {pending}\n")), "{text}");
 }
+
+/// ht-5fr.1.11. Kills: doctor calling a daemon with no attached Herdr server
+/// `healthy`, `degraded` or `starting` (it serves the store only), calling a
+/// daemon with its one host anything but its usual state, and refusing
+/// repairs because of the new word.
+#[test]
+fn store_only_label() {
+    // Assembled Health carries the input's host count.
+    let hosted = boot_health(1_000, true);
+    assert_eq!(hosted.hosts, 1);
+    assert_eq!(daemon_state_label(&hosted), "healthy");
+
+    let mut inputs = crate::daemon::health::HealthInputs::unknown(
+        crate::node::NodeUuid::new_v4(),
+        uuid::Uuid::new_v4(),
+    );
+    inputs.hosts = 0;
+    inputs.since_start_ms = Some(1_000);
+    let store_only = inputs.assemble();
+    assert_eq!(store_only.hosts, 0);
+    assert_eq!(daemon_state_label(&store_only), "store-only");
+
+    // Whatever else it reports, an unavailable daemon stays unavailable.
+    let mut unavailable = store_only.clone();
+    unavailable.state = crate::protocol::results::HealthState::Unavailable;
+    assert_eq!(daemon_state_label(&unavailable), "unavailable");
+
+    // A store-only daemon serves: the text report and repair gating accept it.
+    let report = json!({
+        "result": "ok", "context": {"ok": true}, "state_dir": {"safe": true},
+        "daemon": {"state": daemon_state_label(&store_only), "version_matches": true},
+    });
+    assert!(render_text(&report).contains("daemon: store-only\n"));
+    assert!(repairs_allowed(&report));
+
+    // Wire: the single host is the default and is not serialized (a shipped
+    // CLI's strict decoder still reads it); zero is explicit.
+    let hosted_json = serde_json::to_value(&hosted).unwrap();
+    assert!(hosted_json.get("hosts").is_none(), "{hosted_json}");
+    assert_eq!(
+        serde_json::from_value::<crate::protocol::results::Health>(hosted_json)
+            .unwrap()
+            .hosts,
+        1
+    );
+    let store_only_json = serde_json::to_value(&store_only).unwrap();
+    assert_eq!(store_only_json["hosts"], json!(0));
+    assert_eq!(
+        serde_json::from_value::<crate::protocol::results::Health>(store_only_json)
+            .unwrap()
+            .hosts,
+        0
+    );
+}
