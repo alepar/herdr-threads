@@ -263,6 +263,7 @@ impl Rig {
             own_history: hold,
             dial: DialConfig::default(),
             cancel: coordinator_stop.clone(),
+            resync_pin: None,
         });
         let state = node.iso.state_root().join("state");
         std::fs::create_dir_all(&state).unwrap();
