@@ -40,9 +40,9 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{Instant, MissedTickBehavior, timeout};
 use uuid::Uuid;
 
-use super::envelope::{GENESIS_KIND, hex_decode};
+use super::envelope::{GENESIS_KIND, WireEnvelope, hex_decode};
 use super::facts::GenesisPayload;
-use super::frame::{CloseReason, PeerFrame, Role, write_peer_frame};
+use super::frame::{BranchWant, CloseReason, ForkRef, HaveLog, PeerFrame, Role, write_peer_frame};
 use super::journal_port::{ForkEvidence, JournalPort};
 use super::link::{
     CLOSE_WRITE_TIMEOUT, Established, HANDSHAKE_TIMEOUT, LinkError, LinkEvent, LinkHandle,
@@ -113,8 +113,12 @@ pub enum ForkAck {
 /// resume.
 ///
 /// Responsibility (ForkSink)
-/// - Owns: the two-call contract `on_fork(log, evidence, source) -> ForkAck`
-///   and `resumed()` (polled on the 1 s tick).
+/// - Owns: the contract `on_fork(log, evidence, source) -> ForkAck` and
+///   `resumed()` (polled on the 1 s tick), and the fork.v1 hooks, all with
+///   no-op defaults: `on_have` (a peer's `have` logs and fork refs),
+///   `on_branch(BranchReply)` (a `branch_entries` or `branch_none` frame),
+///   `outbox()` (`branch_want` frames to send and whether the advertised
+///   refs changed) and `fork_refs()` (the refs to advertise).
 /// - Hides: fork and clone policy entirely; the coordinator only pauses and
 ///   unpauses wants.
 /// - Must not: be called for anything but `IngestOutcome::Fork` (and later the
@@ -133,6 +137,54 @@ pub trait ForkSink: Send + Sync {
 
     /// Logs whose fork is now handled and may be wanted again.
     fn resumed(&self) -> Vec<LogKey>;
+
+    /// A `have` from `source`: its logs and, when `fork_cap` (the link
+    /// negotiated [`FORK_CAP`](super::frame::FORK_CAP)), its fork refs. Default: ignored.
+    fn on_have(&self, _source: NodeUuid, _fork_cap: bool, _logs: &[HaveLog], _forks: &[ForkRef]) {}
+
+    /// A branch reply from `source`. Default: ignored.
+    fn on_branch(&self, _source: NodeUuid, _reply: BranchReply) {}
+
+    /// Take what the sink wants sent: `branch_want` frames per peer, and
+    /// whether [`Self::fork_refs`] changed since the last call. Default:
+    /// nothing.
+    fn outbox(&self) -> ForkOutbox {
+        ForkOutbox::default()
+    }
+
+    /// The fork refs to advertise in `have`, at most [`MAX_HAVE_FORKS`](super::frame::MAX_HAVE_FORKS),
+    /// newest first. Default: none.
+    fn fork_refs(&self) -> Vec<ForkRef> {
+        Vec::new()
+    }
+}
+
+/// A branch frame handed to [`ForkSink::on_branch`].
+#[derive(Debug)]
+pub enum BranchReply {
+    /// A `branch_entries` batch.
+    Entries {
+        node: NodeUuid,
+        inc: u32,
+        tip_hash: String,
+        entries: Vec<WireEnvelope>,
+        more: bool,
+    },
+    /// A `branch_none`: the peer no longer has that branch.
+    None {
+        node: NodeUuid,
+        inc: u32,
+        tip_hash: String,
+    },
+}
+
+/// What [`ForkSink::outbox`] hands the coordinator.
+#[derive(Debug, Default)]
+pub struct ForkOutbox {
+    /// `branch_want` frames, each for the peer node it is addressed to.
+    pub sends: Vec<(NodeUuid, BranchWant)>,
+    /// The advertised fork refs changed: send a fresh `have`.
+    pub refs_changed: bool,
 }
 
 /// The sink until incarnations land: one log line per log per hour, and a
