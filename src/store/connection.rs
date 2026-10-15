@@ -205,9 +205,19 @@ pub struct StoreContext {
     /// own. Production sets it from the loaded node key; test builds default to
     /// the fixed test node.
     node_seed: Option<NodeSeed>,
+    /// Test hook: the key seed `SqliteStore::new` opens the journal with, so
+    /// every test store runs against an opened journal. Test builds default to
+    /// the fixed test node; `with_node_seed` (production identity) clears it,
+    /// because the daemon calls `journal::open` itself with its own key.
+    #[cfg(any(test, feature = "test-support"))]
+    auto_journal: Option<[u8; 32]>,
     idle_queries: IdleQueries,
     /// The last writer open's binding-evidence verification result.
     binding_evidence: std::sync::Mutex<Option<crate::ports::BindingEvidenceStartup>>,
+    /// Set once the daemon's early journal-open writer produced the startup
+    /// report: later writer opens (the store's own) no longer replace it, so
+    /// the report keeps the backfill the first open did.
+    binding_evidence_pinned: AtomicBool,
     /// Seats whose latest binding still lacked evidence after the last
     /// writer open. Only these are rechecked for Health; the set only
     /// shrinks, because every new live binding must carry evidence.
@@ -341,11 +351,14 @@ impl StoreContext {
             node_seed: Some(crate::test_support::test_node_seed()),
             #[cfg(not(any(test, feature = "test-support")))]
             node_seed: None,
+            #[cfg(any(test, feature = "test-support"))]
+            auto_journal: Some(crate::test_support::TEST_NODE_SEED),
             idle_queries: Arc::default(),
             sync: OnceLock::new(),
             #[cfg(any(test, feature = "test-support"))]
             incarnation_seed: std::sync::Mutex::new(None),
             binding_evidence: std::sync::Mutex::new(None),
+            binding_evidence_pinned: AtomicBool::new(false),
             binding_evidence_lacking: std::sync::Mutex::new(Vec::new()),
             snapshot_stage_matches: std::sync::Mutex::new(Vec::new()),
             #[cfg(any(test, feature = "test-support"))]
@@ -439,7 +452,34 @@ impl StoreContext {
     #[must_use]
     pub fn with_node_seed(mut self, seed: NodeSeed) -> Self {
         self.node_seed = Some(seed);
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.auto_journal = None;
+        }
         self
+    }
+
+    /// Test hook: a store whose node is the one `NodeIdentity::from_seed(seed)`
+    /// names, with the journal opened under that key by `SqliteStore::new`, so
+    /// `local_node.id` and the journal identity agree. For multi-store and
+    /// oracle tests that need a distinct identity.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn with_journal_seed(mut self, seed: [u8; 32]) -> Self {
+        let uuid = crate::node::NodeIdentity::from_seed(seed).uuid();
+        self.node_seed = Some(NodeSeed {
+            uuid,
+            tag: crate::node::tag_for(uuid, 0),
+            tag_k: 0,
+        });
+        self.auto_journal = Some(seed);
+        self
+    }
+
+    /// The key seed `SqliteStore::new` auto-opens the journal with, if any.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn auto_journal(&self) -> Option<[u8; 32]> {
+        self.auto_journal
     }
 
     /// Test hook: a store whose Herdr host is the fixture host
@@ -664,13 +704,23 @@ impl StoreContext {
         } else {
             Vec::new()
         };
-        if let Ok(mut slot) = self.binding_evidence.lock() {
-            *slot = Some(report);
-        }
-        if let Ok(mut slot) = self.binding_evidence_lacking.lock() {
-            *slot = lacking;
+        if !self.binding_evidence_pinned.load(Ordering::SeqCst) {
+            if let Ok(mut slot) = self.binding_evidence.lock() {
+                *slot = Some(report);
+            }
+            if let Ok(mut slot) = self.binding_evidence_lacking.lock() {
+                *slot = lacking;
+            }
         }
         Ok(conn)
+    }
+
+    /// Keeps the binding-evidence report of the writer opens so far as the
+    /// startup report. The daemon calls it after the early writer it opens
+    /// for `journal::open`, so the store's own later open (which has nothing
+    /// left to backfill) does not replace the report of the first open.
+    pub fn pin_binding_evidence(&self) {
+        self.binding_evidence_pinned.store(true, Ordering::SeqCst);
     }
 
     /// The startup report with `still_lacking` recomputed now: each seat

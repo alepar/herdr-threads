@@ -1562,7 +1562,9 @@ fn public_facade_rejects_expired_permit() {
             |row| row.get::<_, i64>(0)
         )
         .unwrap(),
-        0
+        // Only the journal's bootstrap genesis consumed a decision; the
+        // rejected permit consumed none.
+        1
     );
     drop(db);
     drop(store);

@@ -284,6 +284,28 @@ impl SqliteStore {
             ));
         }
         let mut writer = context.open_writer()?;
+        // Test stores run against an opened journal; the daemon opened its own
+        // before this point (its context has no auto-open seed). A store file
+        // that belongs to another node (a fixture built with `node_seed_for`,
+        // which has no key) stays unopened: there is no key to sign with.
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(seed) = context.auto_journal()
+            && !context.journal_open()
+        {
+            let identity = Arc::new(crate::node::NodeIdentity::from_seed(seed));
+            let stored: String = writer
+                .query_row("SELECT id FROM local_node", [], |row| row.get(0))
+                .map_err(store_error)?;
+            if stored == identity.uuid().to_string() {
+                journal::open(
+                    &context,
+                    &mut writer,
+                    identity,
+                    "test",
+                    crate::sync::facts::FactRegistry::builtins(),
+                )?;
+            }
+        }
         // A store stuck with a hold nothing protects (reconciliation already
         // finished, no unresolved seat) is cleared once at daemon start.
         // A store with no attached Herdr host has no hold to clear.

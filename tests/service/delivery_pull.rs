@@ -1744,7 +1744,9 @@ fn bump(db: &Connection, sequence: i64) {
     )
     .unwrap();
     db.execute(
-        "UPDATE local_node SET decision_seq=?1 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+        // Never backwards: a real command (or the journal's genesis) may have
+        // taken decision sequences past the fixture's own arithmetic.
+        "UPDATE local_node SET decision_seq=MAX(decision_seq,?1) WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [sequence + 3],
     )
     .unwrap();

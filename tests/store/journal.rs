@@ -1662,3 +1662,72 @@ fn freeze_frozen_lowered_unchanged_and_refuses_active_self() {
     );
     tx.commit().unwrap();
 }
+
+fn sqlite_store(ctx: StoreContext) -> crate::store::SqliteStore {
+    crate::store::SqliteStore::new(ctx, "x", crate::store::StoreSettings::default()).unwrap()
+}
+
+fn genesis_facts(path: &std::path::Path) -> (String, i64, String, String, i64) {
+    let conn = Connection::open(path).unwrap();
+    let id: String = conn
+        .query_row("SELECT id FROM local_node", [], |r| r.get(0))
+        .unwrap();
+    let (ix, state, kind, counter): (i64, String, String, i64) = conn
+        .query_row(
+            "SELECT n.active_log_ix, j.apply_state, j.kind, j.counter FROM local_node n \
+             JOIN journal j ON j.log_ix=n.active_log_ix",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    (id, ix, state, kind, counter)
+}
+
+// Kills: SqliteStore::new leaving the journal unopened (no genesis row, no
+// active log) or opening it under a key other than the store's node.
+#[test]
+fn default_test_store_has_applied_genesis() {
+    let store = Store::new();
+    let sqlite = sqlite_store(store.ctx());
+    assert!(sqlite.context().journal_open());
+    let (id, ix, state, kind, counter) = genesis_facts(&store.path);
+    assert_eq!(
+        (state.as_str(), kind.as_str(), counter),
+        ("applied", "node.genesis", 1)
+    );
+    assert!(ix > 0);
+    assert_eq!(id, crate::test_support::test_node_seed().uuid.to_string());
+}
+
+// Kills: the seeded variant reusing the default identity or self log.
+#[test]
+fn seeded_variant_gives_distinct_node_and_self_log() {
+    let default_store = Store::new();
+    let seeded_store = Store::new();
+    let _a = sqlite_store(default_store.ctx());
+    let _b = sqlite_store(seeded_store.ctx().with_journal_seed([2; 32]));
+    let (id_a, ..) = genesis_facts(&default_store.path);
+    let (id_b, _, state, kind, counter) = genesis_facts(&seeded_store.path);
+    assert_ne!(id_a, id_b);
+    assert_eq!(
+        id_b,
+        crate::node::NodeIdentity::from_seed([2; 32])
+            .uuid()
+            .to_string()
+    );
+    assert_eq!(
+        (state.as_str(), kind.as_str(), counter),
+        ("applied", "node.genesis", 1)
+    );
+    let log_node = |p: &std::path::Path| -> String {
+        Connection::open(p)
+            .unwrap()
+            .query_row(
+                "SELECT l.node_uuid || l.incarnation FROM sync_logs l WHERE l.is_self=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_ne!(log_node(&default_store.path), log_node(&seeded_store.path));
+}
