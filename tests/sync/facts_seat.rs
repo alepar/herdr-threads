@@ -25,7 +25,9 @@ use herdr_threads::store::materialize::{FactRoute, HELD_KINDS};
 use herdr_threads::store::{SqliteStore, StoreSettings, seats};
 use herdr_threads::sync::EntityKey;
 use herdr_threads::sync::facts::payload::{ReferencedSeats, SeatKind};
-use herdr_threads::sync::facts::seat::{SeatCreated, SeatCreatedPayload};
+use herdr_threads::sync::facts::seat::{
+    RetireReason, SeatCreated, SeatCreatedPayload, SeatRetired, SeatRetiredPayload,
+};
 use herdr_threads::sync::facts::{ApplyContext, FactError, FactKind, FactRegistry};
 use herdr_threads::test_support::fact_exchange;
 use herdr_threads::test_support::isolation::TestIsolation;
@@ -326,7 +328,6 @@ test_kind!(Settled, "receipt.settled");
 test_kind!(Joined, "membership.joined");
 test_kind!(Left, "membership.left");
 test_kind!(Answered, "invitation.answered");
-test_kind!(Retired, "seat.retired");
 test_kind!(Free, "test.free");
 
 pub fn registry() -> &'static FactRegistry {
@@ -335,7 +336,6 @@ pub fn registry() -> &'static FactRegistry {
             .with::<Joined>()
             .with::<Left>()
             .with::<Answered>()
-            .with::<Retired>()
             .with::<Free>()
     })
 }
@@ -360,6 +360,30 @@ fn emit<K: FactKind<Payload = Refs>>(
         })?;
         Ok(ran)
     })
+}
+
+/// Emits the real `seat.retired` for `seat` on the journal route.
+fn emit_retired(node: &Node, seat: &SeatId) -> Result<bool, ApiError> {
+    node.run(|tx, d| {
+        FactRoute::Journal
+            .emit::<SeatRetired>(
+                tx,
+                node.ctx(),
+                d,
+                &retired_payload(seat),
+                None,
+                |_, _, _| Ok(()),
+            )
+            .map(|authored| authored.is_some())
+    })
+}
+
+pub fn retired_payload(seat: &SeatId) -> SeatRetiredPayload {
+    SeatRetiredPayload {
+        seat: seat.clone(),
+        reason: RetireReason::Closed,
+        retired_at: 1_700_000_000_000,
+    }
 }
 
 // ---- seat.created -----------------------------------------------------------
@@ -632,7 +656,7 @@ fn route_follows_journaled() {
 
 // ---- restore-window authoring hold ------------------------------------------
 
-fn hold_on(node: &Node) {
+pub fn hold_on(node: &Node) {
     node.ctx().sync().unwrap().own_history_hold().set(
         HoldSource::Links,
         true,
@@ -640,7 +664,7 @@ fn hold_on(node: &Node) {
     );
 }
 
-fn hold_off(node: &Node) {
+pub fn hold_off(node: &Node) {
     node.ctx().sync().unwrap().own_history_hold().set(
         HoldSource::Links,
         false,
@@ -655,7 +679,7 @@ fn emit_held(node: &Node, payload: &Refs) -> Vec<Result<bool, ApiError>> {
         emit::<Joined>(node, FactRoute::Journal, payload),
         emit::<Left>(node, FactRoute::Journal, payload),
         emit::<Answered>(node, FactRoute::Journal, payload),
-        emit::<Retired>(node, FactRoute::Journal, payload),
+        emit_retired(node, &payload.seats[0]),
     ]
 }
 
@@ -700,8 +724,14 @@ fn remote_seat_seat_created_non_held_and_local_only_unaffected() {
     node.add_local_seat(&local);
     node.add_remote_seat(&remote);
     hold_on(&node);
-    // A held kind for a remote seat only.
-    for result in emit_held(&node, &refs(&[&remote])) {
+    // A held kind for a remote seat only. `seat.retired` is not refused by the
+    // hold either; its one failure is the parked dependency (the fixture row has
+    // no `seat.created` fact), not "own history catching up".
+    let mut results = emit_held(&node, &refs(&[&remote]));
+    let retired = results.pop().unwrap().unwrap_err();
+    assert_eq!(retired.code, ErrorCode::Conflict);
+    assert!(retired.detail.contains("not applicable"), "{retired:?}");
+    for result in results {
         result.unwrap();
     }
     // seat.created for the local seat.
@@ -859,4 +889,246 @@ fn two_kinds_for_one_seat_keep_first_applied() {
         Some("agent"),
         "B kept the first applied"
     );
+}
+
+// ---- seat.retired -----------------------------------------------------------
+
+/// Authors a `seat.retired` copy for `seat` on `node` (what the retirement
+/// fence authors, without the fence's local writes).
+fn author_retired(node: &Node, seat: &SeatId) {
+    node.run(|tx, d| {
+        journal::author::<SeatRetired>(tx, node.ctx(), d, &retired_payload(seat)).map(|_| ())
+    })
+    .unwrap();
+}
+
+/// `(seat_id, origin, cutover_at, closure_boot)` of every retirement row.
+#[allow(clippy::type_complexity)]
+pub fn retirement_rows(node: &Node) -> Vec<(String, String, i64, Option<String>)> {
+    node.query(
+        "SELECT seat_id,origin,cutover_at,closure_boot FROM retirements ORDER BY ordinal",
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )
+}
+
+/// A seat homed on `home`, published and synced to every node in `others`.
+fn published_seat(home: &Node, others: &[&Node]) -> SeatId {
+    let seat = home.mint_seat(0);
+    home.add_local_seat(&seat);
+    home.enroll(&seat, "codex", "session-1").unwrap();
+    for other in others {
+        fact_exchange::sync(&home.store, &other.store);
+    }
+    seat
+}
+
+fn retired_failures(node: &Node) -> Vec<String> {
+    node.journal()
+        .into_iter()
+        .filter(|(k, state, _)| k == "seat.retired" && state == "failed")
+        .map(|(_, _, error)| error.unwrap_or_default())
+        .collect()
+}
+
+#[test]
+fn seat_retired_round_trip_needs() {
+    let seat = SeatId::new("sAbc12345678");
+    let payload = SeatRetiredPayload {
+        seat: seat.clone(),
+        reason: RetireReason::Operator,
+        retired_at: 42,
+    };
+    let json = serde_json::to_string(&payload).unwrap();
+    assert_eq!(
+        json,
+        r#"{"seat":"sAbc12345678","reason":"operator","retired_at":42}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<SeatRetiredPayload>(&json).unwrap(),
+        payload
+    );
+    let closed: SeatRetiredPayload = serde_json::from_str(
+        r#"{"seat":"sAbc12345678","reason":"closed","retired_at":1,"future":1}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        closed.reason,
+        RetireReason::Closed,
+        "additive field ignored"
+    );
+    assert!(
+        serde_json::from_str::<SeatRetiredPayload>(
+            r#"{"seat":"sAbc12345678","reason":"robot","retired_at":1}"#
+        )
+        .is_err(),
+        "reason is a closed set"
+    );
+    assert_eq!((SeatRetired::NAME, SeatRetired::MAJOR), ("seat.retired", 1));
+    assert_eq!(SeatRetired::creates(&payload), None);
+    assert_eq!(
+        SeatRetired::needs(&payload)
+            .iter()
+            .map(|k| k.as_str().to_owned())
+            .collect::<Vec<_>>(),
+        vec!["sAbc12345678".to_owned()],
+        "needs the seat's seat.created"
+    );
+    assert_eq!(payload.referenced_seats(), vec![seat]);
+    assert!(
+        FactRegistry::builtins().lookup("seat.retired", 1).is_some(),
+        "builtins() registers seat.retired"
+    );
+    assert!(HELD_KINDS.contains(&SeatRetired::NAME));
+}
+
+#[test]
+fn seat_retired_remote_row_and_replicated_job_row() {
+    let reg = registry();
+    let (a, b) = (Node::with(51, reg), Node::with(52, reg));
+    let seat = published_seat(&b, &[&a]);
+    assert_eq!(a.seat(&seat).unwrap().0, "remote");
+    author_retired(&b, &seat);
+    fact_exchange::sync(&a.store, &b.store);
+    let row = a.seat(&seat).unwrap();
+    assert_eq!((row.0.as_str(), row.1, row.3), ("retired", false, true));
+    let seq: (i64, i64) = a.query(
+        &format!(
+            "SELECT retired_at, retired_seq FROM seats WHERE id='{}'",
+            seat.as_str()
+        ),
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )[0];
+    assert_eq!(seq.0, retired_payload(&seat).retired_at);
+    let applied_seq: i64 = a.query(
+        "SELECT applied_seq FROM journal WHERE kind='seat.retired'",
+        |r| r.get(0),
+    )[0];
+    assert_eq!(seq.1, applied_seq, "retired_seq is the entry's applied_seq");
+    assert_eq!(
+        retirement_rows(&a),
+        vec![(
+            seat.as_str().to_owned(),
+            "replicated".to_owned(),
+            seq.0,
+            None
+        )]
+    );
+    // B's own row is untouched by its own fact (the fence retires it, not the handler).
+    assert_eq!(b.seat(&seat).unwrap().0, "resolved");
+    assert!(retirement_rows(&b).is_empty());
+}
+
+#[test]
+fn seat_retired_apply_twice_noop() {
+    let reg = registry();
+    let (a, b) = (Node::with(53, reg), Node::with(54, reg));
+    let seat = published_seat(&b, &[&a]);
+    author_retired(&b, &seat);
+    fact_exchange::sync(&a.store, &b.store);
+    let after_first = (
+        a.seat(&seat),
+        a.seats_projection(),
+        retirement_rows(&a),
+        a.query("SELECT count(*) FROM messages", |r| r.get::<_, i64>(0)),
+    );
+    // A second copy in the same log applies to the retired row and changes nothing.
+    author_retired(&b, &seat);
+    fact_exchange::sync(&a.store, &b.store);
+    assert_eq!(a.count_kind("seat.retired"), 2);
+    let after_second = (
+        a.seat(&seat),
+        a.seats_projection(),
+        retirement_rows(&a),
+        a.query("SELECT count(*) FROM messages", |r| r.get::<_, i64>(0)),
+    );
+    assert_eq!(after_second, after_first);
+    assert!(a.journal().iter().all(|(_, state, _)| state == "applied"));
+}
+
+#[test]
+fn seat_retired_reauthored_second_incarnation_noop() {
+    let reg = registry();
+    let (a, b) = (Node::with(55, reg), Node::with(56, reg));
+    let seat = published_seat(&b, &[&a]);
+    author_retired(&b, &seat);
+    fact_exchange::sync(&a.store, &b.store);
+    let before_a = (a.seat(&seat), a.seats_projection(), retirement_rows(&a));
+    let before_b = (b.seat(&seat), b.seats_projection(), retirement_rows(&b));
+    // B restarts as a second incarnation and re-authors the same fact.
+    b.run(|tx, d| journal::begin_incarnation(tx, b.ctx(), d, 77, None, "host").map(|_| ()))
+        .unwrap();
+    author_retired(&b, &seat);
+    fact_exchange::sync(&a.store, &b.store);
+    assert_eq!(
+        b.count_kind("seat.retired"),
+        2,
+        "the copy is in the new log"
+    );
+    assert_eq!(a.count_kind("seat.retired"), 2);
+    assert_eq!(
+        (a.seat(&seat), a.seats_projection(), retirement_rows(&a)),
+        before_a,
+        "no second retirement row on A"
+    );
+    assert_eq!(
+        (b.seat(&seat), b.seats_projection(), retirement_rows(&b)),
+        before_b
+    );
+    assert_eq!(
+        a.query(
+            "SELECT count(*) FROM messages WHERE kind<>'ordinary'",
+            |r| r.get::<_, i64>(0)
+        ),
+        vec![0],
+        "no audit event"
+    );
+    assert!(a.journal().iter().all(|(_, state, _)| state == "applied"));
+}
+
+#[test]
+fn seat_retired_foreign_origin_failed() {
+    let reg = registry();
+    let (a, b, c) = (
+        Node::with(57, reg),
+        Node::with(58, reg),
+        Node::with(59, reg),
+    );
+    let seat = published_seat(&b, &[&a, &c]);
+    // C holds B's seat as remote and authors a retirement for it.
+    author_retired(&c, &seat);
+    fact_exchange::sync(&c.store, &a.store);
+    fact_exchange::sync(&a.store, &b.store);
+    for node in [&a, &b] {
+        let failures = retired_failures(node);
+        assert_eq!(failures.len(), 1, "{:?}", node.journal());
+        assert!(
+            failures[0].contains("is not the authorized author of seat.retired for")
+                && failures[0].contains(seat.as_str()),
+            "{}",
+            failures[0]
+        );
+        assert!(retirement_rows(node).is_empty(), "retired nothing");
+    }
+    assert_eq!(a.seat(&seat).unwrap().0, "remote");
+    assert_eq!(b.seat(&seat).unwrap().0, "resolved");
+}
+
+#[test]
+fn seat_retired_home_origin_applies() {
+    let reg = registry();
+    let (a, b, c) = (
+        Node::with(60, reg),
+        Node::with(61, reg),
+        Node::with(62, reg),
+    );
+    let seat = published_seat(&b, &[&a, &c]);
+    author_retired(&b, &seat);
+    fact_exchange::sync(&b.store, &a.store);
+    fact_exchange::sync(&b.store, &c.store);
+    for node in [&a, &c] {
+        assert_eq!(node.seat(&seat).unwrap().0, "retired");
+        assert_eq!(retirement_rows(node).len(), 1);
+        assert!(retired_failures(node).is_empty());
+    }
+    assert!(retired_failures(&b).is_empty());
 }

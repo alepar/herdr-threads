@@ -108,3 +108,71 @@ fn liveness_candidates_use_seat_host() {
         "h2's unclaimed baseline hold skips only h2's seat"
     );
 }
+
+fn add_remote_seat(db: &Connection, id: &str, state: &str) {
+    db.execute(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published) \
+         VALUES (?1,?2,'remote','native',0,0,?3,0,'agent',1)",
+        rusqlite::params![id, NODE, "ab".repeat(16)],
+    )
+    .unwrap();
+    if state == "retired" {
+        db.execute(
+            "UPDATE seats SET state='retired',retired_at=5,retired_seq=1 WHERE id=?1",
+            [id],
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn remote_seat_eligible() {
+    let (db, _, _) = two_hosts();
+    add_remote_seat(&db, "seat-remote", "remote");
+    // No host, target or observation exists for it, and none is needed.
+    crate::store::seats::eligible_delivery_recipient(&db, NODE, &SeatId::new("seat-remote"))
+        .expect("a remote seat is an eligible recipient");
+}
+
+#[test]
+fn retired_remote_not_eligible() {
+    let (db, _, _) = two_hosts();
+    add_remote_seat(&db, "seat-gone", "retired");
+    let err =
+        crate::store::seats::eligible_delivery_recipient(&db, NODE, &SeatId::new("seat-gone"))
+            .expect_err("a retired remote seat is not eligible");
+    assert_eq!(
+        err.code,
+        crate::protocol::results::ErrorCode::TargetUnresolved
+    );
+}
+
+#[test]
+fn local_seat_check_unchanged() {
+    let (db, h1, _) = two_hosts();
+    add_seat(&db, "seat-local", h1, "p1");
+    // A local seat without a matching observation stays ineligible: the remote
+    // branch does not wave it through.
+    let err =
+        crate::store::seats::eligible_delivery_recipient(&db, NODE, &SeatId::new("seat-local"))
+            .expect_err("no observation, so not eligible");
+    assert_eq!(
+        err.code,
+        crate::protocol::results::ErrorCode::TargetUnresolved
+    );
+    // An unknown seat is still refused.
+    assert!(
+        crate::store::seats::eligible_delivery_recipient(&db, NODE, &SeatId::new("seat-none"))
+            .is_err()
+    );
+    // And a foreign instance never matches a remote row.
+    add_remote_seat(&db, "seat-other", "remote");
+    assert!(
+        crate::store::seats::eligible_delivery_recipient(
+            &db,
+            "other-instance",
+            &SeatId::new("seat-other")
+        )
+        .is_err()
+    );
+}

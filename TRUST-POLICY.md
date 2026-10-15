@@ -115,6 +115,10 @@ every `binding_cursors` row persist, for undo and herdr-graph. A new or unknown 
 yields unresolved seats under the C2 restore holds above, and each binding ends with reason `seat_unresolved`
 so the same session can reopen it after a rebind.
 
+A retirement of a published seat is also a `seat.retired` fact. Other nodes retire their remote copy of the seat
+only on that fact from the seat's home node (a fact from any other origin is recorded `failed` and retires
+nothing); they never retire a remote seat on their own evidence.
+
 **Startup enrollment.** Installed Claude/Codex top-level `SessionStart` lifecycle hooks enroll
 `HERDR_PANE_ID` through the same journaled ordinary canonical guarded seat resolver as `launch`.
 It freshly reads the actual target and decides against A2: reuse its resolved seat, or allocate only
