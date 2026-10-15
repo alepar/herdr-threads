@@ -359,14 +359,14 @@ fn prepare_send_step_impl(
             tx.execute("UPDATE send_preparations SET id=?1,captured_membership_revision=?2,captured_lifecycle_revision=?3,captured_eligibility_revision=?4,captured_timeline_revision=?5,captured_config_revision=?6,interval_high_water=?7,recipient_high_water=?7,recipient_cursor=0,recipient_count=0,warning_count=0,earliest_lease_deadline=NULL,status='building' WHERE id=?8",
                 params![new_id,membership_revision,lifecycle_revision,eligibility_revision,timeline_revision,config_revision,high_water,id]).map_err(store_error)?;
             (new_id, high_water, 0, 0, 0, "building".to_owned())
-        } else if (mr, lr, er, tr, cr)
+        } else if (mr, lr, er, cr)
             != (
                 membership_revision,
                 lifecycle_revision,
                 eligibility_revision,
-                timeline_revision,
                 config_revision,
             )
+            || timeline_fence_stale(wn, tr, timeline_revision)
         {
             discard_preparation(&tx, &id)?;
             tx.commit().map_err(store_error)?;
@@ -945,7 +945,7 @@ pub fn publish_send(
                 params![scope,request.operation.as_str(),digest.as_slice(),request.thread.as_str()],
                 |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?)),
             ).optional().map_err(store_error)?;
-            let Some((_, instance, mr, lr, er, tr, cr, _, _, status)) = current else {
+            let Some((_, instance, mr, lr, er, tr, cr, _, warnings, status)) = current else {
                 return Err(api_error(ErrorCode::Conflict, "send preparation missing"));
             };
             if status != "sealed" {
@@ -958,7 +958,9 @@ pub fn publish_send(
             if live.5 {
                 return Err(api_error(ErrorCode::Archived, "thread archived"));
             }
-            if (mr, lr, er, tr, cr) != (live.0, live.1, live.2, live.3, live.4) {
+            if (mr, lr, er, cr) != (live.0, live.1, live.2, live.4)
+                || timeline_fence_stale(warnings, tr, live.3)
+            {
                 return Err(api_error(
                     ErrorCode::Conflict,
                     "send preparation snapshot changed",
@@ -1005,7 +1007,7 @@ pub fn publish_send(
                 &digest,
             )?;
             let revisions_match:bool=tx.query_row(
-                "SELECT p.captured_membership_revision=t.membership_revision AND p.captured_lifecycle_revision=(SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=n.id) AND p.captured_eligibility_revision=?4 AND p.captured_timeline_revision=t.timeline_revision AND p.captured_config_revision=n.duration_config_revision AND t.archived=0 FROM send_preparations p JOIN threads t ON t.id=p.thread_id JOIN local_node n ON n.id=t.instance_id WHERE p.operation_scope=?1 AND p.operation_key=?2 AND p.digest=?3",
+                "SELECT p.captured_membership_revision=t.membership_revision AND p.captured_lifecycle_revision=(SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=n.id) AND p.captured_eligibility_revision=?4 AND (p.warning_count=0 OR p.captured_timeline_revision=t.timeline_revision) AND p.captured_config_revision=n.duration_config_revision AND t.archived=0 FROM send_preparations p JOIN threads t ON t.id=p.thread_id JOIN local_node n ON n.id=t.instance_id WHERE p.operation_scope=?1 AND p.operation_key=?2 AND p.digest=?3",
                 params![scope,request.operation.as_str(),digest.as_slice(),eligibility_before_author],|r|r.get(0),
             ).map_err(store_error)?;
             if !revisions_match {
@@ -1038,6 +1040,20 @@ pub fn publish_send(
     )?;
     failpoint!("send.after_commit", context.failpoint_scope());
     Ok(result)
+}
+
+/// Timeline fence, shared by the preparation restart check and both publish comparisons.
+///
+/// Protects: the reserved warning sequence span and the unavailable-warning conditions
+/// `ensure_unavailability_reopen_ready` re-checks, both of which a timeline append can
+/// invalidate. It therefore applies only to a preparation with `warning_count > 0`.
+/// Does not protect: the ordinary message sequence, which is read from `threads.next_sequence`
+/// at publish, so unrelated timeline traffic (other local senders, remote messages) must not
+/// invalidate a preparation without warnings. The audience stays fenced by the membership,
+/// lifecycle, eligibility and config revisions, which are compared unconditionally.
+/// `service_send` keeps the full fence (managed threads see no remote traffic).
+fn timeline_fence_stale(warning_count: i64, captured: i64, live: i64) -> bool {
+    warning_count > 0 && captured != live
 }
 
 #[cfg(test)]

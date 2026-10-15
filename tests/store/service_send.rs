@@ -1508,3 +1508,44 @@ fn new_service_sends_anchor_all_unavailable_audiences_to_send_time() {
         assert_eq!(deadline, 150, "{state}");
     }
 }
+
+// Kills: narrowing the timeline fence in `messages` leaking into service sends, which keep
+// the full fence: a timeline bump between preparation and publish restarts the audience.
+#[test]
+fn service_send_conflicts_on_timeline_bump() {
+    let f = Fixture::with_joined(&["s1"]);
+    let request = f.request("timeline", "never lands", &[], None);
+    let mut changes = 0;
+    let error = f
+        .store
+        .service_send_with_observer(
+            &request,
+            &f.connection,
+            &f.gate,
+            &budget(),
+            |step, context| {
+                if matches!(step, SendStep::Ready { .. }) {
+                    context
+                        .open_writer()
+                        .unwrap()
+                        .execute(
+                            "UPDATE threads SET timeline_revision=timeline_revision+1 WHERE id='t'",
+                            [],
+                        )
+                        .unwrap();
+                    changes += 1;
+                }
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict);
+    assert!(error.detail.contains("restart allowance"), "{error:?}");
+    assert_eq!(changes, usize::from(MAX_AUDIENCE_RESTARTS) + 1);
+    assert_eq!(
+        count(
+            &f.db(),
+            "SELECT count(*) FROM messages WHERE body='never lands'"
+        ),
+        0
+    );
+}
