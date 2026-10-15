@@ -882,26 +882,15 @@ pub(super) fn insert_publication(
     .map_err(store_error)?;
     schema::bump_timeline_revision(tx, thread)?;
     schema::bump_filter_revision(tx, &instance, "directory", thread.as_str())?;
-    if mode == "ordinary" {
-        let work_high_water = recipient_count
-            .checked_add(warning_count)
-            .and_then(|v| v.checked_add(1))
-            .ok_or_else(|| {
-                api_error(ErrorCode::SequenceExhausted, "send work position exhausted")
-            })?;
-        tx.execute(
-        "INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES (?1,'send_attention',?2,?3)",
-        params![
-            format!("work:send:{}", id.as_str()),
-            prep_id,
-            work_high_water
-        ],
-    )
-    .map_err(store_error)?;
-    }
-    if mode == "lazy" {
-        super::lazy_delivery::note_published(tx, &prep_id)?;
-    }
+    super::delivery_tail::DeliveryTail::message(
+        tx,
+        None,
+        &id,
+        &prep_id,
+        &mode,
+        recipient_count,
+        warning_count,
+    )?;
     Ok(Publication {
         message: id,
         sequence: base,

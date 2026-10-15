@@ -472,8 +472,7 @@ fn invite(
         },
         EventAuthor::Programmatic(author.clone()),
     )?;
-    tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES (?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",
-        [v.seat.as_str()]).map_err(store_error)?;
+    super::delivery_tail::DeliveryTail::invitation(tx, &v.seat, true)?;
     schema::bump_membership_revision(tx, &v.thread)?;
     schema::bump_filter_revision(tx, instance, "directory", "all")?;
     schema::bump_filter_revision(

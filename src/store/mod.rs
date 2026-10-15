@@ -7,6 +7,7 @@ pub mod bindings;
 pub mod catch_up;
 pub mod connection;
 pub mod control;
+pub(crate) mod delivery_tail;
 pub mod effective;
 pub mod first_contact;
 pub mod handoff;

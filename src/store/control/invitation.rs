@@ -11,6 +11,7 @@ use crate::protocol::ids::{InvitationId, SeatId, ThreadId, prefix};
 use crate::protocol::results::{ApiError, CommandResult, ErrorCode};
 use crate::protocol::time::{CallBudget, UtcMillis};
 use crate::store::connection::{StoreContext, api_error, store_error};
+use crate::store::delivery_tail::DeliveryTail;
 use crate::store::schema::{self, EventInput};
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -728,9 +729,7 @@ pub fn invite(
                 },
             )?;
             schema::bump_membership_revision(tx, &command.thread)?;
-            if timed {
-                tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES (?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1", [command.seat.as_str()]).map_err(store_error)?;
-            }
+            DeliveryTail::invitation(tx, &command.seat, timed)?;
             let instance: String = tx
                 .query_row(
                     "SELECT instance_id FROM seats WHERE id=?1",
@@ -872,7 +871,7 @@ pub fn operator_orphan_invite(
                     source_invitation: Some(&invitation),
                 },
             )?;
-            tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES (?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",[command.seat.as_str()]).map_err(store_error)?;
+            DeliveryTail::invitation(tx, &command.seat, true)?;
             let instance: String = tx
                 .query_row(
                     "SELECT instance_id FROM threads WHERE id=?1",
