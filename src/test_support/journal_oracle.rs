@@ -502,7 +502,7 @@ type Origin = (LogKey, u64);
 
 /// Causal order over journal entries, rebuilt from envelopes: the previous
 /// counter of the same log, the `deps` triples and `needs` keys resolved to
-/// the entry that `creates` them.
+/// the entry that `creates` them (when exactly one entry does).
 struct Causality {
     preds: HashMap<Origin, Vec<Origin>>,
 }
@@ -537,7 +537,13 @@ impl Causality {
             }
             list.extend(entry.deps.entries().iter().copied());
             for need in &entry.needs {
-                list.extend(creators.get(need).into_iter().flatten().copied());
+                // A key several entries create (a crossed `thread.direct`, a
+                // re-issued `seat.created`) is satisfied by whichever applies
+                // first, so no one of them is a certain ancestor: only a key
+                // with a single creator orders its dependents after it.
+                if let Some([creator]) = creators.get(need).map(Vec::as_slice) {
+                    list.push(*creator);
+                }
             }
         }
         Self { preds }
