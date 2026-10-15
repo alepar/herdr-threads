@@ -288,9 +288,11 @@ pub const RECEIVABLE_FROM: &str = "prepared_recipients pr \
     JOIN messages m ON m.id=sm.message_id";
 pub const RECEIVABLE_WHERE: &str = "pr.seat_id=?1 AND m.kind='ordinary'";
 /// Appended to `RECEIVABLE_WHERE`: unread by a binding, i.e. in a thread the seat has joined, past the binding's cursor
-/// (a missing cursor row counts as 0). Bind `?2` = the binding.
+/// (a missing cursor row counts as 0) and not marked displayed by it (`binding_row_displays`, a row it displayed above
+/// its cursor; ht-yha.63). Bind `?2` = the binding.
 pub const UNREAD_EXTRA: &str = "AND EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=m.thread_id AND mb.seat_id=pr.seat_id AND mb.state='joined') \
-    AND m.sequence > COALESCE((SELECT c.seq FROM binding_cursors c WHERE c.binding_id=?2 AND c.thread_id=m.thread_id),0)";
+    AND m.sequence > COALESCE((SELECT c.seq FROM binding_cursors c WHERE c.binding_id=?2 AND c.thread_id=m.thread_id),0) \
+    AND NOT EXISTS(SELECT 1 FROM binding_row_displays d WHERE d.binding_id=?2 AND d.message_id=m.id)";
 
 pub(crate) fn seat_of(db: &Connection, binding: &BindingId) -> Result<Option<SeatId>, ApiError> {
     db.query_row(
@@ -469,10 +471,11 @@ pub(super) fn advance_through_displayed_with_change(
 }
 
 /// Per-binding displayed marks (`binding_row_displays`; the unread predicates exclude them): a
-/// delivery row this binding displayed that stays above its cursor, because a lower-sequence row
-/// of a higher priority number is still undisplayed, is marked so it is not offered again while
-/// the cursor catches up. The marks the cursor now passes are pruned. One function for both the
-/// top-level completion and the cursor-only `AdvanceCursors` path (subagent streams, body reads).
+/// message this binding displayed that stays above its cursor, because a lower-sequence message is
+/// still undisplayed, is marked so it is not offered again while the cursor catches up: a delivery
+/// row, or a receipt-bearing row the seat receives (the walk's receivable set; ht-yha.63). The marks
+/// the cursor now passes are pruned. One function for both the top-level completion and the
+/// cursor-only `AdvanceCursors` path (subagent streams, body reads).
 fn mark_displayed_above(
     tx: &Connection,
     binding: &BindingId,
@@ -483,14 +486,17 @@ fn mark_displayed_above(
 ) -> Result<(), ApiError> {
     for &sequence in displayed.iter().filter(|s| **s > reached) {
         tx.execute(
-            "INSERT OR IGNORE INTO binding_row_displays(binding_id,message_id) \
-             SELECT ?1, x.id FROM messages x WHERE x.thread_id=?2 AND x.sequence=?3 \
-             AND EXISTS(SELECT 1 FROM lazy_recipients lr WHERE lr.message_id=x.id AND lr.seat_id=?4)",
+            &format!(
+                "INSERT OR IGNORE INTO binding_row_displays(binding_id,message_id) \
+                 SELECT ?4, x.id FROM messages x WHERE x.thread_id=?2 AND x.sequence=?3 \
+                 AND (EXISTS(SELECT 1 FROM lazy_recipients lr WHERE lr.message_id=x.id AND lr.seat_id=?1) \
+                 OR EXISTS(SELECT 1 FROM {RECEIVABLE_FROM} WHERE {RECEIVABLE_WHERE} AND m.id=x.id))"
+            ),
             params![
-                binding.as_str(),
+                seat.as_str(),
                 thread.as_str(),
                 to_i64(sequence)?,
-                seat.as_str()
+                binding.as_str()
             ],
         )
         .map_err(store_error)?;

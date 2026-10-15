@@ -289,7 +289,6 @@ impl<'a> Merge<'a> {
                 self.current_agent,
                 &state.deadline,
                 state.publication_decision_high_water,
-                state.last.as_ref(),
                 &mut self.visited,
                 &mut self.hold,
             )?);

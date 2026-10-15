@@ -808,6 +808,7 @@ fn test_cursor_after(after: u64) -> String {
                 next_manifest: false,
             },
             window_end: None,
+            window_last: None,
             done: false,
         },
         warnings: WarningsCursor {

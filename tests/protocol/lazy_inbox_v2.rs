@@ -119,6 +119,7 @@ fn base_v2() -> State {
             },
             window_start: walks(1, Some(2), 3, 4, false),
             window_end: None,
+            window_last: None,
             done: false,
         },
         warnings: WarningsCursor {
@@ -171,6 +172,7 @@ fn generated_states() -> Vec<State> {
             SourceRank::Invitation,
             SourceRank::Warning,
             SourceRank::Receipt,
+            SourceRank::Unread,
             SourceRank::DeliveryRow,
         ] {
             v.push(Some(key(rank, n(10) as u8, None, n(50), n(1000))));
@@ -241,6 +243,16 @@ fn generated_states() -> Vec<State> {
                                     4 + next(3) as i64,
                                     end_nm,
                                 ));
+                                // The window-relative last key (ht-yha.63), present or not.
+                                if next(2) == 0 {
+                                    s.deadline.window_last = Some(key(
+                                        SourceRank::Unread,
+                                        0,
+                                        Some(next(1_000_000) as i64),
+                                        next(50),
+                                        next(1000),
+                                    ));
+                                }
                             }
                             out.push(s);
                         }
@@ -328,6 +340,13 @@ fn cursor_v2_round_trips_every_combination() {
             body_len: u64::MAX,
         },
     ));
+    w.deadline.window_last = Some(key(
+        SourceRank::Unread,
+        0,
+        Some(i64::MIN),
+        i64::MAX as u64,
+        u64::MAX,
+    ));
     let raw = w.encode("instance").unwrap();
     assert!(
         raw.len() <= MAX_CURSOR_BYTES,
@@ -357,6 +376,40 @@ fn cursor_v2_elides_the_row_position_after_a_delivery_row() {
         ..triple(&last)
     });
     assert_eq!(State::decode(&other.encode("i").unwrap()).unwrap(), other);
+}
+
+// ht-yha.63: the deadline window's own last key round-trips with its window end and is refused
+// without one, past the publication bound, or as a noncanonical flag.
+#[test]
+fn cursor_v2_window_last_round_trips_and_requires_a_window_end() {
+    let mut with_end = base_v2();
+    with_end.deadline.window_end = Some(walks(2, Some(3), 4, 5, false));
+    let without = with_end.clone();
+    with_end.deadline.window_last = Some(key(SourceRank::Unread, 0, Some(777), 40, 9));
+    for s in [&with_end, &without] {
+        let raw = s.encode("i").unwrap();
+        assert_eq!(&State::decode_for(&raw, "i", &s.seat).unwrap(), s);
+    }
+    assert_ne!(
+        with_end.encode("i").unwrap(),
+        without.encode("i").unwrap(),
+        "the key is carried"
+    );
+    let mut no_end = with_end.clone();
+    no_end.deadline.window_end = None;
+    assert!(no_end.encode("i").is_err(), "window_last needs window_end");
+    let mut future = with_end.clone();
+    future.deadline.window_last = Some(key(SourceRank::Unread, 0, None, 51, 9));
+    assert!(future.encode("i").is_err(), "past the publication bound");
+    // The flag set on a payload without the key bytes (or with trailing junk) is refused.
+    let raw = without.encode("i").unwrap();
+    let mut payload = payload_of(&raw);
+    payload[2] |= 1 << 4; // FV2_WINDOW_LAST = 1 << 12: bit 4 of the high flag byte
+    assert!(State::decode_for(&retag(&payload, "i", "s"), "i", &without.seat).is_err());
+    let raw = with_end.encode("i").unwrap();
+    let mut payload = payload_of(&raw);
+    payload[2] |= 1 << 5; // an unknown flag
+    assert!(State::decode_for(&retag(&payload, "i", "s"), "i", &with_end.seat).is_err());
 }
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -530,7 +583,7 @@ fn cursor_v2_rejects_noncanonical_and_out_of_bounds() {
     // an elided flag with a non-delivery-row last: patch a valid elided token's last rank bits
     let raw = elided.encode("i").unwrap();
     let mut p = payload_of(&raw);
-    let header_at = p.iter().position(|b| *b == (1 | (3 << 4))).unwrap(); // priority 1, rank DeliveryRow
+    let header_at = p.iter().position(|b| *b == (1 | (4 << 4))).unwrap(); // priority 1, rank DeliveryRow
     p[header_at] = 1 | (2 << 4); // Receipt
     check(p, "elided flag with a receipt last");
 }

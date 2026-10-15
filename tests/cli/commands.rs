@@ -3142,6 +3142,7 @@ fn inbox_v2_continuation_validates_without_changing_own_text_action() {
                 next_manifest: false,
             },
             window_end: None,
+            window_last: None,
             done: false,
         },
         warnings: WarningsCursor {

@@ -853,10 +853,11 @@ caller (A2) and exact published addressed message IDs in its deciding transactio
 cannot complete delivery. JSON, machine, explicit-seat reads, history, bodies and summaries remain
 read-only for Lazy completion. A complete successful own text body display may separately advance only
 the calling binding's read cursor, as specified below; it is not Lazy completion or a receipt ACK.
-A binding's display of a delivery row that stays above its cursor (delivery order is (priority, decision), the
-cursor walks message sequence, so a higher-priority row can be shown before a lower-sequence one) is remembered per
+A binding's display of a message that stays above its cursor (delivery order is (priority, deadline, decision), the
+cursor walks message sequence, so a message can be shown before a lower-sequence one) is remembered per
 binding (`binding_row_displays`, written by the one cursor-advance function for every display path, top-level
-completion and `AdvanceCursors` alike): every binding-level unread and pending predicate excludes a marked row, the
+completion and `AdvanceCursors` alike), for delivery rows and receipt-bearing rows the seat receives alike (ht-yha.63):
+every binding-level unread and pending predicate (`UNREAD_EXTRA` included) excludes a marked row, the
 display walk passes it, the mark is dropped once the cursor passes it, and a successor binding inherits the marks
 of the cursor it inherits. Marks are the binding's own display bookkeeping, never evidence about another binding,
 and confer no receipt, ACK or wake authority; a bookkeeping failure still leaves the row offered again (at least once).

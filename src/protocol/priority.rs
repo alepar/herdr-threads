@@ -216,19 +216,24 @@ impl From<NudgeThreshold> for i64 {
 pub enum SourceRank {
     Invitation = 0,
     Warning = 1,
-    /// Explicit-ACK receipts and pre-upgrade binding-unread ordinary rows.
+    /// Explicit-ACK receipts of the seat's receipt walk.
     Receipt = 2,
-    DeliveryRow = 3,
+    /// Binding-unread receipt-bearing rows (and pre-upgrade unread rows): their own rank, so an
+    /// unread key never ties a receipt key (the two walks number their ordinals independently).
+    Unread = 3,
+    DeliveryRow = 4,
 }
 
 impl SourceRank {
-    fn from_bits(bits: u8) -> Self {
-        match bits & 3 {
+    fn from_bits(bits: u8) -> Option<Self> {
+        Some(match bits {
             0 => Self::Invitation,
             1 => Self::Warning,
             2 => Self::Receipt,
-            _ => Self::DeliveryRow,
-        }
+            3 => Self::Unread,
+            4 => Self::DeliveryRow,
+            _ => return None,
+        })
     }
 }
 
@@ -296,12 +301,12 @@ fn read_varint(input: &mut &[u8]) -> Result<u64, &'static str> {
 }
 
 impl DeliveryOrderKey {
-    /// Header byte: priority (bits 0-3) | rank (bits 4-5) | deadline-present (bit 6); bit 7 is 0.
+    /// Header byte: priority (bits 0-3) | rank (bits 4-6) | deadline-present (bit 7).
     /// Then the deadline (zigzag LEB128, if present), `decision_seq` and `ordinal` (LEB128).
     pub fn write_compact(&self, out: &mut Vec<u8>) {
         let header = self.priority.get()
             | ((self.rank as u8) << 4)
-            | (u8::from(self.deadline.is_some()) << 6);
+            | (u8::from(self.deadline.is_some()) << 7);
         out.push(header);
         if let Some(UtcMillis(v)) = self.deadline {
             write_varint(out, ((v << 1) ^ (v >> 63)) as u64);
@@ -316,12 +321,9 @@ impl DeliveryOrderKey {
         let start = *input;
         let (&header, rest) = input.split_first().ok_or(MALFORMED)?;
         *input = rest;
-        if header & 0x80 != 0 {
-            return Err(MALFORMED);
-        }
         let priority = DeliveryPriority::new(header & 0x0f).map_err(|_| MALFORMED)?;
-        let rank = SourceRank::from_bits(header >> 4);
-        let deadline = if header & 0x40 != 0 {
+        let rank = SourceRank::from_bits((header >> 4) & 0x07).ok_or(MALFORMED)?;
+        let deadline = if header & 0x80 != 0 {
             let z = read_varint(input)?;
             Some(UtcMillis(((z >> 1) as i64) ^ -((z & 1) as i64)))
         } else {
