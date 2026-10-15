@@ -13,6 +13,7 @@ pub mod harness_evidence;
 pub mod hosts;
 pub mod invitation_content;
 pub mod invitation_due;
+pub mod journal;
 pub mod lazy_delivery;
 pub mod materialization;
 pub mod messages;

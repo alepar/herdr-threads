@@ -14,12 +14,15 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
     time::Duration,
 };
 
 use super::schema::{self, NodeSeed};
+use crate::node::NodeIdentity;
+use crate::sync::facts::FactRegistry;
+use crate::sync::hlc::Hlc;
 
 /// The SQL function every store connection carries: the attached Herdr host's
 /// `herdr_hosts.host_id`, or an error `store_error` maps to `HostUnavailable`.
@@ -94,6 +97,100 @@ const IDLE_QUERY_CONNECTIONS: usize = 4;
 
 type IdleQueries = Arc<std::sync::Mutex<Vec<Connection>>>;
 
+/// Free space below which ingest stores nothing (`Headroom`): 256 MiB.
+pub const INGEST_HEADROOM_BYTES: u64 = 256 * 1024 * 1024;
+
+/// The journal's per-daemon runtime, installed once by `journal::open` into
+/// [`StoreContext`].
+///
+/// Owns: the node's `Arc<NodeIdentity>`, the `Mutex<Hlc>`, the
+/// `&'static FactRegistry`, the ingest headroom threshold, the incarnation
+/// draw source and the "journal is open" gate (a store has a `SyncState` only
+/// after `open`). Hides: whether a given store has a journal; callers ask
+/// [`StoreContext::sync`], which answers `Unsupported "journal not open"` (a
+/// programming error, distinct from every store and fact error) before open.
+/// Must not: be locked outside `src/store/journal.rs` (only Journal ticks or
+/// folds the Hlc, and only inside a writer transaction), or be replaced after
+/// install (a registry upgrade is a reopen with a new `StoreContext`).
+/// Role: read by Journal, ApplyEngine (registry) and the commit guard. New
+/// journal runtime state (the own-history hold, ht-5fr.3.16) is a field here.
+pub struct SyncState {
+    pub(crate) identity: Arc<NodeIdentity>,
+    pub(crate) hlc: std::sync::Mutex<Hlc>,
+    pub(crate) registry: &'static FactRegistry,
+    pub(crate) headroom_bytes: AtomicU64,
+    pub(crate) incarnation_rng: std::sync::Mutex<XorShift>,
+}
+
+impl SyncState {
+    /// The free-space floor below which ingest stores nothing.
+    pub fn headroom_bytes(&self) -> u64 {
+        self.headroom_bytes.load(Ordering::Relaxed)
+    }
+}
+
+/// A tiny xorshift64* generator behind incarnation draws.
+///
+/// Unless fixed by [`StoreContext::seed_incarnations`] it re-seeds its state
+/// from `getrandom` at every draw, so a memory-preserving copy of a running
+/// daemon (a VM snapshot, a restored image) does not repeat the draw of its
+/// original.
+#[derive(Clone, Debug)]
+pub struct XorShift {
+    state: u64,
+    reseed: bool,
+}
+
+impl XorShift {
+    /// A generator that re-seeds from the OS at every draw.
+    pub fn from_os() -> Self {
+        Self {
+            state: 0,
+            reseed: true,
+        }
+    }
+
+    /// A reproducible sequence from `seed`; never re-seeds.
+    pub fn fixed(seed: u64) -> Self {
+        Self {
+            state: seed | 1,
+            reseed: false,
+        }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        if self.reseed {
+            let mut bytes = [0u8; 8];
+            // A failing OS source falls back to the current state and time
+            // rather than a fixed value.
+            if getrandom::fill(&mut bytes).is_ok() {
+                self.state = u64::from_le_bytes(bytes) | 1;
+            } else {
+                self.state ^= std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0x9e37_79b9, |d| d.as_nanos() as u64)
+                    | 1;
+            }
+        }
+        let mut x = self.state;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.state = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// An incarnation drawn uniformly from `1..=u32::MAX`.
+    pub fn draw_incarnation(&mut self) -> u32 {
+        loop {
+            let value = (self.next_u64() >> 32) as u32;
+            if value != 0 {
+                return value;
+            }
+        }
+    }
+}
+
 pub struct StoreContext {
     path: PathBuf,
     clock: Arc<dyn Clock>,
@@ -120,6 +217,13 @@ pub struct StoreContext {
     /// missing or does not cover every target (restart, eviction, another
     /// process staging, a differing target).
     snapshot_stage_matches: std::sync::Mutex<Vec<SnapshotStageMatch>>,
+    /// The journal runtime, installed once by `journal::open` (see
+    /// [`SyncState`]).
+    sync: OnceLock<SyncState>,
+    /// Test hook: the fixed incarnation sequence a later `journal::open` (or
+    /// the open `SyncState`) draws from (see `seed_incarnations`).
+    #[cfg(any(test, feature = "test-support"))]
+    incarnation_seed: std::sync::Mutex<Option<u64>>,
     /// Test hook: every writer open attaches the fixture Herdr host (see
     /// `with_test_host`).
     #[cfg(any(test, feature = "test-support"))]
@@ -236,6 +340,9 @@ impl StoreContext {
             #[cfg(not(any(test, feature = "test-support")))]
             node_seed: None,
             idle_queries: Arc::default(),
+            sync: OnceLock::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            incarnation_seed: std::sync::Mutex::new(None),
             binding_evidence: std::sync::Mutex::new(None),
             binding_evidence_lacking: std::sync::Mutex::new(Vec::new()),
             snapshot_stage_matches: std::sync::Mutex::new(Vec::new()),
@@ -254,6 +361,49 @@ impl StoreContext {
             setup_end_signal: std::sync::Mutex::new(None),
             #[cfg(test)]
             rollback_journal: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// The journal runtime, or `Unsupported "journal not open"` before
+    /// `journal::open` installed it.
+    pub fn sync(&self) -> Result<&SyncState, ApiError> {
+        self.sync
+            .get()
+            .ok_or_else(|| api_error(ErrorCode::Unsupported, "journal not open"))
+    }
+
+    /// Installs the journal runtime; `false` when one is already installed
+    /// (it is never replaced). Only `journal::open` calls this.
+    pub(crate) fn install_sync(&self, state: SyncState) -> bool {
+        self.sync.set(state).is_ok()
+    }
+
+    /// Whether `journal::open` has installed the journal runtime.
+    pub fn journal_open(&self) -> bool {
+        self.sync.get().is_some()
+    }
+
+    /// The incarnation source a new `SyncState` starts with: re-seeding from
+    /// the OS, unless a test fixed the sequence.
+    pub(crate) fn new_incarnation_rng(&self) -> XorShift {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(seed) = self.incarnation_seed.lock().ok().and_then(|slot| *slot) {
+            return XorShift::fixed(seed);
+        }
+        XorShift::from_os()
+    }
+
+    /// Test hook: fixes the incarnation sequence to `seed` and turns
+    /// re-seeding off, for this context before or after `journal::open`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_incarnations(&self, seed: u64) {
+        if let Ok(mut slot) = self.incarnation_seed.lock() {
+            *slot = Some(seed);
+        }
+        if let Some(state) = self.sync.get()
+            && let Ok(mut rng) = state.incarnation_rng.lock()
+        {
+            *rng = XorShift::fixed(seed);
         }
     }
 
@@ -482,6 +632,8 @@ impl StoreContext {
         let synchronous = "FULL";
         conn.pragma_update(None, "synchronous", synchronous)
             .map_err(store_error)?;
+        conn.pragma_update(None, "journal_size_limit", 67_108_864_i64)
+            .map_err(store_error)?;
         let (backfilled, still_lacking) = schema::guard_binding_evidence(&conn)?;
         let report = crate::ports::BindingEvidenceStartup {
             backfilled: backfilled as u64,
@@ -667,6 +819,7 @@ impl StoreContext {
         }
         guard.disable();
         let result = apply(&tx, decision, prepared)?;
+        super::journal::check_self_applied(&tx)?;
         tx.commit().map_err(store_error)?;
         Ok(result)
     }
@@ -688,6 +841,7 @@ impl StoreContext {
             monotonic: self.clock.monotonic_now(),
         };
         let result = apply(&tx, decision, prepared)?;
+        super::journal::check_self_applied(&tx)?;
         tx.commit().map_err(store_error)?;
         Ok(result)
     }

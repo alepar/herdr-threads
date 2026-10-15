@@ -25,6 +25,8 @@
 //! 5. Handlers never write `wake_work` and the other delivery tables
 //!    directly; they use DeliveryTail.
 
+mod node_genesis;
+
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
@@ -36,6 +38,7 @@ use crate::protocol::results::{ApiError, ErrorCode};
 use crate::sync::EntityKey;
 
 pub use crate::store::apply::{ApplyContext, Provenance};
+pub use node_genesis::{GenesisPayload, NodeGenesis, Predecessor};
 
 /// A handler's failure, split by what the engine does next.
 ///
@@ -157,9 +160,9 @@ impl FactRegistry {
         FactRegistryBuilder::default()
     }
 
-    /// The registry of shipped kinds (empty until kinds land).
+    /// The registry of shipped kinds.
     pub fn builtins() -> &'static FactRegistry {
-        BUILTINS.get_or_init(|| FactRegistry::builder().build())
+        BUILTINS.get_or_init(|| FactRegistry::builder().with::<NodeGenesis>().build())
     }
 
     /// A leaked registry holding the builtins plus what `extend` adds, so
