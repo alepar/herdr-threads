@@ -70,6 +70,7 @@ fn start(command: &str, pids: &Path) -> Node {
             template: Some(DialTemplate::parse(&template).expect("template")),
             jitter_seed: Some(5),
         },
+        resync_pin: None,
         cancel: cancel.clone(),
     });
     Node {

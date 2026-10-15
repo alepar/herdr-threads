@@ -96,6 +96,7 @@ mod routing;
 mod serve;
 
 use ingest::{IngestDone, IngestJob};
+pub use routing::ResyncPin;
 use routing::{DupKey, SourceView};
 use serve::{BranchDone, ServeDone};
 
@@ -457,6 +458,9 @@ pub struct CoordinatorDeps {
     pub own_history: Arc<OwnHistoryHold>,
     /// The Dialer's transport template and test jitter seed.
     pub dial: DialConfig,
+    /// Set by a `sync resync` restart: the pinned logs are pulled only from
+    /// the named peer until a round with it completes or ten minutes pass.
+    pub resync_pin: Option<ResyncPin>,
     pub cancel: Cancellation,
 }
 
@@ -622,6 +626,10 @@ impl SyncCoordinator {
             clock: deps.clock.clone(),
             signals: signals.clone(),
         };
+        let pin = deps.resync_pin.clone().map(|pin| ActivePin {
+            pin,
+            since: deps.clock.monotonic_now(),
+        });
         let mut hello = LocalHello::new(deps.identity.clone(), deps.boot);
         hello.caps.push(FORK_CAP.to_owned());
         let me = Arc::new(hello);
@@ -653,6 +661,7 @@ impl SyncCoordinator {
             signals,
             contacts,
             flushes: JoinSet::new(),
+            pin,
         };
         let join = tokio::spawn(actor.run(Inputs {
             intake: intake_rx,
@@ -827,6 +836,15 @@ struct Actor {
     contacts: ContactBook,
     /// `record_contacts` calls in flight (at most one).
     flushes: JoinSet<FlushDone>,
+    /// The resync rx pin while it holds.
+    pin: Option<ActivePin>,
+}
+
+/// A [`ResyncPin`] and when it took hold (the coordinator's monotonic
+/// clock).
+struct ActivePin {
+    pin: ResyncPin,
+    since: MonoInstant,
 }
 
 /// A contact flush joined from the actor's `JoinSet`.
@@ -1605,6 +1623,12 @@ impl Actor {
             link: src.link,
             last_progress: src.last_progress,
         });
+        let pinned_to = self
+            .pin
+            .as_ref()
+            .filter(|active| active.pin.covers(log))
+            .filter(|active| now.0.saturating_sub(active.since.0) < routing::PIN_LIFT_MS)
+            .map(|active| active.pin.from);
         routing::reselect(
             log,
             self.local.0.get(log),
@@ -1612,6 +1636,7 @@ impl Actor {
             self.log_paused(log, now),
             current,
             now,
+            pinned_to,
         )
     }
 
@@ -1720,6 +1745,7 @@ impl Actor {
         self.resolve_probes(now);
         self.expire_penalties(now);
         self.lift_pauses(now);
+        self.expire_pin(now);
         self.failover(now);
         self.flush_have_deltas(now);
         self.drain_fork_outbox();
@@ -1939,6 +1965,45 @@ impl Actor {
         })
     }
 
+    /// Ends the resync pin and re-picks every log: `why` is logged.
+    fn lift_pin(&mut self, why: &str) {
+        if let Some(active) = self.pin.take() {
+            (self.deps.log)(&format!(
+                "sync: resync pin to {} lifted: {why}",
+                uuid8(&active.pin.from)
+            ));
+            self.reselect_all();
+        }
+    }
+
+    /// The pin's 10-minute bound.
+    fn expire_pin(&mut self, now: MonoInstant) {
+        if self
+            .pin
+            .as_ref()
+            .is_some_and(|active| now.0.saturating_sub(active.since.0) >= routing::PIN_LIFT_MS)
+        {
+            self.lift_pin("10 minutes passed");
+        }
+    }
+
+    /// The pin lifts once a round with the pinned peer has completed.
+    fn lift_pin_after_round(&mut self) {
+        let Some(from) = self.pin.as_ref().map(|active| active.pin.from) else {
+            return;
+        };
+        let done = self.links.values().any(|l| {
+            l.mode == LinkMode::Active
+                && l.ranked
+                && !l.closing
+                && l.handle.peer().node == from
+                && l.round.is_some_and(|r| r.complete)
+        });
+        if done {
+            self.lift_pin("round with it completed");
+        }
+    }
+
     /// Complete the rounds whose rule holds (a full `have` since the start and
     /// nothing wantable left to pull), then publish every active link's round
     /// to [`SyncSignals`]. Called wherever the inputs of the rule change.
@@ -1958,6 +2023,7 @@ impl Actor {
                 round.complete = true;
             }
         }
+        self.lift_pin_after_round();
         let rounds = self
             .links
             .iter()
@@ -2331,6 +2397,14 @@ mod tests {
     }
 
     fn start_node(n: u8, journal: Arc<dyn JournalPort>) -> Rig {
+        start_node_pinned(n, journal, None)
+    }
+
+    fn start_node_pinned(
+        n: u8,
+        journal: Arc<dyn JournalPort>,
+        resync_pin: Option<ResyncPin>,
+    ) -> Rig {
         let clock: Arc<dyn Clock> = Arc::new(TokioClock(Instant::now()));
         let cancel = Cancellation::default();
         let (log, lines) = capture();
@@ -2367,6 +2441,7 @@ mod tests {
             fork_sink: sink.clone(),
             own_history: own_history.clone(),
             dial: DialConfig::default(),
+            resync_pin,
             cancel: cancel.clone(),
         });
         Rig {
@@ -3158,6 +3233,111 @@ mod tests {
         c.expect_want(log_node, 1, 1).await;
         rig.cancel.cancel();
         rig.join.await.unwrap();
+    }
+
+    fn pinned_rig(logs: Option<Vec<NodeUuid>>) -> Rig {
+        let journal = Arc::new(MemoryJournal::new(identity(1)));
+        journal.bootstrap();
+        start_node_pinned(
+            1,
+            journal,
+            Some(ResyncPin {
+                from: node_of(2),
+                logs,
+            }),
+        )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resync_pin_restricts_candidates_until_round_completes() {
+        let rig = pinned_rig(None);
+        let mut b = connect(&rig, 0, &peer_hello(2)).await;
+        b.expect_have().await;
+        let mut c = connect(&rig, 1, &peer_hello(3)).await;
+        c.expect_have().await;
+        let log_node = node_of(9);
+
+        // C alone advertises the log; B, the pinned peer, has not spoken.
+        c.send_have(true, false, vec![have_log(log_node, 1, 5)])
+            .await;
+        c.quiet().await;
+        b.quiet().await;
+
+        // B's full have advertises nothing wantable: its round completes,
+        // the pin lifts and C is wanted.
+        b.send_have(true, false, Vec::new()).await;
+        c.expect_want(log_node, 1, 1).await;
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resync_pin_wants_from_the_pinned_peer_despite_a_higher_counter() {
+        let rig = pinned_rig(None);
+        let mut b = connect(&rig, 0, &peer_hello(2)).await;
+        b.expect_have().await;
+        let mut c = connect(&rig, 1, &peer_hello(3)).await;
+        c.expect_have().await;
+        let log_node = node_of(9);
+        c.send_have(true, false, vec![have_log(log_node, 1, 50)])
+            .await;
+        b.send_have(true, false, vec![have_log(log_node, 1, 10)])
+            .await;
+        b.expect_want(log_node, 1, 1).await;
+        c.quiet().await;
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resync_pin_leaves_logs_of_other_nodes_free() {
+        // Only the logs of node 8 are pinned; node 9's log comes from C.
+        let rig = pinned_rig(Some(vec![node_of(8)]));
+        let mut b = connect(&rig, 0, &peer_hello(2)).await;
+        b.expect_have().await;
+        let mut c = connect(&rig, 1, &peer_hello(3)).await;
+        c.expect_have().await;
+        c.send_have(
+            true,
+            false,
+            vec![have_log(node_of(9), 1, 5), have_log(node_of(8), 1, 5)],
+        )
+        .await;
+        c.expect_want(node_of(9), 1, 1).await;
+        c.quiet().await;
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resync_pin_lifts_after_10_min() {
+        let rig = pinned_rig(None);
+        let mut b = connect(&rig, 0, &peer_hello(2)).await;
+        b.expect_have().await;
+        let mut c = connect(&rig, 1, &peer_hello(3)).await;
+        c.expect_have().await;
+        let log_node = node_of(9);
+        c.send_have(true, false, vec![have_log(log_node, 1, 5)])
+            .await;
+        // B never completes a round; C stays unwanted for the whole bound.
+        // Both links answer pings, so only the pin holds C back.
+        let wanted = |frames: &[PeerFrame]| {
+            frames
+                .iter()
+                .any(|f| matches!(f, PeerFrame::Want { node, .. } if *node == log_node))
+        };
+        for _ in 0..1_160 {
+            let (fb, fc) = (b.pump(250).await, c.pump(250).await);
+            assert!(!wanted(&fb) && !wanted(&fc), "no want before the pin lifts");
+        }
+        let mut lifted = false;
+        for _ in 0..100 {
+            let (fb, fc) = (b.pump(250).await, c.pump(250).await);
+            assert!(!wanted(&fb), "B does not advertise the log");
+            if wanted(&fc) {
+                lifted = true;
+                break;
+            }
+        }
+        assert!(lifted, "C is wanted once 10 minutes passed");
+        stop(rig).await;
     }
 
     #[tokio::test(start_paused = true)]

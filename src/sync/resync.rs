@@ -4,7 +4,8 @@
 //! - Owns: the request preconditions and their order, the atomic marker
 //!   writes, the step-0 phase transitions (backup by `VACUUM INTO`, moving
 //!   the old files into `orig/`, choosing `backup_db`), the plan handed to
-//!   composition, and deleting the marker when salvage ends.
+//!   composition, the salvage reader (the backup read back, per log, into an
+//!   ingest callback) and deleting the marker when salvage ends.
 //! - Hides: the marker format (`resync.json` v1), the backup directory layout
 //!   (`backups/<unix_ms>/{herdr-threads.db,orig/}`), and that a rebuild is a
 //!   restart against a missing store.
@@ -14,7 +15,8 @@
 //! - Relationships: [`request`] is called by the operator-gated CLI path and
 //!   uses the daemon's existing graceful stop (the shutdown token).
 //!   [`resume_at_start`] is step 0 of `run_elected_impl`; `app.rs` turns the
-//!   [`ResyncPlan`] into dial targets, the rx pin and the salvage job.
+//!   [`ResyncPlan`] into dial targets, the rx pin and the salvage job, which
+//!   the incarnations worker runs through [`run_salvage`].
 //! - Lifecycle: the marker file is the persisted state. Each phase is
 //!   restart-safe, and `moved`/`salvaging` never back up a second time.
 //! - Errors: request refusals are kept apart: `InvalidRequest` (unknown
@@ -41,8 +43,12 @@ use crate::daemon::paths::NodePaths;
 use crate::node::{NodeTag, NodeUuid};
 use crate::protocol::results::{ApiError, ErrorCode};
 use crate::protocol::time::{CallBudget, Cancellation, Clock, MonoInstant};
+use crate::store::journal;
 use crate::store::sync_dial_targets::DialTarget;
 use crate::sync::coordinator::SyncHandle;
+use crate::sync::envelope::Envelope;
+use crate::sync::journal_port::IngestOutcome;
+use crate::sync::{BatchLimits, LogKey};
 
 /// The marker's file name inside the node directory.
 pub const MARKER_FILE: &str = "resync.json";
@@ -58,6 +64,13 @@ const MIB: u64 = 1024 * 1024;
 
 /// How long [`request`] waits for the coordinator's link snapshot.
 const REQUEST_BUDGET_MS: u64 = 5_000;
+
+/// Most entries of one log handed to ingest at once.
+const SALVAGE_BATCH_ENTRIES: usize = 256;
+
+/// Most canonical bytes of one salvage batch (a single larger entry still
+/// goes alone).
+const SALVAGE_BATCH_BYTES: usize = 4 * 1024 * 1024;
 
 const BACKUPS_DIR: &str = "backups";
 const ORIG_DIR: &str = "orig";
@@ -136,12 +149,17 @@ impl ResyncMarker {
 
     /// Deletes the marker: salvage ended. The backups stay.
     pub fn finish(paths: &NodePaths) -> Result<(), StartError> {
-        match fs::remove_file(marker_path(paths)) {
+        Self::finish_in(&paths.node_dir)
+    }
+
+    /// [`ResyncMarker::finish`] for a node directory.
+    pub fn finish_in(node_dir: &Path) -> Result<(), StartError> {
+        match fs::remove_file(node_dir.join(MARKER_FILE)) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(StartError::io("remove the resync marker", error)),
         }
-        sync_dir(&paths.node_dir).map_err(|error| StartError::io("sync the node directory", error))
+        sync_dir(node_dir).map_err(|error| StartError::io("sync the node directory", error))
     }
 }
 
@@ -376,6 +394,149 @@ pub fn resume_at_start(
         logs: marker.logs,
         backup_db,
     }))
+}
+
+/// Records `salvaging` in the marker and returns it (its targets and
+/// operator are what composition needs). The marker must exist: `app.rs`
+/// calls this only with the plan [`resume_at_start`] just returned.
+pub fn mark_salvaging(paths: &NodePaths) -> Result<ResyncMarker, StartError> {
+    let mut marker = ResyncMarker::read(paths)?
+        .ok_or_else(|| StartError::Marker(format!("{MARKER_FILE} vanished before salvage")))?;
+    if marker.phase != ResyncPhase::Salvaging {
+        marker.phase = ResyncPhase::Salvaging;
+        marker.write(paths)?;
+    }
+    Ok(marker)
+}
+
+/// A log the salvage stopped before its end, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SalvageStop {
+    pub log: LogKey,
+    pub why: String,
+}
+
+/// What one salvage pass did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SalvageReport {
+    /// Logs the backup holds.
+    pub logs: usize,
+    /// Entries ingest reported as stored or already held, over all logs.
+    pub entries: u64,
+    /// Logs stopped before their end.
+    pub stopped: Vec<SalvageStop>,
+    /// The backup could not be opened or listed: nothing was salvaged.
+    pub unreadable: Option<String>,
+    /// Cancelled before the end; the marker is kept for the next start.
+    pub interrupted: bool,
+}
+
+/// The ingest callback of a salvage: one batch of one log. The worker's
+/// implementation holds a `FairWriter` background turn around
+/// `JournalPort::ingest`.
+pub type SalvageIngest<'a> =
+    dyn FnMut(&LogKey, Vec<Envelope>) -> Result<IngestOutcome, ApiError> + 'a;
+
+/// Reads the backup at `backup_db` read-only and hands every log's entries,
+/// ascending in batches of [`SALVAGE_BATCH_ENTRIES`], to `ingest`, logs in
+/// [`LogKey`] order.
+///
+/// A log stops at the first outcome other than `Stored` or at a SQLite error
+/// reading it, and the next log goes on. `ingest` verifies every entry, so
+/// corrupt rows are never admitted. A store error from `ingest` itself ends
+/// the pass with that error: ingest is idempotent, so the caller runs the
+/// whole pass again.
+pub fn salvage(
+    backup_db: &Path,
+    ingest: &mut SalvageIngest<'_>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<SalvageReport, ApiError> {
+    let mut report = SalvageReport::default();
+    let logs = Connection::open_with_flags(
+        backup_db,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| error.to_string())
+    .and_then(|conn| {
+        let vector = journal::vector(&conn).map_err(|error| error.detail)?;
+        Ok((conn, vector))
+    });
+    let (conn, vector) = match logs {
+        Ok(found) => found,
+        Err(why) => {
+            report.unreadable = Some(why);
+            return Ok(report);
+        }
+    };
+    report.logs = vector.0.len();
+    let limits = BatchLimits {
+        entries: SALVAGE_BATCH_ENTRIES,
+        bytes: SALVAGE_BATCH_BYTES,
+    };
+    for log in vector.0.keys() {
+        let mut from = 1u64;
+        loop {
+            if cancelled() {
+                report.interrupted = true;
+                return Ok(report);
+            }
+            let batch = match journal::serve(&conn, log, from, limits) {
+                Ok(batch) => batch,
+                Err(error) => {
+                    report.stopped.push(SalvageStop {
+                        log: *log,
+                        why: format!("read: {}", error.detail),
+                    });
+                    break;
+                }
+            };
+            let Some(last) = batch.last().map(|entry| entry.counter) else {
+                break;
+            };
+            let count = batch.len() as u64;
+            match ingest(log, batch)? {
+                IngestOutcome::Stored { .. } => {
+                    report.entries += count;
+                    from = last.saturating_add(1);
+                }
+                other => {
+                    report.stopped.push(SalvageStop {
+                        log: *log,
+                        why: format!("ingest at counter {from}: {}", outcome_name(&other)),
+                    });
+                    break;
+                }
+            }
+        }
+    }
+    Ok(report)
+}
+
+fn outcome_name(outcome: &IngestOutcome) -> &'static str {
+    match outcome {
+        IngestOutcome::Stored { .. } => "stored",
+        IngestOutcome::Gap { .. } => "gap",
+        IngestOutcome::Fork { .. } => "fork",
+        IngestOutcome::Frozen { .. } => "frozen",
+        IngestOutcome::Corrupt { .. } => "corrupt",
+        IngestOutcome::Headroom => "no disk headroom",
+    }
+}
+
+/// [`salvage`], then the end of the rebuild: the marker is deleted unless the
+/// pass was interrupted. The backup directory is never touched.
+pub fn run_salvage(
+    node_dir: &Path,
+    backup_db: &Path,
+    ingest: &mut SalvageIngest<'_>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<SalvageReport, ApiError> {
+    let report = salvage(backup_db, ingest, cancelled)?;
+    if !report.interrupted {
+        ResyncMarker::finish_in(node_dir)
+            .map_err(|error| ApiError::new(ErrorCode::StoreBusy, error.to_string()))?;
+    }
+    Ok(report)
 }
 
 /// `VACUUM INTO` a copy of the old database inside `dir`. A failure is
@@ -856,6 +1017,218 @@ mod tests {
             .unwrap();
         assert_eq!(backups(&paths).len(), 1);
         assert_eq!(row_of(&plan.backup_db), "old-row");
+    }
+
+    // -- Salvage -----------------------------------------------------------
+
+    use crate::node::NodeIdentity;
+    use crate::store::connection::StoreContext;
+    use crate::store::{SqliteStore, StoreSettings};
+    use crate::sync::journal_port::JournalPort;
+    use crate::sync::memory_journal::MemoryJournal;
+    use crate::sync::{LogHead, LogState};
+
+    /// A foreign log of node `n`: its genesis and `extra` more entries.
+    fn foreign(n: u8, extra: usize) -> (LogKey, Vec<Envelope>) {
+        let journal = MemoryJournal::new(Arc::new(NodeIdentity::from_seed([n; 32])));
+        journal.bootstrap();
+        for i in 0..extra {
+            journal
+                .author_raw("test.kind", format!("{{\"i\":{i}}}").into_bytes())
+                .unwrap();
+        }
+        let log = journal.self_log();
+        let entries = journal
+            .serve(
+                &log,
+                1,
+                BatchLimits {
+                    entries: usize::MAX,
+                    bytes: usize::MAX,
+                },
+                &budget(),
+            )
+            .unwrap();
+        (log, entries)
+    }
+
+    /// A real store at `db` holding the given foreign logs, closed again.
+    fn build_store(db: &Path, logs: &[(LogKey, Vec<Envelope>)]) {
+        let context = StoreContext::new(db.to_path_buf(), Arc::new(FixedClock(NOW)));
+        let store = SqliteStore::new(
+            context,
+            crate::test_support::test_node(),
+            StoreSettings::default(),
+        )
+        .unwrap();
+        for (log, entries) in logs {
+            for chunk in entries.chunks(SALVAGE_BATCH_ENTRIES) {
+                let outcome = store.ingest(log, chunk.to_vec(), &budget()).unwrap();
+                assert!(
+                    matches!(outcome, IngestOutcome::Stored { .. }),
+                    "{outcome:?}"
+                );
+            }
+        }
+    }
+
+    fn stored(count: usize) -> IngestOutcome {
+        IngestOutcome::Stored {
+            stored: count,
+            duplicates: 0,
+            head: LogHead {
+                counter: count as u64,
+                head_hash: [0; 32],
+                state: LogState::Active,
+                frozen_at: None,
+            },
+        }
+    }
+
+    /// Three foreign logs; the first has more than one batch. A store also
+    /// holds its own genesis log, so a backup lists four logs.
+    fn three_logs() -> Vec<(LogKey, Vec<Envelope>)> {
+        vec![
+            foreign(41, SALVAGE_BATCH_ENTRIES + 43),
+            foreign(42, 2),
+            foreign(43, 1),
+        ]
+    }
+
+    /// `(log, head counter)` of a backup, in `LogKey` order.
+    fn backup_logs(db: &Path) -> Vec<(LogKey, u64)> {
+        let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        journal::vector(&conn)
+            .unwrap()
+            .0
+            .into_iter()
+            .map(|(log, head)| (log, head.counter))
+            .collect()
+    }
+
+    #[test]
+    fn salvage_stops_log_at_non_stored_and_continues() {
+        let (iso, _paths) = node("resync-salvage-stop");
+        let db = iso.path("backup.db");
+        let logs = three_logs();
+        build_store(&db, &logs);
+        let big = logs[0].0;
+        let held = backup_logs(&db);
+        assert_eq!(held.len(), 4);
+
+        // (log, first counter, batch size) in call order.
+        let mut calls: Vec<(LogKey, u64, usize)> = Vec::new();
+        let mut ingest = |log: &LogKey, entries: Vec<Envelope>| {
+            calls.push((*log, entries[0].counter, entries.len()));
+            // The big log's second batch is a gap: that log stops there.
+            if *log == big && entries[0].counter > 1 {
+                return Ok(IngestOutcome::Gap {
+                    stored: 0,
+                    expected: 1,
+                });
+            }
+            Ok(stored(entries.len()))
+        };
+        let report = salvage(&db, &mut ingest, &|| false).unwrap();
+
+        let batch = SALVAGE_BATCH_ENTRIES;
+        let mut expected: Vec<(LogKey, u64, usize)> = Vec::new();
+        for (log, counter) in &held {
+            if *log == big {
+                expected.push((*log, 1, batch));
+                expected.push((*log, batch as u64 + 1, 44));
+            } else {
+                expected.push((*log, 1, *counter as usize));
+            }
+        }
+        assert_eq!(
+            calls, expected,
+            "logs in key order; a stopped log is not retried, the next goes on"
+        );
+        assert_eq!(report.logs, 4);
+        assert_eq!(
+            report.entries,
+            held.iter().map(|(_, c)| c).sum::<u64>() - 44
+        );
+        assert_eq!(report.stopped.len(), 1);
+        assert_eq!(report.stopped[0].log, big);
+        assert!(
+            report.stopped[0].why.contains("gap"),
+            "{:?}",
+            report.stopped
+        );
+        assert!(!report.interrupted && report.unreadable.is_none());
+    }
+
+    #[test]
+    fn salvage_ingest_store_error_ends_the_pass_for_a_retry() {
+        let (iso, _paths) = node("resync-salvage-error");
+        let db = iso.path("backup.db");
+        build_store(&db, &three_logs());
+        let mut calls = 0;
+        let mut ingest = |_: &LogKey, entries: Vec<Envelope>| {
+            calls += 1;
+            if calls == 2 {
+                return Err(ApiError::new(ErrorCode::StoreBusy, "writer busy"));
+            }
+            Ok(stored(entries.len()))
+        };
+        let error = salvage(&db, &mut ingest, &|| false).unwrap_err();
+        assert_eq!(error.code, ErrorCode::StoreBusy);
+        assert_eq!(calls, 2, "the pass ends at the error");
+    }
+
+    #[test]
+    fn marker_removed_backup_kept() {
+        let (_iso, paths) = node("resync-salvage-finish");
+        build_store(&paths.database_path, &three_logs());
+        requested_marker(&paths);
+        let plan = resume_at_start(&paths, &FixedClock(NOW)).unwrap().unwrap();
+        let marker = mark_salvaging(&paths).unwrap();
+        assert_eq!(marker.phase, ResyncPhase::Salvaging);
+        assert_eq!(
+            ResyncMarker::read(&paths).unwrap().unwrap().phase,
+            ResyncPhase::Salvaging,
+            "the phase is persisted"
+        );
+        let mut ingest = |_: &LogKey, entries: Vec<Envelope>| Ok(stored(entries.len()));
+        let report = run_salvage(&paths.node_dir, &plan.backup_db, &mut ingest, &|| false).unwrap();
+        assert_eq!(report.entries, 300 + 3 + 2 + 1, "every entry of every log");
+        assert!(
+            ResyncMarker::read(&paths).unwrap().is_none(),
+            "salvage ended: the marker is gone"
+        );
+        assert!(plan.backup_db.is_file(), "the backup stays");
+        let dir = plan.backup_db.parent().unwrap();
+        assert!(dir.join(ORIG_DIR).join(DB_FILE).is_file(), "orig/ stays");
+    }
+
+    #[test]
+    fn interrupted_salvage_keeps_the_marker() {
+        let (_iso, paths) = node("resync-salvage-interrupted");
+        build_store(&paths.database_path, &three_logs());
+        requested_marker(&paths);
+        let plan = resume_at_start(&paths, &FixedClock(NOW)).unwrap().unwrap();
+        let mut ingest = |_: &LogKey, entries: Vec<Envelope>| Ok(stored(entries.len()));
+        let report = run_salvage(&paths.node_dir, &plan.backup_db, &mut ingest, &|| true).unwrap();
+        assert!(report.interrupted);
+        assert_eq!(report.entries, 0);
+        assert!(
+            ResyncMarker::read(&paths).unwrap().is_some(),
+            "the next start salvages again"
+        );
+    }
+
+    #[test]
+    fn unreadable_backup_is_reported_and_the_marker_removed() {
+        let (iso, paths) = node("resync-salvage-unreadable");
+        requested_marker(&paths);
+        let db = iso.path("not-a-database");
+        fs::write(&db, b"this is not a database at all").unwrap();
+        let mut ingest = |_: &LogKey, _: Vec<Envelope>| panic!("nothing to ingest");
+        let report = run_salvage(&paths.node_dir, &db, &mut ingest, &|| false).unwrap();
+        assert!(report.unreadable.is_some(), "{report:?}");
+        assert!(ResyncMarker::read(&paths).unwrap().is_none());
     }
 
     #[test]

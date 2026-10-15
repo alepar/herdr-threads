@@ -1501,9 +1501,8 @@ where
 {
     // Step 0: a pending `sync resync` backs up and moves the damaged store
     // aside, so every later step runs against a missing store (the key is
-    // loaded, not created). The plan is held for the rebuild's composition
-    // (pinned rx source, dial targets, salvage); until then only its
-    // presence is logged.
+    // loaded, not created). The plan is composed once the journal is open:
+    // dial targets, the pinned rx source and the salvage job.
     let resync_plan = crate::sync::resync::resume_at_start(paths, clock.as_ref())?;
     if let Some(plan) = &resync_plan {
         eprintln!(
@@ -1645,6 +1644,9 @@ where
                 check_store_identity(&conn, &identity, &identity_key_path)?;
             }
             publish_node_json(&identity_paths, &identity)?;
+            // The marker of a pending rebuild, once its dial targets are back.
+            let mut resync_start: Option<(crate::sync::resync::ResyncPlan, std::path::PathBuf)> =
+                None;
             // Daemon start order: the journal opens once, after the node.json
             // step and before any host attaches. A refused open (a violated
             // journal invariant) refuses the start.
@@ -1686,8 +1688,49 @@ where
                         env!("CARGO_PKG_VERSION"),
                     )
                     .map_err(sync_error)?;
+                    // A pending `sync resync` (spec §11, after `journal::open`):
+                    // the marker's dial targets come back, which restores the
+                    // path to `from`, and the marker moves to `salvaging`.
+                    let marker = match resync_plan {
+                        Some(_) => Some(
+                            crate::sync::resync::ResyncMarker::read(&identity_paths)
+                                .map_err(io::Error::from)?
+                                .ok_or_else(|| {
+                                    io::Error::other("resync: marker vanished before the rebuild")
+                                })?,
+                        ),
+                        None => None,
+                    };
+                    if let Some(marker) = &marker {
+                        let now = context.clock().utc_now().0;
+                        for target in &marker.targets {
+                            if let Err(error) = crate::store::sync_dial_targets::add_explicit(
+                                &tx,
+                                &target.ssh_dest,
+                                target.remote_command.as_deref(),
+                                now,
+                            ) {
+                                rate_limited_log.write_line(&format!(
+                                    "resync: dial target {} not restored: {}",
+                                    target.ssh_dest, error.detail
+                                ));
+                            }
+                        }
+                    }
                     tx.commit()
                         .map_err(|error| io::Error::other(format!("store startup: {error}")))?;
+                    if let (Some(plan), Some(marker)) = (resync_plan, marker) {
+                        crate::sync::resync::mark_salvaging(&identity_paths)
+                            .map_err(io::Error::from)?;
+                        rate_limited_log.write_line(&format!(
+                            "resync: rebuilding from {} requested by {}; {} dial targets restored; salvaging {}",
+                            plan.from,
+                            marker.operator,
+                            marker.targets.len(),
+                            plan.backup_db.display()
+                        ));
+                        resync_start = Some((plan, identity_paths.node_dir.clone()));
+                    }
                 }
                 // A crash between a retag's commit and its node.json
                 // regeneration left the identity behind the committed tag.
@@ -2016,6 +2059,20 @@ where
                 sync_log.clone(),
             ));
             let incarnations_store = sync_store.clone();
+            let resync_pin = resync_start.as_ref().map(|(plan, _)| {
+                crate::sync::coordinator::ResyncPin {
+                    from: plan.from,
+                    logs: plan.logs.clone(),
+                }
+            });
+            if let Some((plan, node_dir)) = &resync_start
+                && !incarnations_sink.enqueue(crate::sync::incarnations::Job::Salvage {
+                    backup_db: plan.backup_db.clone(),
+                    node_dir: node_dir.clone(),
+                })
+            {
+                return Err(io::Error::other("resync: salvage job could not be queued"));
+            }
             let (sync_handle, peer_intake, sync_join) = crate::sync::coordinator::SyncCoordinator::start(
                 crate::sync::coordinator::CoordinatorDeps {
                     journal: sync_store.clone(),
@@ -2030,6 +2087,7 @@ where
                     fork_sink: incarnations_sink.clone(),
                     own_history: Arc::clone(&own_history),
                     dial: crate::sync::dialer::DialConfig::from(&config),
+                    resync_pin,
                     cancel: factory_stop.clone(),
                 },
             );

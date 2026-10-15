@@ -3,9 +3,10 @@
 //! this node that it lacks.
 //!
 //! Responsibility (routing)
-//! - Owns: [`duplicate_order`], [`wantable`], [`reselect`] and
-//!   [`own_history_on`], plain functions over values the actor copies out of
-//!   its state, and the timing constants they and the actor share.
+//! - Owns: [`duplicate_order`], [`wantable`], [`reselect`] (with the
+//!   [`ResyncPin`] restriction it is handed) and [`own_history_on`], plain
+//!   functions over values the actor copies out of its state, and the timing
+//!   constants they and the actor share.
 //! - Hides: the ranking rules, so the actor never compares counters or nodes.
 //! - Must not: touch the actor's maps, send a frame or read a clock; every
 //!   input is an argument. This is where relay-policy changes go (who serves
@@ -29,6 +30,29 @@ pub(super) const STALL_PENALTY_MS: u64 = 30_000;
 pub(super) const CLONE_PROBE_MS: u64 = 10_000;
 /// Established links per peer node beyond which the newest standby is closed.
 pub(super) const MAX_LINKS_PER_NODE: usize = 2;
+
+/// How long a [`ResyncPin`] holds without a completed round with its peer
+/// (ms).
+pub(super) const PIN_LIFT_MS: u64 = 600_000;
+
+/// A rebuilding node's rx pin (`sync resync`): the pinned logs are pulled
+/// only from `from` while the pin holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResyncPin {
+    /// The peer the rebuilt store is pulled from.
+    pub from: NodeUuid,
+    /// The nodes whose logs are pinned; `None` pins every log.
+    pub logs: Option<Vec<NodeUuid>>,
+}
+
+impl ResyncPin {
+    /// Whether `log` must come from [`ResyncPin::from`].
+    pub(super) fn covers(&self, log: &LogKey) -> bool {
+        self.logs
+            .as_ref()
+            .is_none_or(|nodes| nodes.contains(&log.node))
+    }
+}
 
 /// What the duplicate order compares for one established link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,6 +127,9 @@ pub(super) struct CurrentSource {
 /// 3. the highest advertised counter;
 /// 4. the lower node uuid (then the lower link id, for determinism).
 ///
+/// With `pinned_to` set (an active [`ResyncPin`] covering the log), only the
+/// links to that node are candidates.
+///
 /// `None` when nothing is a candidate. The place to change relay policy.
 pub(super) fn reselect(
     log: &LogKey,
@@ -111,10 +138,12 @@ pub(super) fn reselect(
     paused: bool,
     current: Option<CurrentSource>,
     now: MonoInstant,
+    pinned_to: Option<NodeUuid>,
 ) -> Option<u64> {
     let candidates: Vec<(&SourceView, u64)> = views
         .iter()
         .filter(|view| !view.penalized)
+        .filter(|view| pinned_to.is_none_or(|from| view.node == from))
         .filter_map(|view| {
             let adv = view.adv.as_ref()?;
             wantable(local, adv, paused).then_some((view, adv.counter))
@@ -221,7 +250,7 @@ mod tests {
         local: Option<LogHead>,
         current: Option<CurrentSource>,
     ) -> Option<u64> {
-        reselect(&log(9), local.as_ref(), views, false, current, NOW)
+        reselect(&log(9), local.as_ref(), views, false, current, NOW, None)
     }
 
     #[test]
@@ -302,7 +331,7 @@ mod tests {
         assert_eq!(pick(&views, Some(head(5)), None), None);
         let open = [view(1, 3, 30)];
         assert_eq!(
-            reselect(&log(9), Some(&head(5)), &open, true, None, NOW),
+            reselect(&log(9), Some(&head(5)), &open, true, None, NOW, None),
             None,
             "a paused log is unwantable"
         );

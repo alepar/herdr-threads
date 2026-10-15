@@ -1137,6 +1137,18 @@ only within one server (see C2). Four rules, enforced in the store by `seats::co
   its candidates are local seats only.
 - An unreachable or unattached server freezes wakes only for its own seats; seats on other servers keep waking.
 
+**N11. Resync is an operator repair.** `sync resync --from <node>` rebuilds a damaged store from a peer and records
+`operator:local-user:<uid>` provenance (A3) in its marker, `<state_dir>/node/resync.json`, and in the daemon log line
+that starts the rebuild. The daemon stops, backs the old store up by `VACUUM INTO` and moves the old files aside
+under `backups/<unix_ms>/` (`orig/` holds the moved bytes), and restarts on a fresh store under a new random
+incarnation. Nothing is deleted: the operator removes the backups. The rebuilt store is pulled from `from` (a pin on
+the rx source until a round with `from` completes, or ten minutes), and every verifiable entry of the backup is
+read back through the one ingest path, so facts that never left the damaged node are recovered and corrupt rows are
+never admitted. The rebuild loses node-local state that is not in the journal: bindings, `operations`, wake and
+attention bookkeeping, `herdr_hosts` (rebuilt on attach) and service-managed threads (`journaled = 0`). The node's
+own seats come back from their `seat.created` facts as unresolved seats until C1 continuity or an operator rebinds
+them. It never merges seats and never moves one on heuristic evidence (N5).
+
 ## Accepted limits
 
 For the generic join frontier (excluding active direct-invitation acceptance above), pre-join lazy
@@ -1655,6 +1667,9 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   clock) and is re-signed by the owner, so a receiver attributes it `replicated_from:<owner node_uuid>` (A3): never
   to a node that merely held the branch it came from, and never as a new act. On the owner itself the re-applied
   copy is own history and is recorded `local_journal`, because the original binding is not known here.
+- **Unresolved seats after a rebuild.** A `sync resync` rebuild (N11) loses node-local bindings and managed
+  threads and leaves the node's own seats `unresolved`. They are rebound by C1 continuity or by an operator;
+  the rebuild itself rebinds nothing and merges nothing. The operator repair entry is N11, which lists the losses.
 - **Dead fork owner.** When a forked log's owner never returns, the facts on divergent tails stay only on the nodes
   that hold each branch.
 - **Catch-up suppression reach.** Suppression is settled-only for every origin, own old incarnations included: an
