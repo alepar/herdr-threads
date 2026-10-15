@@ -7,10 +7,11 @@
 //! - **ForkProof** (this file): the pure rule for what counts as a fork.
 //! - **IncarnationStore** (`store::incarnations`): the only SQL for fork
 //!   records, branches and clone evidence.
-//! - **IncarnationsSink / IncarnationsWorker** ([`sink`], [`requests`]): the
-//!   non-blocking [`ForkSink`](super::coordinator::ForkSink) front with its
-//!   job queue and branch-request table, and the `herdr-incarnations`
-//!   thread that runs the jobs.
+//! - **IncarnationsSink / IncarnationsWorker** ([`sink`], [`requests`],
+//!   [`worker`]): the non-blocking
+//!   [`ForkSink`](super::coordinator::ForkSink) front with its job queue and
+//!   branch-request table, and the `herdr-incarnations` thread that runs the
+//!   jobs.
 //! - **Resync**: the operator's `sync resync` salvage, run by the worker.
 //!
 //! # ForkProof
@@ -44,11 +45,13 @@ use super::envelope::{Envelope, EnvelopeError};
 
 mod requests;
 mod sink;
+mod worker;
 
 pub use requests::{
     BranchKey, Failover, Outstanding, PENALTY_MS, REQUEST_TIMEOUT_MS, RequestTable, Swept,
 };
 pub use sink::{IncarnationsSink, JOB_QUEUE_SLOTS, Job, JobQueue, Overflow};
+pub use worker::{HELD_LINE, IncarnationsWorker, WorkerDeps};
 
 /// Two validly signed entries proven distinct at one counter.
 ///
