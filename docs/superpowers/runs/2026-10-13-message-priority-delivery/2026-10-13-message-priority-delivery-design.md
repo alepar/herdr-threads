@@ -312,3 +312,7 @@ The invitation and receipt walks seek only pending, published items (`digest_pen
 ### 2026-10-14, main-merge wake rule and its served-in-turn check (ht-327 merge seam, ht-yha.45 de8d9f57, ht-yha.54)
 
 From v0.11.0: reason `lazy` counts as seat attention for the one-process composer wake (`WakeReservation::for_seat_attention`), like `pending_receipt` (see the Merge note in §Delivery model). `wake_owed_to_binding` refuses a `lazy` wake to a binding whose own cursor or display mark already covers the frontier row; after ht-yha.54 it decides without the seat-wide `state`.
+
+### 2026-10-14, connected-only pending views (ht-yha.57)
+
+User decision ("SGTM"): a binding holds a pending view only while connected; every disconnect, process exit included, drops it, and the next connected transition re-seeds it from its cursors and display marks at a cost proportional to its own backlog, so a disconnected session costs only its cursor and marks.

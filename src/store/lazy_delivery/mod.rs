@@ -129,7 +129,7 @@ macro_rules! seat_owes_display_sql {
     () => {
         concat!(
             "(r.legacy_pending=1 OR EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=r.seat_id AND b.role='top_level' AND ",
-            $crate::store::lazy_delivery::view_held_sql!("b"),
+            "(b.ended_at IS NULL AND (b.liveness='connected' OR b.disconnect_reason='liveness_process_exit'))",
             " AND ",
             $crate::store::lazy_delivery::binding_lazy_unread_sql!(),
             "))"
@@ -137,28 +137,27 @@ macro_rules! seat_owes_display_sql {
     };
 }
 
-/// A binding (alias `$b`) that can still be offered delivery rows, so it holds a pending view
-/// (`binding_pending`): open and connected, or disconnected because its process exited (it reconnects on
-/// its next call). The v47 triggers `binding_pending_publish` and `binding_pending_legacy_set` spell the
-/// same predicate for alias `b` (pinned by `the_view_triggers_spell_the_held_predicate`).
+/// A binding (alias `$b`) that holds a pending view (`binding_pending`): open and connected, any role (a
+/// subagent reads its own stream). Any disconnect, process exit included, drops the view
+/// (`bindings::disconnect_with_hooks`) and the connected transition re-seeds it (`bindings::connect`), so a
+/// disconnected binding costs only its cursors and display marks. The v47 triggers `binding_pending_publish`
+/// and `binding_pending_legacy_set` spell the same predicate for alias `b` (pinned by
+/// `the_view_triggers_spell_the_held_predicate`).
 macro_rules! view_held_sql {
     ($b:literal) => {
         concat!(
             "(",
             $b,
-            ".ended_at IS NULL AND (",
+            ".ended_at IS NULL AND ",
             $b,
-            ".liveness='connected' OR ",
-            $b,
-            ".disconnect_reason='liveness_process_exit'))"
+            ".liveness='connected')"
         )
     };
 }
-pub(crate) use view_held_sql;
 
-/// The published rows a held binding (`view_held_sql!`) finds unread now (`binding_lazy_unread_sql!`): the
-/// seed of a binding's pending view (`binding_pending`). The triggers of v47 keep the view after that; this
-/// is the only Rust writer.
+/// The published rows a held (connected) binding (`view_held_sql!`) finds unread now
+/// (`binding_lazy_unread_sql!`): the backfill seed of every binding's pending view (`binding_pending`). The
+/// triggers of v47 keep the view after that; a reconnect re-seeds one binding with `SEED_BINDING_VIEW_SQL`.
 macro_rules! seed_view_sql {
     ($filter:literal) => {
         concat!(
@@ -172,18 +171,45 @@ macro_rules! seed_view_sql {
     };
 }
 
-/// Seed `binding`'s pending view; only a held binding gets rows (`view_held_sql!`). Called by
-/// `read_cursors::seed` and by `bindings::connect` on every disconnected -> connected transition. `read_cursors::seed` runs it last, after the cursors and inherited marks
-/// are written, so the view starts as exactly the binding's unread rows (one pass over the seat's delivery
-/// rows, the cost class of `capture_high_water`'s binding form, once per enrolment, re-adoption or
-/// reopening).
+/// One binding's seed (`?1` binding, `?2` its seat). The candidates are a superset of every row the unread
+/// predicate accepts and are found without walking the seat's delivery history: the messages past each of
+/// the binding's cursors, the messages of the seat's joined or invited threads the binding has no cursor in,
+/// and the seat's legacy rows; each reaches its delivery row by `UNIQUE(message_id, seat_id)`. The unchanged
+/// predicate then decides exactly.
+pub(crate) const SEED_BINDING_VIEW_SQL: &str = concat!(
+    "WITH cand(ordinal) AS (",
+    "SELECT lr.ordinal FROM binding_cursors c CROSS JOIN messages cm INDEXED BY messages_thread_sequence ON cm.thread_id=c.thread_id AND cm.sequence>c.seq CROSS JOIN lazy_recipients lr ON lr.message_id=cm.id AND lr.seat_id=?2 WHERE c.binding_id=?1 ",
+    "UNION SELECT lr.ordinal FROM memberships mb INDEXED BY memberships_seat_ordinal CROSS JOIN messages mm INDEXED BY messages_thread_sequence ON mm.thread_id=mb.thread_id CROSS JOIN lazy_recipients lr ON lr.message_id=mm.id AND lr.seat_id=?2 WHERE mb.seat_id=?2 AND mb.state IN ('joined','invited') AND NOT EXISTS(SELECT 1 FROM binding_cursors nc WHERE nc.binding_id=?1 AND nc.thread_id=mb.thread_id) ",
+    "UNION SELECT lg.ordinal FROM lazy_recipients lg INDEXED BY lazy_recipients_legacy WHERE lg.seat_id=?2 AND lg.legacy_pending=1) ",
+    "INSERT OR IGNORE INTO binding_pending(binding_id,ordinal,thread_id,priority,decision_seq) SELECT b.binding_id,r.ordinal,r.thread_id,r.priority,r.decision_seq FROM occupant_bindings b JOIN lazy_recipients r ON r.ordinal IN (SELECT ordinal FROM cand) JOIN messages m ON m.id=r.message_id WHERE b.binding_id=?1 AND ",
+    view_held_sql!("b"),
+    " AND r.decision_seq IS NOT NULL AND ",
+    binding_lazy_unread_sql!()
+);
+
+/// Seed `binding`'s pending view from its cursors, display marks and (top-level) legacy rows; only a
+/// connected binding gets rows (`view_held_sql!`). Called by `read_cursors::seed` (enrolment, re-adoption,
+/// reopening) and by `bindings::connect` on every disconnected -> connected transition. Cost: the messages
+/// past its cursors, the scope threads it has no cursor in and the seat's legacy rows, never the seat's
+/// delivery history.
 pub fn seed_binding_pending(tx: &Connection, binding: &BindingId) -> Result<(), ApiError> {
-    tx.execute(seed_view_sql!("b.binding_id=?1"), [binding.as_str()])
+    let seat: Option<String> = tx
+        .query_row(
+            "SELECT seat_id FROM occupant_bindings WHERE binding_id=?1",
+            [binding.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some(seat) = seat else {
+        return Ok(());
+    };
+    tx.execute(SEED_BINDING_VIEW_SQL, params![binding.as_str(), seat])
         .map_err(store_error)?;
     Ok(())
 }
 
-/// Seed the view of every held binding (the v47 migration's backfill and the pre-amendment repair).
+/// Seed the view of every held binding (the v47 migration's backfill).
 pub fn seed_all_binding_pending(conn: &Connection) -> Result<(), ApiError> {
     conn.execute(seed_view_sql!("1"), []).map_err(store_error)?;
     Ok(())

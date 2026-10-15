@@ -20,6 +20,9 @@ non-human `recipients`; its joined snapshot gets priority-0 delivery rows (A8).
 Amended 2026-10-14 for per-session pending views held only by bindings that can still be offered rows
 (ht-yha.54): a binding disconnected other than by process exit drops its view and is re-seeded on reconnect;
 no delivery or wake decision reads the seat-wide delivery-row state (A8).
+Amended 2026-10-14 for connected-only pending views (ht-yha.57): every disconnect, process exit included, drops
+the binding's view and its next connected transition re-seeds it from its cursors and display marks; a
+disconnected binding costs publication nothing (A8).
 
 ## Abstract
 
@@ -803,24 +806,21 @@ pending for a binding until that binding displays it, by any display path (a com
 display: a full `body` read, an `accept` display, a hook page whose completion then failed), its cursor
 passes it, or the binding ends. A binding's own reads (inbox, hook, accept, presentation) seek only its own
 view, so a sibling's display never changes what a binding is offered and a sibling's undisplayed backlog
-never costs it anything. A view is held only by a binding that can still be offered rows: a connected binding
-(any role; a subagent reads its own stream) and one disconnected because its process exited (it reconnects on
-its next call). A binding disconnected as superseded, by an end event (a session end or a subagent stop), by
-seat retirement or unresolve, as replaced or by migration drops its view in the disconnecting transaction, and
-publication writes it no rows while it stays so; when it reconnects (a lifecycle check-in such as a resume, a
-re-adoption or a reopening) its view is re-seeded from its own cursors and display marks, so it is offered
+never costs it anything. A view is held only by a connected binding (any role; a subagent reads its own stream). Every disconnect (a
+process exit, superseded, an end event such as a session end or a subagent stop, seat retirement or unresolve,
+replaced, migration) drops the view in the disconnecting transaction, and publication writes it no rows while it
+stays disconnected, so a disconnected binding costs only its cursors and display marks; when it reconnects (a
+plain call after a process exit, or a lifecycle check-in such as a resume, a re-adoption or a reopening) its
+view is re-seeded, at a cost proportional to its own backlog, from its own cursors and display marks, so it is offered
 exactly the rows it has not displayed, whatever a sibling displayed meanwhile. No seat-level view reads a
 disconnected binding's view: the wake frontier and discovery, the seat inbox filter, the digest's pending
 count and the mod fingerprint, kick count and stall rule consider connected top-level bindings only (plus
 legacy seat-pending rows). The seat-wide `displayed` mark (set once no top-level binding that still owes the
 row, connected or disconnected by process exit, finds it unread) is kept only as the join frontier's "no
 completion has displayed" fact below and the binding-less completion state; no delivery or wake decision reads
-it (the served-in-turn recheck asks the woken binding's own cursor and marks). Accepted limits: a binding
-outside that set (a superseded session whose stale process still calls, say) sees no delivery rows in its own
-reads until a lifecycle check-in reconnects it; a process-exited binding that never returns keeps its view
-until it reconnects or ends, so every publication to its seat adds one view row for it inside the sender's
-publish transaction and its view grows with the seat's traffic while it stays away; bindings disconnected any
-other way cost publication nothing.
+it (the served-in-turn recheck asks the woken binding's own cursor and marks). Accepted limit: a disconnected binding
+whose process still calls without reconnecting (a superseded session's stale process, say; plain calls never
+reconnect it) sees no delivery rows in its own reads until a lifecycle check-in reconnects it.
 Already addressed rows survive leaving, retirement and archival, with no transfer to another seat.
 Undisplayed rows (`state` still `pending`) past the seat's furthest cursor when it joins become seat-pending
 (join frontier, below).
