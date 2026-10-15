@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.0
+
 - **Breaking: protocol 8, upgrade the CLI and daemon together.** Version 1.0.0 speaks wire protocol 8; a mixed older CLI or daemon is refused with the stop-then-ensure remedy.
 - **Breaking: message priority replaces lazy and ordinary delivery.** Every message has a priority 0-9 (`--priority`/`-p`, 0 most urgent, default 1); an idle seat wakes on a pending item only when its priority is at or below the seat's nudge threshold (default 0). `--nudge` is `-p 0`: it now creates only priority-0 delivery rows, with no receipts, deadlines or overdue warnings for joined agents (v0.11's `--nudge` created all three); use `--require-ack` (optionally with `--deadline`) when you need a confirmation. `--nudge --deadline N` is refused (a deadline requires `--require-ack` recipients). `send --lazy` is removed and refused with a message naming its replacement.
 - **Breaking: every invitation confirms.** New invitations are priority 0, wake the invitee and carry an acceptance deadline with an overdue warning to the inviter. An invite request asking for a lazy confirmation is ignored, and a human's explicit `RequireAck` request is accepted (v0.11 refused it). `invite --lazy`, `invite --require-ack` and `handoff --require-invite-ack` are removed: they are still parsed and refused with a message naming the replacement (exit 2). New 1:1 pairs auto-join both seats without an invitation.
