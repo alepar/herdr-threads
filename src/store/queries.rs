@@ -1375,7 +1375,7 @@ fn seats(
                 .optional(),
             (None, false) => db
                 .query_row(
-                    "SELECT ordinal,id,state,target_id,generation,created_at,retired_at FROM seats WHERE instance_id=?1 AND state='resolved' AND ordinal<?2 AND ordinal<=?3 UNION ALL SELECT ordinal,id,state,target_id,generation,created_at,retired_at FROM seats WHERE instance_id=?1 AND state='unresolved' AND ordinal<?2 AND ordinal<=?3 ORDER BY ordinal DESC LIMIT 1",
+                    "SELECT ordinal,id,state,target_id,generation,created_at,retired_at FROM seats WHERE instance_id=?1 AND state='resolved' AND ordinal<?2 AND ordinal<=?3 UNION ALL SELECT ordinal,id,state,target_id,generation,created_at,retired_at FROM seats WHERE instance_id=?1 AND state='unresolved' AND ordinal<?2 AND ordinal<=?3 UNION ALL SELECT ordinal,id,state,target_id,generation,created_at,retired_at FROM seats WHERE instance_id=?1 AND state='remote' AND ordinal<?2 AND ordinal<=?3 ORDER BY ordinal DESC LIMIT 1",
                     params![instance, before, high],
                     map_row,
                 )
@@ -1415,7 +1415,12 @@ fn seats(
             retired_at,
         )?;
         (item.active, item.bindings) = presence(db, &id)?;
-        item.availability = Some(availability_label(db, &id)?);
+        // A remote seat's state column already says `remote`; it has no availability.
+        item.availability = if state == "remote" {
+            None
+        } else {
+            Some(availability_label(db, &id)?)
+        };
         let raw = cursor_for(
             instance,
             CursorScope::Seats,
@@ -1492,6 +1497,7 @@ fn seat_summary(
         "resolved" => ContinuityStatus::Resolved,
         "unresolved" => ContinuityStatus::Unresolved,
         "retired" => ContinuityStatus::Retired,
+        "remote" => ContinuityStatus::Remote,
         _ => return Err(api_error(ErrorCode::StoreCorrupt, "invalid seat state")),
     };
     Ok(SeatSummary {
@@ -1714,7 +1720,12 @@ fn participants(
             accepted_invitation,
             active,
             bindings,
-            availability: Some(availability_label(db, &seat)?),
+            // A remote seat has no bindings here: its state slot reads `remote`.
+            availability: Some(if seat_state == "remote" {
+                "remote".to_owned()
+            } else {
+                availability_label(db, &seat)?
+            }),
         };
         let mut next_cursor = cursor_for(
             instance,
@@ -6177,6 +6188,7 @@ fn participant_locations(
             "resolved" => crate::protocol::results::ContinuityStatus::Resolved,
             "unresolved" => crate::protocol::results::ContinuityStatus::Unresolved,
             "retired" => crate::protocol::results::ContinuityStatus::Retired,
+            "remote" => crate::protocol::results::ContinuityStatus::Remote,
             _ => {
                 return Err(api_error(
                     ErrorCode::StoreCorrupt,

@@ -1182,7 +1182,8 @@ fn pending_work_page_on(
 
 /// The seat walk of wake discovery: live (`seats_live_ordinal`) seats in ordinal
 /// order, excluding any seat whose current occupant is human (Wave 18).
-pub(crate) const WAKE_SEAT_WALK: &str = "SELECT s.ordinal,s.id FROM seats s INDEXED BY seats_live_ordinal WHERE s.instance_id=?1 AND s.host_id=?4 AND s.state!='retired' AND s.ordinal>?2 AND s.ordinal<=?3 AND NOT EXISTS (SELECT 1 FROM occupant_bindings INDEXED BY occupant_bindings_open WHERE seat_id=s.id AND ended_at IS NULL AND harness='human') ORDER BY s.ordinal LIMIT 1";
+// `s.is_local=1` spells `seats::LOCAL_SEAT` (a const &str cannot interpolate it).
+pub(crate) const WAKE_SEAT_WALK: &str = "SELECT s.ordinal,s.id FROM seats s INDEXED BY seats_live_ordinal WHERE s.instance_id=?1 AND s.host_id=?4 AND s.is_local=1 AND s.state!='retired' AND s.ordinal>?2 AND s.ordinal<=?3 AND NOT EXISTS (SELECT 1 FROM occupant_bindings INDEXED BY occupant_bindings_open WHERE seat_id=s.id AND ended_at IS NULL AND harness='human') ORDER BY s.ordinal LIMIT 1";
 
 /// What one discovery pass found: the candidates, the `(before, ordinal)` position
 /// of each, the last seat ordinal passed, and why the pass stopped.

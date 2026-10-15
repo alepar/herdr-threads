@@ -143,6 +143,7 @@ fn format_location(
         ContinuityStatus::Unresolved => {
             return format!("{target_text} unresolved; labels unavailable");
         }
+        ContinuityStatus::Remote => return "remote; labels unavailable".into(),
         ContinuityStatus::Resolved => {}
     }
     let current = target

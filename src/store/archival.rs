@@ -4,6 +4,7 @@ use super::{
     bindings,
     connection::{DecisionInstant, StoreContext, api_error, store_error},
     effective, schema,
+    seats::LOCAL_SEAT,
 };
 use crate::ports::HostId;
 use crate::protocol::{
@@ -329,8 +330,8 @@ fn seed(tx: &Transaction<'_>, instance: &str, rt: &Runtime, epoch: i64) -> Resul
         .collect::<Result<Vec<_>, _>>()
         .map_err(store_error)?;
     for (ordinal, seat, host) in &seats {
-        // A remote seat has no Herdr server here, so it has no sampler row; the
-        // remote-member rule is ht-5fr.4.14's.
+        // A remote seat has no Herdr server here, so it has no sampler row; a thread
+        // with a live remote member is deferred by `has_live_remote_member`.
         if let Some(host) = host {
             tx.execute(
                 "INSERT OR IGNORE INTO seat_archival(seat_id,instance_id,host_id,next_mono) VALUES(?1,?2,?3,0)",
@@ -386,6 +387,39 @@ pub(crate) fn member_active_for_archival(
     .map_err(store_error)
 }
 
+/// RemoteMemberArchivalRule: whether `thread` has a `joined` or `invited` member
+/// that is a non-retired remote seat; automatic archival then does not apply to it.
+///
+/// - Owns: the eligibility rule "only threads whose members are all local archive
+///   automatically". `journaled = 0` threads have no remote members and are
+///   unaffected. One probe on `memberships_thread_state`.
+/// - Hides: how locality is stored (it spells [`LOCAL_SEAT`] negated).
+/// - Must not: sample, start or reset a quiet period (the caller defers before any
+///   quiet-period bookkeeping), or decide archival for a thread without remote
+///   members.
+/// - Relationships: runs first in [`advance_channel`]; a remote seat's retirement
+///   (`seat.retired`, state `retired`) lifts the rule.
+/// - Errors: store errors only.
+///
+/// Accepted race (root design section 8/12, fact-kinds spec section 15): the probe
+/// reads the local membership view, so a remote seat's concurrent join that has
+/// not applied here yet does not block the archive, which then replicates as an
+/// LWW `thread.register`; posts still apply and an explicit `reopen` restores the
+/// thread.
+fn has_live_remote_member(tx: &Connection, thread: &str) -> Result<bool, ApiError> {
+    tx.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM memberships mb INDEXED BY memberships_thread_state \
+             JOIN seats s ON s.id=mb.seat_id \
+             WHERE mb.thread_id=?1 AND mb.state IN ('joined','invited') \
+             AND NOT (s.{LOCAL_SEAT}) AND s.state!='retired')"
+        ),
+        [thread],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
+}
+
 fn defer(tx: &Transaction<'_>, thread: &str, rt: &Runtime) -> Result<(), ApiError> {
     tx.execute("UPDATE channel_archival SET scan_revision=NULL,scan_phase=0,scan_cursor=0,scan_key='',due_mono=?2 WHERE thread_id=?1",params![thread,rt.mono.saturating_add(CADENCE_MS)]).map_err(store_error)?;
     Ok(())
@@ -417,6 +451,12 @@ fn advance_channel(
     registry: &crate::harness::registry::Registry,
     ctx: Option<&StoreContext>,
 ) -> Result<usize, ApiError> {
+    // Before any quiet-period bookkeeping: a thread with a live remote member is
+    // not eligible, so it neither starts nor advances a quiet period here.
+    if has_live_remote_member(tx, thread)? {
+        defer(tx, thread, rt)?;
+        return Ok(1);
+    }
     type ChannelColumns = (
         Option<i64>,
         Option<String>,
@@ -540,8 +580,8 @@ fn scan_members(
         // A member qualifies only through its own host's `archival_hosts` row: the host
         // must have been coherent for the full grace and the sample must carry that
         // row's current epoch. An incoherent or unattached host defers only this
-        // thread. Only resolved local members get here (remote members are inactive
-        // for archival until ht-5fr.4.14's remote-member rule).
+        // thread. Only resolved local members get here (a thread with a live remote
+        // member never reaches this scan: `has_live_remote_member`).
         let qualified:Option<(i64,String)>=tx.query_row("SELECT a.last_mono,b.harness FROM seat_archival a JOIN seats s ON s.id=a.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL JOIN herdr_hosts h ON h.host_id=s.host_id JOIN archival_hosts ah ON ah.host_id=s.host_id WHERE a.seat_id=?1 AND s.instance_id=?2 AND ah.coherent_since IS NOT NULL AND ah.coherent_since<=?8 AND a.host_evidence_epoch=ah.evidence_epoch AND s.state='resolved' AND s.generation=a.binding_generation AND s.target_generation=a.target_generation AND s.target_id=a.target_id AND b.generation=a.binding_generation AND b.registered_at IS NOT NULL AND b.harness=a.harness AND b.role='top_level' AND b.liveness='connected' AND b.native_session=a.native_session AND b.execution_id=a.execution AND h.host_boot=a.host_boot AND h.host_epoch=a.host_epoch AND a.runtime_boot=?3 AND a.evidence_epoch=?4 AND a.samples>=2 AND a.idle_mono<=?5 AND a.last_mono>=?6 AND a.last_mono<=?7 AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.host_id=s.host_id AND rh.target_id=s.target_id AND rh.released_at IS NULL)",params![seat,instance,rt.boot,epoch,rt.mono.saturating_sub(rt.after_ms),rt.mono.saturating_sub(MAX_GAP_MS),rt.mono,rt.mono.saturating_sub(rt.after_ms)],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(store_error)?;
         let Some((last, harness)) = qualified else {
             return Ok((rows.len(), false, true));

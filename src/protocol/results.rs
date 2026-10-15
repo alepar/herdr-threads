@@ -1070,6 +1070,8 @@ pub enum ContinuityStatus {
     Resolved,
     Unresolved,
     Retired,
+    /// A seat homed on another node: listed and addressable, never bound here.
+    Remote,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
