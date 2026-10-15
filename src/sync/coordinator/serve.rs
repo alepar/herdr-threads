@@ -8,6 +8,13 @@
 //!   `max_frame`, and the throttled `have` deltas.
 //! - Hides: that serving is `spawn_blocking` and that a full data queue stops
 //!   a push until `CreditFreed` resumes it.
+//! - Also (ht-5fr.6.8): the fork half of serving. A `branch_want` is one
+//!   request, one reply, no subscription: at most [`MAX_BRANCH_OUTSTANDING`]
+//!   per link in FIFO order through [`JournalPort::serve_branch`] (one job
+//!   per link at a time), the rest and every branch this node cannot serve
+//!   answered `branch_none`. Inbound `branch_entries`/`branch_none` go to the
+//!   fork sink after a shape check, and the sink's outbox and fork refs go
+//!   out to `fork.v1` links only. No fork policy lives here.
 //! - Must not: touch SQLite, wait on a link's queue, or serve a log the
 //!   actor's `local` vector does not yet show (a want for a log not held yet
 //!   stays armed and is served once the log appears).
@@ -29,25 +36,20 @@ pub(super) struct ServeDone {
     pub result: Result<Vec<Envelope>, ApiError>,
 }
 
-/// Encode `envelopes` as `entries` frame bodies no longer than `max_frame`,
-/// halving the batch recursively. A single entry that is still too long goes
-/// alone (the link refuses it as `BadSize`). Each body comes with the last
-/// counter it carries.
+/// Encode `envelopes` as frame bodies (built by `build`) no longer than
+/// `max_frame`, halving the batch recursively. A single entry that is still
+/// too long goes alone (the link refuses it as `BadSize`). Each body comes
+/// with the last counter it carries.
 fn encode_halved(
-    log: &LogKey,
     envelopes: &[Envelope],
     max_frame: usize,
+    build: &dyn Fn(&[Envelope]) -> PeerFrame,
     out: &mut Vec<(Vec<u8>, u64)>,
 ) {
     let Some(last) = envelopes.last() else {
         return;
     };
-    let frame = PeerFrame::Entries {
-        node: log.node,
-        inc: log.incarnation,
-        entries: envelopes.iter().map(WireEnvelope::from).collect(),
-    };
-    let Ok(body) = frame.encode() else {
+    let Ok(body) = build(envelopes).encode() else {
         return;
     };
     if body.len() <= max_frame || envelopes.len() == 1 {
@@ -55,8 +57,27 @@ fn encode_halved(
         return;
     }
     let (head, tail) = envelopes.split_at(envelopes.len() / 2);
-    encode_halved(log, head, max_frame, out);
-    encode_halved(log, tail, max_frame, out);
+    encode_halved(head, max_frame, build, out);
+    encode_halved(tail, max_frame, build, out);
+}
+
+/// The batch limits a peer's hello allows.
+fn peer_batch_limits(peer: &PeerInfo) -> BatchLimits {
+    BatchLimits {
+        entries: (peer.limits.batch_entries as usize).clamp(1, BatchLimits::ENTRIES),
+        bytes: (peer.limits.batch_bytes as usize).clamp(1, BatchLimits::BYTES),
+    }
+}
+
+/// Most `branch_want`s one link may have outstanding (queued or in flight);
+/// the rest are answered `branch_none`.
+pub(super) const MAX_BRANCH_OUTSTANDING: usize = 4;
+
+/// A finished `serve_branch` job, joined by the actor.
+pub(super) struct BranchDone {
+    pub link: u64,
+    pub want: BranchWant,
+    pub result: Result<Option<Vec<Envelope>>, ApiError>,
 }
 
 impl Actor {
@@ -119,13 +140,7 @@ impl Actor {
         let Some((log, from)) = pick else {
             return;
         };
-        let limits = {
-            let peer = &entry.handle.peer().limits;
-            BatchLimits {
-                entries: (peer.batch_entries as usize).clamp(1, BatchLimits::ENTRIES),
-                bytes: (peer.batch_bytes as usize).clamp(1, BatchLimits::BYTES),
-            }
-        };
+        let limits = peer_batch_limits(entry.handle.peer());
         let journal = self.deps.journal.clone();
         self.serving.insert(link_id);
         self.serve_jobs.spawn_blocking(move || {
@@ -180,7 +195,12 @@ impl Actor {
         }
         let max_frame = entry.handle.peer().limits.max_frame as usize;
         let mut bodies = Vec::new();
-        encode_halved(&log, &envelopes, max_frame, &mut bodies);
+        let build = |batch: &[Envelope]| PeerFrame::Entries {
+            node: log.node,
+            inc: log.incarnation,
+            entries: batch.iter().map(WireEnvelope::from).collect(),
+        };
+        encode_halved(&envelopes, max_frame, &build, &mut bodies);
         let mut sent_to = None;
         let mut blocked = false;
         for (body, last_counter) in bodies {
@@ -274,4 +294,238 @@ pub(super) fn have_log(key: &LogKey, head: &LogHead) -> HaveLog {
             _ => None,
         },
     }
+}
+
+impl Actor {
+    /// The fork refs to advertise, capped so a misbehaving sink cannot make
+    /// the peer reject the `have`.
+    pub(super) fn fork_refs(&self) -> Vec<ForkRef> {
+        let mut refs = self.deps.fork_sink.fork_refs();
+        refs.truncate(MAX_HAVE_FORKS);
+        refs
+    }
+
+    /// A peer's `branch_want`: queue it (at most
+    /// [`MAX_BRANCH_OUTSTANDING`] per link, else `branch_none`) and serve the
+    /// queue's front. Ignored from a link without `fork.v1`.
+    pub(super) fn on_branch_want(&mut self, link_id: u64, want: BranchWant) {
+        let Some(entry) = self.links.get_mut(&link_id) else {
+            return;
+        };
+        if !entry.fork_active() {
+            return;
+        }
+        if entry.branch_queue.len() >= MAX_BRANCH_OUTSTANDING {
+            send_branch_none(entry, &want);
+            return;
+        }
+        entry.branch_queue.push_back(want);
+        self.start_branch(link_id);
+    }
+
+    /// Start the serve job for the front of the link's queue, unless one is
+    /// running. A tip that is not a hash cannot be served: `branch_none`.
+    fn start_branch(&mut self, link_id: u64) {
+        loop {
+            let Some(entry) = self.links.get_mut(&link_id) else {
+                return;
+            };
+            if entry.branch_busy {
+                return;
+            }
+            let Some(want) = entry.branch_queue.front().cloned() else {
+                return;
+            };
+            let Some(tip_hash) = hex_decode::<32>(&want.tip.hash) else {
+                entry.branch_queue.pop_front();
+                send_branch_none(entry, &want);
+                continue;
+            };
+            entry.branch_busy = true;
+            let limits = peer_batch_limits(entry.handle.peer());
+            let journal = self.deps.journal.clone();
+            self.branch_jobs.spawn_blocking(move || {
+                let budget = CallBudget {
+                    deadline: MonoInstant(u64::MAX),
+                    cancellation: Cancellation::default(),
+                };
+                let log = LogKey {
+                    node: want.node,
+                    incarnation: want.inc,
+                };
+                let result = journal.serve_branch(
+                    &log,
+                    (want.tip.counter, tip_hash),
+                    want.from,
+                    limits,
+                    &budget,
+                );
+                BranchDone {
+                    link: link_id,
+                    want,
+                    result,
+                }
+            });
+            return;
+        }
+    }
+
+    /// A `serve_branch` job finished: answer the request (halved to
+    /// `max_frame`, or `branch_none`) and start the next queued one. A reply
+    /// whose request left the queue (the link was demoted meanwhile) is
+    /// dropped.
+    pub(super) fn on_branch_served(&mut self, done: BranchDone) {
+        let BranchDone { link, want, result } = done;
+        if let Some(entry) = self.links.get_mut(&link) {
+            entry.branch_busy = false;
+            if entry.branch_queue.front() == Some(&want) {
+                entry.branch_queue.pop_front();
+                let batch = match result {
+                    Ok(Some(batch)) if !batch.is_empty() => Some(batch),
+                    Ok(_) => None,
+                    Err(e) => {
+                        (self.deps.log)(&format!(
+                            "sync: serve_branch {}/{} failed: {:?}",
+                            uuid8(&want.node),
+                            want.inc,
+                            e.code
+                        ));
+                        None
+                    }
+                };
+                let sent = batch.is_some_and(|batch| send_branch_entries(entry, &want, &batch));
+                if !sent {
+                    send_branch_none(entry, &want);
+                }
+            }
+        }
+        self.start_branch(link);
+    }
+
+    /// An inbound `branch_entries`/`branch_none`: a shape error drops the
+    /// frame and counts against the source (`on_corrupt`); otherwise the sink
+    /// gets it, and the credit goes back after.
+    pub(super) fn on_branch_reply(&mut self, link_id: u64, frame: PeerFrame, wire_len: usize) {
+        let len = u32::try_from(wire_len).unwrap_or(u32::MAX);
+        let Some(entry) = self.links.get(&link_id) else {
+            return;
+        };
+        let source = entry.handle.peer().node;
+        let fork_cap = entry.fork_cap();
+        match frame {
+            PeerFrame::BranchEntries {
+                node,
+                inc,
+                tip_hash,
+                entries,
+                more,
+            } => {
+                if !fork_cap {
+                    self.grant(link_id, len);
+                    return;
+                }
+                let decoded: Result<Vec<Envelope>, _> =
+                    entries.into_iter().map(Envelope::try_from).collect();
+                let Ok(decoded) = decoded else {
+                    self.grant(link_id, len);
+                    let log = LogKey {
+                        node,
+                        incarnation: inc,
+                    };
+                    self.on_corrupt(link_id, log, "malformed branch entry");
+                    return;
+                };
+                self.deps.fork_sink.on_branch(
+                    source,
+                    BranchReply::Entries {
+                        node,
+                        inc,
+                        tip_hash,
+                        entries: decoded.iter().map(WireEnvelope::from).collect(),
+                        more,
+                    },
+                );
+                self.grant(link_id, len);
+            }
+            PeerFrame::BranchNone {
+                node,
+                inc,
+                tip_hash,
+            } if fork_cap => {
+                self.deps.fork_sink.on_branch(
+                    source,
+                    BranchReply::None {
+                        node,
+                        inc,
+                        tip_hash,
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// The 1 s tick: hand the sink's `branch_want`s to the active `fork.v1`
+    /// link of their node (dropped when there is none), and when its refs
+    /// changed send one `have` delta carrying them to every such link.
+    pub(super) fn drain_fork_outbox(&mut self) {
+        let ForkOutbox {
+            sends,
+            refs_changed,
+        } = self.deps.fork_sink.outbox();
+        for (node, want) in sends {
+            let link = self
+                .by_node
+                .get(&node)
+                .into_iter()
+                .flatten()
+                .find_map(|id| self.links.get(id).filter(|l| l.fork_active()));
+            if let Some(entry) = link {
+                let _ = entry.handle.send(PeerFrame::BranchWant(want));
+            }
+        }
+        if refs_changed {
+            let forks = self.fork_refs();
+            for entry in self
+                .links
+                .values()
+                .filter(|l| l.fork_active() && l.announced)
+            {
+                let _ = entry.handle.send(PeerFrame::Have {
+                    full: false,
+                    ask: false,
+                    logs: Vec::new(),
+                    forks: forks.clone(),
+                });
+            }
+        }
+    }
+}
+
+/// Answer `want` with `branch_none`.
+fn send_branch_none(entry: &LinkEntry, want: &BranchWant) {
+    let _ = entry.handle.send(PeerFrame::BranchNone {
+        node: want.node,
+        inc: want.inc,
+        tip_hash: want.tip.hash.clone(),
+    });
+}
+
+/// Queue `batch` as `branch_entries` frames halved to the link's
+/// `max_frame`; `false` when any frame did not fit the data queue.
+fn send_branch_entries(entry: &LinkEntry, want: &BranchWant, batch: &[Envelope]) -> bool {
+    let max_frame = entry.handle.peer().limits.max_frame as usize;
+    let build = |part: &[Envelope]| PeerFrame::BranchEntries {
+        node: want.node,
+        inc: want.inc,
+        tip_hash: want.tip.hash.clone(),
+        entries: part.iter().map(WireEnvelope::from).collect(),
+        more: part.last().is_some_and(|e| e.counter < want.tip.counter),
+    };
+    let mut bodies = Vec::new();
+    encode_halved(batch, max_frame, &build, &mut bodies);
+    !bodies.is_empty()
+        && bodies
+            .into_iter()
+            .all(|(body, _)| entry.handle.try_send_entries(body).is_ok())
 }

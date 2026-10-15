@@ -30,6 +30,14 @@
 //!   (`super::dialer`, ht-5fr.5.7) is constructed here: [`SyncHandle::reload_targets`]
 //!   and [`SyncHandle::enabled_target_count`] reach it, a pacer kick re-diffs
 //!   its targets, and shutdown cancels its tasks.
+//! - Fork wiring (ht-5fr.6.8): `fork.v1` is advertised in the local caps; the
+//!   coordinator only moves fork frames. It hands every `have` (logs and fork
+//!   refs) to [`ForkSink::on_have`], serves `branch_want` from the journal
+//!   (no subscription, at most 4 outstanding per link, `branch_none` for the
+//!   rest), routes `branch_entries`/`branch_none` to [`ForkSink::on_branch`]
+//!   after a shape check, and on the 1 s tick drains [`ForkSink::outbox`] to
+//!   the `fork.v1` links. What a fork means, and which branches to ask for,
+//!   is the sink's policy, never the coordinator's.
 //! - Role: the single owner of per-link and per-log sync state, so routing
 //!   decisions that span links need no locks.
 //!
@@ -41,7 +49,7 @@
 //! Core and harness-neutral.
 
 use std::any::Any;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -56,8 +64,8 @@ use super::dialer::{DialConfig, DialShared, Dialer, DialerDeps};
 use super::envelope::{Envelope, GENESIS_KIND, WireEnvelope, hex_decode, hex_encode};
 use super::facts::GenesisPayload;
 use super::frame::{
-    BranchWant, CloseReason, FORK_CAP, ForkRef, HaveLog, MAX_HAVE_LOGS, PeerFrame, Role,
-    write_peer_frame,
+    BranchWant, CloseReason, FORK_CAP, ForkRef, HaveLog, MAX_HAVE_FORKS, MAX_HAVE_LOGS, PeerFrame,
+    Role, write_peer_frame,
 };
 use super::journal_port::{ForkEvidence, IngestOutcome, JournalPort};
 use super::link::{
@@ -81,7 +89,7 @@ mod serve;
 
 use ingest::{IngestDone, IngestJob};
 use routing::{DupKey, SourceView};
-use serve::ServeDone;
+use serve::{BranchDone, ServeDone};
 
 /// Offers the transport may have waiting for the actor.
 pub const PEER_INTAKE_SLOTS: usize = 16;
@@ -595,7 +603,9 @@ impl SyncCoordinator {
             dial: dialer.shared(),
             clock: deps.clock.clone(),
         };
-        let me = Arc::new(LocalHello::new(deps.identity.clone(), deps.boot));
+        let mut hello = LocalHello::new(deps.identity.clone(), deps.boot);
+        hello.caps.push(FORK_CAP.to_owned());
+        let me = Arc::new(hello);
         let actor = Actor {
             me,
             deps,
@@ -617,6 +627,7 @@ impl SyncCoordinator {
             dialer,
             serve_jobs: JoinSet::new(),
             serving: BTreeSet::new(),
+            branch_jobs: JoinSet::new(),
             ingest_jobs: jobs_tx,
             worker: Some(worker),
             retry_logs: BTreeSet::new(),
@@ -694,12 +705,29 @@ struct LinkEntry {
     push_cursor: Option<LogKey>,
     /// `entries` frames dropped as unsolicited.
     unsolicited: u64,
+    /// `branch_want`s the peer has outstanding, oldest first; the front is
+    /// the one being served while `branch_busy`.
+    branch_queue: VecDeque<BranchWant>,
+    /// A `serve_branch` job for the front of `branch_queue` is in flight.
+    branch_busy: bool,
     /// The heads the peer was last told of (a delta carries the difference).
     last_have_sent: Vector,
     /// When the last `have` went out.
     last_have_at: Option<MonoInstant>,
     /// Held so the transport's slot is released when the link is.
     _permit: Option<PeerPermit>,
+}
+
+impl LinkEntry {
+    /// The peer negotiated [`FORK_CAP`] on this link.
+    fn fork_cap(&self) -> bool {
+        self.handle.peer().caps.iter().any(|cap| cap == FORK_CAP)
+    }
+
+    /// Fork content may flow: the node's active, live link with the cap.
+    fn fork_active(&self) -> bool {
+        self.mode == LinkMode::Active && self.ranked && !self.closing && self.fork_cap()
+    }
 }
 
 /// A finished handshake attempt, joined from the actor's `JoinSet`.
@@ -746,6 +774,8 @@ struct Actor {
     serve_jobs: JoinSet<ServeDone>,
     /// Links with a serve job in flight.
     serving: BTreeSet<u64>,
+    /// `journal.serve_branch` reads in flight (at most one per link).
+    branch_jobs: JoinSet<BranchDone>,
     /// The ingest worker's FIFO.
     ingest_jobs: mpsc::UnboundedSender<IngestJob>,
     /// The worker task; ended at shutdown.
@@ -781,6 +811,11 @@ impl Actor {
                 Some(joined) = self.serve_jobs.join_next(), if !self.serve_jobs.is_empty() => {
                     if let Ok(done) = joined {
                         self.on_served(done);
+                    }
+                }
+                Some(joined) = self.branch_jobs.join_next(), if !self.branch_jobs.is_empty() => {
+                    if let Ok(done) = joined {
+                        self.on_branch_served(done);
                     }
                 }
                 wake = pacer.wait(PACER_TICK) => {
@@ -934,6 +969,8 @@ impl Actor {
                         subs_out: BTreeMap::new(),
                         push_cursor: None,
                         unsolicited: 0,
+                        branch_queue: VecDeque::new(),
+                        branch_busy: false,
                         last_have_sent: Vector::default(),
                         last_have_at: None,
                         _permit: permit,
@@ -1122,6 +1159,7 @@ impl Actor {
         entry.errors.clear();
         entry.subs_out.clear();
         entry.push_cursor = None;
+        entry.branch_queue.clear();
         entry.last_have_sent = Vector::default();
         entry.last_have_at = None;
         self.drop_rx_of(link_id);
@@ -1211,7 +1249,10 @@ impl Actor {
             if matches!(frame, PeerFrame::Have { .. } | PeerFrame::Want { .. }) {
                 self.promote_on_traffic(link_id);
             } else {
-                if matches!(frame, PeerFrame::Entries { .. }) {
+                if matches!(
+                    frame,
+                    PeerFrame::Entries { .. } | PeerFrame::BranchEntries { .. }
+                ) {
                     // Never wanted here: hand its credit back.
                     if let Some(entry) = self.links.get_mut(&link_id) {
                         entry.unsolicited += 1;
@@ -1223,12 +1264,14 @@ impl Actor {
                 return;
             }
         }
-        // The branch frames and `seen` are recorded by ht-5fr.5.6 and
-        // ht-5fr.6.
+        // `seen` is recorded by ht-5fr.5.6.
         match frame {
             PeerFrame::Have {
-                full, ask, logs, ..
-            } => self.on_have(link_id, full, ask, &logs),
+                full,
+                ask,
+                logs,
+                forks,
+            } => self.on_have(link_id, full, ask, &logs, &forks),
             PeerFrame::Want { node, inc, from } => self.on_want(
                 link_id,
                 LogKey {
@@ -1247,13 +1290,24 @@ impl Actor {
             PeerFrame::Entries { node, inc, entries } => {
                 self.on_entries(link_id, node, inc, entries, wire_len);
             }
+            PeerFrame::BranchWant(want) => self.on_branch_want(link_id, want),
+            reply @ (PeerFrame::BranchEntries { .. } | PeerFrame::BranchNone { .. }) => {
+                self.on_branch_reply(link_id, reply, wire_len);
+            }
             _ => {}
         }
     }
 
     /// Merge a peer's `have` into its `peer_vector` and re-pick the rx source
     /// of every log it touched.
-    fn on_have(&mut self, link_id: u64, full: bool, ask: bool, logs: &[HaveLog]) {
+    fn on_have(
+        &mut self,
+        link_id: u64,
+        full: bool,
+        ask: bool,
+        logs: &[HaveLog],
+        forks: &[ForkRef],
+    ) {
         let now = self.mono();
         let Some(entry) = self.links.get_mut(&link_id) else {
             return;
@@ -1305,6 +1359,16 @@ impl Actor {
             self.reselect_log(log);
         }
         self.update_own_history();
+        // The sink sees every `have` after the merge; fork refs only from a
+        // peer that negotiated the cap (anything else it sent is ignored).
+        if let Some(entry) = self.links.get(&link_id) {
+            let peer = entry.handle.peer();
+            let fork_cap = peer.caps.iter().any(|cap| cap == FORK_CAP);
+            let forks = if fork_cap { forks } else { &[] };
+            self.deps
+                .fork_sink
+                .on_have(peer.node, fork_cap, logs, forks);
+        }
         if ask {
             self.request_local();
         }
@@ -1377,8 +1441,8 @@ impl Actor {
             .take(MAX_HAVE_LOGS)
             .map(|(key, head)| serve::have_log(key, head))
             .collect();
-        let forks = if entry.handle.peer().caps.iter().any(|cap| cap == FORK_CAP) {
-            self.deps.fork_sink.fork_refs()
+        let forks = if entry.fork_cap() {
+            self.fork_refs()
         } else {
             Vec::new()
         };
@@ -1560,6 +1624,7 @@ impl Actor {
         self.lift_pauses(now);
         self.failover(now);
         self.flush_have_deltas(now);
+        self.drain_fork_outbox();
         if self.refresh.is_empty() && self.links.values().any(|l| l.have_pending.is_some()) {
             // A read that failed leaves `have`s owed: try again.
             self.request_local();
@@ -1698,6 +1763,7 @@ impl Actor {
         self.link_cancel.cancel();
         self.handshakes.abort_all();
         self.serve_jobs.abort_all();
+        self.branch_jobs.abort_all();
         // Closing the FIFO ends the worker once its current batch is done.
         let (closed, _) = mpsc::unbounded_channel();
         drop(std::mem::replace(&mut self.ingest_jobs, closed));
@@ -1859,7 +1925,17 @@ mod tests {
         forks: Mutex<Vec<(LogKey, NodeUuid)>>,
         ack: Mutex<ForkAck>,
         resume: Mutex<Vec<LogKey>>,
+        /// Every `on_have`: source, fork cap, logs, fork refs.
+        haves: Mutex<Vec<RecordedHave>>,
+        /// Every `on_branch`.
+        branches: Mutex<Vec<(NodeUuid, BranchReply)>>,
+        /// What the next `outbox()` hands out.
+        outbox: Mutex<ForkOutbox>,
+        /// What `fork_refs()` answers.
+        refs: Mutex<Vec<ForkRef>>,
     }
+
+    type RecordedHave = (NodeUuid, bool, Vec<HaveLog>, Vec<ForkRef>);
 
     impl ForkSink for RecordingSink {
         fn on_fork(&self, log: LogKey, evidence: ForkEvidence, source: NodeUuid) -> ForkAck {
@@ -1873,6 +1949,21 @@ mod tests {
         fn on_clone(&self, report: CloneReport) {
             self.inner.on_clone(report.clone());
             self.clones.lock().unwrap().push(report);
+        }
+        fn on_have(&self, source: NodeUuid, fork_cap: bool, logs: &[HaveLog], forks: &[ForkRef]) {
+            self.haves
+                .lock()
+                .unwrap()
+                .push((source, fork_cap, logs.to_vec(), forks.to_vec()));
+        }
+        fn on_branch(&self, source: NodeUuid, reply: BranchReply) {
+            self.branches.lock().unwrap().push((source, reply));
+        }
+        fn outbox(&self) -> ForkOutbox {
+            std::mem::take(&mut *self.outbox.lock().unwrap())
+        }
+        fn fork_refs(&self) -> Vec<ForkRef> {
+            self.refs.lock().unwrap().clone()
         }
     }
 
@@ -1911,6 +2002,10 @@ mod tests {
             forks: Mutex::new(Vec::new()),
             ack: Mutex::new(ForkAck::Paused),
             resume: Mutex::new(Vec::new()),
+            haves: Mutex::new(Vec::new()),
+            branches: Mutex::new(Vec::new()),
+            outbox: Mutex::new(ForkOutbox::default()),
+            refs: Mutex::new(Vec::new()),
         });
         let status = Arc::new(WorkerStatus::default());
         let (handle, intake, join) = SyncCoordinator::start(CoordinatorDeps {
@@ -3095,6 +3190,8 @@ mod tests {
         script: Mutex<VecDeque<Scripted>>,
         stored: AtomicUsize,
         ingests: AtomicUsize,
+        /// While set, `serve_branch` waits (holds requests outstanding).
+        branch_gate: AtomicBool,
     }
 
     impl TestJournal {
@@ -3104,6 +3201,7 @@ mod tests {
                 script: Mutex::default(),
                 stored: AtomicUsize::new(0),
                 ingests: AtomicUsize::new(0),
+                branch_gate: AtomicBool::new(false),
             })
         }
 
@@ -3145,6 +3243,9 @@ mod tests {
             limits: BatchLimits,
             budget: &CallBudget,
         ) -> Result<Option<Vec<Envelope>>, ApiError> {
+            while self.branch_gate.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
             self.inner.serve_branch(log, tip, from, limits, budget)
         }
         fn log_meta(
@@ -3893,6 +3994,394 @@ mod tests {
         }));
         b.send(entries_frame(&f.log, &f.envs[2..4])).await;
         b.find_unwant(f.log.node, 1).await;
+        stop(rig).await;
+    }
+    // -- fork wiring (ht-5fr.6.8) ------------------------------------------
+
+    fn fork_hello(n: u8) -> LocalHello {
+        let mut hello = peer_hello(n);
+        hello.caps.push(FORK_CAP.to_owned());
+        hello
+    }
+
+    fn fork_ref(n: u8) -> ForkRef {
+        use crate::sync::frame::TipRef;
+        ForkRef {
+            node: node_of(n),
+            inc: 1,
+            held: TipRef {
+                counter: 3,
+                hash: "aa".repeat(32),
+            },
+            conflicting: TipRef {
+                counter: 4,
+                hash: "bb".repeat(32),
+            },
+            frozen_at: 2,
+        }
+    }
+
+    /// A `branch_want` for `journal`'s own log, ending at its head.
+    fn want_own(journal: &TestJournal, from: u64) -> BranchWant {
+        let log = journal.inner.self_log();
+        let head = journal.view().0[&log];
+        BranchWant {
+            node: log.node,
+            inc: log.incarnation,
+            tip: crate::sync::frame::TipRef {
+                counter: head.counter,
+                hash: hex_encode(&head.head_hash),
+            },
+            from,
+        }
+    }
+
+    /// Counters of the next `branch_entries` frame, with its `more` flag.
+    async fn next_branch_entries(peer: &mut TestPeer) -> (String, Vec<u64>, bool) {
+        peer.find(|f| match f {
+            PeerFrame::BranchEntries {
+                tip_hash,
+                entries,
+                more,
+                ..
+            } => Some((
+                tip_hash.clone(),
+                entries.iter().map(|e| e.counter).collect(),
+                *more,
+            )),
+            _ => None,
+        })
+        .await
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn on_have_called_per_have() {
+        let (rig, _journal) = node(1, 0, 0);
+        let mut fork = connect(&rig, 0, &fork_hello(2)).await;
+        fork.expect_have().await;
+        let mut plain = connect(&rig, 1, &peer_hello(3)).await;
+        plain.expect_have().await;
+
+        fork.send_have(true, false, vec![have_log(node_of(9), 1, 2)])
+            .await;
+        fork.send(PeerFrame::Have {
+            full: false,
+            ask: false,
+            logs: Vec::new(),
+            forks: vec![fork_ref(9)],
+        })
+        .await;
+        // A peer without the cap that sends fork refs anyway.
+        plain
+            .send(PeerFrame::Have {
+                full: true,
+                ask: false,
+                logs: vec![have_log(node_of(8), 1, 1)],
+                forks: vec![fork_ref(8)],
+            })
+            .await;
+        until(|| rig.sink.haves.lock().unwrap().len() == 3).await;
+        let haves = rig.sink.haves.lock().unwrap().clone();
+        let by = |n: u8| {
+            haves
+                .iter()
+                .filter(|h| h.0 == node_of(n))
+                .collect::<Vec<_>>()
+        };
+        let from_fork = by(2);
+        assert_eq!(from_fork.len(), 2, "one call per have");
+        assert!(from_fork.iter().all(|h| h.1), "the cap is reported");
+        assert_eq!(from_fork[0].2.len(), 1);
+        assert!(from_fork[0].3.is_empty());
+        assert_eq!(from_fork[1].3, vec![fork_ref(9)]);
+        let from_plain = by(3);
+        assert_eq!(from_plain.len(), 1);
+        assert!(!from_plain[0].1, "no cap on that link");
+        assert_eq!(from_plain[0].2.len(), 1, "its logs are still handed over");
+        assert!(
+            from_plain[0].3.is_empty(),
+            "refs without the cap are ignored"
+        );
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn branch_want_served() {
+        let (rig, journal) = node(1, 5, 0);
+        let mut peer = connect(&rig, 0, &fork_hello(2)).await;
+        peer.expect_have().await;
+        let want = want_own(&journal, 2);
+        assert_eq!(want.tip.counter, 6);
+        peer.send(PeerFrame::BranchWant(want.clone())).await;
+        let (tip_hash, counters, more) = next_branch_entries(&mut peer).await;
+        assert_eq!(tip_hash, want.tip.hash);
+        assert_eq!(counters, [2, 3, 4, 5, 6]);
+        assert!(!more, "the batch reaches the tip");
+
+        // One request, one reply: later entries are not pushed.
+        journal
+            .inner
+            .author_raw("test.kind", payload(9, 0))
+            .unwrap();
+        let frames = peer.pump(3_000).await;
+        assert!(
+            !frames.iter().any(|f| matches!(
+                f,
+                PeerFrame::Entries { .. } | PeerFrame::BranchEntries { .. }
+            )),
+            "no subscription: {frames:?}"
+        );
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn branch_want_over_4_gets_branch_none() {
+        let (rig, journal) = node(1, 6, 0);
+        let mut peer = connect(&rig, 0, &fork_hello(2)).await;
+        peer.expect_have().await;
+        journal.branch_gate.store(true, Ordering::SeqCst);
+        for from in 1..=6 {
+            peer.send(PeerFrame::BranchWant(want_own(&journal, from)))
+                .await;
+        }
+        // Two requests over the cap: answered at once, while the first four
+        // are still waiting for the journal.
+        for _ in 0..2 {
+            let none = peer
+                .find(|f| match f {
+                    PeerFrame::BranchNone { tip_hash, .. } => Some(tip_hash.clone()),
+                    PeerFrame::BranchEntries { .. } => panic!("served before the gate opened"),
+                    _ => None,
+                })
+                .await;
+            assert_eq!(none, want_own(&journal, 1).tip.hash);
+        }
+        journal.branch_gate.store(false, Ordering::SeqCst);
+        let mut firsts = Vec::new();
+        for _ in 0..4 {
+            firsts.push(next_branch_entries(&mut peer).await.1[0]);
+        }
+        assert_eq!(firsts, [1, 2, 3, 4], "FIFO");
+        let frames = peer.pump(2_000).await;
+        assert!(
+            !frames.iter().any(|f| matches!(
+                f,
+                PeerFrame::BranchEntries { .. } | PeerFrame::BranchNone { .. }
+            )),
+            "the over-cap requests got no second answer: {frames:?}"
+        );
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn branch_none_when_journal_cannot_serve() {
+        let (rig, journal) = node(1, 3, 0);
+        let mut peer = connect(&rig, 0, &fork_hello(2)).await;
+        peer.expect_have().await;
+        let mut wrong_hash = want_own(&journal, 1);
+        wrong_hash.tip.hash = "11".repeat(32);
+        let mut unknown_log = want_own(&journal, 1);
+        unknown_log.inc = 77;
+        let mut not_hex = want_own(&journal, 1);
+        not_hex.tip.hash = "zz".into();
+        for want in [&wrong_hash, &unknown_log, &not_hex] {
+            peer.send(PeerFrame::BranchWant(want.clone())).await;
+            let (hash, inc) = peer
+                .find(|f| match f {
+                    PeerFrame::BranchNone { tip_hash, inc, .. } => Some((tip_hash.clone(), *inc)),
+                    PeerFrame::BranchEntries { .. } => panic!("served an unservable branch"),
+                    _ => None,
+                })
+                .await;
+            assert_eq!((hash, inc), (want.tip.hash.clone(), want.inc));
+        }
+        // The link still serves a good request afterwards.
+        peer.send(PeerFrame::BranchWant(want_own(&journal, 1)))
+            .await;
+        assert_eq!(next_branch_entries(&mut peer).await.1, [1, 2, 3, 4]);
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn branch_replies_reach_on_branch_with_credit_granted() {
+        let (rig, _journal) = node(1, 0, 0);
+        let f = foreign(9, 2);
+        let mut peer = connect(&rig, 0, &fork_hello(2)).await;
+        peer.expect_have().await;
+        let frame = PeerFrame::BranchEntries {
+            node: f.log.node,
+            inc: f.log.incarnation,
+            tip_hash: "cc".repeat(32),
+            entries: f.envs.iter().map(WireEnvelope::from).collect(),
+            more: true,
+        };
+        let len = wire_len(&frame);
+        peer.send(frame).await;
+        assert_eq!(
+            peer.find_credit().await,
+            len,
+            "the frame's credit comes back"
+        );
+        peer.send(PeerFrame::BranchNone {
+            node: f.log.node,
+            inc: f.log.incarnation,
+            tip_hash: "dd".repeat(32),
+        })
+        .await;
+        until(|| rig.sink.branches.lock().unwrap().len() == 2).await;
+        {
+            let branches = rig.sink.branches.lock().unwrap();
+            match &branches[0] {
+                (
+                    source,
+                    BranchReply::Entries {
+                        node,
+                        inc,
+                        tip_hash,
+                        entries,
+                        more,
+                    },
+                ) => {
+                    assert_eq!(*source, node_of(2));
+                    assert_eq!((*node, *inc), (f.log.node, f.log.incarnation));
+                    assert_eq!(tip_hash, &"cc".repeat(32));
+                    assert_eq!(entries.len(), 3);
+                    assert!(*more);
+                }
+                other => panic!("expected entries, got {other:?}"),
+            }
+            match &branches[1] {
+                (source, BranchReply::None { tip_hash, .. }) => {
+                    assert_eq!(*source, node_of(2));
+                    assert_eq!(tip_hash, &"dd".repeat(32));
+                }
+                other => panic!("expected none, got {other:?}"),
+            }
+        }
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn malformed_branch_envelope_dropped_and_counted() {
+        let (rig, _journal) = node(1, 0, 0);
+        let f = foreign(9, 2);
+        let mut peer = connect(&rig, 0, &fork_hello(2)).await;
+        peer.expect_have().await;
+        let mut entries: Vec<WireEnvelope> = f.envs.iter().map(WireEnvelope::from).collect();
+        entries[1].sig = "zz".into();
+        let frame = PeerFrame::BranchEntries {
+            node: f.log.node,
+            inc: f.log.incarnation,
+            tip_hash: "cc".repeat(32),
+            entries,
+            more: false,
+        };
+        let len = wire_len(&frame);
+        peer.send(frame).await;
+        assert_eq!(peer.find_credit().await, len, "credit still comes back");
+        peer.pump(1_000).await;
+        assert!(
+            rig.sink.branches.lock().unwrap().is_empty(),
+            "the sink never saw the frame"
+        );
+        assert!(
+            rig.lines
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.contains("corrupt") && l.contains("malformed branch entry")),
+            "counted against the source: {:?}",
+            rig.lines.lock().unwrap()
+        );
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn outbox_sends_only_to_fork_cap_links() {
+        let (rig, journal) = node(1, 2, 0);
+        let mut fork = connect(&rig, 0, &fork_hello(2)).await;
+        fork.expect_have().await;
+        let mut plain = connect(&rig, 1, &peer_hello(3)).await;
+        plain.expect_have().await;
+        let to_fork = want_own(&journal, 1);
+        let to_plain = want_own(&journal, 2);
+        let to_nobody = want_own(&journal, 3);
+        *rig.sink.outbox.lock().unwrap() = ForkOutbox {
+            sends: vec![
+                (node_of(2), to_fork.clone()),
+                (node_of(3), to_plain),
+                (node_of(7), to_nobody),
+            ],
+            refs_changed: false,
+        };
+        let frames = fork.pump(2_000).await;
+        let wants: Vec<&BranchWant> = frames
+            .iter()
+            .filter_map(|f| match f {
+                PeerFrame::BranchWant(w) => Some(w),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(wants, [&to_fork]);
+        let frames = plain.pump(500).await;
+        assert!(
+            !frames.iter().any(|f| matches!(f, PeerFrame::BranchWant(_))),
+            "a link without fork.v1 got a branch_want: {frames:?}"
+        );
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn refs_changed_one_delta() {
+        let (rig, _journal) = node(1, 0, 0);
+        let mut fork = connect(&rig, 0, &fork_hello(2)).await;
+        fork.expect_have().await;
+        let mut plain = connect(&rig, 1, &peer_hello(3)).await;
+        plain.expect_have().await;
+        fork.pump(1_500).await;
+        plain.pump(100).await;
+
+        *rig.sink.refs.lock().unwrap() = vec![fork_ref(9)];
+        rig.sink.outbox.lock().unwrap().refs_changed = true;
+        let deltas = |frames: &[PeerFrame]| -> Vec<Vec<ForkRef>> {
+            frames
+                .iter()
+                .filter_map(|f| match f {
+                    PeerFrame::Have {
+                        full: false,
+                        ask: false,
+                        logs,
+                        forks,
+                    } if logs.is_empty() => Some(forks.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let frames = fork.pump(5_000).await;
+        assert_eq!(deltas(&frames), [vec![fork_ref(9)]], "exactly one delta");
+        let frames = plain.pump(100).await;
+        assert!(
+            !frames.iter().any(|f| matches!(f, PeerFrame::Have { .. })),
+            "a link without fork.v1 got a delta: {frames:?}"
+        );
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn full_have_carries_fork_refs_only_to_fork_cap_peers() {
+        let (rig, _journal) = node(1, 0, 0);
+        *rig.sink.refs.lock().unwrap() = vec![fork_ref(9)];
+        let mut fork = connect(&rig, 0, &fork_hello(2)).await;
+        let mut plain = connect(&rig, 1, &peer_hello(3)).await;
+        let forks_of = |frame: PeerFrame| match frame {
+            PeerFrame::Have { full, forks, .. } => {
+                assert!(full);
+                forks
+            }
+            other => panic!("expected have, got {other:?}"),
+        };
+        assert_eq!(forks_of(fork.next().await), vec![fork_ref(9)]);
+        assert!(forks_of(plain.next().await).is_empty());
         stop(rig).await;
     }
 }

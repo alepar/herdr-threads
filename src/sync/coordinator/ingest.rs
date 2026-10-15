@@ -194,7 +194,7 @@ impl Actor {
     }
 
     /// Return `len` bytes of credit to the sender on `link_id`.
-    fn grant(&self, link_id: u64, len: u32) {
+    pub(super) fn grant(&self, link_id: u64, len: u32) {
         if let Some(entry) = self.links.get(&link_id) {
             let _ = entry.handle.grant(len);
         }
@@ -307,7 +307,7 @@ impl Actor {
     /// Penalize `(link, log)` for [`CORRUPT_PENALTY_MS`], stop pulling the log
     /// from it and pick another source. With none, the same source is
     /// re-wanted when the penalty expires.
-    fn on_corrupt(&mut self, link_id: u64, log: LogKey, why: &str) {
+    pub(super) fn on_corrupt(&mut self, link_id: u64, log: LogKey, why: &str) {
         let now = self.mono();
         (self.deps.log)(&format!(
             "sync: corrupt {}/{} from link {link_id} ({why}); source penalized",
