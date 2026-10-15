@@ -701,32 +701,6 @@ impl StoreContext {
         upsert_host(&conn, endpoint, now).map_err(store_error)
     }
 
-    /// Attaches the remembered host: the `herdr_hosts` row with the greatest
-    /// `last_attached_at` whose endpoint satisfies `is_live` (stamped), or
-    /// `None` when no row qualifies and nothing is attached. Returns the host id and its endpoint.
-    pub fn attach_remembered(
-        &self,
-        is_live: &dyn Fn(&str) -> bool,
-    ) -> Result<Option<(i64, String)>, ApiError> {
-        let conn = self.open_initialized()?;
-        let mut statement = conn
-            .prepare(
-                "SELECT endpoint FROM herdr_hosts ORDER BY last_attached_at DESC, host_id DESC",
-            )
-            .map_err(store_error)?;
-        let endpoints = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
-            .map_err(store_error)?;
-        drop(statement);
-        drop(conn);
-        let Some(endpoint) = endpoints.into_iter().find(|endpoint| is_live(endpoint)) else {
-            return Ok(None);
-        };
-        let host_id = self.attach_host(&endpoint)?;
-        Ok(Some((host_id, endpoint)))
-    }
-
     /// Test hook: installs (or clears) the lane fault `lane_fault_check` consults.
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_lane_fault(&self, fault: Option<LaneFault>) {

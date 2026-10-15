@@ -162,7 +162,7 @@ impl DomainService {
     /// Owns: the one answer to "does this daemon have a Herdr server to act
     /// on", and `HostUnavailable` ("no Herdr server attached") when it has
     /// none (a store-only daemon). Does not own: choosing or attaching the
-    /// host (`HostChoice`), or its session. Role: the only service path to
+    /// host (`HostSessions` does), or its session. Role: the only service path to
     /// the host; `ResolveSeat`, the operator actions, `ContinuityCheckIn` and
     /// the automatic bootstrap paths get the host here and never read
     /// `current_target` directly. ht-5fr.2 makes this a per-seat lookup by

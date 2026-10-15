@@ -1,9 +1,15 @@
 use herdr_threads::{
-    app::{HostChoice, HostFactory, SystemClock, run_elected_guarded},
+    app::{SystemClock, run_elected_guarded},
     cli,
     daemon::paths::{NodePaths, RuntimeContext},
-    protocol::time::{Cancellation, Clock},
-    service::config::ServiceConfig,
+    protocol::{
+        ids::HostLocator,
+        time::{Cancellation, Clock},
+    },
+    service::{
+        config::ServiceConfig,
+        host_sessions::{HostAttachPlan, HostFactory},
+    },
 };
 use std::{
     ffi::OsString,
@@ -44,28 +50,41 @@ fn detached_child(args: &[OsString]) -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    // The host is chosen after the store opens: the hint attaches that
-    // endpoint, no hint attaches the remembered live one, else store-only.
-    let choice = match context.host_endpoint.clone() {
-        Some(endpoint) => HostChoice::Hint(endpoint),
-        None => HostChoice::Remembered,
+    // Servers attach after the store opens (spec §3 Startup): the hint first,
+    // then every remembered server whose socket exists. The hint is a
+    // canonical locator or the start is refused.
+    let hint = match context.host_endpoint.clone() {
+        Some(endpoint) => Some(
+            HostLocator::parse(endpoint.to_string_lossy().into_owned()).map_err(|error| {
+                io::Error::new(io::ErrorKind::InvalidInput, error.detail.to_string())
+            })?,
+        ),
+        None => None,
     };
     let factory_clock = Arc::clone(&clock);
-    let factory: HostFactory = Arc::new(move |endpoint| {
-        let host = Arc::new(herdr_threads::host::native::NativeCli::new(
-            endpoint.to_path_buf(),
-            Arc::clone(&factory_clock),
-        ));
-        (host.clone(), host)
-    });
+    let plan = HostAttachPlan {
+        hint,
+        factory: HostFactory {
+            build: Arc::new(move |locator| {
+                let host = Arc::new(herdr_threads::host::native::NativeCli::new(
+                    locator.as_path().to_path_buf(),
+                    Arc::clone(&factory_clock),
+                ));
+                (host.clone(), host)
+            }),
+            exists: Arc::new(|path| {
+                use std::os::unix::fs::FileTypeExt;
+                std::fs::metadata(path).is_ok_and(|meta| meta.file_type().is_socket())
+            }),
+        },
+    };
     runtime.block_on(run_elected_guarded(
         &paths,
         &context,
         clock,
         Cancellation::default(),
         config,
-        choice,
-        factory,
+        plan,
         |_| Ok(()),
     ))?;
     Ok(())

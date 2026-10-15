@@ -296,7 +296,7 @@ impl Fixture {
                     thread_clock,
                     thread_stop,
                     ServiceConfig::default(),
-                    herdr_threads::app::HostChoice::given_at(thread_host, thread_endpoint),
+                    herdr_threads::test_support::single_host_plan_at(thread_host, thread_endpoint),
                     move |d| {
                         tx.send(d.clone()).unwrap();
                         Ok(())

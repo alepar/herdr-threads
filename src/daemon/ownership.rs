@@ -29,7 +29,7 @@ pub struct EndpointDescriptor {
 
 /// The attached Herdr endpoint a descriptor publishes as `primary_host`, shared
 /// with the daemon's service factory: the elected daemon learns its host only
-/// after the store opens (`HostChoice`), which is after the lease exists and
+/// after the store opens (`HostSessions` startup attach), which is after the lease exists and
 /// before the descriptor is published. Cloning shares the value.
 #[derive(Debug, Clone, Default)]
 pub struct PrimaryHost(Arc<Mutex<Option<std::path::PathBuf>>>);
