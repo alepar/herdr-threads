@@ -321,18 +321,45 @@ impl StoreContext {
             .ok_or_else(|| api_error(ErrorCode::HostUnavailable, "no Herdr server attached"))
     }
 
-    /// Interim single-host attach: upserts the `herdr_hosts` row of `endpoint`
+    /// Attaches the Herdr server at `endpoint`: upserts its `herdr_hosts` row
     /// for this node (stamping `last_attached_at`) and makes it the primary
     /// host. It creates and verifies the store when it is new but opens no
     /// writer, so the writer's startup invariant report is still produced once,
-    /// by the store that opens next. The store-only start and `HostChoice`
-    /// (ht-5fr.1.7) replace this call.
+    /// by the store that opens next. Called once, by `HostChoice` at daemon
+    /// start.
     pub fn attach_host(&self, endpoint: &str) -> Result<i64, ApiError> {
         let conn = self.open_initialized()?;
         let now = self.clock.utc_now().0;
         let host_id = upsert_host(&conn, endpoint, now).map_err(store_error)?;
         self.set_primary_host(host_id);
         Ok(host_id)
+    }
+
+    /// Attaches the remembered host: the `herdr_hosts` row with the greatest
+    /// `last_attached_at` whose endpoint satisfies `is_live` (stamped and made
+    /// the primary host), or `None` when no row qualifies and nothing is
+    /// attached. Returns the host id and its endpoint.
+    pub fn attach_remembered(
+        &self,
+        is_live: &dyn Fn(&str) -> bool,
+    ) -> Result<Option<(i64, String)>, ApiError> {
+        let conn = self.open_initialized()?;
+        let mut statement = conn
+            .prepare(
+                "SELECT endpoint FROM herdr_hosts ORDER BY last_attached_at DESC, host_id DESC",
+            )
+            .map_err(store_error)?;
+        let endpoints = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
+            .map_err(store_error)?;
+        drop(statement);
+        drop(conn);
+        let Some(endpoint) = endpoints.into_iter().find(|endpoint| is_live(endpoint)) else {
+            return Ok(None);
+        };
+        let host_id = self.attach_host(&endpoint)?;
+        Ok(Some((host_id, endpoint)))
     }
 
     /// Binds `conn`, a connection this context did not open, to this context's

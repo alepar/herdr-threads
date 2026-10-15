@@ -213,6 +213,11 @@ fn change_mark(store: &SqliteStore, budget: &CallBudget) -> Result<(u64, i64), A
 }
 
 fn prune_snapshots(store: &SqliteStore, budget: &CallBudget) -> Result<SnapshotBatch, ApiError> {
+    // A store-only daemon has no attached host and so no host snapshots to
+    // prune; job and preparation pruning still run.
+    if store.context.primary_host().is_err() {
+        return Ok(SnapshotBatch::default());
+    }
     // Unchanged tables cannot have grown a candidate: skip the rescan. The
     // mark is read before the scan, so a commit that races it only forces
     // another scan.

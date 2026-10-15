@@ -97,7 +97,7 @@ impl Session {
                     // Measure commit latency and outage freezing independently
                     // of the configurable initial ordinary batching window.
                     ServiceConfig::default().with_wake_batch_delay(0).unwrap(),
-                    host,
+                    herdr_threads::app::HostChoice::given(host),
                     daemon_probe,
                     move |descriptor| {
                         ready_tx

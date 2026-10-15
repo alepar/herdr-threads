@@ -258,7 +258,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
                 daemon_clock,
                 thread_stop,
                 ServiceConfig::default(),
-                host,
+                herdr_threads::app::HostChoice::given(host),
                 move |descriptor| {
                     ready_tx
                         .send(descriptor.clone())

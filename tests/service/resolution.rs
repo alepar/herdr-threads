@@ -425,7 +425,7 @@ impl Fixture {
                     thread_clock,
                     thread_stop,
                     ServiceConfig::default(),
-                    thread_host,
+                    herdr_threads::app::HostChoice::given(thread_host),
                     move |descriptor| {
                         ready.send(descriptor.clone()).unwrap();
                         Ok(())
@@ -474,7 +474,7 @@ impl Fixture {
                     clock,
                     stop,
                     ServiceConfig::default(),
-                    host,
+                    herdr_threads::app::HostChoice::given(host),
                     move |descriptor| {
                         ready.send(descriptor.clone()).unwrap();
                         Ok(())

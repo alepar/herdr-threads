@@ -534,7 +534,7 @@ impl Rig {
                     clock,
                     daemon_stop,
                     config,
-                    host,
+                    herdr_threads::app::HostChoice::given(host),
                     probe,
                     move |descriptor| {
                         ready_tx

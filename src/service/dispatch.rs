@@ -157,6 +157,22 @@ impl DomainService {
         });
         Ok(self)
     }
+    /// The host-side identity resolver of the attached Herdr server.
+    ///
+    /// Owns: the one answer to "does this daemon have a Herdr server to act
+    /// on", and `HostUnavailable` ("no Herdr server attached") when it has
+    /// none (a store-only daemon). Does not own: choosing or attaching the
+    /// host (`HostChoice`), or its session. Role: the only service path to
+    /// the host; `ResolveSeat`, the operator actions, `ContinuityCheckIn` and
+    /// the automatic bootstrap paths get the host here and never read
+    /// `current_target` directly. ht-5fr.2 makes this a per-seat lookup by
+    /// `host_id` without changing its callers.
+    pub fn attached_host(&self) -> Result<&Arc<OrdinaryIdentity>, ApiError> {
+        self.current_target
+            .as_ref()
+            .ok_or_else(|| ApiError::host_unavailable("no Herdr server attached"))
+    }
+
     pub(crate) fn bootstrap_available(&self) -> bool {
         self.bootstrap.is_some()
     }
@@ -220,11 +236,11 @@ impl DomainService {
                     target: evidence.root_pane.clone(),
                     operation: request.identity.plan.payload.keys.resolve.clone(),
                 };
-                return self
-                    .current_target
-                    .as_ref()
-                    .ok_or_else(|| ApiError::unsupported("bootstrap identity unavailable"))?
-                    .with_bootstrap_observation(&*runtime.observer, &resolving, budget, |guard| {
+                return self.attached_host()?.with_bootstrap_observation(
+                    &*runtime.observer,
+                    &resolving,
+                    budget,
+                    |guard| {
                         runtime.store.automatic_bootstrap_recover(
                             &runtime.canonical,
                             request,
@@ -232,7 +248,8 @@ impl DomainService {
                             Some(guard),
                             budget,
                         )
-                    });
+                    },
+                );
             }
             let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
             return runtime.store.automatic_bootstrap_recover(
@@ -280,11 +297,11 @@ impl DomainService {
                 target: creation.root_pane,
                 operation: request.identity.plan.payload.keys.resolve.clone(),
             };
-            return self
-                .current_target
-                .as_ref()
-                .ok_or_else(|| ApiError::unsupported("bootstrap identity unavailable"))?
-                .with_bootstrap_observation(&*runtime.observer, &resolving, budget, |guard| {
+            return self.attached_host()?.with_bootstrap_observation(
+                &*runtime.observer,
+                &resolving,
+                budget,
+                |guard| {
                     if matches!(request.action, AutomaticBootstrapAction::CheckStart) {
                         return runtime.store.automatic_bootstrap_check_start(
                             &runtime.canonical,
@@ -305,7 +322,8 @@ impl DomainService {
                         Some(guard),
                         budget,
                     )
-                });
+                },
+            );
         }
         let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
         if matches!(
@@ -564,11 +582,11 @@ impl DomainService {
                     target: evidence.root_pane.clone(),
                     operation: request.identity.payload.resolve_key.clone(),
                 };
-                return self
-                    .current_target
-                    .as_ref()
-                    .ok_or_else(|| error(ErrorCode::Unsupported, "bootstrap identity unavailable"))?
-                    .with_bootstrap_observation(&*runtime.observer, &resolving, budget, |guard| {
+                return self.attached_host()?.with_bootstrap_observation(
+                    &*runtime.observer,
+                    &resolving,
+                    budget,
+                    |guard| {
                         runtime.store.bootstrap_recover(
                             &runtime.canonical,
                             request,
@@ -576,7 +594,8 @@ impl DomainService {
                             Some(guard),
                             budget,
                         )
-                    });
+                    },
+                );
             }
             let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
             return runtime.store.bootstrap_recover(
@@ -635,11 +654,11 @@ impl DomainService {
                 target: creation.root_pane,
                 operation: identity.payload.resolve_key.clone(),
             };
-            return self
-                .current_target
-                .as_ref()
-                .ok_or_else(|| error(ErrorCode::Unsupported, "bootstrap identity unavailable"))?
-                .with_bootstrap_observation(&*runtime.observer, &resolving, budget, |guard| {
+            return self.attached_host()?.with_bootstrap_observation(
+                &*runtime.observer,
+                &resolving,
+                budget,
+                |guard| {
                     let permit = self.store.issue_cooperative_permit(
                         crate::store::cooperative_permit_request(&mutation)?,
                         budget,
@@ -651,7 +670,8 @@ impl DomainService {
                         Some(guard),
                         budget,
                     )
-                });
+                },
+            );
         }
         let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
         let permit = if let PermitMutation::BeginBootstrap(command) = &mutation {
@@ -1302,12 +1322,7 @@ impl LocalService for DomainService {
                 self.cooperative_mutation(PermitMutation::CheckIn(check), peer, budget, read, true)
             }
             Command::ResolveSeat(request) => {
-                let preparation = self.current_target.as_ref().ok_or_else(|| {
-                    error(
-                        ErrorCode::Unsupported,
-                        "current-target preparation unavailable",
-                    )
-                })?;
+                let preparation = self.attached_host()?;
                 preparation
                     .resolve(request, budget)
                     .map(CommandResult::SeatResolved)
@@ -1326,12 +1341,7 @@ impl LocalService for DomainService {
                             "operator peer does not match elected owner",
                         )
                     })?;
-                let preparation = self.current_target.as_ref().ok_or_else(|| {
-                    error(
-                        ErrorCode::Unsupported,
-                        "current-target preparation unavailable",
-                    )
-                })?;
+                let preparation = self.attached_host()?;
                 let operator = OperatorCommand::try_from(command).map_err(|_| {
                     error(
                         ErrorCode::InvalidRequest,
@@ -1361,12 +1371,7 @@ impl LocalService for DomainService {
                         "caller peer does not match elected owner",
                     ));
                 }
-                let identity = self.current_target.as_ref().ok_or_else(|| {
-                    error(
-                        ErrorCode::Unsupported,
-                        "current-target preparation unavailable",
-                    )
-                })?;
+                let identity = self.attached_host()?;
                 identity.continuity(continuity, budget)
             }
             // Spec §4 summary protocol. The store decides entitlement against the
@@ -1502,6 +1507,67 @@ mod operator_tests {
                 .unwrap(),
             0
         );
+        drop(domain);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn attached_host_is_host_unavailable_without_host() {
+        use crate::protocol::{
+            authority::Harness,
+            commands::{ContinuityCheckIn, ResolveSeat},
+            ids::{ExecutionId, NativeSessionId},
+        };
+        let path = std::env::temp_dir().join(format!("no-host-{}.db", uuid::Uuid::new_v4()));
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        let store = Arc::new(
+            SqliteStore::new(
+                StoreContext::new(path.clone(), clock.clone()).with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
+                StoreSettings::default(),
+            )
+            .unwrap(),
+        );
+        // A service composed the way a store-only daemon is: no identity.
+        let domain = DomainService::new(
+            "34750f98bd59fcfc946da45aaabe933b".into(),
+            store,
+            clock.clone(),
+        )
+        .with_operator_owner(501)
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(8)));
+        let budget = || CallBudget {
+            deadline: MonoInstant(clock.monotonic_now().0 + 1000),
+            cancellation: Cancellation::default(),
+        };
+        let direct = domain.attached_host().map(|_| ()).unwrap_err();
+        assert_eq!(direct.code, ErrorCode::HostUnavailable);
+        assert_eq!(direct.detail, "no Herdr server attached");
+        for command in [
+            Command::ResolveSeat(ResolveSeat {
+                target: HostTargetId::new("p"),
+                operation: OperationId::new("op"),
+            }),
+            Command::OperatorFreshSeat(OperatorFreshSeat {
+                target: HostTargetId::new("p"),
+                operation: OperationId::new("op"),
+            }),
+            Command::ContinuityCheckIn(ContinuityCheckIn {
+                target: HostTargetId::new("p"),
+                harness: Harness::Codex,
+                native_session: NativeSessionId::new("n"),
+                source: "resume".into(),
+                operation: OperationId::new("op"),
+                execution: ExecutionId::new("e"),
+                liveness: None,
+            }),
+        ] {
+            let error = domain
+                .handle(command.clone(), PeerIdentity::from_kernel(501), &budget())
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::HostUnavailable, "{command:?}");
+            assert_eq!(error.detail, "no Herdr server attached", "{command:?}");
+        }
         drop(domain);
         let _ = std::fs::remove_file(path);
     }
