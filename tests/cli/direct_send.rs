@@ -111,7 +111,7 @@ impl Fixture {
             .unwrap();
         for seat in ["seat-a", "seat-b"] {
             db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES(?1,?2,'resolved','native',?1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![seat, instance.to_string()]).unwrap();
-            db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES(?1,?2,'b',1,1,0,'fresh','term-'||?2,'inc','coherent_enumeration',1)", rusqlite::params![instance.to_string(), seat]).unwrap();
+            db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),?2,'b',1,1,0,'fresh','term-'||?2,'inc','coherent_enumeration',1)", rusqlite::params![instance.to_string(), seat]).unwrap();
             db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES(?1,1,?1,'b',1,1,?2,'session','00000000-0000-4000-8000-000000000002',?3,0,'term-'||?1,'inc')", rusqlite::params![seat, if human {"human"} else {"codex"}, if human {"operator_human"} else {"cooperative_top_level"}]).unwrap();
         }
         let store = Arc::new(
@@ -1015,7 +1015,7 @@ fn invalid_target_and_caller_refuse_before_intent_or_pair() {
                     .unwrap();
             }
             "held" => {
-                f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES(?1,'seat-b','b',1,'operator')", [herdr_threads::node::NodeUuid::from_u128(1).to_string()]).unwrap();
+                f.db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),'seat-b','b',1,'operator')", [herdr_threads::node::NodeUuid::from_u128(1).to_string()]).unwrap();
             }
             "stale-caller" => {
                 f.db.execute("UPDATE seats SET generation=2 WHERE id='seat-a'", [])

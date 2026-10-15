@@ -209,8 +209,15 @@ impl Rig {
         });
         let writer = Arc::new(FairWriter::new(32));
         let identity = Arc::new(
-            OrdinaryIdentity::new(instance, store.clone(), host.clone(), clock.clone(), writer)
-                .with_observation_pacer(pacer.clone()),
+            OrdinaryIdentity::new(
+                instance,
+                crate::test_support::test_host_id(),
+                store.clone(),
+                host.clone(),
+                clock.clone(),
+                writer,
+            )
+            .with_observation_pacer(pacer.clone()),
         );
         Self {
             _dir: dir,

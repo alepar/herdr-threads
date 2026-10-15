@@ -1099,7 +1099,7 @@ pub fn settle_pulled_notices(
     };
     let current: bool = tx
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.binding_id=?5 AND s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=?3 AND b.generation=?3 AND b.native_session=?4 AND b.ended_at IS NULL AND b.role='top_level' AND b.agent_id='' AND b.liveness='connected' AND NOT EXISTS(SELECT 1 FROM recovery_holds h WHERE h.instance_id=s.instance_id AND h.target_id=s.target_id AND h.released_at IS NULL))",
+            "SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.binding_id=?5 AND s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=?3 AND b.generation=?3 AND b.native_session=?4 AND b.ended_at IS NULL AND b.role='top_level' AND b.agent_id='' AND b.liveness='connected' AND NOT EXISTS(SELECT 1 FROM recovery_holds h WHERE h.host_id=s.host_id AND h.target_id=s.target_id AND h.released_at IS NULL))",
             params![seat_id, instance, generation, native_session, binding.as_str()],
             |r| r.get(0),
         )

@@ -39,7 +39,7 @@ fn seed_discovery_database(conn: &Connection) {
     .unwrap();
     for (seat, target) in [("a", "pa"), ("b", "pb"), ("c", "pc"), ("d", "pd")] {
         conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", params![seat,target]).unwrap();
-        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [target]).unwrap();
+        conn.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [target]).unwrap();
     }
     // The acting seats hold a live, not-yet-registered cooperative binding.
     for (seat, target, session, execution) in [
@@ -1105,7 +1105,7 @@ fn current_binding_with_bumped_snapshot_generation_is_unavailable_and_warns_once
         Some("cooperative_top_level".into())
     );
     conn.execute(
-        "UPDATE observed_targets SET generation=2 WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND target_id='pb'",
+        "UPDATE observed_targets SET generation=2 WHERE host_id=(SELECT min(host_id) FROM herdr_hosts) AND target_id='pb'",
         [],
     )
     .unwrap();
@@ -1821,7 +1821,7 @@ fn ack_records_binding_generation_separately_from_target_generation() {
     conn.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
         .unwrap();
     conn.execute(
-        "UPDATE observed_targets SET generation=2 WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND target_id='pb'",
+        "UPDATE observed_targets SET generation=2 WHERE host_id=(SELECT min(host_id) FROM herdr_hosts) AND target_id='pb'",
         [],
     )
     .unwrap();

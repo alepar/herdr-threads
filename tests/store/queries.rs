@@ -1763,7 +1763,7 @@ fn inbox_continuation_stales_at_committed_retirement_fence() {
     assert!(first.has_more);
     db.execute_batch("UPDATE herdr_hosts SET host_boot='boot',host_epoch=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b';
         UPDATE seats SET target_id='target',target_generation=1 WHERE id='s';
-        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','target','boot',1,1,0,'fresh','term-'||'target','inc','coherent_enumeration',1);").unwrap();
+        INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'target','boot',1,1,0,'fresh','term-'||'target','inc','coherent_enumeration',1);").unwrap();
     super::super::control::begin_retirement(
         &store,
         &mut db,
@@ -2707,7 +2707,7 @@ fn retired_seat_has_no_actionable_pending_invitation_before_cleanup() {
         [],
     )
     .unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','target','boot',1,1,0,'fresh','term-'||'target','inc','coherent_enumeration',1)", []).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'target','boot',1,1,0,'fresh','term-'||'target','inc','coherent_enumeration',1)", []).unwrap();
     let job = super::super::control::begin_retirement(
         &store,
         &mut db,
@@ -2757,7 +2757,7 @@ fn committed_retirement_preserves_ack_acceptance_and_orphanhood_during_cleanup_l
     let (store, mut db) = fixture();
     db.execute_batch("UPDATE herdr_hosts SET host_boot='boot',host_epoch=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b';
         UPDATE seats SET target_id='target',target_generation=1 WHERE id='s';
-        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','target','boot',1,1,0,'fresh','term-'||'target','inc','coherent_enumeration',1);
+        INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'target','boot',1,1,0,'fresh','term-'||'target','inc','coherent_enumeration',1);
         INSERT INTO memberships(thread_id,seat_id,episode,state,joined_at) VALUES ('t','s',1,'joined',0);
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s',1,1);
         INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,accepted_actor_seat_id,accepted_generation,accepted_observation,accepted_at,created_decision_seq) VALUES ('accepted','t','s',1,'accepted',0,300,300,'s',1,'verified',50,(SELECT decision_seq+1 FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'));
@@ -3754,7 +3754,7 @@ fn seat_inspect_pages_binding_and_repair_history() {
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,ended_at) VALUES ('s',?1,'target','boot',1,'codex',?2,?2,'fresh',?1,?1)",params![n,format!("exec-{n}")]).unwrap();
     }
     db.execute_batch("COMMIT").unwrap();
-    db.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation) VALUES ('34750f98bd59fcfc946da45aaabe933b','target','s','operator_rebind',1,'boot',1,206)",[]).unwrap();
+    db.execute("INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation) VALUES ((SELECT min(host_id) FROM herdr_hosts),'target','s','operator_rebind',1,'boot',1,206)",[]).unwrap();
     let mut cursor = None;
     let mut count = 0;
     let mut repairs = 0;
@@ -4437,8 +4437,8 @@ fn full_bodies_page_boundaries_match_pagefit_oracle() {
 #[test]
 fn seat_inspect_shows_continuity_diagnostic() {
     let (store, db) = fixture();
-    db.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,continuity_diagnostic) VALUES ('34750f98bd59fcfc946da45aaabe933b','target','s','cooperative_continuity',1,'boot',1,2,'mismatch')",[]).unwrap();
-    db.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation) VALUES ('34750f98bd59fcfc946da45aaabe933b','target','s','operator_rebind',2,'boot',1,3)",[]).unwrap();
+    db.execute("INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,continuity_diagnostic) VALUES ((SELECT min(host_id) FROM herdr_hosts),'target','s','cooperative_continuity',1,'boot',1,2,'mismatch')",[]).unwrap();
+    db.execute("INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation) VALUES ((SELECT min(host_id) FROM herdr_hosts),'target','s','operator_rebind',2,'boot',1,3)",[]).unwrap();
     let q = Command::SeatInspect(SeatInspectQuery {
         seat: SeatId::new("s"),
         page: page(None),

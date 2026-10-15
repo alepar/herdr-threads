@@ -316,11 +316,16 @@ impl SqliteStore {
         // A store stuck with a hold nothing protects (reconciliation already
         // finished, no unresolved seat) is cleared once at daemon start.
         // A store with no attached Herdr host has no hold to clear.
-        if context.primary_host().is_ok() {
+        if let Ok(primary) = context.primary_host() {
             let tx = writer
                 .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                 .map_err(store_error)?;
-            seats::lift_baseline_hold_if_clear(&tx, &instance, context.clock().utc_now())?;
+            seats::lift_baseline_hold_if_clear(
+                &tx,
+                &instance,
+                crate::ports::HostId::from_row(primary),
+                context.clock().utc_now(),
+            )?;
             tx.commit().map_err(store_error)?;
         }
         Ok(Self {
@@ -2270,6 +2275,7 @@ impl StorePort for SqliteStore {
     fn begin_host_observation(
         &self,
         instance: &str,
+        host: crate::ports::HostId,
         budget: &CallBudget,
     ) -> Result<HostObservationAdmission, ApiError> {
         if instance != self.instance {
@@ -2279,7 +2285,7 @@ impl StorePort for SqliteStore {
             ));
         }
         let mut writer = self.writer(budget)?;
-        seats::begin_host_observation(&self.context, &mut writer, instance, budget)
+        seats::begin_host_observation(&self.context, &mut writer, instance, host, budget)
     }
     fn publish_current_target_observation(
         &self,

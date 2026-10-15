@@ -110,7 +110,7 @@ impl Fx {
         )
         .unwrap();
         db.execute(
-            "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'b',1,1,1,'fresh')",
+            "INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,1,'fresh')",
             [&target],
         )
         .unwrap();
@@ -574,7 +574,7 @@ fn held_unresolved_or_retired_seats_are_skipped() {
     )
     .unwrap();
     db.execute(
-        "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('34750f98bd59fcfc946da45aaabe933b','p-s','b',1,'restore')",
+        "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p-s','b',1,'restore')",
         [],
     )
     .unwrap();

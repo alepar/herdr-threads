@@ -7,10 +7,10 @@ use super::{
 };
 use crate::{
     ports::{
-        LogicalAttentionFrontier, LogicalPublicationKey, PokeDue, PokeReceipt, PokeReservation,
-        PriorLadder, RefusalCause, ReservedWakeAuthority, WakeAttentionWitness, WakeCandidate,
-        WakeOutcome, WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation, WakeTarget,
-        WarningOfferFrontier,
+        HostId, LogicalAttentionFrontier, LogicalPublicationKey, PokeDue, PokeReceipt,
+        PokeReservation, PriorLadder, RefusalCause, ReservedWakeAuthority, WakeAttentionWitness,
+        WakeCandidate, WakeOutcome, WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation,
+        WakeTarget, WarningOfferFrontier,
     },
     protocol::{
         commands::WakeOn,
@@ -50,9 +50,22 @@ pub fn load_candidate(
     attention: &EffectiveSeatAttention,
     scan_decision_seq: i64,
 ) -> Result<WakeCandidate, ApiError> {
-    let (state,target,generation,target_generation,boot,epoch,decision_seq,episode,open):(String,Option<String>,i64,i64,Option<String>,i64,i64,i64,i64)=db.query_row(
-        "SELECT s.state,s.target_id,s.generation,s.target_generation,h.host_boot,h.host_epoch,n.decision_seq,s.unavailability_episode,s.unavailability_open FROM seats s JOIN local_node n ON n.id=s.instance_id JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
-        params![seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).map_err(store_error)?;
+    type SeatColumns = (
+        String,
+        Option<String>,
+        i64,
+        i64,
+        Option<String>,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+    );
+    let (state,target,generation,target_generation,boot,epoch,decision_seq,episode,open,host_id):SeatColumns=db.query_row(
+        "SELECT s.state,s.target_id,s.generation,s.target_generation,h.host_boot,h.host_epoch,n.decision_seq,s.unavailability_episode,s.unavailability_open,h.host_id FROM seats s JOIN local_node n ON n.id=s.instance_id JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1 AND s.instance_id=?2",
+        params![seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?))).map_err(store_error)?;
+    let host = HostId::from_row(host_id);
     if decision_seq != scan_decision_seq {
         return Err(api_error(
             ErrorCode::CursorStale,
@@ -60,14 +73,14 @@ pub fn load_candidate(
         ));
     }
     let observation = if let Some(target) = target.as_deref() {
-        effective::effective_observation(db, instance, target)?
+        effective::effective_observation(db, host, target)?
     } else {
         None
     };
     let held: bool = if let Some(target) = target.as_deref() {
         db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE instance_id=?1 AND target_id=?2 AND released_at IS NULL)",
-        params![instance,target],|r|r.get(0)).map_err(store_error)?
+        "SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE host_id=?1 AND target_id=?2 AND released_at IS NULL)",
+        params![host.get(),target],|r|r.get(0)).map_err(store_error)?
     } else {
         false
     };
@@ -405,7 +418,7 @@ pub(super) fn human_bound_sql(seat_expr: &str) -> String {
 pub(super) fn reservable_seat_sql(seat_expr: &str) -> String {
     format!(
         "(EXISTS(SELECT 1 FROM seats rs WHERE rs.id={seat_expr} AND rs.state='resolved' AND rs.target_id IS NOT NULL \
-         AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.instance_id=rs.instance_id AND rh.target_id=rs.target_id AND rh.released_at IS NULL)) \
+         AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.host_id=rs.host_id AND rh.target_id=rs.target_id AND rh.released_at IS NULL)) \
          AND NOT {})",
         human_bound_sql(seat_expr)
     )
@@ -415,7 +428,7 @@ pub(super) fn reservable_seat_sql(seat_expr: &str) -> String {
 #[allow(clippy::too_many_arguments)]
 fn current_authority(
     db: &Connection,
-    instance: &str,
+    host: HostId,
     seat: &SeatId,
     target: &HostTargetId,
     generation: u64,
@@ -436,7 +449,7 @@ fn current_authority(
     if human {
         return Ok(None);
     }
-    let Some(observation) = effective::effective_observation(db, instance, target.as_str())? else {
+    let Some(observation) = effective::effective_observation(db, host, target.as_str())? else {
         return Ok(None);
     };
     if observation.host_boot != boot.as_str()
@@ -711,11 +724,12 @@ pub fn reserve(
         ));
     }
     let committed=context.execute_decision(db,|tx|{
-        type RowColumns = Option<(i64,i64,i64,i64,Option<String>,i64,String)>;
+        type RowColumns = Option<(i64,i64,i64,i64,Option<String>,i64,String,i64)>;
         let row:RowColumns=tx.query_row(
-            "SELECT n.decision_seq,s.unavailability_episode,s.unavailability_open,s.generation,s.target_id,s.target_generation,h.host_boot FROM seats s JOIN local_node n ON n.id=s.instance_id JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
-            params![candidate.seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
-        let Some((decision_seq,episode,open,generation,target,target_generation,boot))=row else {return Ok(None)};
+            "SELECT n.decision_seq,s.unavailability_episode,s.unavailability_open,s.generation,s.target_id,s.target_generation,h.host_boot,h.host_id FROM seats s JOIN local_node n ON n.id=s.instance_id JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1 AND s.instance_id=?2",
+            params![candidate.seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional().map_err(store_error)?;
+        let Some((decision_seq,episode,open,generation,target,target_generation,boot,host_id))=row else {return Ok(None)};
+        let host=HostId::from_row(host_id);
         if !witness.valid_for(candidate,instance,nonnegative(decision_seq)?,nonnegative(episode)?,open!=0) {return Ok(None)}
         // The lazy frontier is not covered by the decision sequence: re-read it
         // (and `wake_on`) so a reservation never rests on a moved frontier.
@@ -739,9 +753,9 @@ pub fn reserve(
             || current.last_reserved_frontier!=candidate.last_reserved_frontier {return Ok(None)}
         let Some(target)=target.map(HostTargetId::new) else {return Ok(None)};
         let boot=HostBootId::new(boot);
-        let host_epoch:i64=tx.query_row("SELECT host_epoch FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",[instance],|r|r.get(0)).map_err(store_error)?;
+        let host_epoch:i64=tx.query_row("SELECT host_epoch FROM herdr_hosts WHERE host_id=?1",[host.get()],|r|r.get(0)).map_err(store_error)?;
         let seat_attention=current.has_pending_invitation||current.has_pending_receipt||current.actionable_warning_seq.is_some();
-        let Some(authority)=current_authority(tx,instance,&candidate.seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?,seat_attention)? else {return Ok(None)};
+        let Some(authority)=current_authority(tx,host,&candidate.seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?,seat_attention)? else {return Ok(None)};
         Ok(Some((target,boot,nonnegative(host_epoch)?,nonnegative(target_generation)?,authority,current)))
     },|tx,at,prepared|{
         let Some((target,host_boot,host_epoch,target_generation,authority,current))=prepared else {return Ok(None)};
@@ -784,10 +798,10 @@ pub fn validate_reservation(
     instance: &str,
     reservation: &WakeReservation,
 ) -> Result<bool, ApiError> {
-    type RowColumns = Option<(i64, i64, i64, String, i64, i64, Option<String>, i64)>;
+    type RowColumns = Option<(i64, i64, i64, String, i64, i64, Option<String>, i64, i64)>;
     let row:RowColumns=db.query_row(
-        "SELECT n.decision_seq,s.unavailability_episode,s.unavailability_open,h.host_boot,h.host_epoch,s.target_generation,s.target_id,s.generation FROM seats s JOIN local_node n ON n.id=s.instance_id JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved'",
-        params![reservation.seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional().map_err(store_error)?;
+        "SELECT n.decision_seq,s.unavailability_episode,s.unavailability_open,h.host_boot,h.host_epoch,s.target_generation,s.target_id,s.generation,h.host_id FROM seats s JOIN local_node n ON n.id=s.instance_id JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved'",
+        params![reservation.seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).optional().map_err(store_error)?;
     let Some((
         seq,
         episode,
@@ -797,6 +811,7 @@ pub fn validate_reservation(
         target_generation,
         target,
         seat_generation,
+        host_id,
     )) = row
     else {
         return Ok(false);
@@ -845,7 +860,7 @@ pub fn validate_reservation(
     // candidate's epoch-current binding.
     let current = current_authority(
         db,
-        instance,
+        HostId::from_row(host_id),
         &reservation.seat,
         &reservation.target,
         nonnegative(seat_generation)?,
@@ -982,11 +997,12 @@ pub fn reserve_poke(
     }
     let seat = &due.seat;
     let committed=context.execute_decision(db,|tx|{
-        type RowColumns = Option<(i64,i64,i64,i64,Option<String>,i64,String,i64)>;
+        type RowColumns = Option<(i64,i64,i64,i64,Option<String>,i64,String,i64,i64)>;
         let row:RowColumns=tx.query_row(
-            "SELECT n.decision_seq,s.unavailability_episode,s.unavailability_open,s.generation,s.target_id,s.target_generation,h.host_boot,h.host_epoch FROM seats s JOIN local_node n ON n.id=s.instance_id JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
-            params![seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional().map_err(store_error)?;
-        let Some((decision_seq,episode,open,generation,target,target_generation,boot,host_epoch))=row else {return Ok(None)};
+            "SELECT n.decision_seq,s.unavailability_episode,s.unavailability_open,s.generation,s.target_id,s.target_generation,h.host_boot,h.host_epoch,h.host_id FROM seats s JOIN local_node n ON n.id=s.instance_id JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1 AND s.instance_id=?2",
+            params![seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).optional().map_err(store_error)?;
+        let Some((decision_seq,episode,open,generation,target,target_generation,boot,host_epoch,host_id))=row else {return Ok(None)};
+        let host=HostId::from_row(host_id);
         let Some(target)=target.map(HostTargetId::new) else {return Ok(None)};
         // Only the receipts still due now are covered, never a stale selection.
         let now=context.clock().utc_now().0;
@@ -998,7 +1014,7 @@ pub fn reserve_poke(
         if current.effectively_retired || !current.continuity_resolved || current.reservation_id.is_some() {return Ok(None)}
         let boot=HostBootId::new(boot);
         // A due receipt is seat-level attention: every connected top-level binding can act on it.
-        let Some(authority)=current_authority(tx,instance,seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?,true)? else {return Ok(None)};
+        let Some(authority)=current_authority(tx,host,seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?,true)? else {return Ok(None)};
         let witness=WakeAttentionWitness::from_complete(instance.into(),seat.clone(),nonnegative(decision_seq)?,false,true,None,nonnegative(episode)?,open!=0,LogicalAttentionFrontier::default());
         Ok(Some((target,boot,nonnegative(host_epoch)?,nonnegative(target_generation)?,authority,current,witness,receipts)))
     },|tx,at,prepared|{

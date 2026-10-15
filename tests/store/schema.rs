@@ -36,7 +36,7 @@ fn db_path() -> PathBuf {
 #[test]
 fn snapshot_generations_are_hidden_until_one_active_pointer_switch() {
     let (_context, db, _clock) = seeded_db(0);
-    db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('g1','34750f98bd59fcfc946da45aaabe933b','b',1,1,'inc',2,0,'building',0,0,0)", []).unwrap();
+    db.execute("INSERT INTO snapshot_generations(id,host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('g1',(SELECT min(host_id) FROM herdr_hosts),'b',1,1,'inc',2,0,'building',0,0,0)", []).unwrap();
     db.execute("INSERT INTO snapshot_targets(generation_id,target_id,terminal_id,generation,observation_sequence,occupancy,ui_state,observed_at) VALUES ('g1','p1','t1',1,1,'empty_shell','idle',0)", []).unwrap();
     db.execute("INSERT INTO snapshot_targets(generation_id,target_id,terminal_id,generation,observation_sequence,occupancy,ui_state,observed_at) VALUES ('g1','p2','t2',1,1,'occupied','idle',0)", []).unwrap();
     assert!(db.execute("INSERT INTO snapshot_targets(generation_id,target_id,terminal_id,generation,observation_sequence,occupancy,ui_state,observed_at) VALUES ('g1','p3','t2',1,1,'unknown','unknown',0)", []).is_err());
@@ -109,7 +109,7 @@ fn unresolved_origin_is_explicit_and_cannot_attach_to_a_resolved_seat() {
         )
         .is_err()
     );
-    db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('prior','34750f98bd59fcfc946da45aaabe933b','boot',1,1,'inc',0,0,'published',0,0,0)", []).unwrap();
+    db.execute("INSERT INTO snapshot_generations(id,host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('prior',(SELECT min(host_id) FROM herdr_hosts),'boot',1,1,'inc',0,0,'published',0,0,0)", []).unwrap();
     db.execute("UPDATE seats SET unresolved_from_generation_id='prior',unresolved_prior_binding_generation=1 WHERE id='s'", []).unwrap();
     assert!(
         db.execute("DELETE FROM snapshot_generations WHERE id='prior'", [])
@@ -1059,9 +1059,9 @@ fn structural_seat_proof_is_all_or_none_and_keeps_provenance() {
 #[test]
 fn target_observation_provenance_requires_complete_qualified_tuple() {
     let (_, db, _) = seeded_db(0);
-    assert!(db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,incarnation) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,1,2,0,'fresh','inc')",[]).is_err());
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,connection_epoch,incarnation,incarnation_source_kind) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,1,2,0,'fresh','term',3,'inc','native_current_target')",[]).unwrap();
-    db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('g','34750f98bd59fcfc946da45aaabe933b','b',1,2,'inc',1,1,'published',0,0,0)",[]).unwrap();
+    assert!(db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,incarnation) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,1,2,0,'fresh','inc')",[]).is_err());
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,connection_epoch,incarnation,incarnation_source_kind) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,1,2,0,'fresh','term',3,'inc','native_current_target')",[]).unwrap();
+    db.execute("INSERT INTO snapshot_generations(id,host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('g',(SELECT min(host_id) FROM herdr_hosts),'b',1,2,'inc',1,1,'published',0,0,0)",[]).unwrap();
     assert!(db.execute("INSERT INTO snapshot_targets(generation_id,target_id,generation,observation_sequence,connection_epoch,occupancy,ui_state,observed_at) VALUES ('g','p',1,2,3,'empty_shell','idle',0)",[]).is_err());
     db.execute("INSERT INTO snapshot_targets(generation_id,target_id,generation,observation_sequence,connection_epoch,incarnation_source_kind,terminal_id,occupancy,ui_state,observed_at) VALUES ('g','p',1,2,3,'coherent_enumeration','term','empty_shell','idle',0)",[]).unwrap();
 }
@@ -1313,7 +1313,7 @@ fn epoch_loss_opens_one_episode_and_later_registration_allows_a_new_one() {
         [],
     )
     .unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,1,1,'fresh')", []).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,1,1,'fresh')", []).unwrap();
     db.execute("INSERT INTO occupant_bindings(seat_id, generation, target_generation, target_id, host_boot, host_epoch, harness, native_session, execution_id, observation_provenance, observed_at, registered_at,terminal_id,incarnation) VALUES ('s',1,1,'p','b',1,'codex','n','e','verified',1,1,'term-'||'p','inc')", []).unwrap();
     db.execute("UPDATE seats SET unavailability_open=0 WHERE id='s'", [])
         .unwrap();
@@ -1353,7 +1353,7 @@ fn epoch_loss_opens_one_episode_and_later_registration_allows_a_new_one() {
 #[test]
 fn target_generation_change_opens_episode_before_binding_reconciliation() {
     let (_, mut db, _) = seeded_db(10);
-    db.execute_batch("UPDATE seats SET target_id='p', target_generation=1, unavailability_open=0 WHERE id='s'; UPDATE herdr_hosts SET host_boot='b', host_epoch=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'; INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,1,1,'fresh'); INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'p','b',1,'codex','n','e','verified',1,1,'term-'||'p','inc');").unwrap();
+    db.execute_batch("UPDATE seats SET target_id='p', target_generation=1, unavailability_open=0 WHERE id='s'; UPDATE herdr_hosts SET host_boot='b', host_epoch=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'; INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,1,1,'fresh'); INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'p','b',1,'codex','n','e','verified',1,1,'term-'||'p','inc');").unwrap();
     let tx = db.transaction().unwrap();
     assert!(schema::ensure_unavailability_episode(&tx, &SeatId::new("s")).is_err());
     tx.rollback().unwrap();
@@ -1373,7 +1373,7 @@ fn target_generation_change_opens_episode_before_binding_reconciliation() {
 #[test]
 fn invalidated_observation_opens_episode_even_with_stale_fresh_target_row() {
     let (_, mut db, _) = seeded_db(10);
-    db.execute_batch("UPDATE seats SET target_id='p', target_generation=1, unavailability_open=0 WHERE id='s'; UPDATE herdr_hosts SET host_boot='b', host_epoch=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'; INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,1,1,'fresh'); INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'p','b',1,'codex','n','e','verified',1,1,'term-'||'p','inc');").unwrap();
+    db.execute_batch("UPDATE seats SET target_id='p', target_generation=1, unavailability_open=0 WHERE id='s'; UPDATE herdr_hosts SET host_boot='b', host_epoch=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'; INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,1,1,'fresh'); INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'p','b',1,'codex','n','e','verified',1,1,'term-'||'p','inc');").unwrap();
     db.execute(
         "UPDATE herdr_hosts SET invalidation_revision=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
         [],
@@ -2323,8 +2323,8 @@ fn missing_v1_index_is_rejected_without_replacement() {
 #[test]
 fn recovery_baseline_survives_new_target_observations_without_allocating_a_seat() {
     let (_, db, _) = seeded_db(50);
-    db.execute("INSERT INTO recovery_baseline_targets(instance_id, target_id, baseline_boot, baseline_epoch, captured_at, disposition) VALUES ('34750f98bd59fcfc946da45aaabe933b', 'pane', 'old', 1, 10, 'held_for_repair')", []).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id, target_id, host_boot, epoch, generation, observed_at, provenance) VALUES ('34750f98bd59fcfc946da45aaabe933b', 'pane', 'old', 1, 1, 10, 'enumeration')", []).unwrap();
+    db.execute("INSERT INTO recovery_baseline_targets(host_id, target_id, baseline_boot, baseline_epoch, captured_at, disposition) VALUES ((SELECT min(host_id) FROM herdr_hosts), 'pane', 'old', 1, 10, 'held_for_repair')", []).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id, target_id, host_boot, epoch, generation, observed_at, provenance) VALUES ((SELECT min(host_id) FROM herdr_hosts), 'pane', 'old', 1, 1, 10, 'enumeration')", []).unwrap();
     db.execute("UPDATE observed_targets SET host_boot='new', epoch=2, generation=2, observed_at=20 WHERE target_id='pane'", []).unwrap();
     let baseline: (String, i64) = db.query_row("SELECT baseline_boot, baseline_epoch FROM recovery_baseline_targets WHERE target_id='pane'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
     assert_eq!(baseline, ("old".to_owned(), 1));
@@ -3459,7 +3459,7 @@ fn b1_indexes_are_usable_by_name() {
         "SELECT ordinal FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND state!='retired' AND ordinal>?2 ORDER BY ordinal LIMIT 1",
         "SELECT ordinal FROM work_jobs INDEXED BY work_jobs_live WHERE status IN ('pending','failed') AND ordinal>?1 ORDER BY ordinal LIMIT 1",
         "SELECT ordinal FROM work_jobs INDEXED BY work_jobs_retention WHERE status='complete' AND kind=?1 AND completed_at<?2 ORDER BY completed_at LIMIT 1",
-        "SELECT admission_sequence FROM snapshot_generations INDEXED BY snapshot_generations_retention WHERE instance_id=?1 AND admission_sequence<?2 ORDER BY admission_sequence LIMIT 1",
+        "SELECT admission_sequence FROM snapshot_generations INDEXED BY snapshot_generations_retention WHERE host_id=?1 AND admission_sequence<?2 ORDER BY admission_sequence LIMIT 1",
         "SELECT seat_id FROM wake_work INDEXED BY wake_work_reserved WHERE reservation_id IS NOT NULL AND seat_id>?1 LIMIT 1",
         "SELECT ordinal FROM digest_pending_invitations INDEXED BY digest_pending_invitations_seat WHERE seat_id=?1 AND created_decision_seq>?2 ORDER BY created_decision_seq, ordinal LIMIT 1",
         "SELECT ordinal FROM digest_pending_manifest_receipts INDEXED BY digest_pending_manifest_receipts_seat WHERE seat_id=?1 AND decision_seq>?2 ORDER BY decision_seq, ordinal LIMIT 1",
@@ -3470,6 +3470,105 @@ fn b1_indexes_are_usable_by_name() {
         "SELECT ordinal FROM occupant_bindings INDEXED BY occupant_bindings_open WHERE seat_id=?1 AND ended_at IS NULL",
     ] {
         db.prepare(probe).unwrap_or_else(|e| panic!("{probe}: {e}"));
+    }
+}
+
+/// The columns of `index` of `table`, in key order.
+fn index_columns(db: &Connection, index: &str) -> Vec<String> {
+    let mut statement = db
+        .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")
+        .unwrap();
+    statement
+        .query_map([index], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+/// ht-5fr.2.4: every Herdr-scope child table is keyed by `host_id` (target ids
+/// are unique only within one Herdr server) and carries no `instance_id`.
+#[test]
+fn herdr_scope_tables_keyed_by_host_id() {
+    let db = fresh_db();
+    let primary_key = |table: &str| -> Vec<String> {
+        let mut statement = db
+            .prepare("SELECT name FROM pragma_table_info(?1) WHERE pk>0 ORDER BY pk")
+            .unwrap();
+        statement
+            .query_map([table], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    for (table, key) in [
+        ("observed_targets", vec!["host_id", "target_id"]),
+        ("recovery_baseline_targets", vec!["host_id", "target_id"]),
+        ("recovery_holds", vec!["host_id", "target_id"]),
+        (
+            "recovery_baseline_releases",
+            vec!["host_id", "baseline_generation_id", "target_id"],
+        ),
+    ] {
+        assert_eq!(primary_key(table), key, "{table} primary key");
+    }
+    // snapshot_generations: UNIQUE(host_id,host_boot,epoch,observation_sequence)
+    // is an auto-index; find it by its columns.
+    let unique_found: bool = db
+        .prepare("SELECT name FROM pragma_index_list('snapshot_generations') WHERE \"unique\"=1 AND origin='u'")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .any(|name| {
+            index_columns(&db, &name.unwrap())
+                == ["host_id", "host_boot", "epoch", "observation_sequence"]
+        });
+    assert!(unique_found, "snapshot_generations UNIQUE key");
+    assert_eq!(
+        index_columns(&db, "snapshot_generations_status"),
+        ["host_id", "status", "id"]
+    );
+    assert_eq!(
+        index_columns(&db, "snapshot_generations_retention"),
+        ["host_id", "admission_sequence"]
+    );
+    assert_eq!(
+        index_columns(&db, "allocation_decisions_target"),
+        ["host_id", "target_id", "ordinal"]
+    );
+    for table in [
+        "snapshot_generations",
+        "observed_targets",
+        "recovery_baseline_releases",
+        "recovery_baseline_targets",
+        "recovery_holds",
+        "allocation_decisions",
+    ] {
+        let columns: Vec<(String, i64)> = db
+            .prepare("SELECT name,\"notnull\" FROM pragma_table_info(?1)")
+            .unwrap()
+            .query_map([table], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            !columns.iter().any(|(name, _)| name == "instance_id"),
+            "{table} still has instance_id"
+        );
+        assert!(
+            columns.contains(&("host_id".to_owned(), 1)),
+            "{table} has no NOT NULL host_id"
+        );
+        let references_hosts: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_list(?1) WHERE \"from\"='host_id' AND \"table\"='herdr_hosts' AND \"to\"='host_id')",
+                [table],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            references_hosts,
+            "{table}.host_id does not reference herdr_hosts"
+        );
     }
 }
 
@@ -3515,9 +3614,10 @@ fn v10_allocation_decisions_accepts_b5_kinds() {
         &crate::test_support::test_node_seed(),
     )
     .unwrap();
+    crate::test_support::attach_test_host_to_connection(&db);
     let insert = |kind: &str, diagnostic: Option<&str>| {
         db.execute(
-            "INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,continuity_diagnostic) VALUES ('34750f98bd59fcfc946da45aaabe933b','t','s',?1,1,'b',0,1,?2)",
+            "INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,continuity_diagnostic) VALUES ((SELECT min(host_id) FROM herdr_hosts),'t','s',?1,1,'b',0,1,?2)",
             params![kind, diagnostic],
         )
     };
@@ -3912,6 +4012,7 @@ fn user_intent_seed(db: &Connection) {
 fn user_intent_schema22_checks_and_eligibility() {
     let db = fresh_db();
     schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed()).unwrap();
+    crate::test_support::attach_test_host_to_connection(&db);
     user_intent_seed(&db);
     db.execute(
         "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('svc','34750f98bd59fcfc946da45aaabe933b',0)",
@@ -4574,8 +4675,14 @@ fn host_scope_write_without_primary_host_is_host_unavailable() {
         deadline: MonoInstant(1_000_000),
         cancellation: Cancellation::default(),
     };
-    let error = crate::store::seats::begin_host_observation(&context, &mut conn, &node, &budget)
-        .unwrap_err();
+    let error = crate::store::seats::begin_host_observation(
+        &context,
+        &mut conn,
+        &node,
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap_err();
     assert_eq!(error.code, ErrorCode::HostUnavailable, "{error:?}");
     assert_eq!(
         context.primary_host().unwrap_err().code,
@@ -4600,8 +4707,14 @@ fn host_scope_write_without_primary_host_is_host_unavailable() {
     // Attaching makes the same write succeed.
     let host_id = context.attach_host("/run/herdr.sock").unwrap();
     assert_eq!(context.primary_host().unwrap(), host_id);
-    let admission =
-        crate::store::seats::begin_host_observation(&context, &mut conn, &node, &budget).unwrap();
+    let admission = crate::store::seats::begin_host_observation(
+        &context,
+        &mut conn,
+        &node,
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     assert_eq!(admission.sequence, 1);
 }
 

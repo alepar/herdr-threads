@@ -99,12 +99,12 @@ fn observation_fixture(retired: u64, generations: u64) -> Fixture {
     insert_seats(&db, "ra", retired - retired / 2, true);
     db.execute_batch(&format!(
         "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{generations}) \
-         INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) \
-         SELECT 'old'||x,'34750f98bd59fcfc946da45aaabe933b','host',1,x,'inc',2,2,'published',0,0,0,0 FROM n;\
+         INSERT INTO snapshot_generations(id,host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) \
+         SELECT 'old'||x,(SELECT min(host_id) FROM herdr_hosts),'host',1,x,'inc',2,2,'published',0,0,0,0 FROM n;\
          INSERT INTO snapshot_targets(generation_id,target_id,generation,observation_sequence,occupancy,ui_state,observed_at) \
          SELECT g.id,t.t,0,g.observation_sequence,'unknown','unknown',0 FROM snapshot_generations g, (SELECT 'a' AS t UNION ALL SELECT 'b') t;\
-         INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) \
-         VALUES ('active','34750f98bd59fcfc946da45aaabe933b','host',1,{},'inc',0,0,'published',0,0,0,0);\
+         INSERT INTO snapshot_generations(id,host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) \
+         VALUES ('active',(SELECT min(host_id) FROM herdr_hosts),'host',1,{},'inc',0,0,'published',0,0,0,0);\
          UPDATE herdr_hosts SET active_snapshot_id='active' WHERE node_id='34750f98bd59fcfc946da45aaabe933b';",
         generations + 1
     ))
@@ -134,6 +134,7 @@ fn observation_pass(fixture: &Fixture, db: &Connection) -> (Vec<String>, Vec<Str
     let fence = HostInvalidationFence {
         admission: HostObservationAdmission {
             instance: "34750f98bd59fcfc946da45aaabe933b".to_owned(),
+            host_id: crate::test_support::test_host_id(),
             sequence: 0,
             expected_active: None,
             expected_boot: None,
@@ -167,7 +168,7 @@ fn observation_pass(fixture: &Fixture, db: &Connection) -> (Vec<String>, Vec<Str
     (
         walked,
         invalidated,
-        seats::has_nonretired_seat(db, "34750f98bd59fcfc946da45aaabe933b").unwrap(),
+        seats::has_nonretired_seat(db, crate::test_support::test_host_id()).unwrap(),
     )
 }
 

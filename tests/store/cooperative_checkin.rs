@@ -71,7 +71,7 @@ fn fixture_with_context() -> (
     conn.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
         .unwrap();
     conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
-    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'p','inc','coherent_enumeration',1)", []).unwrap();
+    conn.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'p','inc','coherent_enumeration',1)", []).unwrap();
     (
         OwnedFixture {
             value: SqliteStore::new(
@@ -658,7 +658,7 @@ fn decision_rechecks_permit_expiry_retirement_hold_mapping_and_known_invalidatio
                 .unwrap();
             }
             "hold" => {
-                conn.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,'hold')",[]).unwrap();
+                conn.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,'hold')",[]).unwrap();
             }
             "mapping" => {
                 conn.execute("UPDATE seats SET target_generation=1", [])
@@ -2282,7 +2282,7 @@ fn builtin_warning_dedup_recipients_and_successor_have_independent_frontiers() {
     let (store, mut conn, clock, _) = fixture_with_context();
     seed_warning_dedup_thread(&conn);
     conn.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('observer','34750f98bd59fcfc946da45aaabe933b','resolved','native','observer-pane',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
-        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','observer-pane','b',1,0,1,'fresh','unknown','unknown',0,0,'observer-terminal','inc','coherent_enumeration',1);
+        INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'observer-pane','b',1,0,1,'fresh','unknown','unknown',0,0,'observer-terminal','inc','coherent_enumeration',1);
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('dedup','observer','joined');
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('dedup','observer',1,1);").unwrap();
     let a = check_in(&store, lifecycle(claim(), "dedup-a")).unwrap();
@@ -3131,7 +3131,7 @@ fn managed_launch_is_refused_when_evidence_differs_from_the_canonical_view() {
             "{label}"
         );
     }
-    conn.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,'restore')", [])
+    conn.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,'restore')", [])
         .unwrap();
     assert_eq!(
         record_launch(&store, managed_launch()).unwrap_err().code,
@@ -3455,7 +3455,7 @@ fn lifecycle_check_in_never_ends_another_binding() {
 fn cross_pane_resume_creates_a_new_binding_on_the_second_seat() {
     let (store, conn, _) = fixture();
     conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
-    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-q','inc','coherent_enumeration',1)", []).unwrap();
+    conn.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-q','inc','coherent_enumeration',1)", []).unwrap();
     let a = session_claim("sess-A", "00000000-0000-4000-8000-0000000000a1");
     check_in(&store, lifecycle(a.clone(), "on-a")).unwrap();
     let row = |seat: &str| -> Vec<String> {

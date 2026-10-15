@@ -290,6 +290,7 @@ fn guarded_repair_cannot_choose_foreign_replay_scope() {
     };
     let guard = OperatorTargetGuard::try_new(
         "foreign",
+        crate::test_support::test_host_id(),
         &OperatorCommand::FreshSeat(command.clone()),
         observation,
     )

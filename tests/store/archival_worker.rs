@@ -357,6 +357,7 @@ fn archival_worker_before_host_admission_waits_for_safety_tick() {
     store
         .begin_host_observation(
             "34750f98bd59fcfc946da45aaabe933b",
+            herdr_threads::test_support::test_host_id(),
             &CallBudget {
                 deadline: MonoInstant(10_000),
                 cancellation,

@@ -308,7 +308,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
             db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,1,1)", rusqlite::params![thread.as_str(), seat.as_str()]).unwrap();
         }
         db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('pending',?1,'resolved','native','pane-pending',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'pane-pending','fixture-host',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'pane-pending','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),'pane-pending','fixture-host',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'pane-pending','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
         let (_, invited) = client.submit(ServiceOperation::Invite(ServiceInvite { thread: thread.clone(), seat: SeatId::new("pending"), constraint: InvitationConstraint::Required, deadline_millis: Some(300_000), operation: OperationId::new("require") }), &budget()).await.unwrap();
         let ServiceResult::Invitation(invitation) = invited else { panic!("missing required invitation"); };
         let required = invitation.requirement.expect("required episode");
@@ -395,7 +395,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         let receipts: i64 = db.query_row("SELECT count(*) FROM receipts WHERE message_id=?1", [notice.summary.message.as_str()], |row| row.get(0)).unwrap();
         assert_eq!(receipts, 0);
         db.execute("UPDATE seats SET target_id='pane-member-1',target_generation=0 WHERE id='member-1'", []).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'pane-member-1','fixture-host',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'pane-member-1','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),'pane-member-1','fixture-host',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'pane-member-1','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
         let recipient_claim = CallerClaim {
             host: herdr_threads::test_support::test_host_locator(),
             instance: instance.to_string(), seat: SeatId::new("member-1"), binding_generation: 1,

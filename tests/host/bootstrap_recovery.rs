@@ -144,7 +144,7 @@ mod bootstrap_recovery {
             StoreSettings::default(),
         )
         .unwrap();
-        let admission = store.begin_host_observation("34750f98bd59fcfc946da45aaabe933b", &context.budget).unwrap();
+        let admission = store.begin_host_observation("34750f98bd59fcfc946da45aaabe933b", crate::test_support::test_host_id(), &context.budget).unwrap();
         let snapshot = cli.enumerate_targets(&context).unwrap();
         let header = SnapshotHeader::from_captured(admission, &snapshot).unwrap();
         let stage = store.begin_snapshot_stage(header, &context.budget).unwrap();
@@ -207,6 +207,7 @@ mod bootstrap_recovery {
         let fair_writer = Arc::new(crate::service::fair_writer::FairWriter::new(8));
         let identity = crate::identity::repair::OrdinaryIdentity::new(
             "34750f98bd59fcfc946da45aaabe933b".into(),
+            crate::test_support::test_host_id(),
             store.clone(),
             cli.clone(),
             cli.clock.clone(),
@@ -489,7 +490,7 @@ mod bootstrap_recovery {
                     "owner" => "UPDATE seats SET structural_terminal_id='changed' WHERE id='sender'",
                     "current_terminal" => "UPDATE observed_targets SET terminal_id='changed'",
                     "current_incarnation" => "UPDATE observed_targets SET incarnation='changed'",
-                    "hold" => "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) SELECT '34750f98bd59fcfc946da45aaabe933b','w4:p1',host_boot,3,'held' FROM herdr_hosts",
+                    "hold" => "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) SELECT host_id,'w4:p1',host_boot,3,'held' FROM herdr_hosts",
                     "invalidation" => "UPDATE herdr_hosts SET invalidation_revision=invalidation_revision+1",
                     "epoch" => "UPDATE herdr_hosts SET host_epoch=host_epoch+1",
                     _ => "SELECT 1",

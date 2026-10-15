@@ -1120,7 +1120,11 @@ impl Topology {
         )
         .unwrap();
         let admission = store
-            .begin_host_observation(&instance.to_string(), &budget)
+            .begin_host_observation(
+                &instance.to_string(),
+                herdr_threads::test_support::test_host_id(),
+                &budget,
+            )
             .unwrap();
         let snapshot = herdr_threads::ports::HostPort::enumerate_targets(&native, &ctx).unwrap();
         let stage = store

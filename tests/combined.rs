@@ -53,6 +53,8 @@ mod lazy_send;
 mod lifecycle_ux;
 #[path = "local_endpoint.rs"]
 mod local_endpoint;
+#[path = "store/multi_host.rs"]
+mod multi_host;
 #[path = "cli/read_picker_pty.rs"]
 mod read_picker_pty;
 #[path = "setup_cli.rs"]

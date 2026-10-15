@@ -311,7 +311,11 @@ impl Fixture {
         )
         .unwrap();
         let admission = store
-            .begin_host_observation(&instance.to_string(), &budget)
+            .begin_host_observation(
+                &instance.to_string(),
+                herdr_threads::test_support::test_host_id(),
+                &budget,
+            )
             .unwrap();
         let snapshot = herdr_threads::ports::HostPort::enumerate_targets(
             native.as_ref(),
@@ -555,6 +559,7 @@ impl Fixture {
         let writer = Arc::new(herdr_threads::service::fair_writer::FairWriter::new(32));
         let identity = Arc::new(herdr_threads::identity::repair::OrdinaryIdentity::new(
             self.instance.to_string(),
+            herdr_threads::test_support::test_host_id(),
             store.clone(),
             host,
             self.clock.clone(),
@@ -604,6 +609,7 @@ impl Fixture {
         let writer = Arc::new(herdr_threads::service::fair_writer::FairWriter::new(32));
         let identity = Arc::new(herdr_threads::identity::repair::OrdinaryIdentity::new(
             self.instance.to_string(),
+            herdr_threads::test_support::test_host_id(),
             store.clone(),
             host.clone(),
             self.clock.clone(),
@@ -868,7 +874,7 @@ fn registered_begin_create_replay_matrix(
         "canonical attached child requires its exact frozen Begin key"
     );
     for seat in [&attachment.resolved_seat, &identity.claim.seat] {
-        f.db().execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) SELECT instance_id,target_id,structural_host_boot,structural_host_epoch,'owned R1 guard' FROM seats WHERE id=?1",[seat.as_str()]).unwrap();
+        f.db().execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) SELECT host_id,target_id,structural_host_boot,structural_host_epoch,'owned R1 guard' FROM seats WHERE id=?1",[seat.as_str()]).unwrap();
         for (command, expected) in commands.iter().zip(&positive) {
             let result = f.call(command.clone());
             if completed {
@@ -1523,7 +1529,7 @@ fn elected_live_registered_phase_replays_recheck_current_caller_recipient_and_pa
     };
     changed.operation = identity.payload.handoff.keys.invite.clone();
     assert!(f.call(phase).is_err());
-    f.db().execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) SELECT instance_id,target_id,structural_host_boot,structural_host_epoch,'owned live guard' FROM seats WHERE id=?1", [attachment.resolved_seat.as_str()]).unwrap();
+    f.db().execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) SELECT host_id,target_id,structural_host_boot,structural_host_epoch,'owned live guard' FROM seats WHERE id=?1", [attachment.resolved_seat.as_str()]).unwrap();
     assert!(f.call(invite.clone()).is_err());
     assert!(f.call(send.clone()).is_err());
     f.db()

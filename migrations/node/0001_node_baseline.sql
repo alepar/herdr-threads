@@ -15,8 +15,9 @@
 --
 -- Herdr-scope child tables (snapshot_generations, observed_targets,
 -- recovery_baseline_releases, recovery_baseline_targets, recovery_holds,
--- allocation_decisions, archival_instances) stay keyed by instance_id until
--- ht-5fr.2 re-keys them to host_id.
+-- allocation_decisions) are keyed by host_id (ht-5fr.2.4); target ids are unique
+-- only within one Herdr server. archival_instances and seat_archival keep
+-- instance_id until the archival re-key (ht-5fr.2).
 --
 -- Node row delta (ht-5fr.1.5): v46's host_instances is split into `local_node`
 -- (the node's own identity, tag and the node-scope counters decision_seq,
@@ -286,7 +287,7 @@ BEGIN SELECT RAISE(ABORT, 'sync_reissues_immutable'); END;
 
 CREATE TABLE snapshot_generations (
     id TEXT PRIMARY KEY,
-    instance_id TEXT NOT NULL REFERENCES local_node(id),
+    host_id INTEGER NOT NULL REFERENCES herdr_hosts(host_id),
     host_boot TEXT NOT NULL,
     epoch INTEGER NOT NULL CHECK(epoch > 0),
     observation_sequence INTEGER NOT NULL CHECK(observation_sequence > 0),
@@ -301,7 +302,7 @@ CREATE TABLE snapshot_generations (
     admission_sequence INTEGER NOT NULL DEFAULT 0 CHECK(admission_sequence >= 0),
     published_invalidation_revision INTEGER CHECK(published_invalidation_revision >= 0),
     created_at INTEGER NOT NULL,
-    UNIQUE(instance_id,host_boot,epoch,observation_sequence),
+    UNIQUE(host_id,host_boot,epoch,observation_sequence),
     CHECK(status NOT IN ('sealed','published') OR staged_targets=expected_targets)
 ) STRICT;
 
@@ -324,15 +325,15 @@ CREATE TABLE snapshot_targets (
 ) STRICT;
 
 CREATE TABLE recovery_baseline_releases (
-    instance_id TEXT NOT NULL REFERENCES local_node(id),
+    host_id INTEGER NOT NULL REFERENCES herdr_hosts(host_id),
     baseline_generation_id TEXT NOT NULL REFERENCES snapshot_generations(id),
     target_id TEXT NOT NULL,
     decision_seq INTEGER NOT NULL CHECK(decision_seq > 0),
-    PRIMARY KEY(instance_id,baseline_generation_id,target_id)
+    PRIMARY KEY(host_id,baseline_generation_id,target_id)
 ) STRICT;
 
 CREATE TABLE observed_targets (
-    instance_id TEXT NOT NULL REFERENCES local_node(id),
+    host_id INTEGER NOT NULL REFERENCES herdr_hosts(host_id),
     target_id TEXT NOT NULL,
     host_boot TEXT NOT NULL,
     epoch INTEGER NOT NULL CHECK(epoch >= 0),
@@ -349,13 +350,13 @@ CREATE TABLE observed_targets (
     ui_state TEXT NOT NULL DEFAULT 'unknown' CHECK(ui_state IN ('idle','active_turn','approval_or_question','human_input','unknown')),
     verified_execution TEXT,
     top_level_occupant INTEGER NOT NULL DEFAULT 0 CHECK(top_level_occupant IN (0,1)),
-    PRIMARY KEY(instance_id, target_id),
+    PRIMARY KEY(host_id, target_id),
     CHECK((incarnation IS NULL AND incarnation_source_kind IS NULL AND connection_epoch IS NULL)
        OR (incarnation IS NOT NULL AND incarnation_source_kind IS NOT NULL AND connection_epoch IS NOT NULL))
 ) STRICT;
 
 CREATE TABLE recovery_baseline_targets (
-    instance_id TEXT NOT NULL REFERENCES local_node(id),
+    host_id INTEGER NOT NULL REFERENCES herdr_hosts(host_id),
     target_id TEXT NOT NULL,
     baseline_boot TEXT NOT NULL,
     baseline_epoch INTEGER NOT NULL CHECK(baseline_epoch >= 0),
@@ -363,17 +364,17 @@ CREATE TABLE recovery_baseline_targets (
     disposition TEXT NOT NULL CHECK(disposition IN (
         'unambiguous_unclaimed', 'created_after_baseline', 'held_for_repair', 'already_owned', 'unknown'
     )),
-    PRIMARY KEY(instance_id, target_id)
+    PRIMARY KEY(host_id, target_id)
 ) STRICT;
 
 CREATE TABLE recovery_holds (
-    instance_id TEXT NOT NULL REFERENCES local_node(id),
+    host_id INTEGER NOT NULL REFERENCES herdr_hosts(host_id),
     target_id TEXT NOT NULL,
     baseline_boot TEXT NOT NULL,
     baseline_epoch INTEGER NOT NULL CHECK(baseline_epoch >= 0),
     reason TEXT NOT NULL CHECK(length(reason) <= 512),
     released_at INTEGER,
-    PRIMARY KEY(instance_id, target_id)
+    PRIMARY KEY(host_id, target_id)
 ) STRICT;
 
 CREATE TABLE seats (
@@ -405,8 +406,8 @@ CREATE TABLE seats (
     remote_kind TEXT CHECK(remote_kind IN ('agent','human')),
     host_id INTEGER REFERENCES herdr_hosts(host_id),
     CHECK((is_local=0) = (remote_kind IS NOT NULL)),
-    CHECK(target_id IS NULL OR host_id IS NOT NULL),
-    CHECK(is_local=1 OR (host_id IS NULL AND target_id IS NULL AND structural_terminal_id IS NULL AND state IN ('remote','retired'))),
+    CHECK((is_local=1) = (host_id IS NOT NULL)),
+    CHECK(is_local=1 OR (target_id IS NULL AND structural_terminal_id IS NULL AND state IN ('remote','retired'))),
     CHECK(state<>'remote' OR is_local=0),
     CHECK((state = 'retired') = (retired_at IS NOT NULL)),
     CHECK(state = 'unresolved' OR unresolved_reason IS NULL),
@@ -816,7 +817,7 @@ CREATE TABLE digest_programmatic_warnings (
 
 CREATE TABLE "allocation_decisions" (
     ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
-    instance_id TEXT NOT NULL REFERENCES local_node(id),
+    host_id INTEGER NOT NULL REFERENCES herdr_hosts(host_id),
     target_id TEXT NOT NULL,
     seat_id TEXT NOT NULL,
     kind TEXT NOT NULL CHECK(kind IN ('ordinary', 'operator_fresh', 'operator_rebind', 'operator_retire', 'operator_human_override', 'cooperative_continuity')),
@@ -1587,7 +1588,7 @@ CREATE TABLE presentation_warning_fence (
     version INTEGER NOT NULL CHECK(version>=0)
 ) STRICT;
 
-CREATE INDEX snapshot_generations_status ON snapshot_generations(instance_id,status,id);
+CREATE INDEX snapshot_generations_status ON snapshot_generations(host_id,status,id);
 
 CREATE INDEX snapshot_generations_captured_active ON snapshot_generations(captured_active_id,status);
 
@@ -1748,13 +1749,13 @@ CREATE INDEX digest_programmatic_warnings_seat ON digest_programmatic_warnings(s
 
 CREATE INDEX digest_programmatic_warnings_thread ON digest_programmatic_warnings(seat_id, thread_id, ordinal);
 
-CREATE INDEX allocation_decisions_target ON allocation_decisions(instance_id, target_id, ordinal);
+CREATE INDEX allocation_decisions_target ON allocation_decisions(host_id, target_id, ordinal);
 
 CREATE INDEX allocation_decisions_seat_history ON allocation_decisions(seat_id, ordinal);
 
 CREATE INDEX seats_live_ordinal ON seats(instance_id, ordinal) WHERE state!='retired';
 
-CREATE INDEX snapshot_generations_retention ON snapshot_generations(instance_id, admission_sequence);
+CREATE INDEX snapshot_generations_retention ON snapshot_generations(host_id, admission_sequence);
 
 CREATE INDEX wake_work_reserved ON wake_work(seat_id) WHERE reservation_id IS NOT NULL;
 
@@ -1951,7 +1952,7 @@ WHEN NEW.active_snapshot_id IS NOT NULL
 BEGIN
     SELECT CASE WHEN NOT EXISTS (
         SELECT 1 FROM snapshot_generations g
-        WHERE g.id=NEW.active_snapshot_id AND g.instance_id=NEW.node_id
+        WHERE g.id=NEW.active_snapshot_id AND g.host_id=NEW.host_id
           AND g.status='published' AND g.staged_targets=g.expected_targets
     ) THEN RAISE(ABORT,'active snapshot is not complete and published') END;
 END;
@@ -1961,7 +1962,7 @@ WHEN NEW.recovery_baseline_generation_id IS NOT NULL
 BEGIN
     SELECT CASE WHEN NOT EXISTS (
         SELECT 1 FROM snapshot_generations g
-        WHERE g.id=NEW.recovery_baseline_generation_id AND g.instance_id=NEW.node_id
+        WHERE g.id=NEW.recovery_baseline_generation_id AND g.host_id=NEW.host_id
           AND g.status='published' AND g.staged_targets=g.expected_targets
     ) THEN RAISE(ABORT,'baseline snapshot is not complete and published') END;
 END;
@@ -2561,13 +2562,13 @@ WHEN NEW.host_boot IS NOT OLD.host_boot OR NEW.host_epoch!=OLD.host_epoch OR NEW
 END;
 
 CREATE TRIGGER archival_current_negative_insert AFTER INSERT ON observed_targets WHEN NEW.ui_state!='idle' BEGIN
- UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE instance_id=NEW.instance_id AND target_id=NEW.target_id AND next_mono IS NOT NULL;
- UPDATE archival_instances SET mutation_revision=mutation_revision+1 WHERE instance_id=NEW.instance_id;
+ UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id) AND target_id=NEW.target_id AND next_mono IS NOT NULL;
+ UPDATE archival_instances SET mutation_revision=mutation_revision+1 WHERE instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id);
 END;
 
 CREATE TRIGGER archival_current_negative_update AFTER UPDATE ON observed_targets WHEN NEW.ui_state!='idle' BEGIN
- UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE instance_id=NEW.instance_id AND target_id=NEW.target_id AND next_mono IS NOT NULL;
- UPDATE archival_instances SET mutation_revision=mutation_revision+1 WHERE instance_id=NEW.instance_id;
+ UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id) AND target_id=NEW.target_id AND next_mono IS NOT NULL;
+ UPDATE archival_instances SET mutation_revision=mutation_revision+1 WHERE instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id);
 END;
 
 CREATE TRIGGER archival_membership_activity_insert AFTER INSERT ON memberships BEGIN
@@ -2586,24 +2587,24 @@ CREATE TRIGGER archival_message_activity AFTER INSERT ON messages BEGIN
 END;
 
 CREATE TRIGGER archival_current_structure_insert AFTER INSERT ON observed_targets
-WHEN EXISTS(SELECT 1 FROM seat_archival a WHERE a.instance_id=NEW.instance_id AND a.target_id=NEW.target_id AND a.idle_mono IS NOT NULL AND
+WHEN EXISTS(SELECT 1 FROM seat_archival a WHERE a.instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id) AND a.target_id=NEW.target_id AND a.idle_mono IS NOT NULL AND
  (a.target_generation!=NEW.generation OR a.terminal IS NOT NEW.terminal_id OR a.incarnation IS NOT NEW.incarnation OR a.host_boot!=NEW.host_boot OR a.host_epoch!=NEW.epoch)) BEGIN
- UPDATE archival_instances SET mutation_revision=mutation_revision+1 WHERE instance_id=NEW.instance_id;
- UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE instance_id=NEW.instance_id AND target_id=NEW.target_id AND idle_mono IS NOT NULL;
+ UPDATE archival_instances SET mutation_revision=mutation_revision+1 WHERE instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id);
+ UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id) AND target_id=NEW.target_id AND idle_mono IS NOT NULL;
 END;
 
 CREATE TRIGGER archival_current_structure_update AFTER UPDATE ON observed_targets
-WHEN EXISTS(SELECT 1 FROM seat_archival a WHERE a.instance_id=NEW.instance_id AND a.target_id=NEW.target_id AND a.idle_mono IS NOT NULL AND
+WHEN EXISTS(SELECT 1 FROM seat_archival a WHERE a.instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id) AND a.target_id=NEW.target_id AND a.idle_mono IS NOT NULL AND
  (a.target_generation!=NEW.generation OR a.terminal IS NOT NEW.terminal_id OR a.incarnation IS NOT NEW.incarnation OR a.host_boot!=NEW.host_boot OR a.host_epoch!=NEW.epoch)) BEGIN
- UPDATE archival_instances SET mutation_revision=mutation_revision+1 WHERE instance_id=NEW.instance_id;
- UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE instance_id=NEW.instance_id AND target_id=NEW.target_id AND idle_mono IS NOT NULL;
+ UPDATE archival_instances SET mutation_revision=mutation_revision+1 WHERE instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id);
+ UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id) AND target_id=NEW.target_id AND idle_mono IS NOT NULL;
 END;
 
 CREATE TRIGGER archival_snapshot_structure AFTER INSERT ON snapshot_targets
-WHEN EXISTS(SELECT 1 FROM snapshot_generations g JOIN seat_archival a ON a.instance_id=g.instance_id AND a.target_id=NEW.target_id WHERE g.id=NEW.generation_id AND a.idle_mono IS NOT NULL AND
+WHEN EXISTS(SELECT 1 FROM snapshot_generations g JOIN herdr_hosts gh ON gh.host_id=g.host_id JOIN seat_archival a ON a.instance_id=gh.node_id AND a.target_id=NEW.target_id WHERE g.id=NEW.generation_id AND a.idle_mono IS NOT NULL AND
  (a.target_generation!=NEW.generation OR a.terminal IS NOT NEW.terminal_id OR a.incarnation IS NOT g.incarnation OR a.host_boot!=g.host_boot OR a.host_epoch!=g.epoch OR NEW.ui_state NOT IN ('idle','unknown'))) BEGIN
- UPDATE archival_instances SET mutation_revision=mutation_revision+1 WHERE instance_id=(SELECT instance_id FROM snapshot_generations WHERE id=NEW.generation_id);
- UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE instance_id=(SELECT instance_id FROM snapshot_generations WHERE id=NEW.generation_id) AND target_id=NEW.target_id AND idle_mono IS NOT NULL;
+ UPDATE archival_instances SET mutation_revision=mutation_revision+1 WHERE instance_id=(SELECT h.node_id FROM snapshot_generations g JOIN herdr_hosts h ON h.host_id=g.host_id WHERE g.id=NEW.generation_id);
+ UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE instance_id=(SELECT h.node_id FROM snapshot_generations g JOIN herdr_hosts h ON h.host_id=g.host_id WHERE g.id=NEW.generation_id) AND target_id=NEW.target_id AND idle_mono IS NOT NULL;
 END;
 
 CREATE TRIGGER archival_membership_queue_delete AFTER DELETE ON memberships BEGIN

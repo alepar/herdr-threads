@@ -743,6 +743,26 @@ pub fn bump_lifecycle_revision(tx: &Transaction<'_>, instance: &str) -> Result<(
     Ok(())
 }
 
+/// [`bump_lifecycle_revision`] for an explicit host: worker-scoped decisions
+/// (observation, reconciliation, repair) bump the row of the host they decide
+/// for, not the cooperative path's primary host.
+pub fn bump_host_lifecycle_revision(
+    tx: &Transaction<'_>,
+    host: crate::ports::HostId,
+) -> Result<(), ApiError> {
+    let changed = tx.execute(
+        "UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+1 WHERE host_id=?1 AND lifecycle_revision<?2",
+        params![host.get(), i64::MAX],
+    ).map_err(store_error)?;
+    if changed != 1 {
+        return Err(api_error(
+            ErrorCode::SequenceExhausted,
+            "lifecycle revision missing or exhausted",
+        ));
+    }
+    Ok(())
+}
+
 /// The one send-time availability projection for a registered seat. A seat is
 /// effectively available only when its current registered binding matches the
 /// instance boot/epoch and the canonical effective target observation
@@ -762,11 +782,11 @@ pub fn effective_registered_availability(
     seat: &str,
     instance: Option<&str>,
 ) -> Result<Option<String>, ApiError> {
-    type BindingColumns = Option<(String, String, i64, Option<String>, i64, String)>;
+    type BindingColumns = Option<(i64, String, i64, Option<String>, i64, String)>;
     let binding: BindingColumns = db
         .query_row(
-            "SELECT s.instance_id, s.target_id, s.target_generation, h.host_boot, h.host_epoch, b.observation_provenance \
-             FROM seats s JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id JOIN occupant_bindings b ON b.seat_id=s.id \
+            "SELECT s.host_id, s.target_id, s.target_generation, h.host_boot, h.host_epoch, b.observation_provenance \
+             FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id JOIN occupant_bindings b ON b.seat_id=s.id \
              WHERE s.id=?1 AND s.state='resolved' AND s.target_id IS NOT NULL \
                AND b.ended_at IS NULL AND b.liveness='connected' AND b.registered_at IS NOT NULL AND b.target_id=s.target_id \
                AND b.generation=s.generation AND b.target_generation=s.target_generation \
@@ -778,11 +798,12 @@ pub fn effective_registered_availability(
         )
         .optional()
         .map_err(store_error)?;
-    let Some((instance, target, target_generation, host_boot, host_epoch, provenance)) = binding
+    let Some((host_id, target, target_generation, host_boot, host_epoch, provenance)) = binding
     else {
         return Ok(None);
     };
-    let confirmed = effective_observation(db, &instance, &target)?.is_some_and(|observation| {
+    let host = crate::ports::HostId::from_row(host_id);
+    let confirmed = effective_observation(db, host, &target)?.is_some_and(|observation| {
         observation.structural_generation == target_generation
             && Some(observation.host_boot.as_str()) == host_boot.as_deref()
             && observation.epoch == host_epoch
@@ -807,7 +828,7 @@ pub fn effective_registered_availability(
 /// open the episode.
 pub fn carry_pending(db: &Connection, seat: &str, instance: &str) -> Result<bool, ApiError> {
     db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM seats s JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id \
+        "SELECT EXISTS(SELECT 1 FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id \
          JOIN occupant_bindings b ON b.seat_id=s.id \
          WHERE s.id=?1 AND h.node_id=?2 AND s.state='resolved' \
            AND (h.reconciled_boot IS NOT h.recovery_boot OR h.reconciled_epoch IS NOT h.recovery_epoch) \

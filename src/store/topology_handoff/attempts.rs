@@ -539,13 +539,13 @@ mod tests {
         id.digest = id.semantic_digest().unwrap();
         let boot = created().host_incarnation;
         db.execute("UPDATE herdr_hosts SET host_boot=?1,host_epoch=1,observation_sequence=1,observation_admission_sequence=1,observation_decided_sequence=1,lifecycle_revision=1,recovery_boot=?1,recovery_epoch=1",[boot.as_str()]).unwrap();
-        db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) VALUES('g','34750f98bd59fcfc946da45aaabe933b',?1,1,1,'herdr-server:pid=42:start=1.000002:uid=501',0,0,'published',0,0,0,0)",[boot.as_str()]).unwrap();
+        db.execute("INSERT INTO snapshot_generations(id,host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) VALUES('g',(SELECT min(host_id) FROM herdr_hosts),?1,1,1,'herdr-server:pid=42:start=1.000002:uid=501',0,0,'published',0,0,0,0)",[boot.as_str()]).unwrap();
         db.execute_batch("UPDATE herdr_hosts SET active_snapshot_id='g',recovery_baseline_generation_id='g'; INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('sender','34750f98bd59fcfc946da45aaabe933b','resolved','native','w1:p1',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));").unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('sender',1,'w1:p1',?1,1,'codex','session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,0)",[boot.as_str()]).unwrap();
         for (pane, terminal, generation) in
             [("w1:p1", "caller-terminal", 0), ("w1:p2", "terminal", 1)]
         {
-            db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('34750f98bd59fcfc946da45aaabe933b',?1,?2,1,?3,2,'fresh',0,?4,'herdr-server:pid=42:start=1.000002:uid=501','native_current_target',1)",params![pane,boot.as_str(),generation,terminal]).unwrap();
+            db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,?2,1,?3,2,'fresh',0,?4,'herdr-server:pid=42:start=1.000002:uid=501','native_current_target',1)",params![pane,boot.as_str(),generation,terminal]).unwrap();
         }
         let observation = HostObservation {
             focused: false,
@@ -573,6 +573,7 @@ mod tests {
         };
         let admission = HostObservationAdmission {
             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+            host_id: crate::test_support::test_host_id(),
             sequence: 1,
             expected_active: Some(SnapshotGenerationId::store_issued("g".into())),
             expected_boot: Some(boot),
@@ -970,7 +971,7 @@ mod tests {
     fn created_recovery_refuses_hold_stale_admission_lifecycle_and_structural_mismatch() {
         for (sql, expected) in [
             (
-                "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) SELECT '34750f98bd59fcfc946da45aaabe933b','w1:p2',host_boot,1,'held' FROM herdr_hosts",
+                "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) SELECT host_id,'w1:p2',host_boot,1,'held' FROM herdr_hosts",
                 ErrorCode::TargetUnresolved,
             ),
             (

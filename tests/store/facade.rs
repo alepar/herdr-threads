@@ -173,7 +173,7 @@ fn public_facade_late_accept_and_ack_share_unique_due_warnings() {
     db.execute_batch("\
         UPDATE herdr_hosts SET host_boot='b',host_epoch=1;\
         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
-        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,1,0,'fresh','term-'||'p','inc','coherent_enumeration',1);\
+        INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,1,0,'fresh','term-'||'p','inc','coherent_enumeration',1);\
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',1,1,'p','b',1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-'||'p','inc');\
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,2);\
         INSERT INTO memberships(thread_id,seat_id,state,episode) VALUES ('t','s','invited',1);\
@@ -739,9 +739,13 @@ fn public_facade_publishes_an_empty_coherent_snapshot_atomically() {
         StoreSettings::default(),
     )
     .unwrap();
-    let admission =
-        StorePort::begin_host_observation(&store, "34750f98bd59fcfc946da45aaabe933b", &budget())
-            .unwrap();
+    let admission = StorePort::begin_host_observation(
+        &store,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget(),
+    )
+    .unwrap();
     let snapshot = HostSnapshot {
         boot: HostBootId::new("b"),
         epoch: 1,
@@ -790,7 +794,7 @@ fn public_facade_retirement_fences_before_bounded_cleanup() {
     )
     .unwrap();
     db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native','p2',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','p2','b',1,1,0,'fresh','term-'||'p2','inc','coherent_enumeration',1)",[]).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p2','b',1,1,0,'fresh','term-'||'p2','inc','coherent_enumeration',1)",[]).unwrap();
     db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)",[]).unwrap();
     db.execute(
         "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s2','joined',0)",
@@ -867,7 +871,7 @@ fn public_facade_mixed_retirement_keeps_cutover_across_quanta_and_reopen() {
         UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=30;\
         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('retiring','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
         INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('other','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
-        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','pane','b',1,1,0,'fresh','term-'||'pane','inc','coherent_enumeration',1);\
+        INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'pane','b',1,1,0,'fresh','term-'||'pane','inc','coherent_enumeration',1);\
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('receipts','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,21);\
         INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('receipts','retiring','joined',0);\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('receipts','retiring',1,1);\
@@ -1121,9 +1125,13 @@ fn public_facade_operator_fresh_and_rebind_keep_provenance_without_receipt_autho
         StoreSettings::default(),
     )
     .unwrap();
-    let admission =
-        StorePort::begin_host_observation(&store, "34750f98bd59fcfc946da45aaabe933b", &budget())
-            .unwrap();
+    let admission = StorePort::begin_host_observation(
+        &store,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget(),
+    )
+    .unwrap();
     let snapshot = HostSnapshot {
         boot: HostBootId::new("b"),
         epoch: 1,
@@ -1172,6 +1180,7 @@ fn public_facade_operator_fresh_and_rebind_keep_provenance_without_receipt_autho
         let admission = StorePort::begin_host_observation(
             &store,
             "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             &budget(),
         )
         .unwrap();
@@ -1194,6 +1203,7 @@ fn public_facade_operator_fresh_and_rebind_keep_provenance_without_receipt_autho
     };
     let guard = OperatorTargetGuard::try_new(
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &OperatorCommand::FreshSeat(fresh.clone()),
         fresh_observation.clone(),
     )
@@ -1210,6 +1220,7 @@ fn public_facade_operator_fresh_and_rebind_keep_provenance_without_receipt_autho
     };
     let replay_guard = OperatorTargetGuard::try_new(
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &OperatorCommand::FreshSeat(fresh.clone()),
         fresh_observation,
     )
@@ -1234,6 +1245,7 @@ fn public_facade_operator_fresh_and_rebind_keep_provenance_without_receipt_autho
     };
     let guard = OperatorTargetGuard::try_new(
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &OperatorCommand::Rebind(rebind.clone()),
         rebind_observation,
     )
@@ -1332,7 +1344,7 @@ fn public_facade_check_in_commits_anchor_and_exact_empty_offer() {
     db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
         .unwrap();
     db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','resolved','native','p1',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','p1','b',1,1,0,'fresh','term-'||'p1','inc','coherent_enumeration',1)",[]).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p1','b',1,1,0,'fresh','term-'||'p1','inc','coherent_enumeration',1)",[]).unwrap();
     drop(db);
     let store = SqliteStore::new(
         context,
@@ -1406,7 +1418,7 @@ fn lifecycle_check_in_resets_only_its_own_offer() {
     db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
         .unwrap();
     db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','resolved','native','p1',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','p1','b',1,1,0,'fresh','term-'||'p1','inc','coherent_enumeration',1)",[]).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p1','b',1,1,0,'fresh','term-'||'p1','inc','coherent_enumeration',1)",[]).unwrap();
     drop(db);
     let store = SqliteStore::new(
         context,
@@ -1503,7 +1515,7 @@ fn public_facade_rejects_expired_permit() {
     db.execute_batch("\
         UPDATE herdr_hosts SET host_boot='b',host_epoch=1;\
         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
-        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,1,0,'fresh','term-'||'p','inc','coherent_enumeration',1);\
+        INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,1,0,'fresh','term-'||'p','inc','coherent_enumeration',1);\
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',1,1,'p','b',1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-'||'p','inc');\
     ").unwrap();
     drop(db);
@@ -1582,7 +1594,7 @@ fn public_facade_creates_thread_with_current_cooperative_permit() {
     db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
         .unwrap();
     db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','resolved','native','p1',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','p1','b',1,1,0,'fresh','term-'||'p1','inc','coherent_enumeration',1)",[]).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p1','b',1,1,0,'fresh','term-'||'p1','inc','coherent_enumeration',1)",[]).unwrap();
     db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s1',1,1,'p1','b',1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-'||'p1','inc');",[]).unwrap();
     drop(db);
     let store = SqliteStore::new(
@@ -1706,7 +1718,7 @@ fn public_facade_creates_invites_sends_accepts_acks_and_archives_with_stable_ids
         .unwrap();
     for seat in ["s1", "s2"] {
         db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[seat]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)",[seat]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)",[seat]).unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,1,?1,'b',1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-'||?1,'inc')",[seat]).unwrap();
     }
     drop(db);
@@ -1942,7 +1954,7 @@ fn join_hint_fixture_inner(
         .unwrap();
     for seat in ["s1", "s2"] {
         db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[seat]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)",[seat]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)",[seat]).unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,1,?1,'b',1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-'||?1,'inc')",[seat]).unwrap();
     }
     drop(db);
@@ -2280,7 +2292,7 @@ fn public_join_refuses_pending_archived_foreign_and_stale_context_without_writes
                 ErrorCode::CallerUnverified
             }
             "held" => {
-                db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('34750f98bd59fcfc946da45aaabe933b','s2','b',1,'restored')", []).unwrap();
+                db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'s2','b',1,'restored')", []).unwrap();
                 ErrorCode::CallerUnverified
             }
             "subagent" => {

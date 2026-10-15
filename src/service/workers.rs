@@ -1777,10 +1777,11 @@ impl crate::identity::reconcile::observation_store::ObservationStore for Schedul
     fn begin_host_observation(
         &self,
         instance: &str,
+        host: crate::ports::HostId,
         budget: &CallBudget,
     ) -> Result<HostObservationAdmission, ApiError> {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
-        self.store.begin_host_observation(instance, budget)
+        self.store.begin_host_observation(instance, host, budget)
     }
     fn invalidate_host_observation(
         &self,

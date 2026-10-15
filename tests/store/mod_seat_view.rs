@@ -95,7 +95,7 @@ fn view_reports_held_unresolved_retired() {
     let (store, conn, _) = fixture();
     assert!(!view(&store).held);
     conn.execute(
-        "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,'hold')",
+        "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,'hold')",
         [],
     )
     .unwrap();

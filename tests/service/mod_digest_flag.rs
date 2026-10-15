@@ -89,7 +89,7 @@ fn service(channels: Arc<dyn ModChannels>) -> (DomainService, Directory) {
         .unwrap();
     }
     db.execute(
-        "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','s-target','b',1,0,0,'fresh','term','inc','coherent_enumeration',1)",
+        "INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'s-target','b',1,0,0,'fresh','term','inc','coherent_enumeration',1)",
         [],
     )
     .unwrap();

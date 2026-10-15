@@ -385,6 +385,7 @@ fn publication(epoch: u64) -> PublishedSnapshot {
     PublishedSnapshot {
         id: SnapshotGenerationId::store_issued("g1".into()),
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+        host_id: crate::test_support::test_host_id(),
         boot: HostBootId::new("b"),
         epoch,
         observation_sequence: 1,
@@ -452,7 +453,7 @@ fn carry_binding_forward_carries_every_registered_binding() {
     let mut g = fixture();
     g.db.execute_batch(
         "UPDATE herdr_hosts SET host_epoch=2;
-         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',2,2,1,'fresh','unknown','unknown',0,0,'term','inc','coherent_enumeration',1);",
+         INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',2,2,1,'fresh','unknown','unknown',0,0,'term','inc','coherent_enumeration',1);",
     )
     .unwrap();
     let tx = g.db.transaction().unwrap();

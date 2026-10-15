@@ -923,6 +923,7 @@ impl HostSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostObservationAdmission {
     pub(crate) instance: String,
+    pub(crate) host_id: HostId,
     pub(crate) sequence: u64,
     pub(crate) expected_active: Option<SnapshotGenerationId>,
     pub(crate) expected_boot: Option<HostBootId>,
@@ -933,6 +934,10 @@ pub struct HostObservationAdmission {
 impl HostObservationAdmission {
     pub fn instance(&self) -> &str {
         &self.instance
+    }
+    /// The Herdr server this admission orders captures of.
+    pub fn host_id(&self) -> HostId {
+        self.host_id
     }
     pub fn sequence(&self) -> u64 {
         self.sequence
@@ -988,6 +993,7 @@ pub struct GuardedInvalidationTransition {
 pub struct SnapshotHeader {
     pub admission: HostObservationAdmission,
     pub instance: String,
+    pub host_id: HostId,
     pub boot: HostBootId,
     pub epoch: u64,
     pub observation_sequence: u64,
@@ -1020,6 +1026,7 @@ impl SnapshotHeader {
         };
         Ok(Self {
             instance: admission.instance.clone(),
+            host_id: admission.host_id,
             admission,
             boot: snapshot.boot.clone(),
             epoch: snapshot.epoch,
@@ -1078,6 +1085,9 @@ pub struct PruneProgress {
 pub struct PublishedSnapshot {
     pub id: SnapshotGenerationId,
     pub instance: String,
+    /// The Herdr server this publication observed; reconciliation touches only
+    /// that server's seats.
+    pub host_id: HostId,
     pub boot: HostBootId,
     pub epoch: u64,
     pub observation_sequence: u64,
@@ -1450,6 +1460,7 @@ pub struct ResolvedTargetCheck {
 #[derive(Debug)]
 pub struct OperatorTargetGuard {
     instance: String,
+    host_id: HostId,
     target: HostTargetId,
     command: OperatorCommand,
     host_boot: HostBootId,
@@ -1462,6 +1473,7 @@ pub struct OperatorTargetGuard {
 impl OperatorTargetGuard {
     pub(crate) fn try_new(
         instance: &str,
+        host_id: HostId,
         command: &OperatorCommand,
         observation: HostObservation,
     ) -> Result<Self, &'static str> {
@@ -1481,6 +1493,7 @@ impl OperatorTargetGuard {
         Ok(Self {
             structural_proof: observation.verified_structural_proof(),
             instance: instance.into(),
+            host_id,
             target: observation.target,
             command: command.clone(),
             host_boot: observation.host_boot,
@@ -1492,6 +1505,10 @@ impl OperatorTargetGuard {
     }
     pub fn instance(&self) -> &str {
         &self.instance
+    }
+    /// The Herdr server the guarded target was observed on.
+    pub fn host_id(&self) -> HostId {
+        self.host_id
     }
     pub fn target(&self) -> &HostTargetId {
         &self.target
@@ -1576,6 +1593,7 @@ impl OperatorRequest {
 #[derive(Debug)]
 pub struct ContinuityTargetGuard {
     instance: String,
+    host_id: HostId,
     target: HostTargetId,
     command: ContinuityCheckIn,
     host_boot: HostBootId,
@@ -1588,6 +1606,7 @@ pub struct ContinuityTargetGuard {
 impl ContinuityTargetGuard {
     pub(crate) fn try_new(
         instance: &str,
+        host_id: HostId,
         command: &ContinuityCheckIn,
         observation: HostObservation,
     ) -> Result<Self, &'static str> {
@@ -1600,6 +1619,7 @@ impl ContinuityTargetGuard {
         Ok(Self {
             structural_proof: observation.verified_structural_proof(),
             instance: instance.into(),
+            host_id,
             target: observation.target,
             command: command.clone(),
             host_boot: observation.host_boot,
@@ -1611,6 +1631,10 @@ impl ContinuityTargetGuard {
     }
     pub fn instance(&self) -> &str {
         &self.instance
+    }
+    /// The Herdr server the guarded target was observed on.
+    pub fn host_id(&self) -> HostId {
+        self.host_id
     }
     pub fn target(&self) -> &HostTargetId {
         &self.target
@@ -3214,6 +3238,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     fn begin_host_observation(
         &self,
         instance: &str,
+        host: HostId,
         budget: &CallBudget,
     ) -> Result<HostObservationAdmission, ApiError>;
     /// Admit one trusted explicit-target read after host I/O, under the same
@@ -4311,6 +4336,7 @@ mod allocation_tests {
         };
         let admission = HostObservationAdmission {
             instance: "instance".into(),
+            host_id: crate::test_support::test_host_id(),
             sequence: 1,
             expected_active: None,
             expected_boot: None,
@@ -4497,6 +4523,7 @@ mod allocation_tests {
         };
         let guard = OperatorTargetGuard::try_new(
             "i1",
+            crate::test_support::test_host_id(),
             &OperatorCommand::FreshSeat(fresh.clone()),
             observation.clone(),
         )
@@ -4516,6 +4543,7 @@ mod allocation_tests {
         assert!(
             OperatorTargetGuard::try_new(
                 "i1",
+                crate::test_support::test_host_id(),
                 &OperatorCommand::Rebind(rebind),
                 observation.clone()
             )
@@ -4524,6 +4552,7 @@ mod allocation_tests {
         assert!(
             OperatorTargetGuard::try_new(
                 "i1",
+                crate::test_support::test_host_id(),
                 &OperatorCommand::FreshSeat(fresh.clone()),
                 HostObservation {
                     provenance: ObservationProvenance::UncharacterizedCache,
@@ -4541,6 +4570,7 @@ mod allocation_tests {
         assert!(
             OperatorTargetGuard::try_new(
                 "i1",
+                crate::test_support::test_host_id(),
                 &OperatorCommand::OrphanInvite(orphan.clone()),
                 operator_observation("p1")
             )
@@ -4570,6 +4600,7 @@ mod allocation_tests {
         };
         let admission = HostObservationAdmission {
             instance: "i".into(),
+            host_id: crate::test_support::test_host_id(),
             sequence: 1,
             expected_active: None,
             expected_boot: Some(HostBootId::new("b1")),
@@ -4681,6 +4712,7 @@ mod allocation_tests {
         };
         let guard = OperatorTargetGuard::try_new(
             "i1",
+            crate::test_support::test_host_id(),
             &OperatorCommand::FreshSeat(command.clone()),
             operator_observation("p1"),
         )
@@ -4709,6 +4741,7 @@ mod allocation_tests {
         };
         let guard = OperatorTargetGuard::try_new(
             "i1",
+            crate::test_support::test_host_id(),
             &OperatorCommand::Rebind(original.clone()),
             operator_observation("p1"),
         )
@@ -4753,6 +4786,7 @@ mod allocation_tests {
         };
         let guard = OperatorTargetGuard::try_new(
             "i1",
+            crate::test_support::test_host_id(),
             &OperatorCommand::Rebind(original),
             operator_observation("p1"),
         )
@@ -4800,6 +4834,7 @@ mod allocation_tests {
         };
         let guard = OperatorTargetGuard::try_new(
             "i1",
+            crate::test_support::test_host_id(),
             &OperatorCommand::FreshSeat(command.clone()),
             operator_observation("p1"),
         )
@@ -4847,6 +4882,7 @@ mod allocation_tests {
         };
         let guard = OperatorTargetGuard::try_new(
             "i1",
+            crate::test_support::test_host_id(),
             &OperatorCommand::FreshSeat(command.clone()),
             operator_observation("p1"),
         )
