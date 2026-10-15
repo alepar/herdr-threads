@@ -131,11 +131,11 @@ fn set(lanes: &[Lane]) -> LaneSet {
 const INSERTS: &[(&str, &str)] = &[
     (
         "journal",
-        "INSERT INTO sync_logs(log_ix,node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) VALUES (2,printf('%032d',1),1,0,zeroblob(32),zeroblob(32),1,zeroblob(32),0); INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,ingested_at,apply_state) VALUES (2,1,zeroblob(32),zeroblob(32),0,'k',1,x'',x'',zeroblob(64),0,'pending')",
+        "INSERT INTO sync_logs(node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) VALUES (printf('%032d',1),1,0,zeroblob(32),zeroblob(32),1,zeroblob(32),0); INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,ingested_at,apply_state) VALUES (last_insert_rowid(),1,zeroblob(32),zeroblob(32),0,'k',1,x'',x'',zeroblob(64),0,'pending')",
     ),
     (
         "sync_logs",
-        "INSERT INTO sync_logs(log_ix,node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) VALUES (2,printf('%032d',1),1,0,zeroblob(32),zeroblob(32),1,zeroblob(32),0)",
+        "INSERT INTO sync_logs(node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) VALUES (printf('%032d',1),1,0,zeroblob(32),zeroblob(32),1,zeroblob(32),0)",
     ),
     (
         "sync_dial_targets",
