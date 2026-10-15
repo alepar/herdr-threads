@@ -1529,6 +1529,7 @@ fn store_only_daemon_serves_without_host_workers() {
     let refused = herdr_threads::ports::LocalClient::call(
         &client,
         Command::ResolveSeat(ResolveSeat {
+            host: herdr_threads::test_support::test_host_locator(),
             target: HostTargetId::new("p"),
             operation: OperationId::new("op"),
         }),

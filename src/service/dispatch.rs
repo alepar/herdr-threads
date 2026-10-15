@@ -1551,14 +1551,17 @@ mod operator_tests {
         assert_eq!(direct.detail, "no Herdr server attached");
         for command in [
             Command::ResolveSeat(ResolveSeat {
+                host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("p"),
                 operation: OperationId::new("op"),
             }),
             Command::OperatorFreshSeat(OperatorFreshSeat {
+                host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("p"),
                 operation: OperationId::new("op"),
             }),
             Command::ContinuityCheckIn(ContinuityCheckIn {
+                host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("p"),
                 harness: Harness::Codex,
                 native_session: NativeSessionId::new("n"),
