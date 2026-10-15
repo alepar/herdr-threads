@@ -555,7 +555,7 @@ fn run_pass(ctx: &StoreContext, conn: &mut Connection, limits: ReissueLimits) ->
     ctx.execute_decision(
         conn,
         |_| Ok(()),
-        |tx, d, ()| reissue_pass(tx, ctx, d, limits),
+        |tx, d, ()| reissue_pass(tx, ctx, d, limits).map(|r| r.done().expect("not held")),
     )
     .unwrap()
 }
@@ -760,7 +760,10 @@ fn crash_between_passes_resumes_consistently() {
     {
         let ctx = &o.ctx;
         let tx = o.conn.transaction().unwrap();
-        let progress = reissue_pass(&tx, ctx, decision(), ALL).unwrap();
+        let progress = reissue_pass(&tx, ctx, decision(), ALL)
+            .unwrap()
+            .done()
+            .unwrap();
         assert_eq!(progress.reissued, expected_total);
         drop(tx);
     }
@@ -884,4 +887,1327 @@ fn wall_limit_still_makes_progress() {
             has_more: true
         }
     );
+}
+
+// ---- rotation, clone gate, restore successor, branch pulls (ht-5fr.6.7) -----
+
+use crate::store::apply::{ApplyLimits, apply_pass};
+use crate::store::connection::HoldSource;
+use crate::sync::BatchLimits;
+use crate::sync::coordinator::{CloneKind, CloneReport};
+use crate::sync::facts::{ApplyContext, FactError, GenesisPayload};
+use crate::sync::journal_port::IngestOutcome;
+
+const OPERATOR: &str = "operator:local-user:501";
+
+/// A clock whose UTC reading the test sets.
+struct TickClock(std::sync::atomic::AtomicI64);
+impl TickClock {
+    fn new(utc: i64) -> Arc<Self> {
+        Arc::new(Self(std::sync::atomic::AtomicI64::new(utc)))
+    }
+    fn set(&self, utc: i64) {
+        self.0.store(utc, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+impl Clock for TickClock {
+    fn utc_now(&self) -> UtcMillis {
+        UtcMillis(self.0.load(std::sync::atomic::Ordering::SeqCst))
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        MonoInstant(1)
+    }
+}
+
+const T0: i64 = 1_700_000_000_000;
+
+// A message-like kind: records what it saw in `test_seen` and writes a lazy row
+// and a wake row only when `delivery_suppressed` is false.
+#[derive(Serialize, Deserialize)]
+struct Msg {
+    id: String,
+}
+
+struct MsgKind;
+impl FactKind for MsgKind {
+    const NAME: &'static str = "test.msg";
+    const MAJOR: u32 = 1;
+    type Payload = Msg;
+    fn creates(p: &Msg) -> Option<EntityKey> {
+        EntityKey::new(format!("m:{}", p.id)).ok()
+    }
+    fn needs(_: &Msg) -> Vec<EntityKey> {
+        Vec::new()
+    }
+    fn apply(tx: &Transaction<'_>, cx: &mut ApplyContext<'_>, p: Msg) -> Result<(), FactError> {
+        let fail = |e: rusqlite::Error| FactError::from_api(store_error(e));
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS test_seen(id TEXT, suppressed INTEGER);\
+             CREATE TABLE IF NOT EXISTS test_lazy(id TEXT);\
+             CREATE TABLE IF NOT EXISTS test_wake(id TEXT);",
+        )
+        .map_err(fail)?;
+        let settle = EntityKey::new(format!("s:{}", p.id)).expect("key");
+        let suppressed = cx
+            .delivery_suppressed(tx, &settle)
+            .map_err(FactError::from_api)?;
+        tx.execute(
+            "INSERT INTO test_seen(id,suppressed) VALUES (?1,?2)",
+            params![p.id, suppressed],
+        )
+        .map_err(fail)?;
+        if !suppressed {
+            tx.execute("INSERT INTO test_lazy(id) VALUES (?1)", [&p.id])
+                .map_err(fail)?;
+            tx.execute("INSERT INTO test_wake(id) VALUES (?1)", [&p.id])
+                .map_err(fail)?;
+        }
+        Ok(())
+    }
+}
+
+/// The settlement of `Msg { id }`.
+struct SettleKind;
+impl FactKind for SettleKind {
+    const NAME: &'static str = "test.settle";
+    const MAJOR: u32 = 1;
+    type Payload = Msg;
+    fn creates(p: &Msg) -> Option<EntityKey> {
+        EntityKey::new(format!("s:{}", p.id)).ok()
+    }
+    fn needs(_: &Msg) -> Vec<EntityKey> {
+        Vec::new()
+    }
+    fn apply(_: &Transaction<'_>, _: &mut ApplyContext<'_>, _: Msg) -> Result<(), FactError> {
+        Ok(())
+    }
+}
+
+fn delivery_registry() -> &'static FactRegistry {
+    FactRegistry::builtins_plus(|b| b.with::<PutKind>().with::<MsgKind>().with::<SettleKind>())
+}
+
+fn msg(id: &str) -> Msg {
+    Msg { id: id.into() }
+}
+
+/// A node of one identity: its store, context, writer and active log.
+struct Node {
+    _store: Store,
+    ctx: StoreContext,
+    conn: Connection,
+    log: LogKey,
+    clock: Arc<TickClock>,
+}
+
+impl Node {
+    /// `identity`'s node at `utc`, with incarnation draws starting from
+    /// `incarnation_seed`: the same identity and seed is the same node, so two
+    /// of them are a store and its older backup.
+    fn new(identity: Arc<NodeIdentity>, incarnation_seed: u64, utc: i64) -> Self {
+        let store = Store::new();
+        let clock = TickClock::new(utc);
+        let ctx = StoreContext::new(store.path.clone(), Arc::clone(&clock) as Arc<dyn Clock>)
+            .with_node_seed(crate::test_support::node_seed_for(identity.uuid()));
+        ctx.seed_incarnations(incarnation_seed);
+        let mut conn = ctx.open_writer().unwrap();
+        let report = journal::open(&ctx, &mut conn, identity, "host", delivery_registry()).unwrap();
+        Self {
+            _store: store,
+            ctx,
+            conn,
+            log: report.self_log,
+            clock,
+        }
+    }
+
+    fn author<K: FactKind>(&mut self, payload: &K::Payload) {
+        let ctx = &self.ctx;
+        ctx.execute_decision(
+            &mut self.conn,
+            |_| Ok(()),
+            |tx, d, ()| journal::author::<K>(tx, ctx, d, payload),
+        )
+        .unwrap();
+    }
+
+    /// Starts incarnation `incarnation` naming `predecessor` (committed).
+    fn rotate_to(&mut self, incarnation: u32, predecessor: Option<Predecessor>) -> LogKey {
+        let ctx = &self.ctx;
+        ctx.execute_decision(
+            &mut self.conn,
+            |_| Ok(()),
+            |tx, d, ()| journal::begin_incarnation(tx, ctx, d, incarnation, predecessor, "host"),
+        )
+        .unwrap();
+        self.log = LogKey {
+            node: self.log.node,
+            incarnation,
+        };
+        self.log
+    }
+
+    fn entries(&self, log: &LogKey, first: u64) -> Vec<Envelope> {
+        journal::serve(&self.conn, log, first, BatchLimits::default()).unwrap()
+    }
+
+    fn ingest(&mut self, from: &Node, log: &LogKey, first: u64) {
+        let entries = from.entries(log, first);
+        let outcome = journal::ingest(&self.ctx, &mut self.conn, log, entries, &budget()).unwrap();
+        assert!(
+            matches!(outcome, IngestOutcome::Stored { .. }),
+            "{outcome:?}"
+        );
+    }
+
+    fn pass(&mut self) -> usize {
+        let ctx = &self.ctx;
+        ctx.execute_decision(
+            &mut self.conn,
+            |_| Ok(()),
+            |tx, d, ()| apply_pass(tx, ctx, d, ApplyLimits::default()),
+        )
+        .unwrap()
+        .applied
+    }
+
+    fn hold(&self, source: HoldSource, on: bool) {
+        self.ctx
+            .sync()
+            .unwrap()
+            .own_history_hold()
+            .set(source, on, MonoInstant(0));
+    }
+
+    fn state(&self, log: &LogKey, counter: u64) -> String {
+        self.conn
+            .query_row(
+                "SELECT j.apply_state FROM journal j JOIN sync_logs l ON l.log_ix=j.log_ix \
+                 WHERE l.node_uuid=?1 AND l.incarnation=?2 AND j.counter=?3",
+                params![log.node.to_string(), log.incarnation, counter as i64],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    fn seen(&self, id: &str) -> Option<bool> {
+        self.conn
+            .query_row("SELECT suppressed FROM test_seen WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .ok()
+    }
+
+    fn delivered(&self, id: &str) -> (i64, i64) {
+        let n = |table: &str| {
+            self.conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE id=?1"),
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0)
+        };
+        (n("test_lazy"), n("test_wake"))
+    }
+
+    /// Runs `f` in one decision transaction of this node's writer.
+    fn decide<T>(
+        &mut self,
+        f: impl FnOnce(&Transaction<'_>, &StoreContext, DecisionInstant) -> Result<T, ApiError>,
+    ) -> T {
+        let ctx = &self.ctx;
+        ctx.execute_decision(&mut self.conn, |_| Ok(()), |tx, d, ()| f(tx, ctx, d))
+            .unwrap()
+    }
+}
+
+/// The active self log and its state.
+fn active_log_of(conn: &Connection) -> (LogKey, String) {
+    let (node, incarnation, state): (String, u32, String) = conn
+        .query_row(
+            "SELECT l.node_uuid,l.incarnation,l.state FROM local_node n \
+             JOIN sync_logs l ON l.log_ix=n.active_log_ix",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    (
+        LogKey {
+            node: node.parse().unwrap(),
+            incarnation,
+        },
+        state,
+    )
+}
+
+fn genesis_payload(conn: &Connection, log: &LogKey) -> GenesisPayload {
+    let payload: Vec<u8> = conn
+        .query_row(
+            "SELECT j.payload FROM journal j JOIN sync_logs l ON l.log_ix=j.log_ix \
+             WHERE l.node_uuid=?1 AND l.incarnation=?2 AND j.counter=1",
+            params![log.node.to_string(), log.incarnation],
+            |r| r.get(0),
+        )
+        .unwrap();
+    serde_json::from_slice(&payload).unwrap()
+}
+
+/// Node A with `puts` puts after its genesis on an unrotated active log
+/// (counters `1..=puts+1`).
+fn active(puts: usize) -> Active {
+    let store = Store::new();
+    let (log, entries) = chain_of_a(&store, puts);
+    let ctx = StoreContext::new(store.path.clone(), Arc::new(FixedClock));
+    ctx.seed_incarnations(1234);
+    let mut conn = ctx.open_writer().unwrap();
+    journal::open(&ctx, &mut conn, identity_a(), "a-host", registry()).unwrap();
+    Active {
+        _store: store,
+        ctx,
+        conn,
+        log,
+        entries,
+    }
+}
+
+struct Active {
+    _store: Store,
+    ctx: StoreContext,
+    conn: Connection,
+    log: LogKey,
+    entries: Vec<Envelope>,
+}
+
+impl Active {
+    fn rotate(&mut self, proof: &Proof, source: Option<NodeUuid>) -> Repair<Rotation> {
+        let ctx = &self.ctx;
+        ctx.execute_decision(
+            &mut self.conn,
+            |_| Ok(()),
+            |tx, d, ()| owner_rotate(tx, ctx, d, proof, source),
+        )
+        .unwrap()
+    }
+
+    fn restore(&mut self, entry: &Envelope) -> Repair<Rotation> {
+        let ctx = &self.ctx;
+        ctx.execute_decision(
+            &mut self.conn,
+            |_| Ok(()),
+            |tx, d, ()| restore_rotate(tx, ctx, d, entry, None),
+        )
+        .unwrap()
+    }
+}
+
+fn clone_report(subject: NodeUuid, kind: CloneKind) -> CloneReport {
+    CloneReport {
+        subject,
+        kind,
+        boots: Vec::new(),
+        source: identity_b().uuid(),
+    }
+}
+
+// Kills: a genesis that declares no freeze (or `frozen_at` off by one), a
+// rotation that leaves `active_log_ix` on the forked log, a freeze before the
+// rotation (I1: the active log frozen), a missing evidence row or branch row.
+#[test]
+fn owner_rotate_genesis_predecessor_frozen_at_x_minus_1_moves_active_freezes_old() {
+    let mut a = active(3); // counters 1..=4
+    let conflicting = signed_entry(a.log, 3, a.entries[1].hash, r#"{"id":"fork3"}"#);
+    let p = proof(a.log, 3, &a.entries[2], conflicting.clone());
+    let source = identity_b().uuid();
+
+    let Repair::Done(Rotation::Forked {
+        rotated: Some(new),
+        fork,
+        branch_ix,
+    }) = a.rotate(&p, Some(source))
+    else {
+        panic!("expected a rotation");
+    };
+    assert_eq!(
+        fork,
+        ForkRecord {
+            new: true,
+            frozen_at: 2
+        }
+    );
+    assert_ne!(new.incarnation, a.log.incarnation);
+    assert_eq!(freeze_of(&a.conn, &a.log), ("frozen".into(), Some(2)));
+    let (active_log, active_state) = active_log_of(&a.conn);
+    assert_eq!(active_log, new, "active_log_ix moved to the new log");
+    assert_eq!(active_state, "active", "I1: the active log is not frozen");
+    assert_eq!(
+        genesis_payload(&a.conn, &new).predecessor,
+        Some(Predecessor {
+            incarnation: a.log.incarnation,
+            frozen_at: Some(2)
+        })
+    );
+    assert_eq!(
+        count(
+            &a.conn,
+            "SELECT COUNT(*) FROM journal_forked WHERE counter=3 AND source_node IS NOT NULL"
+        ),
+        1,
+        "the conflicting entry is quarantined with its source"
+    );
+    assert_eq!(count(&a.conn, "SELECT COUNT(*) FROM sync_forks"), 1);
+    let (state, next_from, tip): (String, i64, i64) = a
+        .conn
+        .query_row(
+            "SELECT state,next_from,tip_counter FROM sync_branches WHERE branch_ix=?1",
+            [branch_ix],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((state.as_str(), next_from, tip), ("pulling", 3, 3));
+}
+
+// Kills: a re-check that trusts the first classification (a restore that the
+// node authored past would still rotate as a restore and freeze nothing), or
+// one that skips the freeze for the forked old log.
+#[test]
+fn owner_rotate_recheck_turns_restore_into_fork() {
+    let mut a = active(3); // head 4
+    let tail = signed_entry(a.log, 5, a.entries[3].hash, r#"{"id":"tail"}"#);
+    // Classified now it would be a restore; a local command authors counter 5.
+    a.ctx
+        .execute_decision(
+            &mut a.conn,
+            |_| Ok(()),
+            |tx, d, ()| {
+                journal::author::<PutKind>(
+                    tx,
+                    &a.ctx,
+                    d,
+                    &Put {
+                        id: "local5".into(),
+                        fail: None,
+                    },
+                )
+            },
+        )
+        .unwrap();
+
+    let Repair::Done(Rotation::Forked {
+        rotated: Some(new),
+        fork,
+        ..
+    }) = a.restore(&tail)
+    else {
+        panic!("a restore authored past is a fork");
+    };
+    assert_eq!(fork.frozen_at, 4);
+    assert_eq!(freeze_of(&a.conn, &a.log), ("frozen".into(), Some(4)));
+    assert_eq!(
+        genesis_payload(&a.conn, &new).predecessor,
+        Some(Predecessor {
+            incarnation: a.log.incarnation,
+            frozen_at: Some(4)
+        })
+    );
+}
+
+// Kills: a rotation of a non-active own log (it must not author a genesis), a
+// missing branch row, and a re-check that accepts a proof whose held entry this
+// store does not hold.
+#[test]
+fn owner_rotate_non_active_records_without_rotating_and_stale_proof_writes_nothing() {
+    let mut o = owner(3, 2);
+    let prev2 = o.entries[1].hash;
+    let conflicting = signed_entry(o.old, 3, prev2, r#"{"id":"x3"}"#);
+    let p = proof(o.old, 3, &o.entries[2], conflicting);
+    let (active_before, _) = active_log_of(&o.conn);
+    let out = run_owner_rotate(&mut o, &p);
+    let Repair::Done(Rotation::Forked {
+        rotated: None,
+        fork,
+        ..
+    }) = out
+    else {
+        panic!("no rotation for a non-active own log: {out:?}");
+    };
+    assert!(fork.new);
+    assert_eq!(active_log_of(&o.conn).0, active_before);
+    assert_eq!(count(&o.conn, "SELECT COUNT(*) FROM sync_branches"), 1);
+
+    // A held entry this store never stored: stale, nothing written.
+    let alien = signed_entry(o.old, 3, prev2, r#"{"id":"alien"}"#);
+    let other = signed_entry(o.old, 3, prev2, r#"{"id":"other"}"#);
+    let before = o.conn.total_changes();
+    let stale = proof(o.old, 3, &alien, other);
+    let out = run_owner_rotate(&mut o, &stale);
+    assert_eq!(out, Repair::Done(Rotation::Stale));
+    assert_eq!(o.conn.total_changes(), before);
+}
+
+fn run_owner_rotate(o: &mut Owner, p: &Proof) -> Repair<Rotation> {
+    let ctx = &o.ctx;
+    ctx.execute_decision(
+        &mut o.conn,
+        |_| Ok(()),
+        |tx, d, ()| owner_rotate(tx, ctx, d, p, None),
+    )
+    .unwrap()
+}
+
+// Kills: a restore rotation that freezes the old log or leaves it as the
+// active one, or one that declares a freeze.
+#[test]
+fn restore_rotate_old_log_not_frozen_not_active() {
+    let mut a = active(3);
+    let tail = signed_entry(a.log, 5, a.entries[3].hash, r#"{"id":"tail"}"#);
+    let Repair::Done(Rotation::Restored {
+        new_log,
+        predecessor,
+    }) = a.restore(&tail)
+    else {
+        panic!("expected a restore rotation");
+    };
+    assert_eq!(predecessor, a.log);
+    let (active_log, _) = active_log_of(&a.conn);
+    assert_eq!(active_log, new_log);
+    assert_ne!(active_log, a.log, "the old log is no longer active");
+    assert_eq!(
+        freeze_of(&a.conn, &a.log),
+        ("active".into(), None),
+        "the old log is not frozen"
+    );
+    assert_eq!(
+        genesis_payload(&a.conn, &new_log).predecessor,
+        Some(Predecessor {
+            incarnation: a.log.incarnation,
+            frozen_at: None
+        })
+    );
+    assert_eq!(count(&a.conn, "SELECT COUNT(*) FROM sync_forks"), 0);
+}
+
+/// A restored node and its original: the original authored `open`, `done` and
+/// the settlement of `done` after the backup, so the restored store holds only
+/// the genesis.
+fn restored_pair() -> (Node, Node) {
+    let mut orig = Node::new(identity_a(), 600, T0);
+    orig.author::<MsgKind>(&msg("open")); // 2
+    orig.author::<MsgKind>(&msg("done")); // 3
+    orig.author::<SettleKind>(&msg("done")); // 4
+    let restored = Node::new(identity_a(), 600, T0);
+    assert_eq!(restored.log, orig.log, "the backup holds the same log");
+    (orig, restored)
+}
+
+fn restore_from(restored: &mut Node, orig: &Node) -> Rotation {
+    let entry = orig.entries(&orig.log, 2).remove(0);
+    restored
+        .decide(|tx, ctx, d| restore_rotate(tx, ctx, d, &entry, None))
+        .done()
+        .expect("not held")
+}
+
+// Kills: an old-tail ingest that is refused (the old log is not active any
+// more), applied before the own-history hold lifts, delivered for a key the
+// tail settled, or suppressed for an unsettled one.
+#[test]
+fn restored_tail_ingest_applied_after_hold_settled_only() {
+    let (orig, mut restored) = restored_pair();
+    let Rotation::Restored { new_log, .. } = restore_from(&mut restored, &orig) else {
+        panic!("expected a restore rotation");
+    };
+    assert_ne!(new_log, orig.log);
+
+    restored.hold(HoldSource::Links, true);
+    restored.ingest(&orig, &orig.log, 2);
+    assert_eq!(restored.pass(), 0, "the hold keeps the old tail pending");
+    assert_eq!(restored.state(&orig.log, 4), "pending");
+
+    restored.hold(HoldSource::Links, false);
+    restored.pass();
+    assert_eq!(restored.state(&orig.log, 4), "applied");
+    assert_eq!(restored.seen("done"), Some(true), "settled by the tail");
+    assert_eq!(restored.delivered("done"), (0, 0), "no lazy row, no wake");
+    assert_eq!(restored.seen("open"), Some(false), "unsettled");
+    assert_eq!(restored.delivered("open"), (1, 1), "lazy row and wake");
+}
+
+// Kills: a foreign entry applied while the tail that settles its key is still
+// unpulled, and one applied after the hold with suppression lost.
+#[test]
+fn foreign_entry_before_old_tail_waits_for_hold_then_suppressed() {
+    let (orig, mut restored) = restored_pair();
+    restore_from(&mut restored, &orig);
+    let mut peer = Node::new(identity_b(), 700, T0);
+    peer.author::<MsgKind>(&msg("done")); // 2
+
+    restored.hold(HoldSource::Links, true);
+    restored.ingest(&peer, &peer.log, 1);
+    assert_eq!(restored.pass(), 0);
+    assert_eq!(
+        restored.state(&peer.log, 2),
+        "pending",
+        "waits for the hold"
+    );
+    assert_eq!(restored.seen("done"), None);
+
+    restored.ingest(&orig, &orig.log, 2);
+    restored.hold(HoldSource::Links, false);
+    restored.pass();
+    assert_eq!(restored.state(&peer.log, 2), "applied");
+    assert_eq!(restored.seen("done"), Some(true), "the tail settled it");
+    assert_eq!(restored.delivered("done"), (0, 0));
+}
+
+// ---- clone gate ---------------------------------------------------------------
+
+fn snapshot(conn: &Connection) -> i64 {
+    conn.total_changes() as i64
+}
+
+// Kills: a gate on `record_fork` (the freeze must still happen), a gate that
+// misses one of the three repairs, and a held repair that writes.
+#[test]
+fn clone_suspect_holds_rotation_and_reissue_but_not_record_fork() {
+    let mut o = owner(3, 2);
+    let prev2 = o.entries[1].hash;
+    let tail = o.fork(3, prev2, r#"{"id":"x3"}"#);
+    let me = identity_a().uuid();
+    let tx = o.conn.transaction().unwrap();
+    assert!(
+        record_clone_evidence(&tx, &clone_report(me, CloneKind::Handshake), UtcMillis(10)).unwrap()
+    );
+    tx.commit().unwrap();
+    assert!(clone_suspect(&o.conn).unwrap());
+
+    let before = snapshot(&o.conn);
+    let ctx = &o.ctx;
+    let tx = o.conn.transaction().unwrap();
+    let conflicting = signed_entry(o.old, 3, prev2, r#"{"id":"y3"}"#);
+    let p = proof(o.old, 3, &o.entries[2], conflicting);
+    assert_eq!(
+        owner_rotate(&tx, ctx, decision(), &p, None).unwrap(),
+        Repair::Held { clone: true }
+    );
+    assert_eq!(
+        restore_rotate(&tx, ctx, decision(), &tail, None).unwrap(),
+        Repair::Held { clone: true }
+    );
+    assert_eq!(
+        reissue_pass(&tx, ctx, decision(), ALL).unwrap(),
+        Repair::Held { clone: true }
+    );
+    tx.commit().unwrap();
+    assert_eq!(snapshot(&o.conn), before, "held repairs write nothing");
+    assert_eq!(count(&o.conn, "SELECT COUNT(*) FROM sync_reissues"), 0);
+
+    // Evidence, tips and pulls are not gated.
+    let tx = o.conn.transaction().unwrap();
+    let low = signed_entry(o.old, 2, o.entries[0].hash, r#"{"id":"z2"}"#);
+    let low_proof = proof(o.old, 2, &o.entries[1], low.clone());
+    let fork = record_fork(&tx, &low_proof, None).unwrap();
+    assert_eq!(fork.frozen_at, 1, "record_fork still lowers the freeze");
+    upsert_branch_tip(&tx, &o.old, low.counter, low.hash, None).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(freeze_of(&o.conn, &o.old), ("frozen".into(), Some(1)));
+}
+
+// Kills: a gate on any open row (it must be about this node).
+#[test]
+fn other_node_row_does_not_gate() {
+    let mut a = active(3);
+    let tx = a.conn.transaction().unwrap();
+    record_clone_evidence(
+        &tx,
+        &clone_report(identity_b().uuid(), CloneKind::ThirdParty),
+        UtcMillis(10),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    assert!(!clone_suspect(&a.conn).unwrap());
+
+    let conflicting = signed_entry(a.log, 3, a.entries[1].hash, r#"{"id":"f"}"#);
+    let p = proof(a.log, 3, &a.entries[2], conflicting);
+    assert!(matches!(
+        a.rotate(&p, None),
+        Repair::Done(Rotation::Forked {
+            rotated: Some(_),
+            ..
+        })
+    ));
+}
+
+// Kills: a clear that leaves the gate shut, one that skips the re-issue after,
+// and lineage evidence that does not gate.
+#[test]
+fn clear_then_rotate_and_reissue() {
+    let mut a = active(3);
+    let me = identity_a().uuid();
+    let conflicting = signed_entry(a.log, 3, a.entries[1].hash, r#"{"id":"f"}"#);
+    let p = proof(a.log, 3, &a.entries[2], conflicting);
+    let tx = a.conn.transaction().unwrap();
+    record_log_clone_evidence(
+        &tx,
+        LogEvidence::LineageBranch,
+        &a.log,
+        "two geneses",
+        UtcMillis(5),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    assert!(
+        clone_suspect(&a.conn).unwrap(),
+        "lineage evidence gates too"
+    );
+    assert_eq!(a.rotate(&p, None), Repair::Held { clone: true });
+    assert_eq!(
+        count(&a.conn, "SELECT COUNT(*) FROM sync_logs"),
+        1,
+        "no rotation while held"
+    );
+
+    let tx = a.conn.transaction().unwrap();
+    assert_eq!(
+        clear_clone_evidence(&tx, OPERATOR, UtcMillis(20)).unwrap(),
+        1
+    );
+    tx.commit().unwrap();
+    assert!(!clone_suspect(&a.conn).unwrap());
+    assert!(matches!(
+        a.rotate(&p, None),
+        Repair::Done(Rotation::Forked {
+            rotated: Some(_),
+            ..
+        })
+    ));
+
+    // The same for the re-issue pass.
+    let mut o = owner(3, 2);
+    let tx = o.conn.transaction().unwrap();
+    record_clone_evidence(&tx, &clone_report(me, CloneKind::PeerClose), UtcMillis(10)).unwrap();
+    tx.commit().unwrap();
+    let ctx = &o.ctx;
+    let held = o
+        .ctx
+        .execute_decision(
+            &mut o.conn,
+            |_| Ok(()),
+            |tx, d, ()| reissue_pass(tx, ctx, d, ALL),
+        )
+        .unwrap();
+    assert_eq!(held, Repair::Held { clone: true });
+    let tx = o.conn.transaction().unwrap();
+    assert_eq!(
+        clear_clone_evidence(&tx, OPERATOR, UtcMillis(30)).unwrap(),
+        1
+    );
+    tx.commit().unwrap();
+    let progress = o.pass(ALL);
+    assert_eq!(progress.reissued, 2, "counters 3 and 4 above the freeze");
+}
+
+// Kills: a repeat report that inserts a second open row, one that rewrites
+// `detected_at`, or `last_seen_at` that stays put.
+#[test]
+fn repeat_report_advances_last_seen_only() {
+    let mut a = active(1);
+    let me = identity_a().uuid();
+    let report = clone_report(me, CloneKind::Handshake);
+    let tx = a.conn.transaction().unwrap();
+    assert!(record_clone_evidence(&tx, &report, UtcMillis(1_000)).unwrap());
+    assert!(!record_clone_evidence(&tx, &report, UtcMillis(2_000)).unwrap());
+    assert!(
+        !record_clone_evidence(&tx, &report, UtcMillis(1_500)).unwrap(),
+        "an older repeat does not move last_seen_at back"
+    );
+    tx.commit().unwrap();
+    let (rows, detected, seen): (i64, i64, i64) = a
+        .conn
+        .query_row(
+            "SELECT COUNT(*),MIN(detected_at),MAX(last_seen_at) FROM sync_clone_evidence",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((rows, detected, seen), (1, 1_000, 2_000));
+
+    // A different kind about the same node is its own row.
+    let tx = a.conn.transaction().unwrap();
+    assert!(
+        record_clone_evidence(
+            &tx,
+            &clone_report(me, CloneKind::PeerClose),
+            UtcMillis(3_000)
+        )
+        .unwrap()
+    );
+    tx.commit().unwrap();
+    assert_eq!(
+        count(&a.conn, "SELECT COUNT(*) FROM sync_clone_evidence"),
+        2
+    );
+}
+
+// Kills: a deletable evidence row, a mutable cleared row, a clear that can be
+// overwritten, a clear without operator provenance, and a log-kind row with no
+// log (or a report row with one).
+#[test]
+fn append_only_and_set_once_rules() {
+    let mut a = active(1);
+    let me = identity_a().uuid();
+    let tx = a.conn.transaction().unwrap();
+    record_clone_evidence(
+        &tx,
+        &clone_report(me, CloneKind::Handshake),
+        UtcMillis(1_000),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+
+    let message = abort_message(a.conn.execute("DELETE FROM sync_clone_evidence", []));
+    assert!(
+        message.contains("sync_clone_evidence_append_only"),
+        "{message}"
+    );
+    for update in [
+        "UPDATE sync_clone_evidence SET detail='x'",
+        "UPDATE sync_clone_evidence SET subject=lower(hex(randomblob(16)))",
+        "UPDATE sync_clone_evidence SET detected_at=1",
+        "UPDATE sync_clone_evidence SET last_seen_at=1",
+    ] {
+        let message = abort_message(a.conn.execute(update, []));
+        assert!(
+            message.contains("sync_clone_evidence_set_once"),
+            "{update}: {message}"
+        );
+    }
+
+    let tx = a.conn.transaction().unwrap();
+    let bad = clear_clone_evidence(&tx, "operator:other", UtcMillis(2_000)).unwrap_err();
+    assert_eq!(bad.code, ErrorCode::InvalidRequest);
+    assert_eq!(
+        clear_clone_evidence(&tx, OPERATOR, UtcMillis(2_000)).unwrap(),
+        1
+    );
+    assert_eq!(
+        clear_clone_evidence(&tx, "operator:local-user:7", UtcMillis(3_000)).unwrap(),
+        0,
+        "nothing is open, so nothing is cleared again"
+    );
+    tx.commit().unwrap();
+    let cleared_by: String = a
+        .conn
+        .query_row("SELECT cleared_by FROM sync_clone_evidence", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(cleared_by, OPERATOR);
+    for update in [
+        "UPDATE sync_clone_evidence SET cleared_by='operator:local-user:7'",
+        "UPDATE sync_clone_evidence SET cleared_at=NULL, cleared_by=NULL",
+        "UPDATE sync_clone_evidence SET last_seen_at=last_seen_at+1",
+    ] {
+        let message = abort_message(a.conn.execute(update, []));
+        assert!(
+            message.contains("sync_clone_evidence_set_once"),
+            "{update}: {message}"
+        );
+    }
+
+    // A cleared row does not block a fresh open one for the same subject/kind.
+    let tx = a.conn.transaction().unwrap();
+    assert!(
+        record_clone_evidence(
+            &tx,
+            &clone_report(me, CloneKind::Handshake),
+            UtcMillis(4_000)
+        )
+        .unwrap()
+    );
+    tx.commit().unwrap();
+    assert!(clone_suspect(&a.conn).unwrap());
+
+    // kind and log_ix agree.
+    let subject = me.to_string();
+    assert!(
+        a.conn
+            .execute(
+                "INSERT INTO sync_clone_evidence(subject,kind,log_ix,detail,detected_at,last_seen_at) \
+                 VALUES (?1,'lineage_branch',NULL,'',0,0)",
+                [&subject],
+            )
+            .is_err()
+    );
+    assert!(
+        a.conn
+            .execute(
+                "INSERT INTO sync_clone_evidence(subject,kind,log_ix,detail,detected_at,last_seen_at) \
+                 VALUES (?1,'handshake',1,'',0,0)",
+                [&subject],
+            )
+            .is_err()
+    );
+}
+
+// ---- restore successor --------------------------------------------------------
+
+/// The original node: I1 (genesis and a put) rotated to `second`; and a store
+/// restored from a backup taken before the rotation (I1 genesis only).
+fn rotated_original_and_backup(second: u32) -> (Node, Node) {
+    let mut orig = Node::new(identity_a(), 600, T0);
+    orig.author::<PutKind>(&Put {
+        id: "p".into(),
+        fail: None,
+    });
+    let first = orig.log;
+    orig.clock.set(T0 + 1_000);
+    orig.rotate_to(
+        second,
+        Some(Predecessor {
+            incarnation: first.incarnation,
+            frozen_at: None,
+        }),
+    );
+    let restored = Node::new(identity_a(), 600, T0);
+    assert_eq!(restored.log, first);
+    (orig, restored)
+}
+
+fn successor(node: &Node) -> Option<LogKey> {
+    restore_successor(&node.conn, &node.ctx).unwrap()
+}
+
+fn log_of(node: &Node, incarnation: u32) -> LogKey {
+    LogKey {
+        node: node.log.node,
+        incarnation,
+    }
+}
+
+// Kills: no successor before its genesis is ingested, a successor that is not
+// the newest of a chain, and a rotation that names P (a second genesis naming
+// one log) instead of the successor.
+#[test]
+fn restore_successor_after_rotation_chain() {
+    let (mut orig, mut restored) = rotated_original_and_backup(501);
+    let i1 = restored.log;
+    assert_eq!(successor(&restored), None, "I2's genesis is not here yet");
+
+    restored.ingest(&orig, &log_of(&orig, 501), 1);
+    assert_eq!(successor(&restored), Some(log_of(&orig, 501)));
+
+    // A longer chain: the newest log is the successor.
+    orig.clock.set(T0 + 2_000);
+    orig.rotate_to(
+        502,
+        Some(Predecessor {
+            incarnation: 501,
+            frozen_at: None,
+        }),
+    );
+    restored.ingest(&orig, &log_of(&orig, 502), 1);
+    assert_eq!(successor(&restored), Some(log_of(&orig, 502)));
+
+    // The restore rotation names the successor, so no log is named twice.
+    let tail = orig.entries(&i1, 2).remove(0);
+    let Rotation::Restored {
+        new_log,
+        predecessor,
+    } = restore_from_entry(&mut restored, &tail)
+    else {
+        panic!("expected a restore rotation");
+    };
+    assert_eq!(predecessor, log_of(&orig, 502));
+    assert_eq!(
+        genesis_payload(&restored.conn, &new_log).predecessor,
+        Some(Predecessor {
+            incarnation: 502,
+            frozen_at: None
+        })
+    );
+    let named: Vec<Option<u32>> = {
+        let mut geneses = own_geneses(&restored.conn).unwrap();
+        geneses.sort_by_key(|g| g.hlc);
+        geneses.iter().map(|g| g.predecessor).collect()
+    };
+    assert_eq!(
+        named,
+        vec![None, Some(i1.incarnation), Some(501), Some(502)],
+        "each log is named once"
+    );
+}
+
+fn restore_from_entry(restored: &mut Node, entry: &Envelope) -> Rotation {
+    restored
+        .decide(|tx, ctx, d| restore_rotate(tx, ctx, d, entry, None))
+        .done()
+        .expect("not held")
+}
+
+// Kills: a bootstrap genesis that is ignored, one with an older HLC accepted,
+// and several bootstraps (ambiguous) resolved by guessing.
+#[test]
+fn restore_successor_bootstrap_genesis_newer_hlc() {
+    let mut restored = Node::new(identity_a(), 600, T0);
+    // A wipe: the same key, a new incarnation, no predecessor, later.
+    let wiped = Node::new(identity_a(), 0x5000_0000_0000_0001, T0 + 10_000);
+    assert_ne!(wiped.log, restored.log);
+    restored.ingest(&wiped, &wiped.log, 1);
+    assert_eq!(successor(&restored), Some(wiped.log));
+
+    // A bootstrap that is not newer than P's genesis is no successor.
+    let mut lone = Node::new(identity_a(), 600, T0);
+    let ancient = Node::new(identity_a(), 0x6000_0000_0000_0001, T0 - 10_000);
+    lone.ingest(&ancient, &ancient.log, 1);
+    assert_eq!(
+        successor(&lone),
+        None,
+        "an older bootstrap is not a successor"
+    );
+
+    // Two candidate bootstraps are ambiguous.
+    let second = Node::new(identity_a(), 0x7000_0000_0000_0001, T0 + 20_000);
+    restored.ingest(&second, &second.log, 1);
+    assert_eq!(successor(&restored), None);
+}
+
+// Kills: rule 3 missing: a P entry authored after the node moved on.
+#[test]
+fn restore_successor_none_when_hlc_above() {
+    let (orig, mut restored) = rotated_original_and_backup(501);
+    restored.ingest(&orig, &log_of(&orig, 501), 1);
+    assert_eq!(successor(&restored), Some(log_of(&orig, 501)));
+
+    restored.clock.set(T0 + 10_000);
+    restored.author::<PutKind>(&Put {
+        id: "late".into(),
+        fail: None,
+    });
+    assert_eq!(successor(&restored), None, "P authored after I2's genesis");
+}
+
+// Kills: rule 2 missing: a lineage branch resolved by picking one successor.
+#[test]
+fn restore_successor_none_when_two_geneses_name_predecessor() {
+    let (orig, mut restored) = rotated_original_and_backup(501);
+    let mut clone = Node::new(identity_a(), 600, T0);
+    clone.clock.set(T0 + 1_500);
+    clone.rotate_to(
+        502,
+        Some(Predecessor {
+            incarnation: restored.log.incarnation,
+            frozen_at: None,
+        }),
+    );
+    restored.ingest(&orig, &log_of(&orig, 501), 1);
+    assert_eq!(successor(&restored), Some(log_of(&orig, 501)));
+    restored.ingest(&clone, &log_of(&clone, 502), 1);
+    assert_eq!(successor(&restored), None, "I1 is named by two geneses");
+}
+
+// Kills: rule 4 missing: a process that rotated since it started.
+#[test]
+fn restore_successor_none_when_rotated_since_start() {
+    let (orig, mut restored) = rotated_original_and_backup(501);
+    restored.ingest(&orig, &log_of(&orig, 501), 1);
+    assert_eq!(successor(&restored), Some(log_of(&orig, 501)));
+
+    // A rotation that rolls back leaves no row but the process has rotated.
+    let ctx = &restored.ctx;
+    let tx = restored.conn.transaction().unwrap();
+    journal::begin_incarnation(&tx, ctx, decision(), 777, None, "host").unwrap();
+    drop(tx);
+    assert!(ctx.sync().unwrap().rotated_since_start());
+    assert_eq!(successor(&restored), None);
+}
+
+// Kills: a bootstrap that counts as a rotation, and a rotation that does not.
+#[test]
+fn begin_incarnation_after_open_sets_rotated_open_does_not() {
+    let mut node = Node::new(identity_a(), 600, T0);
+    assert!(
+        !node.ctx.sync().unwrap().rotated_since_start(),
+        "open's bootstrap does not set it"
+    );
+    node.rotate_to(
+        501,
+        Some(Predecessor {
+            incarnation: node.log.incarnation,
+            frozen_at: None,
+        }),
+    );
+    assert!(node.ctx.sync().unwrap().rotated_since_start());
+}
+
+// ---- branch pulls -------------------------------------------------------------
+
+/// A conflicting branch of `o.old`: counters `from..=to`, chained on `prev`.
+fn branch(o: &Owner, from: u64, to: u64, prev: [u8; 32], tag: &str) -> Vec<Envelope> {
+    let mut out = Vec::new();
+    let mut prev = prev;
+    for counter in from..=to {
+        let entry = signed_entry(
+            o.old,
+            counter,
+            prev,
+            &format!(r#"{{"id":"{tag}{counter}"}}"#),
+        );
+        prev = entry.hash;
+        out.push(entry);
+    }
+    out
+}
+
+fn tip_row(o: &mut Owner, tip: &Envelope) -> i64 {
+    let tx = o.conn.transaction().unwrap();
+    let ix = upsert_branch_tip(&tx, &o.old, tip.counter, tip.hash, None).unwrap();
+    tx.commit().unwrap();
+    ix
+}
+
+fn progress(o: &mut Owner, ix: i64, entries: &[Envelope], more: bool) -> BranchVerdict {
+    let tx = o.conn.transaction().unwrap();
+    let verdict = branch_progress(&tx, ix, identity_b().uuid(), entries, more).unwrap();
+    tx.commit().unwrap();
+    verdict
+}
+
+fn branch_row(conn: &Connection, ix: i64) -> (String, i64, i64, i64, Option<String>) {
+    conn.query_row(
+        "SELECT state,next_from,search_span,attempts,last_error FROM sync_branches WHERE branch_ix=?1",
+        [ix],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    )
+    .unwrap()
+}
+
+// Kills: a due read that ignores `next_attempt_at`, one that returns
+// non-pulling rows, a re-advertise that does not reset `unavailable`, and a
+// first `next_from` other than `frozen_at + 1`.
+#[test]
+fn due_branches_after_next_attempt_at() {
+    let mut o = owner(3, 2);
+    let chain = branch(&o, 3, 4, o.entries[1].hash, "b");
+    let tip = chain.last().unwrap().clone();
+    let ix = tip_row(&mut o, &tip);
+    let (state, next_from, ..) = branch_row(&o.conn, ix);
+    assert_eq!((state.as_str(), next_from), ("pulling", 3));
+
+    let due = due_branches(&o.conn, UtcMillis(0)).unwrap();
+    assert_eq!(
+        due,
+        vec![DueBranch {
+            branch_ix: ix,
+            log: o.old,
+            tip: (4, tip.hash),
+            next_from: 3
+        }]
+    );
+
+    o.conn
+        .execute("UPDATE sync_branches SET next_attempt_at=5000", [])
+        .unwrap();
+    assert!(due_branches(&o.conn, UtcMillis(4_999)).unwrap().is_empty());
+    assert_eq!(due_branches(&o.conn, UtcMillis(5_000)).unwrap().len(), 1);
+
+    o.conn
+        .execute("UPDATE sync_branches SET state='unavailable'", [])
+        .unwrap();
+    assert!(due_branches(&o.conn, UtcMillis(9_999)).unwrap().is_empty());
+    assert_eq!(tip_row(&mut o, &tip), ix, "the same tip is the same row");
+    let (state, ..) = branch_row(&o.conn, ix);
+    assert_eq!(state, "pulling", "a re-advertise returns it to pulling");
+    assert_eq!(due_branches(&o.conn, UtcMillis(0)).unwrap().len(), 1);
+
+    o.conn
+        .execute("UPDATE sync_branches SET state='complete'", [])
+        .unwrap();
+    assert!(due_branches(&o.conn, UtcMillis(9_999)).unwrap().is_empty());
+}
+
+// Kills: common entries stored again, off-chain ones dropped, a freeze left
+// above the first divergence (I2), `complete` not reached at the tip.
+#[test]
+fn branch_progress_skips_common_stores_off_chain_lowers_freeze() {
+    // Own chain 1..=4; the owner thinks all four are common (freeze 4).
+    let mut o = owner(3, 4);
+    let mut reply = vec![o.entries[1].clone()]; // counter 2: common
+    reply.extend(branch(&o, 3, 5, o.entries[1].hash, "b")); // 3', 4', 5'
+    let tip = reply.last().unwrap().clone();
+    let ix = tip_row(&mut o, &tip);
+    o.conn
+        .execute("UPDATE sync_branches SET next_from=2", [])
+        .unwrap();
+
+    let verdict = progress(&mut o, ix, &reply, false);
+    assert_eq!(
+        verdict,
+        BranchVerdict::Progress {
+            stored: 3,
+            skipped: 1,
+            complete: true,
+            next_from: 6,
+            frozen_at: 2
+        }
+    );
+    assert_eq!(freeze_of(&o.conn, &o.old), ("frozen".into(), Some(2)));
+    assert_eq!(count(&o.conn, "SELECT COUNT(*) FROM journal_forked"), 3);
+    assert_eq!(
+        count(
+            &o.conn,
+            "SELECT COUNT(*) FROM journal_forked f JOIN sync_logs l ON l.log_ix=f.log_ix \
+             WHERE f.counter<=l.frozen_at_counter"
+        ),
+        0,
+        "I2: every forked row lies above the freeze"
+    );
+    assert_eq!(
+        count(
+            &o.conn,
+            "SELECT COUNT(*) FROM journal_forked WHERE source_node=?1"
+                .replace("?1", &format!("'{}'", identity_b().uuid()))
+                .as_str()
+        ),
+        3,
+        "forked rows carry their source"
+    );
+    let (state, next_from, _, attempts, error) = branch_row(&o.conn, ix);
+    assert_eq!(
+        (state.as_str(), next_from, attempts, error),
+        ("complete", 6, 1, None)
+    );
+    // The owner's own rows above the new freeze are now re-issue candidates.
+    assert_eq!(
+        count(
+            &o.conn,
+            "SELECT COUNT(*) FROM journal j JOIN sync_logs l ON l.log_ix=j.log_ix \
+             WHERE l.state='frozen' AND j.counter>l.frozen_at_counter"
+        ),
+        2,
+        "counters 3 and 4 of the owner's own branch"
+    );
+}
+
+// Kills: a first entry that does not chain accepted as a branch, a span that
+// does not double, a search that does not clamp at counter 1, and a short
+// source treated as still pulling.
+#[test]
+fn branch_progress_needs_earlier_widens_search() {
+    let mut o = owner(3, 4);
+    let far = signed_entry(o.old, 1_000, [9; 32], r#"{"id":"far"}"#);
+    let ix = tip_row(&mut o, &far);
+    o.conn
+        .execute("UPDATE sync_branches SET next_from=1000", [])
+        .unwrap();
+    let verdict = progress(&mut o, ix, &[far], true);
+    assert_eq!(
+        verdict,
+        BranchVerdict::NeedsEarlier {
+            next_from: 744,
+            search_span: 256
+        }
+    );
+
+    let mid = signed_entry(o.old, 744, [8; 32], r#"{"id":"mid"}"#);
+    let verdict = progress(&mut o, ix, &[mid], true);
+    assert_eq!(
+        verdict,
+        BranchVerdict::NeedsEarlier {
+            next_from: 232,
+            search_span: 512
+        }
+    );
+    let (state, next_from, span, attempts, error) = branch_row(&o.conn, ix);
+    assert_eq!(
+        (state.as_str(), next_from, span, attempts),
+        ("pulling", 232, 512, 2)
+    );
+    assert!(error.is_some());
+
+    // The search clamps at 1.
+    o.conn
+        .execute("UPDATE sync_branches SET next_from=100, search_span=0", [])
+        .unwrap();
+    let low = signed_entry(o.old, 100, [7; 32], r#"{"id":"low"}"#);
+    let verdict = progress(&mut o, ix, &[low], true);
+    assert_eq!(
+        verdict,
+        BranchVerdict::NeedsEarlier {
+            next_from: 1,
+            search_span: 256
+        }
+    );
+    // Nothing was admitted by any of those replies.
+    assert_eq!(count(&o.conn, "SELECT COUNT(*) FROM journal_forked"), 0);
+
+    // A source that holds less than the tip: complete, not pulling forever.
+    let mut o = owner(3, 2);
+    let chain = branch(&o, 3, 6, o.entries[1].hash, "s");
+    let ix = tip_row(&mut o, chain.last().unwrap());
+    let verdict = progress(&mut o, ix, &chain[..2], false);
+    assert!(
+        matches!(
+            verdict,
+            BranchVerdict::Progress {
+                complete: true,
+                next_from: 5,
+                ..
+            }
+        ),
+        "{verdict:?}"
+    );
+    let (state, ..) = branch_row(&o.conn, ix);
+    assert_eq!(state, "complete");
+}
+
+// Kills: a bad signature or a broken chain admitted, a Corrupt reply that
+// writes entries, and a missing attempts / last_error record.
+#[test]
+fn branch_progress_corrupt_on_broken_chain_or_bad_sig() {
+    let mut o = owner(3, 2);
+    let mut chain = branch(&o, 3, 5, o.entries[1].hash, "c");
+    let ix = tip_row(&mut o, &chain[2].clone());
+
+    // A bad signature: entry 4 is signed by another node's key.
+    let forged = UnsignedEnvelope {
+        log: o.old,
+        counter: 4,
+        prev_hash: chain[0].hash,
+        hlc: HlcStamp::from_parts(1_700_000_000_000, 4),
+        kind: "test.put".into(),
+        kind_version: 1,
+        deps: Deps::empty(),
+        creates: None,
+        needs: Vec::new(),
+        payload: br#"{"id":"forged"}"#.to_vec(),
+    }
+    .seal(&identity_b());
+    let bad = vec![chain[0].clone(), forged];
+    let verdict = progress(&mut o, ix, &bad, true);
+    assert!(
+        matches!(verdict, BranchVerdict::Corrupt { .. }),
+        "{verdict:?}"
+    );
+    assert_eq!(count(&o.conn, "SELECT COUNT(*) FROM journal_forked"), 0);
+    let (state, next_from, _, attempts, error) = branch_row(&o.conn, ix);
+    assert_eq!((state.as_str(), next_from, attempts), ("pulling", 3, 1));
+    assert!(error.is_some_and(|e| !e.is_empty()));
+
+    // A broken chain: entry 5 does not continue entry 4.
+    chain[2] = signed_entry(o.old, 5, [5; 32], r#"{"id":"gap"}"#);
+    let verdict = progress(&mut o, ix, &chain, true);
+    assert!(
+        matches!(verdict, BranchVerdict::Corrupt { .. }),
+        "{verdict:?}"
+    );
+    assert_eq!(count(&o.conn, "SELECT COUNT(*) FROM journal_forked"), 0);
+    assert_eq!(branch_row(&o.conn, ix).3, 2);
+
+    // A reply that skips the requested counter is corrupt too.
+    let skipped = vec![chain[1].clone()];
+    assert!(matches!(
+        progress(&mut o, ix, &skipped, true),
+        BranchVerdict::Corrupt { .. }
+    ));
 }

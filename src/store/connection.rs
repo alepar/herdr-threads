@@ -94,9 +94,18 @@ pub struct SyncState {
     pub(crate) apply_hint: Arc<AtomicBool>,
     /// While active, `apply_pass` applies only the active self log.
     pub(crate) own_history_hold: Arc<OwnHistoryHold>,
+    /// Set by every `journal::begin_incarnation` after `open` (not by `open`'s
+    /// own bootstrap): this daemon process has rotated its active log since it
+    /// started. `restore_successor` needs it clear (incarnations design 6).
+    pub(crate) rotated_since_start: AtomicBool,
 }
 
 impl SyncState {
+    /// Whether this process has started a new incarnation since `open`.
+    pub fn rotated_since_start(&self) -> bool {
+        self.rotated_since_start.load(Ordering::Acquire)
+    }
+
     /// The free-space floor below which ingest stores nothing.
     pub fn headroom_bytes(&self) -> u64 {
         self.headroom_bytes.load(Ordering::Relaxed)

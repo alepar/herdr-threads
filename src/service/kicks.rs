@@ -172,6 +172,8 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "sync_forks",
     "sync_branches",
     "sync_reissues",
+    // Clone evidence (ht-5fr.6.7): read by the repair gate, schedules no lane.
+    "sync_clone_evidence",
     // Immutable automatic identities accompany the archival fence parent.
     "automatic_handoff_companions",
     "automatic_bootstrap_parents",
