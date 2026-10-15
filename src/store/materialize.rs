@@ -138,6 +138,16 @@ pub const HELD_KINDS: &[&str] = &[
     "seat.retired",
 ];
 
+/// The `detail` of the refusal [`FactRoute::emit`] returns while the restore-window
+/// authoring hold is active.
+pub const OWN_HISTORY_HOLD_DETAIL: &str = "own history catching up";
+
+/// Whether `error` is the restore-window authoring hold's refusal, so a display
+/// entry point can skip the settlement instead of failing the delivery.
+pub fn is_own_history_hold(error: &ApiError) -> bool {
+    error.code == ErrorCode::ServiceBusy && error.detail == OWN_HISTORY_HOLD_DETAIL
+}
+
 /// How a command turns a decided payload into rows: through the journal, or
 /// as a node-local write for a service-managed thread.
 ///
@@ -220,10 +230,7 @@ impl FactRoute {
                 {
                     for seat in &seats {
                         if seats::is_local_seat(tx, seat)? {
-                            return Err(api_error(
-                                ErrorCode::ServiceBusy,
-                                "own history catching up",
-                            ));
+                            return Err(api_error(ErrorCode::ServiceBusy, OWN_HISTORY_HOLD_DETAIL));
                         }
                     }
                 }

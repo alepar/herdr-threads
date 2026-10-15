@@ -249,6 +249,7 @@ impl FactRegistry {
                 .with::<membership::MembershipJoined>()
                 .with::<membership::MembershipLeft>()
                 .with::<message::MessageSent>()
+                .with::<receipt::ReceiptSettled>()
                 .build()
         })
     }

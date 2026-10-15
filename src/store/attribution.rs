@@ -85,6 +85,17 @@ pub(crate) fn stage(
     Ok(())
 }
 
+/// Drops the attribution staged under `key`, if any: a command that staged it
+/// and then did not author the fact (a skipped settlement) leaves nothing behind.
+pub(crate) fn discard(tx: &Transaction<'_>, key: &str) -> Result<(), ApiError> {
+    tx.execute(
+        "DELETE FROM fact_attribution_staging WHERE staging_key=?1",
+        [key],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
+
 /// Takes the attribution for `key`: the staged row, deleted, or else the
 /// fallback with no binding, generation 0 and the observation
 /// `{"provenance":"<provenance>","decided_at":<origin_ms>}`.

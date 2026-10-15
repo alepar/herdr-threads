@@ -1,5 +1,9 @@
 //! Receipt settlement and availability transitions.
 
+use crate::sync::facts::{
+    payload::{SettleBatch, SettleHow},
+    receipt::{ReceiptSettled, ReceiptSettledPayload},
+};
 use crate::{
     delivery::settle::{self, LazyFact, ModeFact, ReceiptFact, SettleFacts, SettlePlan},
     harness::adapter::DeliveryMechanism,
@@ -22,11 +26,15 @@ use crate::{
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
+    attribution,
     connection::{DecisionInstant, StoreContext, api_error, store_error},
+    control::AccountableActor,
     effective::{self, EffectiveReceiptState},
+    materialize::{FactRoute, MaterializeInput, is_own_history_hold},
     schema::{self, EventInput},
 };
 
@@ -317,25 +325,36 @@ pub fn ack_policy_delivered(
                     .map_err(|_| api_error(ErrorCode::StoreCorrupt, "ACK observation malformed"))?;
             observation["action_provenance"] = json!(request.provenance);
             observation["via"] = json!(request.via);
-            settle_pending(
+            let skipped = settle_pending(
+                context,
                 tx,
                 decision,
+                &actor,
                 &seat,
                 request.operation,
                 &settle_ids,
                 &observation.to_string(),
-                actor.binding_generation,
-                &actor.binding_id,
-                "ack_mod",
+                if request.mechanism == DeliveryMechanism::PushChannel {
+                    SettleHow::ModDelivered
+                } else {
+                    SettleHow::Policy
+                },
+                OnHold::Skip,
             )?;
             // One display, one cursor walk per thread: lazy rows this display completes, plus
             // the ordinary messages it showed whole (settled now, or already settled elsewhere).
             // A refused id was never displayed and never advances the cursor.
             let mut complete_ids = Vec::new();
-            let mut shown_ids = settle_ids;
+            let mut shown_ids: Vec<MessageId> = settle_ids
+                .into_iter()
+                .filter(|id| !skipped.contains(id))
+                .collect();
             let mut results = Vec::with_capacity(plans.len());
             for (id, plan) in request.messages.iter().zip(plans) {
                 let (result, reason) = match plan {
+                    SettlePlan::Settle if skipped.contains(id) => {
+                        (ModAckOutcome::Retryable, Some(ModAckReason::Busy))
+                    }
                     SettlePlan::Settle => (ModAckOutcome::Settled, None),
                     SettlePlan::Complete => {
                         complete_ids.push(id.clone());
@@ -516,17 +535,27 @@ fn ack_impl(
             } else {
                 actor.observation(decision.utc.0)
             };
-            settle_pending(
+            let skipped = settle_pending(
+                context,
                 tx,
                 decision,
+                &actor,
                 &seat,
                 &request.operation,
                 &newly,
                 &observation,
-                actor.binding_generation,
-                &actor.binding_id,
-                "ack",
+                if displayed {
+                    SettleHow::Displayed
+                } else {
+                    SettleHow::Acked
+                },
+                if displayed {
+                    OnHold::Skip
+                } else {
+                    OnHold::Fail
+                },
             )?;
+            newly.retain(|id| !skipped.contains(id));
             failpoint!("ack.before_commit", context.failpoint_scope());
             Ok(CommandResult::Acknowledged(AckResult {
                 acknowledged: newly,
@@ -538,25 +567,83 @@ fn ack_impl(
     Ok(result)
 }
 
-/// Settles validated pending receipts of one seat: the late overdue warning
-/// first, then the receipt rows, warning-condition clearing, one compact info
-/// event per thread (key prefix `event_prefix`), filter revisions and delivery
-/// observations. Shared by `ack`, `ack_displayed` and `ack_mod_delivered`.
-// Allowed: shared settlement writes; each argument is one distinct input of the decision.
+/// What a settlement does when the restore-window authoring hold refuses it
+/// (fact-kinds design section 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OnHold {
+    /// Explicit `ack`: the retryable refusal fails the command.
+    Fail,
+    /// A display entry point: the settlement is skipped, the receipt stays
+    /// pending and the delivery does not fail.
+    Skip,
+}
+
+/// The batch ID a settlement carries: the command's operation ID, or a digest
+/// of it when it exceeds the 64-byte `settle_batch` bound.
+fn batch_id(operation: &OperationId) -> String {
+    let id = operation.as_str();
+    if id.len() <= 64 {
+        return id.to_owned();
+    }
+    let digest = Sha256::digest(id.as_bytes());
+    let hex: String = digest.iter().take(16).map(|b| format!("{b:02x}")).collect();
+    format!("h:{hex}")
+}
+
+/// The route a settlement of `message` takes: the journal when `message.sent`
+/// created it there, a node-local write for a service-managed thread, a store
+/// whose journal never opened (a fixture) or a message no fact created
+/// (transitional: pair threads until ht-5fr.4.10), which `receipt.settled`
+/// would park on its `needs`.
+fn settle_route(
+    tx: &Transaction<'_>,
+    context: &StoreContext,
+    thread: &ThreadId,
+    message: &MessageId,
+) -> Result<FactRoute, ApiError> {
+    let route = FactRoute::for_thread(tx, thread)?;
+    if route == FactRoute::Journal {
+        let created: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM journal WHERE creates=?1)",
+                [message.as_str()],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if !context.journal_open() || !created {
+            return Ok(FactRoute::LocalOnly);
+        }
+    }
+    Ok(route)
+}
+
+/// Settles validated pending receipts of one seat: per message in request
+/// order it stages the acting binding's attribution and authors one
+/// `receipt.settled` (fact-kinds design section 9). `materialize_settlement`
+/// does the writes on every node: the receipt row, warning-condition clearing,
+/// delivery observations, filter revisions and, on each thread's last settled
+/// receipt of the batch, the compact `ack` info event. Shared by `ack`,
+/// `ack_displayed`, `ack_mod_delivered` and the delivery-policy settlement.
+///
+/// Returns the messages the hold skipped (only with [`OnHold::Skip`]); they
+/// stay pending.
+// Allowed: shared settlement authoring; each argument is one distinct input of the decision.
 #[allow(clippy::too_many_arguments)]
 fn settle_pending(
+    context: &StoreContext,
     tx: &Transaction<'_>,
     decision: DecisionInstant,
+    actor: &AccountableActor,
     seat: &SeatId,
-    operation: &crate::protocol::ids::OperationId,
+    operation: &OperationId,
     newly: &[MessageId],
     observation: &str,
-    binding_generation: u64,
-    binding: &BindingId,
-    event_prefix: &str,
-) -> Result<(), ApiError> {
-    let mut by_thread: BTreeMap<ThreadId, Vec<MessageId>> = BTreeMap::new();
-    for id in newly {
+    how: SettleHow,
+    on_hold: OnHold,
+) -> Result<Vec<MessageId>, ApiError> {
+    let mut threads = Vec::with_capacity(newly.len());
+    let mut last_of: BTreeMap<ThreadId, usize> = BTreeMap::new();
+    for (index, id) in newly.iter().enumerate() {
         let thread: String = tx
             .query_row(
                 "SELECT thread_id FROM messages WHERE id=?1",
@@ -564,103 +651,234 @@ fn settle_pending(
                 |r| r.get(0),
             )
             .map_err(store_error)?;
-        by_thread
-            .entry(ThreadId::new(thread))
-            .or_default()
-            .push(id.clone());
+        let thread = ThreadId::new(thread);
+        last_of.insert(thread.clone(), index);
+        threads.push(thread);
     }
-    // All late warnings precede settlement and its compact info event.
-    for id in newly {
-        let receipt = effective::effective_receipt(tx, id.as_str(), seat.as_str())?
-            .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "validated receipt disappeared"))?;
-        if receipt.state == EffectiveReceiptState::Pending
-            && effective_deadline(tx, &receipt)?.is_some_and(|deadline| deadline <= decision.utc.0)
-        {
-            schema::record_overdue_if_pending(
-                tx,
-                &ObligationRef::Receipt {
-                    message: id.clone(),
-                    seat: seat.clone(),
-                },
-                &TimeBasis::Decision,
-                decision.utc,
-            )?;
-        }
-    }
-    for id in newly {
-        let receipt = effective::effective_receipt(tx, id.as_str(), seat.as_str())?
-            .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "validated receipt disappeared"))?;
-        let manifest: bool = tx
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM send_manifests WHERE message_id=?1)",
-                [id.as_str()],
-                |r| r.get(0),
-            )
-            .map_err(store_error)?;
-        if manifest {
-            tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,ack_binding_id) VALUES (?1,?2,'acked',?3,?4,?2,?5,?6,?7,?9) ON CONFLICT(message_id,seat_id) DO UPDATE SET state='acked',deadline_at=CASE WHEN ?8 THEN COALESCE(receipt_state.deadline_at,excluded.deadline_at) ELSE receipt_state.deadline_at END,ack_actor_seat_id=excluded.ack_actor_seat_id,ack_generation=excluded.ack_generation,ack_observation=excluded.ack_observation,acked_at=excluded.acked_at,ack_binding_id=excluded.ack_binding_id WHERE receipt_state.state='pending'",
-                params![id.as_str(),seat.as_str(),receipt.available_at,receipt.deadline_at,binding_generation as i64,observation,decision.utc.0,receipt.state==EffectiveReceiptState::Pending,binding.as_str()]).map_err(store_error)?;
-        } else {
-            // Persist the original projected clock before changing its state.
-            // Catch-up's extended deadline is separate; waivers gain no clock.
-            let pending_deadline = if receipt.state == EffectiveReceiptState::Pending {
-                receipt.deadline_at
-            } else {
-                None
-            };
-            tx.execute("UPDATE receipts SET state='acked',deadline_at=COALESCE(deadline_at,?6),ack_actor_seat_id=?1,ack_generation=?2,ack_observation=?3,acked_at=?4,ack_binding_id=?7 WHERE message_id=?5 AND seat_id=?1 AND state='pending'",
-                params![seat.as_str(),binding_generation as i64,observation,decision.utc.0,id.as_str(),pending_deadline,binding.as_str()]).map_err(store_error)?;
-        }
-    }
-    for thread in by_thread.keys() {
-        schema::clear_warning_conditions_for_receipts(
-            tx,
-            thread.as_str(),
-            seat.as_str(),
-            decision.utc,
-        )?;
-    }
-    for (thread, ids) in &by_thread {
-        let mut payload =
-            json!({"event":"ack", "seat":seat, "messages":ids, "decided_at":decision.utc.0})
-                .to_string();
-        if payload.len() > 4096 {
-            let digest = schema::canonical_digest(ids)?;
-            let hash: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-            payload = json!({"event":"ack", "seat":seat, "count":ids.len(), "message_ids_sha256":hash, "decided_at":decision.utc.0}).to_string();
-        }
-        let key = format!(
-            "{event_prefix}:{}:{}:{}:{}:{}:{}",
-            seat.as_str().len(),
-            seat.as_str(),
-            operation.as_str().len(),
-            operation.as_str(),
-            thread.as_str().len(),
-            thread.as_str()
-        );
-        schema::append_event_once(
-            tx,
-            EventInput {
-                thread,
-                key: &key,
-                kind: "info",
-                payload_json: &payload,
-                decision_at: decision.utc,
-                source_message: None,
-                source_invitation: None,
+    let batch = batch_id(operation);
+    let mut skipped = Vec::new();
+    for (index, (id, thread)) in newly.iter().zip(&threads).enumerate() {
+        let payload = ReceiptSettledPayload {
+            message: id.clone(),
+            seat: seat.clone(),
+            how,
+            settled_at: decision.utc.0,
+            batch: SettleBatch {
+                id: batch.clone(),
+                last_in_thread: last_of.get(thread) == Some(&index),
             },
-        )?;
-        let instance: String = tx
-            .query_row(
-                "SELECT instance_id FROM threads WHERE id=?1",
-                [thread.as_str()],
-                |r| r.get(0),
-            )
-            .map_err(store_error)?;
-        schema::bump_filter_revision(tx, &instance, "inbox", seat.as_str())?;
-        schema::bump_filter_revision(tx, &instance, "directory", thread.as_str())?;
-        tx.execute("INSERT INTO delivery_observations(seat_id,thread_id,acked) VALUES (?1,?2,?3) ON CONFLICT(seat_id,thread_id) DO UPDATE SET acked=acked+excluded.acked", params![seat.as_str(),thread.as_str(),ids.len() as i64]).map_err(store_error)?;
+        };
+        let route = settle_route(tx, context, thread, id)?;
+        let key = attribution::ack_key(id.as_str(), seat.as_str());
+        attribution::stage(tx, &key, actor, observation)?;
+        match route.emit::<ReceiptSettled>(
+            tx,
+            context,
+            decision,
+            &payload,
+            None,
+            materialize_settlement,
+        ) {
+            Ok(_) => {}
+            Err(error) if on_hold == OnHold::Skip && is_own_history_hold(&error) => {
+                attribution::discard(tx, &key)?;
+                skipped.push(id.clone());
+            }
+            Err(error) => return Err(error),
+        }
     }
+    Ok(skipped)
+}
+
+/// Materializes one `receipt.settled` (fact-kinds design section 9), the one
+/// writer of a settled receipt on every node:
+/// 1. a no-op unless the effective receipt is `Pending` (or `NotRequired` for a
+///    human `acked`);
+/// 2. a late settlement records the overdue warning first;
+/// 3. the `receipt_state` row becomes `acked` (`acked_at = settled_at`, the
+///    attribution `take` returns, `settle_batch`);
+/// 4. the warning condition of the (thread, seat) closes when nothing warned is
+///    still pending;
+/// 5. a local seat counts the display in `delivery_observations`;
+/// 6. on `last_in_thread` the `ack` info event of the batch's receipts in the
+///    thread is appended once (its key is `<prefix>:<seat>:<batch>:<thread>`,
+///    as a local ACK always wrote) and the inbox and directory filters bump.
+///
+/// A fact of an already appended batch event appends nothing (the event key
+/// dedups), so a re-authored copy changes nothing.
+pub fn materialize_settlement(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    payload: &ReceiptSettledPayload,
+) -> Result<(), ApiError> {
+    let (message, seat) = (&payload.message, &payload.seat);
+    let thread: String = tx
+        .query_row(
+            "SELECT thread_id FROM messages WHERE id=?1",
+            [message.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?
+        .ok_or_else(|| api_error(ErrorCode::NotFound, "settled message not found"))?;
+    let thread = ThreadId::new(thread);
+    let settled_at = UtcMillis(payload.settled_at);
+    if let Some(receipt) = effective::effective_receipt(tx, message.as_str(), seat.as_str())? {
+        let human_acked =
+            receipt.state == EffectiveReceiptState::NotRequired && payload.how == SettleHow::Acked;
+        if receipt.state == EffectiveReceiptState::Pending || human_acked {
+            settle_receipt(tx, m, payload, &receipt)?;
+            schema::clear_warning_conditions_for_receipts(
+                tx,
+                thread.as_str(),
+                seat.as_str(),
+                m.decision.utc,
+            )?;
+            if crate::store::seats::is_local_seat(tx, seat)? {
+                tx.execute("INSERT INTO delivery_observations(seat_id,thread_id,acked) VALUES (?1,?2,1) ON CONFLICT(seat_id,thread_id) DO UPDATE SET acked=acked+1", params![seat.as_str(),thread.as_str()]).map_err(store_error)?;
+            }
+        }
+    }
+    if payload.batch.last_in_thread && payload.how != SettleHow::Retired {
+        append_batch_event(tx, payload, &thread, settled_at)?;
+    }
+    Ok(())
+}
+
+/// Steps 2 and 3 of [`materialize_settlement`]: the late overdue warning and
+/// the receipt row.
+fn settle_receipt(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    payload: &ReceiptSettledPayload,
+    receipt: &effective::EffectiveReceipt,
+) -> Result<(), ApiError> {
+    let (message, seat) = (&payload.message, &payload.seat);
+    let pending = receipt.state == EffectiveReceiptState::Pending;
+    if pending
+        && effective_deadline(tx, receipt)?.is_some_and(|deadline| deadline <= payload.settled_at)
+    {
+        schema::record_overdue_if_pending(
+            tx,
+            &ObligationRef::Receipt {
+                message: message.clone(),
+                seat: seat.clone(),
+            },
+            &TimeBasis::Decision,
+            UtcMillis(payload.settled_at),
+        )?;
+    }
+    let attribution = attribution::take(
+        tx,
+        m,
+        &attribution::ack_key(message.as_str(), seat.as_str()),
+    )?;
+    let manifest: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM send_manifests WHERE message_id=?1)",
+            [message.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if payload.how == SettleHow::Retired {
+        // Decoded, never authored in v1: retirement settles from `seat.retired`.
+        tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,retired_at,settle_batch) VALUES (?1,?2,'recipient_retired',?3,?4,?5,?6) \
+            ON CONFLICT(message_id,seat_id) DO UPDATE SET state='recipient_retired',available_at=COALESCE(receipt_state.available_at,excluded.available_at),deadline_at=COALESCE(receipt_state.deadline_at,excluded.deadline_at),retired_at=excluded.retired_at,settle_batch=excluded.settle_batch WHERE receipt_state.state='pending'",
+            params![message.as_str(),seat.as_str(),receipt.available_at,receipt.deadline_at,payload.settled_at,payload.batch.id]).map_err(store_error)?;
+    } else if manifest {
+        tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,ack_binding_id,settle_batch) VALUES (?1,?2,'acked',?3,?4,?2,?5,?6,?7,?9,?10) ON CONFLICT(message_id,seat_id) DO UPDATE SET state='acked',deadline_at=CASE WHEN ?8 THEN COALESCE(receipt_state.deadline_at,excluded.deadline_at) ELSE receipt_state.deadline_at END,ack_actor_seat_id=excluded.ack_actor_seat_id,ack_generation=excluded.ack_generation,ack_observation=excluded.ack_observation,acked_at=excluded.acked_at,ack_binding_id=excluded.ack_binding_id,settle_batch=excluded.settle_batch WHERE receipt_state.state='pending'",
+            params![message.as_str(),seat.as_str(),receipt.available_at,receipt.deadline_at,attribution.generation,attribution.observation,payload.settled_at,pending,attribution.binding_id,payload.batch.id]).map_err(store_error)?;
+    } else {
+        // Persist the original projected clock before changing its state.
+        // Catch-up's extended deadline is separate; waivers gain no clock.
+        let pending_deadline = if pending { receipt.deadline_at } else { None };
+        tx.execute("UPDATE receipts SET state='acked',deadline_at=COALESCE(deadline_at,?6),ack_actor_seat_id=?1,ack_generation=?2,ack_observation=?3,acked_at=?4,ack_binding_id=?7 WHERE message_id=?5 AND seat_id=?1 AND state='pending'",
+            params![seat.as_str(),attribution.generation,attribution.observation,payload.settled_at,message.as_str(),pending_deadline,attribution.binding_id]).map_err(store_error)?;
+    }
+    Ok(())
+}
+
+/// Step 6 of [`materialize_settlement`]: the batch's compact `ack` info event
+/// for one thread, with the 4096-byte fallback to a count and a digest of the
+/// message list. Appends nothing when the batch settled no receipt here.
+fn append_batch_event(
+    tx: &Transaction<'_>,
+    payload: &ReceiptSettledPayload,
+    thread: &ThreadId,
+    settled_at: UtcMillis,
+) -> Result<(), ApiError> {
+    let seat = &payload.seat;
+    // Legacy physical rows carry no batch column: they list by the batch's
+    // single settlement instant.
+    let mut statement = tx
+        .prepare("SELECT message_id FROM receipt_state WHERE seat_id=?1 AND settle_batch=?2 AND message_id IN (SELECT id FROM messages WHERE thread_id=?3) UNION SELECT message_id FROM receipts WHERE seat_id=?1 AND thread_id=?3 AND state='acked' AND acked_at=?4 AND ack_actor_seat_id=?1 ORDER BY 1")
+        .map_err(store_error)?;
+    let ids: Vec<MessageId> = statement
+        .query_map(
+            params![
+                seat.as_str(),
+                payload.batch.id,
+                thread.as_str(),
+                settled_at.0
+            ],
+            |r| r.get::<_, String>(0),
+        )
+        .map_err(store_error)?
+        .map(|id| id.map(MessageId::new))
+        .collect::<Result<_, _>>()
+        .map_err(store_error)?;
+    drop(statement);
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let mut event =
+        json!({"event":"ack", "seat":seat, "messages":ids, "decided_at":settled_at.0}).to_string();
+    if event.len() > 4096 {
+        let digest = schema::canonical_digest(&ids)?;
+        let hash: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+        event = json!({"event":"ack", "seat":seat, "count":ids.len(), "message_ids_sha256":hash, "decided_at":settled_at.0}).to_string();
+    }
+    let prefix = match payload.how {
+        SettleHow::ModDelivered | SettleHow::Policy => "ack_mod",
+        _ => "ack",
+    };
+    let key = format!(
+        "{prefix}:{}:{}:{}:{}:{}:{}",
+        seat.as_str().len(),
+        seat.as_str(),
+        payload.batch.id.len(),
+        payload.batch.id,
+        thread.as_str().len(),
+        thread.as_str()
+    );
+    // The event takes the next position itself: the late overdue warning above
+    // may already have advanced the counter past the entry's `decision_seq`.
+    let (_, inserted) = schema::append_event_once(
+        tx,
+        EventInput {
+            thread,
+            key: &key,
+            kind: "info",
+            payload_json: &event,
+            decision_at: settled_at,
+            source_message: None,
+            source_invitation: None,
+        },
+    )?;
+    if !inserted {
+        return Ok(());
+    }
+    let instance: String = tx
+        .query_row(
+            "SELECT instance_id FROM threads WHERE id=?1",
+            [thread.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if crate::store::seats::is_local_seat(tx, seat)? {
+        schema::bump_filter_revision(tx, &instance, "inbox", seat.as_str())?;
+    }
+    schema::bump_filter_revision(tx, &instance, "directory", thread.as_str())?;
     Ok(())
 }
 
