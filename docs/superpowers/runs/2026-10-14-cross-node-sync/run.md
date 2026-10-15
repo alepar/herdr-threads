@@ -19,6 +19,10 @@ roastDesignExit: converged at round 2 — Should-fix (6 confirmed) [converged], 
 
 graph-pass: depth 30→30 · width 3.2→3.2 · applied 2 · parked 8 — the parked epic narrows (L33–L38) together give depth 30→19, width 3.2→5.1; all safe no on shared-file overlap only
 
+code-run-1: coordinator wf_516906c6-9a5 · stopReason ready-drained · completed 79 · escalated ht-5fr.4.2 · final review: not ready (fact kinds unfinished; base 89 commits behind main) · metrics: merges 79, rebase-conflicts 14, seam-reviews 31 (fixed 2), check-fails 1 (fixed 1), fix-pass entered 5 / FIXED 2 / BLOCKED 3, cancelled 5
+graph-change-applied: L33–L38 epic narrows applied mid-run on user approval (relayed via herdr-threads 1:1; user ran narrow.py) — adds 4.1<-1.5, 2.1<-1.6, removes 8 epic-level edges
+fix-beads-mid-run: ht-5fr.3.21 (self-log AheadOfSelf verify/dedupe, security review) merged · ht-5fr.3.32 (commit_kicks fixture vs seeded sync_logs row) merged · ht-5fr.18 (Linux process-table discovery reads other users' processes, security review) merged
+
 approvals:
 - top-split · auto · ht-5fr.1 PROMOTE, ht-5fr.2 PROMOTE, ht-5fr.3 PROMOTE, ht-5fr.4 PROMOTE, ht-5fr.5 PROMOTE, ht-5fr.6 PROMOTE, ht-5fr.7 LEAF, ht-5fr.8 LEAF, ht-5fr.9 LEAF, ht-5fr.10 LEAF, ht-5fr.11 LEAF, ht-5fr.12 LEAF, ht-5fr.13 LEAF
 - coverage-round-1 · canonical R-list: R1–R16 (coverage-round-1-requirements.md), R-new appended as R17–R20 · requirements: 16 · mapped: 16 · unmapped: 0 · auto GAP R17 → ht-5fr.4.5 amended + 4.18 case; auto GAP R18 → ht-5fr.5.2 amended; auto GAP R19 → leaf ht-5fr.1.12; auto GAP R20 → leaf ht-5fr.1.13; auto GAP real-ssh → leaf ht-5fr.14; auto GAP ht-5fr.7/.11/.12 → edges + scope; auto UNOWNED-SEAM status reads → ht-5fr.8 owns; auto UNOWNED-SEAM marker rendering → ht-5fr.4.14/ht-5fr.13; auto reject wake-e2e (spec follow-on); auto reject leaf decomposition (promotion verdict); NEEDS-SPEC (ht-5fr.7/.8/.13, leaves under root spec) not re-run — the findings already named the gaps and were fixed
@@ -35,3 +39,6 @@ parked:
 - graph-change · L37 · "ht-5fr.4 <- ht-5fr.3: parked — narrow to 4.3/4.5/4.12<-3.16, 4.4<-3.14, 4.8<-3.11, 4.15<-3.15; safe no: shared baseline SQL, facts/mod.rs"
 - graph-change · L38 · "ht-5fr.2 <- ht-5fr.1: parked — narrow to 2.1<-1.5, 2.3/2.12<-1.3, 2.4/2.11<-1.10, 2.7<-1.7, 2.10/2.12<-1.11; safe no: shared ids.rs, ports.rs, schema.rs, baseline SQL"
 - graph-change · L39 · "ht-5fr.4.13 <- ht-5fr.4.12: parked proposal — split-file src/store/receipts.rs (19→18 after narrows)"
+- decision · ht-5fr.4.2 / ht-52dq · "spec gap: inviter-less service/operator invites on journaled threads — chose (d) now + (b) in ht-5fr.4.10: inviter_kind seat|service|operator, optional inviter, origin-node authority for non-seat kinds; fact-kinds §2/§6 amendment owed"
+- security-followup · phase-4 roast · "envelope.rs payload parser differential (dup keys / non-canonical JSON vs handlers); serve.rs/coordinator.rs peer-controlled max_frame lower bound, subs_out growth, serve-job deadline; incarnations/worker.rs unsigned Have claims must not drive evidence/restore/hold"
+- pipeline-defect · super-code · "evidence-only fix pass with no commit classed BLOCKED (3x: 1.2, 1.6, 2.4), cancelling 5 stacked tasks; local coordinator patch refused by permission layer (self-modification), reverted"
