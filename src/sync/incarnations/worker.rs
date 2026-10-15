@@ -29,7 +29,7 @@
 //!   retries it after the backoff; a job that can never succeed
 //!   (`InvalidRequest`, `NotFound`, `Conflict`) is recorded and dropped.
 //!
-//! The timer is a `tokio::time::interval(1 s)` on a current-thread runtime
+//! The timer is a 1 s tokio interval timer on a current-thread runtime
 //! inside the thread, so tests run it on paused time.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

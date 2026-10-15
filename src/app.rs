@@ -951,16 +951,16 @@ impl LaneProbe {
         self.state().sessions = Some(Arc::downgrade(sessions));
     }
     /// The period of the daemon's host sweep (set by
-    /// [`LaneProbe::set_host_sweep_interval`]); call the setter before the
+    /// [`LaneProbe::set_host_sweep_period`]); call the setter before the
     /// daemon starts.
-    fn host_sweep_interval(&self) -> Duration {
+    fn host_sweep_period(&self) -> Duration {
         self.state()
             .host_sweep_interval
             .unwrap_or(crate::service::host_sessions::DEFAULT_SWEEP_INTERVAL)
     }
     /// Shortens the host sweep so a test sees a socket that appears after
     /// start attached within milliseconds. Call before the daemon starts.
-    pub fn set_host_sweep_interval(&self, interval: Duration) {
+    pub fn set_host_sweep_period(&self, interval: Duration) {
         self.state().host_sweep_interval = Some(interval);
     }
     /// The program and period of the discovery worker (set by
@@ -1281,7 +1281,7 @@ impl LaneProbe {
     fn attach_registry(&self, _: &Arc<CommitKicks>, _: Vec<Arc<WorkerStatus>>) {}
     fn attach_pacer(&self, _: Lane, _: &Arc<Pacer>) {}
     fn attach_host_sessions(&self, _: &Arc<HostSessions>) {}
-    fn host_sweep_interval(&self) -> Duration {
+    fn host_sweep_period(&self) -> Duration {
         crate::service::host_sessions::DEFAULT_SWEEP_INTERVAL
     }
     fn discovery(&self) -> (Option<std::path::PathBuf>, Duration) {
@@ -1947,7 +1947,7 @@ where
                         let db = remembered_store.context().open_query(budget.clone())?;
                         crate::store::hosts::remembered(&db, usize::MAX)
                     }),
-                    sweep_interval: factory_probe.host_sweep_interval(),
+                    sweep_interval: factory_probe.host_sweep_period(),
                     wake_safety_tick: config.lane_tick(Duration::from_millis(
                         crate::service::workers::WAKE_SAFETY_TICK_MILLIS,
                     )),

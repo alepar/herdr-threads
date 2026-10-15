@@ -1,7 +1,7 @@
 //! Peer discovery: dial targets found from Herdr (spec §11).
 //!
 //! Responsibility (DiscoveryWorker)
-//! - Owns: the 60 s discovery cadence while a Herdr host is attached, the
+//! - Owns: the 60 s discovery cadence (a `Pacer` on the injected clock) while a Herdr host is attached, the
 //!   `herdr machine list --json` call (bounded, killed on drop) and its
 //!   tolerant parse, the `herdr --remote <target>` client scan, the choice of
 //!   which found destinations are worth upserting, the one-line-per-hour log
@@ -41,6 +41,7 @@ use crate::{
         results::ApiError,
         time::{CallBudget, Cancellation, Clock, MonoInstant},
     },
+    service::pacer::{Pacer, Wake},
     store::sync_dial_targets::{DiscoverySource, MAX_TARGET_TEXT},
 };
 
@@ -320,15 +321,32 @@ pub(crate) fn remote_clients_from(
 /// Runs the passes until `deps.cancel`. The first pass runs at once.
 pub struct DiscoveryWorker {
     deps: DiscoveryDeps,
+    pacer: Arc<Pacer>,
     last_logged: Mutex<Vec<(&'static str, std::time::Instant)>>,
 }
 
 impl DiscoveryWorker {
     pub fn new(deps: DiscoveryDeps) -> Self {
+        let pacer = Arc::new(Pacer::new(
+            "discovery",
+            Arc::clone(&deps.clock),
+            deps.cancel.clone(),
+        ));
         Self {
             deps,
+            pacer,
             last_logged: Mutex::new(Vec::new()),
         }
+    }
+
+    #[cfg(test)]
+    fn pacer(&self) -> &Arc<Pacer> {
+        &self.pacer
+    }
+
+    #[cfg(test)]
+    fn into_deps(self) -> DiscoveryDeps {
+        self.deps
     }
 
     /// Spawns the worker on the current tokio runtime.
@@ -344,9 +362,8 @@ impl DiscoveryWorker {
                 () = cancel.cancelled() => return,
                 () = async { self.pass().await; } => {}
             }
-            tokio::select! {
-                () = cancel.cancelled() => return,
-                () = tokio::time::sleep(self.deps.period) => {}
+            if let Wake::Cancelled = self.pacer.wait(self.deps.period).await {
+                return;
             }
         }
     }
@@ -788,17 +805,67 @@ mod tests {
         assert!(matches!(garbage.list().await, ListOutcome::Failed(_)));
     }
 
+    /// Polls `cond` every 5 ms for at most 5 s.
+    async fn poll_until(what: &str, cond: impl Fn() -> bool) {
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while !cond() {
+            assert!(std::time::Instant::now() < until, "{what}");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
     #[tokio::test]
     async fn worker_stops_on_cancel() {
         let rig = rig(true, machines(&[("h", true)]), Vec::new());
         let cancel = rig.worker.deps.cancel.clone();
         let reloads = Arc::clone(&rig.reloads);
         let task = tokio::spawn(async move { rig.worker.run().await });
-        let until = std::time::Instant::now() + Duration::from_secs(5);
-        while reloads.load(Ordering::SeqCst) == 0 {
-            assert!(std::time::Instant::now() < until, "first pass runs at once");
-            tokio::time::sleep(Duration::from_millis(5)).await;
+        poll_until("first pass runs at once", || {
+            reloads.load(Ordering::SeqCst) > 0
+        })
+        .await;
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("the worker stops promptly")
+            .unwrap();
+    }
+
+    struct SteppedClock(std::sync::atomic::AtomicU64);
+    impl Clock for SteppedClock {
+        fn utc_now(&self) -> crate::protocol::time::UtcMillis {
+            crate::protocol::time::UtcMillis(0)
         }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(self.0.load(Ordering::SeqCst))
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_waits_its_period_on_the_injected_clock() {
+        let clock = Arc::new(SteppedClock(std::sync::atomic::AtomicU64::new(0)));
+        let mut rig = rig(true, machines(&[("h", true)]), Vec::new());
+        rig.worker = DiscoveryWorker::new(DiscoveryDeps {
+            clock: Arc::clone(&clock) as Arc<dyn Clock>,
+            ..rig.worker.into_deps()
+        });
+        let cancel = rig.worker.deps.cancel.clone();
+        let lister = Arc::clone(&rig.lister);
+        let pacer = Arc::clone(rig.worker.pacer());
+        let task = tokio::spawn(async move { rig.worker.run().await });
+        poll_until("first pass", || lister.1.load(Ordering::SeqCst) == 1).await;
+        // Real time passes; the injected clock does not: no second pass.
+        poll_until("pacer idle", || pacer.idle_events() >= 1).await;
+        tokio::time::timeout(Duration::from_millis(100), std::future::pending::<()>())
+            .await
+            .unwrap_err();
+        assert_eq!(lister.1.load(Ordering::SeqCst), 1);
+        clock.0.store(60_000, Ordering::SeqCst);
+        pacer.clock_advanced();
+        poll_until("second pass after the clock moved", || {
+            lister.1.load(Ordering::SeqCst) == 2
+        })
+        .await;
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(5), task)
             .await

@@ -323,7 +323,7 @@ impl Daemon {
         let paths: NodePaths = herdr_threads::test_support::resolve_seeded(&state_dir(isolation));
         let clock = Arc::clone(clock);
         let probe = LaneProbe::default();
-        probe.set_host_sweep_interval(Duration::from_secs(600));
+        probe.set_host_sweep_period(Duration::from_secs(600));
         probe.log_lane_errors_to(isolation.path("lanes.log"));
         let stop = Cancellation::default();
         let plan = world.plan(hint);
