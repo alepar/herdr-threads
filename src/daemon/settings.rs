@@ -24,11 +24,16 @@
 //! - `"summary"`: thread summary, catch-up and soft-deadline poke settings
 //!   (`crate::protocol::summary::SummarySettings`; every key optional,
 //!   unknown keys rejected, validated by `ServiceConfig::from_settings`).
-//! - `"sync": {"dial_command": "<sh template>"}`: replaces the ssh transport of
+//! - `"sync": {"dial_command": "<sh template>", "discover": true | false}`:
+//!   `dial_command` replaces the ssh transport of
 //!   every peer dial target with `/bin/sh -c <template>`, each `{dest}` replaced
 //!   by the target's destination single-quoted for sh (at most 4096 bytes, at
 //!   least one `{dest}`, no NUL or newline). Unset means ssh. Unknown `sync.*`
-//!   keys are rejected. Read once at daemon start.
+//!   keys are rejected. `discover` (default `true`) lets the daemon add dial
+//!   targets from `herdr machine list` and `herdr --remote` clients while a
+//!   Herdr host is attached; `false` adds none and leaves rows already found
+//!   as they are (explicit `peer add` targets are unaffected). Both are read
+//!   once at daemon start.
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -64,12 +69,23 @@ pub struct InstanceSettings {
 }
 
 /// The `sync` object of `settings.json`. Unknown keys are rejected.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SyncSettings {
     /// The raw dial template; `ServiceConfig::from_settings` validates it into
     /// a `DialTemplate`.
     pub dial_command: Option<String>,
+    /// Peer discovery from Herdr machines and `herdr --remote` clients.
+    pub discover: bool,
+}
+
+impl Default for SyncSettings {
+    fn default() -> Self {
+        Self {
+            dial_command: None,
+            discover: true,
+        }
+    }
 }
 
 impl Default for InstanceSettings {
@@ -226,6 +242,19 @@ mod tests {
             load(dir_with(Some("{}")).path()).unwrap().sync.dial_command,
             None
         );
+    }
+
+    #[test]
+    fn sync_discover_defaults_on_and_parses_off() {
+        let on = load(dir_with(Some("{}")).path()).unwrap();
+        assert!(on.sync.discover);
+        let off = load(dir_with(Some(r#"{"sync":{"discover":false}}"#)).path()).unwrap();
+        assert!(!off.sync.discover);
+        assert_eq!(off.sync.dial_command, None);
+        assert!(load(dir_with(Some(r#"{"sync":{"discover":"no"}}"#)).path()).is_err());
+        let config = crate::service::config::ServiceConfig::from_settings(&off).unwrap();
+        assert!(!config.sync_discover());
+        assert!(crate::service::config::ServiceConfig::default().sync_discover());
     }
 
     #[test]
