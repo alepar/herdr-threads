@@ -343,31 +343,51 @@ pub fn notifies_mod(table: &str) -> bool {
     MOD_NOTIFY_TABLES.contains(&table)
 }
 
-/// Registry of lane Pacers. A kick to an unregistered lane is a no-op.
+/// Registry of lane Pacers.
+///
+/// Responsibility: owns the per-lane lists of Pacers and the fan-out of a lane
+/// kick to every Pacer registered for it (one per attached host where a lane
+/// is per-host). `unregister` exists only for a failed attach. Does not own
+/// lane identity: [`Lane`] stays closed (hosts are dynamic, lanes are not).
+/// A kick to a lane with no Pacer is a no-op.
 #[derive(Default)]
 pub struct CommitKicks {
-    pacers: Mutex<[Option<Arc<Pacer>>; Lane::COUNT]>,
+    pacers: Mutex<[Vec<Arc<Pacer>>; Lane::COUNT]>,
     mod_observer: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl CommitKicks {
-    fn slots(&self) -> std::sync::MutexGuard<'_, [Option<Arc<Pacer>>; Lane::COUNT]> {
+    fn slots(&self) -> std::sync::MutexGuard<'_, [Vec<Arc<Pacer>>; Lane::COUNT]> {
         self.pacers.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Registers `lane`'s Pacer; called once per lane at worker start.
+    /// Appends `pacer` to `lane`'s list; called at worker start. Registering
+    /// the same Pacer twice is a caller bug.
     pub fn register(&self, lane: Lane, pacer: Arc<Pacer>) {
-        self.slots()[lane as usize] = Some(pacer);
+        let mut slots = self.slots();
+        let list = &mut slots[lane as usize];
+        debug_assert!(!list.iter().any(|p| Arc::ptr_eq(p, &pacer)));
+        list.push(pacer);
     }
 
-    /// Kicks the Pacer of every registered lane in `lanes`.
+    /// Removes exactly `pacer` from `lane`'s list. Only a failed attach calls
+    /// it; a Pacer that is not registered is left alone.
+    pub fn unregister(&self, lane: Lane, pacer: &Arc<Pacer>) {
+        let mut slots = self.slots();
+        let list = &mut slots[lane as usize];
+        if let Some(at) = list.iter().position(|p| Arc::ptr_eq(p, pacer)) {
+            list.remove(at);
+        }
+    }
+
+    /// Kicks every Pacer registered for each lane in `lanes`.
     pub fn kick(&self, lanes: LaneSet) {
         // Collect first so no Pacer lock is taken under the registry lock.
         let targets: Vec<Arc<Pacer>> = {
             let slots = self.slots();
             lanes
                 .iter()
-                .filter_map(|lane| slots[lane as usize].clone())
+                .flat_map(|lane| slots[lane as usize].iter().cloned())
                 .collect()
         };
         for pacer in targets {
@@ -394,14 +414,15 @@ impl CommitKicks {
         }
     }
 
+    /// True while at least one Pacer is registered for `lane`.
     pub fn registered(&self, lane: Lane) -> bool {
-        self.slots()[lane as usize].is_some()
+        !self.slots()[lane as usize].is_empty()
     }
 
-    /// The Pacer registered for `lane` (test support).
+    /// The first Pacer registered for `lane` (test support).
     #[cfg(any(test, feature = "test-support"))]
     pub fn pacer(&self, lane: Lane) -> Option<Arc<Pacer>> {
-        self.slots()[lane as usize].clone()
+        self.slots()[lane as usize].first().cloned()
     }
 }
 
