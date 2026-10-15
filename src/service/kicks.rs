@@ -424,6 +424,12 @@ impl CommitKicks {
         !self.slots()[lane as usize].is_empty()
     }
 
+    /// How many Pacers are registered for `lane` (test support).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pacer_count(&self, lane: Lane) -> usize {
+        self.slots()[lane as usize].len()
+    }
+
     /// The first Pacer registered for `lane` (test support).
     #[cfg(any(test, feature = "test-support"))]
     pub fn pacer(&self, lane: Lane) -> Option<Arc<Pacer>> {

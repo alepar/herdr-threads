@@ -833,6 +833,40 @@ fn claim_from_a_attaches_a_lazily() {
     assert_eq!(host, rig.host_id_of(&rig.loc_a), "the seat sits on A");
 }
 
+// Kills: an archival lane gated on a startup attach (a store-only daemon never
+// runs it) or started again per attach: it starts with the first lazy attach,
+// once.
+#[test]
+fn archival_lane_starts_with_the_first_lazy_attach_once() {
+    let rig = Rig::start("mh-archival-late", false);
+    assert!(!rig.daemon.probe.registered(Lane::Archival));
+    assert!(!rig.daemon.probe.status_has_pacer(Lane::Archival));
+    rig.touch(&rig.loc_a);
+    rig.wait("the archival lane to start", || {
+        rig.daemon.probe.status_has_pacer(Lane::Archival)
+    });
+    assert_eq!(rig.daemon.probe.registered_count(Lane::Archival), 1);
+    rig.touch(&rig.loc_b);
+    assert!(rig.attached(&rig.loc_b));
+    assert_eq!(
+        rig.daemon.probe.registered_count(Lane::Archival),
+        1,
+        "a second host does not start a second lane"
+    );
+}
+
+// A daemon with a host attached at startup starts the lane at startup, as
+// before, and a later host does not start another. (A second rig in one test
+// would wait on the first daemon's process-wide lock, hence two tests.)
+#[test]
+fn archival_lane_starts_at_startup_when_a_host_is_attached() {
+    let rig = Rig::start("mh-archival-startup", true);
+    assert_eq!(rig.daemon.probe.registered_count(Lane::Archival), 1);
+    rig.touch(&rig.loc_b);
+    assert!(rig.attached(&rig.loc_b));
+    assert_eq!(rig.daemon.probe.registered_count(Lane::Archival), 1);
+}
+
 // Kills: a service that routes every claim to one server: the claim from B
 // attaches B, each seat is woken by its own server's worker, and the same pane
 // id on both servers stays two seats.
