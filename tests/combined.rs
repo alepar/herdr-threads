@@ -21,6 +21,8 @@ mod canary_manifest_writer;
 mod channel_archival;
 #[path = "contracts.rs"]
 mod contracts;
+#[path = "store/fact_convergence_invitation.rs"]
+mod fact_convergence_invitation;
 #[path = "store/fact_convergence_membership.rs"]
 mod fact_convergence_membership;
 #[path = "store/fact_convergence_message.rs"]
@@ -29,6 +31,8 @@ mod fact_convergence_message;
 mod fact_convergence_seat;
 #[path = "store/fact_convergence_thread.rs"]
 mod fact_convergence_thread;
+#[path = "sync/facts_invitation.rs"]
+mod facts_invitation;
 #[path = "sync/facts_membership.rs"]
 mod facts_membership;
 #[path = "sync/facts_message.rs"]

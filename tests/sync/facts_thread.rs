@@ -96,6 +96,7 @@ impl Node {
             thread: thread.clone(),
             seat_lo: lo.clone(),
             seat_hi: hi.clone(),
+            creator: None,
         };
         self.run(|tx, d| {
             FactRoute::Journal
@@ -283,6 +284,7 @@ fn payload_round_trips_creates_needs() {
         thread: direct_thread_id(&lo, &hi).unwrap(),
         seat_lo: lo.clone(),
         seat_hi: hi.clone(),
+        creator: None,
     };
     let json = serde_json::to_string(&direct).unwrap();
     assert_eq!(
@@ -324,6 +326,7 @@ fn wrong_direct_id_rejected() {
                 thread: node.mint_thread(),
                 seat_lo: lo.clone(),
                 seat_hi: hi.clone(),
+                creator: None,
             },
         ),
         (
@@ -332,6 +335,7 @@ fn wrong_direct_id_rejected() {
                 thread: right.clone(),
                 seat_lo: hi.clone(),
                 seat_hi: lo.clone(),
+                creator: None,
             },
         ),
         (
@@ -340,6 +344,7 @@ fn wrong_direct_id_rejected() {
                 thread: right.clone(),
                 seat_lo: lo.clone(),
                 seat_hi: lo.clone(),
+                creator: None,
             },
         ),
     ];
@@ -393,6 +398,7 @@ fn each_kind_applied_twice_no_change_no_event() {
         thread: pair.clone(),
         seat_lo: lo.clone(),
         seat_hi: hi.clone(),
+        creator: None,
     };
     node.run(|tx, d| journal::author::<ThreadDirect>(tx, node.ctx(), d, &again_direct).map(|_| ()))
         .unwrap();

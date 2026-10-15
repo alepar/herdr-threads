@@ -137,6 +137,11 @@ pub struct ThreadDirectPayload {
     pub thread: ThreadId,
     pub seat_lo: SeatId,
     pub seat_hi: SeatId,
+    /// The pair member whose command opened the thread, for the derived
+    /// `create` event's actor. Optional and unchecked beyond being one of the
+    /// two seats: both members' nodes may author the same thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator: Option<SeatId>,
 }
 
 impl ReferencedSeats for ThreadDirectPayload {

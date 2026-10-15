@@ -178,7 +178,7 @@ fn own_seat_restore_without_host_failed() {
 
 /// Makes the closure proof of `seat` current on `node`'s host (what an
 /// absent-target enumeration leaves) and returns it.
-fn closure_proof(node: &Node, seat: &SeatId) -> ClosureEvidence {
+pub fn closure_proof(node: &Node, seat: &SeatId) -> ClosureEvidence {
     let target = format!("p-{}", seat.as_str());
     node.raw()
         .execute_batch(&format!(
@@ -197,7 +197,7 @@ fn closure_proof(node: &Node, seat: &SeatId) -> ClosureEvidence {
 
 /// Starts the retirement of `seat` on its home node, with the write guard
 /// armed on the writer.
-fn begin_retirement(node: &Node, seat: &SeatId) -> Result<RetirementJob, ApiError> {
+pub fn begin_retirement(node: &Node, seat: &SeatId) -> Result<RetirementJob, ApiError> {
     let proof = closure_proof(node, seat);
     let mut conn = node.raw();
     let _guard = write_guard::arm(&conn);
@@ -229,8 +229,8 @@ fn add_obligations(a: &Node, seat: &SeatId) {
                VALUES('tRetire0001','{s}',1,1); \
              INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) \
                VALUES('tRetire0002','{s}',1,'invited','invited'); \
-             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) \
-               VALUES('iRetire00001','tRetire0002','{s}',1,'pending',1,1,1000,2000,(SELECT id FROM local_node)); \
+             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node,inviter_kind) \
+               VALUES('iRetire00001','tRetire0002','{s}',1,'pending',1,1,1000,2000,(SELECT id FROM local_node),'operator'); \
              INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq,origin_node) \
                VALUES((SELECT id FROM local_node),'mRetire00001','tRetire0001',1,'ordinary','b',0,1,(SELECT id FROM local_node)); \
              INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) \

@@ -447,6 +447,7 @@ pub(crate) fn mutate(
                 AutomaticDeliveryAction::Ensure(v) => {
                     let (thread, created) = control::resolve_direct_pair(
                         tx,
+                        context,
                         decision,
                         &request.claim,
                         &v.recipient,

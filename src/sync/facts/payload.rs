@@ -68,6 +68,49 @@ pub enum AnswerOutcome {
     Rejected,
 }
 
+/// Who issued an invitation. A `seat` inviter is a seat of some node and the
+/// invitation names it; `service` (a registered service author) and `operator`
+/// (an operator command) have no seat, so the fact's authority is the signing
+/// origin node.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InviterKind {
+    #[default]
+    Seat,
+    Service,
+    Operator,
+}
+
+impl InviterKind {
+    /// The `invitations.inviter_kind` spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Seat => "seat",
+            Self::Service => "service",
+            Self::Operator => "operator",
+        }
+    }
+}
+
+/// An invitation's confirmation mode: `lazy` (no deadline, never wakes) or
+/// `require_ack`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Confirmation {
+    Lazy,
+    RequireAck,
+}
+
+impl Confirmation {
+    /// The `invitations.confirmation` spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Lazy => "lazy",
+            Self::RequireAck => "require_ack",
+        }
+    }
+}
+
 /// The LWW registers of a thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -162,6 +205,11 @@ mod tests {
         ] {
             round(&v, &format!("\"{s}\""));
         }
+        round(&InviterKind::Seat, "\"seat\"");
+        round(&InviterKind::Service, "\"service\"");
+        round(&InviterKind::Operator, "\"operator\"");
+        round(&Confirmation::Lazy, "\"lazy\"");
+        round(&Confirmation::RequireAck, "\"require_ack\"");
         round(&AnswerOutcome::Accepted, "\"accepted\"");
         round(&AnswerOutcome::Rejected, "\"rejected\"");
         round(&RegisterField::Topic, "\"topic\"");

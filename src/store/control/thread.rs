@@ -383,8 +383,15 @@ pub fn materialize_thread_direct(
         ],
     )
     .map_err(store_error)?;
-    let event = serde_json::json!({"action":"create_thread","goal":label}).to_string();
-    create_event(tx, m, &payload.thread, &event)?;
+    let mut event = serde_json::json!({"action":"create_thread","goal":label});
+    if let Some(creator) = payload
+        .creator
+        .as_ref()
+        .filter(|seat| **seat == payload.seat_lo || **seat == payload.seat_hi)
+    {
+        event["actor_seat"] = serde_json::json!(creator.as_str());
+    }
+    create_event(tx, m, &payload.thread, &event.to_string())?;
     schema::bump_filter_revision(tx, &instance, "directory", "all")?;
     Ok(())
 }
@@ -402,11 +409,10 @@ pub(crate) fn author_register(
     payload: &ThreadRegisterPayload,
 ) -> Result<(), ApiError> {
     let route = FactRoute::for_thread(tx, &payload.thread)?;
-    // Transitional (ht-5fr.4.10): a pair thread `ensure_direct_thread` still
-    // inserts directly has no creating fact, so a register fact for it would
-    // park on its `needs`. Until that command authors `thread.direct`, such a
-    // thread keeps the node-local write it always had.
-    let route = if route == FactRoute::Journal && !has_creating_fact(tx, &payload.thread)? {
+    // A thread no fact created (a fixture whose journal never opened) has no
+    // creating entry, so a register fact for it would park on its `needs`:
+    // such a thread keeps the node-local write it always had.
+    let route = if route == FactRoute::Journal && !has_creating_fact(tx, payload.thread.as_str())? {
         FactRoute::LocalOnly
     } else {
         route
@@ -436,12 +442,12 @@ pub(crate) fn author_register(
     Ok(())
 }
 
-/// Whether some journal entry created the thread's key (`thread.created` or
-/// `thread.direct`).
-pub(crate) fn has_creating_fact(tx: &Transaction<'_>, thread: &ThreadId) -> Result<bool, ApiError> {
+/// Whether some journal entry created the entity key (a thread's
+/// `thread.created` or `thread.direct`, an invitation's `invitation.created`).
+pub(crate) fn has_creating_fact(tx: &Transaction<'_>, key: &str) -> Result<bool, ApiError> {
     tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM journal WHERE creates=?1)",
-        [thread.as_str()],
+        [key],
         |r| r.get(0),
     )
     .map_err(store_error)

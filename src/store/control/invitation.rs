@@ -1,5 +1,22 @@
-//! Invitations and consent.
+//! Invitations and consent: the commands `invite`, `operator_orphan_invite`,
+//! `accept`, `reject` and `accept_required`, and the materializers of the
+//! invitation fact kinds (`invitation.created`, `invitation.answered`).
+//!
+//! Responsibility
+//! - Owns: the commands (decide under A2, then author the fact through
+//!   [`FactRoute`]), and the one writer of `invitations` and
+//!   `invitation_rejections` for a new invitation or an answer
+//!   ([`materialize_invitation`], [`materialize_answer`]); a service writer
+//!   reaches them through the node-local route.
+//! - Must not: write an invitation row outside a materializer, nor reject a
+//!   fact because of the local membership view (receivers apply; only the
+//!   origin-authority check rejects). The `already_joined` rule is ordinals
+//!   only (`last_joined_n > invitee_n`), never the current membership state.
+//! - Role: `sync::facts::invitation` handlers and the local-only route call the
+//!   materializers.
 
+use super::membership::{JoinedTransition, materialize_joined, membership_route, next_transition};
+use super::thread::{has_creating_fact, local_instance};
 use super::{
     bump_member_directory, cooperative_payload_hash, decide_accountable, guard_pair_member,
     joined_in_thread, validate_actor,
@@ -10,10 +27,16 @@ use crate::protocol::commands::{Accept, AcceptRequired, Invite, OperatorOrphanIn
 use crate::protocol::ids::{InvitationId, SeatId, ThreadId, prefix};
 use crate::protocol::results::{ApiError, CommandResult, ErrorCode};
 use crate::protocol::time::{CallBudget, UtcMillis};
-use crate::store::connection::{StoreContext, api_error, store_error};
+use crate::store::attribution;
+use crate::store::connection::{DecisionInstant, StoreContext, api_error, store_error};
 use crate::store::delivery_tail::DeliveryTail;
+use crate::store::materialize::{FactRoute, MaterializeInput, local_only};
 use crate::store::schema::{self, EventInput};
-use rusqlite::{Connection, OptionalExtension, params};
+use crate::sync::facts::invitation::{
+    InvitationAnswered, InvitationAnsweredPayload, InvitationCreated, InvitationCreatedPayload,
+};
+use crate::sync::facts::payload::{AnswerOutcome, Confirmation, InviterKind, answer_key};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 /// Prefer work the caller can still settle over a newer accepted invitation.
 /// The fallback preserves idempotent acceptance and terminal-state diagnostics.
@@ -151,84 +174,29 @@ pub fn accept(
                 return Err(api_error(ErrorCode::Conflict, "invitation was cancelled"));
             }
             let thread = ThreadId::new(thread);
-            let already_joined = joined_in_thread(tx, &thread, &caller)?;
-            let instance: String = tx
-                .query_row(
-                    "SELECT instance_id FROM seats WHERE id=?1",
-                    [caller.as_str()],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?;
-            // Capture the current episode while the invitation/membership are
-            // still pending/invited. A generic acceptance keeps its head policy.
-            let direct_floor = if already_joined {
-                None
-            } else {
-                crate::store::lazy_delivery::direct_acceptance_floor(
-                    tx,
-                    &instance,
-                    &caller,
-                    &thread,
-                    &invitation,
-                )?
-            };
-            schema::record_overdue_if_pending(tx, &obligation, &TimeBasis::Decision, decision.utc)?;
-            let generation: i64 = tx
-                .query_row(
-                    "SELECT generation FROM seats WHERE id=?1",
-                    [caller.as_str()],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?;
-            let observation = actor.observation(decision.utc.0);
-            tx.execute("UPDATE invitations SET state='accepted', accepted_at=?1,accepted_actor_seat_id=?2,accepted_generation=?3,accepted_observation=?4 WHERE id=?5",
-                params![decision.utc.0,caller.as_str(),generation,observation,invitation.as_str()]).map_err(store_error)?;
-            schema::clear_warning_condition_for_invitation(tx, invitation.as_str(), decision.utc)?;
-            let event_seq = schema::next_decision_seq(tx, &instance)?;
-            // This invitation needs its own acceptance event even when another
-            // invitation already joined the seat. The join interval belongs to
-            // the first transition into Joined and must keep that frontier.
-            if !already_joined {
-                let episode: i64 = tx
-                    .query_row(
-                        "SELECT episode FROM invitations WHERE id=?1",
-                        [invitation.as_str()],
-                        |r| r.get(0),
-                    )
-                    .map_err(store_error)?;
-                tx.execute("UPDATE memberships SET state='joined',voluntary_state='joined',episode=?1,joined_at=?2,left_at=NULL,home_transition=home_transition+1,last_joined_n=home_transition+1 WHERE thread_id=?3 AND seat_id=?4",
-                    params![episode,decision.utc.0,thread.as_str(),caller.as_str()]).map_err(store_error)?;
-                tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,?3,?4)",
-                    params![thread.as_str(),caller.as_str(),episode,event_seq as i64]).map_err(store_error)?;
-                match direct_floor {
-                    Some(floor) => {
-                        crate::store::read_cursors::init_for_direct_accept(
-                            tx, &caller, &thread, floor,
-                        )?;
-                    }
-                    None => {
-                        crate::store::read_cursors::init_for_join(tx, &caller, &thread)?;
-                    }
-                }
-            }
-            let payload = serde_json::json!({"action":"accept", "seat":caller.as_str(), "invitation":invitation.as_str()}).to_string();
-            schema::append_event_once_with_decision_seq(
+            // The acceptance is the invitee's one fact: its membership
+            // ordinal is the next one, and the attribution of the local
+            // binding rides in the staging table until the materializer takes it.
+            let n = next_transition(tx, &thread, &caller)?;
+            attribution::stage(
                 tx,
-                EventInput {
-                    thread: &thread,
-                    key: &format!("accept:{}", invitation.as_str()),
-                    kind: "info",
-                    payload_json: &payload,
-                    decision_at: decision.utc,
-                    source_message: None,
-                    source_invitation: Some(&invitation),
-                },
-                event_seq,
+                &attribution::answer_key(invitation.as_str()),
+                &actor,
+                &actor.observation(decision.utc.0),
             )?;
-            schema::bump_membership_revision(tx, &thread)?;
-            schema::bump_filter_revision(tx, &instance, "directory", "all")?;
-            bump_member_directory(tx, &instance, &caller)?;
-            schema::bump_filter_revision(tx, &instance, "inbox", caller.as_str())?;
+            author_answer(
+                tx,
+                context,
+                decision,
+                &InvitationAnsweredPayload {
+                    invitation: invitation.clone(),
+                    invitee: caller.clone(),
+                    outcome: AnswerOutcome::Accepted,
+                    reason: None,
+                    answered_at: decision.utc.0,
+                    n,
+                },
+            )?;
             Ok(CommandResult::Accepted(invitation.clone().into()))
         },
     )
@@ -341,65 +309,44 @@ pub fn reject(
                     "invitation is terminal or cancelled",
                 ));
             }
-            // Lateness is retained, never described as expiration or acceptance.
-            schema::record_overdue_if_pending(tx, &obligation, &TimeBasis::Decision, decision.utc)?;
-            let generation: i64 = tx
-                .query_row(
-                    "SELECT generation FROM seats WHERE id=?1",
-                    [caller.as_str()],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?;
-            let observation = actor.observation(decision.utc.0);
-            tx.execute("INSERT INTO invitation_rejections(invitation_id,reason,rejected_at,actor_seat_id,generation,observation) VALUES (?1,?2,?3,?4,?5,?6)",
-                params![command.invitation.as_str(),command.reason,decision.utc.0,caller.as_str(),generation,observation]).map_err(store_error)?;
-            schema::clear_warning_condition_for_invitation(
+            // Lateness is retained, never described as expiration or
+            // acceptance: the materializer records it, on the deciding node.
+            attribution::stage(
                 tx,
-                command.invitation.as_str(),
-                decision.utc,
+                &attribution::answer_key(command.invitation.as_str()),
+                &actor,
+                &actor.observation(decision.utc.0),
             )?;
-            // Only an invited voluntary marker is cleared; no join or leave interval is fabricated.
-            // Restore a prior left state only with its recorded closed interval and leave event.
-            let prior_left: Option<i64> = tx.query_row(
-                "SELECT m.decision_at FROM membership_intervals mi JOIN messages m ON m.thread_id=mi.thread_id AND m.decision_seq=mi.left_seq WHERE mi.thread_id=?1 AND mi.seat_id=?2 AND mi.left_seq IS NOT NULL AND json_extract(m.event_json,'$.action')='leave' AND json_extract(m.event_json,'$.seat')=?2 ORDER BY mi.episode DESC LIMIT 1",
-                params![command.thread.as_str(),caller.as_str()], |r| r.get(0),
-            ).optional().map_err(store_error)?;
-            tx.execute("UPDATE memberships SET voluntary_state=?1,left_at=?2 WHERE thread_id=?3 AND seat_id=?4 AND voluntary_state='invited' AND episode=(SELECT episode FROM invitations WHERE id=?5) AND NOT EXISTS(SELECT 1 FROM invitations i WHERE i.thread_id=?3 AND i.seat_id=?4 AND i.state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=i.id))",
-                params![if prior_left.is_some() { "left" } else { "absent" },prior_left,command.thread.as_str(),caller.as_str(),command.invitation.as_str()]).map_err(store_error)?;
-            let payload = serde_json::json!({"action":"reject","seat":caller.as_str(),"invitation":command.invitation.as_str(),"reason":command.reason}).to_string();
-            let (warning, inserted) = schema::append_attributed_event_once(
+            author_answer(
                 tx,
-                EventInput {
-                    thread: &command.thread,
-                    key: &format!("reject:{}", command.invitation.as_str()),
-                    kind: "warn",
-                    payload_json: &payload,
-                    decision_at: decision.utc,
-                    source_message: None,
-                    source_invitation: Some(&command.invitation),
+                context,
+                decision,
+                &InvitationAnsweredPayload {
+                    invitation: command.invitation.clone(),
+                    invitee: caller.clone(),
+                    outcome: AnswerOutcome::Rejected,
+                    reason: Some(command.reason.clone()),
+                    answered_at: decision.utc.0,
+                    n: 0,
                 },
-                crate::protocol::service::EventAuthor::Native(caller.clone()),
             )?;
-            if inserted {
-                schema::enqueue_invitation_rejection_notice(
-                    tx,
-                    warning.as_str(),
-                    command.thread.as_str(),
-                    caller.as_str(),
-                )?;
-            }
-            schema::bump_membership_revision(tx, &command.thread)?;
-            schema::bump_filter_revision(tx, &command.claim.instance, "directory", "all")?;
-            bump_member_directory(tx, &command.claim.instance, &caller)?;
-            schema::bump_filter_revision(tx, &command.claim.instance, "inbox", caller.as_str())?;
+            let (seat, generation, observation, at, reason): (String, i64, String, i64, String) = tx
+                .query_row(
+                    "SELECT actor_seat_id,generation,observation,rejected_at,reason FROM invitation_rejections WHERE invitation_id=?1",
+                    [command.invitation.as_str()],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )
+                .optional()
+                .map_err(store_error)?
+                .ok_or_else(|| api_error(ErrorCode::Conflict, "invitation was not rejected"))?;
             Ok(CommandResult::Rejected(
                 crate::protocol::results::InvitationRejection {
                     invitation: command.invitation.clone(),
-                    actor: caller.clone(),
+                    actor: SeatId::new(seat),
                     generation: generation as u64,
                     observation,
-                    rejected_at: decision.utc,
-                    reason: command.reason.clone(),
+                    rejected_at: UtcMillis(at),
+                    reason,
                 },
             ))
         },
@@ -475,6 +422,10 @@ pub fn accept_required(
                 &obligation,
                 &digest,
             )?;
+            // A requirement lives on a managed thread, which is node-local:
+            // the writes below go through the local-only route (its input
+            // holds the replicated-write scope for the rest of this closure).
+            let local = local_only(tx, decision)?;
             let generation: i64 = tx
                 .query_row(
                     "SELECT generation FROM seats WHERE id=?1",
@@ -484,8 +435,14 @@ pub fn accept_required(
                 .map_err(store_error)?;
             let observation = actor.observation(decision.utc.0);
             schema::record_overdue_if_pending(tx, &obligation, &TimeBasis::Decision, decision.utc)?;
-            tx.execute("UPDATE invitations SET state='accepted',accepted_at=?1,accepted_actor_seat_id=?2,accepted_generation=?3,accepted_observation=?4 WHERE id=?5 AND state='pending'",
-                params![decision.utc.0,caller.as_str(),generation,observation,command.invitation.as_str()]).map_err(store_error)?;
+            mark_accepted(
+                tx,
+                &command.invitation,
+                &caller,
+                decision.utc.0,
+                generation,
+                &observation,
+            )?;
             schema::clear_warning_condition_for_invitation(
                 tx,
                 command.invitation.as_str(),
@@ -493,29 +450,38 @@ pub fn accept_required(
             )?;
             tx.execute("UPDATE requirement_episodes SET state='accepted',revision=revision+1,accepted_at=?1,accepted_by_seat_id=?2,accepted_generation=?3,accepted_observation=?4 WHERE id=?5 AND state='pending' AND revision=?6",
                 params![decision.utc.0,caller.as_str(),generation,observation,command.requirement.as_str(),command.expected_revision as i64]).map_err(store_error)?;
+            let instance = local_instance(tx)?;
             let joined = joined_in_thread(tx, &command.thread, &caller)?;
-            if !joined {
-                let instance: String = tx
-                    .query_row(
-                        "SELECT instance_id FROM seats WHERE id=?1",
-                        [caller.as_str()],
-                        |r| r.get(0),
-                    )
-                    .map_err(store_error)?;
-                let seq = schema::next_decision_seq(tx, &instance)?;
-                let episode: i64 = tx
-                    .query_row(
-                        "SELECT episode FROM invitations WHERE id=?1",
-                        [command.invitation.as_str()],
-                        |r| r.get(0),
-                    )
-                    .map_err(store_error)?;
-                tx.execute("UPDATE memberships SET state='joined',voluntary_state='joined',episode=?1,joined_at=?2,left_at=NULL,home_transition=home_transition+1,last_joined_n=home_transition+1 WHERE thread_id=?3 AND seat_id=?4",
-                    params![episode,decision.utc.0,command.thread.as_str(),caller.as_str()]).map_err(store_error)?;
-                tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,?3,?4)",
-                    params![command.thread.as_str(),caller.as_str(),episode,seq as i64]).map_err(store_error)?;
-                crate::store::read_cursors::init_for_join(tx, &caller, &command.thread)?;
-            }
+            let episode: i64 = tx
+                .query_row(
+                    "SELECT episode FROM invitations WHERE id=?1",
+                    [command.invitation.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            // The transition takes a position after the late-overdue warning
+            // above, as the acceptance always did.
+            let seq = if joined {
+                local.decision_seq
+            } else {
+                schema::next_decision_seq(tx, &instance)?
+            };
+            materialize_joined(
+                tx,
+                &local,
+                &JoinedTransition {
+                    thread: &command.thread,
+                    seat: &caller,
+                    n: next_transition(tx, &command.thread, &caller)?,
+                    at: decision.utc.0,
+                    join_event: false,
+                    seq,
+                    episode: Some(episode),
+                    direct_floor: None,
+                    // The requirement's own invitation episodes stay independent.
+                    settle: false,
+                },
+            )?;
             let payload = serde_json::json!({"action":"accept_required","seat":caller.as_str(),
                 "requirement":command.requirement.as_str(),"invitation":command.invitation.as_str()}).to_string();
             schema::append_attributed_event_once(
@@ -532,13 +498,6 @@ pub fn accept_required(
                 crate::protocol::service::EventAuthor::Native(caller.clone()),
             )?;
             schema::bump_membership_revision(tx, &command.thread)?;
-            let instance: String = tx
-                .query_row(
-                    "SELECT instance_id FROM seats WHERE id=?1",
-                    [caller.as_str()],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?;
             schema::bump_filter_revision(tx, &instance, "directory", "all")?;
             bump_member_directory(tx, &instance, &caller)?;
             schema::bump_filter_revision(tx, &instance, "inbox", caller.as_str())?;
@@ -579,10 +538,10 @@ pub fn invite(
         ));
     }
     let confirmation = command.confirmation.map(|mode| match mode {
-        crate::protocol::commands::InvitationConfirmation::Lazy => "lazy",
-        crate::protocol::commands::InvitationConfirmation::RequireAck => "require_ack",
+        crate::protocol::commands::InvitationConfirmation::Lazy => Confirmation::Lazy,
+        crate::protocol::commands::InvitationConfirmation::RequireAck => Confirmation::RequireAck,
     });
-    let timed = confirmation != Some("lazy");
+    let timed = confirmation != Some(Confirmation::Lazy);
     let duration = command
         .deadline_millis
         .or(installation_default_ms)
@@ -674,72 +633,30 @@ pub fn invite(
                 return Ok(CommandResult::Invitation(InvitationId::new(id)));
             }
             let deadline = schema::checked_deadline(decision.utc, duration)?;
-            let episode = crate::store::service_controls::next_invitation_episode(
-                tx,
-                &command.thread,
-                &command.seat,
-            )?;
-            if prior.is_some() {
-                tx.execute("UPDATE memberships SET state='invited', voluntary_state='invited', episode=?1, joined_at=NULL, left_at=NULL WHERE thread_id=?2 AND seat_id=?3",
-                    params![episode, command.thread.as_str(), command.seat.as_str()]).map_err(store_error)?;
-            } else {
-                tx.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,?2,?3,'invited','invited')",
-                    params![command.thread.as_str(), command.seat.as_str(), episode]).map_err(store_error)?;
-            }
             let invitation = InvitationId::new(crate::store::public_ids::fresh(
                 tx,
                 prefix::INVITATION,
                 &[("invitations", "id", prefix::INVITATION)],
             )?);
-            let instance: String = tx
-                .query_row(
-                    "SELECT instance_id FROM seats WHERE id=?1",
-                    [command.seat.as_str()],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?;
-            let created_decision_seq = i64::try_from(schema::next_decision_seq(tx, &instance)?)
-                .map_err(|_| {
-                    api_error(
-                        ErrorCode::SequenceExhausted,
-                        "invitation decision sequence exhausted",
-                    )
-                })?;
-            tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id,origin_node,invitee_n) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8,?9,?10,(SELECT id FROM local_node),COALESCE((SELECT home_transition FROM memberships WHERE thread_id=?2 AND seat_id=?3),0))",
-                params![invitation.as_str(), command.thread.as_str(), command.seat.as_str(), episode, decision.utc.0, created_decision_seq, duration, deadline.0,confirmation,caller.as_str()]).map_err(store_error)?;
-            let mut payload = serde_json::json!({"action":"invite", "actor_seat":caller.as_str(), "seat":command.seat.as_str(),
-                "invitation":invitation.as_str()});
-            if timed {
-                payload["deadline_at"] = serde_json::json!(deadline.0);
-            }
-            if let Some(mode) = confirmation {
-                payload["confirmation"] = serde_json::json!(mode);
-            }
-            let payload = payload.to_string();
-            schema::append_event_once(
+            let invitee_n = home_transition(tx, &command.thread, &command.seat)?;
+            author_invitation(
                 tx,
-                EventInput {
-                    thread: &command.thread,
-                    key: &format!("invite:{}", invitation.as_str()),
-                    kind: "info",
-                    payload_json: &payload,
-                    decision_at: decision.utc,
-                    source_message: None,
-                    source_invitation: Some(&invitation),
+                context,
+                decision,
+                &InvitationCreatedPayload {
+                    invitation: invitation.clone(),
+                    thread: command.thread.clone(),
+                    inviter: Some(caller.clone()),
+                    inviter_kind: InviterKind::Seat,
+                    invitee: command.seat.clone(),
+                    invitee_n,
+                    created_at: decision.utc.0,
+                    duration_ms: duration,
+                    deadline_at: timed.then_some(deadline.0),
+                    confirmation,
+                    actor_label: None,
                 },
             )?;
-            schema::bump_membership_revision(tx, &command.thread)?;
-            DeliveryTail::invitation(tx, &command.seat, timed)?;
-            let instance: String = tx
-                .query_row(
-                    "SELECT instance_id FROM seats WHERE id=?1",
-                    [caller.as_str()],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?;
-            schema::bump_filter_revision(tx, &instance, "directory", "all")?;
-            bump_member_directory(tx, &instance, &command.seat)?;
-            schema::bump_filter_revision(tx, &instance, "inbox", command.seat.as_str())?;
             Ok(CommandResult::Invitation(invitation))
         },
     )
@@ -810,30 +727,10 @@ pub fn operator_orphan_invite(
             Ok(())
         },
         |tx, decision| {
-            let prior: Option<(i64, String)> = tx
-                .query_row(
-                    "SELECT episode,state FROM memberships WHERE thread_id=?1 AND seat_id=?2",
-                    params![command.thread.as_str(), command.seat.as_str()],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()
-                .map_err(store_error)?;
             let pending: Option<String> = tx.query_row("SELECT i.id FROM invitations i WHERE i.thread_id=?1 AND i.seat_id=?2 AND i.state='pending' AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) AND NOT EXISTS (SELECT 1 FROM requirement_episodes r WHERE r.invitation_id=i.id AND r.created_decision_seq=i.created_decision_seq) ORDER BY i.episode DESC LIMIT 1",
                 params![command.thread.as_str(),command.seat.as_str()], |r| r.get(0)).optional().map_err(store_error)?;
             if let Some(id) = pending {
                 return Ok(CommandResult::OperatorInvited(InvitationId::new(id)));
-            }
-            let episode = crate::store::service_controls::next_invitation_episode(
-                tx,
-                &command.thread,
-                &command.seat,
-            )?;
-            if prior.is_some() {
-                tx.execute("UPDATE memberships SET state='invited',voluntary_state='invited',episode=?1,joined_at=NULL,left_at=NULL WHERE thread_id=?2 AND seat_id=?3",
-                    params![episode,command.thread.as_str(),command.seat.as_str()]).map_err(store_error)?;
-            } else {
-                tx.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,?2,?3,'invited','invited')",
-                    params![command.thread.as_str(),command.seat.as_str(),episode]).map_err(store_error)?;
             }
             let deadline = schema::checked_deadline(decision.utc, duration)?;
             let invitation = InvitationId::new(crate::store::public_ids::fresh(
@@ -841,51 +738,582 @@ pub fn operator_orphan_invite(
                 prefix::INVITATION,
                 &[("invitations", "id", prefix::INVITATION)],
             )?);
-            let instance: String = tx
-                .query_row(
-                    "SELECT instance_id FROM seats WHERE id=?1",
-                    [command.seat.as_str()],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?;
-            let created_decision_seq = i64::try_from(schema::next_decision_seq(tx, &instance)?)
-                .map_err(|_| {
-                    api_error(
-                        ErrorCode::SequenceExhausted,
-                        "invitation decision sequence exhausted",
-                    )
-                })?;
-            tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,origin_node,invitee_n) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8,(SELECT id FROM local_node),COALESCE((SELECT home_transition FROM memberships WHERE thread_id=?2 AND seat_id=?3),0))",
-                params![invitation.as_str(),command.thread.as_str(),command.seat.as_str(),episode,decision.utc.0,created_decision_seq,duration,deadline.0]).map_err(store_error)?;
-            let payload = serde_json::json!({"action":"operator_orphan_invite", "actor":actor.audit_label(),
-                "seat":command.seat.as_str(),"invitation":invitation.as_str(),"deadline_at":deadline.0}).to_string();
-            schema::append_event_once(
+            let invitee_n = home_transition(tx, &command.thread, &command.seat)?;
+            author_invitation(
                 tx,
-                EventInput {
-                    thread: &command.thread,
-                    key: &format!("operator_invite:{}", invitation.as_str()),
-                    kind: "info",
-                    payload_json: &payload,
-                    decision_at: decision.utc,
-                    source_message: None,
-                    source_invitation: Some(&invitation),
+                context,
+                decision,
+                &InvitationCreatedPayload {
+                    invitation: invitation.clone(),
+                    thread: command.thread.clone(),
+                    inviter: None,
+                    inviter_kind: InviterKind::Operator,
+                    invitee: command.seat.clone(),
+                    invitee_n,
+                    created_at: decision.utc.0,
+                    duration_ms: duration,
+                    deadline_at: Some(deadline.0),
+                    confirmation: None,
+                    actor_label: Some(actor.audit_label()),
                 },
             )?;
-            DeliveryTail::invitation(tx, &command.seat, true)?;
-            let instance: String = tx
-                .query_row(
-                    "SELECT instance_id FROM threads WHERE id=?1",
-                    [command.thread.as_str()],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?;
-            schema::bump_membership_revision(tx, &command.thread)?;
-            schema::bump_filter_revision(tx, &instance, "directory", "all")?;
-            bump_member_directory(tx, &instance, &command.seat)?;
-            schema::bump_filter_revision(tx, &instance, "inbox", command.seat.as_str())?;
             Ok(CommandResult::OperatorInvited(invitation))
         },
     )?;
     crate::store::operator::validate_result(&typed_command, &result)?;
     Ok(result)
+}
+
+/// The invitee's `memberships.home_transition` for the thread in this node's
+/// view (0 without a row): the `invitee_n` an invitation records.
+fn home_transition(
+    tx: &Transaction<'_>,
+    thread: &ThreadId,
+    seat: &SeatId,
+) -> Result<u64, ApiError> {
+    let n: Option<i64> = tx
+        .query_row(
+            "SELECT home_transition FROM memberships WHERE thread_id=?1 AND seat_id=?2",
+            params![thread.as_str(), seat.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    u64::try_from(n.unwrap_or(0))
+        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative membership ordinal"))
+}
+
+/// Authors `invitation.created`: through the journal for a journaled thread,
+/// as a node-local write for any other (a managed thread, which refuses a
+/// remote seat).
+pub(crate) fn author_invitation(
+    tx: &Transaction<'_>,
+    ctx: &StoreContext,
+    decision: DecisionInstant,
+    payload: &InvitationCreatedPayload,
+) -> Result<(), ApiError> {
+    membership_route(tx, &payload.thread)?.emit::<InvitationCreated>(
+        tx,
+        ctx,
+        decision,
+        payload,
+        None,
+        materialize_invitation,
+    )?;
+    Ok(())
+}
+
+/// Authors `invitation.answered` the way [`author_invitation`] authors a new
+/// invitation.
+fn author_answer(
+    tx: &Transaction<'_>,
+    ctx: &StoreContext,
+    decision: DecisionInstant,
+    payload: &InvitationAnsweredPayload,
+) -> Result<(), ApiError> {
+    let thread: String = tx
+        .query_row(
+            "SELECT thread_id FROM invitations WHERE id=?1",
+            [payload.invitation.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let thread = ThreadId::new(thread);
+    // An invitation no fact created (a fixture row) answers node-locally too:
+    // its `invitation.answered` would park on the invitation key.
+    let route = match membership_route(tx, &thread)? {
+        FactRoute::Journal if !has_creating_fact(tx, payload.invitation.as_str())? => {
+            FactRoute::LocalOnly
+        }
+        route => route,
+    };
+    route.emit::<InvitationAnswered>(tx, ctx, decision, payload, None, materialize_answer)?;
+    Ok(())
+}
+
+/// The seat an invitation is addressed to, if the invitation exists.
+pub fn invitation_invitee(
+    tx: &Transaction<'_>,
+    invitation: &InvitationId,
+) -> Result<Option<SeatId>, ApiError> {
+    tx.query_row(
+        "SELECT seat_id FROM invitations WHERE id=?1",
+        [invitation.as_str()],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .map(|seat| seat.map(SeatId::new))
+    .map_err(store_error)
+}
+
+/// Where a new invitation leaves the invitee's membership row. A voluntary
+/// invitation (every replicated one) makes the invitee `invited`; a service
+/// requirement keeps the voluntary state the seat already had (a node-local
+/// writer only, on a managed thread).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Placement {
+    Voluntary,
+    Required,
+}
+
+/// Materializes `invitation.created` (fact-kinds design section 6): a no-op if
+/// the invitation exists. Otherwise inserts the row with a local episode and
+/// `origin_node = m.origin_node`, in the state the invitee's seat and ordinals
+/// give it (`recipient_retired` for a retired seat, `already_joined` when
+/// `last_joined_n > invitee_n`, else `pending`). Only a `pending` row touches
+/// anything else: the invitee becomes `invited`, the derived invite event is
+/// appended, the revisions and filters bump, and a local, non-suppressed
+/// invitee gets its delivery attention.
+pub fn materialize_invitation(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    payload: &InvitationCreatedPayload,
+) -> Result<(), ApiError> {
+    insert_invitation(tx, m, payload, Placement::Voluntary, true).map(|_| ())
+}
+
+/// [`materialize_invitation`] with the membership placement and the derived
+/// event chosen by the caller. Returns the new row's episode, `None` when the
+/// invitation existed.
+pub(crate) fn insert_invitation(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    p: &InvitationCreatedPayload,
+    placement: Placement,
+    event: bool,
+) -> Result<Option<i64>, ApiError> {
+    let exists: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM invitations WHERE id=?1)",
+            [p.invitation.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if exists {
+        return Ok(None);
+    }
+    let (seat_state, seat_retired_at): (String, Option<i64>) = tx
+        .query_row(
+            "SELECT state,retired_at FROM seats WHERE id=?1",
+            [p.invitee.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(store_error)?
+        .ok_or_else(|| {
+            api_error(
+                ErrorCode::NotFound,
+                format!("unknown invitee seat {}", p.invitee.as_str()),
+            )
+        })?;
+    let prior: Option<(String, i64)> = tx
+        .query_row(
+            "SELECT state,last_joined_n FROM memberships WHERE thread_id=?1 AND seat_id=?2",
+            params![p.thread.as_str(), p.invitee.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let invitee_n = i64::try_from(p.invitee_n)
+        .map_err(|_| api_error(ErrorCode::InvalidRequest, "invitee ordinal out of range"))?;
+    let state = if seat_state == "retired" {
+        "recipient_retired"
+    } else if prior
+        .as_ref()
+        .is_some_and(|(_, joined_n)| *joined_n > invitee_n)
+    {
+        "already_joined"
+    } else {
+        "pending"
+    };
+    let deadline = match p.deadline_at {
+        Some(deadline) => deadline,
+        None => p.created_at.checked_add(p.duration_ms).ok_or_else(|| {
+            api_error(
+                ErrorCode::InvalidRequest,
+                "invitation deadline out of range",
+            )
+        })?,
+    };
+    let episode =
+        crate::store::service_controls::next_invitation_episode(tx, &p.thread, &p.invitee)?;
+    let inviter = match p.inviter_kind {
+        InviterKind::Seat => p.inviter.as_ref().map(SeatId::as_str),
+        _ => None,
+    };
+    let decision_seq = i64::try_from(m.decision_seq)
+        .map_err(|_| api_error(ErrorCode::SequenceExhausted, "decision sequence exhausted"))?;
+    tx.execute(
+        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,retired_at,confirmation,inviter_seat_id,origin_node,invitee_n,inviter_kind) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+        params![
+            p.invitation.as_str(),
+            p.thread.as_str(),
+            p.invitee.as_str(),
+            episode,
+            state,
+            p.created_at,
+            decision_seq,
+            p.duration_ms,
+            deadline,
+            if state == "recipient_retired" { seat_retired_at } else { None },
+            p.confirmation.map(Confirmation::as_str),
+            inviter,
+            m.origin_node.to_string(),
+            invitee_n,
+            p.inviter_kind.as_str(),
+        ],
+    )
+    .map_err(store_error)?;
+    if state != "pending" {
+        return Ok(Some(episode));
+    }
+    place_invitee(
+        tx,
+        p,
+        placement,
+        prior.as_ref().map(|(state, _)| state.as_str()),
+        episode,
+    )?;
+    let timed = p.confirmation != Some(Confirmation::Lazy);
+    if event {
+        invite_event(tx, m, p, deadline, episode)?;
+    }
+    let instance = local_instance(tx)?;
+    schema::bump_membership_revision(tx, &p.thread)?;
+    if crate::store::seats::is_local_seat(tx, &p.invitee)?
+        && !(m.suppress)(
+            tx,
+            &answer_key(&p.invitation)
+                .map_err(|e| api_error(ErrorCode::InvalidRequest, e.to_string()))?,
+        )?
+    {
+        DeliveryTail::invitation(tx, &p.invitee, timed)?;
+    }
+    schema::bump_filter_revision(tx, &instance, "directory", "all")?;
+    bump_member_directory(tx, &instance, &p.invitee)?;
+    schema::bump_filter_revision(tx, &instance, "inbox", p.invitee.as_str())?;
+    Ok(Some(episode))
+}
+
+/// Makes the invitee `invited` (a voluntary invitation) or leaves the
+/// voluntary state alone (a requirement): the membership half of a new
+/// pending invitation.
+fn place_invitee(
+    tx: &Transaction<'_>,
+    p: &InvitationCreatedPayload,
+    placement: Placement,
+    prior_state: Option<&str>,
+    episode: i64,
+) -> Result<(), ApiError> {
+    let (thread, seat) = (p.thread.as_str(), p.invitee.as_str());
+    match (placement, prior_state) {
+        (Placement::Voluntary, None) => {
+            tx.execute(
+                "INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,?2,?3,'invited','invited')",
+                params![thread, seat, episode],
+            )
+            .map_err(store_error)?;
+        }
+        // A joined seat stays joined (a forked log can deliver an invitation
+        // the seat's own transitions already answered); a retired row is terminal.
+        (Placement::Voluntary, Some("joined" | "retired")) => {}
+        (Placement::Voluntary, Some(_)) => {
+            tx.execute(
+                "UPDATE memberships SET state='invited', voluntary_state='invited', episode=?1, joined_at=NULL, left_at=NULL WHERE thread_id=?2 AND seat_id=?3",
+                params![episode, thread, seat],
+            )
+            .map_err(store_error)?;
+        }
+        (Placement::Required, None) => {
+            tx.execute(
+                "INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,?2,?3,'invited','absent')",
+                params![thread, seat, episode],
+            )
+            .map_err(store_error)?;
+        }
+        (Placement::Required, Some("left")) => {
+            tx.execute(
+                "UPDATE memberships SET state='invited',voluntary_state='left' WHERE thread_id=?1 AND seat_id=?2",
+                params![thread, seat],
+            )
+            .map_err(store_error)?;
+        }
+        (Placement::Required, Some(_)) => {}
+    }
+    Ok(())
+}
+
+/// The derived timeline event of a new pending invitation, in the shape its
+/// issuer always had: `invite:` for a seat, `operator_invite:` for an
+/// operator, `service_invite:<id>:ordinary` for a service.
+fn invite_event(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    p: &InvitationCreatedPayload,
+    deadline: i64,
+    episode: i64,
+) -> Result<(), ApiError> {
+    let id = p.invitation.as_str();
+    let (key, payload, author) = match p.inviter_kind {
+        InviterKind::Seat => {
+            let mut payload = serde_json::json!({"action":"invite",
+                "actor_seat":p.inviter.as_ref().map(SeatId::as_str),
+                "seat":p.invitee.as_str(),"invitation":id});
+            if p.confirmation != Some(Confirmation::Lazy) {
+                payload["deadline_at"] = serde_json::json!(deadline);
+            }
+            if let Some(mode) = p.confirmation {
+                payload["confirmation"] = serde_json::json!(mode.as_str());
+            }
+            (format!("invite:{id}"), payload, None)
+        }
+        InviterKind::Operator => (
+            format!("operator_invite:{id}"),
+            serde_json::json!({"action":"operator_orphan_invite",
+                "actor":p.actor_label.as_deref().unwrap_or("operator"),
+                "seat":p.invitee.as_str(),"invitation":id,"deadline_at":deadline}),
+            None,
+        ),
+        InviterKind::Service => {
+            let issuer = p.actor_label.as_deref().unwrap_or("service");
+            // A service author is a node-local registration: only its own
+            // node can attribute the event to it.
+            let registered: bool = m.local_origin
+                && tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM service_authors WHERE id=?1)",
+                        [issuer],
+                        |r| r.get(0),
+                    )
+                    .map_err(store_error)?;
+            (
+                format!("service_invite:{id}:ordinary"),
+                serde_json::json!({"action":"service_invite","issuer":issuer,
+                    "seat":p.invitee.as_str(),"invitation":id,"required":false,
+                    "episode":episode}),
+                registered.then(|| {
+                    crate::protocol::service::EventAuthor::Programmatic(
+                        crate::protocol::ids::ServiceAuthorId::new(issuer),
+                    )
+                }),
+            )
+        }
+    };
+    let payload = payload.to_string();
+    let input = EventInput {
+        thread: &p.thread,
+        key: &key,
+        kind: "info",
+        payload_json: &payload,
+        decision_at: UtcMillis(p.created_at),
+        source_message: None,
+        source_invitation: Some(&p.invitation),
+    };
+    match author {
+        Some(author) => schema::append_attributed_event_once(tx, input, author)?,
+        None => schema::append_event_once(tx, input)?,
+    };
+    Ok(())
+}
+
+/// Marks a pending invitation `accepted` with the acceptor's attribution.
+pub(crate) fn mark_accepted(
+    tx: &Transaction<'_>,
+    invitation: &InvitationId,
+    seat: &SeatId,
+    at: i64,
+    generation: i64,
+    observation: &str,
+) -> Result<usize, ApiError> {
+    tx.execute(
+        "UPDATE invitations SET state='accepted', accepted_at=?1,accepted_actor_seat_id=?2,accepted_generation=?3,accepted_observation=?4 WHERE id=?5 AND state='pending'",
+        params![at, seat.as_str(), generation, observation, invitation.as_str()],
+    )
+    .map_err(store_error)
+}
+
+/// Where the next event of an answer lands: the entry's own `decision_seq`
+/// while nothing allocated a later one (the common case), else a fresh one.
+fn event_position(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    instance: &str,
+) -> Result<u64, ApiError> {
+    let current: i64 = tx
+        .query_row(
+            "SELECT decision_seq FROM local_node WHERE id=?1",
+            [instance],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if u64::try_from(current).is_ok_and(|current| current == m.decision_seq) {
+        Ok(m.decision_seq)
+    } else {
+        schema::next_decision_seq(tx, instance)
+    }
+}
+
+/// Materializes `invitation.answered` (section 6): a no-op unless the
+/// invitation is `pending` (not rejected, not cancelled). A late answer records
+/// the overdue warning first (`record_overdue_if_pending` acts only on the
+/// deciding node). An accept marks the invitation accepted from the staged
+/// `answer:<id>` attribution, applies the invitee's membership joined
+/// transition with the payload's ordinal (which settles the invitee's other
+/// pending invitations `already_joined`) and appends the `accept:` event. A
+/// reject records the rejection, restores the invitee's voluntary state and
+/// appends the rejection warning. Both clear the invitation's warning condition.
+pub fn materialize_answer(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    payload: &InvitationAnsweredPayload,
+) -> Result<(), ApiError> {
+    // Whatever the outcome, the staged attribution of this answer is consumed.
+    let attribution =
+        attribution::take(tx, m, &attribution::answer_key(payload.invitation.as_str()))?;
+    let row: Option<(String, String, i64, bool)> = tx
+        .query_row(
+            "SELECT i.thread_id,i.seat_id,i.episode,\
+             i.state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=i.id) \
+             AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) \
+             FROM invitations i WHERE i.id=?1",
+            [payload.invitation.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some((thread, seat, episode, open)) = row else {
+        return Err(api_error(ErrorCode::NotFound, "invitation not found"));
+    };
+    if !open {
+        return Ok(());
+    }
+    let (thread, seat) = (ThreadId::new(thread), SeatId::new(seat));
+    let journaled: bool = tx
+        .query_row(
+            "SELECT journaled FROM threads WHERE id=?1",
+            [thread.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let instance = local_instance(tx)?;
+    let at = UtcMillis(payload.answered_at);
+    let obligation = ObligationRef::Invitation(payload.invitation.clone());
+    match payload.outcome {
+        AnswerOutcome::Accepted => {
+            // The pair episode's read floor, captured before the state changes.
+            // Only a live local decision has it: it staged the acceptor's
+            // binding, which a replicated or re-ingested answer never has.
+            let direct_floor = if attribution.binding_id.is_some()
+                && !joined_in_thread(tx, &thread, &seat)?
+                && crate::store::seats::is_local_seat(tx, &seat)?
+            {
+                crate::store::lazy_delivery::direct_acceptance_floor(
+                    tx,
+                    &instance,
+                    &seat,
+                    &thread,
+                    &payload.invitation,
+                )?
+            } else {
+                None
+            };
+            schema::record_overdue_if_pending(tx, &obligation, &TimeBasis::Decision, at)?;
+            mark_accepted(
+                tx,
+                &payload.invitation,
+                &seat,
+                payload.answered_at,
+                attribution.generation,
+                &attribution.observation,
+            )?;
+            schema::clear_warning_condition_for_invitation(tx, payload.invitation.as_str(), at)?;
+            let seq = event_position(tx, m, &instance)?;
+            materialize_joined(
+                tx,
+                m,
+                &JoinedTransition {
+                    thread: &thread,
+                    seat: &seat,
+                    n: payload.n,
+                    at: payload.answered_at,
+                    join_event: false,
+                    seq,
+                    episode: Some(episode),
+                    direct_floor,
+                    settle: journaled,
+                },
+            )?;
+            let event = serde_json::json!({"action":"accept","seat":seat.as_str(),
+                "invitation":payload.invitation.as_str()})
+            .to_string();
+            schema::append_event_once_with_decision_seq(
+                tx,
+                EventInput {
+                    thread: &thread,
+                    key: &format!("accept:{}", payload.invitation.as_str()),
+                    kind: "info",
+                    payload_json: &event,
+                    decision_at: at,
+                    source_message: None,
+                    source_invitation: Some(&payload.invitation),
+                },
+                seq,
+            )?;
+        }
+        AnswerOutcome::Rejected => {
+            let reason = payload.reason.as_deref().unwrap_or_default();
+            schema::record_overdue_if_pending(tx, &obligation, &TimeBasis::Decision, at)?;
+            tx.execute(
+                "INSERT INTO invitation_rejections(invitation_id,reason,rejected_at,actor_seat_id,generation,observation) VALUES (?1,?2,?3,?4,?5,?6)",
+                params![
+                    payload.invitation.as_str(),
+                    reason,
+                    payload.answered_at,
+                    seat.as_str(),
+                    attribution.generation,
+                    attribution.observation
+                ],
+            )
+            .map_err(store_error)?;
+            schema::clear_warning_condition_for_invitation(tx, payload.invitation.as_str(), at)?;
+            // Only an invited voluntary marker is cleared; no join or leave interval is fabricated.
+            // Restore a prior left state only with its recorded closed interval and leave event.
+            let prior_left: Option<i64> = tx.query_row(
+                "SELECT m.decision_at FROM membership_intervals mi JOIN messages m ON m.thread_id=mi.thread_id AND m.decision_seq=mi.left_seq WHERE mi.thread_id=?1 AND mi.seat_id=?2 AND mi.left_seq IS NOT NULL AND json_extract(m.event_json,'$.action')='leave' AND json_extract(m.event_json,'$.seat')=?2 ORDER BY mi.episode DESC LIMIT 1",
+                params![thread.as_str(), seat.as_str()], |r| r.get(0),
+            ).optional().map_err(store_error)?;
+            tx.execute("UPDATE memberships SET voluntary_state=?1,left_at=?2 WHERE thread_id=?3 AND seat_id=?4 AND voluntary_state='invited' AND episode=(SELECT episode FROM invitations WHERE id=?5) AND NOT EXISTS(SELECT 1 FROM invitations i WHERE i.thread_id=?3 AND i.seat_id=?4 AND i.state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=i.id))",
+                params![if prior_left.is_some() { "left" } else { "absent" }, prior_left, thread.as_str(), seat.as_str(), payload.invitation.as_str()]).map_err(store_error)?;
+            let event = serde_json::json!({"action":"reject","seat":seat.as_str(),
+                "invitation":payload.invitation.as_str(),"reason":reason})
+            .to_string();
+            let (warning, inserted) = schema::append_attributed_event_once(
+                tx,
+                EventInput {
+                    thread: &thread,
+                    key: &format!("reject:{}", payload.invitation.as_str()),
+                    kind: "warn",
+                    payload_json: &event,
+                    decision_at: at,
+                    source_message: None,
+                    source_invitation: Some(&payload.invitation),
+                },
+                crate::protocol::service::EventAuthor::Native(seat.clone()),
+            )?;
+            if inserted {
+                schema::enqueue_invitation_rejection_notice(
+                    tx,
+                    warning.as_str(),
+                    thread.as_str(),
+                    seat.as_str(),
+                )?;
+            }
+        }
+    }
+    schema::bump_membership_revision(tx, &thread)?;
+    schema::bump_filter_revision(tx, &instance, "directory", "all")?;
+    bump_member_directory(tx, &instance, &seat)?;
+    schema::bump_filter_revision(tx, &instance, "inbox", seat.as_str())?;
+    Ok(())
 }

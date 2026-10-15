@@ -1577,9 +1577,14 @@ fn automatic_linked_terminal_reconciles_completed_child_without_reopening_or_rel
             legacy_source: Some("covered".into()),
         };
         for _ in 0..30 {
-            if !crate::store::archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt)
-                .unwrap()
-                .has_more
+            if !crate::store::archival::advance_with(
+                &db,
+                Some(&context),
+                "34750f98bd59fcfc946da45aaabe933b",
+                &rt,
+            )
+            .unwrap()
+            .has_more
             {
                 break;
             }

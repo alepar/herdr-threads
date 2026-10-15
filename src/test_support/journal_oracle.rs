@@ -186,6 +186,7 @@ pub const CONVERTED_TABLES: &[TableSpec] = &[
             "deadline_at",
             "confirmation",
             "inviter_seat_id AS inviter",
+            "inviter_kind",
             "invitee_n",
             "origin_node",
             "accepted_at",

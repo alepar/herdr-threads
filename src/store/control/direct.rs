@@ -1,13 +1,20 @@
 //! Direct-pair channels.
 
-use super::{bump_member_directory, cooperative_payload_hash, decide_accountable, validate_actor};
+use super::{
+    Transition, author_invitation, author_membership, cooperative_payload_hash, decide_accountable,
+    validate_actor,
+};
 use crate::protocol::authority::{MutationPermit, ObligationRef};
-use crate::protocol::ids::{InvitationId, SeatId, ThreadId, prefix};
+use crate::protocol::ids::{InvitationId, SeatId, ThreadId, direct_thread_id, prefix};
 use crate::protocol::results::{ApiError, CommandResult, ErrorCode};
 use crate::protocol::time::{CallBudget, UtcMillis};
 use crate::store::connection::{DecisionInstant, StoreContext, api_error, store_error};
-use crate::store::delivery_tail::DeliveryTail;
-use crate::store::schema::{self, EventInput};
+use crate::store::materialize::{FactRoute, local_only};
+use crate::store::schema;
+use crate::sync::facts::invitation::InvitationCreatedPayload;
+use crate::sync::facts::membership::MembershipPayload;
+use crate::sync::facts::payload::{Confirmation, InviterKind};
+use crate::sync::facts::thread::{ThreadDirect, ThreadDirectPayload};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 /// The registry alone identifies an automatic channel. Reject inconsistent
@@ -215,6 +222,7 @@ pub fn ensure_direct_thread(
             )?;
             let (thread, created) = resolve_direct_pair(
                 tx,
+                context,
                 decision,
                 &command.claim,
                 &command.recipient,
@@ -234,8 +242,9 @@ pub fn ensure_direct_thread(
 
 /// One resolver for ordinary Ensure and future attached handoff children. The
 /// caller owns the accountable transaction and must decide A2 before calling.
-pub(crate) fn resolve_direct_pair(
+pub fn resolve_direct_pair(
     tx: &Transaction<'_>,
+    context: &StoreContext,
     decision: DecisionInstant,
     claim: &crate::protocol::authority::CallerClaim,
     recipient: &SeatId,
@@ -256,16 +265,18 @@ pub(crate) fn resolve_direct_pair(
     } else {
         (recipient, caller)
     };
-    let existing: Option<String> = tx
+    // The pair's thread ID is a pure function of its two seats, so the lookup
+    // is by thread ID and two nodes that open the same pair name one thread.
+    let thread =
+        direct_thread_id(a, b).map_err(|e| api_error(ErrorCode::InvalidRequest, e.to_string()))?;
+    let existing: bool = tx
         .query_row(
-            "SELECT thread_id FROM direct_threads WHERE instance_id=?1 AND seat_a=?2 AND seat_b=?3",
-            params![instance, a.as_str(), b.as_str()],
+            "SELECT EXISTS(SELECT 1 FROM threads WHERE id=?1 AND instance_id=?2)",
+            params![thread.as_str(), instance],
             |r| r.get(0),
         )
-        .optional()
         .map_err(store_error)?;
-    if let Some(id) = existing {
-        let thread = ThreadId::new(id);
+    if existing {
         direct_pair(tx, &thread)?;
         require_pair_lifecycle(tx, &thread, caller, recipient)?;
         return Ok((thread, false));
@@ -285,10 +296,10 @@ pub(crate) fn resolve_direct_pair(
         ));
     }
     let confirmation = creation_policy.map(|p| match p.confirmation {
-        crate::protocol::commands::InvitationConfirmation::Lazy => "lazy",
-        crate::protocol::commands::InvitationConfirmation::RequireAck => "require_ack",
+        crate::protocol::commands::InvitationConfirmation::Lazy => Confirmation::Lazy,
+        crate::protocol::commands::InvitationConfirmation::RequireAck => Confirmation::RequireAck,
     });
-    let timed = confirmation != Some("lazy");
+    let timed = confirmation != Some(Confirmation::Lazy);
     let duration = i64::try_from(
         creation_policy
             .and_then(|p| p.deadline_millis)
@@ -303,84 +314,71 @@ pub(crate) fn resolve_direct_pair(
         ));
     }
     let deadline = schema::checked_deadline(decision.utc, duration)?;
-    let thread = ThreadId::new(crate::store::public_ids::fresh(
+    // Three facts, in this order: the pair's thread, the caller's membership
+    // (the creating join: its event is the thread's `create:` event) and the
+    // invitation of the recipient. A crossed create on another node authors the
+    // same `d...` thread; each side's invitation then settles `already_joined`.
+    let direct = ThreadDirectPayload {
+        thread: thread.clone(),
+        seat_lo: a.clone(),
+        seat_hi: b.clone(),
+        creator: Some(caller.clone()),
+    };
+    if context.journal_open() {
+        FactRoute::Journal.emit::<ThreadDirect>(
+            tx,
+            context,
+            decision,
+            &direct,
+            None,
+            |_, _, _| {
+                Err(api_error(
+                    ErrorCode::Unsupported,
+                    "thread.direct is journaled",
+                ))
+            },
+        )?;
+    } else {
+        // Only a store whose journal never opened (a fixture; the daemon opens
+        // it before serving) gets here: the same materializer, written locally.
+        let input = local_only(tx, decision)?;
+        super::materialize_thread_direct(tx, &input, &direct)?;
+    }
+    author_membership(
         tx,
-        prefix::THREAD,
-        &[("threads", "id", prefix::THREAD)],
-    )?);
-    let label = format!("1:1 {} {}", a.as_str(), b.as_str());
-    let joined_seq = schema::next_decision_seq(tx, instance)?;
-    tx.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES(?1,?2,?3,?3,?4,?4,1)",params![thread.as_str(),instance,label,decision.utc.0]).map_err(store_error)?;
-    tx.execute("INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at,home_transition,last_joined_n) VALUES(?1,?2,'joined','joined',?3,1,1)",params![thread.as_str(),caller.as_str(),decision.utc.0]).map_err(store_error)?;
-    crate::store::read_cursors::init_for_join(tx, caller, &thread)?;
-    tx.execute(
-        "INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES(?1,?2,1,?3)",
-        params![thread.as_str(), caller.as_str(), joined_seq as i64],
-    )
-    .map_err(store_error)?;
-    let payload =
-        serde_json::json!({"action":"create_thread","goal":label,"actor_seat":caller.as_str()})
-            .to_string();
-    schema::append_event_once_with_decision_seq(
-        tx,
-        EventInput {
-            thread: &thread,
-            key: &format!("create:{}", thread.as_str()),
-            kind: "info",
-            payload_json: &payload,
-            decision_at: decision.utc,
-            source_message: None,
-            source_invitation: None,
+        context,
+        decision,
+        Transition::Joined,
+        &MembershipPayload {
+            thread: thread.clone(),
+            seat: caller.clone(),
+            n: 1,
+            at: decision.utc.0,
         },
-        joined_seq,
     )?;
     let invitation = InvitationId::new(crate::store::public_ids::fresh(
         tx,
         prefix::INVITATION,
         &[("invitations", "id", prefix::INVITATION)],
     )?);
-    let invited_seq = schema::next_decision_seq(tx, instance)?;
-    tx.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES(?1,?2,1,'invited','invited')",params![thread.as_str(),recipient.as_str()]).map_err(store_error)?;
-    tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id,origin_node,invitee_n) VALUES(?1,?2,?3,1,'pending',?4,?5,?6,?7,?8,?9,(SELECT id FROM local_node),0)",params![invitation.as_str(),thread.as_str(),recipient.as_str(),decision.utc.0,invited_seq as i64,duration,deadline.0,confirmation,caller.as_str()]).map_err(store_error)?;
-    let mut payload = serde_json::json!({"action":"invite","actor_seat":caller.as_str(),"seat":recipient.as_str(),"invitation":invitation.as_str()});
-    if timed {
-        payload["deadline_at"] = serde_json::json!(deadline.0);
-    }
-    if let Some(mode) = confirmation {
-        payload["confirmation"] = serde_json::json!(mode);
-    }
-    let payload = payload.to_string();
-    schema::append_event_once(
+    author_invitation(
         tx,
-        EventInput {
-            thread: &thread,
-            key: &format!("invite:{}", invitation.as_str()),
-            kind: "info",
-            payload_json: &payload,
-            decision_at: decision.utc,
-            source_message: None,
-            source_invitation: Some(&invitation),
+        context,
+        decision,
+        &InvitationCreatedPayload {
+            invitation,
+            thread: thread.clone(),
+            inviter: Some(caller.clone()),
+            inviter_kind: InviterKind::Seat,
+            invitee: recipient.clone(),
+            invitee_n: 0,
+            created_at: decision.utc.0,
+            duration_ms: duration,
+            deadline_at: timed.then_some(deadline.0),
+            confirmation,
+            actor_label: None,
         },
     )?;
-    tx.execute(
-        "INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id,created_hlc,created_node) VALUES(?1,?2,?3,?4,?5,?1)",
-        params![
-            instance,
-            a.as_str(),
-            b.as_str(),
-            thread.as_str(),
-            crate::sync::hlc::HlcStamp::from_parts(decision.utc.0.max(0) as u64, 0).as_u64() as i64
-        ],
-    )
-    .map_err(store_error)?;
-    for seat in [caller, recipient] {
-        // Preserve each ordinary membership transition's revision/projection bump.
-        schema::bump_membership_revision(tx, &thread)?;
-        schema::bump_filter_revision(tx, instance, "directory", "all")?;
-        bump_member_directory(tx, instance, seat)?;
-        schema::bump_filter_revision(tx, instance, "inbox", seat.as_str())?;
-    }
-    DeliveryTail::invitation(tx, recipient, timed)?;
     Ok((thread, true))
 }
 

@@ -3682,6 +3682,91 @@ fn a_lazy_invitation_reaches_hook_pull_without_attention_or_acceptance() {
     assert!(attention.attention.latest_warning_seq.is_none());
 }
 
+// Kills: a presentation read that assumes the inviter is a local seat with a
+// binding or a pane. An invitation replicated from another node names a remote
+// inviter (`state='remote'`, no host, no binding); the invitee's pull renders
+// the same context (topic, goal, accept command) as for a local inviter.
+#[test]
+fn an_invitation_from_a_remote_inviter_reaches_hook_pull() {
+    use crate::protocol::commands::{CreateThread, InvitationConfirmation, Invite};
+    let f = fixture(0);
+    let context = pull_seat(&f);
+    let DeliveryPullReply::Unchanged {
+        attention_version: quiet_version,
+    } = pull(&f, &context, None)
+    else {
+        panic!("quiet pull must be unchanged")
+    };
+    let inviter = check_in(
+        &f,
+        fixture_claim(&f, "x", "px", fourth(), "inviter"),
+        "ci-inviter",
+    );
+    let CommandResult::ThreadCreated(thread) = f
+        .service
+        .handle(
+            Command::CreateThread(CreateThread {
+                name: None,
+                topic: "remote inviter topic".into(),
+                goal: "review the remote handoff".into(),
+                operation: OperationId::new("create-remote-invite"),
+                claim: inviter.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("thread not created")
+    };
+    f.service
+        .handle(
+            Command::Invite(Invite {
+                confirmation: Some(InvitationConfirmation::Lazy),
+                thread: thread.clone(),
+                seat: SeatId::new("s"),
+                deadline_millis: None,
+                operation: OperationId::new("remote-invite"),
+                claim: inviter,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    // The inviter is another node's seat: a remote row with no host, target or
+    // binding. (The immutability guard is dropped to re-point the stored inviter.)
+    f.db.execute(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published) \
+         VALUES ('rinviter','34750f98bd59fcfc946da45aaabe933b','remote','native',0,0,?1,0,'agent',1)",
+        [&"ab".repeat(16)],
+    )
+    .unwrap();
+    f.db.execute_batch("DROP TRIGGER invitations_confirmation_immutable")
+        .unwrap();
+    assert_eq!(
+        f.db.execute(
+            "UPDATE invitations SET inviter_seat_id='rinviter' WHERE thread_id=?1 AND seat_id='s'",
+            [thread.as_str()],
+        )
+        .unwrap(),
+        1
+    );
+    let first = page(pull(&f, &context, Some(quiet_version)));
+    assert!(
+        first.text.contains("remote inviter topic"),
+        "{}",
+        first.text
+    );
+    assert!(
+        first.text.contains("review the remote handoff"),
+        "{}",
+        first.text
+    );
+    assert!(first.text.contains(thread.as_str()), "{}", first.text);
+    assert!(first.text.contains("accept"), "{}", first.text);
+    assert!(first.truncated.is_empty());
+}
+
 // Kills: caching an offered informational frontier as if it settled the
 // original sender's independent open-condition attention.
 #[test]

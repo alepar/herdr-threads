@@ -302,9 +302,24 @@ impl Q4WriterReaders {
 }
 
 impl Q4WriterReaders {
+    /// A second context on the same database, as a restarted daemon has: the
+    /// journal is reopened on it, because the invitation writers author facts.
     fn context(&self) -> StoreContext {
-        StoreContext::new(self.path.clone(), Arc::new(FixedClock(AtomicI64::new(100))))
-            .with_test_host()
+        let context =
+            StoreContext::new(self.path.clone(), Arc::new(FixedClock(AtomicI64::new(100))))
+                .with_test_host();
+        let mut conn = context.open_writer().unwrap();
+        crate::store::journal::open(
+            &context,
+            &mut conn,
+            Arc::new(crate::node::NodeIdentity::from_seed(
+                crate::test_support::TEST_NODE_SEED,
+            )),
+            "test",
+            crate::sync::facts::FactRegistry::builtins(),
+        )
+        .unwrap();
+        context
     }
     fn service_operation(&self, operation: ServiceOperation) -> Result<ServiceResult, ApiError> {
         let author = ServiceAuthorId::new(format!(

@@ -11,7 +11,9 @@ use rusqlite::{Connection, Transaction};
 use serde::{Deserialize, Serialize};
 
 use herdr_threads::node::{NodeIdentity, NodeUuid, tag_for};
-use herdr_threads::protocol::ids::{NativeSessionId, SeatId, ThreadId, generate_public_id, prefix};
+use herdr_threads::protocol::ids::{
+    InvitationId, NativeSessionId, SeatId, ThreadId, generate_public_id, prefix,
+};
 use herdr_threads::protocol::results::{ApiError, ErrorCode};
 use herdr_threads::protocol::time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis};
 use herdr_threads::store::bindings::{
@@ -24,8 +26,9 @@ use herdr_threads::store::journal;
 use herdr_threads::store::materialize::{FactRoute, HELD_KINDS};
 use herdr_threads::store::{SqliteStore, StoreSettings, seats};
 use herdr_threads::sync::EntityKey;
+use herdr_threads::sync::facts::invitation::{InvitationAnswered, InvitationAnsweredPayload};
 use herdr_threads::sync::facts::membership::{MembershipJoined, MembershipLeft, MembershipPayload};
-use herdr_threads::sync::facts::payload::{ReferencedSeats, SeatKind};
+use herdr_threads::sync::facts::payload::{AnswerOutcome, ReferencedSeats, SeatKind};
 use herdr_threads::sync::facts::seat::{
     RetireReason, SeatCreated, SeatCreatedPayload, SeatRetired, SeatRetiredPayload,
 };
@@ -326,11 +329,10 @@ macro_rules! test_kind {
 }
 
 test_kind!(Settled, "receipt.settled");
-test_kind!(Answered, "invitation.answered");
 test_kind!(Free, "test.free");
 
 pub fn registry() -> &'static FactRegistry {
-    FactRegistry::builtins_plus(|b| b.with::<Settled>().with::<Answered>().with::<Free>())
+    FactRegistry::builtins_plus(|b| b.with::<Settled>().with::<Free>())
 }
 
 fn refs(seats: &[&SeatId]) -> Refs {
@@ -689,15 +691,42 @@ fn emit_membership<K: FactKind<Payload = MembershipPayload>>(
 /// Emits each held kind for `payload` on the journal route. The membership
 /// kinds are the real ones, in `thread` (which only the success cases need to
 /// exist).
-fn emit_held(node: &Node, thread: &ThreadId, payload: &Refs) -> Vec<Result<bool, ApiError>> {
+fn emit_held(
+    node: &Node,
+    thread: &ThreadId,
+    payload: &Refs,
+    answer: &InvitationAnsweredPayload,
+) -> Vec<Result<bool, ApiError>> {
     let seat = &payload.seats[0];
     vec![
         emit::<Settled>(node, FactRoute::Journal, payload),
         emit_membership::<MembershipJoined>(node, thread, seat, 1),
         emit_membership::<MembershipLeft>(node, thread, seat, 2),
-        emit::<Answered>(node, FactRoute::Journal, payload),
+        emit_answered(node, answer),
         emit_retired(node, seat),
     ]
+}
+
+/// Emits the real `invitation.answered` on the journal route; returns whether
+/// it authored an entry.
+fn emit_answered(node: &Node, answer: &InvitationAnsweredPayload) -> Result<bool, ApiError> {
+    node.run(|tx, d| {
+        FactRoute::Journal
+            .emit::<InvitationAnswered>(tx, node.ctx(), d, answer, None, |_, _, _| Ok(()))
+            .map(|authored| authored.is_some())
+    })
+}
+
+/// A rejection of an invitation that need not exist, by `invitee`.
+fn answer_of(invitation: &str, invitee: &SeatId) -> InvitationAnsweredPayload {
+    InvitationAnsweredPayload {
+        invitation: InvitationId::new(invitation),
+        invitee: invitee.clone(),
+        outcome: AnswerOutcome::Rejected,
+        reason: Some("no".into()),
+        answered_at: 1,
+        n: 0,
+    }
 }
 
 #[test]
@@ -722,7 +751,13 @@ fn held_kinds_refused_while_hold_active() {
     node.add_local_seat(&local);
     hold_on(&node);
     let before = node.journal().len();
-    for result in emit_held(&node, &ThreadId::new("tNoThread001"), &refs(&[&local])) {
+    let answer = answer_of("iNoInvite001", &local);
+    for result in emit_held(
+        &node,
+        &ThreadId::new("tNoThread001"),
+        &refs(&[&local]),
+        &answer,
+    ) {
         let error = result.unwrap_err();
         assert_eq!(error.code, ErrorCode::ServiceBusy, "retryable");
         assert_eq!(error.detail, "own history catching up");
@@ -745,14 +780,19 @@ fn remote_seat_seat_created_non_held_and_local_only_unaffected() {
     // membership kinds and `seat.retired` fail only on the parked dependency
     // (no fact created the thread or the fixture seat), not "own history
     // catching up".
-    let mut results = emit_held(&node, &ThreadId::new("tNoThread001"), &refs(&[&remote]));
+    let answer = answer_of("iNoInvite001", &remote);
+    let mut results = emit_held(
+        &node,
+        &ThreadId::new("tNoThread001"),
+        &refs(&[&remote]),
+        &answer,
+    );
     let retired = results.pop().unwrap().unwrap_err();
     assert_eq!(retired.code, ErrorCode::Conflict);
     assert!(retired.detail.contains("not applicable"), "{retired:?}");
     let [settled, joined, left, answered]: [_; 4] = results.try_into().unwrap();
     settled.unwrap();
-    answered.unwrap();
-    for parked in [joined, left] {
+    for parked in [joined, left, answered] {
         let error = parked.unwrap_err();
         assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
         assert!(error.detail.contains("not applicable"), "{error:?}");
@@ -795,7 +835,16 @@ fn held_authoring_succeeds_after_clear_or_cap() {
     assert!(emit::<Settled>(&node, FactRoute::Journal, &refs(&[&local])).is_err());
     hold_off(&node);
     let thread = node.create_thread(&local, "held", None).unwrap();
-    for result in emit_held(&node, &thread, &refs(&[&local])) {
+    // A real invitation of a second local seat, so the answer's dependency holds.
+    let guest = node.mint_seat(0);
+    node.add_local_seat(&guest);
+    let invitation = node.invite_fact(&thread, &local, &guest);
+    for result in emit_held(
+        &node,
+        &thread,
+        &refs(&[&local]),
+        &answer_of(invitation.as_str(), &guest),
+    ) {
         result.unwrap();
     }
     // The flag stays set, the 5-minute cap passes.
