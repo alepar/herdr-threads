@@ -21,6 +21,7 @@ pub mod delivery;
 pub mod harness;
 pub mod host;
 pub mod identity;
+pub mod node;
 pub mod notification;
 pub mod ports;
 pub mod protocol;
