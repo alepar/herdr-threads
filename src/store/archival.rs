@@ -2,7 +2,7 @@
 //! by the worker outside the writer turn; this module performs canonical checks.
 use super::{
     bindings,
-    connection::{api_error, store_error},
+    connection::{DecisionInstant, StoreContext, api_error, store_error},
     effective, schema,
 };
 use crate::ports::HostId;
@@ -12,6 +12,8 @@ use crate::protocol::{
     service::EventAuthor,
 };
 use crate::protocol::{results::ApiError, time::UtcMillis};
+use crate::sync::facts::payload::RegisterField;
+use crate::sync::facts::thread::ThreadRegisterPayload;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 /// Private certificates associate parser evidence with canonical bindings only;
@@ -117,23 +119,40 @@ fn instance_initialized(db: &Connection, instance: &str) -> Result<bool, ApiErro
 /// Each call owns one bounded deciding transaction. The caller must already
 /// hold its fair background writer turn and install the store VM budget.
 pub fn advance(db: &Connection, instance: &str, rt: &Runtime) -> Result<Progress, ApiError> {
+    advance_with(db, None, instance, rt)
+}
+
+/// [`advance`] with the store context the archive decision of a journaled
+/// thread is authored through; a bare connection archives only a node-local
+/// thread.
+pub fn advance_with(
+    db: &Connection,
+    ctx: Option<&StoreContext>,
+    instance: &str,
+    rt: &Runtime,
+) -> Result<Progress, ApiError> {
     let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate).map_err(store_error)?;
-    let result = advance_in(&tx, instance, rt)?;
+    let result = advance_in(&tx, instance, rt, ctx)?;
     tx.commit().map_err(store_error)?;
     Ok(result)
 }
+/// `ctx` is the store context the archive decision is authored through
+/// (`thread.register`); `None` for a bare connection, which can archive only a
+/// node-local thread.
 pub(crate) fn advance_in(
     tx: &Transaction<'_>,
     instance: &str,
     rt: &Runtime,
+    ctx: Option<&StoreContext>,
 ) -> Result<Progress, ApiError> {
-    advance_in_with_registry(tx, instance, rt, crate::harness::registry::builtins())
+    advance_in_with_registry(tx, instance, rt, crate::harness::registry::builtins(), ctx)
 }
 pub(crate) fn advance_in_with_registry(
     tx: &Transaction<'_>,
     instance: &str,
     rt: &Runtime,
     registry: &crate::harness::registry::Registry,
+    ctx: Option<&StoreContext>,
 ) -> Result<Progress, ApiError> {
     if rt.mono < 0 || rt.after_ms < 0 || rt.after_ms > i64::MAX - MAX_GAP_MS {
         return Err(api_error(
@@ -170,6 +189,7 @@ pub(crate) fn advance_in_with_registry(
             epoch,
             &mut progress.archived,
             registry,
+            ctx,
         )?;
         progress.has_more |= tx.query_row("SELECT EXISTS(SELECT 1 FROM channel_archival WHERE instance_id=?1 AND enabled=1 AND due_mono<=?2)",params![instance,rt.mono],|r|r.get::<_,bool>(0)).map_err(store_error)?;
     }
@@ -386,6 +406,7 @@ fn cheap_blocker(
  OR EXISTS(SELECT 1 FROM automatic_bootstrap_parents WHERE instance_id=?1 AND (thread_id=?2 OR thread_id IS NULL) AND state NOT IN ('completed','cancelled'))",params![instance,thread,now],|r|r.get(0)).map_err(store_error)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn advance_channel(
     tx: &Transaction<'_>,
     instance: &str,
@@ -394,6 +415,7 @@ fn advance_channel(
     epoch: i64,
     archived: &mut Vec<String>,
     registry: &crate::harness::registry::Registry,
+    ctx: Option<&StoreContext>,
 ) -> Result<usize, ApiError> {
     type ChannelColumns = (
         Option<i64>,
@@ -442,7 +464,6 @@ fn advance_channel(
                 defer(tx, thread, rt)?;
                 return Ok(1);
             }
-            tx.execute("UPDATE threads SET archived=1,updated_at=?2,directory_revision=directory_revision+1 WHERE id=?1 AND archived=0",params![thread,rt.utc.0]).map_err(store_error)?;
             let id = ThreadId::new(thread);
             let payload=serde_json::json!({"action":"automatic_archive","provenance":"daemon_lifecycle","reason":"quiet_and_no_protected_work","policy_version":1,"after_ms":rt.after_ms}).to_string();
             schema::append_attributed_event_once(
@@ -458,7 +479,25 @@ fn advance_channel(
                 },
                 EventAuthor::BuiltIn,
             )?;
-            schema::bump_filter_revision(tx, instance, "directory", "all")?;
+            // The decision replicates as an LWW register write, authored at
+            // the lane's decision instant; the materializer copies it to
+            // `threads` and bumps the directory.
+            let decision = DecisionInstant {
+                utc: rt.utc,
+                monotonic: crate::protocol::time::MonoInstant(
+                    u64::try_from(rt.mono).unwrap_or_default(),
+                ),
+            };
+            super::control::author_register(
+                tx,
+                ctx,
+                decision,
+                &ThreadRegisterPayload {
+                    thread: id.clone(),
+                    field: RegisterField::Archived,
+                    value: Some("1".to_owned()),
+                },
+            )?;
             archived.push(thread.into());
             return Ok(1);
         }
@@ -1312,7 +1351,7 @@ pub(crate) fn store_pass(
         {
             rt.legacy_source = None;
         }
-        let progress = advance_in(tx, &store.instance, &rt)?;
+        let progress = advance_in(tx, &store.instance, &rt, Some(&store.context))?;
         let expiry = if let Some(thread) = progress.archived.first() {
             tx.query_row(
                 "SELECT scan_expiry FROM channel_archival WHERE thread_id=?1",

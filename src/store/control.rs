@@ -42,9 +42,14 @@ pub use retirement::begin_retirement;
 pub(crate) use retirement::begin_retirement_authored;
 #[cfg(test)]
 pub(crate) use retirement::begin_retirement_fence;
+pub use thread::NewThread;
 pub use thread::archive;
+pub(crate) use thread::author_register;
 pub use thread::create_thread;
 pub use thread::create_thread_in_namespace;
+pub use thread::materialize_register;
+pub use thread::materialize_thread_created;
+pub use thread::materialize_thread_direct;
 pub use thread::reopen;
 pub use thread::set_thread_name;
 pub use thread::set_topic;

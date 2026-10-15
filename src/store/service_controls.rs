@@ -108,7 +108,16 @@ pub fn operate(
     }
     let at = context.clock().utc_now();
     let result = match &operation {
-        ServiceOperation::EnsureThread(v) => ensure_thread(tx, instance, &author, v, at)?,
+        ServiceOperation::EnsureThread(v) => ensure_thread(
+            tx,
+            instance,
+            &author,
+            v,
+            super::connection::DecisionInstant {
+                utc: at,
+                monotonic: context.clock().monotonic_now(),
+            },
+        )?,
         ServiceOperation::Invite(v) => {
             invite(tx, instance, &author, v, at, installation_default_ms)?
         }
@@ -249,7 +258,7 @@ fn ensure_thread(
     instance: &str,
     author: &crate::protocol::ids::ServiceAuthorId,
     v: &crate::protocol::service::EnsureManagedThread,
-    at: UtcMillis,
+    decision: super::connection::DecisionInstant,
 ) -> Result<ServiceResult, ApiError> {
     super::control::guard_pair_service_owner(tx, &v.thread)?;
     if v.topic.is_empty() || v.topic.len() > 1024 || v.goal.is_empty() || v.goal.len() > 1024 {
@@ -272,9 +281,22 @@ fn ensure_thread(
             tx, &v.thread, author,
         )?));
     }
-    tx.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,managed_owner_author_id,journaled) VALUES (?1,?2,?3,?4,?5,?5,?6,0)",
-        params![v.thread.as_str(),instance,v.topic,v.goal,at.0,author.as_str()]).map_err(store_error)?;
-    schema::bump_filter_revision(tx, instance, "directory", "all")?;
+    // A managed thread is node-local: the creation materializer through the
+    // local-only route, `journaled = 0`, no registers and no journal entry.
+    let input = super::materialize::local_only(tx, decision)?;
+    super::control::materialize_thread_created(
+        tx,
+        &input,
+        &super::control::NewThread {
+            thread: &v.thread,
+            topic: &v.topic,
+            goal: &v.goal,
+            name: None,
+            creator: None,
+            managed_owner: Some(author),
+            journaled: false,
+        },
+    )?;
     Ok(ServiceResult::ThreadEnsured(managed_thread(
         tx, &v.thread, author,
     )?))

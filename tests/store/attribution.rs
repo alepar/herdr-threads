@@ -43,6 +43,9 @@ fn input(local_origin: bool, provenance: &'static str) -> MaterializeInput<'stat
         local_origin,
         own_history: local_origin,
         provenance,
+        origin_hlc: crate::sync::hlc::HlcStamp::from_parts(1, 0),
+        origin_counter: 1,
+        ingest_seq: Some(1),
         suppress: &|_, _| Ok(false),
         scope: Default::default(),
     }

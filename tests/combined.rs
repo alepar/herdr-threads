@@ -23,8 +23,12 @@ mod channel_archival;
 mod contracts;
 #[path = "store/fact_convergence_seat.rs"]
 mod fact_convergence_seat;
+#[path = "store/fact_convergence_thread.rs"]
+mod fact_convergence_thread;
 #[path = "sync/facts_seat.rs"]
 mod facts_seat;
+#[path = "sync/facts_thread.rs"]
+mod facts_thread;
 #[path = "golden_surfaces.rs"]
 mod golden_surfaces;
 #[path = "handoff_agy.rs"]

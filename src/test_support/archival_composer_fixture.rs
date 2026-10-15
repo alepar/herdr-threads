@@ -147,7 +147,7 @@ pub fn advance(
 ) -> Result<Progress, ApiError> {
     let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)
         .expect("fixture transaction");
-    let out = archival::advance_in_with_registry(&tx, instance, rt, r)?;
+    let out = archival::advance_in_with_registry(&tx, instance, rt, r, None)?;
     tx.commit().expect("fixture commit");
     Ok(out)
 }

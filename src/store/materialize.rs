@@ -65,6 +65,15 @@ pub struct MaterializeInput<'a> {
     /// `local_journal` for it when nothing was staged.
     pub own_history: bool,
     pub provenance: &'a str,
+    /// The entry's envelope HLC: the stamp a register write carries. For a
+    /// [`local_only`] input the decision instant at counter 0.
+    pub origin_hlc: HlcStamp,
+    /// The entry's counter in its origin log (`0` for a [`local_only`] input,
+    /// which has no journal row).
+    pub origin_counter: u64,
+    /// The `journal` row that carried the entry (`thread_registers`
+    /// `src_ingest_seq`); `None` for a [`local_only`] input.
+    pub ingest_seq: Option<i64>,
     /// Catch-up suppression for a settlement key (`ApplyContext::delivery_suppressed`).
     pub suppress: &'a SuppressFn<'a>,
     /// Test-support only: held for the input's lifetime by [`local_only`].
@@ -105,6 +114,9 @@ pub fn local_only(
         // recorded as `local_journal` too.
         own_history: true,
         provenance: "local",
+        origin_hlc: HlcStamp::from_parts(u64::try_from(decision.utc.0).unwrap_or(0), 0),
+        origin_counter: 0,
+        ingest_seq: None,
         suppress: &never_suppress,
         #[cfg(feature = "test-support")]
         scope: Some(crate::test_support::write_guard::enter_replicated_write_scope()),
