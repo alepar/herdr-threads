@@ -580,9 +580,12 @@ fn retired_invitee_settles_recipient_retired_at_apply() {
     let row = node.invitation(&payload.invitation).unwrap();
     assert_eq!(row.state, "recipient_retired");
     assert_eq!(row.retired_at, Some(5), "the seat's own retirement time");
-    assert!(
-        node.membership(&thread, &guest).is_none(),
-        "no membership row"
+    // The terminal row the retirement job leaves on a node that applied the
+    // invitation first (order permutation, fact_order::invite_vs_seat_retired).
+    assert_eq!(
+        node.membership(&thread, &guest),
+        Some(("retired".into(), 0, 0)),
+        "a retired membership row, no invited one"
     );
     assert!(node.invitation_events(&thread).is_empty());
     assert!(node.attention(&guest).is_none());

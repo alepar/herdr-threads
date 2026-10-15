@@ -965,6 +965,18 @@ pub(crate) fn insert_invitation(
         ],
     )
     .map_err(store_error)?;
+    if state == "recipient_retired" && prior.is_none() {
+        // The terminal row the retirement job leaves for an invitee whose
+        // invitation applied first: either arrival order ends with the same
+        // `memberships` row (fact-kinds design section 3 audit; the order
+        // permutation suite).
+        tx.execute(
+            "INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state,retired_at) VALUES (?1,?2,?3,'retired','retired',?4)",
+            params![p.thread.as_str(), p.invitee.as_str(), episode, seat_retired_at],
+        )
+        .map_err(store_error)?;
+        schema::bump_membership_revision(tx, &p.thread)?;
+    }
     if state != "pending" {
         return Ok(Some(episode));
     }
