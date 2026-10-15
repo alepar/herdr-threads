@@ -837,6 +837,10 @@ struct ProbeState {
     sessions: Option<std::sync::Weak<HostSessions>>,
     /// The sweep period the daemon is composed with (default: production's).
     host_sweep_interval: Option<Duration>,
+    /// The `herdr` program and pass period discovery runs with (default: `herdr`
+    /// from the environment, every 60 s). Set, the process-table scan is off,
+    /// so a test sees only the targets its fake `herdr` names.
+    discovery: Option<(std::path::PathBuf, Duration)>,
     /// The store commits without fsync (see [`LaneProbe::relax_commit_durability`]).
     relaxed_durability: bool,
 }
@@ -939,6 +943,20 @@ impl LaneProbe {
     /// start attached within milliseconds. Call before the daemon starts.
     pub fn set_host_sweep_interval(&self, interval: Duration) {
         self.state().host_sweep_interval = Some(interval);
+    }
+    /// The program and period of the discovery worker (set by
+    /// [`LaneProbe::set_discovery`]).
+    fn discovery(&self) -> (Option<std::path::PathBuf>, Duration) {
+        match self.state().discovery.clone() {
+            Some((program, period)) => (Some(program), period),
+            None => (None, crate::sync::discovery::POLL_PERIOD),
+        }
+    }
+    /// Runs peer discovery with `herdr` at `program` every `period`, and without
+    /// the `herdr --remote` process scan (the machine's real clients are not the
+    /// test's). Call before the daemon starts.
+    pub fn set_discovery(&self, program: std::path::PathBuf, period: Duration) {
+        self.state().discovery = Some((program, period));
     }
     /// The session of the attached server `locator`, once the daemon attached it.
     fn session_of(&self, locator: &crate::protocol::ids::HostLocator) -> Option<Arc<HostSession>> {
@@ -1247,6 +1265,9 @@ impl LaneProbe {
     fn host_sweep_interval(&self) -> Duration {
         crate::service::host_sessions::DEFAULT_SWEEP_INTERVAL
     }
+    fn discovery(&self) -> (Option<std::path::PathBuf>, Duration) {
+        (None, crate::sync::discovery::POLL_PERIOD)
+    }
     fn lane_log(&self, clock: Arc<dyn Clock>) -> crate::daemon::logs::RateLimitedLaneLog {
         crate::daemon::logs::RateLimitedLaneLog::to_stderr(clock)
     }
@@ -1443,6 +1464,8 @@ struct ComposedSessions {
 struct ComposedSync {
     handle: crate::sync::coordinator::SyncHandle,
     join: tokio::task::JoinHandle<()>,
+    /// Peer discovery (ends on the daemon's stop token, before the coordinator).
+    discovery: tokio::task::JoinHandle<()>,
 }
 
 /// The incarnations repair thread (ht-5fr.6.13) and the token that ends it.
@@ -1452,6 +1475,9 @@ struct ComposedIncarnations {
     stop: Cancellation,
     join: std::thread::JoinHandle<()>,
 }
+
+/// How long shutdown waits for the discovery worker to notice the stop.
+const DISCOVERY_STOP_BOUND: Duration = Duration::from_secs(2);
 
 /// How long shutdown waits for the coordinator to close its links.
 const SYNC_STOP_BOUND: Duration = Duration::from_secs(3);
@@ -1715,6 +1741,7 @@ where
             let apply_identity = Arc::clone(&identity);
             let sync_identity = Arc::clone(&identity);
             let sync_store = sqlite.clone();
+            let discovery_store = sqlite.clone();
             let apply_node_json = identity_paths.node_json_path.clone();
             let store: Arc<dyn StorePort> = sqlite;
             // The manifest policy, logged after election (stderr is the daemon
@@ -2061,11 +2088,49 @@ where
                     })
                     .map_err(|error| io::Error::other(format!("idle exit monitor: {error}")))?;
             }
+            // Peer discovery (spec §11): after the coordinator, so a pass that
+            // adds a target can ask its Dialer to reload.
+            let (discovery_program, discovery_period) = factory_probe.discovery();
+            let scan_clients = discovery_program.is_none();
+            let discovery_join = crate::sync::discovery::DiscoveryWorker::spawn(
+                crate::sync::discovery::DiscoveryDeps {
+                    enabled: config.sync_discover(),
+                    host_attached: {
+                        let sessions = Arc::clone(&host_sessions);
+                        Arc::new(move || sessions.any_reachable())
+                    },
+                    machines: Arc::new(match discovery_program {
+                        Some(program) => crate::sync::discovery::HerdrCli::new(program),
+                        None => crate::sync::discovery::HerdrCli::from_env(),
+                    }),
+                    remote_clients: Arc::new(move || {
+                        if scan_clients {
+                            crate::sync::discovery::scan_remote_clients()
+                        } else {
+                            Vec::new()
+                        }
+                    }),
+                    store: discovery_store,
+                    reload: {
+                        let handle = sync_handle.clone();
+                        Arc::new(move || handle.reload_targets())
+                    },
+                    clock: Arc::clone(&factory_clock),
+                    log: {
+                        let log = Arc::clone(&rate_limited_log);
+                        Arc::new(move |line: &str| log.write_line(line))
+                    },
+                    status: Arc::default(),
+                    period: discovery_period,
+                    cancel: factory_stop.clone(),
+                },
+            );
             *factory_sync_slot
                 .lock()
                 .map_err(|_| io::Error::other("sync slot poisoned"))? = Some(ComposedSync {
                 handle: sync_handle,
                 join: sync_join,
+                discovery: discovery_join,
             });
             // The harness version manifest: cache, embedded fallback and the
             // detached fetch policy. One log line per fetch outcome (at most
@@ -2325,7 +2390,25 @@ where
                 .lock()
                 .map_err(|_| io::Error::other("sync slot poisoned"))?
                 .take();
-            if let Some(ComposedSync { handle, mut join }) = sync {
+            if let Some(ComposedSync {
+                handle,
+                mut join,
+                mut discovery,
+            }) = sync
+            {
+                // Discovery holds a handle clone: it ends first (the cancel
+                // above wakes it), or the coordinator would keep a sender.
+                if tokio::time::timeout(DISCOVERY_STOP_BOUND, &mut discovery)
+                    .await
+                    .is_err()
+                {
+                    discovery.abort();
+                    let _ = discovery.await;
+                    eprintln!(
+                        "sync: discovery still running after {} s; aborted",
+                        DISCOVERY_STOP_BOUND.as_secs()
+                    );
+                }
                 drop(handle);
                 if tokio::time::timeout(SYNC_STOP_BOUND, &mut join).await.is_err() {
                     join.abort();

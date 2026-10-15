@@ -26,6 +26,7 @@ pub struct ServiceConfig {
     summary: SummarySettings,
     dial_template: Option<DialTemplate>,
     idle_exit_after: std::time::Duration,
+    sync_discover: bool,
 }
 
 impl Default for ServiceConfig {
@@ -39,6 +40,7 @@ impl Default for ServiceConfig {
             summary: SummarySettings::default(),
             dial_template: None,
             idle_exit_after: crate::daemon::idle_exit::IDLE_EXIT_AFTER,
+            sync_discover: true,
         }
     }
 }
@@ -85,6 +87,11 @@ impl ServiceConfig {
     pub fn with_idle_exit_after(mut self, after: std::time::Duration) -> Self {
         self.idle_exit_after = after;
         self
+    }
+
+    /// Whether `sync.discover` lets the daemon add dial targets (default on).
+    pub fn sync_discover(&self) -> bool {
+        self.sync_discover
     }
     pub fn archive_after_ms(&self) -> u64 {
         self.archive_after_ms
@@ -229,6 +236,7 @@ impl ServiceConfig {
         .and_then(|config| config.with_summary(settings.summary.clone()))
         .and_then(|config| config.with_archive_after(settings.archive_after_ms))
         .and_then(|config| config.with_dial_command(settings.sync.dial_command.as_deref()))
+        .map(|config| config.with_sync_discover(settings.sync.discover))
     }
 
     pub fn new(
@@ -249,7 +257,15 @@ impl ServiceConfig {
             summary: SummarySettings::default(),
             dial_template: None,
             idle_exit_after: crate::daemon::idle_exit::IDLE_EXIT_AFTER,
+            sync_discover: true,
         })
+    }
+
+    /// Set `sync.discover`.
+    #[must_use]
+    pub fn with_sync_discover(mut self, discover: bool) -> Self {
+        self.sync_discover = discover;
+        self
     }
 
     /// Validate `sync.dial_command` into a `DialTemplate`.

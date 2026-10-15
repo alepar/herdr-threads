@@ -44,6 +44,79 @@ pub(crate) fn parse_procargs2(buf: &[u8]) -> Vec<String> {
     argv
 }
 
+/// Every same-user process this reader can describe, one record per pid. The scan is racy by
+/// nature (a process may exit between the listing and its read); such a pid is simply absent.
+pub fn scan() -> Vec<ProcessRecord> {
+    list_pids().into_iter().filter_map(read_process).collect()
+}
+
+/// The `<target>` of every `herdr --remote <target>` (or `--remote=<target>`) client in `rows`,
+/// first-seen order, without duplicates. The executable is matched by the base name of its argv[0]
+/// (`herdr`), so a renamed or wrapped binary is not seen: discovery is best effort.
+pub fn remote_targets(rows: &[ProcessRecord]) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    for row in rows {
+        let Some(program) = row.argv.first() else {
+            continue;
+        };
+        if program.rsplit('/').next() != Some("herdr") {
+            continue;
+        }
+        let mut args = row.argv.iter().skip(1);
+        while let Some(arg) = args.next() {
+            let target = if arg == "--remote" {
+                args.next().map(String::as_str)
+            } else {
+                arg.strip_prefix("--remote=")
+            };
+            if let Some(target) = target.filter(|target| !target.is_empty())
+                && !found.iter().any(|known| known == target)
+            {
+                found.push(target.to_owned());
+            }
+        }
+    }
+    found
+}
+
+#[cfg(target_os = "macos")]
+fn list_pids() -> Vec<u32> {
+    // SAFETY: a null buffer asks only for the byte count of the pid list.
+    let bytes = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    let Ok(count) = usize::try_from(bytes) else {
+        return Vec::new();
+    };
+    // Room for processes that start between the two calls.
+    let mut pids = vec![0 as libc::pid_t; count + 64];
+    let size = (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
+    // SAFETY: `pids` is a writable buffer of `size` bytes; the kernel writes at most that many.
+    let written = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), size) };
+    let Ok(written) = usize::try_from(written) else {
+        return Vec::new();
+    };
+    pids.truncate(written);
+    pids.into_iter()
+        .filter_map(|pid| u32::try_from(pid).ok())
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn list_pids() -> Vec<u32> {
+    std::fs::read_dir("/proc")
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn list_pids() -> Vec<u32> {
+    Vec::new()
+}
+
 #[cfg(target_os = "macos")]
 fn read_process(pid: u32) -> Option<ProcessRecord> {
     if pid == 0 || pid > i32::MAX as u32 {
@@ -191,6 +264,43 @@ mod tests {
         assert!(parse_procargs2(&no_nul).is_empty());
         assert!(parse_procargs2(&[1, 0]).is_empty());
         assert!(parse_procargs2(&(-1i32).to_ne_bytes()).is_empty());
+    }
+
+    fn row(argv: &[&str]) -> ProcessRecord {
+        ProcessRecord {
+            pid: 1,
+            parent: None,
+            start: 1,
+            argv: argv.iter().map(|arg| (*arg).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn process_table_remote_targets() {
+        let rows = [
+            row(&["herdr", "--remote", "alice@box"]),
+            row(&[
+                "/home/u/.local/bin/herdr",
+                "--remote=other",
+                "--session",
+                "x",
+            ]),
+            // Duplicate, wrong program, no target, empty target, a flag that merely ends so.
+            row(&["herdr", "--remote", "alice@box"]),
+            row(&["ssh", "--remote", "not-herdr"]),
+            row(&["herdr", "--remote"]),
+            row(&["herdr", "--remote="]),
+            row(&["herdr", "--not-remote", "x"]),
+            row(&[]),
+        ];
+        assert_eq!(remote_targets(&rows), ["alice@box", "other"]);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn scan_lists_this_process() {
+        let pid = std::process::id();
+        assert!(scan().iter().any(|row| row.pid == pid));
     }
 
     #[test]

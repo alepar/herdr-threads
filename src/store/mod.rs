@@ -1469,6 +1469,35 @@ impl crate::sync::resync::ResyncStore for SqliteStore {
     }
 }
 
+impl crate::sync::discovery::DiscoveryStore for SqliteStore {
+    fn upsert_discovered(
+        &self,
+        found: &[(String, sync_dial_targets::DiscoverySource)],
+        budget: &CallBudget,
+    ) -> Result<crate::sync::discovery::UpsertTally, ApiError> {
+        let _turn = self
+            .sync_admission
+            .as_ref()
+            .map(|writer| writer.enter_background(budget, self.context.clock()))
+            .transpose()?;
+        let now = self.context.clock().utc_now().0;
+        let mut writer = self.writer(budget)?;
+        let tx = writer
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        let mut tally = crate::sync::discovery::UpsertTally::default();
+        for (dest, source) in found {
+            match sync_dial_targets::upsert_discovered(&tx, dest, *source, now)? {
+                sync_dial_targets::Discovered::Inserted(_) => tally.inserted += 1,
+                sync_dial_targets::Discovered::Present(_) => {}
+                sync_dial_targets::Discovered::Skipped => tally.skipped += 1,
+            }
+        }
+        tx.commit().map_err(store_error)?;
+        Ok(tally)
+    }
+}
+
 impl StorePort for SqliteStore {
     fn presentation_render_selection(
         &self,
