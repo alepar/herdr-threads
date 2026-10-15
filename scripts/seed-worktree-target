@@ -16,6 +16,8 @@
 # rebuilds once (incremental state is kept). Dependencies are reused as is.
 set -eu
 [ $# -ge 1 ] && [ $# -le 2 ] || { sed -n '6,8p' "$0" >&2; exit 2; }
+[ -d "$1" ] || { echo "not a Cargo target directory: $1" >&2; exit 2; }
+[ $# -lt 2 ] || [ -d "$2" ] || { echo "not a checkout: $2" >&2; exit 2; }
 src=$(CDPATH='' cd "$1" && pwd -P)
 dest_root=${2:-$(CDPATH='' cd "$(dirname "$0")/.." && pwd -P)}
 dest="$dest_root/target"
