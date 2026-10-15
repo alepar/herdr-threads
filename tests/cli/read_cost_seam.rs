@@ -85,6 +85,7 @@ fn participant(index: usize) -> Participant {
         active: false,
         bindings: Vec::new(),
         availability: None,
+        home_unreachable: None,
     }
 }
 

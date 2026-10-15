@@ -326,7 +326,7 @@ fn query_inner(
         Command::PickerDirectory(q) => {
             picker_directory::directory(&db, instance, q, store.clock().utc_now(), output)
         }
-        Command::Participants(q) => participants(&db, instance, q, output),
+        Command::Participants(q) => participants(&db, instance, q, store.clock().utc_now(), output),
         Command::ParticipantLocations(q) => participant_locations(&db, instance, q),
         Command::Seats(q) => seats(&db, instance, q, output),
         Command::Diagnostics(q) => diagnostics(&db, instance, q, store.clock().utc_now(), output),
@@ -335,7 +335,7 @@ fn query_inner(
         Command::DeliveryInspect(q) => {
             delivery_inspect(&db, instance, q, store.clock().utc_now(), output)
         }
-        Command::Thread(q) => thread_details(&db, instance, q, output),
+        Command::Thread(q) => thread_details(&db, instance, q, store.clock().utc_now(), output),
         Command::RetirementJobs(q) => retirement_jobs(&db, instance, q, output),
         Command::Warnings(q) => warnings(&db, instance, q, output),
         Command::ActiveWarnings(q) => {
@@ -772,6 +772,7 @@ fn thread_details(
     db: &QueryConnection,
     instance: &str,
     q: &ThreadQuery,
+    now: UtcMillis,
     output: &OutputSpec,
 ) -> Result<CommandResult, ApiError> {
     type Row = (String, String, i64, i64, i64);
@@ -805,7 +806,8 @@ fn thread_details(
         page: q.page.clone(),
         caller: q.caller.clone(),
     };
-    let CommandResult::Participants(participants) = participants(db, instance, &pq, output)? else {
+    let CommandResult::Participants(participants) = participants(db, instance, &pq, now, output)?
+    else {
         unreachable!()
     };
     let followup = contextual_argv(
@@ -1554,10 +1556,52 @@ fn presence(db: &QueryConnection, seat: &str) -> Result<(bool, Vec<BindingPresen
     Ok((active, bindings))
 }
 
+/// `Some` for the first row of a remote seat's unreachable home node; the
+/// reach rule itself stays in `sync_contacts::reach`.
+fn unreachable_home(
+    db: &QueryConnection,
+    seat: &str,
+    now: UtcMillis,
+    seen: &mut std::collections::HashSet<String>,
+) -> Result<Option<crate::protocol::results::UnreachableHome>, ApiError> {
+    let home: Option<String> = db
+        .query_row(
+            "SELECT home_node FROM seats WHERE id=?1 AND is_local=0",
+            [seat],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| db.map_error(e))?;
+    let Some(home) = home else {
+        return Ok(None);
+    };
+    let Ok(node) = home.parse::<crate::node::NodeUuid>() else {
+        return Ok(None);
+    };
+    if seen.contains(&home) {
+        return Ok(None);
+    }
+    let crate::store::sync_contacts::NodeReach::Unreachable { since } =
+        crate::store::sync_contacts::reach(db, &node, u64::try_from(now.0).unwrap_or(0))?
+    else {
+        return Ok(None);
+    };
+    let tag = crate::store::node_directory::get(db, node)
+        .map_err(|e| db.map_error(e))?
+        .map(|row| row.tag.to_string());
+    let tag = crate::store::sync_status::node_label(tag.as_deref(), &home);
+    seen.insert(home);
+    Ok(Some(crate::protocol::results::UnreachableHome {
+        tag,
+        since: since.map(|ms| UtcMillis(i64::try_from(ms).unwrap_or(i64::MAX))),
+    }))
+}
+
 fn participants(
     db: &QueryConnection,
     instance: &str,
     q: &ParticipantsQuery,
+    now: UtcMillis,
     output: &OutputSpec,
 ) -> Result<CommandResult, ApiError> {
     let scope:(i64,i64)=db.query_row("SELECT t.membership_revision,(SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=t.instance_id) FROM threads t WHERE t.id=?1 AND t.instance_id=?2",params![q.thread.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|db.map_error(e))?.ok_or_else(||api_error(ErrorCode::NotFound,"thread not found"))?;
@@ -1605,6 +1649,7 @@ fn participants(
     )?;
     let mut last = cursor.as_ref().map_or(0, |c| c.after_ordinal);
     let mut items = Vec::new();
+    let mut unreachable_seen = std::collections::HashSet::new();
     let mut examined = 0usize;
     let mut stop = StopReason::Complete;
     while examined < CANDIDATE_LIMIT {
@@ -1726,6 +1771,7 @@ fn participants(
             } else {
                 availability_label(db, &seat)?
             }),
+            home_unreachable: unreachable_home(db, &seat, now, &mut unreachable_seen)?,
         };
         let mut next_cursor = cursor_for(
             instance,

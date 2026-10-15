@@ -91,6 +91,7 @@ fn participants() -> Page<Participant> {
         active: false,
         bindings: Vec::new(),
         availability: None,
+        home_unreachable: None,
     }])
 }
 

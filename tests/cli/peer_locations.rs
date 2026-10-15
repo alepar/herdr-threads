@@ -81,6 +81,7 @@ fn result() -> CommandResult {
                 active: false,
                 bindings: Vec::new(),
                 availability: None,
+                home_unreachable: None,
             })
             .collect(),
         next_cursor: None,

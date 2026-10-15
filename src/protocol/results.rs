@@ -1622,6 +1622,18 @@ pub struct Participant {
     /// Availability slot, filled by the liveness worker; absent until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub availability: Option<String>,
+    /// Set on the first row of each unreachable home node in the page: the
+    /// reader prints one `node <tag> unreachable` line per node, not per seat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_unreachable: Option<UnreachableHome>,
+}
+/// A remote seat's home node that has had no sync contact for too long.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnreachableHome {
+    pub tag: String,
+    /// Last contact; `None` when none was ever recorded.
+    pub since: Option<UtcMillis>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

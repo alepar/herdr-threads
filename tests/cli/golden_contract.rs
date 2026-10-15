@@ -180,6 +180,7 @@ mod fixtures {
             active: seat == "seat-b",
             bindings: presence_bindings(seat),
             availability: None,
+            home_unreachable: None,
         }
     }
 

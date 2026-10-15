@@ -151,6 +151,7 @@ fn participants_are_a_list_marking_self() {
         active: false,
         bindings: Vec::new(),
         availability: None,
+        home_unreachable: None,
     };
     let out = human(&CommandResult::Participants(page(vec![
         participant("seat-A", MembershipStatus::Joined, true),

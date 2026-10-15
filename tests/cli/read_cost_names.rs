@@ -78,6 +78,7 @@ fn participant(seat: SeatId) -> Participant {
         active: false,
         bindings: Vec::new(),
         availability: None,
+        home_unreachable: None,
     }
 }
 
