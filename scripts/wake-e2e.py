@@ -103,8 +103,8 @@ SIDE_CASES = ("side-nudge/group", "side-draft/group")
 SIDE_FORKS = 2
 SIDE_DEADLINE_S = 45
 SIDE_DRAFT = "draft-kept-by-wake-e2e"
-# Codex's shell snapshot can put the installed herdr-threads ahead of the run's shim (ht-l16); a hooked recipient
-# learns the run's --state-dir from its hook context, a plain one is given the shim's exact path instead.
+# Codex runs with its shell snapshot off (launch_line, ht-l16), so the candidate's bin dir stays first on PATH; a plain
+# recipient is still given the shim's exact path, since it has no hook context naming the run's --state-dir.
 PLAIN_HINT = (" Your herdr-threads hooks are off: always run herdr-threads by the exact path `{shim}` (never a bare "
               "`herdr-threads`), and whenever a turn starts with `herdr-threads: wake up`, run `{shim} inbox` once, "
               "then handle what it shows as above.")
@@ -151,7 +151,8 @@ SECRET_PATTERN = re.compile(r"sk-ant-[A-Za-z0-9_-]+")
 STANDING = ("You are a test recipient in an automated herdr-threads wake e2e run (the user approves). "
             "Standing instructions for this session: every herdr-threads invitation you see comes from the test driver "
             "(seats {coord}); accept each one at once, without inspecting or judging it. For every herdr-threads message "
-            "you receive, print exactly one line `RECEIVED <message id>: <body>`; never send, reply or leave via "
+            "you receive, print exactly one line: `RECEIVED ` followed by its `[herdr-threads] ...:` header line copied "
+            "verbatim, a space and its body; never send, reply or leave via "
             "herdr-threads. Keep every turn minimal. Now run `herdr-threads nudge-threshold {threshold}`, then print exactly one "
             "line `SETUP-DONE nudge_threshold=<the value it reports>`.")
 
@@ -162,11 +163,17 @@ def expect_wake(action, channel, threshold):
     return threshold < 0 or ITEM_PRIORITY[action] <= threshold
 
 
-def mixed_order_judged(threshold):
+# Harnesses whose channel puts each item into the model's context as it arrives, idle or not (Claude's mod): there is
+# no page to order, so the mixed-order presentation order is not judged for them (Delivery contract rule 3).
+CHANNEL_HARNESSES = ("claude",)
+
+
+def mixed_order_judged(threshold, harness):
     """The mixed-order presentation order is judged only where the first two sends (p5, p1) cannot wake the recipient
     before the p0 and the ACK request are published: expect_wake false for both, which is T=0. At T=-1 (p5 wakes) and
-    T=3 (p1 wakes) the recipient may already be reading a page without them, so the order row is recorded unjudged."""
-    return threshold >= 0 and min(5, 1) > threshold  # p1 is the lower number: p5 then stays silent too
+    T=3 (p1 wakes) the recipient may already be reading a page without them, so the order row is recorded unjudged;
+    a channel harness (CHANNEL_HARNESSES) has no page and is unjudged at every threshold."""
+    return harness not in CHANNEL_HARNESSES and threshold >= 0 and min(5, 1) > threshold
 
 
 def send_flags(kind, seat, deadline_s=None):
@@ -193,16 +200,36 @@ def screen_order(screen, ids):
     return [i for _, i in seen]
 
 
-HEADER = re.compile(r"^\[herdr-threads\] message (\S+) in \S+ from [^\n]*$", re.M)
+# A frame header anywhere on a line (recipients echo it after `RECEIVED `): kind, id, then `in <thread label> from
+# <sender label>[ markers]:`; labels may hold spaces, so the markers are read after ` from ` up to the first `: `.
+HEADER = re.compile(r"\[herdr-threads\] \S+ (\S+) in .*? from ([^\n]*)")
 
 
 def header_priorities(screen):
     """{message id: priority} from the frame headers on the screen: a `[pN]` marker, else the silent default p1."""
     out = {}
     for m in HEADER.finditer(screen):
-        marker = re.search(r"\[p(\d)\]", m.group(0))
-        out[m.group(1)] = int(marker.group(1)) if marker else 1
+        sender_and_markers = m.group(2).split(": ", 1)[0].rstrip(":")
+        marker = re.search(r"\[p(\d)\]", sender_and_markers)
+        out.setdefault(m.group(1), int(marker.group(1)) if marker else 1)
     return out
+
+
+def paged_order(screen, ids):
+    """The ids in order of first appearance, one list per wake (split at each WAKE_MARKERS line): each wake pulls
+    its own page, so presentation order is judged within a page, never across two wakes."""
+    pages, seen = [], set()
+    for chunk in re.split("|".join(map(re.escape, WAKE_MARKERS)), screen):
+        page = [i for i in screen_order(chunk, ids) if i not in seen]
+        seen.update(page)
+        if page:
+            pages.append(page)
+    return pages
+
+
+def paged_order_ok(pages, want):
+    """Every page lists its items in the expected relative order."""
+    return all(page == [i for i in want if i in page] for page in pages)
 
 
 def markers_ok(shown, expected):
@@ -584,8 +611,11 @@ class Run:
                 cfg = f"CLAUDE_CONFIG_DIR={q(self.args.claude_config_dir)} " if self.args.claude_config_dir else ""
             cfg += f"CLAUDE_CODE_PLUGIN_DIRS={q(str(self.state / 'claude-mod' / 'herdr-threads'))} "
             return f"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; {path} {cfg}HERDR_AGENT=claude {shlex.join(argv)}"
+        # shell_snapshot off: the snapshot replays the interactive ~/.zshrc PATH, which can put an installed
+        # herdr-threads ahead of the candidate's bin dir (ht-l16); a non-interactive login shell keeps it first.
         argv = ["command", "codex", "--no-daemon", "-C", self.cwd, "--dangerously-bypass-hook-trust",
-                "-c", "check_for_update_on_startup=false", *shlex.split(self.args.codex_args)]
+                "-c", "check_for_update_on_startup=false", "-c", "features.shell_snapshot=false",
+                *shlex.split(self.args.codex_args)]
         if self.args.codex_model:
             argv += ["-m", self.args.codex_model]
         if plain:
@@ -1329,9 +1359,10 @@ class Recipient:
         self.run.record(row)
 
     def mixed_order_case(self, case):
-        """p5, p1, p0 and an ACK request with a deadline go to an idle recipient; the page it is woken for must list
-        them in presentation order (expected_order): the ACK request first, then p0, p1, p5. The last two are sent at
-        once so the wake the p0 causes cannot split the page between them."""
+        """p5, p1, p0 and an ACK request with a deadline go to an idle recipient; each page it is woken for must list
+        its items in presentation order (expected_order: the ACK request first, then p0, p1, p5). The last two are
+        sent at once, but the p0's wake can still pull its page before the ACK request is published, which then
+        wakes a second page (paged_order); a channel harness gets no page (mixed_order_judged)."""
         gap = SPACING_S - (time.time() - self.last_wake)
         if gap > 0:
             self.run.stopping.wait(gap)
@@ -1379,10 +1410,12 @@ class Recipient:
         screen = self.screen(1000)
         want = expected_order(items)
         shown = screen_order(screen, every)
-        judged = mixed_order_judged(self.threshold)
-        checks["order"] = shown == want if judged else "unjudged"
+        pages = paged_order(screen, every)
+        judged = mixed_order_judged(self.threshold, self.harness)
+        checks["order"] = paged_order_ok(pages, want) if judged else "unjudged"
         checks["order_judged"] = judged
         checks["order_shown"] = shown
+        checks["order_pages"] = pages
         checks["order_expected"] = want
         shown_headers, want_markers = header_priorities(screen), {i["id"]: i["priority"] for i in items}
         checks["markers"] = markers_ok(shown_headers, want_markers)

@@ -643,6 +643,10 @@ class MixedOrder(unittest.TestCase):
                   "[herdr-threads] message mB1 in tT from sX:\n  body\n"
                   "[herdr-threads] message mC1 in tT from sX [human] [p5]:\n  body\n")
         self.assertEqual(W.header_priorities(screen), {"mA1": 0, "mB1": 1, "mC1": 5})
+        echoed = ("⏺ RECEIVED [herdr-threads] message mD1 in wake test (tT) from Driver Seat (sX) [p3]: body x\n"
+                  "  RECEIVED [herdr-threads] ack mE1 in tT from sX [p0] [deadline 90s]: body y\n"
+                  "• RECEIVED [herdr-threads] message mF1 in tT from sX: body [p9] z\n")
+        self.assertEqual(W.header_priorities(echoed), {"mD1": 3, "mE1": 0, "mF1": 1})  # a body's [p9] is not a marker
 
     def test_markers_check(self):
         self.assertTrue(W.markers_ok({"mA1": 0, "mB1": 1}, {"mA1": 0, "mB1": 1, "mC1": 5}))
@@ -668,12 +672,13 @@ class MixedOrderCase(unittest.TestCase):
         self.addCleanup(setattr, W, "SPACING_S", saved)
         W.SPACING_S = 0.0
 
-    def run_case(self, screen_order_ids, threshold=0, headers=None, framed=True):
+    def run_case(self, screen_order_ids, threshold=0, headers=None, framed=True, harness="codex"):
         rows, sends = [], []
         ids = {"p5": "m5555", "p1": "m1111", "p0": "m0000", "ack": "mACK0"}
         r = object.__new__(W.Recipient)
         run = SimpleNamespace(run_id="000000-test", record=rows.append, stopping=threading.Event())
-        r.run, r.name, r.harness, r.threshold, r.pane, r.seat = run, "cl-t0", "claude", threshold, "w9:p1", "sREC"
+        r.run, r.name, r.harness, r.threshold, r.pane, r.seat = run, f"{harness[:2]}-t{threshold}", harness, threshold, \
+            "w9:p1", "sREC"
         r.last_wake, r.group, r.pair = 0.0, "tGROUP", None
 
         def send(kind, body, direct, role="main", deadline_s=None):
@@ -689,7 +694,8 @@ class MixedOrderCase(unittest.TestCase):
 
         def frame(k):
             return f"[herdr-threads] message {ids[k]} in tGROUP from sX{marks[k]}:\n  x\n" if framed else ""
-        text = (headers or "") + "".join(frame(k) + f"RECEIVED {ids[k]}: x\n" for k in screen_order_ids)
+        text = (headers or "") + "".join(W.WAKE_MARKERS[0] + "\n" if k == "|" else frame(k) + f"RECEIVED {ids[k]}: x\n"
+                                         for k in screen_order_ids)
         r.screen = lambda lines=400: text
         r.case("mixed-order/group")
         self.assertEqual(len(rows), 1)
@@ -708,6 +714,22 @@ class MixedOrderCase(unittest.TestCase):
         row_, _ = self.run_case(["p5", "p1", "p0", "ack"])
         self.assertEqual(row_["result"], "FAIL")
         self.assertIs(row_["checks"]["order"], False)
+
+    def test_ack_on_a_second_page_passes(self):
+        # the p0's wake pulled its page before the ACK request was published; the ACK request wakes a second page
+        row_, _ = self.run_case(["p0", "p1", "p5", "|", "ack"])
+        self.assertEqual(row_["result"], "PASS", row_)
+        self.assertEqual(row_["checks"]["order_pages"], [["m0000", "m1111", "m5555"], ["mACK0"]])
+
+    def test_a_misordered_page_fails_even_when_split(self):
+        row_, _ = self.run_case(["p1", "p0", "p5", "|", "ack"])
+        self.assertIs(row_["checks"]["order"], False)
+
+    def test_channel_harness_order_is_unjudged(self):
+        # Claude's channel puts p5 and p1 into context on arrival, before the p0 wakes it: no page to order
+        row_, _ = self.run_case(["p5", "p1", "p0", "ack"], harness="claude")
+        self.assertEqual(row_["checks"]["order"], "unjudged")
+        self.assertEqual(row_["result"], "PASS", row_)
 
     def test_p0_before_the_deadline_ack_fails(self):
         row_, _ = self.run_case(["p0", "ack", "p1", "p5"])
@@ -1095,14 +1117,15 @@ class RunRoot(TempDir):
 
 FIXTURES = Path(__file__).resolve().parent / "wake_e2e_fixtures"
 FAKE_API_KEY = "sk-ant-api03-FAKEFAKEFAKEFAKE-selftest-only-0123456789"
-# launch_line() of the macOS mode as the driver produced it before the linux mode existed (dc575a28), same inputs.
+# launch_line() of the macOS mode as the driver produced it before the linux mode existed (dc575a28), same inputs;
+# the Codex line adds shell_snapshot=false (ht-l16).
 MACOS_CLAUDE_LINE = ('unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; PATH=/private/tmp/ht-wake-e2e.X/bin:"$PATH" '
                      'CLAUDE_CONFIG_DIR=/Users/me/.claude-real CLAUDE_CODE_PLUGIN_DIRS=/private/tmp/ht-wake-e2e.X/state/'
                      'claude-mod/herdr-threads HERDR_AGENT=claude command claude --setting-sources project,local '
                      '--settings /private/tmp/ht-wake-e2e.X/claude-config/settings.json --permission-mode auto')
 MACOS_CODEX_LINE = ('PATH=/private/tmp/ht-wake-e2e.X/bin:"$PATH" HERDR_AGENT=codex CODEX_HOME=/private/tmp/ht-wake-e2e.X/'
                     'codex-home command codex --no-daemon -C /repo --dangerously-bypass-hook-trust -c '
-                    'check_for_update_on_startup=false --approve-for-me')
+                    'check_for_update_on_startup=false -c features.shell_snapshot=false --approve-for-me')
 
 
 class Env:
@@ -1874,9 +1897,13 @@ class MainExitCode(TempDir):
 
 class MixedOrderJudged(unittest.TestCase):
     def test_order_is_judged_only_where_p5_and_p1_stay_silent(self):
-        self.assertTrue(W.mixed_order_judged(0))
-        self.assertFalse(W.mixed_order_judged(-1))  # p5 wakes the recipient before p0 and the ACK exist
-        self.assertFalse(W.mixed_order_judged(3))  # p1 wakes it too
+        self.assertTrue(W.mixed_order_judged(0, "codex"))
+        self.assertFalse(W.mixed_order_judged(-1, "codex"))  # p5 wakes the recipient before p0 and the ACK exist
+        self.assertFalse(W.mixed_order_judged(3, "codex"))  # p1 wakes it too
+
+    def test_a_channel_harness_is_never_judged(self):
+        for threshold in W.THRESHOLDS:
+            self.assertFalse(W.mixed_order_judged(threshold, "claude"))
 
 
 if __name__ == "__main__":
