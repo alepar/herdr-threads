@@ -50,15 +50,15 @@ use crate::{
     ports::{
         ClosureEvidence, DuePhase, DuePhaseCursor, DuePhaseProgress, DueScanProgress,
         DueScanRequest, DueScanState, DurableWorkAdmission, GuardedInvalidationTransition,
-        GuardedSeatTransition, HostInvalidationFence, HostInvalidationReason, HostObservation,
-        HostObservationAdmission, InvalidationSeatPage, OperationReadScope, OperatorRequest,
-        PokeDue, PokeReceipt, PokeReservation, PriorLadder, PruneProgress, PublishedSnapshot,
-        ReadContext, ReceiptSparseCursor, ReconciliationOutcome, RegisterAvailableRequest,
-        RetirementJob, RetirementProgress, RetirementSummary, SendPreparationProgress,
-        SnapshotCleanupProgress, SnapshotGenerationId, SnapshotHeader, SnapshotSeatPage,
-        SnapshotStage, SnapshotStageProgress, StorePort, WakeCandidate, WakeOutcome,
-        WakeRecoveryCandidate, WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation,
-        WorkAdmission, WorkCandidate, WorkKind, WorkProgress,
+        GuardedSeatTransition, HostId, HostInvalidationFence, HostInvalidationReason,
+        HostObservation, HostObservationAdmission, InvalidationSeatPage, OperationReadScope,
+        OperatorRequest, PokeDue, PokeReceipt, PokeReservation, PriorLadder, PruneProgress,
+        PublishedSnapshot, ReadContext, ReceiptSparseCursor, ReconciliationOutcome,
+        RegisterAvailableRequest, RetirementJob, RetirementProgress, RetirementSummary,
+        SendPreparationProgress, SnapshotCleanupProgress, SnapshotGenerationId, SnapshotHeader,
+        SnapshotSeatPage, SnapshotStage, SnapshotStageProgress, StorePort, WakeCandidate,
+        WakeOutcome, WakeRecoveryCandidate, WakeRecoveryOutcome, WakeRecoveryRequest,
+        WakeReservation, WorkAdmission, WorkCandidate, WorkKind, WorkProgress,
     },
     protocol::{
         authority::{MutationPermit, OperatorActor},
@@ -917,11 +917,12 @@ const WAKE_RECOVERY_WALK_LIMIT: usize = 100;
 /// cursor's order). Cost follows the reserved set, not settled or retired seats.
 /// `CROSS JOIN` pins `wake_work` as the outer loop: with a plain join the planner
 /// drives from `seats` in ordinal order and walks every seat.
-pub(crate) const WAKE_RECOVERY_WALK_SQL: &str = "SELECT s.ordinal,s.id,w.reservation_id,w.reservation_boot FROM wake_work w INDEXED BY wake_work_reserved CROSS JOIN seats s ON s.id=w.seat_id WHERE w.reservation_id IS NOT NULL AND s.instance_id=?1 AND s.ordinal>?2 AND s.ordinal<=?3 ORDER BY s.ordinal LIMIT 100";
+pub(crate) const WAKE_RECOVERY_WALK_SQL: &str = "SELECT s.ordinal,s.id,w.reservation_id,w.reservation_boot FROM wake_work w INDEXED BY wake_work_reserved CROSS JOIN seats s ON s.id=w.seat_id WHERE w.reservation_id IS NOT NULL AND s.instance_id=?1 AND s.host_id=?4 AND s.ordinal>?2 AND s.ordinal<=?3 ORDER BY s.ordinal LIMIT 100";
 
 fn wake_recovery_page(
     context: &StoreContext,
     instance: &str,
+    host: HostId,
     elected_boot: Option<uuid::Uuid>,
     page: PageRequest,
     budget: &CallBudget,
@@ -967,7 +968,12 @@ fn wake_recovery_page(
         .prepare(WAKE_RECOVERY_WALK_SQL)
         .map_err(|error| db.map_error(error))?;
     let mut rows = statement
-        .query(params![instance, due_i64(after)?, due_i64(high_water)?])
+        .query(params![
+            instance,
+            due_i64(after)?,
+            due_i64(high_water)?,
+            host.get()
+        ])
         .map_err(|error| db.map_error(error))?;
     while let Some(row) = rows.next().map_err(|error| db.map_error(error))? {
         if budget.is_exhausted(context.clock()) {
@@ -1159,7 +1165,7 @@ fn pending_work_page_on(
 
 /// The seat walk of wake discovery: live (`seats_live_ordinal`) seats in ordinal
 /// order, excluding any seat whose current occupant is human (Wave 18).
-pub(crate) const WAKE_SEAT_WALK: &str = "SELECT s.ordinal,s.id FROM seats s INDEXED BY seats_live_ordinal WHERE s.instance_id=?1 AND s.state!='retired' AND s.ordinal>?2 AND s.ordinal<=?3 AND NOT EXISTS (SELECT 1 FROM occupant_bindings INDEXED BY occupant_bindings_open WHERE seat_id=s.id AND ended_at IS NULL AND harness='human') ORDER BY s.ordinal LIMIT 1";
+pub(crate) const WAKE_SEAT_WALK: &str = "SELECT s.ordinal,s.id FROM seats s INDEXED BY seats_live_ordinal WHERE s.instance_id=?1 AND s.host_id=?4 AND s.state!='retired' AND s.ordinal>?2 AND s.ordinal<=?3 AND NOT EXISTS (SELECT 1 FROM occupant_bindings INDEXED BY occupant_bindings_open WHERE seat_id=s.id AND ended_at IS NULL AND harness='human') ORDER BY s.ordinal LIMIT 1";
 
 /// What one discovery pass found: the candidates, the `(before, ordinal)` position
 /// of each, the last seat ordinal passed, and why the pass stopped.
@@ -1177,6 +1183,7 @@ pub(crate) struct WakeDiscovery {
 pub(crate) fn discover_wake_candidates(
     db: &Connection,
     instance: &str,
+    host: HostId,
     mut after: u64,
     high_water: u64,
     limit: usize,
@@ -1192,7 +1199,7 @@ pub(crate) fn discover_wake_candidates(
             .prepare_cached(WAKE_SEAT_WALK)
             .map_err(store_error)?
             .query_row(
-                params![instance, due_i64(after)?, due_i64(high_water)?],
+                params![instance, due_i64(after)?, due_i64(high_water)?, host.get()],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
@@ -1242,6 +1249,7 @@ pub(crate) fn discover_wake_candidates(
 fn wake_candidates_page(
     context: &StoreContext,
     instance: &str,
+    host: HostId,
     page: PageRequest,
     budget: &CallBudget,
 ) -> Result<Page<WakeCandidate>, ApiError> {
@@ -1276,6 +1284,7 @@ fn wake_candidates_page(
     } = discover_wake_candidates(
         &db,
         instance,
+        host,
         cursor.as_ref().map_or(0, |c| c.after_ordinal),
         high_water,
         usize::from(page.limit),
@@ -2908,10 +2917,11 @@ impl StorePort for SqliteStore {
     }
     fn wake_candidates(
         &self,
+        host: HostId,
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<WakeCandidate>, ApiError> {
-        wake_candidates_page(&self.context, &self.instance, page, budget)
+        wake_candidates_page(&self.context, &self.instance, host, page, budget)
     }
     fn pending_work(
         &self,
@@ -2931,6 +2941,7 @@ impl StorePort for SqliteStore {
     }
     fn wake_batch_seats(
         &self,
+        host: HostId,
         after: Option<&SeatId>,
         limit: u16,
         budget: &CallBudget,
@@ -2950,7 +2961,8 @@ impl StorePort for SqliteStore {
                 params![
                     self.instance,
                     after.map(SeatId::as_str).unwrap_or(""),
-                    i64::from(limit)
+                    i64::from(limit),
+                    host.get()
                 ],
                 |r| r.get::<_, String>(0),
             )
@@ -3032,6 +3044,7 @@ impl StorePort for SqliteStore {
     }
     fn clear_wake_batch_if_empty(
         &self,
+        host: HostId,
         seat: &SeatId,
         budget: &CallBudget,
     ) -> Result<bool, ApiError> {
@@ -3039,6 +3052,7 @@ impl StorePort for SqliteStore {
         self.context.execute_decision(
             &mut writer,
             |tx| {
+                wake::require_seat_on_host(tx, host, seat)?;
                 let scan = attention::wake_seat_attention(tx, seat.as_str())?;
                 Ok(!scan.attention.has_pending_invitation
                     && !scan.attention.has_pending_receipt
@@ -3055,6 +3069,7 @@ impl StorePort for SqliteStore {
     }
     fn wake_batch_window(
         &self,
+        host: HostId,
         candidate: &WakeCandidate,
         budget: &CallBudget,
     ) -> Result<Option<(crate::protocol::time::UtcMillis, u64)>, ApiError> {
@@ -3063,12 +3078,14 @@ impl StorePort for SqliteStore {
             &self.context,
             &mut writer,
             &self.instance,
+            host,
             candidate,
             self.settings.wake_batch_delay_ms,
         )
     }
     fn reserve_wake(
         &self,
+        host: HostId,
         candidate: &WakeCandidate,
         budget: &CallBudget,
     ) -> Result<Option<WakeReservation>, ApiError> {
@@ -3083,6 +3100,7 @@ impl StorePort for SqliteStore {
             &self.context,
             &mut writer,
             &self.instance,
+            host,
             candidate,
             daemon_boot,
             self.settings.minimum_wake_delay_ms,
@@ -3090,12 +3108,14 @@ impl StorePort for SqliteStore {
     }
     fn wake_recovery_candidates(
         &self,
+        host: HostId,
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
         wake_recovery_page(
             &self.context,
             &self.instance,
+            host,
             self.settings.daemon_boot,
             page,
             budget,
@@ -3103,6 +3123,7 @@ impl StorePort for SqliteStore {
     }
     fn recover_wake_reservation(
         &self,
+        host: HostId,
         request: WakeRecoveryRequest,
         budget: &CallBudget,
     ) -> Result<WakeRecoveryOutcome, ApiError> {
@@ -3111,6 +3132,7 @@ impl StorePort for SqliteStore {
             &self.context,
             &mut writer,
             &self.instance,
+            host,
             self.settings.daemon_boot,
             &request,
         )
@@ -3138,6 +3160,7 @@ impl StorePort for SqliteStore {
     }
     fn complete_wake(
         &self,
+        host: HostId,
         attempt: WakeAttemptId,
         outcome: WakeOutcome,
         refused_restore: Option<&PriorLadder>,
@@ -3153,6 +3176,7 @@ impl StorePort for SqliteStore {
         wake::complete(
             &self.context,
             &mut writer,
+            host,
             &attempt,
             daemon_boot,
             outcome,
@@ -3160,12 +3184,18 @@ impl StorePort for SqliteStore {
             budget,
         )
     }
-    fn poke_candidates(&self, limit: u16, budget: &CallBudget) -> Result<Vec<PokeDue>, ApiError> {
+    fn poke_candidates(
+        &self,
+        host: HostId,
+        limit: u16,
+        budget: &CallBudget,
+    ) -> Result<Vec<PokeDue>, ApiError> {
         let db = self.context.open_query(budget.clone())?;
         db.execute_batch("BEGIN DEFERRED")
             .map_err(|e| db.map_error(e))?;
-        poke::due_pokes(
+        poke::due_pokes_on_host(
             &db,
+            host,
             self.context.clock().utc_now().0,
             &self.settings.summary,
             limit,
@@ -3173,12 +3203,14 @@ impl StorePort for SqliteStore {
     }
     fn poke_for_wake(
         &self,
+        host: HostId,
         seat: &SeatId,
         budget: &CallBudget,
     ) -> Result<Option<PokeDue>, ApiError> {
         let db = self.context.open_query(budget.clone())?;
         db.execute_batch("BEGIN DEFERRED")
             .map_err(|e| db.map_error(e))?;
+        wake::require_seat_on_host(&db, host, seat)?;
         poke::due_pokes_for_seat(
             &db,
             seat,
@@ -3188,6 +3220,7 @@ impl StorePort for SqliteStore {
     }
     fn reserve_poke(
         &self,
+        host: HostId,
         due: &PokeDue,
         budget: &CallBudget,
     ) -> Result<Option<PokeReservation>, ApiError> {
@@ -3202,6 +3235,7 @@ impl StorePort for SqliteStore {
             &self.context,
             &mut writer,
             &self.instance,
+            host,
             due,
             daemon_boot,
             &self.settings.summary,
@@ -3209,6 +3243,7 @@ impl StorePort for SqliteStore {
     }
     fn complete_poke(
         &self,
+        host: HostId,
         attempt: WakeAttemptId,
         outcome: WakeOutcome,
         receipts: &[PokeReceipt],
@@ -3226,6 +3261,7 @@ impl StorePort for SqliteStore {
         wake::complete_with_pokes(
             &self.context,
             &mut writer,
+            host,
             &attempt,
             daemon_boot,
             outcome,

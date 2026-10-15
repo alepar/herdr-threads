@@ -3490,8 +3490,12 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     ) -> Result<crate::protocol::summary::SubmitOutcome, ApiError> {
         Err(ApiError::unsupported("thread summaries are unavailable"))
     }
+    /// Wake calls take the worker's `host`: seat-selecting calls return only
+    /// that host's seats, per-seat writes answer `Conflict` for a seat on
+    /// another host (see `ScheduledStore::for_host`).
     fn wake_candidates(
         &self,
+        host: HostId,
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<WakeCandidate>, ApiError>;
@@ -3510,6 +3514,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     /// This also finds windows retained across a daemon restart.
     fn wake_batch_seats(
         &self,
+        _host: HostId,
         _after: Option<&SeatId>,
         _limit: u16,
         _budget: &CallBudget,
@@ -3548,6 +3553,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     /// Clear a retained window only when canonical ordinary attention is gone.
     fn clear_wake_batch_if_empty(
         &self,
+        _host: HostId,
         _seat: &SeatId,
         _budget: &CallBudget,
     ) -> Result<bool, ApiError> {
@@ -3559,6 +3565,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     /// Lightweight adapters preserve their immediate-wake behavior by default.
     fn wake_batch_window(
         &self,
+        _host: HostId,
         _candidate: &WakeCandidate,
         _budget: &CallBudget,
     ) -> Result<Option<(UtcMillis, u64)>, ApiError> {
@@ -3567,6 +3574,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
 
     fn reserve_wake(
         &self,
+        host: HostId,
         candidate: &WakeCandidate,
         budget: &CallBudget,
     ) -> Result<Option<WakeReservation>, ApiError>;
@@ -3575,6 +3583,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     /// never prompt eligibility.
     fn wake_recovery_candidates(
         &self,
+        host: HostId,
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<WakeRecoveryCandidate>, ApiError>;
@@ -3582,6 +3591,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     /// boot. Record uncertainty while preserving frozen delay and history.
     fn recover_wake_reservation(
         &self,
+        host: HostId,
         request: WakeRecoveryRequest,
         budget: &CallBudget,
     ) -> Result<WakeRecoveryOutcome, ApiError>;
@@ -3610,6 +3620,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     /// durable step stays advanced by one).
     fn complete_wake(
         &self,
+        host: HostId,
         attempt: WakeAttemptId,
         outcome: WakeOutcome,
         refused_restore: Option<&PriorLadder>,
@@ -3617,13 +3628,19 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     ) -> Result<bool, ApiError>;
     /// Seats with receipts past their soft point (spec §10), at most `limit`
     /// seats, evaluated lazily from each receipt's effective deadline.
-    fn poke_candidates(&self, _limit: u16, _budget: &CallBudget) -> Result<Vec<PokeDue>, ApiError> {
+    fn poke_candidates(
+        &self,
+        _host: HostId,
+        _limit: u16,
+        _budget: &CallBudget,
+    ) -> Result<Vec<PokeDue>, ApiError> {
         Err(unsupported_poke())
     }
     /// Takes the seat's single wake reservation slot for a poke (reason
     /// `soft_deadline`). `None`: the slot is busy or nothing is still due.
     fn reserve_poke(
         &self,
+        _host: HostId,
         _due: &PokeDue,
         _budget: &CallBudget,
     ) -> Result<Option<PokeReservation>, ApiError> {
@@ -3634,6 +3651,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     /// transaction. Any other outcome marks nothing.
     fn complete_poke(
         &self,
+        _host: HostId,
         _attempt: WakeAttemptId,
         _outcome: WakeOutcome,
         _receipts: &[PokeReceipt],
@@ -3644,6 +3662,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     /// Seat-scoped due pokes, for an ordinary wake that can carry the poke text.
     fn poke_for_wake(
         &self,
+        _host: HostId,
         _seat: &SeatId,
         _budget: &CallBudget,
     ) -> Result<Option<PokeDue>, ApiError> {

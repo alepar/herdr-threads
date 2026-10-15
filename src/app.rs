@@ -1833,6 +1833,7 @@ where
                     Arc::clone(&store),
                     Arc::clone(&writer),
                     Arc::clone(&session.port),
+                    crate::ports::HostId::from_row(session.host_id),
                     instance.to_string(),
                     boot,
                     config.retry_config(),

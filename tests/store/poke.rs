@@ -335,7 +335,9 @@ fn soft_poke_targets_the_composer_rule_binding() {
     insert("claude-sub", "subagent", true, 30);
     insert("claude-gone", "top_level", false, 40);
     drop(db);
-    let due = StorePort::poke_candidates(&store, 16, &budget()).unwrap();
+    let due =
+        StorePort::poke_candidates(&store, crate::test_support::test_host_id(), 16, &budget())
+            .unwrap();
     let ids = |targets: &[crate::ports::WakeTarget]| -> Vec<String> {
         targets
             .iter()
@@ -347,9 +349,14 @@ fn soft_poke_targets_the_composer_rule_binding() {
         ["codex:None", "claude:Some(20)"],
         "connected top-level bindings only"
     );
-    let reserved = StorePort::reserve_poke(&store, &due[0], &budget())
-        .unwrap()
-        .expect("reserved");
+    let reserved = StorePort::reserve_poke(
+        &store,
+        crate::test_support::test_host_id(),
+        &due[0],
+        &budget(),
+    )
+    .unwrap()
+    .expect("reserved");
     let ReservedWakeAuthority::Cooperative { targets, .. } = &reserved.reservation.authority else {
         panic!("cooperative authority");
     };
@@ -373,13 +380,20 @@ fn poke_reservation_shares_the_wake_slot_and_marks_only_on_submit() {
             .query_row("SELECT soft_poked_at FROM receipts", [], |r| r.get(0))
             .unwrap()
     };
-    let due = StorePort::poke_candidates(&store, 16, &budget()).unwrap();
+    let due =
+        StorePort::poke_candidates(&store, crate::test_support::test_host_id(), 16, &budget())
+            .unwrap();
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].seat, SeatId::new("s"));
 
-    let reserved = StorePort::reserve_poke(&store, &due[0], &budget())
-        .unwrap()
-        .expect("a bound cooperative seat reserves a poke");
+    let reserved = StorePort::reserve_poke(
+        &store,
+        crate::test_support::test_host_id(),
+        &due[0],
+        &budget(),
+    )
+    .unwrap()
+    .expect("a bound cooperative seat reserves a poke");
     assert_eq!(reserved.reservation.reasons, ["soft_deadline"]);
     assert!(matches!(
         &reserved.reservation.authority,
@@ -392,14 +406,20 @@ fn poke_reservation_shares_the_wake_slot_and_marks_only_on_submit() {
     );
     // One reservation slot per seat: a second poke is refused while it is held.
     assert!(
-        StorePort::reserve_poke(&store, &due[0], &budget())
-            .unwrap()
-            .is_none()
+        StorePort::reserve_poke(
+            &store,
+            crate::test_support::test_host_id(),
+            &due[0],
+            &budget()
+        )
+        .unwrap()
+        .is_none()
     );
 
     // An abandoned attempt marks nothing: the receipt may be poked again.
     StorePort::complete_poke(
         &store,
+        crate::test_support::test_host_id(),
         reserved.reservation.attempt.clone(),
         WakeOutcome::OutcomeUnknown,
         &reserved.receipts,
@@ -407,15 +427,23 @@ fn poke_reservation_shares_the_wake_slot_and_marks_only_on_submit() {
     )
     .unwrap();
     assert_eq!(marked(), None);
-    let again = StorePort::poke_candidates(&store, 16, &budget()).unwrap();
+    let again =
+        StorePort::poke_candidates(&store, crate::test_support::test_host_id(), 16, &budget())
+            .unwrap();
     assert_eq!(again.len(), 1);
 
     // Host acceptance marks exactly the reserved receipts, atomically.
-    let reserved = StorePort::reserve_poke(&store, &again[0], &budget())
-        .unwrap()
-        .unwrap();
+    let reserved = StorePort::reserve_poke(
+        &store,
+        crate::test_support::test_host_id(),
+        &again[0],
+        &budget(),
+    )
+    .unwrap()
+    .unwrap();
     StorePort::complete_poke(
         &store,
+        crate::test_support::test_host_id(),
         reserved.reservation.attempt.clone(),
         WakeOutcome::Submitted,
         &reserved.receipts,
@@ -424,7 +452,7 @@ fn poke_reservation_shares_the_wake_slot_and_marks_only_on_submit() {
     .unwrap();
     assert_eq!(marked(), Some(700));
     assert!(
-        StorePort::poke_candidates(&store, 16, &budget())
+        StorePort::poke_candidates(&store, crate::test_support::test_host_id(), 16, &budget())
             .unwrap()
             .is_empty()
     );

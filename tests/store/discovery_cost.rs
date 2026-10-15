@@ -353,7 +353,12 @@ fn new_walk(db: &Connection, after: u64) -> Vec<u64> {
     let mut statement = db.prepare(WAKE_RECOVERY_WALK_SQL).unwrap();
     statement
         .query_map(
-            params!["34750f98bd59fcfc946da45aaabe933b", after as i64, high],
+            params![
+                "34750f98bd59fcfc946da45aaabe933b",
+                after as i64,
+                high,
+                crate::test_support::test_host_id().get()
+            ],
             |r| r.get::<_, i64>(0),
         )
         .unwrap()
@@ -398,7 +403,12 @@ fn recovery_walk_is_flat_in_retired_and_unreserved_rows() {
     let plan: String = small
         .query_row(
             &format!("EXPLAIN QUERY PLAN {WAKE_RECOVERY_WALK_SQL}"),
-            params!["34750f98bd59fcfc946da45aaabe933b", 0, 1_i64 << 40],
+            params![
+                "34750f98bd59fcfc946da45aaabe933b",
+                0,
+                1_i64 << 40,
+                crate::test_support::test_host_id().get()
+            ],
             |r| r.get(3),
         )
         .unwrap();

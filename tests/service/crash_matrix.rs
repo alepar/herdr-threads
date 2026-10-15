@@ -120,7 +120,8 @@ impl Matrix {
             clock,
             instance,
             db_path,
-            ports: ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32))),
+            ports: ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)))
+                .for_host(crate::test_support::test_host_id()),
             store,
             service,
             boot,
@@ -163,7 +164,8 @@ impl Matrix {
         self.boot = uuid::Uuid::new_v4();
         let (store, service) = Self::compose(&self.clock, &self.instance, &self.db_path, self.boot);
         self.service = service;
-        self.ports = ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)));
+        self.ports = ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)))
+            .for_host(crate::test_support::test_host_id());
         self.store = store;
     }
 
@@ -531,8 +533,13 @@ fn send_failure_before_commit_leaves_no_acceptance_and_retry_commits_once() {
     );
     // Pending work: the recipient has nothing to read, and no wake is due.
     assert!(m.pending("r").is_empty());
-    let wake =
-        StorePort::wake_candidates(m.store.as_ref(), PageRequest::default(), &m.budget()).unwrap();
+    let wake = StorePort::wake_candidates(
+        m.store.as_ref(),
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &m.budget(),
+    )
+    .unwrap();
     assert!(
         wake.items.iter().all(|c| !c.has_pending_receipt),
         "failed commit must never wake: {wake:?}"
@@ -725,7 +732,8 @@ fn configured_batching_retains_first_attention_without_self_kicks() {
     store.set_kick_sink(Box::new(move |lanes, _| {
         captured.lock().unwrap().push(lanes)
     }));
-    let ports = ScheduledStore::new(store, Arc::new(FairWriter::new(32)));
+    let ports = ScheduledStore::new(store, Arc::new(FairWriter::new(32)))
+        .for_host(crate::test_support::test_host_id());
     let notifier = PromptLog::default();
     let scheduler = Scheduler::new(
         m.instance.clone(),

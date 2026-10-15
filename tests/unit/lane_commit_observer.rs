@@ -94,7 +94,11 @@ fn observers_are_exclusive_per_origin_ignore_noops_and_clean_up() {
         let _origin = crate::service::kicks::enter_lane(Lane::Wakes);
         assert!(
             store
-                .clear_wake_batch_if_empty(&crate::protocol::ids::SeatId::new("s"), &budget())
+                .clear_wake_batch_if_empty(
+                    crate::test_support::test_host_id(),
+                    &crate::protocol::ids::SeatId::new("s"),
+                    &budget()
+                )
                 .unwrap()
         );
     }

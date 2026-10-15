@@ -24,6 +24,44 @@ use crate::{
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
+/// A per-seat wake write whose seat is not on the worker's host (rebound
+/// mid-pass, or never this worker's): the scheduler skips the seat.
+pub(crate) fn wrong_host() -> ApiError {
+    api_error(
+        ErrorCode::Conflict,
+        "seat is not on this wake worker's host",
+    )
+}
+
+fn require_host(scope: HostId, actual: HostId) -> Result<(), ApiError> {
+    if scope == actual {
+        Ok(())
+    } else {
+        Err(wrong_host())
+    }
+}
+
+/// `Conflict` unless the seat exists on `scope`'s host. A missing seat is
+/// left to the caller (its own not-found handling).
+pub(crate) fn require_seat_on_host(
+    db: &Connection,
+    scope: HostId,
+    seat: &SeatId,
+) -> Result<(), ApiError> {
+    let host: Option<Option<i64>> = db
+        .query_row(
+            "SELECT host_id FROM seats WHERE id=?1",
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    match host {
+        None => Ok(()),
+        Some(host) => require_host(scope, HostId::from_row(host.ok_or_else(wrong_host)?)),
+    }
+}
+
 /// The write every new-attention producer makes: set the attention reason bit
 /// and advance `attention_version` so the dispatcher re-derives the seat's
 /// wake reasons. Catch-up release (ht-1ip.6) calls it in the row-end
@@ -710,6 +748,7 @@ pub fn reserve(
     context: &StoreContext,
     db: &mut Connection,
     instance: &str,
+    scope: HostId,
     candidate: &WakeCandidate,
     daemon_boot: uuid::Uuid,
     configured_minimum: u64,
@@ -730,6 +769,7 @@ pub fn reserve(
             params![candidate.seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional().map_err(store_error)?;
         let Some((decision_seq,episode,open,generation,target,target_generation,boot,host_id))=row else {return Ok(None)};
         let host=HostId::from_row(host_id);
+        require_host(scope,host)?;
         if !witness.valid_for(candidate,instance,nonnegative(decision_seq)?,nonnegative(episode)?,open!=0) {return Ok(None)}
         // The lazy frontier is not covered by the decision sequence: re-read it
         // (and `wake_on`) so a reservation never rests on a moved frontier.
@@ -883,9 +923,12 @@ pub fn validate_reservation(
 /// pre-reservation ladder row and returns whether it matched. A path that
 /// cleared the reservation in between (host invalidation, registration loss)
 /// matches 0 rows: no error, the durable step stays advanced by one.
+// Allowed: the completion inputs plus the worker's host scope.
+#[allow(clippy::too_many_arguments)]
 pub fn complete(
     context: &StoreContext,
     db: &mut Connection,
+    scope: HostId,
     attempt: &WakeAttemptId,
     daemon_boot: &uuid::Uuid,
     outcome: WakeOutcome,
@@ -895,6 +938,7 @@ pub fn complete(
     complete_with_pokes(
         context,
         db,
+        scope,
         attempt,
         daemon_boot,
         outcome,
@@ -913,6 +957,7 @@ pub fn complete(
 pub fn complete_with_pokes(
     context: &StoreContext,
     db: &mut Connection,
+    scope: HostId,
     attempt: &WakeAttemptId,
     daemon_boot: &uuid::Uuid,
     outcome: WakeOutcome,
@@ -927,13 +972,14 @@ pub fn complete_with_pokes(
         ));
     }
     context.execute_budgeted_decision(db,budget,|tx|{
-        type RowColumns = Option<(String,Option<String>,Option<i64>,i64,String)>;
+        type RowColumns = Option<(String,Option<String>,Option<i64>,i64,String,Option<i64>)>;
         let row:RowColumns=tx.query_row(
-            "SELECT w.seat_id,w.reservation_boot,w.binding_generation,s.generation,s.state FROM wake_work w JOIN seats s ON s.id=w.seat_id WHERE w.reservation_id=?1",
-            [attempt.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(store_error)?;
+            "SELECT w.seat_id,w.reservation_boot,w.binding_generation,s.generation,s.state,s.host_id FROM wake_work w JOIN seats s ON s.id=w.seat_id WHERE w.reservation_id=?1",
+            [attempt.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(store_error)?;
+        if let Some(r)=&row {require_host(scope,HostId::from_row(r.5.ok_or_else(wrong_host)?))?}
         Ok(row)
     },|tx,at,row|{
-        let Some((seat,reservation_boot,binding_generation,current_generation,state))=row else {return Ok(false)};
+        let Some((seat,reservation_boot,binding_generation,current_generation,state,_))=row else {return Ok(false)};
         let daemon_boot=daemon_boot.to_string();
         if reservation_boot.as_deref()!=Some(daemon_boot.as_str()) {return Ok(false)}
         let disposition=if state!="resolved" || binding_generation.is_some_and(|generation|generation!=current_generation) {
@@ -985,6 +1031,7 @@ pub fn reserve_poke(
     context: &StoreContext,
     db: &mut Connection,
     instance: &str,
+    scope: HostId,
     due: &PokeDue,
     daemon_boot: uuid::Uuid,
     settings: &SummarySettings,
@@ -1003,6 +1050,7 @@ pub fn reserve_poke(
             params![seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).optional().map_err(store_error)?;
         let Some((decision_seq,episode,open,generation,target,target_generation,boot,host_epoch,host_id))=row else {return Ok(None)};
         let host=HostId::from_row(host_id);
+        require_host(scope,host)?;
         let Some(target)=target.map(HostTargetId::new) else {return Ok(None)};
         // Only the receipts still due now are covered, never a stale selection.
         let now=context.clock().utc_now().0;
@@ -1043,6 +1091,7 @@ pub fn recover_abandoned(
     context: &StoreContext,
     db: &mut Connection,
     instance: &str,
+    scope: HostId,
     elected_boot: Option<uuid::Uuid>,
     request: &WakeRecoveryRequest,
 ) -> Result<WakeRecoveryOutcome, ApiError> {
@@ -1064,15 +1113,16 @@ pub fn recover_abandoned(
         ));
     }
     context.execute_decision(db, |tx| {
-        type RowColumns = Option<(Option<String>, Option<String>, Option<String>, Option<String>)>;
+        type RowColumns = Option<(Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>)>;
         let row: RowColumns = tx.query_row(
-            "SELECT w.reservation_id,w.reservation_boot,w.last_reservation_id,w.last_reservation_boot FROM wake_work w JOIN seats s ON s.id=w.seat_id WHERE w.seat_id=?1 AND s.instance_id=?2",
+            "SELECT w.reservation_id,w.reservation_boot,w.last_reservation_id,w.last_reservation_boot,s.host_id FROM wake_work w JOIN seats s ON s.id=w.seat_id WHERE w.seat_id=?1 AND s.instance_id=?2",
             params![request.seat.as_str(),instance],
-            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
         ).optional().map_err(store_error)?;
+        if let Some(r) = &row { require_host(scope, HostId::from_row(r.4.ok_or_else(wrong_host)?))?; }
         Ok(row)
     }, |tx, at, row| {
-        let Some((active, boot, last, last_boot)) = row else { return Ok(WakeRecoveryOutcome::Stale) };
+        let Some((active, boot, last, last_boot, _)) = row else { return Ok(WakeRecoveryOutcome::Stale) };
         let prior = request.prior_daemon_boot.to_string();
         if active.as_deref() == Some(request.attempt.as_str()) && boot.as_deref() == Some(prior.as_str()) {
             let changed = tx.execute(
@@ -1090,7 +1140,7 @@ pub fn recover_abandoned(
 
 /// The retained-window table drives this walk through its primary key. Cost
 /// follows retained windows, rather than all resolved or historical seats.
-pub(crate) const BATCH_SEATS_SQL: &str = "SELECT b.seat_id FROM wake_batches b CROSS JOIN seats s ON s.id=b.seat_id WHERE s.instance_id=?1 AND b.seat_id>?2 ORDER BY b.seat_id LIMIT ?3";
+pub(crate) const BATCH_SEATS_SQL: &str = "SELECT b.seat_id FROM wake_batches b CROSS JOIN seats s ON s.id=b.seat_id WHERE s.instance_id=?1 AND s.host_id=?4 AND b.seat_id>?2 ORDER BY b.seat_id LIMIT ?3";
 
 fn receipt_attention_at(
     db: &Connection,
@@ -1179,60 +1229,99 @@ pub fn batch_window(
     context: &StoreContext,
     db: &mut Connection,
     instance: &str,
+    scope: HostId,
     candidate: &WakeCandidate,
     delay_ms: u64,
 ) -> Result<Option<(crate::protocol::time::UtcMillis, u64)>, ApiError> {
     if delay_ms == 0 {
         return Ok(None);
     }
-    context.execute_decision(db, |tx| {
-        let live: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2 AND state!='retired')",
-            params![candidate.seat.as_str(), instance], |r| r.get(0)).map_err(store_error)?;
-        if !live { return Ok((None, false)); }
-        let scan = super::attention::wake_seat_attention(tx, candidate.seat.as_str())?;
-        let invitations = super::attention::pending_confirming_invitations(tx, candidate.seat.as_str(), None, scan.decision_seq)?;
-        let pending = super::attention::pending_receipts(tx, candidate.seat.as_str(), None)?;
-        let mut first = None::<i64>;
-        let mut urgent = scan.attention.latest_warning_seq.is_some()
-            && !candidate.warning_offered_for_current_occupant();
-        let now = context.clock().utc_now().0;
-        for item in invitations.items {
-            let (created, due): (i64, Option<i64>) = tx.query_row(
-                "SELECT created_at,deadline_at FROM invitations WHERE id=?1", [&item.id],
-                |r| Ok((r.get(0)?,r.get(1)?))).map_err(store_error)?;
-            first = Some(first.map_or(created, |prior| prior.min(created)));
-            urgent |= due.is_some_and(|at| at <= now);
-        }
-        for item in pending.items {
-            if let Some(receipt) = effective::effective_receipt(tx, &item.id, candidate.seat.as_str())? {
-                let at = receipt_attention_at(tx, candidate.seat.as_str(), &receipt, item.key)?;
-                first = Some(first.map_or(at, |prior| prior.min(at)));
-                urgent |= super::receipts::effective_deadline(tx, &receipt)?.is_some_and(|at| at <= now);
+    context.execute_decision(
+        db,
+        |tx| {
+            let seat_host: Option<Option<i64>> = tx
+                .query_row(
+                    "SELECT host_id FROM seats WHERE id=?1 AND instance_id=?2 AND state!='retired'",
+                    params![candidate.seat.as_str(), instance],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(store_error)?;
+            let Some(seat_host) = seat_host else {
+                return Ok((None, false));
+            };
+            require_host(scope, HostId::from_row(seat_host.ok_or_else(wrong_host)?))?;
+            let scan = super::attention::wake_seat_attention(tx, candidate.seat.as_str())?;
+            let invitations = super::attention::pending_confirming_invitations(
+                tx,
+                candidate.seat.as_str(),
+                None,
+                scan.decision_seq,
+            )?;
+            let pending = super::attention::pending_receipts(tx, candidate.seat.as_str(), None)?;
+            let mut first = None::<i64>;
+            let mut urgent = scan.attention.latest_warning_seq.is_some()
+                && !candidate.warning_offered_for_current_occupant();
+            let now = context.clock().utc_now().0;
+            for item in invitations.items {
+                let (created, due): (i64, Option<i64>) = tx
+                    .query_row(
+                        "SELECT created_at,deadline_at FROM invitations WHERE id=?1",
+                        [&item.id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .map_err(store_error)?;
+                first = Some(first.map_or(created, |prior| prior.min(created)));
+                urgent |= due.is_some_and(|at| at <= now);
             }
-        }
-        // A `wake_on: all` seat's oldest pending lazy row batches like an
-        // ordinary receipt (DP8).
-        if scan.attention.frontier.lazy.is_some()
-            && let Some(at) = super::lazy_delivery::oldest_pending_at(tx, candidate.seat.as_str())? {
-            first = Some(first.map_or(at, |prior| prior.min(at)));
-        }
-        let existing: Option<i64> = tx.query_row("SELECT deadline_at FROM wake_batches WHERE seat_id=?1",
-            [candidate.seat.as_str()], |r| r.get(0)).optional().map_err(store_error)?;
-        if let Some(first_at) = first
-            && existing.is_none()
-            && let Some(oldest) = oldest_ordinary_at(tx, candidate.seat.as_str(), scan.decision_seq)? {
-            first = Some(first_at.min(oldest));
-        }
-        Ok((first, urgent))
-    }, |tx, _, (first, urgent)| {
-        let Some(first) = first else {
-            tx.execute("DELETE FROM wake_batches WHERE seat_id=?1", [candidate.seat.as_str()]).map_err(store_error)?;
-            return Ok(None);
-        };
-        let deadline = retain_batch_deadline(tx, candidate.seat.as_str(), first, delay_ms)?;
-        Ok((!urgent).then_some((deadline, delay_ms)))
-    })
+            for item in pending.items {
+                if let Some(receipt) =
+                    effective::effective_receipt(tx, &item.id, candidate.seat.as_str())?
+                {
+                    let at = receipt_attention_at(tx, candidate.seat.as_str(), &receipt, item.key)?;
+                    first = Some(first.map_or(at, |prior| prior.min(at)));
+                    urgent |= super::receipts::effective_deadline(tx, &receipt)?
+                        .is_some_and(|at| at <= now);
+                }
+            }
+            // A `wake_on: all` seat's oldest pending lazy row batches like an
+            // ordinary receipt (DP8).
+            if scan.attention.frontier.lazy.is_some()
+                && let Some(at) =
+                    super::lazy_delivery::oldest_pending_at(tx, candidate.seat.as_str())?
+            {
+                first = Some(first.map_or(at, |prior| prior.min(at)));
+            }
+            let existing: Option<i64> = tx
+                .query_row(
+                    "SELECT deadline_at FROM wake_batches WHERE seat_id=?1",
+                    [candidate.seat.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(store_error)?;
+            if let Some(first_at) = first
+                && existing.is_none()
+                && let Some(oldest) =
+                    oldest_ordinary_at(tx, candidate.seat.as_str(), scan.decision_seq)?
+            {
+                first = Some(first_at.min(oldest));
+            }
+            Ok((first, urgent))
+        },
+        |tx, _, (first, urgent)| {
+            let Some(first) = first else {
+                tx.execute(
+                    "DELETE FROM wake_batches WHERE seat_id=?1",
+                    [candidate.seat.as_str()],
+                )
+                .map_err(store_error)?;
+                return Ok(None);
+            };
+            let deadline = retain_batch_deadline(tx, candidate.seat.as_str(), first, delay_ms)?;
+            Ok((!urgent).then_some((deadline, delay_ms)))
+        },
+    )
 }
 
 /// Retain the first deadline without sliding it on later attention. The caller

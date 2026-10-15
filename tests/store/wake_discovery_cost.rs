@@ -157,6 +157,7 @@ fn pass(db: &Connection) -> (u64, usize) {
         discover_wake_candidates(
             db,
             "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             0,
             high as u64,
             100,

@@ -42,7 +42,13 @@ fn pending_invitation_is_a_wake_candidate_before_work_row_projection() {
         StoreSettings::default(),
     )
     .unwrap();
-    let candidates = StorePort::wake_candidates(&store, PageRequest::default(), &budget()).unwrap();
+    let candidates = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap();
     assert_eq!(candidates.items.len(), 1);
     assert!(candidates.items[0].has_pending_invitation);
     assert!(candidates.items[0].has_actionable_work());
@@ -75,7 +81,13 @@ fn wake_candidate_is_found_past_one_hundred_settled_receipts() {
     .unwrap();
     // The pending probe finds the one pending receipt without walking the 100
     // settled ones, so the seat is complete within the first page.
-    let second = StorePort::wake_candidates(&store, PageRequest::default(), &budget()).unwrap();
+    let second = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap();
     assert!(!second.has_more && second.next_cursor.is_none());
     assert_eq!(second.items.len(), 1);
     assert!(second.items[0].has_pending_receipt);
@@ -107,11 +119,18 @@ fn wake_page_requires_its_complete_encoded_page_budget() {
         StoreSettings::default(),
     )
     .unwrap();
-    let complete = StorePort::wake_candidates(&store, PageRequest::default(), &budget()).unwrap();
+    let complete = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap();
     let minimum = serde_json::to_vec(&complete).unwrap().len() as u32;
     assert!(minimum > 256 && complete.items.len() == 1 && !complete.has_more);
     let exact = StorePort::wake_candidates(
         &store,
+        crate::test_support::test_host_id(),
         PageRequest {
             max_bytes: minimum,
             ..PageRequest::default()
@@ -122,6 +141,7 @@ fn wake_page_requires_its_complete_encoded_page_budget() {
     assert_eq!(exact, complete);
     let error = StorePort::wake_candidates(
         &store,
+        crate::test_support::test_host_id(),
         PageRequest {
             max_bytes: minimum - 1,
             ..PageRequest::default()
@@ -161,7 +181,13 @@ fn wake_candidate_finds_unprojected_manifest_receipt_and_warning() {
         StoreSettings::default(),
     )
     .unwrap();
-    let page = StorePort::wake_candidates(&store, PageRequest::default(), &budget()).unwrap();
+    let page = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap();
     assert_eq!(page.items.len(), 1);
     assert!(page.items[0].has_pending_receipt);
     assert_eq!(page.items[0].actionable_warning_seq, Some(10));
@@ -192,10 +218,15 @@ fn second_published_receipt_advances_wake_frontier_before_projection() {
         StoreSettings::default(),
     )
     .unwrap();
-    let first = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
+    let first = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
     let first_frontier = first.attention_witness.unwrap().frontier();
     assert_eq!(
         first_frontier.addressed_receipt,
@@ -213,10 +244,15 @@ fn second_published_receipt_advances_wake_frontier_before_projection() {
         UPDATE local_node SET decision_seq=11 WHERE id='34750f98bd59fcfc946da45aaabe933b';\
     ").unwrap();
     drop(db);
-    let second = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
+    let second = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
     let second_frontier = second.attention_witness.unwrap().frontier();
     assert_eq!(
         second_frontier.addressed_receipt,
@@ -255,10 +291,15 @@ fn reservation_persists_daemon_boot_attempt_and_delay_then_ignores_late_completi
         ..StoreSettings::default()
     };
     let store = SqliteStore::new(context, "34750f98bd59fcfc946da45aaabe933b", settings).unwrap();
-    let stale_candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
+    let stale_candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
     let db = store.context.open_writer().unwrap();
     db.execute(
         "UPDATE local_node SET decision_seq=decision_seq+1 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
@@ -267,17 +308,32 @@ fn reservation_persists_daemon_boot_attempt_and_delay_then_ignores_late_completi
     .unwrap();
     drop(db);
     assert!(
-        StorePort::reserve_wake(&store, &stale_candidate, &budget())
-            .unwrap()
-            .is_none()
+        StorePort::reserve_wake(
+            &store,
+            crate::test_support::test_host_id(),
+            &stale_candidate,
+            &budget()
+        )
+        .unwrap()
+        .is_none()
     );
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
-    let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
-        .unwrap()
-        .unwrap();
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
+    let reservation = StorePort::reserve_wake(
+        &store,
+        crate::test_support::test_host_id(),
+        &candidate,
+        &budget(),
+    )
+    .unwrap()
+    .unwrap();
     assert!(StorePort::validate_wake_reservation(&store, &reservation, &budget()).unwrap());
     assert_eq!(reservation.lease_until, MonoInstant(6_000));
     let db = store.context.open_writer().unwrap();
@@ -324,6 +380,7 @@ fn reservation_persists_daemon_boot_attempt_and_delay_then_ignores_late_completi
     drop(db);
     StorePort::complete_wake(
         &store,
+        crate::test_support::test_host_id(),
         WakeAttemptId::new("obsolete"),
         WakeOutcome::Submitted,
         None,
@@ -374,13 +431,23 @@ fn old_boot_recovery_is_exact_preserves_history_and_cannot_clear_successor() {
         settings(old_boot),
     )
     .unwrap();
-    let candidate = StorePort::wake_candidates(&old, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
-    let reservation = StorePort::reserve_wake(&old, &candidate, &budget())
-        .unwrap()
-        .unwrap();
+    let candidate = StorePort::wake_candidates(
+        &old,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
+    let reservation = StorePort::reserve_wake(
+        &old,
+        crate::test_support::test_host_id(),
+        &candidate,
+        &budget(),
+    )
+    .unwrap()
+    .unwrap();
     drop(old);
 
     let reopened = SqliteStore::new(
@@ -389,8 +456,13 @@ fn old_boot_recovery_is_exact_preserves_history_and_cannot_clear_successor() {
         settings(next_boot),
     )
     .unwrap();
-    let page =
-        StorePort::wake_recovery_candidates(&reopened, PageRequest::default(), &budget()).unwrap();
+    let page = StorePort::wake_recovery_candidates(
+        &reopened,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap();
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].attempt, reservation.attempt);
     assert_eq!(page.items[0].prior_daemon_boot, old_boot);
@@ -403,12 +475,28 @@ fn old_boot_recovery_is_exact_preserves_history_and_cannot_clear_successor() {
     };
     let mut false_owner = request.clone();
     false_owner.elected_boot = old_boot;
-    assert!(StorePort::recover_wake_reservation(&reopened, false_owner, &budget()).is_err());
+    assert!(
+        StorePort::recover_wake_reservation(
+            &reopened,
+            crate::test_support::test_host_id(),
+            false_owner,
+            &budget()
+        )
+        .is_err()
+    );
     let db = reopened.context.open_writer().unwrap();
     db.execute("CREATE TRIGGER fail_recovery BEFORE UPDATE ON wake_work BEGIN SELECT RAISE(ABORT,'recovery fault'); END", []).unwrap();
     // This connection stays open: the fault trigger is not part of the node schema, so a
     // fresh writer open would refuse the store until the trigger is dropped.
-    assert!(StorePort::recover_wake_reservation(&reopened, request.clone(), &budget()).is_err());
+    assert!(
+        StorePort::recover_wake_reservation(
+            &reopened,
+            crate::test_support::test_host_id(),
+            request.clone(),
+            &budget()
+        )
+        .is_err()
+    );
     let still_active: String = db
         .query_row(
             "SELECT reservation_id FROM wake_work WHERE seat_id='s'",
@@ -420,11 +508,23 @@ fn old_boot_recovery_is_exact_preserves_history_and_cannot_clear_successor() {
     db.execute("DROP TRIGGER fail_recovery", []).unwrap();
     drop(db);
     assert_eq!(
-        StorePort::recover_wake_reservation(&reopened, request.clone(), &budget()).unwrap(),
+        StorePort::recover_wake_reservation(
+            &reopened,
+            crate::test_support::test_host_id(),
+            request.clone(),
+            &budget()
+        )
+        .unwrap(),
         WakeRecoveryOutcome::Recovered
     );
     assert_eq!(
-        StorePort::recover_wake_reservation(&reopened, request.clone(), &budget()).unwrap(),
+        StorePort::recover_wake_reservation(
+            &reopened,
+            crate::test_support::test_host_id(),
+            request.clone(),
+            &budget()
+        )
+        .unwrap(),
         WakeRecoveryOutcome::AlreadySettled
     );
     let db = reopened.context.open_writer().unwrap();
@@ -441,25 +541,42 @@ fn old_boot_recovery_is_exact_preserves_history_and_cannot_clear_successor() {
         )
     );
     drop(db);
-    let next_candidate = StorePort::wake_candidates(&reopened, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
+    let next_candidate = StorePort::wake_candidates(
+        &reopened,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
     assert!(next_candidate.reservation_id.is_none());
     assert_eq!(
         next_candidate.last_reservation_id.as_ref(),
         Some(&reservation.attempt)
     );
-    let successor = StorePort::reserve_wake(&reopened, &next_candidate, &budget())
-        .unwrap()
-        .unwrap();
+    let successor = StorePort::reserve_wake(
+        &reopened,
+        crate::test_support::test_host_id(),
+        &next_candidate,
+        &budget(),
+    )
+    .unwrap()
+    .unwrap();
     assert_ne!(successor.attempt, reservation.attempt);
     assert_eq!(
-        StorePort::recover_wake_reservation(&reopened, request, &budget()).unwrap(),
+        StorePort::recover_wake_reservation(
+            &reopened,
+            crate::test_support::test_host_id(),
+            request,
+            &budget()
+        )
+        .unwrap(),
         WakeRecoveryOutcome::Stale
     );
     StorePort::complete_wake(
         &reopened,
+        crate::test_support::test_host_id(),
         reservation.attempt,
         WakeOutcome::Submitted,
         None,
@@ -505,14 +622,20 @@ fn recovery_page_includes_retired_zero_reason_attempt_without_stealing_current_b
         },
     )
     .unwrap();
-    let page =
-        StorePort::wake_recovery_candidates(&store, PageRequest::default(), &budget()).unwrap();
+    let page = StorePort::wake_recovery_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap();
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].seat.as_str(), "retired");
     assert_eq!(page.items[0].attempt.as_str(), "old");
     assert_eq!(
         StorePort::recover_wake_reservation(
             &store,
+            crate::test_support::test_host_id(),
             WakeRecoveryRequest {
                 instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 seat: SeatId::new("retired"),
@@ -564,13 +687,23 @@ fn recognized_idle_unregistered_occupant_gets_recovery_hint_reservation() {
         },
     )
     .unwrap();
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
-    let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
-        .unwrap()
-        .unwrap();
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
+    let reservation = StorePort::reserve_wake(
+        &store,
+        crate::test_support::test_host_id(),
+        &candidate,
+        &budget(),
+    )
+    .unwrap()
+    .unwrap();
     assert!(
         matches!(&reservation.authority,crate::ports::ReservedWakeAuthority::RecoveryHint {execution} if execution.as_str()=="exec")
     );
@@ -602,6 +735,7 @@ fn completion_cas_ignores_old_attempt_and_releases_matching_attempt_without_losi
     .unwrap();
     StorePort::complete_wake(
         &store,
+        crate::test_support::test_host_id(),
         WakeAttemptId::new("old"),
         WakeOutcome::Submitted,
         None,
@@ -621,6 +755,7 @@ fn completion_cas_ignores_old_attempt_and_releases_matching_attempt_without_losi
     drop(db);
     StorePort::complete_wake(
         &store,
+        crate::test_support::test_host_id(),
         WakeAttemptId::new("current"),
         WakeOutcome::Submitted,
         None,
@@ -654,6 +789,7 @@ fn matching_completion_records_submitted_and_retains_zero_reason_history() {
     .unwrap();
     StorePort::complete_wake(
         &store,
+        crate::test_support::test_host_id(),
         WakeAttemptId::new("current"),
         WakeOutcome::Submitted,
         None,
@@ -811,11 +947,22 @@ fn unverified_execution_gets_structural_cooperative_reservation() {
             .unwrap();
     };
     let reserve = |store: &SqliteStore| {
-        let candidate = StorePort::wake_candidates(store, PageRequest::default(), &budget())
-            .unwrap()
-            .items
-            .remove(0);
-        StorePort::reserve_wake(store, &candidate, &budget()).unwrap()
+        let candidate = StorePort::wake_candidates(
+            store,
+            crate::test_support::test_host_id(),
+            PageRequest::default(),
+            &budget(),
+        )
+        .unwrap()
+        .items
+        .remove(0);
+        StorePort::reserve_wake(
+            store,
+            crate::test_support::test_host_id(),
+            &candidate,
+            &budget(),
+        )
+        .unwrap()
     };
     for registered in [false, true] {
         let (store, path) = open(registered);
@@ -970,6 +1117,7 @@ fn walk_all(store: &SqliteStore, limit: u16) -> (Vec<(String, String, String)>, 
     loop {
         let page = StorePort::wake_recovery_candidates(
             store,
+            crate::test_support::test_host_id(),
             PageRequest {
                 cursor,
                 limit,
@@ -1133,6 +1281,7 @@ fn refused_completion_restores_the_prior_ladder_in_the_fenced_update() {
         let store = refusal_store(&path);
         let matched = StorePort::complete_wake(
             &store,
+            crate::test_support::test_host_id(),
             WakeAttemptId::new("current"),
             WakeOutcome::Refused(cause),
             Some(&prior_ladder()),
@@ -1169,6 +1318,7 @@ fn non_refused_completions_ignore_a_supplied_restore_and_report_no_match() {
     let store = refusal_store(&path);
     let matched = StorePort::complete_wake(
         &store,
+        crate::test_support::test_host_id(),
         WakeAttemptId::new("current"),
         WakeOutcome::OutcomeUnknown,
         Some(&prior_ladder()),
@@ -1212,6 +1362,7 @@ fn fence_miss_restores_nothing_and_keeps_the_advanced_step() {
     let before = ladder_row(&store);
     let matched = StorePort::complete_wake(
         &store,
+        crate::test_support::test_host_id(),
         WakeAttemptId::new("current"),
         WakeOutcome::Refused(crate::ports::RefusalCause::Unavailable),
         Some(&prior_ladder()),
@@ -1244,6 +1395,7 @@ fn refused_completion_of_a_different_boot_matches_nothing() {
     let before = ladder_row(&store);
     let matched = StorePort::complete_wake(
         &store,
+        crate::test_support::test_host_id(),
         WakeAttemptId::new("current"),
         WakeOutcome::Refused(crate::ports::RefusalCause::Unsafe),
         Some(&prior_ladder()),
@@ -1297,6 +1449,7 @@ fn page_seats(store: &SqliteStore) -> Vec<String> {
     loop {
         let page = StorePort::wake_candidates(
             store,
+            crate::test_support::test_host_id(),
             PageRequest {
                 cursor: cursor.take(),
                 ..PageRequest::default()
@@ -1339,15 +1492,25 @@ fn human_bound_seat_never_in_a_candidate_page() {
     for _ in 0..3 {
         assert_eq!(page_seats(&store), ["a"]);
     }
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
     assert_eq!(candidate.seat.as_str(), "a");
     assert!(
-        StorePort::reserve_wake(&store, &candidate, &budget())
-            .unwrap()
-            .is_some()
+        StorePort::reserve_wake(
+            &store,
+            crate::test_support::test_host_id(),
+            &candidate,
+            &budget()
+        )
+        .unwrap()
+        .is_some()
     );
     let db = store.context.open_writer().unwrap();
     let human: (i64, Option<String>) = db
@@ -1402,9 +1565,14 @@ fn settled_seat_leaves_the_page_and_keeps_its_wake_work_row() {
     )
     .unwrap();
     drop(db);
-    let resumed = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items;
+    let resumed = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items;
     assert_eq!(resumed.len(), 1);
     assert_eq!(
         resumed[0].retry_step, 2,
@@ -1419,13 +1587,23 @@ fn settled_seat_leaves_the_page_and_keeps_its_wake_work_row() {
 #[test]
 fn seat_mid_reservation_when_it_settles_is_reached_by_recovery() {
     let (store, path) = seeded_store(&[("s", "codex")]);
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
-    let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
-        .unwrap()
-        .unwrap();
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
+    let reservation = StorePort::reserve_wake(
+        &store,
+        crate::test_support::test_host_id(),
+        &candidate,
+        &budget(),
+    )
+    .unwrap()
+    .unwrap();
     accept_invitation(&store, "s");
     assert!(page_seats(&store).is_empty());
     drop(store);
@@ -1442,8 +1620,13 @@ fn seat_mid_reservation_when_it_settles_is_reached_by_recovery() {
     )
     .unwrap();
     assert!(page_seats(&reopened).is_empty());
-    let recovery =
-        StorePort::wake_recovery_candidates(&reopened, PageRequest::default(), &budget()).unwrap();
+    let recovery = StorePort::wake_recovery_candidates(
+        &reopened,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap();
     assert_eq!(recovery.items.len(), 1);
     assert_eq!(recovery.items[0].attempt, reservation.attempt);
     drop(reopened);
@@ -1456,10 +1639,15 @@ fn seat_mid_reservation_when_it_settles_is_reached_by_recovery() {
 #[test]
 fn reservation_after_a_decision_commit_is_refused() {
     let (store, path) = seeded_store(&[("s", "codex")]);
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
     let db = store.context.open_writer().unwrap();
     db.execute(
         "UPDATE local_node SET decision_seq=decision_seq+1 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
@@ -1468,9 +1656,14 @@ fn reservation_after_a_decision_commit_is_refused() {
     .unwrap();
     drop(db);
     assert!(
-        StorePort::reserve_wake(&store, &candidate, &budget())
-            .unwrap()
-            .is_none()
+        StorePort::reserve_wake(
+            &store,
+            crate::test_support::test_host_id(),
+            &candidate,
+            &budget()
+        )
+        .unwrap()
+        .is_none()
     );
     let reserved: i64 = store
         .context
@@ -1483,14 +1676,24 @@ fn reservation_after_a_decision_commit_is_refused() {
         )
         .unwrap();
     assert_eq!(reserved, 0);
-    let fresh = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
+    let fresh = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
     assert!(
-        StorePort::reserve_wake(&store, &fresh, &budget())
-            .unwrap()
-            .is_some(),
+        StorePort::reserve_wake(
+            &store,
+            crate::test_support::test_host_id(),
+            &fresh,
+            &budget()
+        )
+        .unwrap()
+        .is_some(),
         "a candidate read after the commit reserves"
     );
     drop(store);
@@ -1533,6 +1736,7 @@ fn legacy_wake_cursor_is_invalid_cursor() {
     .unwrap();
     let error = StorePort::wake_candidates(
         &store,
+        crate::test_support::test_host_id(),
         PageRequest {
             cursor: Some(legacy),
             ..PageRequest::default()
@@ -1557,7 +1761,13 @@ fn trailing_retired_seats_do_not_leave_a_dangling_cursor() {
     let db = store.context.open_writer().unwrap();
     db.execute("INSERT INTO seats(id,instance_id,state,role,generation,target_generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) VALUES ('gone','34750f98bd59fcfc946da45aaabe933b','retired','native',1,1,0,1,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     drop(db);
-    let page = StorePort::wake_candidates(&store, PageRequest::default(), &budget()).unwrap();
+    let page = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap();
     assert_eq!(page.items.len(), 1);
     assert!(!page.has_more && page.next_cursor.is_none(), "{page:?}");
     drop(store);
@@ -1581,10 +1791,15 @@ fn human_bound_seat_with_pending_acks_is_never_a_wake_candidate() {
         INSERT INTO wake_work(seat_id,retry_step) VALUES ('h',3);\
     ").unwrap();
     drop(db);
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
     assert_eq!(candidate.seat.as_str(), "h");
     assert!(candidate.has_pending_invitation && candidate.has_pending_receipt);
     assert_eq!(candidate.retry_step, 3);
@@ -1602,6 +1817,7 @@ fn human_bound_seat_with_pending_acks_is_never_a_wake_candidate() {
         loop {
             let page = StorePort::wake_candidates(
                 &store,
+                crate::test_support::test_host_id(),
                 PageRequest {
                     cursor: cursor.take(),
                     limit,
@@ -1619,9 +1835,14 @@ fn human_bound_seat_with_pending_acks_is_never_a_wake_candidate() {
         assert!(listed.is_empty(), "limit {limit}: {listed:?}");
     }
     assert!(
-        StorePort::reserve_wake(&store, &candidate, &budget())
-            .unwrap()
-            .is_none(),
+        StorePort::reserve_wake(
+            &store,
+            crate::test_support::test_host_id(),
+            &candidate,
+            &budget()
+        )
+        .unwrap()
+        .is_none(),
         "a human-bound seat is never reserved"
     );
     let db = store.context.open_writer().unwrap();
@@ -1650,14 +1871,24 @@ fn cooperative_wake_requires_an_open_binding() {
         .unwrap()
         .execute("UPDATE occupant_bindings SET ended_at=1", [])
         .unwrap();
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
     assert!(
-        StorePort::reserve_wake(&store, &candidate, &budget())
-            .unwrap()
-            .is_none()
+        StorePort::reserve_wake(
+            &store,
+            crate::test_support::test_host_id(),
+            &candidate,
+            &budget()
+        )
+        .unwrap()
+        .is_none()
     );
     drop(store);
     let _ = std::fs::remove_file(path);
@@ -1696,11 +1927,22 @@ fn bound_seat_store(harness: &str) -> (SqliteStore, std::path::PathBuf) {
 }
 
 fn reserve_for_seat(store: &SqliteStore) -> Option<crate::ports::WakeReservation> {
-    let candidate = StorePort::wake_candidates(store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
-    StorePort::reserve_wake(store, &candidate, &budget()).unwrap()
+    let candidate = StorePort::wake_candidates(
+        store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
+    StorePort::reserve_wake(
+        store,
+        crate::test_support::test_host_id(),
+        &candidate,
+        &budget(),
+    )
+    .unwrap()
 }
 
 /// Kills: a reservation that drops the open binding's harness, so the host
@@ -1732,14 +1974,24 @@ fn human_bound_seat_with_agent_in_pane_gets_no_wake_authority() {
     let (store, path) = bound_seat_store("human");
     // This branch's wake discovery (B1) already leaves a person's seat out of
     // the candidates; any candidate that does appear must not reserve.
-    let candidates = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items;
+    let candidates = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items;
     for candidate in &candidates {
         assert!(
-            StorePort::reserve_wake(&store, candidate, &budget())
-                .unwrap()
-                .is_none()
+            StorePort::reserve_wake(
+                &store,
+                crate::test_support::test_host_id(),
+                candidate,
+                &budget()
+            )
+            .unwrap()
+            .is_none()
         );
     }
     // Control: the same fixture bound to an agent does yield wake authority.
@@ -1773,14 +2025,24 @@ fn human_bound_seat_with_a_later_disconnected_agent_binding_gets_no_wake() {
         .unwrap()
     };
     assert!(held(&db));
-    for candidate in &StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
+    for candidate in &StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
     {
         assert!(
-            StorePort::reserve_wake(&store, candidate, &budget())
-                .unwrap()
-                .is_none()
+            StorePort::reserve_wake(
+                &store,
+                crate::test_support::test_host_id(),
+                candidate,
+                &budget()
+            )
+            .unwrap()
+            .is_none()
         );
     }
     db.execute(
@@ -1812,14 +2074,24 @@ fn managed_launch_binding_reserves_a_cooperative_wake() {
         .unwrap()
         .execute("DELETE FROM occupant_bindings", [])
         .unwrap();
-    let unbound = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
+    let unbound = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
     assert!(
-        StorePort::reserve_wake(&store, &unbound, &budget())
-            .unwrap()
-            .is_none(),
+        StorePort::reserve_wake(
+            &store,
+            crate::test_support::test_host_id(),
+            &unbound,
+            &budget()
+        )
+        .unwrap()
+        .is_none(),
         "control: no binding, no wake"
     );
     let recorded = StorePort::record_managed_launch(
@@ -1893,19 +2165,35 @@ fn durable_batch_uses_oldest_saturated_publication_and_clears_when_work_drains()
         },
     )
     .unwrap();
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
-    let first = StorePort::wake_batch_window(&store, &candidate, &budget())
-        .unwrap()
-        .unwrap();
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
+    let first = StorePort::wake_batch_window(
+        &store,
+        crate::test_support::test_host_id(),
+        &candidate,
+        &budget(),
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(first, (UtcMillis(30_000), 30_000));
     let db = store.context.open_writer().unwrap();
     db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('later','t','s',151,'pending',99,151,100000,100000)",[]).unwrap();
     drop(db);
     assert_eq!(
-        StorePort::wake_batch_window(&store, &candidate, &budget()).unwrap(),
+        StorePort::wake_batch_window(
+            &store,
+            crate::test_support::test_host_id(),
+            &candidate,
+            &budget()
+        )
+        .unwrap(),
         Some(first)
     );
     let db = store.context.open_writer().unwrap();
@@ -1922,12 +2210,23 @@ fn durable_batch_uses_oldest_saturated_publication_and_clears_when_work_drains()
     );
     db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('fresh','t','s',152,'pending',100,152,100000,100000)",[]).unwrap();
     drop(db);
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
     assert_eq!(
-        StorePort::wake_batch_window(&store, &candidate, &budget()).unwrap(),
+        StorePort::wake_batch_window(
+            &store,
+            crate::test_support::test_host_id(),
+            &candidate,
+            &budget()
+        )
+        .unwrap(),
         Some((UtcMillis(30_100), 30_000))
     );
     drop(store);
@@ -1955,12 +2254,23 @@ fn canonical_batch_cleanup_clears_catch_up_holds_and_release_starts_new_window()
         },
     )
     .unwrap();
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
     assert_eq!(
-        StorePort::wake_batch_window(&store, &candidate, &budget()).unwrap(),
+        StorePort::wake_batch_window(
+            &store,
+            crate::test_support::test_host_id(),
+            &candidate,
+            &budget()
+        )
+        .unwrap(),
         Some((UtcMillis(30_000), 30_000))
     );
     let db = store.context.open_writer().unwrap();
@@ -1978,13 +2288,28 @@ fn canonical_batch_cleanup_clears_catch_up_holds_and_release_starts_new_window()
     )
     .unwrap();
     assert_eq!(
-        StorePort::wake_batch_seats(&store, None, 16, &budget()).unwrap(),
+        StorePort::wake_batch_seats(
+            &store,
+            crate::test_support::test_host_id(),
+            None,
+            16,
+            &budget()
+        )
+        .unwrap(),
         vec![SeatId::new("s")]
     );
     let db = store.context.open_writer().unwrap();
     db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('keep','t','s',1,'pending',100,3,100000,100000)",[]).unwrap();
     drop(db);
-    assert!(!StorePort::clear_wake_batch_if_empty(&store, &SeatId::new("s"), &budget()).unwrap());
+    assert!(
+        !StorePort::clear_wake_batch_if_empty(
+            &store,
+            crate::test_support::test_host_id(),
+            &SeatId::new("s"),
+            &budget()
+        )
+        .unwrap()
+    );
     let db = store.context.open_writer().unwrap();
     assert_eq!(
         db.query_row(
@@ -2002,12 +2327,25 @@ fn canonical_batch_cleanup_clears_catch_up_holds_and_release_starts_new_window()
     .unwrap();
     drop(db);
     assert!(
-        StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-            .unwrap()
-            .items
-            .is_empty()
+        StorePort::wake_candidates(
+            &store,
+            crate::test_support::test_host_id(),
+            PageRequest::default(),
+            &budget()
+        )
+        .unwrap()
+        .items
+        .is_empty()
     );
-    assert!(StorePort::clear_wake_batch_if_empty(&store, &SeatId::new("s"), &budget()).unwrap());
+    assert!(
+        StorePort::clear_wake_batch_if_empty(
+            &store,
+            crate::test_support::test_host_id(),
+            &SeatId::new("s"),
+            &budget()
+        )
+        .unwrap()
+    );
     let db = store.context.open_writer().unwrap();
     assert_eq!(
         db.query_row("SELECT count(*) FROM wake_batches", [], |r| r
@@ -2021,12 +2359,23 @@ fn canonical_batch_cleanup_clears_catch_up_holds_and_release_starts_new_window()
     )
     .unwrap();
     drop(db);
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
     assert_eq!(
-        StorePort::wake_batch_window(&store, &candidate, &budget()).unwrap(),
+        StorePort::wake_batch_window(
+            &store,
+            crate::test_support::test_host_id(),
+            &candidate,
+            &budget()
+        )
+        .unwrap(),
         Some((UtcMillis(30_200), 30_000))
     );
     drop(store);
@@ -2054,7 +2403,14 @@ fn durable_batch_window_enumeration_pages_only_retained_windows() {
         StoreSettings::default(),
     )
     .unwrap();
-    let first = StorePort::wake_batch_seats(&store, None, 16, &budget()).unwrap();
+    let first = StorePort::wake_batch_seats(
+        &store,
+        crate::test_support::test_host_id(),
+        None,
+        16,
+        &budget(),
+    )
+    .unwrap();
     assert_eq!(first.len(), 16);
     assert_eq!(first[0], SeatId::new("seat-00"));
     let db = store.context.open_writer().unwrap();
@@ -2064,15 +2420,37 @@ fn durable_batch_window_enumeration_pages_only_retained_windows() {
     )
     .unwrap();
     drop(db);
-    let second = StorePort::wake_batch_seats(&store, first.last(), 16, &budget()).unwrap();
+    let second = StorePort::wake_batch_seats(
+        &store,
+        crate::test_support::test_host_id(),
+        first.last(),
+        16,
+        &budget(),
+    )
+    .unwrap();
     assert_eq!(second.len(), 9);
     assert_eq!(second[0], SeatId::new("seat-16"));
     assert!(
-        StorePort::wake_batch_seats(&store, second.last(), 16, &budget())
-            .unwrap()
-            .is_empty()
+        StorePort::wake_batch_seats(
+            &store,
+            crate::test_support::test_host_id(),
+            second.last(),
+            16,
+            &budget()
+        )
+        .unwrap()
+        .is_empty()
     );
-    assert!(StorePort::wake_batch_seats(&store, None, 17, &budget()).is_err());
+    assert!(
+        StorePort::wake_batch_seats(
+            &store,
+            crate::test_support::test_host_id(),
+            None,
+            17,
+            &budget()
+        )
+        .is_err()
+    );
     drop(store);
     let _ = std::fs::remove_file(path);
 }
@@ -2098,12 +2476,23 @@ fn batch_window_ignores_human_waived_receipts_and_clears_last_required_waiver() 
         },
     )
     .unwrap();
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
     assert_eq!(
-        StorePort::wake_batch_window(&store, &candidate, &budget()).unwrap(),
+        StorePort::wake_batch_window(
+            &store,
+            crate::test_support::test_host_id(),
+            &candidate,
+            &budget()
+        )
+        .unwrap(),
         Some((UtcMillis(30_090), 30_000))
     );
     let db = store.context.open_writer().unwrap();
@@ -2201,10 +2590,15 @@ fn target_ids(reservation: &crate::ports::WakeReservation) -> Vec<String> {
 #[test]
 fn two_connected_claude_bindings_both_get_mod_wakes() {
     let (store, path) = multi_store(&[row("a", "claude", 10), row("b", "claude", 20)]);
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
     let ids: Vec<_> = candidate
         .targets
         .iter()
@@ -2215,9 +2609,14 @@ fn two_connected_claude_bindings_both_get_mod_wakes() {
         ["a", "b"],
         "the candidate names both for the channel pre-check"
     );
-    let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
-        .unwrap()
-        .expect("reserved");
+    let reservation = StorePort::reserve_wake(
+        &store,
+        crate::test_support::test_host_id(),
+        &candidate,
+        &budget(),
+    )
+    .unwrap()
+    .expect("reserved");
     assert_eq!(target_ids(&reservation), ["a", "b"]);
     assert_eq!(
         reservation.authority.targets()[1].fingerprint_pid,
@@ -2239,13 +2638,23 @@ fn subagents_and_humans_are_never_targets() {
         },
     ]);
     let reservation = {
-        let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-            .unwrap()
-            .items
-            .remove(0);
-        StorePort::reserve_wake(&store, &candidate, &budget())
-            .unwrap()
-            .expect("reserved")
+        let candidate = StorePort::wake_candidates(
+            &store,
+            crate::test_support::test_host_id(),
+            PageRequest::default(),
+            &budget(),
+        )
+        .unwrap()
+        .items
+        .remove(0);
+        StorePort::reserve_wake(
+            &store,
+            crate::test_support::test_host_id(),
+            &candidate,
+            &budget(),
+        )
+        .unwrap()
+        .expect("reserved")
     };
     assert_eq!(target_ids(&reservation), ["top"]);
     drop(store);
@@ -2261,10 +2670,15 @@ fn disconnected_bindings_are_never_woken() {
         ..row(id, "claude", pid)
     };
     let (store, path) = multi_store(&[gone("old", 10), row("live", "claude", 20)]);
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
     assert_eq!(
         candidate
             .targets
@@ -2273,23 +2687,38 @@ fn disconnected_bindings_are_never_woken() {
             .collect::<Vec<_>>(),
         ["live"]
     );
-    let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
-        .unwrap()
-        .expect("the live binding is woken");
+    let reservation = StorePort::reserve_wake(
+        &store,
+        crate::test_support::test_host_id(),
+        &candidate,
+        &budget(),
+    )
+    .unwrap()
+    .expect("the live binding is woken");
     assert_eq!(target_ids(&reservation), ["live"]);
     drop(store);
     let _ = std::fs::remove_file(path);
 
     let (store, path) = multi_store(&[gone("old", 10), gone("older", 20)]);
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
     assert!(candidate.targets.is_empty());
     assert!(
-        StorePort::reserve_wake(&store, &candidate, &budget())
-            .unwrap()
-            .is_none(),
+        StorePort::reserve_wake(
+            &store,
+            crate::test_support::test_host_id(),
+            &candidate,
+            &budget()
+        )
+        .unwrap()
+        .is_none(),
         "no connected top-level binding, no wake authority"
     );
     drop(store);
@@ -2310,13 +2739,23 @@ fn only_bindings_placed_on_the_observed_terminal_are_targets() {
             [],
         )
         .unwrap();
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
-    let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
-        .unwrap()
-        .expect("reserved");
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
+    let reservation = StorePort::reserve_wake(
+        &store,
+        crate::test_support::test_host_id(),
+        &candidate,
+        &budget(),
+    )
+    .unwrap()
+    .expect("reserved");
     assert_eq!(target_ids(&reservation), ["here"]);
     drop(store);
     let _ = std::fs::remove_file(path);
@@ -2333,9 +2772,14 @@ fn human_seat_is_never_woken() {
             ..row("person", "human", 0)
         },
     ]);
-    let candidates = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items;
+    let candidates = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items;
     assert!(
         candidates.is_empty(),
         "a seat that holds a human binding is not a wake candidate"
@@ -2462,13 +2906,23 @@ fn composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match() {
 #[test]
 fn wake_fence_is_the_mapping_generation() {
     let (store, path) = multi_store(&[row("a", "claude", 10)]);
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .remove(0);
-    let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
-        .unwrap()
-        .expect("reserved");
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .remove(0);
+    let reservation = StorePort::reserve_wake(
+        &store,
+        crate::test_support::test_host_id(),
+        &candidate,
+        &budget(),
+    )
+    .unwrap()
+    .expect("reserved");
     assert!(StorePort::validate_wake_reservation(&store, &reservation, &budget()).unwrap());
     let db = store.context.open_writer().unwrap();
     db.execute(
@@ -2530,11 +2984,16 @@ fn serve_in_turn(store: &SqliteStore, binding: &str, item: &str) {
 
 /// The seat's wake candidate when it owes a wake at all.
 fn owed_candidate(store: &SqliteStore) -> Option<WakeCandidate> {
-    StorePort::wake_candidates(store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
-        .into_iter()
-        .find(|c| c.seat.as_str() == "s" && c.has_actionable_work())
+    StorePort::wake_candidates(
+        store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
+    .into_iter()
+    .find(|c| c.seat.as_str() == "s" && c.has_actionable_work())
 }
 
 /// The real store as the dispatcher's final fence, including the per-binding in-turn recheck.
@@ -2607,9 +3066,14 @@ const FOREGROUND_B: u32 = 20;
 fn in_turn_service_is_decided_for_the_binding_the_composer_reaches() {
     for kind in [InTurnKind::Receipt, InTurnKind::Invitation] {
         let (store, path, _) = two_binding_store(kind);
-        let control = StorePort::reserve_wake(&store, &owed_candidate(&store).unwrap(), &budget())
-            .unwrap()
-            .expect("control: unserved item reserves a wake");
+        let control = StorePort::reserve_wake(
+            &store,
+            crate::test_support::test_host_id(),
+            &owed_candidate(&store).unwrap(),
+            &budget(),
+        )
+        .unwrap()
+        .expect("control: unserved item reserves a wake");
         assert_eq!(target_ids(&control), ["a", "b"], "{kind:?}");
         assert_eq!(
             dispatch_to(&store, &control, FOREGROUND_A).1.len(),
@@ -2624,9 +3088,14 @@ fn in_turn_service_is_decided_for_the_binding_the_composer_reaches() {
         serve_in_turn(&store, "a", item_1);
         let candidate = owed_candidate(&store)
             .unwrap_or_else(|| panic!("{kind:?}: an unserved sibling's wake is never hidden"));
-        let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
-            .unwrap()
-            .expect("reserved");
+        let reservation = StorePort::reserve_wake(
+            &store,
+            crate::test_support::test_host_id(),
+            &candidate,
+            &budget(),
+        )
+        .unwrap()
+        .expect("reserved");
         let (outcome, typed) = dispatch_to(&store, &reservation, FOREGROUND_A);
         assert!(
             typed.is_empty(),
@@ -2650,9 +3119,14 @@ fn in_turn_service_is_decided_for_the_binding_the_composer_reaches() {
         serve_in_turn(&store, "b", item_2);
         let candidate = owed_candidate(&store)
             .unwrap_or_else(|| panic!("{kind:?}: b's presentation never hides a's wake"));
-        let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
-            .unwrap()
-            .expect("reserved");
+        let reservation = StorePort::reserve_wake(
+            &store,
+            crate::test_support::test_host_id(),
+            &candidate,
+            &budget(),
+        )
+        .unwrap()
+        .expect("reserved");
         assert_eq!(
             dispatch_to(&store, &reservation, FOREGROUND_A).1.len(),
             1,
@@ -2678,10 +3152,14 @@ fn in_turn_service_is_decided_for_the_binding_the_composer_reaches() {
 fn an_in_turn_offer_after_reservation_cancels_that_bindings_wake() {
     for kind in [InTurnKind::Receipt, InTurnKind::Invitation] {
         let (store, path, item) = two_binding_store(kind);
-        let reservation =
-            StorePort::reserve_wake(&store, &owed_candidate(&store).unwrap(), &budget())
-                .unwrap()
-                .expect("reserved");
+        let reservation = StorePort::reserve_wake(
+            &store,
+            crate::test_support::test_host_id(),
+            &owed_candidate(&store).unwrap(),
+            &budget(),
+        )
+        .unwrap()
+        .expect("reserved");
         serve_in_turn(&store, "a", item);
         let (outcome, typed) = dispatch_to(&store, &reservation, FOREGROUND_A);
         assert!(typed.is_empty(), "{kind:?}: served after reservation");
@@ -2715,9 +3193,14 @@ fn a_binding_served_one_reason_is_still_woken_for_another() {
         .execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('m','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','body',1,0);
             INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t','s','pending',100000);")
         .unwrap();
-    let reservation = StorePort::reserve_wake(&store, &owed_candidate(&store).unwrap(), &budget())
-        .unwrap()
-        .expect("the unserved receipt reserves a wake");
+    let reservation = StorePort::reserve_wake(
+        &store,
+        crate::test_support::test_host_id(),
+        &owed_candidate(&store).unwrap(),
+        &budget(),
+    )
+    .unwrap()
+    .expect("the unserved receipt reserves a wake");
     assert_eq!(
         dispatch_to(&store, &reservation, FOREGROUND_A).1.len(),
         1,
@@ -2759,9 +3242,14 @@ fn a_recovery_hint_wake_to_a_served_binding_is_refused() {
     .unwrap();
     let candidate =
         owed_candidate(&store).expect("the unserved older sibling keeps the seat's wake owed");
-    let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
-        .unwrap()
-        .expect("reserved");
+    let reservation = StorePort::reserve_wake(
+        &store,
+        crate::test_support::test_host_id(),
+        &candidate,
+        &budget(),
+    )
+    .unwrap()
+    .expect("reserved");
     assert!(
         matches!(
             reservation.authority,

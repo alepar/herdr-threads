@@ -94,9 +94,14 @@ fn publish_staged(store: &SqliteStore, n: i64, decision_seq: i64, decision_at: i
 }
 
 fn candidates(store: &SqliteStore) -> Vec<WakeCandidate> {
-    StorePort::wake_candidates(store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
+    StorePort::wake_candidates(
+        store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
 }
 
 /// The candidate of seat `s` read directly, whether or not it is actionable.
@@ -114,7 +119,13 @@ fn direct_candidate(store: &SqliteStore) -> WakeCandidate {
 }
 
 fn reserve(store: &SqliteStore, candidate: &WakeCandidate) -> Option<WakeReservation> {
-    StorePort::reserve_wake(store, candidate, &budget()).unwrap()
+    StorePort::reserve_wake(
+        store,
+        crate::test_support::test_host_id(),
+        candidate,
+        &budget(),
+    )
+    .unwrap()
 }
 
 fn last_lazy_ordinal(store: &SqliteStore) -> Option<i64> {
@@ -135,6 +146,7 @@ fn last_lazy_ordinal(store: &SqliteStore) -> Option<i64> {
 fn settle(store: &SqliteStore, reservation: &WakeReservation) {
     StorePort::complete_wake(
         store,
+        crate::test_support::test_host_id(),
         reservation.attempt.clone(),
         WakeOutcome::Submitted,
         None,
@@ -240,7 +252,7 @@ fn nudge_seat_is_never_woken_by_a_lazy_row_and_no_poke_exists() {
     }
     drop(db);
     assert!(
-        StorePort::poke_candidates(&store, 16, &budget())
+        StorePort::poke_candidates(&store, crate::test_support::test_host_id(), 16, &budget())
             .unwrap()
             .is_empty(),
         "lazy rows have no deadline, so no poke is due"
@@ -259,6 +271,7 @@ fn refused_wake_restores_the_lazy_frontier_so_the_row_wakes_again() {
     assert_eq!(last_lazy_ordinal(&store), Some(1));
     StorePort::complete_wake(
         &store,
+        crate::test_support::test_host_id(),
         reservation.attempt.clone(),
         WakeOutcome::Refused(crate::ports::RefusalCause::Unsafe),
         Some(&prior),
@@ -309,14 +322,26 @@ fn batch_window_anchors_on_the_oldest_pending_lazy_row() {
     publish_lazy(&store, 2, 90);
     let candidate = candidates(&store).remove(0);
     assert_eq!(
-        StorePort::wake_batch_window(&store, &candidate, &budget()).unwrap(),
+        StorePort::wake_batch_window(
+            &store,
+            crate::test_support::test_host_id(),
+            &candidate,
+            &budget()
+        )
+        .unwrap(),
         Some((UtcMillis(30_050), 30_000)),
         "the oldest lazy row opens the window like an ordinary receipt"
     );
     // A later pass keeps the retained deadline instead of sliding it.
     publish_lazy(&store, 3, 95);
     assert_eq!(
-        StorePort::wake_batch_window(&store, &candidate, &budget()).unwrap(),
+        StorePort::wake_batch_window(
+            &store,
+            crate::test_support::test_host_id(),
+            &candidate,
+            &budget()
+        )
+        .unwrap(),
         Some((UtcMillis(30_050), 30_000))
     );
     drop(store);

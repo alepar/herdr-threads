@@ -344,7 +344,8 @@ impl Fixture {
         let store = Arc::new(store);
         Self {
             clock,
-            store: ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32))),
+            store: ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)))
+                .for_host(crate::test_support::test_host_id()),
             sqlite: store,
             path,
             _guard: guard,
@@ -952,6 +953,7 @@ fn frozen_wake_lane_neither_reads_nor_pokes_until_recovery() {
         fx.sqlite.clone(),
         Arc::new(FairWriter::new(32)),
         host.clone(),
+        crate::test_support::test_host_id(),
         "34750f98bd59fcfc946da45aaabe933b".into(),
         uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
         RetryConfig::default(),
@@ -1139,6 +1141,7 @@ fn receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path(
         let candidates = crate::store::discover_wake_candidates(
             &db,
             "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             0,
             high,
             100,
