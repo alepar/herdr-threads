@@ -54,21 +54,16 @@ pub struct Progress {
     pub has_more: bool,
 }
 
-// The archival lane can win the startup race with the host attach: the
-// attached host's row is what establishes the canonical host instance.
-// With no host attached there is no canonical host instance yet either.
+// The archival lane can win the startup race with the host attach: a host's
+// row is what establishes the canonical host instance. With no host row there
+// is no canonical host instance yet either.
 fn instance_initialized(db: &Connection, instance: &str) -> Result<bool, ApiError> {
-    match db
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1)",
-            [instance],
-            |r| r.get(0),
-        )
-        .map_err(store_error)
-    {
-        Err(error) if error.code == ErrorCode::HostUnavailable => Ok(false),
-        other => other,
-    }
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM herdr_hosts WHERE node_id=?1)",
+        [instance],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
 }
 
 /// Each call owns one bounded deciding transaction. The caller must already
@@ -631,7 +626,7 @@ pub(crate) fn observation_ticket_with_registry(
     };
     let claim = CallerClaim {
         instance: instance.into(),
-        host: super::hosts::primary_claim_host(db),
+        host: super::hosts::seat_claim_host(db, seat),
         seat: SeatId::new(seat),
         binding_generation: generation as u64,
         role: CallerRole::TopLevel,
@@ -645,7 +640,7 @@ pub(crate) fn observation_ticket_with_registry(
     if runtime_boot != rt.boot {
         return Ok(None);
     }
-    let mapping = match super::seats::cooperative_bound_mapping(db, &claim, None) {
+    let mapping = match super::seats::seat_bound_mapping(db, &claim) {
         Ok(mapping) => mapping,
         Err(_) => return Ok(None),
     };
@@ -774,7 +769,7 @@ pub(crate) fn record_sample_in_with_registry(
         )
         .map_err(store_error)?;
     let proof = observation.verified_structural_proof();
-    let mapping = super::seats::cooperative_bound_mapping(tx, claim, None).ok();
+    let mapping = super::seats::seat_bound_mapping(tx, claim).ok();
     let current = effective::effective_observation(
         tx,
         super::seats::seat_host(tx, &claim.seat)?,
@@ -862,7 +857,9 @@ fn validate_snapshot_page(
     instance: &str,
     rt: &Runtime,
 ) -> Result<bool, ApiError> {
-    let (current,saved,checked,mut cursor):(Option<String>,Option<String>,bool,String)=tx.query_row("SELECT h.active_snapshot_id,a.validating_snapshot,a.snapshot_checked,a.snapshot_cursor FROM archival_instances a JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=a.instance_id WHERE a.instance_id=?1",[instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(store_error)?;
+    // The published view is every host's active snapshot (a change on any host restarts the
+    // validation); per-host archival evidence replaces this in ht-5fr.2.9.
+    let (current,saved,checked,mut cursor):(Option<String>,Option<String>,bool,String)=tx.query_row("SELECT (SELECT NULLIF(group_concat(COALESCE(active_snapshot_id,''),','),'') FROM (SELECT active_snapshot_id FROM herdr_hosts WHERE node_id=a.instance_id ORDER BY host_id)),a.validating_snapshot,a.snapshot_checked,a.snapshot_cursor FROM archival_instances a WHERE a.instance_id=?1",[instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(store_error)?;
     if current == saved && checked {
         return Ok(true);
     }

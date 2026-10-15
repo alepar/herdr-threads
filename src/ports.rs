@@ -3222,9 +3222,9 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
     /// Read-only: the host epoch persisted by the last accepted publication
-    /// for this instance (0 when none). Used only to start a new epoch above
-    /// it at daemon boot; it grants no observation authority.
-    fn persisted_host_epoch(&self, _instance: &str, _budget: &CallBudget) -> Result<u64, ApiError>;
+    /// for `host` (0 when none). Used only to start a new epoch above it at
+    /// daemon boot; it grants no observation authority.
+    fn persisted_host_epoch(&self, _host: HostId, _budget: &CallBudget) -> Result<u64, ApiError>;
     /// Upserts the `herdr_hosts` row of `locator`, stamping `last_attached_at`
     /// to `now`; returns its id and the persisted host epoch (0 for a new row).
     fn attach_host(

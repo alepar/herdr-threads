@@ -1122,6 +1122,21 @@ repairs them (A5): move one copy's `<state_dir>/node/` directory aside so it sta
 decided and materialized on the node whose view caused them and are not replicated; only facts are. Settled
 history never wakes anyone: catch-up of old facts applies under suppression (see Accepted limits).
 
+**N10. Several Herdr servers on one node.** One daemon may serve several Herdr servers, and target ids are unique
+only within one server (see C2). Four rules, enforced in the store by `seats::cooperative_claim` and
+`seats::decide_continuity`:
+- The caller claim's host locator names the Herdr server the caller's pane runs under. It is cooperative context
+  like `target`: a hint the daemon checks, never attestation.
+- The daemon accepts a claim only when the claimed seat is a local seat that currently sits on the attached
+  server the claim names (A2, decided in the deciding transaction). A server that is not attached is
+  `HostUnavailable` (retryable once it is); a seat that is not local, or sits on another server, is
+  CallerUnverified.
+- A rebind under C1 or by an operator may move a local seat between Herdr servers of the same node, and never
+  between nodes. `host_id` changes only in the same transaction that sets the new `target_id`, and the
+  allocation decision records the server. C1 takes the server from the continuity command, not from a claim, and
+  its candidates are local seats only.
+- An unreachable or unattached server freezes wakes only for its own seats; seats on other servers keep waking.
+
 ## Accepted limits
 
 For the generic join frontier (excluding active direct-invitation acceptance above), pre-join lazy

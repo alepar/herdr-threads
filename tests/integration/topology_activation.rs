@@ -406,7 +406,10 @@ impl Fixture {
                             daemon_clock,
                             daemon_stop,
                             ServiceConfig::default(),
-                            HostChoice::given(native),
+                            HostChoice::given_at(
+                                native,
+                                daemon_context.require_host().unwrap().to_path_buf(),
+                            ),
                             ready,
                         )
                         .await
@@ -546,7 +549,7 @@ impl Fixture {
         let store = Arc::new(
             SqliteStore::new(
                 StoreContext::new(self.paths.database_path.clone(), self.clock.clone())
-                    .with_test_host(),
+                    .with_attached_host(&self.context.claim_host().unwrap()),
                 self.instance.to_string(),
                 StoreSettings::default(),
             )
@@ -596,7 +599,8 @@ impl Fixture {
         f_copy_database(&self.db(), &copy);
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(copy, self.clock.clone()).with_test_host(),
+                StoreContext::new(copy, self.clock.clone())
+                    .with_attached_host(&self.context.claim_host().unwrap()),
                 self.instance.to_string(),
                 StoreSettings::default(),
             )
@@ -782,7 +786,8 @@ fn registered_begin_create_replay_matrix(
     }
     let generic = f.unconfigured_domain();
     let store = SqliteStore::new(
-        StoreContext::new(f.paths.database_path.clone(), f.clock.clone()).with_test_host(),
+        StoreContext::new(f.paths.database_path.clone(), f.clock.clone())
+            .with_attached_host(&f.context.claim_host().unwrap()),
         f.instance.to_string(),
         StoreSettings::default(),
     )
@@ -1246,7 +1251,8 @@ fn elected_public_new_tab_completes_one_native_create_and_start_then_replays_his
         &budget,
     );
     let store = SqliteStore::new(
-        StoreContext::new(f.paths.database_path.clone(), f.clock.clone()).with_test_host(),
+        StoreContext::new(f.paths.database_path.clone(), f.clock.clone())
+            .with_attached_host(&f.context.claim_host().unwrap()),
         f.instance.to_string(),
         StoreSettings::default(),
     )

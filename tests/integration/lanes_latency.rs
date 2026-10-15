@@ -76,8 +76,10 @@ impl Session {
         let context = RuntimeContext::explicit(state.clone(), herdr.socket_path(), None).unwrap();
         let paths = NodePaths::resolve(&context.state_dir).unwrap();
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        // The canonical path the CLI claims name, which is also the endpoint the daemon attaches.
+        let endpoint = context.require_host().unwrap().to_path_buf();
         let host: Arc<dyn HostPort> =
-            Arc::new(NativeCli::new(herdr.socket_path(), Arc::clone(&clock)));
+            Arc::new(NativeCli::new(endpoint.clone(), Arc::clone(&clock)));
         let probe = LaneProbe::default();
         // Lane budgets measure the commit chain, not fsync on a disk the
         // rest of the suite shares (production commits stay FULL).
@@ -97,7 +99,7 @@ impl Session {
                     // Measure commit latency and outage freezing independently
                     // of the configurable initial ordinary batching window.
                     ServiceConfig::default().with_wake_batch_delay(0).unwrap(),
-                    herdr_threads::app::HostChoice::given(host),
+                    herdr_threads::app::HostChoice::given_at(host, endpoint),
                     daemon_probe,
                     move |descriptor| {
                         ready_tx

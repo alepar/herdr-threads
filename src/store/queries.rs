@@ -861,7 +861,7 @@ fn thread_details(
     // The embedded participants page overflows the details envelope: cut it
     // back through the page fit, each cut page continuing from its last item.
     let filter = digest(&q.thread.as_str())?;
-    let (member_rev,lifecycle_rev):(i64,i64)=db.query_row("SELECT t.membership_revision,h.lifecycle_revision FROM threads t JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=t.instance_id WHERE t.id=?1",[q.thread.as_str()],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|db.map_error(e))?;
+    let (member_rev,lifecycle_rev):(i64,i64)=db.query_row("SELECT t.membership_revision,(SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=t.instance_id) FROM threads t WHERE t.id=?1",[q.thread.as_str()],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|db.map_error(e))?;
     let start_after = q
         .page
         .cursor
@@ -1554,7 +1554,7 @@ fn participants(
     q: &ParticipantsQuery,
     output: &OutputSpec,
 ) -> Result<CommandResult, ApiError> {
-    let scope:(i64,i64)=db.query_row("SELECT t.membership_revision,h.lifecycle_revision FROM threads t JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=t.instance_id WHERE t.id=?1 AND t.instance_id=?2",params![q.thread.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|db.map_error(e))?.ok_or_else(||api_error(ErrorCode::NotFound,"thread not found"))?;
+    let scope:(i64,i64)=db.query_row("SELECT t.membership_revision,(SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=t.instance_id) FROM threads t WHERE t.id=?1 AND t.instance_id=?2",params![q.thread.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|db.map_error(e))?.ok_or_else(||api_error(ErrorCode::NotFound,"thread not found"))?;
     let filter = digest(&q.thread.as_str())?;
     let cursor = decode_cursor(
         &q.page,
@@ -1812,7 +1812,7 @@ fn directory(
     };
     let lifecycle_revision: i64 = if member_relevant {
         db.query_row(
-            "SELECT lifecycle_revision FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
+            "SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=?1",
             [instance],
             |r| r.get(0),
         )

@@ -320,18 +320,30 @@ impl SqliteStore {
         }
         // A store stuck with a hold nothing protects (reconciliation already
         // finished, no unresolved seat) is cleared once at daemon start.
-        // A store with no attached Herdr host has no hold to clear.
-        if let Ok(primary) = context.primary_host() {
-            let tx = writer
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                .map_err(store_error)?;
-            seats::lift_baseline_hold_if_clear(
-                &tx,
-                &instance,
-                crate::ports::HostId::from_row(primary),
-                context.clock().utc_now(),
-            )?;
-            tx.commit().map_err(store_error)?;
+        // Each remembered host's hold is judged on its own; a store with no host row has none to
+        // clear.
+        {
+            let hosts: Vec<i64> = {
+                let mut statement = writer
+                    .prepare("SELECT host_id FROM herdr_hosts WHERE node_id=?1 ORDER BY host_id")
+                    .map_err(store_error)?;
+                statement
+                    .query_map([&instance], |row| row.get(0))
+                    .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
+                    .map_err(store_error)?
+            };
+            for host in hosts {
+                let tx = writer
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                    .map_err(store_error)?;
+                seats::lift_baseline_hold_if_clear(
+                    &tx,
+                    &instance,
+                    crate::ports::HostId::from_row(host),
+                    context.clock().utc_now(),
+                )?;
+                tx.commit().map_err(store_error)?;
+            }
         }
         Ok(Self {
             context,
@@ -2274,15 +2286,13 @@ impl StorePort for SqliteStore {
             other => other,
         }
     }
-    fn persisted_host_epoch(&self, instance: &str, budget: &CallBudget) -> Result<u64, ApiError> {
-        if instance != self.instance {
-            return Err(api_error(
-                ErrorCode::InvalidRequest,
-                "host instance mismatch",
-            ));
-        }
+    fn persisted_host_epoch(
+        &self,
+        host: crate::ports::HostId,
+        budget: &CallBudget,
+    ) -> Result<u64, ApiError> {
         let writer = self.writer(budget)?;
-        seats::persisted_host_epoch(&writer, instance)
+        seats::persisted_host_epoch(&writer, host)
     }
     fn attach_host(
         &self,

@@ -47,7 +47,6 @@ pub(super) fn fixture() -> Connection {
         );
         assert_eq!(rc, ffi::SQLITE_OK, "deserialize the fixture schema");
     }
-    herdr_threads::test_support::bind_test_host(&db);
     db
 }
 
@@ -2165,7 +2164,6 @@ fn archival_startup_waits_for_canonical_host_instance() {
         &herdr_threads::test_support::test_node_seed(),
     )
     .unwrap();
-    herdr_threads::test_support::bind_test_host(&db);
     let mut rt = runtime(0);
     rt.coherent = false;
     assert_eq!(
@@ -2205,7 +2203,6 @@ fn archival_registered_decision_waits_for_canonical_host_instance() {
         &herdr_threads::test_support::test_node_seed(),
     )
     .unwrap();
-    herdr_threads::test_support::bind_test_host(&db);
     let r = injected::registry();
     assert!(
         r.by_host_kind("synthetic_fourth_alias")

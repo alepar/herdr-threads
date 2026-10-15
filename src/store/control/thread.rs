@@ -51,6 +51,7 @@ fn set_archived(
         },
         |tx, decision| {
             decide_accountable(
+                context,
                 tx,
                 decision,
                 &mut permit,
@@ -154,6 +155,7 @@ pub fn set_topic(
         },
         |tx, at| {
             decide_accountable(
+                context,
                 tx,
                 at,
                 &mut permit,
@@ -266,6 +268,7 @@ pub fn set_thread_name(
         },
         |tx, at| {
             decide_accountable(
+                context,
                 tx,
                 at,
                 &mut permit,
@@ -386,6 +389,7 @@ fn create_thread_impl(
         },
         |tx, decision| {
             decide_accountable(
+                context,
                 tx,
                 decision,
                 &mut permit,

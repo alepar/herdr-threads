@@ -111,14 +111,14 @@ pub fn remembered(conn: &Connection, limit: usize) -> Result<Vec<HostRow>, ApiEr
 }
 
 /// The claim host of a claim the store builds itself from a binding row (archival ticket, mod
-/// presentation refresh): the primary host row's endpoint when it is a canonical locator, else the
-/// interim unnamed host's placeholder locator. Internal claims never leave the store and are not
-/// compared with a fence, so this names the server, it does not route.
-pub(crate) fn primary_claim_host(db: &Connection) -> HostLocator {
+/// presentation refresh): the endpoint of the Herdr server `seat` sits on when it is a canonical
+/// locator, else the interim unnamed host's locator. Internal claims never leave the
+/// store and are not compared with a fence, so this names the server, it does not route.
+pub(crate) fn seat_claim_host(db: &Connection, seat: &str) -> HostLocator {
     let endpoint: Option<String> = db
         .query_row(
-            "SELECT endpoint FROM herdr_hosts WHERE host_id=primary_host()",
-            [],
+            "SELECT h.endpoint FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1",
+            [seat],
             |row| row.get(0),
         )
         .optional()
@@ -127,7 +127,8 @@ pub(crate) fn primary_claim_host(db: &Connection) -> HostLocator {
     endpoint
         .and_then(|endpoint| HostLocator::parse(endpoint).ok())
         .unwrap_or_else(|| {
-            HostLocator::parse("/unnamed-host").expect("the placeholder is a canonical locator")
+            HostLocator::parse(crate::store::schema::UNNAMED_HOST_ENDPOINT)
+                .expect("the placeholder is a canonical locator")
         })
 }
 
@@ -178,13 +179,19 @@ impl HostIndex {
         ids
     }
 
-    /// Adds an attached host. `HostSessions` only, after the host's workers run.
-    // No production caller until the HostSessions leaf (ht-5fr.2.7).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Adds an attached host. `HostSessions` only (until it lands, the daemon's
+    /// single-host composition), after the host's workers run.
     pub(crate) fn publish(&self, locator: HostLocator, id: HostId) {
         if let Ok(mut map) = self.by_locator.write() {
             map.insert(locator, id);
         }
+    }
+
+    /// Test hook: publishes `id` at `locator` as `HostSessions` would, for fixtures outside the
+    /// crate that attach hosts through the store port.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn publish_for_test(&self, locator: HostLocator, id: HostId) {
+        self.publish(locator, id);
     }
 }
 

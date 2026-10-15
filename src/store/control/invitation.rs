@@ -103,6 +103,7 @@ pub fn accept(
         },
         |tx, decision| {
             let actor = decide_accountable(
+                context,
                 tx,
                 decision,
                 &mut permit,
@@ -296,6 +297,7 @@ pub fn reject(
         },
         |tx, decision| {
             let actor = decide_accountable(
+                context,
                 tx,
                 decision,
                 &mut permit,
@@ -462,6 +464,7 @@ pub fn accept_required(
                 return Ok(CommandResult::RequiredAccepted(current));
             }
             let actor = decide_accountable(
+                context,
                 tx,
                 decision,
                 &mut permit,
@@ -634,6 +637,7 @@ pub fn invite(
         },
         |tx, decision| {
             decide_accountable(
+                context,
                 tx,
                 decision,
                 &mut permit,

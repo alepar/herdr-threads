@@ -144,6 +144,7 @@ impl AccountableActor {
 // Allowed: one deciding mutation: transaction, permit, claim and the obligation it proves.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decide_accountable(
+    context: &StoreContext,
     tx: &Transaction<'_>,
     at: DecisionInstant,
     permit: &mut MutationPermit,
@@ -170,6 +171,7 @@ pub(crate) fn decide_accountable(
         )?;
     }
     let (mapping, resolution) = super::seats::decide_cooperative(
+        context,
         tx,
         at,
         &claim.instance,
@@ -288,6 +290,7 @@ pub fn complete_inbox_delivery(
         },
         |tx, decision| {
             decide_accountable(
+                context,
                 tx,
                 decision,
                 &mut permit,
@@ -338,10 +341,10 @@ pub fn advance_cursors(
         &format!("seat:{}", claim.seat.as_str()),
         request.operation.as_str(),
         digest,
-        |tx| super::seats::cooperative_instance(tx, &claim.instance, claim),
-        |tx| super::seats::cooperative_mapping(tx, claim, None).map(|_| ()),
+        |tx| super::seats::cooperative_claim(tx, context, &claim.instance, claim).map(|_| ()),
+        |tx| super::seats::claimed_mapping(tx, context, &claim.instance, claim, None).map(|_| ()),
         |tx, at| {
-            let mapping = super::seats::cooperative_mapping(tx, claim, None)?;
+            let mapping = super::seats::claimed_mapping(tx, context, &claim.instance, claim, None)?;
             // Own stream (spec §2), allowed for subagent bindings.
             let binding = super::seats::resolve_cooperative(tx, at, claim, None, &mapping)?
                 .binding()
@@ -464,17 +467,18 @@ pub fn binding_event(
         &format!("seat:{}", claim.seat.as_str()),
         request.operation.as_str(),
         digest,
-        |tx| super::seats::cooperative_instance(tx, &claim.instance, claim),
+        |tx| super::seats::cooperative_claim(tx, context, &claim.instance, claim).map(|_| ()),
         |tx| match request.kind {
             BindingEventKind::SubagentStart => {
-                super::seats::cooperative_mapping(tx, claim, None).map(|_| ())
+                super::seats::claimed_mapping(tx, context, &claim.instance, claim, None).map(|_| ())
             }
             BindingEventKind::SubagentStop | BindingEventKind::SessionEnd => Ok(()),
         },
         |tx, at| {
             let changed = match request.kind {
                 BindingEventKind::SubagentStart => {
-                    let mapping = super::seats::cooperative_mapping(tx, claim, None)?;
+                    let mapping =
+                        super::seats::claimed_mapping(tx, context, &claim.instance, claim, None)?;
                     let created = match &request.child_session {
                         Some(child) => {
                             super::seats::attach_registered_child(tx, at, claim, child, &mapping)?

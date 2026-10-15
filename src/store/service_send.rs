@@ -228,7 +228,7 @@ pub(crate) fn prepare_service_send_step(
     let instance = connection.instance().to_owned();
     let op_scope = scope(&instance, &author);
     let (lifecycle_revision, eligibility_revision, config_revision): (i64, i64, i64) = tx.query_row(
-        "SELECT h.lifecycle_revision,n.send_eligibility_revision,n.duration_config_revision FROM local_node n JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=n.id WHERE n.id=?1",
+        "SELECT (SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=n.id),n.send_eligibility_revision,n.duration_config_revision FROM local_node n WHERE n.id=?1",
         [instance.as_str()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     ).map_err(store_error)?;
     let live = [
@@ -447,7 +447,7 @@ pub(crate) fn publish_service_send(
     }
     let (membership, timeline) = check_thread(tx, connection, request)?;
     let (lifecycle, eligibility, config): (i64, i64, i64) = tx.query_row(
-        "SELECT h.lifecycle_revision,n.send_eligibility_revision,n.duration_config_revision FROM local_node n JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=n.id WHERE n.id=?1",
+        "SELECT (SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=n.id),n.send_eligibility_revision,n.duration_config_revision FROM local_node n WHERE n.id=?1",
         [instance.as_str()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     ).map_err(store_error)?;
     if captured != [membership, lifecycle, eligibility, timeline, config] {

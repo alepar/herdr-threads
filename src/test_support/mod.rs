@@ -26,7 +26,6 @@ use crate::{
     },
 };
 use rusqlite::Connection;
-use std::sync::{Arc, OnceLock};
 
 /// The ed25519 seed of the node every fixture store is created with.
 pub const TEST_NODE_SEED: [u8; 32] = [1; 32];
@@ -86,49 +85,27 @@ pub fn test_host_id() -> crate::ports::HostId {
 }
 
 /// Attaches the fixture Herdr host to a store: upserts its `herdr_hosts` row
-/// through `conn`, makes it `ctx`'s primary host and binds `conn` to it.
-/// Idempotent. Returns the host id.
+/// through `conn` and publishes it into `ctx`'s `HostIndex` under
+/// [`test_host_locator`] (the host a fixture claim names). Idempotent.
+/// Returns the host id.
 pub fn attach_test_host(ctx: &StoreContext, conn: &Connection) -> i64 {
     let host_id = upsert_test_host(conn);
-    ctx.set_primary_host(host_id);
-    ctx.bind_connection(conn).expect("bind the primary host");
+    ctx.hosts()
+        .publish(test_host_locator(), crate::ports::HostId::from_row(host_id));
     host_id
 }
 
 /// [`attach_test_host`] for a bare connection that has no `StoreContext`
-/// (`schema::initialize` on `:memory:`): the connection alone is bound.
+/// (`schema::initialize` on `:memory:`): only the row is created.
 pub fn attach_test_host_to_connection(conn: &Connection) -> i64 {
-    let host_id = upsert_test_host(conn);
-    let primary = Arc::new(OnceLock::new());
-    let _ = primary.set(host_id);
-    crate::store::connection::register_primary_host(conn, primary).expect("bind the primary host");
-    host_id
+    upsert_test_host(conn)
 }
 
 /// Opens a raw connection to an existing store file the way a fixture reads or
-/// repairs it, bound to the fixture host (see [`attach_test_host`]) so store
-/// functions that read Herdr-scope columns run on it. The host row is not
-/// created here: a store opened through `StoreContext::with_test_host` has it.
+/// repairs it. The host row is not created here: a store opened through
+/// `StoreContext::with_test_host` has it.
 pub fn open_test_connection(path: &std::path::Path) -> Connection {
-    let conn = Connection::open(path).expect("open the store file");
-    bind_test_host(&conn);
-    conn
-}
-
-/// Binds a connection whose database already holds the fixture host row (an
-/// opened store file, a deserialized image) to that host, so store functions
-/// that read Herdr-scope columns run on it.
-pub fn bind_test_host(conn: &Connection) {
-    let host_id: i64 = conn
-        .query_row(
-            "SELECT host_id FROM herdr_hosts WHERE endpoint=?1",
-            [TEST_HOST_ENDPOINT],
-            |row| row.get(0),
-        )
-        .unwrap_or(1);
-    let primary = Arc::new(OnceLock::new());
-    let _ = primary.set(host_id);
-    crate::store::connection::register_primary_host(conn, primary).expect("bind the primary host");
+    Connection::open(path).expect("open the store file")
 }
 
 impl StoreContext {

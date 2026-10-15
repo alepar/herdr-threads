@@ -202,6 +202,7 @@ pub fn ensure_direct_thread(
         |tx| validate_actor(tx, &caller, command.claim.target.as_str()).map(|_| ()),
         |tx, decision| {
             decide_accountable(
+                context,
                 tx,
                 decision,
                 &mut permit,

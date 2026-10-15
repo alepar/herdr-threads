@@ -349,3 +349,21 @@ Digest:
 ## Post-Implementation Notes
 
 > *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
+
+### 2026-10-15, ht-5fr.2.6 (`cooperative_claim`, `primary_host` removed)
+
+- `StoreContext.primary_host`, its accessor and the `primary_host()` SQL function are gone. The reads that still
+  named it took their host from one of three places instead. Cooperative and handoff paths use the claim's or
+  the admission guard's `HostId`. Retirement bumps the retired seat's own server. The thread- and node-scope
+  fences (send and service-event preparations, directory and inbox revisions) read the node-wide
+  `SUM(lifecycle_revision)` over the node's `herdr_hosts` rows: it only grows, so "unchanged since capture"
+  still means "no host's lifecycle moved".
+- Archival is still one node-wide lane keyed by `archival_instances`; until ht-5fr.2.9 its snapshot-validation
+  token is the ordered join of every host's `active_snapshot_id`, and "initialized" means the node has any host
+  row.
+- Deep handoff and bootstrap revalidators (no `StoreContext`) call `seats::seat_mapping` / `seat_bound_mapping`,
+  which check node, role and locality and take the seat's own server; only the entry points run
+  `cooperative_claim`, so the claim host is compared once per call.
+- The single-host composition publishes its session into `HostIndex` after its workers spawn
+  (`app::publish_session`); the unnamed host (no socket path) is published as `/unnamed-host`.
+- `StorePort::persisted_host_epoch` takes a `HostId` (the attach step keeps one host until HostSessions lands).

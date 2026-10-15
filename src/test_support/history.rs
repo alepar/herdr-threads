@@ -719,7 +719,7 @@ fn publish_programmatic_warnings(
     use crate::store::{service_events, service_substrate};
     let (instance, boot): (String, String) = conn
         .query_row(
-            "SELECT t.instance_id,h.host_boot FROM threads t JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=t.instance_id WHERE t.id=?1",
+            "SELECT t.instance_id,h.host_boot FROM threads t JOIN herdr_hosts h ON h.node_id=t.instance_id WHERE t.id=?1 ORDER BY h.host_id LIMIT 1",
             [thread],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )

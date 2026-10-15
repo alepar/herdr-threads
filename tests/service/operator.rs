@@ -204,10 +204,12 @@ impl Fixture {
         let instance = owner.node_uuid().unwrap().to_string();
         drop(owner);
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        // The fixture's Herdr server: the endpoint the daemon attaches and the CLI claims name.
+        let claim_host = runtime.claim_host().unwrap();
         let store = Arc::new(
             SqliteStore::new(
                 StoreContext::new(paths.database_path.clone(), clock.clone())
-                    .with_test_host()
+                    .with_attached_host(&claim_host)
                     .with_node_seed(herdr_threads::test_support::node_seed_for(&instance)),
                 &instance,
                 StoreSettings::default(),
@@ -282,6 +284,7 @@ impl Fixture {
         let thread_paths = paths.clone();
         let thread_clock = clock.clone();
         let thread_host = host.clone();
+        let thread_endpoint = runtime.require_host().unwrap().to_path_buf();
         let thread_stop = stop.clone();
         let daemon = std::thread::spawn(move || {
             tokio::runtime::Builder::new_current_thread()
@@ -293,7 +296,7 @@ impl Fixture {
                     thread_clock,
                     thread_stop,
                     ServiceConfig::default(),
-                    herdr_threads::app::HostChoice::given(thread_host),
+                    herdr_threads::app::HostChoice::given_at(thread_host, thread_endpoint),
                     move |d| {
                         tx.send(d.clone()).unwrap();
                         Ok(())

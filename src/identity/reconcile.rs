@@ -39,7 +39,7 @@ pub mod observation_store {
     /// Role: implemented by the scheduled store of each host's observation
     /// worker. A new per-host query takes a `HostId` (or a seat row's `host_id`)
     /// and adds `host_id = ?` and `LOCAL_SEAT` to its seat predicate; it never
-    /// reads the primary host.
+    /// reads a node-wide host.
     pub trait ObservationStore: Send + Sync {
         fn clock(&self) -> &dyn crate::protocol::time::Clock;
         fn begin_host_observation(

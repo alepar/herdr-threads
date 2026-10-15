@@ -4733,10 +4733,10 @@ fn ordinary_allocation_replay_returns_original_seat_after_retirement() {
         panic!("seat missing")
     };
     // The ordinary-allocation insert writes the local home, the local flag and
-    // the primary host.
+    // the fixture host.
     assert_eq!(
         conn.query_row(
-            "SELECT home_node=(SELECT id FROM local_node), is_local, host_id=primary_host() FROM seats WHERE id=?1",
+            "SELECT home_node=(SELECT id FROM local_node), is_local, host_id=(SELECT MIN(host_id) FROM herdr_hosts) FROM seats WHERE id=?1",
             [seat.as_str()],
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
         )
