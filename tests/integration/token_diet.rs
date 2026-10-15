@@ -284,7 +284,7 @@ fn agent_facing_machine_text_is_compact() {
     let message_id = lines[2].split_whitespace().nth(1).unwrap();
     assert!(
         lines[2].starts_with("#23 ")
-            && herdr_threads::protocol::ids::is_short_public_id(
+            && herdr_threads::protocol::ids::is_public_id(
                 herdr_threads::protocol::ids::prefix::MESSAGE,
                 message_id,
             )
@@ -301,7 +301,7 @@ fn agent_facing_machine_text_is_compact() {
         .map(|(id, _)| id)
         .unwrap();
     assert!(
-        herdr_threads::protocol::ids::is_short_public_id(
+        herdr_threads::protocol::ids::is_public_id(
             herdr_threads::protocol::ids::prefix::MESSAGE,
             clipped_id,
         ),
@@ -368,7 +368,7 @@ fn agent_facing_machine_text_is_compact() {
     assert!(
         pending.lines().skip(1).all(|l| {
             l.split_whitespace().next().is_some_and(|id| {
-                herdr_threads::protocol::ids::is_short_public_id(
+                herdr_threads::protocol::ids::is_public_id(
                     herdr_threads::protocol::ids::prefix::MESSAGE,
                     id,
                 )

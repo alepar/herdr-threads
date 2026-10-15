@@ -583,9 +583,9 @@ fn hint_lazy_message(f: &Fixture, id: &str) {
         })
         .unwrap();
     let suffix = id
-        .strip_prefix("msg-")
+        .strip_prefix("m")
         .expect("canonical fixture message prefix");
-    let preparation = format!("prep-{suffix}");
+    let preparation = format!("p{suffix}");
     assert_eq!(
         send_message_id_for_preparation(&preparation).as_deref(),
         Some(id)
@@ -625,11 +625,11 @@ fn hint_native_attention(f: &Fixture) -> i64 {
 fn q3_completion_hint_mod_ack_lazy_mixed_and_already_settled() {
     let f = fixture();
     let context = claude(&f, "hint-mod");
-    hint_lazy_message(&f, "msg-hint-lazy");
-    hint_lazy_message(&f, "msg-hint-mixed-lazy");
+    hint_lazy_message(&f, "mTsthintlazy");
+    hint_lazy_message(&f, "mTsthintmixd");
     let receipts = hint_receipt_states(&f);
     let native_attention = hint_native_attention(&f);
-    let first = ack(&f, context.clone(), &["msg-hint-lazy"], "hint-lazy-first").unwrap();
+    let first = ack(&f, context.clone(), &["mTsthintlazy"], "hint-lazy-first").unwrap();
     assert_eq!(all(&first), vec![(ModAckOutcome::Settled, None)]);
     assert_eq!(
         hint_receipt_states(&f),
@@ -638,7 +638,7 @@ fn q3_completion_hint_mod_ack_lazy_mixed_and_already_settled() {
     );
     assert_eq!(
         f.db.query_row(
-            "SELECT state FROM lazy_recipients WHERE message_id='msg-hint-lazy'",
+            "SELECT state FROM lazy_recipients WHERE message_id='mTsthintlazy'",
             [],
             |r| r.get::<_, String>(0)
         )
@@ -647,7 +647,7 @@ fn q3_completion_hint_mod_ack_lazy_mixed_and_already_settled() {
     );
     assert_eq!(completion_hints(&f), vec![context.seat.clone()]);
     assert_eq!(
-        ack(&f, context.clone(), &["msg-hint-lazy"], "hint-lazy-first").unwrap(),
+        ack(&f, context.clone(), &["mTsthintlazy"], "hint-lazy-first").unwrap(),
         first,
         "same-key successful replay returns the stored Settled report"
     );
@@ -671,7 +671,7 @@ fn q3_completion_hint_mod_ack_lazy_mixed_and_already_settled() {
         "one additional harmless hint from the retained successful result"
     );
     assert_eq!(
-        all(&ack(&f, context.clone(), &["msg-hint-lazy"], "hint-lazy-already").unwrap()),
+        all(&ack(&f, context.clone(), &["mTsthintlazy"], "hint-lazy-already").unwrap()),
         vec![(ModAckOutcome::AlreadySettled, None)]
     );
     assert_eq!(hint_receipt_states(&f), receipts);
@@ -685,7 +685,7 @@ fn q3_completion_hint_mod_ack_lazy_mixed_and_already_settled() {
         all(&ack(
             &f,
             context.clone(),
-            &["msg-hint-mixed-lazy", "m1", "ghost"],
+            &["mTsthintmixd", "m1", "ghost"],
             "hint-mixed"
         )
         .unwrap()),
@@ -797,17 +797,17 @@ fn q3_completion_hint_delivery_confirm_lazy_mixed_and_retained_offer() {
     use crate::protocol::delivery::DeliveryConfirmOutcome as Outcome;
     let f = fixture();
     let context = hint_pull_claim(&f);
-    hint_lazy_message(&f, "msg-hint-lazy");
-    hint_lazy_message(&f, "msg-hint-mixed-lazy");
+    hint_lazy_message(&f, "mTsthintlazy");
+    hint_lazy_message(&f, "mTsthintmixd");
     let receipts = hint_receipt_states(&f);
     let native_attention = hint_native_attention(&f);
     hint_retain_offer(
         &f,
         &context,
-        &["msg-hint-lazy", "msg-hint-mixed-lazy", "m1", "m2", "ghost"],
+        &["mTsthintlazy", "mTsthintmixd", "m1", "m2", "ghost"],
     );
     assert_eq!(
-        hint_confirm(&f, context.clone(), &["msg-hint-lazy"], "hint-confirm-lazy").unwrap(),
+        hint_confirm(&f, context.clone(), &["mTsthintlazy"], "hint-confirm-lazy").unwrap(),
         vec![Outcome::Settled]
     );
     assert_eq!(
@@ -820,7 +820,7 @@ fn q3_completion_hint_delivery_confirm_lazy_mixed_and_retained_offer() {
         hint_confirm(
             &f,
             context.clone(),
-            &["msg-hint-mixed-lazy", "m1", "ghost"],
+            &["mTsthintmixd", "m1", "ghost"],
             "hint-confirm-mixed"
         )
         .unwrap(),

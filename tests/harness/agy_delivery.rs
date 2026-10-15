@@ -698,7 +698,7 @@ fn a_full_page_of_offered_ids_is_tracked() {
     let rig = Rig::new();
     let rt = runtime(1000, &ident("a"));
     let ids: Vec<String> = (0..PAGE_MAX_BLOCKS)
-        .map(|_| generate_public_id(prefix::MESSAGE))
+        .map(|_| generate_public_id(prefix::MESSAGE, &"abc".parse().unwrap()))
         .collect();
     let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
     rig.pre(0, &Fake::with(vec![page(&refs, TEXT, 1)]), &rt);

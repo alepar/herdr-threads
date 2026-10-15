@@ -375,7 +375,7 @@ fn body_over_8_kib_refused_terminal_truncated_and_stays_pending() {
 #[test]
 fn lazy_row_completes_as_displayed_and_replay_is_already_settled() {
     let (context, mut conn, _) = setup();
-    let message = lazy(&conn, "p0000aaaa", 1, "lazy body");
+    let message = lazy(&conn, "pTst0000aaaa", 1, "lazy body");
     assert_eq!(lazy_state(&conn, &message), "pending");
     let mut first = request(&[&message]);
     first.via = ModDeliveryVia::Append;
@@ -399,7 +399,7 @@ fn lazy_over_limit_refused_truncated() {
     let (context, mut conn, _) = setup();
     let message = lazy(
         &conn,
-        "p0000bbbb",
+        "pTst0000bbbb",
         1,
         &"y".repeat(WATCH_BODY_LIMIT_BYTES + 1),
     );
@@ -514,7 +514,7 @@ fn claim_rejected_without_writes_for_wrong_harness_and_subagent() {
 fn mod_ack_of_ordinary_and_lazy_advances_the_cursor_past_both() {
     let (context, mut conn, _) = setup();
     receivable_pending(&conn, "o6", 1, "ordinary");
-    let lazy_id = lazy(&conn, "p0000aaaa", 2, "lazy body");
+    let lazy_id = lazy(&conn, "pTst0000aaaa", 2, "lazy body");
     let report = run(&context, &mut conn, &request(&["o6", &lazy_id])).unwrap();
     assert_eq!(
         outcomes(&report),
@@ -553,7 +553,7 @@ fn mod_ack_of_only_the_lazy_row_stops_before_an_unshown_ordinary_message() {
     // never shown, so the cursor passes o5 and stops before o6.
     receivable_pending(&conn, "o5", 1, "shown ordinary");
     receivable_pending(&conn, "o6", 2, "never shown");
-    let lazy_id = lazy(&conn, "p0000aaaa", 3, "lazy body");
+    let lazy_id = lazy(&conn, "pTst0000aaaa", 3, "lazy body");
     let report = run(&context, &mut conn, &request(&["o5", &lazy_id])).unwrap();
     assert_eq!(
         outcomes(&report),
@@ -614,7 +614,7 @@ fn truncated_ordinary_next_to_a_lazy_row_does_not_let_the_cursor_pass() {
     // the lazy row (seq 3) behind it cannot carry the cursor past it.
     receivable_pending(&conn, "ok1", 1, "short");
     receivable_pending(&conn, "big", 2, &"x".repeat(WATCH_BODY_LIMIT_BYTES + 1));
-    let lazy_id = lazy(&conn, "p0000aaaa", 3, "lazy body");
+    let lazy_id = lazy(&conn, "pTst0000aaaa", 3, "lazy body");
     let report = run(&context, &mut conn, &request(&["ok1", "big", &lazy_id])).unwrap();
     assert_eq!(
         outcomes(&report),

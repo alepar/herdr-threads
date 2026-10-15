@@ -1,6 +1,7 @@
 //! The one place the store mints user-facing public IDs.
 //!
-//! IDs are `<prefix><8 base62 chars>` (`protocol::ids::generate_public_id`).
+//! IDs are `<prefix><tag><8 base62 chars>` (`protocol::ids::generate_public_id`),
+//! the tag being this node's `local_node.tag`.
 //! Every caller runs inside the store's write transaction, so a candidate is
 //! checked against every table it (or an ID derived from its suffix) will be
 //! written to before use; a taken candidate is regenerated in the same
@@ -8,6 +9,9 @@
 
 use rusqlite::{Connection, params};
 
+use std::str::FromStr;
+
+use crate::node::NodeTag;
 use crate::protocol::{
     ids::{generate_public_id, prefix},
     results::{ApiError, ErrorCode},
@@ -20,7 +24,7 @@ use super::connection::{api_error, store_error};
 const ATTEMPTS: usize = 16;
 
 /// Where a candidate must be absent: `(table, column, prefix)` — the candidate
-/// suffix is checked as `<prefix><suffix>` in `table.column`.
+/// `<tag><suffix>` is checked as `<prefix><suffix>` in `table.column`.
 pub(crate) type Slot = (&'static str, &'static str, &'static str);
 
 /// A send preparation `pX` publishes its ordinary message as `mX`.
@@ -49,10 +53,25 @@ pub(crate) const NOTIFY_PREPARATION_SLOTS: &[Slot] = &[
 /// per draw is about (retired ids) x 2^-47.6, and such a reuse is harmless
 /// (TRUST-POLICY Accepted limits, Probabilistic identifiers). Live ids are
 /// checked for collisions in every slot.
+///
+/// Owns: minting, with the node tag. The tag is read from the `local_node` row
+/// through `conn`, i.e. inside the caller's transaction, never from
+/// `NodeIdentity`'s cache: a retag commits on that row, and the next mint in
+/// any transaction must see exactly the committed value. Must not: write, or
+/// decide the tag (that is `node::tag_for` at node creation / retag).
 pub(crate) fn fresh(conn: &Connection, prefix: &str, slots: &[Slot]) -> Result<String, ApiError> {
+    let tag: String = conn
+        .query_row("SELECT tag FROM local_node", [], |r| r.get(0))
+        .map_err(store_error)?;
+    let tag = NodeTag::from_str(&tag).map_err(|error| {
+        api_error(
+            ErrorCode::StoreCorrupt,
+            format!("local_node.tag is not a node tag: {error}"),
+        )
+    })?;
     fresh_with(
         prefix,
-        || generate_public_id(prefix),
+        || generate_public_id(prefix, &tag),
         |candidate| {
             let suffix = &candidate[prefix.len()..];
             for (table, column, slot_prefix) in slots {
@@ -94,37 +113,74 @@ fn fresh_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::ids::is_short_public_id;
+    use crate::protocol::ids::{is_public_id, public_id_parts};
 
     #[test]
     fn a_colliding_candidate_is_regenerated() {
-        let mut queue = vec!["sBBBBBBBB", "sAAAAAAAA"];
+        let mut queue = vec!["sQ7aBBBBBBBB", "sQ7aAAAAAAAA"];
         let mut checked = Vec::new();
         let id = fresh_with(
             "s",
             || queue.pop().unwrap().to_owned(),
             |candidate| {
                 checked.push(candidate.to_owned());
-                Ok(candidate == "sAAAAAAAA")
+                Ok(candidate == "sQ7aAAAAAAAA")
             },
         )
         .unwrap();
-        assert_eq!(id, "sBBBBBBBB");
-        assert_eq!(checked, ["sAAAAAAAA", "sBBBBBBBB"]);
+        assert_eq!(id, "sQ7aBBBBBBBB");
+        assert_eq!(checked, ["sQ7aAAAAAAAA", "sQ7aBBBBBBBB"]);
     }
 
     #[test]
     fn persistent_collisions_fail_closed() {
-        let error = fresh_with("s", || "sAAAAAAAA".into(), |_| Ok(true)).unwrap_err();
+        let error = fresh_with("s", || "sQ7aAAAAAAAA".into(), |_| Ok(true)).unwrap_err();
         assert_eq!(error.code, ErrorCode::StoreCorrupt);
+    }
+
+    fn conn_with_tag(tag: &str) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE a(id TEXT UNIQUE); CREATE TABLE b(id TEXT UNIQUE);
+             CREATE TABLE local_node(tag TEXT NOT NULL);",
+        )
+        .unwrap();
+        conn.execute("INSERT INTO local_node(tag) VALUES (?1)", params![tag])
+            .unwrap();
+        conn
     }
 
     #[test]
     fn fresh_checks_every_slot_including_derived_ids() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE a(id TEXT UNIQUE); CREATE TABLE b(id TEXT UNIQUE);")
-            .unwrap();
+        let conn = conn_with_tag("Q7a");
         let id = fresh(&conn, "p", &[("a", "id", "p"), ("b", "id", "m")]).unwrap();
-        assert!(is_short_public_id("p", &id), "{id}");
+        assert!(is_public_id("p", &id), "{id}");
+    }
+
+    #[test]
+    fn fresh_reads_tag_from_local_node() {
+        let conn = conn_with_tag("Q7a");
+        for prefix in ["s", "t", "np"] {
+            let id = fresh(&conn, prefix, &[]).unwrap();
+            let (tag, _) = public_id_parts(prefix, &id).expect(&id);
+            assert_eq!(tag.as_str(), "Q7a", "{id}");
+        }
+    }
+
+    #[test]
+    fn fresh_follows_updated_tag() {
+        let conn = conn_with_tag("Q7a");
+        let before = fresh(&conn, "s", &[]).unwrap();
+        conn.execute("UPDATE local_node SET tag='Zz9'", []).unwrap();
+        let after = fresh(&conn, "s", &[]).unwrap();
+        assert!(before.starts_with("sQ7a"), "{before}");
+        assert!(after.starts_with("sZz9"), "{after}");
+    }
+
+    #[test]
+    fn fresh_rejects_a_malformed_tag_row() {
+        let conn = conn_with_tag("a-c");
+        let error = fresh(&conn, "s", &[]).unwrap_err();
+        assert_eq!(error.code, ErrorCode::StoreCorrupt);
     }
 }

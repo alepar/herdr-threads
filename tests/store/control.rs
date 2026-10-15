@@ -3774,7 +3774,7 @@ fn create_thread_persists_joined_creator_and_creation_audit() {
         panic!("wrong result")
     };
     assert!(
-        is_short_public_id(prefix::THREAD, thread.as_str()),
+        is_public_id(prefix::THREAD, thread.as_str()),
         "new thread IDs are short: {}",
         thread.as_str()
     );
@@ -4117,7 +4117,7 @@ fn operator_orphan_invite_uses_configured_duration_and_keeps_pending_deadline() 
         panic!()
     };
     assert!(
-        is_short_public_id(prefix::INVITATION, id.as_str()),
+        is_public_id(prefix::INVITATION, id.as_str()),
         "new invitation IDs are short: {}",
         id.as_str()
     );
