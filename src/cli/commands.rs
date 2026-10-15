@@ -1971,20 +1971,6 @@ where
         // Human/operator invitations retain their established semantics.
         *confirmation = None;
     }
-    if actor == InvocationActor::Human {
-        // A person's handoff invitation asks for the Lazy policy when it has no explicit deadline;
-        // the daemon ignores the requested policy (invitations always confirm).
-        let policy = match &mut parsed.action {
-            CliAction::Handoff(request) => request.policy.as_mut(),
-            CliAction::TopologyHandoff(request) => request.policy.as_mut(),
-            _ => None,
-        };
-        if let Some(policy) = policy
-            && policy.invite_deadline_millis.is_none()
-        {
-            policy.invitation_confirmation = InvitationConfirmation::Lazy;
-        }
-    }
     parsed.actor = actor;
     Ok(parsed)
 }

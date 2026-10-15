@@ -5326,3 +5326,21 @@ fn automatic_presentation_admission_counts_exact_local_root() {
     );
     assert!(journal.resolve_recovery_ref("local:1").is_err());
 }
+
+// ht-yha.65 (main review M5): a person's handoff keeps the RequireAck policy the parser builds; no dead Lazy
+// request is sent (the daemon ignores it; invitations always confirm).
+#[test]
+fn a_human_handoff_requests_the_confirming_invitation_policy() {
+    let parsed = crate::cli::commands::parse_argv([
+        "ht", "human", "handoff", "--pane", "w1:p2", "--kind", "codex", "--thread", "t1", "--",
+        "go",
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    assert_eq!(
+        serde_json::to_value(request).unwrap()["policy"]["invitation_confirmation"],
+        "require_ack"
+    );
+}
