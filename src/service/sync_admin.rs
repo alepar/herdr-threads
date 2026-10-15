@@ -57,9 +57,17 @@ pub struct SyncAdmin {
     /// The daemon's runtime: the handler runs on a blocking thread and awaits
     /// the coordinator through it.
     pub runtime: tokio::runtime::Handle,
+    /// The discovery worker's state; `None` when the daemon runs none.
+    pub discovery: Option<Arc<crate::sync::discovery::DiscoveryStatus>>,
 }
 
 impl SyncAdmin {
+    fn discovery_state(&self) -> Option<String> {
+        self.discovery
+            .as_ref()
+            .map(|status| status.get().as_str().to_owned())
+    }
+
     /// Answers `command`. `actor` is the admitted operator for a mutating
     /// command and `None` for a read.
     pub fn run(
@@ -92,7 +100,10 @@ impl SyncAdmin {
                 let rows = self
                     .store
                     .sync_read(budget, |conn, _| sync_status::peers(conn, now))?;
-                Ok(SyncReply::Peers { rows })
+                Ok(SyncReply::Peers {
+                    rows,
+                    discovery: self.discovery_state(),
+                })
             }
             SyncCommand::Status { log } => self.status(log.as_deref(), budget),
             SyncCommand::Verify => {
@@ -294,6 +305,7 @@ impl SyncAdmin {
             store_bytes: resync::database_bytes(&self.paths),
             headroom_until: snapshot.headroom_until.map(|until| until.0),
             coordinator_unavailable,
+            discovery: self.discovery_state(),
         })))
     }
 
