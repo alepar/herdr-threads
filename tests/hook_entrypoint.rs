@@ -887,6 +887,9 @@ impl Fixture {
         let host = root.join("host.sock");
         let context = RuntimeContext::explicit(state.clone(), host.clone(), None).unwrap();
         let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        // The fixture host is the Herdr server the hooks' claims name.
+        let claim_host =
+            herdr_threads::protocol::ids::HostLocator::parse(host.to_str().unwrap()).unwrap();
         let instance = seed(&paths);
         let db = paths.database_path.clone();
         let stop = Cancellation::default();
@@ -927,13 +930,16 @@ impl Fixture {
                     WriterSink(std::io::sink()),
                     BufferLimits::new(64 * 1024, 16 * 1024).unwrap(),
                     move |instance, boot, cancellation| {
+                        let context = StoreContext::new(database, Arc::clone(&service_clock))
+                            .with_test_host()
+                            .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
+                        context.hosts().publish_for_test(
+                            claim_host,
+                            herdr_threads::test_support::test_host_id(),
+                        );
                         let store: Arc<dyn StorePort> = Arc::new(
                             SqliteStore::new(
-                                StoreContext::new(database, Arc::clone(&service_clock))
-                                    .with_test_host()
-                                    .with_node_seed(herdr_threads::test_support::node_seed_for(
-                                        instance,
-                                    )),
+                                context,
                                 instance.to_string(),
                                 StoreSettings::default(),
                             )
@@ -5651,8 +5657,9 @@ mod continuity {
             }
             let setup =
                 StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()))
-                    .with_test_host()
                     .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
+            // The seeded seats sit on the server the daemon will attach (and the claims name).
+            setup.attach_host(&host.to_string_lossy()).unwrap();
             let db = setup.open_writer().unwrap();
             seed(&db, &instance.to_string());
             drop(db);
@@ -5717,6 +5724,7 @@ mod continuity {
             let paths = self.paths.clone();
             let clock = Arc::clone(&self.clock);
             let host = Arc::clone(&self.herdr);
+            let endpoint = self.host.clone();
             let stop = self.stop.clone();
             self.daemon = Some(std::thread::spawn(move || {
                 tokio::runtime::Builder::new_current_thread()
@@ -5728,7 +5736,7 @@ mod continuity {
                         clock,
                         stop,
                         ServiceConfig::default(),
-                        herdr_threads::app::HostChoice::given(host),
+                        herdr_threads::app::HostChoice::given_at(host, endpoint),
                         move |descriptor| {
                             tx.send(descriptor.clone()).unwrap();
                             Ok(())
@@ -5793,6 +5801,11 @@ mod continuity {
                 descriptor.node_uuid,
                 Some(descriptor.boot_id),
             )
+        }
+
+        /// The Herdr server the fixture's daemon attached and its hooks' claims name.
+        pub fn host_locator(&self) -> herdr_threads::protocol::ids::HostLocator {
+            herdr_threads::protocol::ids::HostLocator::parse(self.host.to_str().unwrap()).unwrap()
         }
 
         pub fn call(
@@ -5985,7 +5998,7 @@ mod continuity {
                         target: HostTargetId::new(PANE),
                     },
                     SemanticMutation::ResolveSeat {
-                        host: herdr_threads::test_support::test_host_locator(),
+                        host: fx.host_locator(),
                         target: HostTargetId::new(PANE),
                     },
                     1,
@@ -6729,7 +6742,7 @@ mod continuity {
                     target: HostTargetId::new(PANE),
                 },
                 SemanticMutation::ContinuityCheckIn {
-                    host: herdr_threads::test_support::test_host_locator(),
+                    host: fx.host_locator(),
                     target: HostTargetId::new(PANE),
                     harness: if harness == "codex" {
                         Wire::Codex
@@ -6773,7 +6786,7 @@ mod continuity {
             .create(&dir)
             .unwrap();
         ContextJournal::open(&dir, fx.instance, seat, Duration::from_secs(1))
-            .map(|journal| journal.with_host(herdr_threads::test_support::test_host_locator()))
+            .map(|journal| journal.with_host(fx.host_locator()))
             .unwrap()
             .install_reattached(OccupantContext {
                 format_version: 1,
@@ -6893,7 +6906,7 @@ mod continuity {
                         target: HostTargetId::new(PANE),
                     },
                     SemanticMutation::ContinuityCheckIn {
-                        host: herdr_threads::test_support::test_host_locator(),
+                        host: fx.host_locator(),
                         target: HostTargetId::new(PANE),
                         harness: herdr_threads::protocol::authority::Harness::Claude,
                         native_session: herdr_threads::protocol::ids::NativeSessionId::new("S-1"),
@@ -6999,7 +7012,7 @@ mod continuity {
                         target: HostTargetId::new(PANE),
                     },
                     SemanticMutation::ContinuityCheckIn {
-                        host: herdr_threads::test_support::test_host_locator(),
+                        host: fx.host_locator(),
                         target: HostTargetId::new(PANE),
                         harness: if harness == "codex" {
                             herdr_threads::protocol::authority::Harness::Codex

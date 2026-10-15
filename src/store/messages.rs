@@ -205,7 +205,8 @@ fn prepare_send_step_impl(
         ));
     }
     let digest = schema::canonical_digest(&send_payload(request))?;
-    super::seats::cooperative_instance(conn, &request.claim.instance, &request.claim)?;
+    let host =
+        super::seats::cooperative_claim(conn, context, &request.claim.instance, &request.claim)?;
     let seat = request.claim.seat.clone();
     let scope = format!("seat:{}", seat.as_str());
     let tx = conn
@@ -246,7 +247,7 @@ fn prepare_send_step_impl(
             delivery,
             crate::protocol::authority::HandoffRequirement::Delivery(_)
         ) {
-            super::seats::cooperative_bound_mapping(&tx, &request.claim, None)?;
+            super::seats::cooperative_bound_mapping(&tx, host, &request.claim, None)?;
         }
         super::handoff::validate_handoff_requirement(&tx, delivery, false)?;
     }
@@ -272,7 +273,7 @@ fn prepare_send_step_impl(
     })?;
     super::control::validate_pair_send(&tx, request)?;
     if request.direct_recipient.is_some() {
-        super::seats::cooperative_mapping(&tx, &request.claim, None)?;
+        super::seats::cooperative_mapping(&tx, host, &request.claim, None)?;
     }
     if archived {
         return Err(api_error(ErrorCode::Archived, "thread is archived"));
@@ -284,7 +285,7 @@ fn prepare_send_step_impl(
         return Err(api_error(ErrorCode::Unauthorized, "sender is not joined"));
     }
     let (lifecycle_revision, eligibility_revision, config_revision): (i64,i64,i64) = tx.query_row(
-        "SELECT h.lifecycle_revision,n.send_eligibility_revision,n.duration_config_revision FROM local_node n JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=n.id WHERE n.id=?1",
+        "SELECT (SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=n.id),n.send_eligibility_revision,n.duration_config_revision FROM local_node n WHERE n.id=?1",
         [instance.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
     ).map_err(store_error)?;
     type PriorPrepColumns = Option<(
@@ -925,7 +926,7 @@ pub fn publish_send(
     validate_delivery_options(request)?;
     require_live_budget(context, budget)?;
     let digest = schema::canonical_digest(&send_payload(request))?;
-    super::seats::cooperative_instance(conn, &request.claim.instance, &request.claim)?;
+    super::seats::cooperative_claim(conn, context, &request.claim.instance, &request.claim)?;
     let seat = request.claim.seat.clone();
     let scope = format!("seat:{}", seat.as_str());
     let cooperative = permit.cooperative_metadata();
@@ -964,7 +965,7 @@ pub fn publish_send(
                     "send preparation incomplete",
                 ));
             }
-            let live:(i64,i64,i64,i64,i64,bool)=tx.query_row("SELECT t.membership_revision,h.lifecycle_revision,n.send_eligibility_revision,t.timeline_revision,n.duration_config_revision,t.archived FROM threads t JOIN local_node n ON n.id=t.instance_id JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=n.id WHERE t.id=?1 AND n.id=?2",params![request.thread.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).map_err(store_error)?;
+            let live:(i64,i64,i64,i64,i64,bool)=tx.query_row("SELECT t.membership_revision,(SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=n.id),n.send_eligibility_revision,t.timeline_revision,n.duration_config_revision,t.archived FROM threads t JOIN local_node n ON n.id=t.instance_id WHERE t.id=?1 AND n.id=?2",params![request.thread.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).map_err(store_error)?;
             if live.5 {
                 return Err(api_error(ErrorCode::Archived, "thread archived"));
             }
@@ -1004,6 +1005,7 @@ pub fn publish_send(
                 )
                 .map_err(store_error)?;
             let actor = super::control::decide_accountable(
+                context,
                 tx,
                 decision,
                 permit,
@@ -1014,7 +1016,7 @@ pub fn publish_send(
                 &digest,
             )?;
             let revisions_match:bool=tx.query_row(
-                "SELECT p.captured_membership_revision=t.membership_revision AND p.captured_lifecycle_revision=h.lifecycle_revision AND p.captured_eligibility_revision=?4 AND p.captured_timeline_revision=t.timeline_revision AND p.captured_config_revision=n.duration_config_revision AND t.archived=0 FROM send_preparations p JOIN threads t ON t.id=p.thread_id JOIN local_node n ON n.id=t.instance_id JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=n.id WHERE p.operation_scope=?1 AND p.operation_key=?2 AND p.digest=?3",
+                "SELECT p.captured_membership_revision=t.membership_revision AND p.captured_lifecycle_revision=(SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=n.id) AND p.captured_eligibility_revision=?4 AND p.captured_timeline_revision=t.timeline_revision AND p.captured_config_revision=n.duration_config_revision AND t.archived=0 FROM send_preparations p JOIN threads t ON t.id=p.thread_id JOIN local_node n ON n.id=t.instance_id WHERE p.operation_scope=?1 AND p.operation_key=?2 AND p.digest=?3",
                 params![scope,request.operation.as_str(),digest.as_slice(),eligibility_before_author],|r|r.get(0),
             ).map_err(store_error)?;
             if !revisions_match {

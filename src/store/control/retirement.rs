@@ -150,7 +150,18 @@ pub(crate) fn begin_retirement_fence(
     )?);
     tx.execute("INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation) VALUES (?1,?2,?3,?4,?5,?6,?7)",
         params![job.as_str(),seat.as_str(),cutover.0,boot,epoch,target,generation]).map_err(store_error)?;
-    schema::bump_lifecycle_revision(tx, instance)?;
+    // The retired seat's own server advances its lifecycle; a seat with no server (remote) leaves
+    // every local host's lifecycle alone.
+    if let Some(host) = tx
+        .query_row(
+            "SELECT host_id FROM seats WHERE id=?1",
+            [seat.as_str()],
+            |r| r.get::<_, Option<i64>>(0),
+        )
+        .map_err(store_error)?
+    {
+        schema::bump_host_lifecycle_revision(tx, crate::ports::HostId::from_row(host))?;
+    }
     schema::bump_filter_revision(tx, instance, "directory", "all")?;
     bump_member_directory(tx, instance, &seat)?;
     Ok(RetirementJob {

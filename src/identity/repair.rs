@@ -73,7 +73,7 @@ const DIAGNOSTIC_READ_MILLIS: u64 = 750;
 /// passes the attached session's `host_id`). New per-host queries take a
 /// [`HostId`] (from here, from a seat row's `host_id`, or from a claim) and add
 /// `host_id = ?` plus `LOCAL_SEAT` to every seat predicate; they never read the
-/// primary host.
+/// node-wide host.
 pub struct OrdinaryIdentity {
     instance: String,
     host_id: HostId,

@@ -215,9 +215,11 @@ pub(crate) fn binding_evidence_lacking(conn: &Connection, seat: &str) -> rusqlit
 }
 
 /// The endpoint recorded for an attached Herdr host that was composed without
-/// a socket path (an in-process host given directly). Interim: ht-5fr.1.7's
-/// `HostChoice` replaces the single-host composition that needs it.
-pub const UNNAMED_HOST_ENDPOINT: &str = "unnamed-host";
+/// a socket path (an in-process host given directly), and the locator claims
+/// name it by. A canonical locator so the composition publishes it into the
+/// host index like any socket path. Interim: ht-5fr.1.7's `HostChoice`
+/// replaces the single-host composition that needs it.
+pub const UNNAMED_HOST_ENDPOINT: &str = "/host.sock";
 
 /// The identity a fresh node store is created with: the `local_node` row and
 /// the self row of `node_directory`. An existing store keeps its own rows; the
@@ -732,20 +734,9 @@ fn bump_thread_revision(tx: &Connection, thread: &ThreadId, column: &str) -> Res
     Ok(())
 }
 
-pub fn bump_lifecycle_revision(tx: &Transaction<'_>, instance: &str) -> Result<(), ApiError> {
-    let changed = tx.execute("UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+1 WHERE host_id=primary_host() AND node_id=?1 AND lifecycle_revision<?2", params![instance, i64::MAX]).map_err(store_error)?;
-    if changed != 1 {
-        return Err(api_error(
-            ErrorCode::SequenceExhausted,
-            "lifecycle revision missing or exhausted",
-        ));
-    }
-    Ok(())
-}
-
-/// [`bump_lifecycle_revision`] for an explicit host: worker-scoped decisions
+/// Advances `host`'s `lifecycle_revision`: worker-scoped decisions
 /// (observation, reconciliation, repair) bump the row of the host they decide
-/// for, not the cooperative path's primary host.
+/// for, a seat retirement the row of the seat's own server.
 pub fn bump_host_lifecycle_revision(
     tx: &Transaction<'_>,
     host: crate::ports::HostId,
@@ -1976,7 +1967,7 @@ pub(crate) fn execute_accountable_transaction(
         operation_key,
         digest,
         |tx| {
-            super::seats::cooperative_instance(tx, &claim.instance, &claim)?;
+            super::seats::cooperative_claim(tx, context, &claim.instance, &claim)?;
             if let Some(delivery) = &delivery {
                 super::handoff::validate_handoff_requirement(tx, delivery, true)?;
             } else {

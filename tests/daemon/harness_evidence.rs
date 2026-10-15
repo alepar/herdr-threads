@@ -2168,10 +2168,10 @@ mod publication_order {
         }
         fn persisted_host_epoch(
             &self,
-            _instance: &str,
+            _host: crate::ports::HostId,
             _budget: &CallBudget,
         ) -> Result<u64, ApiError> {
-            self.inner.persisted_host_epoch(_instance, _budget)
+            self.inner.persisted_host_epoch(_host, _budget)
         }
         fn attach_host(
             &self,

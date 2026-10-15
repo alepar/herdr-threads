@@ -362,12 +362,13 @@ pub(crate) fn mutate(
         operation.as_str(),
         digest,
         |tx| {
-            seats::cooperative_instance(tx, &claim.instance, &claim)?;
+            seats::cooperative_claim(tx, context, &claim.instance, &claim)?;
             validate_phase(tx, request, true)
         },
         |_| Ok(()),
         |tx, decision| {
             control::decide_accountable(
+                context,
                 tx,
                 decision,
                 &mut permit,

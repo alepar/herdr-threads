@@ -391,12 +391,18 @@ impl World {
                 ids::*,
             },
         };
-        let paths = NodePaths::resolve(
-            &RuntimeContext::explicit(self.state.clone(), self.host.clone(), None)
+        let context =
+            RuntimeContext::explicit(self.state.clone(), self.host.clone(), None).unwrap();
+        // The Herdr server the elected daemon attached: the canonical path the CLI claims name.
+        let host = herdr_threads::protocol::ids::HostLocator::parse(
+            context
+                .require_host()
                 .unwrap()
-                .state_dir,
+                .to_string_lossy()
+                .into_owned(),
         )
         .unwrap();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
         let instance = read_node_uuid_hint(&paths).unwrap().unwrap();
         let db = rusqlite::Connection::open(&paths.database_path).unwrap();
         #[allow(clippy::type_complexity)]
@@ -426,7 +432,7 @@ impl World {
             )
             .expect("the seat's lifecycle check-in opened its binding");
         herdr_threads::protocol::authority::CallerClaim {
-            host: herdr_threads::test_support::test_host_locator(),
+            host,
             instance: instance.to_string(),
             seat: SeatId::new(seat),
             binding_generation: generation as u64,

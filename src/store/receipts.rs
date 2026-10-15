@@ -280,6 +280,7 @@ pub fn ack_policy_delivered(
         },
         |tx, decision| {
             let actor = super::control::decide_accountable(
+                context,
                 tx,
                 decision,
                 permit,
@@ -473,6 +474,7 @@ fn ack_impl(
         |tx, decision| {
             failpoint!("ack.after_decision_sample", context.failpoint_scope());
             let actor = super::control::decide_accountable(
+                context,
                 tx,
                 decision,
                 permit,

@@ -306,6 +306,8 @@ pub(crate) fn enroll_with_hooks(
     now: UtcMillis,
     hooks: &[(&str, EnrollHook)],
 ) -> Result<EnrollOutcome, ApiError> {
+    // A remote seat is never occupied on this node; refused before anything is written.
+    super::seats::require_local_seat(tx, &request.key.seat)?;
     if let Some(existing) = match_claim(tx, request.key)? {
         return Ok(EnrollOutcome::Existing(existing));
     }
@@ -549,6 +551,7 @@ pub fn connect(
     let Some(seat) = binding_seat(tx, binding)? else {
         return Ok(false);
     };
+    super::seats::require_local_seat(tx, &SeatId::new(seat.as_str()))?;
     // Every reconnect (check-in or plain call) can restore availability: fence it.
     super::schema::fence_seat_availability(tx, &seat, || {
         let rows = tx
@@ -836,6 +839,7 @@ pub fn launch_placeholder_replace(
     now: UtcMillis,
 ) -> Result<(), ApiError> {
     let binding = event.binding;
+    super::seats::require_local_seat(tx, &binding.seat)?;
     if binding.role != BindingRole::TopLevel
         || binding.harness == "human"
         || binding.provenance == crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE
@@ -1075,6 +1079,7 @@ fn attach_subagent_with_hooks(
     if claim.agent_id.is_none() {
         return Err(subagent_shape_error());
     }
+    super::seats::require_local_seat(tx, &claim.seat)?;
     enroll_with_hooks(
         tx,
         &EnrollRequest {

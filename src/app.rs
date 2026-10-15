@@ -1163,7 +1163,8 @@ impl LaneProbe {
 /// attaches it, `Remembered` attaches the row with the greatest
 /// `last_attached_at` whose endpoint is a live socket (or none), `Given` is a
 /// caller-built host (tests, `FakeHost`). Attaching stamps `last_attached_at`,
-/// sets the store's primary host and the descriptor's `primary_host`.
+/// sets the descriptor's `primary_host`; the composition then publishes the host
+/// into the store's `HostIndex` (see `publish_session`).
 /// Does not own: building the production host (the [`HostFactory`] closure
 /// from `main.rs` does), the host's session or reachability, or the daemon
 /// address. Must not be resolved before election (the remembered host lives
@@ -1213,11 +1214,16 @@ impl HostChoice {
     /// [`HostChoice::Given`] for a fixture host that is never used for guarded
     /// bootstrap, recorded under the unnamed test endpoint.
     pub fn given(host: Arc<dyn HostPort>) -> Self {
-        Self::Given(
+        Self::given_at(
             host,
-            Arc::new(NoBootstrapObserver),
             std::path::PathBuf::from(crate::store::schema::UNNAMED_HOST_ENDPOINT),
         )
+    }
+
+    /// [`HostChoice::given`] recorded (and published to the host index) under `endpoint`, the
+    /// server the fixture's claims name.
+    pub fn given_at(host: Arc<dyn HostPort>, endpoint: std::path::PathBuf) -> Self {
+        Self::Given(host, Arc::new(NoBootstrapObserver), endpoint)
     }
 
     /// Attaches the chosen host in `context`'s store (the store is created if
@@ -1305,6 +1311,25 @@ pub(crate) struct HostSession {
     pub(crate) endpoint: std::path::PathBuf,
     pub(crate) port: Arc<dyn HostPort>,
     pub(crate) observer: Arc<dyn crate::ports::BootstrapObserver>,
+}
+
+/// Publishes `session`'s host into the store's [`HostIndex`](crate::store::hosts::HostIndex)
+/// under its canonical endpoint, so a claim naming that server resolves. Called once the
+/// session's workers run; HostSessions replaces this single-host step (ht-5fr.2.7).
+fn publish_session(
+    index: &crate::store::hosts::HostIndex,
+    session: &HostSession,
+) -> io::Result<()> {
+    let locator = crate::protocol::ids::HostLocator::parse(session.endpoint.to_string_lossy())
+        .map_err(|error| {
+            io::Error::other(format!(
+                "host endpoint {} is not a canonical locator: {}",
+                session.endpoint.display(),
+                error.detail
+            ))
+        })?;
+    index.publish(locator, crate::ports::HostId::from_row(session.host_id));
+    Ok(())
 }
 
 /// The lifecycle calls the factory only after ownership election and socket
@@ -1593,7 +1618,7 @@ where
             let context = StoreContext::with_host_index(
                 database_path,
                 Arc::clone(&factory_clock),
-                host_index,
+                Arc::clone(&host_index),
             )
             .with_node_seed(crate::store::schema::NodeSeed {
                 uuid: identity.uuid(),
@@ -1670,8 +1695,9 @@ where
             }
             // The host choice is resolved here, after the store exists: zero
             // or one Herdr server is attached (its `herdr_hosts` row stamped,
-            // the store's primary host and the descriptor's `primary_host`
-            // set). `None` runs the daemon store-only.
+            // the descriptor's `primary_host` set; the store's host index is
+            // published once the host's workers run). `None` runs the daemon
+            // store-only.
             let session: Option<HostSession> =
                 host_choice.attach(&context, host_factory.as_ref())?;
             factory_primary_host.set(session.as_ref().map(|session| session.endpoint.clone()));
@@ -1737,7 +1763,7 @@ where
                 Some(session) => {
                     let persisted_epoch = store
                         .persisted_host_epoch(
-                            &instance.to_string(),
+                            crate::ports::HostId::from_row(session.host_id),
                             &CallBudget {
                                 deadline: MonoInstant(
                                     factory_clock.monotonic_now().0.saturating_add(2_000),
@@ -2108,6 +2134,12 @@ where
                         bootstrap_store,
                     )
                     .map_err(|error| io::Error::other(error.detail))?;
+            }
+            // The host's workers run: claims naming its server now resolve.
+            if let Some(session) = &session
+                && let Err(error) = publish_session(&host_index, session)
+            {
+                rate_limited_log.write_line(&format!("host not addressable: {error}"));
             }
             let stop = StopController::new(instance, boot, cancellation);
             let provider = elected_health_provider(
@@ -2969,29 +3001,30 @@ mod host_choice_tests {
             .unwrap();
         assert!(session.is_none());
         assert_eq!(built.load(Ordering::SeqCst), 0, "no host is built");
-        assert_eq!(
-            ctx.primary_host().unwrap_err().code,
-            crate::protocol::results::ErrorCode::HostUnavailable
-        );
+        assert!(ctx.hosts().ids().is_empty(), "nothing is published");
         assert_eq!(rows(&isolation), before, "nothing is stamped");
     }
 
     #[test]
-    fn attach_sets_primary_host_via_accessor() {
-        let isolation = TestIsolation::new("primary-accessor");
+    fn attach_leaves_publishing_to_the_composition() {
+        let isolation = TestIsolation::new("publish-step");
         let ctx = context(&isolation);
-        assert_eq!(
-            ctx.primary_host().unwrap_err().code,
-            crate::protocol::results::ErrorCode::HostUnavailable
-        );
         let session = HostChoice::given(Arc::new(StubHost))
             .attach(&ctx, None)
             .unwrap()
             .unwrap();
-        assert_eq!(ctx.primary_host().unwrap(), session.host_id);
+        assert!(ctx.hosts().ids().is_empty(), "attach publishes nothing");
         assert_eq!(
             session.endpoint,
             PathBuf::from(crate::store::schema::UNNAMED_HOST_ENDPOINT)
+        );
+        publish_session(ctx.hosts(), &session).unwrap();
+        let locator =
+            crate::protocol::ids::HostLocator::parse(crate::store::schema::UNNAMED_HOST_ENDPOINT)
+                .unwrap();
+        assert_eq!(
+            ctx.hosts().attached_id(&locator).unwrap(),
+            crate::ports::HostId::from_row(session.host_id)
         );
     }
 

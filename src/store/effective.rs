@@ -802,7 +802,7 @@ fn inbox_revision(db: &Connection, instance: &str, seat: &str) -> Result<i64, Ap
 }
 fn inbox_host_revisions(db: &Connection, instance: &str) -> Result<(i64, i64), ApiError> {
     db.query_row(
-        "SELECT h.lifecycle_revision,n.decision_seq FROM local_node n JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=n.id WHERE n.id=?1",
+        "SELECT (SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=n.id),n.decision_seq FROM local_node n WHERE n.id=?1",
         [instance],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )

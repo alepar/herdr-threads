@@ -261,7 +261,7 @@ pub(crate) fn prepare_notify_step_internal(
         return Ok(PrepareProgress::Step(PreparationStep::Committed(result)));
     }
     let (instance,membership_revision,lifecycle_revision): (String,i64,i64) = tx.query_row(
-        "SELECT t.instance_id,t.membership_revision,h.lifecycle_revision FROM threads t JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=t.instance_id WHERE t.id=?1",
+        "SELECT t.instance_id,t.membership_revision,(SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=t.instance_id) FROM threads t WHERE t.id=?1",
         [request.thread.as_str()],|r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))
         .optional().map_err(store_error)?.ok_or_else(||api_error(ErrorCode::NotFound,"thread not found"))?;
     if instance != connection.instance() {
@@ -495,7 +495,7 @@ pub(crate) fn publish_notify_internal(
         ));
     }
     let (instance,current_mr,current_lr,next_sequence): (String,i64,i64,i64)=tx.query_row(
-        "SELECT t.instance_id,t.membership_revision,h.lifecycle_revision,t.next_sequence FROM threads t JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=t.instance_id WHERE t.id=?1",
+        "SELECT t.instance_id,t.membership_revision,(SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=t.instance_id),t.next_sequence FROM threads t WHERE t.id=?1",
         [request.thread.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(store_error)?;
     if instance != connection.instance() {
         return Err(api_error(

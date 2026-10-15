@@ -106,6 +106,10 @@ impl Fixture {
         let context = StoreContext::new(root.join("store.db"), clock.clone())
             .with_test_host()
             .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
+        // The fixture's claims name the isolated server: it is the fixture host.
+        context
+            .hosts()
+            .publish_for_test(isolated_host(), herdr_threads::test_support::test_host_id());
         let db = context.open_writer().unwrap();
         db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
             .unwrap();

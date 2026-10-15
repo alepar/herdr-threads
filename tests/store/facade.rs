@@ -1262,10 +1262,10 @@ fn public_facade_operator_fresh_and_rebind_keep_provenance_without_receipt_autho
     );
     let db = store.context.open_writer().unwrap();
     // The operator-fresh insert writes the local home, the local flag and the
-    // primary host.
+    // fixture host.
     assert_eq!(
         db.query_row(
-            "SELECT home_node=(SELECT id FROM local_node), is_local, host_id=primary_host() FROM seats WHERE id=?1",
+            "SELECT home_node=(SELECT id FROM local_node), is_local, host_id=(SELECT MIN(host_id) FROM herdr_hosts) FROM seats WHERE id=?1",
             [new_seat.as_str()],
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
         )

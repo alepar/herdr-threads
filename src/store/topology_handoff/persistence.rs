@@ -522,7 +522,7 @@ pub(super) fn validate_live(
     canonical: &HandoffNamespace,
     identity: &BootstrapIdentity,
 ) -> Result<(), ApiError> {
-    crate::store::seats::cooperative_bound_mapping(db, &identity.claim, None)?;
+    crate::store::seats::seat_bound_mapping(db, &identity.claim)?;
     let recorded: Option<Option<String>> = db.query_row(
         "SELECT thread_id FROM bootstrap_handoffs WHERE instance_id=?1 AND state_dir=?2 AND host_endpoint=?3 AND actor_scope=?4 AND compound=?5",
         params![canonical.instance,canonical.state_dir.to_str(),canonical.host_endpoint.to_str(),scope(identity),identity.compound.as_str()], |r|r.get(0),

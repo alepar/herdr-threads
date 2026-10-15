@@ -59,8 +59,6 @@ pub(crate) fn seat_host(conn: &Connection, seat: &SeatId) -> Result<HostId, ApiE
 
 /// Whether `seat` exists and is local (see [`LOCAL_SEAT`]); an unknown seat is
 /// not local.
-// Used by tests; ht-5fr.4 adopts it in the remaining observation callers.
-#[allow(dead_code)]
 pub(crate) fn is_local_seat(conn: &Connection, seat: &SeatId) -> Result<bool, ApiError> {
     conn.query_row(
         &format!("SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND {LOCAL_SEAT})"),
@@ -197,11 +195,11 @@ pub fn begin_host_observation(
     )
 }
 
-pub fn persisted_host_epoch(conn: &Connection, instance: &str) -> Result<u64, ApiError> {
+pub fn persisted_host_epoch(conn: &Connection, host: HostId) -> Result<u64, ApiError> {
     let epoch: Option<i64> = conn
         .query_row(
-            "SELECT host_epoch FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
-            [instance],
+            "SELECT host_epoch FROM herdr_hosts WHERE host_id=?1",
+            [host.get()],
             |r| r.get(0),
         )
         .optional()
@@ -3114,7 +3112,9 @@ fn resolve_bootstrap_seat_impl(
         &format!("service-allocation:{}", canonical.instance),
         request.operation.as_str(),
         digest,
-        |tx| super::seats::cooperative_instance(tx, &canonical.instance, &request.identity.claim),
+        |tx| {
+            cooperative_claim(tx, context, &canonical.instance, &request.identity.claim).map(|_| ())
+        },
         |tx| {
             if validate(tx, false)?.is_none() {
                 validate_resolution_allocation(
@@ -3129,6 +3129,7 @@ fn resolve_bootstrap_seat_impl(
             snapshot_budget(context, budget)?;
             if let Some(permit) = permit.as_mut() {
                 super::control::decide_accountable(
+                    context,
                     tx,
                     at,
                     permit,
@@ -3353,6 +3354,10 @@ pub fn mutate_operator(
         operation.as_str(),
         digest,
         |tx| {
+            // A remote seat is never rebound or replaced here; refused before any write.
+            for named in seat.iter().chain(replace.iter()) {
+                require_local_seat(tx, named)?;
+            }
             if !observed_matches(
                 tx,
                 host,
@@ -3635,8 +3640,9 @@ fn reconciliation_lags(tx: &Transaction<'_>, host: HostId) -> Result<bool, ApiEr
         .unwrap_or(false))
 }
 
-/// TRUST-POLICY C1 candidates: nonretired unresolved seats of the instance
-/// whose bindings include this harness's session `native_session` (any
+/// TRUST-POLICY C1 candidates: nonretired unresolved **local** seats of the instance, whatever
+/// Herdr server they last sat on (a remote seat is never a candidate, so C1 never moves a seat
+/// between nodes), whose bindings include this harness's session `native_session` (any
 /// top-level row, open or ended, not only the newest: a one-shot or `/clear`
 /// successor enrolled later must not hide the main session, ht-54r.78).
 /// Sentinel (`plugin_context:`), empty and human values never match, and a
@@ -3656,9 +3662,9 @@ pub(crate) fn continuity_candidates(
     native_session: &str,
 ) -> Result<Vec<SeatId>, ApiError> {
     let mut statement = tx
-        .prepare(
-            "SELECT s.id, COALESCE(MAX(b.disconnect_reason IS 'seat_unresolved'),0) FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.instance_id=?1 AND s.state='unresolved' AND b.harness=?2 AND b.harness<>'human' AND b.role='top_level' AND b.agent_id='' AND b.observation_provenance<>'managed_launch' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' GROUP BY s.id ORDER BY s.id",
-        )
+        .prepare(&format!(
+            "SELECT s.id, COALESCE(MAX(b.disconnect_reason IS 'seat_unresolved'),0) FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.instance_id=?1 AND s.{LOCAL_SEAT} AND s.state='unresolved' AND b.harness=?2 AND b.harness<>'human' AND b.role='top_level' AND b.agent_id='' AND b.observation_provenance<>'managed_launch' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' GROUP BY s.id ORDER BY s.id",
+        ))
         .map_err(store_error)?;
     let rows: Vec<(String, bool)> = statement
         .query_map(params![instance, harness, native_session], |r| {
@@ -3765,7 +3771,6 @@ pub fn decide_continuity(
     let command = request.command.clone();
     let diagnostic = request.diagnostic;
     let instance = request.guard.instance().to_owned();
-    let host = request.guard.host_id();
     if instance != elected_instance {
         return Err(api_error(
             ErrorCode::StaleHostObservation,
@@ -3775,6 +3780,16 @@ pub fn decide_continuity(
     command
         .validate()
         .map_err(|e| api_error(ErrorCode::InvalidRequest, e))?;
+    // C1 does not go through `cooperative_claim`: the resumed session id is its evidence, and the
+    // seat may sit on another server of this node (the move C1 exists for). The command's server
+    // is the one it reattaches onto; an unattached one is `HostUnavailable`.
+    let host = context.hosts().attached_id(&command.host)?;
+    if request.guard.host_id() != host {
+        return Err(api_error(
+            ErrorCode::StaleHostObservation,
+            "continuity guard belongs to another Herdr server",
+        ));
+    }
     let target = command.target.clone();
     let expected_boot = request.guard.host_boot().clone();
     let expected_epoch = request.guard.epoch();
@@ -4228,39 +4243,138 @@ pub(crate) fn binding_evidence<'a>(
     }
 }
 
-pub(crate) fn cooperative_instance(
+/// The one store entry check of a cooperative call: node, declared role, the attached Herdr
+/// server the claim names, a local seat, and that seat sitting on that server. Returns the
+/// `HostId` the caller keeps for the rest of its transaction (mapping, holds, observation,
+/// seat writes).
+///
+/// Owns: the decision whether a claim may act (A2, decided inside the deciding transaction from
+/// the canonical view). Does not own: the claim's wire shape, the host's reachability or session,
+/// or what the call then does. Error split: `CallerUnverified` for a claim that does not match
+/// the store (node or role, a seat that is not local, a seat on another server), `HostUnavailable`
+/// when the named server is not attached (retryable once it is). C1 continuity and the operator
+/// rebinds do not go through here (they carry no claim, or move a seat between servers).
+pub(crate) fn cooperative_claim(
     db: &Connection,
-    instance: &str,
+    ctx: &StoreContext,
+    node: &str,
     claim: &crate::protocol::authority::CallerClaim,
+) -> Result<HostId, ApiError> {
+    claim_shape(claim, node)?;
+    let host = ctx.hosts().attached_id(&claim.host)?;
+    let seat_host = local_seat_host(db, &claim.seat, node)?;
+    if seat_host != host {
+        return Err(api_error(
+            ErrorCode::CallerUnverified,
+            "cooperative seat sits on another Herdr server",
+        ));
+    }
+    Ok(host)
+}
+
+/// The claim's node and declared role against the store's node. A subagent claim carries its
+/// agent id and resolves to a binding attached to its parent (ht-54r.3); refusing it a write is
+/// `Command::validate`'s and dispatch's job (ht-54r.20).
+fn claim_shape(
+    claim: &crate::protocol::authority::CallerClaim,
+    node: &str,
 ) -> Result<(), ApiError> {
     use crate::protocol::authority::CallerRole;
-    // A subagent claim carries its agent id and resolves to a binding attached to its parent
-    // (ht-54r.3); refusing it a write is `Command::validate`'s and dispatch's job (ht-54r.20).
     let role_matches = match claim.role {
         CallerRole::TopLevel => claim.agent_id.is_none(),
         CallerRole::Subagent => claim.agent_id.is_some(),
     };
-    if claim.instance != instance || !role_matches {
+    if claim.instance != node || !role_matches {
         return Err(api_error(
             ErrorCode::CallerUnverified,
-            "cooperative instance or declared role mismatch",
+            "cooperative node or declared role mismatch",
         ));
     }
-    let owner: Option<String> = db
+    Ok(())
+}
+
+/// The server a local seat of `node` sits on; a missing or remote seat is `CallerUnverified`.
+fn local_seat_host(db: &Connection, seat: &SeatId, node: &str) -> Result<HostId, ApiError> {
+    if !is_local_seat(db, seat)? {
+        return Err(api_error(
+            ErrorCode::CallerUnverified,
+            "cooperative seat is not local",
+        ));
+    }
+    let owner: String = db
         .query_row(
             "SELECT instance_id FROM seats WHERE id=?1",
-            [claim.seat.as_str()],
+            [seat.as_str()],
             |r| r.get(0),
         )
-        .optional()
         .map_err(store_error)?;
-    if owner.as_deref() != Some(instance) {
+    if owner != node {
         return Err(api_error(
             ErrorCode::CallerUnverified,
             "cooperative seat belongs to another instance",
         ));
     }
-    Ok(())
+    seat_host(db, seat)
+}
+
+/// The mapping of the claim's seat on the server the seat itself sits on, for a revalidation
+/// inside a transaction (or a permit issue) whose entry already ran [`cooperative_claim`]: it
+/// checks the claim's node, role and the seat's locality, not `claim.host` against the seat.
+/// The entry points hold the one A2 claim-host check; the deep validators of handoff and
+/// bootstrap call this.
+pub(crate) fn seat_mapping(
+    db: &Connection,
+    claim: &crate::protocol::authority::CallerClaim,
+    mode: Option<crate::protocol::commands::CheckInMode>,
+) -> Result<CooperativeMapping, ApiError> {
+    claim_shape(claim, &claim.instance)?;
+    let host = local_seat_host(db, &claim.seat, &claim.instance)?;
+    cooperative_mapping(db, host, claim, mode)
+}
+
+/// [`seat_mapping`] plus: the claim's own binding is open (see [`cooperative_bound_mapping`]).
+pub(crate) fn seat_bound_mapping(
+    db: &Connection,
+    claim: &crate::protocol::authority::CallerClaim,
+) -> Result<CooperativeMapping, ApiError> {
+    claim_shape(claim, &claim.instance)?;
+    let host = local_seat_host(db, &claim.seat, &claim.instance)?;
+    cooperative_bound_mapping(db, host, claim, None)
+}
+
+/// [`cooperative_claim`] then [`cooperative_mapping`] on the host it returned, for a decision that
+/// needs the mapping and not the host afterwards.
+pub(crate) fn claimed_mapping(
+    db: &Connection,
+    ctx: &StoreContext,
+    node: &str,
+    claim: &crate::protocol::authority::CallerClaim,
+    mode: Option<crate::protocol::commands::CheckInMode>,
+) -> Result<CooperativeMapping, ApiError> {
+    let host = cooperative_claim(db, ctx, node, claim)?;
+    cooperative_mapping(db, host, claim, mode)
+}
+
+/// Refuses a seat that exists and is not local: a remote seat is never occupied on this node.
+/// The same error as [`cooperative_claim`]'s, for the paths that name a seat without a claim
+/// (bindings, check-in, resolve, operator actions). An unknown seat is left to the caller's own
+/// not-found handling. Checked before any write.
+pub(crate) fn require_local_seat(conn: &Connection, seat: &SeatId) -> Result<(), ApiError> {
+    let remote: bool = conn
+        .query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND NOT ({LOCAL_SEAT}))"),
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if remote {
+        Err(api_error(
+            ErrorCode::CallerUnverified,
+            "cooperative seat is not local",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 /// Delivery's current recipient predicate uses canonical continuity without
@@ -4310,12 +4424,14 @@ pub(crate) fn eligible_delivery_recipient(
     Ok(())
 }
 
+/// The claim seat's canonical mapping on `host`, the server [`cooperative_claim`] resolved for
+/// the claim (or the seat's own server for a claim the store builds itself).
 pub(crate) fn cooperative_mapping(
     db: &Connection,
+    host: HostId,
     claim: &crate::protocol::authority::CallerClaim,
     mode: Option<crate::protocol::commands::CheckInMode>,
 ) -> Result<CooperativeMapping, ApiError> {
-    cooperative_instance(db, &claim.instance, claim)?;
     if !uuid::Uuid::parse_str(claim.execution.as_str())
         .is_ok_and(|execution| execution.hyphenated().to_string() == claim.execution.as_str())
     {
@@ -4335,7 +4451,7 @@ pub(crate) fn cooperative_mapping(
         i64,
     )>;
     let row: RowColumns = db.query_row(
-        "SELECT s.state,s.target_id,s.generation,s.target_generation,h.host_boot,h.host_epoch,h.invalidation_revision,h.host_id FROM seats s JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id WHERE s.id=?1",
+        "SELECT s.state,s.target_id,s.generation,s.target_generation,h.host_boot,h.host_epoch,h.invalidation_revision,h.host_id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1",
         [claim.seat.as_str()], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional().map_err(store_error)?;
     let Some((state, target, generation, revision, boot, epoch, invalidation, host_id)) = row
     else {
@@ -4344,6 +4460,12 @@ pub(crate) fn cooperative_mapping(
             "cooperative seat missing",
         ));
     };
+    if host_id != host.get() {
+        return Err(api_error(
+            ErrorCode::CallerUnverified,
+            "cooperative seat sits on another Herdr server",
+        ));
+    }
     if state != "resolved" || target.as_deref() != Some(claim.target.as_str()) {
         return Err(api_error(
             ErrorCode::CallerUnverified,
@@ -4365,7 +4487,6 @@ pub(crate) fn cooperative_mapping(
         };
         return Err(api_error(code, "cooperative binding generation changed"));
     }
-    let host = HostId::from_row(host_id);
     let held: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE host_id=?1 AND target_id=?2 AND released_at IS NULL)",
         params![host.get(),claim.target.as_str()], |r|r.get(0)).map_err(store_error)?;
     let observation = effective::effective_observation(db, host, claim.target.as_str())?;
@@ -4433,10 +4554,11 @@ pub(crate) fn cooperative_mapping(
 /// instead and uses `cooperative_mapping`.
 pub(crate) fn cooperative_bound_mapping(
     db: &Connection,
+    host: HostId,
     claim: &crate::protocol::authority::CallerClaim,
     mode: Option<crate::protocol::commands::CheckInMode>,
 ) -> Result<CooperativeMapping, ApiError> {
-    let mapping = cooperative_mapping(db, claim, mode)?;
+    let mapping = cooperative_mapping(db, host, claim, mode)?;
     if super::queries::open_binding_for(db, &bindings::BindingKey::from_claim(claim))?.is_none() {
         return Err(api_error(
             ErrorCode::CallerUnverified,
@@ -4460,7 +4582,7 @@ pub(crate) fn issue_bootstrap_begin_permit(
         .validate()
         .map_err(ApiError::invalid_request)?;
     super::topology_handoff::encode_identity(canonical, &command.identity)?;
-    cooperative_instance(db, instance, &command.identity.claim)?;
+    let host = cooperative_claim(db, context, instance, &command.identity.claim)?;
     let current = super::topology_handoff::current(db, canonical, &command.identity)?;
     let mapping = if current
         .is_some_and(|v| v.state == crate::protocol::handoff::BootstrapState::Completed)
@@ -4468,7 +4590,7 @@ pub(crate) fn issue_bootstrap_begin_permit(
         // Historical replay cannot consume a live deciding fence.
         (0, 0)
     } else {
-        let mapping = cooperative_mapping(db, &command.identity.claim, None)?;
+        let mapping = cooperative_mapping(db, host, &command.identity.claim, None)?;
         (mapping.revision, mapping.invalidation_revision)
     };
     let request = crate::store::cooperative_permit_request(
@@ -4492,7 +4614,7 @@ pub(crate) fn issue_cooperative_permit(
     mut request: crate::ports::CooperativePermitRequest,
     budget: &CallBudget,
 ) -> Result<MutationPermit, ApiError> {
-    cooperative_instance(db, instance, &request.claim)?;
+    let host = cooperative_claim(db, context, instance, &request.claim)?;
     let stored: Option<Vec<u8>> = db
         .query_row(
             "SELECT digest FROM operations WHERE actor_scope=?1 AND operation_key=?2",
@@ -4521,7 +4643,7 @@ pub(crate) fn issue_cooperative_permit(
                     .ok_or_else(|| api_error(ErrorCode::NotFound, "current invitation missing"))?;
             request.obligation = ObligationRef::Invitation(invitation);
         }
-        let mapping = cooperative_mapping(db, &request.claim, request.check_in_mode)?;
+        let mapping = cooperative_mapping(db, host, &request.claim, request.check_in_mode)?;
         (mapping.revision, mapping.invalidation_revision)
     };
     Ok(MutationPermit::cooperative(
@@ -4542,6 +4664,7 @@ pub fn check_in_payload(command: &CheckIn) -> impl serde::Serialize + '_ {
 // Allowed: one deciding mutation: transaction, permit, claim, mode and the obligation it proves.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decide_cooperative(
+    ctx: &StoreContext,
     tx: &Transaction<'_>,
     at: DecisionInstant,
     instance: &str,
@@ -4553,7 +4676,7 @@ pub(crate) fn decide_cooperative(
     digest: &[u8; 32],
 ) -> Result<(CooperativeMapping, bindings::Resolution), ApiError> {
     let mapping = decide_cooperative_fence(
-        tx, at, instance, permit, claim, mode, operation, obligation, digest,
+        ctx, tx, at, instance, permit, claim, mode, operation, obligation, digest,
     )?;
     let resolution = resolve_cooperative(tx, at, claim, mode, &mapping)?;
     Ok((mapping, resolution))
@@ -4564,6 +4687,7 @@ pub(crate) fn decide_cooperative(
 /// binding write (`register_available`) call this and [`resolve_cooperative`] separately.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decide_cooperative_fence(
+    ctx: &StoreContext,
     tx: &Transaction<'_>,
     at: DecisionInstant,
     instance: &str,
@@ -4574,8 +4698,8 @@ pub(crate) fn decide_cooperative_fence(
     obligation: &ObligationRef,
     digest: &[u8; 32],
 ) -> Result<CooperativeMapping, ApiError> {
-    cooperative_instance(tx, instance, claim)?;
-    let mapping = cooperative_mapping(tx, claim, mode)?;
+    let host = cooperative_claim(tx, ctx, instance, claim)?;
+    let mapping = cooperative_mapping(tx, host, claim, mode)?;
     let fence = crate::protocol::authority::CooperativeDecisionFence {
         now: at.monotonic,
         instance: instance.into(),
@@ -4765,10 +4889,14 @@ pub fn register_available(
         &scope,
         command.operation.as_str(),
         idempotency_digest,
-        |tx| cooperative_instance(tx, &claim.instance, claim),
-        |tx| cooperative_mapping(tx, claim, Some(command.mode)).map(|_| ()),
+        |tx| cooperative_claim(tx, context, &claim.instance, claim).map(|_| ()),
+        |tx| {
+            let host = cooperative_claim(tx, context, &claim.instance, claim)?;
+            cooperative_mapping(tx, host, claim, Some(command.mode)).map(|_| ())
+        },
         |tx, at| {
             let mapping = decide_cooperative_fence(
+                context,
                 tx,
                 at,
                 &claim.instance,
@@ -5132,7 +5260,10 @@ pub fn hook_plain_reconnect(
 ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
     context.execute_decision(
         conn,
-        |tx| cooperative_mapping(tx, claim, None),
+        |tx| {
+            let host = cooperative_claim(tx, context, instance, claim)?;
+            cooperative_mapping(tx, host, claim, None)
+        },
         |tx, at, mapping| {
             resolve_cooperative(tx, at, claim, None, &mapping)?;
             let view = if presentation {
@@ -5439,6 +5570,7 @@ pub fn set_wake_on(
         |_| Ok(()),
         |tx, at| {
             control::decide_accountable(
+                context,
                 tx,
                 at,
                 &mut permit,

@@ -70,8 +70,10 @@ impl Session {
         let paths = NodePaths::resolve(&context.state_dir).unwrap();
         let log = daemon_log_path(&paths);
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        // The canonical path the CLI claims name, which is also the endpoint the daemon attaches.
+        let endpoint = context.require_host().unwrap().to_path_buf();
         let host: Arc<dyn HostPort> =
-            Arc::new(NativeCli::new(herdr.socket_path(), Arc::clone(&clock)));
+            Arc::new(NativeCli::new(endpoint.clone(), Arc::clone(&clock)));
         let probe = LaneProbe::default();
         // The detached daemon's stderr is its daemon.log; in this process the
         // lane error log is pointed at the same file.
@@ -89,7 +91,7 @@ impl Session {
                     clock,
                     daemon_stop,
                     ServiceConfig::default(),
-                    herdr_threads::app::HostChoice::given(host),
+                    herdr_threads::app::HostChoice::given_at(host, endpoint),
                     daemon_probe,
                     move |descriptor| {
                         ready_tx

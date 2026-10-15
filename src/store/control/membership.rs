@@ -107,6 +107,7 @@ pub fn join(
         },
         |tx, decision| {
             let actor = decide_accountable(
+                context,
                 tx,
                 decision,
                 &mut permit,
@@ -209,6 +210,7 @@ pub fn leave(
         },
         |tx, decision| {
             decide_accountable(
+                context,
                 tx,
                 decision,
                 &mut permit,

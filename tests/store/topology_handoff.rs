@@ -122,7 +122,6 @@ pub(super) fn fixture() -> Connection {
         );
         assert_eq!(rc, ffi::SQLITE_OK, "deserialize the fixture schema");
     }
-    herdr_threads::test_support::bind_test_host(&db);
     db
 }
 

@@ -4665,7 +4665,7 @@ fn herdr_hosts_endpoint_unique_and_bounded() {
 }
 
 #[test]
-fn host_scope_write_without_primary_host_is_host_unavailable() {
+fn host_scope_write_without_host_row_is_host_unavailable() {
     let clock = Arc::new(TestClock::new(0));
     // No `with_test_host`: nothing is attached.
     let context = StoreContext::new(db_path(), clock);
@@ -4684,20 +4684,7 @@ fn host_scope_write_without_primary_host_is_host_unavailable() {
     )
     .unwrap_err();
     assert_eq!(error.code, ErrorCode::HostUnavailable, "{error:?}");
-    assert_eq!(
-        context.primary_host().unwrap_err().code,
-        ErrorCode::HostUnavailable
-    );
-    // A read of a Herdr-scope column through the same seam fails the same way.
-    let read = conn.query_row(
-        "SELECT host_epoch FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
-        [&node],
-        |r| r.get::<_, i64>(0),
-    );
-    assert_eq!(
-        crate::store::connection::store_error(read.unwrap_err()).code,
-        ErrorCode::HostUnavailable
-    );
+    assert!(context.hosts().ids().is_empty(), "no host is published");
     // Node-scope state is untouched by the refusal and still writable.
     assert_eq!(
         schema::next_decision_seq(&conn, &node).unwrap(),
@@ -4706,7 +4693,7 @@ fn host_scope_write_without_primary_host_is_host_unavailable() {
     );
     // Attaching makes the same write succeed.
     let host_id = context.attach_host("/run/herdr.sock").unwrap();
-    assert_eq!(context.primary_host().unwrap(), host_id);
+    assert_eq!(host_id, crate::test_support::test_host_id().get());
     let admission = crate::store::seats::begin_host_observation(
         &context,
         &mut conn,
@@ -4723,7 +4710,6 @@ fn attach_host_is_idempotent_and_stamps_last_attached_at() {
     let clock = Arc::new(TestClock::new(5_000));
     let context = StoreContext::new(db_path(), clock.clone());
     let first = context.attach_host("/run/herdr-a.sock").unwrap();
-    assert_eq!(context.primary_host().unwrap(), first);
     clock.utc.store(9_000, Ordering::SeqCst);
     assert_eq!(context.attach_host("/run/herdr-a.sock").unwrap(), first);
     let db = context.open_writer().unwrap();

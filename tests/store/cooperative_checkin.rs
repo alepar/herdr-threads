@@ -4137,3 +4137,414 @@ mod hermes_lineage {
         assert_eq!(open_hermes_bindings(&conn), 1);
     }
 }
+
+// TRUST-POLICY C1 across Herdr servers (ht-5fr.2.6): the resumed session id is the evidence, so a
+// continuity check-in names its own server and may move a local seat between servers of its node.
+mod cross_server_continuity {
+    use super::*;
+    use crate::{
+        ports::{
+            ContinuityRequest, ContinuityTargetGuard, ExecutionEvidence, HostId, HostObservation,
+            HostUiState, IncarnationEvidence, ObservationProvenance, StructuralOccupancy,
+        },
+        protocol::commands::ContinuityCheckIn,
+        store::{connection::upsert_host, seats},
+    };
+
+    const NODE: &str = "34750f98bd59fcfc946da45aaabe933b";
+    const SERVER_2: &str = "/ht-c1-h2.sock";
+    const SESSION: &str = "sess-resumed";
+
+    struct Servers {
+        context: StoreContext,
+        conn: Connection,
+        h1: i64,
+        h2: i64,
+        _directory: PrivateDirectory,
+    }
+
+    /// Two attached servers (`h1` the fixture host), `s1` unresolved on `h1` with a
+    /// `claude` binding of `SESSION`, and a free target `t` freshly observed on `h2` only.
+    fn servers() -> Servers {
+        let directory = PrivateDirectory(
+            std::env::temp_dir().join(format!("c1-cross-server-{}", uuid::Uuid::new_v4())),
+        );
+        std::fs::create_dir(&directory.0).unwrap();
+        let clock = Arc::new(TestClock(AtomicU64::new(100)));
+        let context = StoreContext::new(directory.0.join("store.db"), clock).with_test_host();
+        let conn = context.open_writer().unwrap();
+        let h1: i64 = conn
+            .query_row("SELECT min(host_id) FROM herdr_hosts", [], |r| r.get(0))
+            .unwrap();
+        let h2 = upsert_host(&conn, SERVER_2, 0).unwrap();
+        context
+            .hosts()
+            .publish(HostLocator::parse(SERVER_2).unwrap(), HostId::from_row(h2));
+        conn.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) \
+             VALUES ('s1',?1,'unresolved','native',NULL,1,1,0,(SELECT id FROM local_node),1,?2)",
+            rusqlite::params![NODE, h1],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at) \
+             VALUES ('s1',1,1,'old-pane','b',1,'claude',?1,'exec-old','cooperative_top_level',10,10,50)",
+            [SESSION],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) \
+             VALUES (?1,'t','b',1,1,3,100,'fresh','term-t','inc','coherent_enumeration',1)",
+            [h2],
+        )
+        .unwrap();
+        Servers {
+            context,
+            conn,
+            h1,
+            h2,
+            _directory: directory,
+        }
+    }
+
+    fn command(host: &str, session: &str, operation: &str) -> ContinuityCheckIn {
+        ContinuityCheckIn {
+            host: HostLocator::parse(host).unwrap(),
+            target: HostTargetId::new("t"),
+            harness: Harness::Claude,
+            native_session: NativeSessionId::new(session),
+            source: "resume".into(),
+            operation: OperationId::new(operation),
+            execution: ExecutionId::new(format!("exec-{operation}")),
+            liveness: Some(crate::protocol::authority::LivenessFingerprint {
+                pid: 4242,
+                start: 7,
+            }),
+        }
+    }
+
+    fn observation() -> HostObservation {
+        HostObservation {
+            focused: false,
+            target: HostTargetId::new("t"),
+            host_boot: HostBootId::new("b"),
+            epoch: 1,
+            generation: 1,
+            observed_at_utc: UtcMillis(100),
+            observed_at_mono: MonoInstant(100),
+            provenance: ObservationProvenance::FreshCurrentTarget,
+            occupant: None,
+            ui: HostUiState::Idle,
+            terminal: None,
+            occupancy: StructuralOccupancy::EmptyShell,
+            incarnation: IncarnationEvidence::Unknown,
+            execution: ExecutionEvidence::Unknown,
+            call_id: HostCallId::new("c1-call"),
+            connection_epoch: 1,
+            observation_sequence: 1,
+            started_at_mono: MonoInstant(100),
+            completed_at_mono: MonoInstant(100),
+        }
+    }
+
+    /// Decides `command` with a guard for server `guard_host`.
+    fn decide(
+        servers: &mut Servers,
+        guard_host: i64,
+        command: &ContinuityCheckIn,
+    ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+        let guard = ContinuityTargetGuard::try_new(
+            NODE,
+            HostId::from_row(guard_host),
+            command,
+            observation(),
+        )
+        .unwrap();
+        seats::decide_continuity(
+            &servers.context,
+            &mut servers.conn,
+            NODE,
+            ContinuityRequest {
+                command: command.clone(),
+                guard,
+                diagnostic: "match",
+            },
+        )
+    }
+
+    #[test]
+    fn c1_cross_server_reattach() {
+        let mut s = servers();
+        let command = command(SERVER_2, SESSION, "c1-cross");
+        let h2 = s.h2;
+        let result = decide(&mut s, h2, &command).unwrap();
+        // Kills: refusing the move C1 exists for (the seat sat on h1, the claim names h2), or
+        // moving the target without the server.
+        assert_eq!(
+            result,
+            CommandResult::ContinuityReattached(crate::protocol::results::ContinuityReattachment {
+                seat: SeatId::new("s1"),
+                binding_generation: 2,
+                fast_forward: None,
+            })
+        );
+        let seat: (String, i64, Option<String>) = s
+            .conn
+            .query_row(
+                "SELECT state,host_id,target_id FROM seats WHERE id='s1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(seat, ("resolved".into(), s.h2, Some("t".into())));
+        let open: i64 = s
+            .conn
+            .query_row(
+                "SELECT count(*) FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL AND target_id='t'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            open, 1,
+            "the deciding transaction opens the successor binding"
+        );
+        let decision: (i64, String, String) = s
+            .conn
+            .query_row(
+                "SELECT host_id,target_id,kind FROM allocation_decisions WHERE seat_id='s1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            decision,
+            (
+                s.h2,
+                "t".to_owned(),
+                crate::protocol::authority::COOPERATIVE_CONTINUITY_PROVENANCE.to_owned()
+            ),
+            "the decision records the server the seat moved to"
+        );
+        assert_ne!(s.h1, s.h2);
+    }
+
+    #[test]
+    fn c1_unattached_locator_is_host_unavailable() {
+        let mut s = servers();
+        let command = command("/ht-c1-unattached.sock", SESSION, "c1-unattached");
+        // Kills: resolving an unattached locator to the guard's server or to the seat's.
+        let h2 = s.h2;
+        let error = decide(&mut s, h2, &command).unwrap_err();
+        assert_eq!(error.code, ErrorCode::HostUnavailable, "{error:?}");
+        let (state, host): (String, i64) = s
+            .conn
+            .query_row("SELECT state,host_id FROM seats WHERE id='s1'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((state.as_str(), host), ("unresolved", s.h1));
+    }
+
+    #[test]
+    fn c1_remote_seat_never_candidate() {
+        let mut s = servers();
+        // The only seat holding the session is remote: it has no server and no pane (s1 keeps no
+        // binding of it).
+        s.conn
+            .execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+            .unwrap();
+        s.conn
+            .execute(
+                "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,host_id) \
+                 VALUES ('remote',?1,'remote','native',1,0,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',0,'agent',NULL)",
+                [NODE],
+            )
+            .unwrap();
+        s.conn
+            .execute(
+                "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at) \
+                 VALUES ('remote',1,1,'old-pane','b',1,'claude',?1,'exec-remote','cooperative_top_level',10,10,50)",
+                [SESSION],
+            )
+            .unwrap();
+        let command = command(SERVER_2, SESSION, "c1-remote");
+        // Kills: a candidate query that matches on the session id alone.
+        let h2 = s.h2;
+        let error = decide(&mut s, h2, &command).unwrap_err();
+        assert_eq!(error.code, ErrorCode::NotFound, "{error:?}");
+        let (state, host): (String, Option<i64>) = s
+            .conn
+            .query_row(
+                "SELECT state,host_id FROM seats WHERE id='remote'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((state.as_str(), host), ("remote", None));
+    }
+
+    #[test]
+    fn c1_guard_for_another_server_is_stale() {
+        let mut s = servers();
+        let command = command(SERVER_2, SESSION, "c1-guard");
+        // Kills: using the guard's server instead of the command's.
+        let h1 = s.h1;
+        let error = decide(&mut s, h1, &command).unwrap_err();
+        assert_eq!(error.code, ErrorCode::StaleHostObservation, "{error:?}");
+    }
+    fn operator_actor() -> crate::protocol::authority::OperatorActor {
+        crate::protocol::authority::OperatorActor::from_peer(
+            crate::protocol::authority::PeerIdentity::from_kernel(501),
+            501,
+        )
+        .unwrap()
+    }
+
+    fn row_counts(conn: &Connection) -> Vec<i64> {
+        [
+            "seats",
+            "occupant_bindings",
+            "allocation_decisions",
+            "operations",
+        ]
+        .iter()
+        .map(|table| {
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap()
+        })
+        .collect()
+    }
+
+    fn add_remote_seat(conn: &Connection) {
+        conn.execute(
+            "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,host_id) \
+             VALUES ('remote',?1,'remote','native',1,0,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',0,'agent',NULL)",
+            [NODE],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn operator_rebind_moves_host_and_target_together() {
+        use crate::{
+            ports::{OperatorRequest, OperatorTargetGuard},
+            protocol::commands::{OperatorCommand, OperatorRebind},
+        };
+        let mut s = servers();
+        let rebind = OperatorRebind {
+            host: HostLocator::parse(SERVER_2).unwrap(),
+            seat: SeatId::new("s1"),
+            target: HostTargetId::new("t"),
+            operation: OperationId::new("rebind-to-h2"),
+        };
+        let guard = OperatorTargetGuard::try_new(
+            NODE,
+            HostId::from_row(s.h2),
+            &OperatorCommand::Rebind(rebind.clone()),
+            observation(),
+        )
+        .unwrap();
+        let result = seats::mutate_operator(
+            &s.context,
+            &mut s.conn,
+            NODE,
+            OperatorRequest::Rebind(rebind, guard),
+            operator_actor(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(result, CommandResult::OperatorRebound(SeatId::new("s1")));
+        // Kills: a rebind that sets the target but leaves the seat on its old server (or the
+        // reverse): the seat sat on h1 and the target is on h2.
+        let seat: (String, i64, Option<String>) = s
+            .conn
+            .query_row(
+                "SELECT state,host_id,target_id FROM seats WHERE id='s1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(seat, ("resolved".into(), s.h2, Some("t".into())));
+        let decision: (i64, String, String) = s
+            .conn
+            .query_row(
+                "SELECT host_id,target_id,kind FROM allocation_decisions WHERE seat_id='s1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            decision,
+            (s.h2, "t".to_owned(), "operator_rebind".to_owned()),
+            "the decision records the server the seat moved to"
+        );
+    }
+
+    #[test]
+    fn remote_seat_refused_by_every_operator_action() {
+        use crate::{
+            ports::{OperatorRequest, OperatorTargetGuard},
+            protocol::commands::{OperatorCommand, OperatorRebind, OperatorReplace},
+        };
+        let mut s = servers();
+        add_remote_seat(&s.conn);
+        let before = row_counts(&s.conn);
+        let target = HostTargetId::new("t");
+        let host = HostLocator::parse(SERVER_2).unwrap();
+        let guard = |command: OperatorCommand| {
+            OperatorTargetGuard::try_new(NODE, HostId::from_row(s.h2), &command, observation())
+                .unwrap()
+        };
+        // Kills: an operator action that rebinds or replaces a seat whose home is another node.
+        let rebind = OperatorRebind {
+            host: host.clone(),
+            seat: SeatId::new("remote"),
+            target: target.clone(),
+            operation: OperationId::new("rebind-remote"),
+        };
+        let request =
+            OperatorRequest::Rebind(rebind.clone(), guard(OperatorCommand::Rebind(rebind)));
+        let error = seats::mutate_operator(
+            &s.context,
+            &mut s.conn,
+            NODE,
+            request,
+            operator_actor(),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::CallerUnverified, "{error:?}");
+        assert_eq!(error.detail, "cooperative seat is not local");
+        for (seat, replace, operation) in [
+            ("remote", "s1", "replace-seat"),
+            ("s1", "remote", "replace-old"),
+        ] {
+            let replacement = OperatorReplace {
+                host: host.clone(),
+                seat: SeatId::new(seat),
+                target: target.clone(),
+                replace: SeatId::new(replace),
+                operation: OperationId::new(operation),
+            };
+            let request = OperatorRequest::Replace(
+                replacement.clone(),
+                guard(OperatorCommand::Replace(replacement)),
+            );
+            let error = seats::mutate_operator(
+                &s.context,
+                &mut s.conn,
+                NODE,
+                request,
+                operator_actor(),
+                None,
+            )
+            .unwrap_err();
+            assert_eq!(error.code, ErrorCode::CallerUnverified, "{error:?}");
+            assert_eq!(error.detail, "cooperative seat is not local");
+        }
+        assert_eq!(row_counts(&s.conn), before, "no refusal wrote a row");
+    }
+}

@@ -396,8 +396,9 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
     let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let instance = owner.node_uuid().unwrap();
     drop(owner);
+    let claim_host = context.claim_host().unwrap();
     let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()))
-        .with_test_host()
+        .with_attached_host(&claim_host)
         .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
     let db = setup.open_writer().unwrap();
     db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
@@ -410,6 +411,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
     let stop = Cancellation::default();
     let worker_stop = stop.clone();
     let worker_paths = paths.clone();
+    let worker_claim_host = claim_host.clone();
     let check_in_dispatches = Arc::new(AtomicU64::new(0));
     let counted = Arc::clone(&check_in_dispatches);
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -439,7 +441,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
                     let store: Arc<dyn StorePort> = Arc::new(
                         SqliteStore::new(
                             StoreContext::new(database, Arc::clone(&service_clock))
-                                .with_test_host()
+                                .with_attached_host(&worker_claim_host)
                                 .with_node_seed(herdr_threads::test_support::node_seed_for(
                                     instance,
                                 )),
@@ -617,7 +619,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
             // The execution is no longer part of a call's identity (ht-54r.3); a claim from a
             // different mapping generation is what the daemon fences.
             claim: herdr_threads::protocol::authority::CallerClaim {
-                host: herdr_threads::test_support::test_host_locator(),
+                host: claim_host.clone(),
                 binding_generation: prior.binding_generation + 1,
                 ..prior.clone()
             },
@@ -677,13 +679,13 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
         "recipient",
         Duration::from_secs(1),
     )
-    .map(|journal| journal.with_host(herdr_threads::test_support::test_host_locator()))
+    .map(|journal| journal.with_host(claim_host.clone()))
     .unwrap();
     // An agent's identity is its harness environment: the CLI saved no context for it.
     assert!(contexts.current().unwrap().is_none());
     // Another caller advances the service: a direct lifecycle CheckIn of a different session.
     let next_claim = herdr_threads::protocol::authority::CallerClaim {
-        host: herdr_threads::test_support::test_host_locator(),
+        host: claim_host.clone(),
         native_session: herdr_threads::protocol::ids::NativeSessionId::new("direct-successor"),
         execution: herdr_threads::protocol::ids::ExecutionId::new(Uuid::new_v4().to_string()),
         // Its own (live) process: sharing the CLI session's fingerprint would supersede it.

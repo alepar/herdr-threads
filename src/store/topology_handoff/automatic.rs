@@ -267,7 +267,7 @@ fn live(
     ) {
         return Err(conflict());
     }
-    seats::cooperative_mapping(db, &id.claim, None)?;
+    seats::seat_mapping(db, &id.claim, None)?;
     if let Some(thread) = &status.thread {
         let valid:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM threads t JOIN memberships m ON m.thread_id=t.id WHERE t.id=?1 AND t.instance_id=?2 AND t.archived=0 AND m.seat_id=?3 AND m.state='joined')",params![thread.as_str(),id.claim.instance,id.claim.seat.as_str()],|r|r.get(0)).map_err(store_error)?;
         if !valid {
@@ -531,8 +531,8 @@ fn validate_guard(
         .ok_or_else(conflict)?;
     let lifecycle: i64 = tx
         .query_row(
-            "SELECT lifecycle_revision FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
-            [&ns.instance],
+            "SELECT lifecycle_revision FROM herdr_hosts WHERE host_id=?1",
+            [guard.ordinary().admission().host_id.get()],
             |r| r.get(0),
         )
         .map_err(store_error)?;
@@ -633,7 +633,7 @@ fn apply(
             return Ok(CommandResult::AutomaticBootstrap(Box::new(s)));
         }
         id.validate_admission().map_err(ApiError::invalid_request)?;
-        seats::cooperative_mapping(tx, &id.claim, None)?;
+        seats::seat_mapping(tx, &id.claim, None)?;
         tx.execute("INSERT INTO automatic_bootstrap_parents(instance_id,actor_scope,compound,state_dir,host_endpoint,original_json,state,current_attempt) VALUES(?1,?2,?3,?4,?5,?6,'prepared',1)",params![ns.instance,actor(id),id.plan.payload.keys.compound.as_str(),ns.state_dir.to_str(),ns.host_endpoint.to_str(),encode(id,524288)?]).map_err(store_error)?;
         let p = tx.last_insert_rowid();
         for (role, key) in keys(id) {
@@ -905,13 +905,14 @@ pub(crate) fn mutate(
         input.operation.as_str(),
         input.payload_hash,
         |tx| {
-            seats::cooperative_instance(tx, &ns.instance, &claim)?;
+            seats::cooperative_claim(tx, context, &ns.instance, &claim)?;
             current(tx, ns, &request.identity)?;
             Ok(())
         },
         |_| Ok(()),
         |tx, at| {
             control::decide_accountable(
+                context,
                 tx,
                 at,
                 &mut permit,

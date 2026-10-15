@@ -513,7 +513,9 @@ impl Rig {
     fn start_daemon(&mut self) {
         assert!(self.daemon.is_none());
         let clock: Arc<dyn Clock> = self.clock.clone();
-        let host: Arc<dyn HostPort> = Arc::new(NativeCli::new(self.socket.clone(), clock.clone()));
+        // The canonical path the CLI claims name, which is also the endpoint the daemon attaches.
+        let endpoint = std::fs::canonicalize(&self.socket).unwrap();
+        let host: Arc<dyn HostPort> = Arc::new(NativeCli::new(endpoint.clone(), clock.clone()));
         let stop = Cancellation::default();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let (paths, daemon_stop, config) = (self.paths.clone(), stop.clone(), self.config.clone());
@@ -534,7 +536,7 @@ impl Rig {
                     clock,
                     daemon_stop,
                     config,
-                    herdr_threads::app::HostChoice::given(host),
+                    herdr_threads::app::HostChoice::given_at(host, endpoint),
                     probe,
                     move |descriptor| {
                         ready_tx
