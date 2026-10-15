@@ -2216,16 +2216,17 @@ pub(crate) fn run<W: Write>(
                 .map(std::path::PathBuf::from),
         ))?;
     env.state_dir = Some(runtime.state_dir.clone());
-    env.host_endpoint = Some(runtime.host_endpoint.clone());
+    let claim_host = runtime.require_host()?.to_path_buf();
+    env.host_endpoint = Some(claim_host.clone());
     let mut output = parsed.output.clone();
     output.context.state_dir = Some(runtime.state_dir.display().to_string());
-    output.context.host = Some(runtime.host_endpoint.display().to_string());
+    output.context.host = Some(claim_host.display().to_string());
     let namespace = crate::protocol::handoff::HandoffNamespace {
         instance: instance.to_string(),
         state_dir: runtime.state_dir.clone(),
-        host_endpoint: runtime.host_endpoint.clone(),
+        host_endpoint: claim_host.clone(),
     };
-    let host = crate::host::native::NativeCli::new(runtime.host_endpoint, Arc::clone(&clock));
+    let host = crate::host::native::NativeCli::new(claim_host, Arc::clone(&clock));
     let seats = super::launch::DaemonSeatResolver::new(&client, journal, instance, clock.as_ref());
     let shell = super::launch::SystemShellProbe::from_process();
     let mut launcher = NativeLauncher {

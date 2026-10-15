@@ -15,23 +15,31 @@ pub const SOCKET_PATH_LIMIT: usize = 100;
 #[derive(Debug, Clone)]
 pub struct RuntimeContext {
     pub state_dir: PathBuf,
-    pub host_endpoint: PathBuf,
+    /// The claim host: the Herdr server this call attaches to (an attach hint,
+    /// never part of the node's address). `None` for a store-only call; read it
+    /// through [`RuntimeContext::require_host`] when a Herdr server is needed.
+    pub host_endpoint: Option<PathBuf>,
     pub herdr_bin: Option<PathBuf>,
 }
 
 impl RuntimeContext {
     pub fn explicit(
         state_dir: PathBuf,
-        host_endpoint: PathBuf,
+        host_endpoint: impl Into<Option<PathBuf>>,
         herdr_bin: Option<PathBuf>,
     ) -> io::Result<Self> {
-        if !state_dir.is_absolute() || !host_endpoint.is_absolute() {
+        let host_endpoint = host_endpoint.into();
+        if !state_dir.is_absolute() || host_endpoint.as_ref().is_some_and(|h| !h.is_absolute()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "state and host endpoint must be absolute",
             ));
         }
-        if state_dir.as_os_str().is_empty() || host_endpoint.file_name().is_none() {
+        if state_dir.as_os_str().is_empty()
+            || host_endpoint
+                .as_ref()
+                .is_some_and(|h| h.file_name().is_none())
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "missing state or host endpoint",
@@ -66,8 +74,12 @@ impl RuntimeContext {
                 Err(error) => return Err(error),
             }
         };
-        let parent = host_endpoint.parent().unwrap().canonicalize()?;
-        let host_endpoint = parent.join(host_endpoint.file_name().unwrap());
+        let host_endpoint = host_endpoint
+            .map(|host| -> io::Result<PathBuf> {
+                let parent = host.parent().unwrap().canonicalize()?;
+                Ok(parent.join(host.file_name().unwrap()))
+            })
+            .transpose()?;
         Ok(Self {
             state_dir,
             host_endpoint,
@@ -75,7 +87,23 @@ impl RuntimeContext {
         })
     }
 
-    /// Explicit values take precedence. Outside a plugin action both paths are required.
+    /// Responsibility: the one place that produces the "host endpoint missing"
+    /// error. Every consumer that needs a pane or a Herdr server (hook claim,
+    /// `me`, `launch`, handoff, `panes`, setup) reads the claim host through
+    /// this instead of the field. Does not: decide whether a call needs a host
+    /// (the caller does) or compare it with the daemon's (the interim guard
+    /// `lifecycle::check_claim_host`).
+    pub fn require_host(&self) -> io::Result<&Path> {
+        self.host_endpoint.as_deref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "host endpoint missing: use --host-endpoint or HERDR_SOCKET_PATH",
+            )
+        })
+    }
+
+    /// Explicit values take precedence. The state directory is required; the
+    /// claim host is optional (see [`RuntimeContext::require_host`]).
     pub fn from_environment(
         state_dir: Option<PathBuf>,
         host_endpoint: Option<PathBuf>,
@@ -88,14 +116,8 @@ impl RuntimeContext {
                     "state directory missing: use --state-dir or HERDR_PLUGIN_STATE_DIR",
                 )
             })?;
-        let host = host_endpoint
-            .or_else(|| std::env::var_os("HERDR_SOCKET_PATH").map(PathBuf::from))
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "host endpoint missing: use --host-endpoint or HERDR_SOCKET_PATH",
-                )
-            })?;
+        let host =
+            host_endpoint.or_else(|| std::env::var_os("HERDR_SOCKET_PATH").map(PathBuf::from));
         Self::explicit(
             state,
             host,
@@ -402,6 +424,38 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ht-paths-{}", uuid::Uuid::new_v4()));
         fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
         Scratch(dir)
+    }
+
+    #[test]
+    fn require_host_error_text() {
+        let dir = scratch();
+        let context = RuntimeContext::explicit(dir.0.clone(), None, None).unwrap();
+        let error = context.require_host().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(
+            error.to_string(),
+            "host endpoint missing: use --host-endpoint or HERDR_SOCKET_PATH"
+        );
+    }
+
+    #[test]
+    fn explicit_without_host_canonicalizes_state_only() {
+        let dir = scratch();
+        let link = dir.0.join("link");
+        std::os::unix::fs::symlink(&dir.0, &link).unwrap();
+        let context = RuntimeContext::explicit(link.join("state"), None, None).unwrap();
+        assert_eq!(
+            context.state_dir,
+            dir.0.canonicalize().unwrap().join("state")
+        );
+        assert_eq!(context.host_endpoint, None);
+        // A present host keeps its canonical parent and is returned as is.
+        let with =
+            RuntimeContext::explicit(dir.0.clone(), Some(link.join("host.sock")), None).unwrap();
+        assert_eq!(
+            with.require_host().unwrap(),
+            dir.0.canonicalize().unwrap().join("host.sock")
+        );
     }
 
     /// The signature takes the state directory only, so neither a host

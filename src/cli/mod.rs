@@ -380,8 +380,13 @@ pub(crate) fn pane_agent(
     pane: &crate::protocol::ids::HostTargetId,
 ) -> Result<Option<crate::ports::PaneAgentObservation>, ApiError> {
     use crate::ports::HostPort;
-    let host =
-        crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(clock));
+    let host = crate::host::native::NativeCli::new(
+        context
+            .require_host()
+            .map_err(host_context_error)?
+            .to_path_buf(),
+        Arc::clone(clock),
+    );
     host.observe_pane_agent(
         pane,
         &crate::ports::HostCallContext {
@@ -548,7 +553,10 @@ fn run_parsed_in_pane<W: Write>(
     ) {
         parsed.output.context = crate::protocol::output::ContinuationContext {
             state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
-            host: Some(context.host_endpoint.to_string_lossy().into_owned()),
+            host: context
+                .host_endpoint
+                .as_ref()
+                .map(|host| host.to_string_lossy().into_owned()),
         };
     }
     let original_actor = if let CliAction::Retry(recovery) = &parsed.action {
@@ -560,7 +568,10 @@ fn run_parsed_in_pane<W: Write>(
         if direct_send::plan(&original.semantic).is_some() {
             parsed.output.context = crate::protocol::output::ContinuationContext {
                 state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
-                host: Some(context.host_endpoint.to_string_lossy().into_owned()),
+                host: context
+                    .host_endpoint
+                    .as_ref()
+                    .map(|host| host.to_string_lossy().into_owned()),
             };
         }
         Some(retry::preflight_original_actor(
@@ -569,7 +580,10 @@ fn run_parsed_in_pane<W: Write>(
             parsed.actor,
             &crate::protocol::output::ContinuationContext {
                 state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
-                host: Some(context.host_endpoint.to_string_lossy().into_owned()),
+                host: context
+                    .host_endpoint
+                    .as_ref()
+                    .map(|host| host.to_string_lossy().into_owned()),
             },
         )?)
     } else {
@@ -590,8 +604,10 @@ fn run_parsed_in_pane<W: Write>(
     if topology_runtime::run_operator(&parsed, &context, &paths, &clock, writer)? {
         return Ok(());
     }
-    let host =
-        crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(&clock));
+    let host = crate::host::native::NativeCli::new(
+        context.require_host().map_err(context_error)?.to_path_buf(),
+        Arc::clone(&clock),
+    );
     // Canonical terminal cleanup precedes caller selection,
     // SeatInspect and local selected-generation guards. Exact IDs need no host I/O.
     let historical_retry = matches!(&parsed.action, CliAction::Retry(_));
@@ -605,7 +621,10 @@ fn run_parsed_in_pane<W: Write>(
         let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
         let selected_context = crate::protocol::output::ContinuationContext {
             state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
-            host: Some(context.host_endpoint.to_string_lossy().into_owned()),
+            host: context
+                .host_endpoint
+                .as_ref()
+                .map(|host| host.to_string_lossy().into_owned()),
         };
         if topology_runtime::try_completed(
             parsed,
@@ -792,8 +811,9 @@ fn run_parsed_in_pane<W: Write>(
         && output::human_active()
     {
         let (instance, _, client) = connect(&paths, &clock)?;
-        let mut cache =
-            follow::NickCache::new(&context, &paths, instance, &clock).with_caller(caller_pane);
+        let mut cache = follow::NickCache::new(&context, &paths, instance, &clock)
+            .map_err(context_error)?
+            .with_caller(caller_pane);
         return follow::render_history(&client, query.clone(), &parsed.output, &mut cache, writer);
     }
     // Canonical thread and recipient selectors precede both caller composition
@@ -814,14 +834,19 @@ fn run_parsed_in_pane<W: Write>(
     }
     let seat_labels =
         if matches!(&parsed.action, CliAction::Wire(Command::Seats(_))) && output::human_active() {
-            crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(&clock))
-                .seat_labels(&budget())
-                .unwrap_or_default()
+            crate::host::native::NativeCli::new(
+                context.require_host().map_err(context_error)?.to_path_buf(),
+                Arc::clone(&clock),
+            )
+            .seat_labels(&budget())
+            .unwrap_or_default()
         } else {
             Vec::new()
         };
-    let peer_source =
-        crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(&clock));
+    let peer_source = crate::host::native::NativeCli::new(
+        context.require_host().map_err(context_error)?.to_path_buf(),
+        Arc::clone(&clock),
+    );
     let Some(parsed) = peer_locations::with_source(peer_source, || {
         human::with_seat_labels(seat_labels, || {
             run_caller_scoped(
@@ -1113,11 +1138,12 @@ where
             .context
             .state_dir
             .get_or_insert_with(|| context.state_dir.to_string_lossy().into_owned());
-        parsed
-            .output
-            .context
-            .host
-            .get_or_insert_with(|| context.host_endpoint.to_string_lossy().into_owned());
+        if parsed.output.context.host.is_none() {
+            parsed.output.context.host = context
+                .host_endpoint
+                .as_ref()
+                .map(|host| host.to_string_lossy().into_owned());
+        }
     }
     // Who is calling comes from the environment (decision 15): an agent without a session id is
     // refused before any daemon call, reads included.
@@ -2566,9 +2592,11 @@ fn invalid_request(detail: &str) -> RunError {
 }
 
 fn context_error(error: io::Error) -> RunError {
-    RunError::Api(ApiError::invalid_request(format!(
-        "invalid state/host context: {error}"
-    )))
+    RunError::Api(host_context_error(error))
+}
+
+fn host_context_error(error: io::Error) -> ApiError {
+    ApiError::invalid_request(format!("invalid state/host context: {error}"))
 }
 
 /// The three documented administrative forms. Their authority is the kernel
@@ -3269,11 +3297,11 @@ fn run_launch<W: Write>(
     let mut request = request.clone();
     let mut env = setup::SetupEnv::from_process(&parsed.output)?;
     env.state_dir = Some(context.state_dir.clone());
-    env.host_endpoint = Some(context.host_endpoint.clone());
+    let claim_host = context.require_host().map_err(context_error)?.to_path_buf();
+    env.host_endpoint = Some(claim_host.clone());
     let (instance, _, client) = connect(paths, clock)?;
     let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
-    let host =
-        crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(clock));
+    let host = crate::host::native::NativeCli::new(claim_host, Arc::clone(clock));
     // Without `--name`, the agent is named after the pane's Herdr label. Best
     // effort: an unreadable snapshot leaves the short-seat-id fallback.
     if request.name.is_none() {

@@ -301,8 +301,11 @@ pub fn resolve_host_endpoint(inputs: &InstanceInputs) -> Result<(PathBuf, String
     }
 }
 
-/// Both fields resolved into a runtime context, plus `{"state_dir": how,
-/// "host_endpoint": how}`. A failure names the flag and variable to use.
+/// The state directory (required) and the claim host (optional) resolved into
+/// a runtime context, plus `{"state_dir": how, "host_endpoint": how}`; the host
+/// source is `"none"` when no Herdr server resolved. A failure to find the
+/// state directory names the flag and variable to use; a call that needs the
+/// host fails later, in [`RuntimeContext::require_host`].
 pub fn resolve_context(inputs: &InstanceInputs) -> io::Result<(RuntimeContext, Value)> {
     resolve_context_with_selected_state(inputs).map(|(context, source, _)| (context, source))
 }
@@ -318,21 +321,17 @@ pub(crate) fn resolve_context_with_selected_state(
 /// context uses canonical paths. Each source is resolved only once.
 pub(crate) fn resolve_context_with_selected_paths(
     inputs: &InstanceInputs,
-) -> io::Result<(RuntimeContext, Value, PathBuf, PathBuf)> {
+) -> io::Result<(RuntimeContext, Value, PathBuf, Option<PathBuf>)> {
     let (state, state_how) = resolve_state_dir(inputs).map_err(|error| {
         io::Error::new(
             io::ErrorKind::NotFound,
             format!("state directory unknown: {error}; use --state-dir or HERDR_PLUGIN_STATE_DIR"),
         )
     })?;
-    let (host, host_how) = resolve_host_endpoint(inputs).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "Herdr host endpoint unknown: {error}; use --host-endpoint or HERDR_SOCKET_PATH"
-            ),
-        )
-    })?;
+    let (host, host_how) = match resolve_host_endpoint(inputs) {
+        Ok((host, how)) => (Some(host), how),
+        Err(_) => (None, "none".to_owned()),
+    };
     let selected_state = state.clone();
     let selected_host = host.clone();
     let context = RuntimeContext::explicit(
@@ -402,6 +401,30 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_host_is_none_and_reported_as_such() {
+        let dir = scratch();
+        let state = dir.join("state");
+        fs::create_dir(&state).unwrap();
+        let inputs = InstanceInputs {
+            home: Some(dir.join("home")),
+            state_flag: Some(state.clone()),
+            non_default_server: true,
+            ..InstanceInputs::default()
+        };
+        let (context, source, _, selected_host) =
+            resolve_context_with_selected_paths(&inputs).unwrap();
+        assert_eq!(context.host_endpoint, None);
+        assert_eq!(selected_host, None);
+        assert_eq!(source["host_endpoint"], "none");
+        assert_eq!(source["state_dir"], "--state-dir");
+        assert_eq!(
+            context.require_host().unwrap_err().to_string(),
+            "host endpoint missing: use --host-endpoint or HERDR_SOCKET_PATH"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn selected_state_capture_preserves_raw_spelling_and_canonical_identity() {
         let dir = scratch();
         let state = dir.join("state");
@@ -434,7 +457,7 @@ mod tests {
         inputs.non_default_server = true;
         let (context, source, selected, selected_host) =
             resolve_context_with_selected_paths(&inputs).unwrap();
-        assert_eq!(selected_host, dir.join("host.sock"));
+        assert_eq!(selected_host, Some(dir.join("host.sock")));
         assert_eq!(
             selected,
             dir.join("home/.local/state/herdr/plugins/herdr-threads")
@@ -458,7 +481,7 @@ mod tests {
         let _listener = UnixListener::bind(&socket).unwrap();
         let (context, source) = resolve_context(&inputs).unwrap();
         assert_eq!(context.state_dir, state);
-        assert_eq!(context.host_endpoint, socket);
+        assert_eq!(context.host_endpoint, Some(socket));
         assert_eq!(source["state_dir"], "default (~/.local/state)");
         assert_eq!(source["host_endpoint"], "default (~/.config)");
         assert_eq!(calls(&dir), "", "fast path must not run herdr");

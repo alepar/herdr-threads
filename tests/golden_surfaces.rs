@@ -1048,7 +1048,7 @@ impl Topology {
         cmd.args(["daemon", "run", "--state-dir"])
             .arg(&context.state_dir)
             .arg("--host-endpoint")
-            .arg(&context.host_endpoint)
+            .arg(context.host_endpoint.clone().unwrap())
             .env("CLAUDE_CONFIG_DIR", iso.path("claude-config"))
             .env("CODEX_HOME", iso.path("codex-home"))
             .stdout(fs::File::create(iso.path("daemon.stdout")).unwrap())
@@ -1086,7 +1086,7 @@ impl Topology {
         store_clock: Arc<dyn Clock>,
     ) -> usize {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
-        let native = NativeCli::new(context.host_endpoint.clone(), clock.clone());
+        let native = NativeCli::new(context.host_endpoint.clone().unwrap(), clock.clone());
         let ctx = HostCallContext {
             budget: CallBudget {
                 deadline: MonoInstant(clock.monotonic_now().0 + 5000),
@@ -1194,7 +1194,14 @@ impl Topology {
     /// rewritten to `<thread>`, `<invitation>`, `<message>` and `<seat>` (the fixture's own seats, `sender`
     /// and `recipient`, stay).
     fn norm(&self) -> Norm {
-        let sockets = self.context.host_endpoint.parent().unwrap().to_path_buf();
+        let sockets = self
+            .context
+            .host_endpoint
+            .clone()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
         let mut norm = Norm::new(&[self.iso.state_root(), &sockets])
             .also(self.instance.to_string(), "<instance>");
         if let Ok(db) = Connection::open_with_flags(
@@ -1234,7 +1241,7 @@ impl Topology {
         cmd.arg("--state-dir")
             .arg(&self.context.state_dir)
             .arg("--host-endpoint")
-            .arg(&self.context.host_endpoint)
+            .arg(self.context.host_endpoint.clone().unwrap())
             .env("CLAUDE_CONFIG_DIR", self.iso.path("claude-config"))
             .env("CODEX_HOME", self.iso.path("codex-home"))
             .env("PATH", std::env::join_paths(path).unwrap())
@@ -1284,7 +1291,7 @@ impl Topology {
         cmd.args(["human", "--json", "--state-dir"])
             .arg(&self.context.state_dir)
             .arg("--host-endpoint")
-            .arg(&self.context.host_endpoint)
+            .arg(self.context.host_endpoint.clone().unwrap())
             .args(["setup", kind]);
         if kind == "claude" {
             cmd.arg("--keep-prompt-suggestions");
@@ -1513,11 +1520,14 @@ fn hook_stdout_healthy_checkin() {
             cmd.arg("--state-dir")
                 .arg(&t.context.state_dir)
                 .arg("--host-endpoint")
-                .arg(&t.context.host_endpoint)
+                .arg(t.context.host_endpoint.clone().unwrap())
                 .args(["hook", harness, "--event", event])
                 .env("HERDR_ENV", "1")
                 .env("HERDR_PANE_ID", pane)
-                .env("HERDR_SOCKET_PATH", &t.context.host_endpoint)
+                .env(
+                    "HERDR_SOCKET_PATH",
+                    t.context.host_endpoint.clone().unwrap(),
+                )
                 .env("CLAUDE_CONFIG_DIR", t.iso.path("claude-config"))
                 .env("CODEX_HOME", t.iso.path("codex-home"))
                 // The hook takes its liveness fingerprint from its harness process: this test

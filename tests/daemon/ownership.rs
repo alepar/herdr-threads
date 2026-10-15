@@ -369,6 +369,7 @@ fn stale_descriptor_pid_does_not_authorize_unlink_or_signal() {
         pid: unrelated.id(),
         socket_device: published.socket_device,
         socket_inode: published.socket_inode,
+        primary_host: None,
     };
     fs::write(
         &instance.descriptor_path,
@@ -598,6 +599,7 @@ fn corrupt_and_wrong_instance_descriptors_are_rejected() {
         pid: 1,
         socket_device: 1,
         socket_inode: 1,
+        primary_host: None,
     };
     fs::write(
         &instance.descriptor_path,
@@ -827,6 +829,7 @@ fn published_endpoint_must_be_a_private_owned_socket() {
             pid: 1,
             socket_device: meta.dev(),
             socket_inode: meta.ino(),
+            primary_host: None,
         };
         fs::write(
             &instance.descriptor_path,
@@ -927,4 +930,23 @@ fn dropping_the_lease_releases_it_despite_a_transient_descriptor_copy() {
     // SAFETY: closes the duplicate made above.
     unsafe { libc::close(copy) };
     drop(next.expect("the dropped lease was released despite the descriptor copy"));
+}
+
+#[test]
+fn descriptor_primary_host_round_trips_and_defaults_to_none() {
+    let root = fixture();
+    let instance = paths(&root, root.sock("primary.sock"));
+    let owner = OwnerLock::acquire_with_test_hint(&instance)
+        .unwrap()
+        .with_primary_host(Some("/herdr/a.sock".into()));
+    let bound = owner.bind_socket().unwrap();
+    let published = owner.publish_endpoint(&bound, "0.1.0", 1).unwrap();
+    assert_eq!(published.primary_host, Some("/herdr/a.sock".into()));
+    let read = read_descriptor(&instance, owner.node_uuid().unwrap()).unwrap();
+    assert_eq!(read, published);
+    // A descriptor written before the field existed reads as store-only.
+    let mut value: serde_json::Value = serde_json::to_value(&published).unwrap();
+    value.as_object_mut().unwrap().remove("primary_host");
+    let old: EndpointDescriptor = serde_json::from_value(value).unwrap();
+    assert_eq!(old.primary_host, None);
 }

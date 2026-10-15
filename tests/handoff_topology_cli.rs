@@ -427,7 +427,7 @@ impl Fixture {
         cmd.args(["daemon", "run", "--state-dir"])
             .arg(&context.state_dir)
             .arg("--host-endpoint")
-            .arg(&context.host_endpoint)
+            .arg(context.host_endpoint.clone().unwrap())
             .env("CLAUDE_CONFIG_DIR", iso.path("claude-config"))
             .env("CODEX_HOME", iso.path("codex-home"))
             .stdout(fs::File::create(iso.path("daemon.stdout")).unwrap())
@@ -444,7 +444,7 @@ impl Fixture {
         println!(
             "fixture instance={instance} root={} host={} daemon={}",
             iso.state_root().display(),
-            context.host_endpoint.display(),
+            context.host_endpoint.clone().unwrap().display(),
             daemon.id()
         );
         Self {
@@ -459,7 +459,7 @@ impl Fixture {
     }
     fn seed(paths: &NodePaths, context: &RuntimeContext, instance: herdr_threads::node::NodeUuid) {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
-        let native = NativeCli::new(context.host_endpoint.clone(), clock.clone());
+        let native = NativeCli::new(context.host_endpoint.clone().unwrap(), clock.clone());
         let budget = CallBudget {
             deadline: MonoInstant(clock.monotonic_now().0 + 5000),
             cancellation: Cancellation::default(),
@@ -569,7 +569,10 @@ impl Fixture {
         std::env::join_paths(paths).unwrap()
     }
     fn command(&self) -> Command {
-        self.command_in(&self.context.state_dir, &self.context.host_endpoint)
+        self.command_in(
+            &self.context.state_dir,
+            &self.context.host_endpoint.clone().unwrap(),
+        )
     }
     fn command_in(&self, state: &Path, host: &Path) -> Command {
         self.command_in_format(state, host, true)
@@ -603,7 +606,11 @@ impl Fixture {
         let mut cmd = if json {
             self.command()
         } else {
-            self.command_in_format(&self.context.state_dir, &self.context.host_endpoint, false)
+            self.command_in_format(
+                &self.context.state_dir,
+                &self.context.host_endpoint.clone().unwrap(),
+                false,
+            )
         };
         cmd.args([
             "--cooperative-seat",
@@ -637,7 +644,7 @@ impl Fixture {
             .args(["--json", "--state-dir"])
             .arg(&self.context.state_dir)
             .arg("--host-endpoint")
-            .arg(&self.context.host_endpoint)
+            .arg(self.context.host_endpoint.clone().unwrap())
             .args(["setup", kind, "--harness-binary"])
             .arg(self.iso.path(kind))
             .env("PATH", self.owned_path())
@@ -761,7 +768,16 @@ impl Fixture {
         let bootstrap = argv.last().unwrap();
         assert!(bootstrap.contains(&self.instance.to_string()));
         assert!(bootstrap.contains(self.context.state_dir.to_str().unwrap()));
-        assert!(bootstrap.contains(self.context.host_endpoint.to_str().unwrap()));
+        assert!(
+            bootstrap.contains(
+                self.context
+                    .host_endpoint
+                    .clone()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+            )
+        );
         assert!(!bootstrap.contains(BODY));
         let host = self.host.state.lock().unwrap();
         assert_eq!(host.helpers.len(), 1);
@@ -1034,8 +1050,11 @@ fn new_tab_preserves_both_harness_configs_and_caller_workspace() {
         let alias = f.iso.path("state-alias");
         std::os::unix::fs::symlink(&f.context.state_dir, &alias).unwrap();
         let host_parent = f.iso.path("host-alias");
-        std::os::unix::fs::symlink(f.context.host_endpoint.parent().unwrap(), &host_parent)
-            .unwrap();
+        std::os::unix::fs::symlink(
+            f.context.host_endpoint.clone().unwrap().parent().unwrap(),
+            &host_parent,
+        )
+        .unwrap();
         let mut cmd = f.command_in(&alias, &host_parent.join("host.sock"));
         cmd.args(["retry", out["handoff"]["recovery_ref"].as_str().unwrap()]);
         let replay = successful(f.capture(cmd));
@@ -1619,7 +1638,7 @@ fn final_sdd_actual_native_maximum_completes_and_historical_retry_never_relaunch
         assert_eq!(actual.len(), 64);
         assert_eq!(&actual[..63], frozen);
         assert!(actual[63].contains(f.context.state_dir.to_str().unwrap()));
-        assert!(actual[63].contains(f.context.host_endpoint.to_str().unwrap()));
+        assert!(actual[63].contains(f.context.host_endpoint.clone().unwrap().to_str().unwrap()));
         assert!(actual[63].len() <= 4096);
         let reference = first["handoff"]["recovery_ref"].as_str().unwrap();
         let retry = successful(f.run(&["retry", reference], "'malformed"));
@@ -1645,14 +1664,23 @@ fn final_sdd_pending(f: &Fixture, out: &Output, phase: &str) -> Value {
     );
     assert_eq!(
         report["namespace"]["host_endpoint"],
-        f.context.host_endpoint.to_str().unwrap()
+        f.context.host_endpoint.clone().unwrap().to_str().unwrap()
     );
     assert_eq!(report["recovery_ref"], f.reference());
     assert_eq!(report["attempt"], 1);
     for key in ["retry_argv", "inspect_argv"] {
         let argv: Vec<String> = serde_json::from_value(report[key].clone()).unwrap();
         assert!(argv.contains(&f.context.state_dir.to_string_lossy().into_owned()));
-        assert!(argv.contains(&f.context.host_endpoint.to_string_lossy().into_owned()));
+        assert!(
+            argv.contains(
+                &f.context
+                    .host_endpoint
+                    .clone()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            )
+        );
     }
     report.clone()
 }
@@ -1692,7 +1720,7 @@ fn final_sdd_public_creation_unknown_reports_pinned_attempt_and_conditional_huma
     assert!(text.contains("outcome: creation_unknown"));
     assert!(text.contains("created_pane_argv: herdr-threads human --state-dir"));
     assert!(text.contains(f.context.state_dir.to_str().unwrap()));
-    assert!(text.contains(f.context.host_endpoint.to_str().unwrap()));
+    assert!(text.contains(f.context.host_endpoint.clone().unwrap().to_str().unwrap()));
     let retry = f.run(&["retry", &f.reference()], "'malformed");
     let second = final_sdd_pending(&f, &retry, "creation");
     assert_eq!(report, second);
@@ -1867,7 +1895,7 @@ fn pending_public_postpublication_witnessed_read_failure_reports() {
             );
             assert_eq!(
                 report["namespace"]["host_endpoint"],
-                f.context.host_endpoint.to_str().unwrap()
+                f.context.host_endpoint.clone().unwrap().to_str().unwrap()
             );
             // No canonical status was observed: unknown, never invented.
             assert!(report["attempt"].is_null());
@@ -1886,7 +1914,16 @@ fn pending_public_postpublication_witnessed_read_failure_reports() {
             let retry: Vec<String> = serde_json::from_value(report["retry_argv"].clone()).unwrap();
             assert_eq!(retry[1], "HERDR_PANE_ID=w4:p1");
             assert!(retry.contains(&f.context.state_dir.to_string_lossy().into_owned()));
-            assert!(retry.contains(&f.context.host_endpoint.to_string_lossy().into_owned()));
+            assert!(
+                retry.contains(
+                    &f.context
+                        .host_endpoint
+                        .clone()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned()
+                )
+            );
             assert_eq!(
                 retry[retry.len() - 2..],
                 ["retry".to_owned(), reference.clone()]

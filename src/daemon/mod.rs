@@ -14,7 +14,7 @@ pub mod transport;
 
 use crate::daemon::{
     diagnostics::{BufferLimits, DiagnosticSink, DiagnosticSource},
-    lifecycle::run_owner_with_factory,
+    lifecycle::run_owner_attached,
     logs::RotatingLogSink,
     ownership::EndpointDescriptor,
     paths::NodePaths,
@@ -352,8 +352,38 @@ where
     D: FnOnce() -> Fut,
     Fut: Future<Output = io::Result<()>>,
 {
-    run_owner_with_factory(
+    run_elected_attached(
         paths,
+        None,
+        clock,
+        shutdown,
+        make_service,
+        on_ready,
+        on_drained,
+    )
+    .await
+}
+
+/// [`run_elected_with_diagnostics`] publishing `primary_host` (the attached
+/// Herdr endpoint; `None` for a store-only daemon) in the descriptor.
+pub async fn run_elected_attached<F, R, D, Fut>(
+    paths: &NodePaths,
+    primary_host: Option<std::path::PathBuf>,
+    clock: Arc<dyn Clock>,
+    shutdown: Cancellation,
+    make_service: F,
+    on_ready: R,
+    on_drained: D,
+) -> io::Result<bool>
+where
+    F: FnOnce(crate::node::NodeUuid, Uuid, Cancellation) -> io::Result<Arc<dyn LocalService>>,
+    R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
+    D: FnOnce() -> Fut,
+    Fut: Future<Output = io::Result<()>>,
+{
+    run_owner_attached(
+        paths,
+        primary_host,
         clock,
         shutdown,
         ChildOwnedLogSink::new(paths),

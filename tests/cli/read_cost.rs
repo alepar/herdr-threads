@@ -177,7 +177,7 @@ fn run(argv: &[&str], seats: Vec<SeatSummary>) -> Run {
     let mut out = Vec::new();
     let runtime = crate::daemon::paths::RuntimeContext {
         state_dir: root.clone(),
-        host_endpoint: root.join("host.sock"),
+        host_endpoint: Some(root.join("host.sock")),
         herdr_bin: None,
     };
     let result = run_caller_scoped(

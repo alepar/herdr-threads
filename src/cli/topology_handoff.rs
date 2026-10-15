@@ -76,8 +76,8 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
     )?;
     let namespace = HandoffNamespace {
         instance: inputs.namespace.instance.clone(),
+        host_endpoint: runtime.require_host()?.to_path_buf(),
         state_dir: runtime.state_dir,
-        host_endpoint: runtime.host_endpoint,
     };
     let workspace = if let Some(value) = &request.selector.space {
         if let Some(exact) = inputs
@@ -290,8 +290,8 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
     )?;
     let namespace = HandoffNamespace {
         instance: inputs.namespace.instance.clone(),
+        host_endpoint: runtime.require_host()?.to_path_buf(),
         state_dir: runtime.state_dir,
-        host_endpoint: runtime.host_endpoint,
     };
     let workspace = if let Some(value) = &request.selector.space {
         if let Some(exact) = inputs

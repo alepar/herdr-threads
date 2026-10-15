@@ -775,11 +775,18 @@ fn automatic_launched_pane_live_retry_requires_original_current_caller() {
     let namespace = crate::protocol::handoff::HandoffNamespace {
         instance: claim().instance,
         state_dir: selected.state_dir.clone(),
-        host_endpoint: selected.host_endpoint.clone(),
+        host_endpoint: selected.host_endpoint.clone().unwrap(),
     };
     let mut output = OutputSpec::default();
     output.context.state_dir = Some(selected.state_dir.to_string_lossy().into_owned());
-    output.context.host = Some(selected.host_endpoint.to_string_lossy().into_owned());
+    output.context.host = Some(
+        selected
+            .host_endpoint
+            .clone()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+    );
     let client = AutomaticClient::new();
     *client.lose_ensure.lock().unwrap() = true;
     let mut launcher = AutomaticLauncher::default();

@@ -1641,7 +1641,7 @@ fn thread_reads_carry_the_located_caller_for_the_self_marker() {
         std::sync::Arc::new(crate::app::SystemClock::new());
     let runtime = crate::daemon::paths::RuntimeContext {
         state_dir: root.clone(),
-        host_endpoint: root.join("host"),
+        host_endpoint: Some(root.join("host")),
         herdr_bin: None,
     };
     let selected = [
@@ -3204,7 +3204,7 @@ fn actor_prerequisite_public_retry_refuses_before_daemon_state_or_connect() {
         "--state-dir".into(),
         runtime.state_dir.display().to_string(),
         "--host-endpoint".into(),
-        runtime.host_endpoint.display().to_string(),
+        runtime.host_endpoint.clone().unwrap().display().to_string(),
         "retry".into(),
         reference.recovery_ref(),
     ];
@@ -4992,7 +4992,7 @@ mod main539_composition {
                 "--state-dir".into(),
                 runtime.state_dir.display().to_string(),
                 "--host-endpoint".into(),
-                runtime.host_endpoint.display().to_string(),
+                runtime.host_endpoint.clone().unwrap().display().to_string(),
                 "retry".into(),
                 reference.recovery_ref(),
             ],
@@ -5383,7 +5383,12 @@ impl OrdinaryHumanRetryFixture {
             "--state-dir".into(),
             self.runtime.state_dir.to_string_lossy().into_owned(),
             "--host-endpoint".into(),
-            self.runtime.host_endpoint.to_string_lossy().into_owned(),
+            self.runtime
+                .host_endpoint
+                .clone()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
             "--json".into(),
             "retry".into(),
             self.reference.recovery_ref(),

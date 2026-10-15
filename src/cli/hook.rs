@@ -1687,6 +1687,10 @@ fn connect_pane(
     let context =
         RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
             .map_err(|e| Failure::Quiet(format!("runtime context: {e}")))?;
+    // A hook claim binds a pane of the claim host's Herdr server.
+    context
+        .require_host()
+        .map_err(|e| Failure::Quiet(format!("runtime context: {e}")))?;
     let paths = NodePaths::resolve(&context.state_dir)
         .map_err(|e| Failure::Unavailable(format!("state paths: {:?}", e.kind())))?;
     if let Some(executable) = ensure_executable {
@@ -1802,7 +1806,10 @@ fn check_in(
             &instance.to_string(),
             &ContinuationContext {
                 state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
-                host: Some(context.host_endpoint.to_string_lossy().into_owned()),
+                host: context
+                    .host_endpoint
+                    .as_ref()
+                    .map(|host| host.to_string_lossy().into_owned()),
             },
         );
         done
@@ -2303,7 +2310,7 @@ impl PaneCall<'_> {
     fn fallback_for(&self, seat: &SeatId) -> Vec<String> {
         let selectors = pane_selectors(
             Some(&self.context.state_dir),
-            Some(&self.context.host_endpoint),
+            self.context.host_endpoint.as_deref(),
             &pane_inputs(),
         );
         let mut fallback = cli_prefix(&selectors);
@@ -2338,12 +2345,15 @@ impl PaneCall<'_> {
         let pane = pane_inputs();
         let selectors = pane_selectors(
             Some(&context.state_dir),
-            Some(&context.host_endpoint),
+            context.host_endpoint.as_deref(),
             &pane,
         );
         let target_context = ContinuationContext {
             state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
-            host: Some(context.host_endpoint.to_string_lossy().into_owned()),
+            host: context
+                .host_endpoint
+                .as_ref()
+                .map(|host| host.to_string_lossy().into_owned()),
         };
         let routing = bridge::RecipientRouting {
             target: &target_context,

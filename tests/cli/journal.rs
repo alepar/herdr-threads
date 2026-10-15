@@ -1965,7 +1965,7 @@ fn retry_preflight_retained_human_root_refuses_before_connect() {
     );
     assert_eq!(
         parsed.output.context.host.as_deref(),
-        Some(context.host_endpoint.to_str().unwrap())
+        Some(context.host_endpoint.clone().unwrap().to_str().unwrap())
     );
     assert!(output.is_empty());
     assert_eq!(std::fs::read(journal.path(&reference)).unwrap(), before);

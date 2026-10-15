@@ -115,8 +115,8 @@ pub(crate) fn namespace(
     )?;
     Ok(HandoffNamespace {
         instance: instance.into(),
+        host_endpoint: runtime.require_host()?.to_path_buf(),
         state_dir: runtime.state_dir,
-        host_endpoint: runtime.host_endpoint,
     })
 }
 pub(crate) fn check_namespace(p: &Plan, context: &ContinuationContext) -> io::Result<()> {

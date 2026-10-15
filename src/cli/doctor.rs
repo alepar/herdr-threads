@@ -500,8 +500,7 @@ fn doctor_environment(
             .unwrap_or_default(),
         host_endpoint: report["context"]["host_endpoint"]
             .as_str()
-            .map(PathBuf::from)
-            .unwrap_or_default(),
+            .map(PathBuf::from),
     };
     let mut environment = super::setup::SetupEnv::for_context(&context).snapshot();
     environment.instance_source = report["context"]["source"].clone();
@@ -776,7 +775,7 @@ struct CapturedDoctorContext {
     context: crate::daemon::paths::RuntimeContext,
     source: Value,
     selected_state: PathBuf,
-    selected_host: PathBuf,
+    selected_host: Option<PathBuf>,
 }
 
 fn local_ownership_environment(
@@ -787,7 +786,7 @@ fn local_ownership_environment(
     let mut local = environment.clone();
     if !supplied && let Some(captured) = captured {
         local.state_dir = Some(captured.selected_state.clone());
-        local.host_endpoint = Some(captured.selected_host.clone());
+        local.host_endpoint = captured.selected_host.clone();
     }
     local
 }
@@ -835,11 +834,17 @@ fn report_captured(
         "version": env!("CARGO_PKG_VERSION"),
         "protocol_version": PROTOCOL_VERSION,
     });
-    let host_present = std::fs::symlink_metadata(&context.host_endpoint).is_ok();
+    let host_present = context
+        .host_endpoint
+        .as_ref()
+        .is_some_and(|host| std::fs::symlink_metadata(host).is_ok());
     report["context"] = json!({
         "ok": true,
         "state_dir": context.state_dir.display().to_string(),
-        "host_endpoint": context.host_endpoint.display().to_string(),
+        "host_endpoint": context
+            .host_endpoint
+            .as_ref()
+            .map(|host| host.display().to_string()),
         "host_endpoint_present": host_present,
         "source": source,
     });
@@ -1599,10 +1604,12 @@ pub(crate) fn run_registered<W: Write>(
                         .state_dir
                         .clone()
                         .ok_or_else(|| io::Error::other("state directory unavailable"))?,
-                    host_endpoint: environment
-                        .host_endpoint
-                        .clone()
-                        .ok_or_else(|| io::Error::other("host endpoint unavailable"))?,
+                    host_endpoint: Some(
+                        environment
+                            .host_endpoint
+                            .clone()
+                            .ok_or_else(|| io::Error::other("host endpoint unavailable"))?,
+                    ),
                 };
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -1709,12 +1716,12 @@ mod selected_ownership_tests {
         let captured = CapturedDoctorContext {
             context: crate::daemon::paths::RuntimeContext {
                 state_dir: PathBuf::from("/canonical/state"),
-                host_endpoint: PathBuf::from("/canonical/host"),
+                host_endpoint: Some(PathBuf::from("/canonical/host")),
                 herdr_bin: None,
             },
             source: json!({}),
             selected_state: PathBuf::from("/selected/state"),
-            selected_host: PathBuf::from("/selected/host"),
+            selected_host: Some(PathBuf::from("/selected/host")),
         };
         let environment = crate::harness::adapter::SetupEnvironment {
             state_dir: Some(PathBuf::from("/supplied/state")),
@@ -1724,10 +1731,10 @@ mod selected_ownership_tests {
         };
         let local = local_ownership_environment(&environment, Some(&captured), false);
         assert_eq!(local.state_dir, Some(captured.selected_state.clone()));
-        assert_eq!(local.host_endpoint, Some(captured.selected_host.clone()));
+        assert_eq!(local.host_endpoint, captured.selected_host.clone());
         assert_eq!(
             captured.context.host_endpoint,
-            PathBuf::from("/canonical/host")
+            Some(PathBuf::from("/canonical/host"))
         );
         let supplied = local_ownership_environment(&environment, Some(&captured), true);
         assert_eq!(supplied.state_dir, environment.state_dir);

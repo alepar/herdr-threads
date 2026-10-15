@@ -27,7 +27,14 @@ pub(super) fn source() -> (Temp, NodePaths, Source) {
         "i".into(),
         ContinuationContext {
             state_dir: Some(context.state_dir.to_string_lossy().into()),
-            host: Some(context.host_endpoint.to_string_lossy().into()),
+            host: Some(
+                context
+                    .host_endpoint
+                    .clone()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into(),
+            ),
         },
     );
     (dir, paths, source)

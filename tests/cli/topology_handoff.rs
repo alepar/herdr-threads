@@ -1042,7 +1042,8 @@ mod live {
                     crate::daemon::paths::NodePaths::resolve_read_only(&runtime.state_dir).unwrap();
                 std::fs::create_dir_all(&paths.node_dir).unwrap();
                 identity.payload.handoff.namespace.state_dir = runtime.state_dir.clone();
-                identity.payload.handoff.namespace.host_endpoint = runtime.host_endpoint.clone();
+                identity.payload.handoff.namespace.host_endpoint =
+                    runtime.host_endpoint.clone().unwrap();
                 identity.digest = identity.semantic_digest().unwrap();
                 (paths.node_dir.join("intents"), paths.database_path)
             } else {
@@ -7034,7 +7035,7 @@ mod live {
                 .is_err()
             );
             let mut wrong_host = selected.clone();
-            wrong_host.host_endpoint = peer.base._temp.path().join("wrong-host");
+            wrong_host.host_endpoint = Some(peer.base._temp.path().join("wrong-host"));
             assert!(
                 dispatch(
                     &parsed,

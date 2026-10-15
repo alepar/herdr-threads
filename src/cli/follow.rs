@@ -225,16 +225,17 @@ impl NickCache {
         paths: &NodePaths,
         instance: crate::node::NodeUuid,
         clock: &Arc<dyn Clock>,
-    ) -> Self {
-        Self::with_pane_source(
+    ) -> io::Result<Self> {
+        Ok(Self::with_pane_source(
             Box::new(NativeCli::new(
-                context.host_endpoint.clone(),
+                // Pane nicknames come from the claim host's Herdr server.
+                context.require_host()?.to_path_buf(),
                 Arc::clone(clock),
             )),
             paths,
             instance,
             clock,
-        )
+        ))
     }
 
     /// A cache reading pane names from `host`: the production host adapter,
@@ -1072,7 +1073,7 @@ pub(crate) fn run(
         Form::Lines
     };
     let (instance, _, mut client) = connect(paths, clock)?;
-    let mut cache = NickCache::new(context, paths, instance, clock)
+    let mut cache = NickCache::new(context, paths, instance, clock)?
         .with_caller(if form == Form::Human {
             caller_pane
         } else {

@@ -278,7 +278,10 @@ impl Fixture {
         let instance = owner.node_uuid().unwrap();
         drop(owner);
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
-        let native = Arc::new(NativeCli::new(context.host_endpoint.clone(), clock.clone()));
+        let native = Arc::new(NativeCli::new(
+            context.host_endpoint.clone().unwrap(),
+            clock.clone(),
+        ));
         let budget = CallBudget {
             deadline: MonoInstant(clock.monotonic_now().0 + 5000),
             cancellation: Cancellation::default(),
@@ -470,7 +473,7 @@ impl Fixture {
                     std::ffi::OsStr::new("--state-dir"),
                     AsRef::<std::ffi::OsStr>::as_ref(&&self.context.state_dir),
                     std::ffi::OsStr::new("--host-endpoint"),
-                    AsRef::<std::ffi::OsStr>::as_ref(&&self.context.host_endpoint),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&self.context.host_endpoint.clone().unwrap()),
                 ],
                 args,
             ))
@@ -495,12 +498,20 @@ impl Fixture {
     }
     fn rotate_owned_endpoint(&self) {
         use std::os::unix::fs::MetadataExt;
-        let old = fs::metadata(&self.context.host_endpoint).unwrap().ino();
-        fs::rename(&self.context.host_endpoint, self.root.join("previous.sock")).unwrap();
-        let listener = UnixListener::bind(&self.context.host_endpoint).unwrap();
+        let old = fs::metadata(self.context.host_endpoint.clone().unwrap())
+            .unwrap()
+            .ino();
+        fs::rename(
+            self.context.host_endpoint.clone().unwrap(),
+            self.root.join("previous.sock"),
+        )
+        .unwrap();
+        let listener = UnixListener::bind(self.context.host_endpoint.clone().unwrap()).unwrap();
         listener.set_nonblocking(true).unwrap();
         assert_ne!(
-            fs::metadata(&self.context.host_endpoint).unwrap().ino(),
+            fs::metadata(self.context.host_endpoint.clone().unwrap())
+                .unwrap()
+                .ino(),
             old
         );
         let (ready, acknowledged) = std::sync::mpsc::sync_channel(0);
@@ -533,7 +544,7 @@ impl Fixture {
             .unwrap(),
         );
         let host = Arc::new(NativeCli::new(
-            self.context.host_endpoint.clone(),
+            self.context.host_endpoint.clone().unwrap(),
             self.clock.clone(),
         ));
         let writer = Arc::new(herdr_threads::service::fair_writer::FairWriter::new(32));
@@ -2216,7 +2227,7 @@ fn elected_generic_refuses_fresh_and_saved_recovery_before_publication_or_effect
             namespace: HandoffNamespace {
                 instance: f.instance.to_string(),
                 state_dir: f.context.state_dir.clone(),
-                host_endpoint: f.context.host_endpoint.clone(),
+                host_endpoint: f.context.host_endpoint.clone().unwrap(),
             },
             keys: HandoffKeys {
                 compound: OperationId::new("task21-original"),

@@ -21,6 +21,10 @@ pub struct EndpointDescriptor {
     pub pid: u32,
     pub socket_device: u64,
     pub socket_inode: u64,
+    /// The canonical endpoint of the Herdr server the daemon is attached to;
+    /// `None` for a store-only daemon. Read by the interim single-host guard.
+    #[serde(default)]
+    pub primary_host: Option<std::path::PathBuf>,
 }
 
 /// The locked owner-lease file. Dropping the last holder releases the lease
@@ -46,6 +50,8 @@ pub struct OwnerLock {
     /// From the `node.json` hint at acquire time; `None` until the daemon has
     /// written it. Publication refuses without it.
     node_uuid: Option<NodeUuid>,
+    /// Published in the descriptor as `primary_host`.
+    primary_host: Option<std::path::PathBuf>,
     owner_token: Uuid,
 }
 
@@ -132,6 +138,13 @@ impl OwnedAsyncListener {
 }
 
 impl OwnerLock {
+    /// The attached Herdr endpoint the descriptor will publish as
+    /// `primary_host` (canonical; `None` for a store-only daemon).
+    pub fn with_primary_host(mut self, primary_host: Option<std::path::PathBuf>) -> Self {
+        self.primary_host = primary_host;
+        self
+    }
+
     pub fn acquire(paths: &NodePaths) -> io::Result<Self> {
         paths.prepare_node_dir()?;
         let file = open_private_file(&paths.lock_path)?;
@@ -140,6 +153,7 @@ impl OwnerLock {
             lock_file: Arc::new(LeaseFile(file)),
             paths: paths.clone(),
             node_uuid: hint_uuid(paths),
+            primary_host: None,
             owner_token: Uuid::new_v4(),
         })
     }
@@ -271,6 +285,7 @@ impl OwnerLock {
             pid: std::process::id(),
             socket_device,
             socket_inode,
+            primary_host: self.primary_host.clone(),
         };
         atomic_write(
             &self.paths.descriptor_path,

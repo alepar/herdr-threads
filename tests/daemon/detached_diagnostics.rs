@@ -624,6 +624,10 @@ fn run_continuous_case(slow: bool, probe_drain: bool, writer_end_gate: bool) {
 fn detached_owner_fixture() {
     let root = PathBuf::from(std::env::var_os("HERDR_TASK23_ROOT").unwrap());
     let paths = fixture_paths(root.clone());
+    // Attached to the host the ensure callers claim (the interim guard).
+    let host = RuntimeContext::explicit(root.clone(), root.join("host.sock"), None)
+        .unwrap()
+        .host_endpoint;
     let shutdown = Cancellation::default();
     let monitor_shutdown = shutdown.clone();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -659,8 +663,9 @@ fn detached_owner_fixture() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         });
-        run_elected_with_diagnostics(
+        run_elected_attached(
             &paths,
+            host,
             Arc::new(TestClock),
             shutdown,
             |instance, boot, _| {
