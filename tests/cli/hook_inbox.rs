@@ -126,6 +126,29 @@ fn whole_page_is_shown_escaped_with_exact_ack_and_lazy_ids() {
     assert_eq!(lazy_ids, vec![MessageId::new("m1")]);
 }
 
+// ht-yha.60 (main review I1): the header must not tell the model that every message shown in full has no
+// receipt obligation while the same block asks it to ACK one. Kills: an unqualified "messages shown in full".
+#[test]
+fn header_never_waives_the_receipt_of_an_ack_required_message() {
+    let offer = page_offer(vec![ordinary("m2", "needs receipt", true)], false);
+    let (context, _) = append(String::new(), &offer, &prefix(), 4096);
+    assert!(context.contains("ack m2"), "{context}");
+    let header = context.lines().next().unwrap();
+    assert!(
+        !header.contains("messages shown in full are recorded as presented"),
+        "unqualified waiver: {header}"
+    );
+    assert!(
+        header.contains("without an ACK request"),
+        "the waiver names only messages without an ACK request: {header}"
+    );
+    assert!(
+        header.len() <= 320,
+        "header stays compact: {} bytes",
+        header.len()
+    );
+}
+
 // Kills: showing a body prefix, completing a lazy item that did not fit,
 // skipping an item to show a later one (page order), exceeding the bound,
 // and a missing exact retrieval command when more remains.
