@@ -1516,7 +1516,16 @@ mod live {
         let mut result = crate::archival_legacy::Scan::default();
         for _ in 0..100 {
             let page = source.scan(|| false).unwrap();
-            result.hints.extend(page.hints);
+            // A page that finds no record but follows one in the same traversal
+            // carries a `Hint::Coverage` continuity marker (a no-op in
+            // `archival_pass`, sharing the record hints' veto). Whether one
+            // appears depends on where the 10 ms page deadline splits the
+            // traversal, so the accumulated scan keeps only record hints.
+            result.hints.extend(
+                page.hints
+                    .into_iter()
+                    .filter(|hint| !matches!(hint, crate::archival_legacy::Hint::Coverage { .. })),
+            );
             if !page.pending {
                 result.coverage = page.coverage;
                 return result;
