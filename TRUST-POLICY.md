@@ -829,7 +829,13 @@ replaced, migration) drops the view in the disconnecting transaction, and public
 stays disconnected, so a disconnected binding costs only its cursors and display marks; when it reconnects (a
 plain call after a process exit, or a lifecycle check-in such as a resume, a re-adoption or a reopening) its
 view is re-seeded, at a cost proportional to its own backlog, from its own cursors and display marks, so it is offered
-exactly the rows it has not displayed, whatever a sibling displayed meanwhile. No seat-level view reads a
+exactly the rows it has not displayed, whatever a sibling displayed meanwhile. The seed is complete because an
+open binding has a cursor in every thread its seat has joined (the V32 backfill, `read_cursors::init_for_new_binding`
+at enrolment, `read_cursors::init_for_join` and `init_for_direct_accept` at every join; pinned by
+`a_held_binding_has_a_cursor_in_every_joined_thread`): it walks only the messages past each of the binding's
+cursors, the one cursorless readable scope (a pending direct-pair invitation) and the seat's legacy rows
+(`SEED_BINDING_VIEW_SQL`, `src/store/lazy_delivery/mod.rs`, ht-yha.67), never the seat's delivery history. A change
+that lets a binding join a thread without a cursor must extend the seed in the same commit. No seat-level view reads a
 disconnected binding's view: the wake frontier and discovery, the seat inbox filter, the digest's pending
 count and the mod fingerprint, kick count and stall rule consider connected top-level bindings only (plus
 legacy seat-pending rows). The seat-wide `displayed` mark (set once no top-level binding that still owes the
@@ -1101,12 +1107,14 @@ cannot complete one; it sees only mail past its head cursor. A binding enrolled 
 if it is top-level. On a generic `accept` or `accept-required` (not the active direct-invitation
 exception), the accepting top-level binding's own text `accept` displays the joined thread's seat-pending lazy
 rows in its output (A8, ht-br0), so that completion clears them for the seat as above and the accept itself is
-the first opportunity, with no later hook needed. Ordinary messages are not part of this: one addressed to the seat before it joined (an
-ACK request to an invitee, a direct `--nudge` target) is a pending receipt from publication, listed with the
-seat's ACK obligations until settled and never re-offered through the cursor stream after the join, because
-every cursor starts at the head. That pending-receipt path is an agent seat's; a human seat's receipt is waived,
-and the join frontier gives a human seat's pre-join ordinary messages no separate path (unchanged from before
-ht-8y9).
+the first opportunity, with no later hook needed. Messages with explicit ACK recipients are not part of this: one
+addressed to the seat before it joined (an ACK request to an invitee) is a pending receipt from publication, listed
+with the seat's ACK obligations until settled and never re-offered through the cursor stream after the join,
+because every cursor starts at the head. A bare `--nudge` (p0, no `--require-ack`) makes no receipt (D9): to a
+pre-upgrade pair's pending invitee it is a priority-0 delivery row, readable through the pending-pair read scope
+before the accept and then pending like any delivery row (A8). That pending-receipt path is an agent seat's; a
+human seat's receipt is waived, and the join frontier gives a human seat's pre-join ordinary messages no separate
+path (unchanged from before ht-8y9).
 
 A rejoin follows the same rule: an older sibling's cursor rises to the head, past joined-era mail another
 binding of the seat read or passed (lazy rows at or below the seat's furthest cursor are not marked; ordinary
