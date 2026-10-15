@@ -2390,18 +2390,30 @@ mod live {
     fn composition_actual_new_thread_child_requires_canonical_created_thread() {
         let mut request = request();
         request.thread = None;
-        let f = Fixture::with_layout(
+        let mut f = Fixture::with_layout(
             Fault::None,
             request,
             Some(vec!["--model".into(), "saved value".into()]),
             true,
             false,
         );
+        // Setup only: the subject is the retained child progress and its
+        // composition, not the 250 ms permit, so host load must not expire
+        // the create child's permit before its progress is saved.
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher {
             unknown: true,
             ..Default::default()
         };
-        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        let error = downstream(&f, &mut launcher, &mut vec![]).unwrap_err();
+        assert!(
+            matches!(&error, RunError::Api(e) if e.code == ErrorCode::UnknownOutcome && e.detail.contains("downstream possible start")),
+            "only the unknown launch outcome may fail the first run: {error:?}"
+        );
+        assert_eq!(
+            child_calls(&f),
+            ["create_child", "invite_child", "send_child"]
+        );
         let path = child_progress_path(&f.journal, &f.peer.reference);
         let mut child: ChildProgress =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
