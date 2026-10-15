@@ -7,6 +7,7 @@
 pub mod chain;
 pub mod envelope;
 pub mod facts;
+pub mod frame;
 pub mod hlc;
 pub mod journal_port;
 
