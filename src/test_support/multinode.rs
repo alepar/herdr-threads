@@ -50,7 +50,7 @@ use crate::{
     protocol::time::Clock,
     store::{connection::StoreContext, journal, sync_dial_targets},
     sync::facts::{FactKind, FactRegistry},
-    test_support::{isolation::TestIsolation, spawn::SpawnOwned},
+    test_support::{fake_herdr::FakeHerdr, isolation::TestIsolation, spawn::SpawnOwned},
 };
 use rusqlite::{Connection, OpenFlags};
 use std::{
@@ -98,6 +98,20 @@ struct Node {
     seed: [u8; 32],
     uuid: NodeUuid,
     up: bool,
+    /// The node's fake Herdr servers, in the order [`Cluster::add_host`] gave them.
+    hosts: Vec<FakeHerdr>,
+}
+
+/// A stand-in agent seat on a node's fake Herdr server: what
+/// [`Cluster::seat`] returns and [`Cluster::run_as`] acts as.
+#[derive(Clone, Debug)]
+pub struct Seat {
+    pub id: String,
+    pub node: usize,
+    pub pane: String,
+    /// Index of the seat's server among the node's hosts.
+    pub host: usize,
+    session: String,
 }
 
 /// N linked daemons under one isolated root. Dropping it stops them all.
@@ -195,6 +209,7 @@ impl Cluster {
                 seed,
                 uuid: NodeIdentity::from_seed(seed).uuid(),
                 up: false,
+                hosts: Vec::new(),
             });
         }
         let mut cluster = Self { iso, bin, nodes };
@@ -326,6 +341,131 @@ impl Cluster {
             .unwrap()
     }
 
+    /// Gives `node` another fake Herdr server with idle Claude agents in
+    /// `panes` and returns its index. A CLI call naming its socket attaches it
+    /// to the node's daemon lazily, so the daemon keeps running as started.
+    pub fn add_host(&mut self, node: usize, panes: &[&str]) -> usize {
+        let index = self.nodes[node].hosts.len();
+        let socket = self.iso.socket_path(&format!("h{node}{index}"));
+        let label = format!("{}h{index}", self.nodes[node].name);
+        self.nodes[node]
+            .hosts
+            .push(FakeHerdr::start(&label, &socket, panes));
+        index
+    }
+
+    /// `node`'s first fake Herdr server. Panics when it has none.
+    pub fn host(&self, node: usize) -> &FakeHerdr {
+        self.host_at(node, 0)
+    }
+
+    /// `node`'s `index`th fake Herdr server.
+    pub fn host_at(&self, node: usize, index: usize) -> &FakeHerdr {
+        self.nodes[node]
+            .hosts
+            .get(index)
+            .unwrap_or_else(|| panic!("node {node} has no fake host {index}"))
+    }
+
+    /// The CLI of `node` as `seat` (a stand-in agent on its pane through the
+    /// cooperative caller flags), or as nobody when `seat` is `None`, against
+    /// the node's fake host when it has one. Returns exit code, the parsed
+    /// `--json` stdout and stderr.
+    pub fn run_as(
+        &self,
+        seat: Option<&Seat>,
+        node: usize,
+        args: &[&str],
+    ) -> (i32, serde_json::Value, String) {
+        self.run_on(seat, seat.map_or(0, |s| s.host), node, args)
+    }
+
+    /// [`Cluster::run_as`] naming the node's `host`th server as the endpoint.
+    pub fn run_on(
+        &self,
+        seat: Option<&Seat>,
+        host: usize,
+        node: usize,
+        args: &[&str],
+    ) -> (i32, serde_json::Value, String) {
+        let hosts = &self.nodes[node].hosts;
+        let endpoint = match hosts.get(host) {
+            Some(host) => host.socket().to_path_buf(),
+            None => self.iso.path("no-host.sock"),
+        };
+        let mut command = self.iso.command(&self.bin);
+        command
+            .arg("--json")
+            .arg("--state-dir")
+            .arg(&self.nodes[node].state)
+            .arg("--host-endpoint")
+            .arg(&endpoint);
+        if let Some(seat) = seat {
+            crate::test_support::isolation::as_agent(&mut command, "claude", &seat.session);
+            command.args([
+                "--cooperative-seat",
+                &seat.id,
+                "--cooperative-target",
+                &seat.pane,
+                "--cooperative-harness",
+                "claude",
+                "--cooperative-role",
+                "top-level",
+            ]);
+        }
+        let output = command.args(args).output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let value = serde_json::from_str(&stdout).unwrap_or(serde_json::Value::Null);
+        (output.status.code().unwrap_or(-1), value, stderr)
+    }
+
+    /// Success of `args` as `seat`; returns `result.data`.
+    pub fn ok_as(&self, seat: Option<&Seat>, node: usize, args: &[&str]) -> serde_json::Value {
+        let (code, value, stderr) = self.run_as(seat, node, args);
+        assert_eq!(code, 0, "{args:?} failed on node {node}: {stderr}{value}");
+        value["result"]["data"].clone()
+    }
+
+    /// Resolves `pane` of `node`'s first host to its seat and checks the
+    /// stand-in agent in (availability and the binding a wake needs).
+    pub fn seat(&self, node: usize, pane: &str) -> Seat {
+        self.seat_on(node, 0, pane)
+    }
+
+    /// [`Cluster::seat`] on the node's `host`th server.
+    pub fn seat_on(&self, node: usize, host: usize, pane: &str) -> Seat {
+        let probe = Seat {
+            id: String::new(),
+            node,
+            pane: pane.to_owned(),
+            host,
+            session: String::new(),
+        };
+        let (code, value, stderr) =
+            self.run_on(None, host, node, &["seat", "resolve", "--pane", pane]);
+        assert_eq!(
+            code, 0,
+            "seat resolve {pane} on node {node}: {stderr}{value}"
+        );
+        let id = value["result"]["data"].clone();
+        let seat = Seat {
+            id: id.as_str().expect("a seat id").to_owned(),
+            session: crate::test_support::fake_herdr::session_of(
+                self.host_at(node, host).label(),
+                pane,
+            ),
+            ..probe
+        };
+        let (code, _, stderr) = self.run_as(
+            Some(&seat),
+            node,
+            &["check-in", "--lifecycle-event", "agent-start"],
+        );
+        assert_eq!(code, 0, "check-in of {}: {stderr}", seat.id);
+        seat
+    }
+
     fn insert_target(&self, dialer: usize, dest: usize) {
         let mut conn = Connection::open(db_path(&self.nodes[dialer].state))
             .expect("open the dialer's store (it has run once)");
@@ -450,6 +590,40 @@ impl Cluster {
                 format!("--- {} ({})\n{text}\n", n.name, n.state.display())
             })
             .collect()
+    }
+
+    /// The first column of the first row of `sql` on `node`'s store, as text
+    /// (`None` for no row or a busy store). Read-only.
+    pub fn scalar(
+        &self,
+        node: usize,
+        sql: &str,
+        params: &[&dyn rusqlite::ToSql],
+    ) -> Option<String> {
+        use rusqlite::types::Value;
+        let value: Value = open_db(&self.nodes[node].state)?
+            .query_row(sql, params, |r| r.get(0))
+            .ok()?;
+        Some(match value {
+            Value::Null => "NULL".to_owned(),
+            Value::Integer(i) => i.to_string(),
+            Value::Real(f) => f.to_string(),
+            Value::Text(t) => t,
+            Value::Blob(b) => format!("{b:?}"),
+        })
+    }
+
+    /// `(kind, count)` of every journal row `node` holds.
+    pub fn kinds(&self, node: usize) -> std::collections::BTreeMap<String, i64> {
+        let Some(conn) = open_db(&self.nodes[node].state) else {
+            return Default::default();
+        };
+        let Ok(mut stmt) = conn.prepare("SELECT kind, count(*) FROM journal GROUP BY kind") else {
+            return Default::default();
+        };
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map(|rows| rows.filter_map(Result::ok).collect())
+            .unwrap_or_default()
     }
 
     /// The state of `dialer`'s only dial target (`linked`, `backoff`, ...).

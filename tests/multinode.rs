@@ -15,8 +15,8 @@ use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
-const WAIT: Duration = Duration::from_secs(90);
+pub(crate) const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
+pub(crate) const WAIT: Duration = Duration::from_secs(90);
 
 /// A kind of a "newer" software version: registered only where it is authored.
 #[derive(Serialize, Deserialize)]
@@ -168,3 +168,15 @@ fn unknown_kind_authored_and_relayed_unchanged() {
         );
     }
 }
+
+#[path = "multinode/support.rs"]
+mod support;
+
+#[path = "multinode/config_direct.rs"]
+mod config_direct;
+
+#[path = "multinode/config_relay.rs"]
+mod config_relay;
+
+#[path = "multinode/config_store_only.rs"]
+mod config_store_only;

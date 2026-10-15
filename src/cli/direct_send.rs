@@ -213,6 +213,7 @@ fn inspect<C: LocalClient + ?Sized>(
     client: &C,
     clock: &dyn Clock,
     seat: &SeatId,
+    allow_remote: bool,
 ) -> Result<crate::protocol::results::SeatInspection, RunError> {
     let result = client.call(
         Command::SeatInspect(SeatInspectQuery {
@@ -227,11 +228,17 @@ fn inspect<C: LocalClient + ?Sized>(
     let CommandResult::SeatInspect(v) = result else {
         return Err(super::invalid_request("missing direct seat inspection"));
     };
+    // A recipient seat of another node has no binding here: it is `remote`, with
+    // no target, and is addressed by id alone (its home node delivers).
+    let remote = allow_remote
+        && v.summary.continuity == ContinuityStatus::Remote
+        && v.mapping.state == ContinuityStatus::Remote;
     if v.summary.seat != *seat
-        || v.summary.continuity != ContinuityStatus::Resolved
-        || v.mapping.state != ContinuityStatus::Resolved
-        || v.summary.target.is_none()
-        || v.summary.target != v.mapping.target
+        || !(remote
+            || (v.summary.continuity == ContinuityStatus::Resolved
+                && v.mapping.state == ContinuityStatus::Resolved
+                && v.summary.target.is_some()
+                && v.summary.target == v.mapping.target))
         || v.summary.retired_at.is_some()
         || v.retirement.is_some()
         || v.hold.is_some()
@@ -272,7 +279,7 @@ pub(crate) fn start<C: LocalClient + ?Sized, W: Write>(
         p.request.delivery_mode == DeliveryMode::Lazy,
         p.creation_policy.is_some(),
     )?;
-    let caller = inspect(client, clock, &claim.seat)?;
+    let caller = inspect(client, clock, &claim.seat, false)?;
     if caller.summary.generation != claim.binding_generation
         || caller.summary.target.as_ref() != Some(&claim.target)
         || !caller
@@ -282,7 +289,7 @@ pub(crate) fn start<C: LocalClient + ?Sized, W: Write>(
     {
         return Err(super::invalid_request("direct send caller binding differs"));
     }
-    inspect(client, clock, &p.request.target)?;
+    inspect(client, clock, &p.request.target, true)?;
     let scope = IntentScope::Cooperative {
         instance: claim.instance.clone(),
         host: claim.host.clone(),
