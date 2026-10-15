@@ -11,6 +11,8 @@ Amended 2026-10-12 for the text accept's thread-scoped opening-mail display (ht-
 ordinary stop and, with a live mod channel, by a bounded channel grace.
 Amended 2026-10-12 for the consented Codex pane environment block (foreground configuration only; no seat,
 binding, receipt or attribution rule changes).
+Amended 2026-10-14 for cross-node sync (ht-5fr): node identity and key custody, replicated facts, origin
+authority, peer identity binding, fork and clone repair, remote seats.
 
 ## Abstract
 
@@ -64,6 +66,19 @@ explicitly, so that a weakness is a documented decision rather than a surprise.
 - **Daemon boot**: one herdr-threads daemon process. A daemon restart does not change the Herdr incarnation.
 - **Operator**: a request made with `--operator`, accepted when the kernel peer UID matches the daemon owner.
   This is the local account, not proof of a person.
+- **Node**: one daemon and store per (machine, OS user, state dir). Nodes sync through signed facts (root spec
+  `docs/superpowers/runs/2026-10-14-cross-node-sync/2026-10-14-cross-node-sync-design.md`, "spec" below).
+- **node_uuid**: lowercase hex of the first 16 bytes of SHA-256(the node's Ed25519 public key); the node's
+  replication identity, unchanged while the key exists.
+- **Node tag**: the 3-character base62 prefix part of every public ID the node mints; derived from `node_uuid`
+  and changed only by an applied `node.retag` fact (spec section 2).
+- **Home node**: the node whose daemon created a seat; the only node that may author facts for it.
+- **Remote seat**: a seat row whose home node is another node. It has no host, target or bindings here and is
+  never occupiable on this node.
+- **Fact**: a signed, hash-chained journal entry authored by one node (its origin) and applied by every node
+  through the one ApplyEngine path.
+- **Origin**: the node that authored and signed a fact.
+- **Incarnation**: one generation of a node's log; a fork repair or restore starts a new one under the same key.
 
 ## Continuity invariants
 
@@ -191,7 +206,9 @@ records there are replay machinery, never its identity.
 | `cooperative_hook_context` | lazy completion claim | A top-level standard native hook **of a harness whose adapter declares no hook-pull delivery** wrote and flushed output whose context carried the lazy message's complete body, and the adapter reported that the output carries context (A8). Claimed by `CompleteInboxDelivery.via = hook_context`, which is part of the accountable operation's payload digest (as `AckModDelivered` carries the mod claim); no per-row source is stored. Not proof that the harness ingested it or the model read it. A prefix never carries it. The daemon refuses this claim from a hook-pull binding. |
 | `operator_human` | bindings, receipts | A person declared this pane human with `ht human me init` and acted from it. Best effort: refused where the system sees evidence of an agent (A4). |
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because a resumed harness session id matched (C1). Never on receipts. |
-| `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. |
+| `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. Also covers `sync clone-cleared` and the other mutating sync, peer and legacy commands (`sync resync`, `peer add`, `peer forget`, `legacy purge`). |
+| `replicated_from:<node_uuid>` | receipts and events applied from another node's fact (bindings never) | Applied as given from a fact authored and signed by node `<node_uuid>`; the authoring node's own provenance travels inside the fact. Never written for a locally authored fact. |
+| `local_journal` | receipts and events materialized from an own old incarnation's entry with no staged local attribution | A wipe or restore pull-back re-applied this node's own earlier fact; the original binding is not known here. Never on bindings. |
 | `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), on any seat, beside whatever bindings the seat already holds, decided against the effective observation (A2). It carries the liveness fingerprint (pid and start time, from host process info) of the one process Herdr reports in the pane's foreground besides its shell; with none or several observable, nothing is recorded. Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, it keeps the seat generation, and it establishes no availability. Receipt deadlines start at send time independently of this binding. |
 | `cooperative_env_session` | binding claims | The CLI or a hook took the caller's session id from its harness environment or hook payload (`CLAUDE_CODE_SESSION_ID`; `CODEX_SESSION_ID` with `CODEX_THREAD_ID`; `HERMES_SESSION_ID`; and the session variable a registered adapter declares in its caller shape, today agy's `ANTIGRAVITY_CONVERSATION_ID`), choosing the innermost harness among the caller's ancestors. Cooperative and prompted, not native attestation. Never on receipts. |
 | `cooperative_hook_agent` | binding claims | herdr-threads' own Claude PreToolUse hook inserted `--agent-id=<agent_id>` into a recognized `herdr-threads`/`ht` command, attributing the call to that subagent. Shapes the hook cannot recognize stay attributed to the parent session. Never on receipts. |
@@ -1017,6 +1034,91 @@ seat-pending); an undisplayed lazy row at or below it is passed by every binding
 unshown lazy rows 1..50 while sibling B is at 0; after a leave and rejoin rows 1..50 are not marked and B rises to
 the head, so no binding sees them.
 
+## Cross-node sync (2026-10-14, ht-5fr)
+
+Nodes share one thread space by exchanging signed facts (spec: root design, sections 1, 4-10 and 12; subspecs
+node-identity, fact-kinds, peer-link, incarnations). The model stays cooperative and same-user: the checks below
+are consistency guards against bugs, version skew and accidents, never adversarial caller verification (see the
+Abstract). They add no new way for a caller to prove who it is.
+
+**N1. Node identity and key custody.** A node's identity is an Ed25519 key in `<state_dir>/node/node.key`: exactly
+32 raw bytes, mode 0600, owned by the daemon's user, a regular file. It is created once (no-clobber, never
+rewritten, truncated or regenerated) and `node_uuid` is derived from its public key. The daemon refuses to start
+when the key is missing while a store exists, when the key is unreadable, has wrong permissions or length, or is not
+a regular file, and when the key and the store's `local_node` disagree; it never repairs or recreates a key next to
+an existing store. Losing the key makes a new node (new key and new store); the old node's seats stay remote seats
+of the old node (N5). `node.json` is derived, hint-only data and never authority: client-local files and hints never decide identity (A2).
+
+**N2. Origin signatures are verified by every receiver.** Every journal entry carries its origin's signature over
+its canonical bytes and a hash chain. Every receiver verifies signature and chain before storing or applying an
+entry, whatever link or relay delivered it; a hash or signature failure rejects the batch and counts against that
+source. A relayed entry is trusted exactly as far as its origin signature, never because of the node that relayed it.
+
+**N3. The author's view decides.** A2 applies on the authoring node: the command that authors a fact is decided
+there, in its deciding transaction, against that node's canonical view. Receivers apply signed facts as given:
+no handler rejects a fact because of the receiver's local membership, archive, eligibility or host view (the
+author's view decides, never the receiver's). A receiver-side rejection exists only for the consistency guards of
+N4 and for malformed or constraint-violating facts. Materialized remote facts carry the provenance
+`replicated_from:<node_uuid>` (A3); the authoring node's own provenance travels inside the fact, and attribution
+columns are never replicated.
+
+**N4. Origin authority.** A receiver rejects, as `failed` (counted as processed, visible in `sync unapplied`, and
+replayable with `sync unapplied replay`), a fact whose origin is not the kind's authorized author (fact-kinds
+section 17):
+- the seat's home node for the seat-scoped kinds (`seat.*` retirement via `seat.retired`, `membership.*` i.e.
+  `membership.joined` and `membership.left`, `invitation.answered` for the invitee's seat, and `receipt.settled`
+  for the receipt's seat);
+- the inviter's home node for `invitation.created`;
+- the author seat's home node for `message.sent`;
+- the creator's home node for `thread.created`;
+- the home node of either pair seat for `thread.direct`;
+- for `seat.created`, the node whose tag the seat ID carries: the ID's tag is one the origin has held (from its
+  initial tag up to its current retag step), so a seat minted under the origin's pre-retag tag still passes.
+
+`thread.register` and the `node.*` kinds are authored by any node. A re-issued fact keeps its original origin and
+passes. This is a deterministic consistency guard on replicated identity against buggy or version-skewed nodes: it
+compares the origin with replicated identity that every node holds identically, so every node rejects the same
+facts. It is not adversarial verification (a node holding another node's key is out of scope, see Accepted limits)
+and not a view check (it never rejects a fact the authorized author was entitled to author).
+
+**N5. Remote seats.** A seat is never moved, merged, or retired on heuristic evidence. A seat's home node never
+changes. A remote seat is retired only by its home node's `seat.retired`; observation, reconciliation, liveness
+and retirement-by-observation never touch it, and a forgotten or gone home node never retires its seats. Remote
+seats are not occupiable: a claim, a binding open or connect, a check-in or an operator action naming a seat whose
+home is another node is refused with CallerUnverified "cooperative seat is not local" (enforced by ht-5fr.2.6
+through `seats::is_local_seat`). So no action is ever attributed on this node to a remote seat, and no fact is
+authored for it. Delivery rows, wakes and deadlines are created only for local seats; the sender's node owns the
+deadline and overdue decision for an obligation it authored.
+
+**N6. Peer identity binding.** A link handshake is refused with `auth_failed` when SHA-256(hello pubkey)[0..16]
+differs from the node_uuid the peer claims, and also when a genesis pubkey is already recorded for that node_uuid
+and differs from the hello pubkey. The first rule is enforced by the handshake (ht-5fr.5.2), the second by the
+post-handshake check against the held logs' genesis keys (ht-5fr.5.5). A bad `PeerAuth` signature is also
+`auth_failed`. `auth_failed` stops dialing that target until the target is changed. The same node_uuid arriving
+with a different boot id is a clone (N8), not a duplicate link.
+
+**N7. Fork quarantine and re-issue.** Two validly signed different entries at one (origin, incarnation, counter)
+prove the key holder forked its log. Every node holding both freezes that log at the last common counter, keeps
+the conflicting entries in quarantine (`journal_forked`), stops pulling beyond the frozen counter and records fork
+evidence. The owning node (when it holds no clone evidence, N8) starts a new incarnation and re-issues, in original
+order and with the original public fact IDs, every fact past the frozen counter from all branches, re-signed under
+its key. Idempotent apply makes re-issues no-ops where already applied, so every node ends with the union of facts
+and never authors under the frozen incarnation again. These are the only defined repairs for forks; no node merges
+branches by any other rule.
+
+**N8. Clone gate.** One key live in two daemons is detected by the handshake (`node_collision`), a third node's boot
+comparison, a lineage branch (two own genesis entries naming one predecessor) or an `own_unknown_newer` log. A node
+holding clone evidence about itself takes no automatic identity action (no owner rotation, no restore rotation, no
+re-issue); it keeps authoring locally and recording evidence. Clones are never healed automatically. The operator
+repairs them (A5): move one copy's `<state_dir>/node/` directory aside so it starts as a new node, then run
+`sync clone-cleared` on the keeper; a single copy that is a restore these rules cannot tell from a clone runs
+`sync clone-cleared` alone. `sync clone-cleared` and the other mutating sync commands record
+`operator:local-user:<uid>` provenance (A3).
+
+**N9. Derived events are local.** Derived `info`/`warn` events (overdue, retirement and warning notices) are
+decided and materialized on the node whose view caused them and are not replicated; only facts are. Settled
+history never wakes anyone: catch-up of old facts applies under suppression (see Accepted limits).
+
 ## Accepted limits
 
 For the generic join frontier (excluding active direct-invitation acceptance above), pre-join lazy
@@ -1506,7 +1608,49 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   wake eligibility (whether pending lazy messages may wake an idle seat); it creates no receipt, ACK evidence,
   attention or authority, and the daemon records only the seat's own current top-level binding as the actor.
 
+### Cross-node sync (ht-5fr)
+
+- **Root can steal a node key.** Whoever can read `node.key` (root, or the same user) can author facts as that
+  node. This is in-contract (A1): the origin signature and N4 are consistency guards, not a defense against a
+  key holder. Clock skew affects last-writer-wins resolution and shown times only; it never gates admission,
+  delivery or any deadline decision.
+- **Node decommission.** A forgotten or gone node's seats stay remote members: it never sends `seat.retired`.
+  Threads with such members are not auto-archived (automatic archival decides only threads whose every
+  non-retired member is local); they are archived explicitly. Only the home node can retire its seats.
+- **Clones.** One key live in two daemons is detected (handshake, third-node boot comparison, lineage branch,
+  `own_unknown_newer`) and holds every automatic identity action on the node holding the evidence; it is never
+  healed automatically. The operator repair is moving one copy's `<state_dir>/node/` aside (it becomes a new node;
+  facts it never sent stay in its moved-aside store; seats it created and sent reappear on the keeper as
+  unresolved seats needing `seat retire` or a rebind) and `sync clone-cleared` on the other, recorded with
+  `operator:local-user:<uid>` provenance. Detection assumes each copy starts a fresh daemon process (a new boot
+  id); memory-preserving clones (a live VM snapshot, a fork of a running daemon) are out of scope.
+- **Restore older than a rotation.** A restored node that authored on its restored log, or rotated, before it
+  learned of a later own incarnation is held as a clone suspect. Its repair is `sync clone-cleared` alone
+  (single copy, no move-aside); no fact is lost while it waits.
+- **Restore-window same-key facts.** Past the own-history hold's 5-minute cap (or for a `seat.created` authored
+  during the hold) a restored node can author a one-shot fact whose different fact sits in its unpulled old tail;
+  it resolves like forked-log same-key facts.
+- **Forked-log same-key facts.** Two branches of one key holder that decided one key differently (a seat's created
+  kind or retire reason, a same-ordinal membership transition, an invitation answer, a receipt settlement) resolve
+  on each node to whichever it applied first; the seat's next membership transition re-converges membership.
+- **Dead fork owner.** When a forked log's owner never returns, the facts on divergent tails stay only on the nodes
+  that hold each branch.
+- **Catch-up suppression reach.** Suppression is settled-only for every origin, own old incarnations included: an
+  unsettled obligation in a pulled-back own tail is offered. During the own-history hold, a settlement held only by
+  unlinked nodes, or ingested after the hold's cap, cannot suppress, so that message is offered again.
+- **Automatic archival on a stale view.** An archive decided before a remote seat's concurrent join applied
+  locally archives the thread on every node until an explicit reopen; posts into it still apply and deliver.
+
 ## Decision record
+
+### Cross-node sync trust model (2026-10-14, ht-5fr)
+
+Signatures and origin authority are consistency guards, not adversarial verification: every node runs as the same
+user for the same person, so a node that holds a key is trusted as that node (N1, N4). The guards exist to make
+every node reach the same verdict on the same facts and to catch buggy or version-skewed nodes deterministically,
+which is why they read only replicated identity and never a receiver's local view (N3). Rationale and rejected
+alternatives: the root spec (`docs/superpowers/runs/2026-10-14-cross-node-sync/2026-10-14-cross-node-sync-design.md`,
+section 12) and its roast reports `2026-10-14-cross-node-sync-roast-design-1.md` and `-2.md` in the same directory.
 
 ### Wrapper compatibility and foreground execution (2026-10-06)
 
