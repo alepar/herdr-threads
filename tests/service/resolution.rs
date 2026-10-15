@@ -369,7 +369,7 @@ impl Fixture {
         });
         if hold_baseline {
             let db = rusqlite::Connection::open(&paths.database_path).unwrap();
-            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('saved',?1,'unresolved','native',1,0)", [instance.to_string()]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('saved',?1,'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
         }
         if seed {
             let budget = CallBudget {
@@ -1113,7 +1113,7 @@ fn real_ipc_exact_resolution_replay_after_retirement_and_hold_is_historical_with
     hold.execute("UPDATE herdr_hosts SET baseline_hold_unclaimed=1", [])
         .unwrap();
     hold.execute(
-        "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,generation,created_at) SELECT 'still-unresolved',instance_id,'unresolved','other','native',1,0 FROM seats WHERE id=?1",
+        "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,generation,created_at,home_node,is_local,host_id) SELECT 'still-unresolved',instance_id,'unresolved','other','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts) FROM seats WHERE id=?1",
         [first.as_str()],
     )
     .unwrap();
@@ -1806,11 +1806,11 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
         rusqlite::params![fixture.descriptor.node_uuid.to_string(), successor_literal],
     ).unwrap();
     db.execute(
-        "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('checkin-seat',?1,'resolved','native','w1:p1',0,1,0)",
+        "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('checkin-seat',?1,'resolved','native','w1:p1',0,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
         [fixture.descriptor.node_uuid.to_string()],
     ).unwrap();
     db.execute(
-        "INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('sender',?1,'resolved','native',1,0)",
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('sender',?1,'resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
         [fixture.descriptor.node_uuid.to_string()],
     ).unwrap();
     db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq)
@@ -2134,7 +2134,7 @@ fn elected_failed_partial_unknown_captures_cannot_create_allocation_baseline() {
         }
         let db = fixture.db();
         for n in 0..17 {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,1,1,0)", rusqlite::params![format!("denied-{n}"),fixture.descriptor.node_uuid.to_string(),format!("missing-{n}")]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?3,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![format!("denied-{n}"),fixture.descriptor.node_uuid.to_string(),format!("missing-{n}")]).unwrap();
         }
         fixture.host.snapshot_mode.store(mode, Ordering::SeqCst);
         fixture.host.snapshot_held.store(false, Ordering::SeqCst);
@@ -2212,7 +2212,7 @@ fn elected_hung_snapshot_keeps_health_deadlines_and_owner_until_physical_join() 
     }
     let instance = fixture.descriptor.node_uuid.to_string();
     let db = fixture.db();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('due',?1,'unresolved','native',1,0)", [&instance]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('due',?1,'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&instance]).unwrap();
     db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('due-thread',?1,'topic','goal',0,0)", [&instance]).unwrap();
     db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('due-thread','due','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('due-inv','due-thread','due',1,'pending',0,1,100,100);").unwrap();
     assert!(matches!(
@@ -2316,7 +2316,7 @@ fn elected_driver_reconciles_multiple_saved_pages_and_reopens_with_fresh_capture
     }
     let db = fixture.db();
     for n in 0..33 {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,1,1,0)", rusqlite::params![format!("saved-{n}"),fixture.descriptor.node_uuid.to_string(),format!("missing-{n}")]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?3,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![format!("saved-{n}"),fixture.descriptor.node_uuid.to_string(),format!("missing-{n}")]).unwrap();
     }
     fixture.host.snapshot_held.store(false, Ordering::SeqCst);
     loop {

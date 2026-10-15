@@ -826,7 +826,7 @@ fn real_store_reconfirms_host_invalidated_seat_from_production_shaped_publicatio
         };
         conn.execute("UPDATE herdr_hosts SET host_boot='boot-a',host_epoch=1", [])
             .unwrap();
-        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0)", []).unwrap();
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
         conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('34750f98bd59fcfc946da45aaabe933b','pane','boot-a',1,1,0,'fresh')", []).unwrap();
         conn.execute(
             "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'pane','boot-a',1,'codex','plugin_context:x','e','cooperative_top_level',1,1,'terminal-a',?1)",
@@ -1156,7 +1156,7 @@ fn real_store_reconfirms_never_registered_seat_from_its_structural_proof() {
         };
         conn.execute("UPDATE herdr_hosts SET host_boot='boot-a',host_epoch=1", [])
             .unwrap();
-        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0,'terminal-u',?1,'coherent_enumeration','boot-a',1,1,1)", [proof_incarnation]).unwrap();
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,home_node,is_local,host_id) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0,'terminal-u',?1,'coherent_enumeration','boot-a',1,1,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [proof_incarnation]).unwrap();
         conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('34750f98bd59fcfc946da45aaabe933b','pane','boot-a',1,1,0,'fresh')", []).unwrap();
         publish(&context, &mut conn, &budget, production(2));
         let admission = seats::begin_host_observation(
@@ -1613,7 +1613,7 @@ fn real_store_registered_seat_follows_observed_move_with_unsupported_execution()
             [("b", "w1:p2", "terminal-b"), ("d", "w1:p3", "terminal-d")]
         {
             conn.execute(
-                "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,?3,'inc-a',?4,'boot-a',1,1,1,0)",
+                "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,?3,'inc-a',?4,'boot-a',1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
                 rusqlite::params![seat, address, terminal, kind],
             )
             .unwrap();
@@ -3095,7 +3095,7 @@ mod carry_forward {
             ("resolved", None)
         };
         conn.execute(
-            "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at,unavailability_open) VALUES ('s','34750f98bd59fcfc946da45aaabe933b',?1,?2,'native','pane',?4,1,'terminal-a','inc-a',?3,'boot-a',3,1,1,0,1)",
+            "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at,unavailability_open,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b',?1,?2,'native','pane',?4,1,'terminal-a','inc-a',?3,'boot-a',3,1,1,0,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
             rusqlite::params![state, reason, kind, if unresolved { 2 } else { 1 }],
         )
         .unwrap();

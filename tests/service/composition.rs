@@ -402,9 +402,9 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
     let db = setup.open_writer().unwrap();
     db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
         .unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat',?1,'resolved','native','w1:p1',1,0,0)", [instance.to_string()]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('seat',?1,'resolved','native','w1:p1',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
     db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'w1:p1','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'w1:p1','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient',?1,'resolved','native','w1:p2',1,0,0)", [instance.to_string()]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('recipient',?1,'resolved','native','w1:p2',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
     db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'w1:p2','b',1,0,2,'fresh','unknown','unknown',0,0,'term-'||'w1:p2','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
     drop(db);
     let stop = Cancellation::default();
@@ -877,7 +877,7 @@ fn elected_service_fixture(custom_settings: bool) {
         .with_test_host()
         .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
     let db = setup.open_writer().unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s2',?1,'resolved','native',1,0)", [instance.to_string()]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s2',?1,'resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
     db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t',?1,'topic','goal',0,0)", [instance.to_string()]).unwrap();
     db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s2','invited');
         INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms)
@@ -1586,7 +1586,7 @@ fn elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined() {
         .unwrap();
     db.execute("UPDATE local_node SET decision_seq=1", [])
         .unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('wake',?1,'resolved','native','pane',1,1,0)", [instance.to_string()]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('wake',?1,'resolved','native','pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
     db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'pane','host',1,1,0,'fresh','occupied','idle','exec',1,'term-'||'pane','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
     db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t',?1,'topic','goal',0,0)", [instance.to_string()]).unwrap();
     db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','wake','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv','t','wake',1,'pending',0,1,9223372036854775807,300000);").unwrap();
@@ -1653,7 +1653,7 @@ fn elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined() {
         .unwrap();
     assert!(!reserved.is_empty());
     // Make a different invitation overdue only after the host call is held.
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('due',?1,'unresolved','native',1,0)", [instance.to_string()]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('due',?1,'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
     db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','due','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('due-inv','t','due',1,'pending',0,2,100,100);").unwrap();
     let client = LocalSocketClient::new(
         descriptor.endpoint.clone(),
@@ -1785,7 +1785,7 @@ impl ActualNativeFixture {
             .open_writer()
             .unwrap();
         for n in 0..saved {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,1,1,0)", rusqlite::params![format!("saved-{n}"),instance.to_string(),format!("absent-{n}")]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?3,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![format!("saved-{n}"),instance.to_string(),format!("absent-{n}")]).unwrap();
         }
         drop(db);
         let listener = std::os::unix::net::UnixListener::bind(&endpoint).unwrap();
@@ -2146,7 +2146,7 @@ fn actual_native_snapshot_cancellation_closes_peer_before_elected_worker_join_an
     }
     let db = fixture.db();
     let instance = fixture.descriptor.node_uuid.to_string();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('due',?1,'unresolved','native',1,0)", [&instance]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('due',?1,'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&instance]).unwrap();
     db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t',?1,'topic','goal',0,0)", [&instance]).unwrap();
     db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','due','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('due-inv','t','due',1,'pending',0,1,100,100);").unwrap();
     assert!(matches!(
@@ -2655,12 +2655,12 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
         db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
             .unwrap();
         for seat in ["healable", "noproof"] {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native','p-'||?1,1,1,0)", [seat, instance.as_str()]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native','p-'||?1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat, instance.as_str()]).unwrap();
             db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES (?1,1,1,'p-'||?1,'b',1,'codex','n','e-'||?1,'cooperative_top_level',1,1)", [seat]).unwrap();
         }
         db.execute("UPDATE seats SET structural_terminal_id='term',structural_incarnation='inc',structural_incarnation_kind='coherent_enumeration',structural_host_boot='b',structural_host_epoch=1,structural_connection_epoch=1,structural_observation_sequence=1 WHERE id='healable'", []).unwrap();
         // One unresolved seat for the unresolved-seat channel.
-        db.execute("INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,created_at) VALUES ('stuck',?1,'unresolved','other','native','p-stuck',2,1,0)", [instance.as_str()]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('stuck',?1,'unresolved','other','native','p-stuck',2,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.as_str()]).unwrap();
     }
     let host = Arc::new(herdr_threads::host::native::NativeCli::new(
         root.join("absent-herdr.sock"),

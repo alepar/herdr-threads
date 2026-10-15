@@ -188,7 +188,7 @@ fn fixture() -> Connection {
 fn populate_fixture(db: &Connection) {
     db.execute_batch("\
         UPDATE local_node SET decision_seq=10;\
-        INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('s', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0);\
+        INSERT INTO seats(id, instance_id, state, role, generation, created_at,home_node,is_local,host_id) VALUES ('s', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
         INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('t', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'goal', 0, 0);\
         INSERT INTO send_preparations(id, instance_id, operation_scope, operation_key, digest, thread_id, captured_membership_revision, captured_lifecycle_revision, captured_eligibility_revision, captured_timeline_revision, captured_config_revision, interval_high_water, recipient_high_water, status) VALUES ('p', '34750f98bd59fcfc946da45aaabe933b', 'actor', 'o', zeroblob(32), 't', 0, 0, 0, 0, 0, 0, 1, 'sealed');\
         INSERT INTO prepared_recipients(preparation_id, thread_id, seat_id, receipt_ordinal, frozen_duration_ms, eligible_at_snapshot) VALUES ('p', 't', 's', 1, 300, 0);\
@@ -499,7 +499,7 @@ fn persisted_overdue_transition_stays_actionable_until_offered_after_human_check
 fn published_warning_keeps_sequence_and_historical_recipient_before_projection() {
     let db = fixture();
     db.execute_batch("\
-        INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('joined', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0);\
+        INSERT INTO seats(id, instance_id, state, role, generation, created_at,home_node,is_local,host_id) VALUES ('joined', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
         INSERT INTO membership_intervals(thread_id, seat_id, episode, joined_seq, left_seq) VALUES ('t', 'joined', 1, 4, 12);\
         INSERT INTO prepared_unavailable_warnings(preparation_id, warning_key, warning_id, affected_seat_id, unavailability_episode, warning_offset, event_json) VALUES ('p', 'key', 'warn-id', 's', 1, 1, '{}');\
     ").unwrap();
@@ -685,7 +685,7 @@ fn warning_slice_counts_unprojected_historical_recipient_once() {
 #[test]
 fn warning_recipient_page_counts_intervals_and_direct_affected_once() {
     let db = fixture();
-    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('joined','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0); INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','joined',1,5); INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES ('p','key','warn-id','joined',1,1,'{}'); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m','t',1,'ordinary','body',1000,10); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','m','t',10,1000,1,1,1,1);").unwrap();
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('joined','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)); INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','joined',1,5); INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES ('p','key','warn-id','joined',1,1,'{}'); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m','t',1,'ordinary','body',1000,10); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','m','t',10,1000,1,1,1,1);").unwrap();
     let first = scan_effective_warning_recipients(&db, "warn-id", None, 1).unwrap();
     assert_eq!(first.visited, 1);
     assert_eq!(first.seats, vec!["joined"]);

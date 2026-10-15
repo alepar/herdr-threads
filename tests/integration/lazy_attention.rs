@@ -77,7 +77,7 @@ impl Fixture {
         f
     }
     fn member(&self, seat: &str, state: &str, membership: &str, harness: Harness) {
-        self.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,retired_at,retired_seq) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b',?2,'native',?1,1,0,0,CASE WHEN ?2='retired' THEN 0 END,CASE WHEN ?2='retired' THEN 1 END)",params![seat,state]).unwrap();
+        self.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b',?2,'native',?1,1,0,0,CASE WHEN ?2='retired' THEN 0 END,CASE WHEN ?2='retired' THEN 1 END,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",params![seat,state]).unwrap();
         self.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch,ui_state) VALUES('34750f98bd59fcfc946da45aaabe933b',?1,'b',1,0,1,'fresh',0,'term-'||?1,'inc','coherent_enumeration',1,'idle')",[seat]).unwrap();
         self.db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES(?1,1,?1,'b',1,0,?2,'session-'||?1,?3,?4,0,0,'term-'||?1,'inc')",params![seat,harness.as_str(), execution(seat), if harness==Harness::Human {"operator_human"} else {"cooperative_top_level"}]).unwrap();
         self.db

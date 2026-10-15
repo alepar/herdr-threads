@@ -376,7 +376,7 @@ fn reconciliation_marker_that_lifts_the_hold_bumps_once() {
     let iso = TestIsolation::new("snapshot-eligibility-marker-lift");
     let (context, mut conn) = host_store(&iso);
     // A nonretired seat makes the first publication hold the baseline.
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('h','34750f98bd59fcfc946da45aaabe933b','resolved','native','p0',1,1,0)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('h','34750f98bd59fcfc946da45aaabe933b','resolved','native','p0',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     let published = publish(&context, &mut conn, &capture(&["p0", "p1"]), 1);
     let flag = |conn: &Connection| -> i64 {
         conn.query_row(
@@ -433,7 +433,7 @@ fn baseline_hold_change_bumps_once() {
         |_, conn| {
             // An unresolved saved seat makes the next publication hold the
             // unclaimed baseline targets (hold 0 -> 1).
-            conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0)", []).unwrap();
+            conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
         },
         Capture::clone,
     );
@@ -686,7 +686,7 @@ fn send_store(iso: &TestIsolation) -> (StoreContext, Connection) {
         ("a", "pa", "00000000-0000-4000-8000-0000000000aa"),
         ("r", "pr", "00000000-0000-4000-8000-0000000000bb"),
     ] {
-        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,1)", [seat, target]).unwrap();
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat, target]).unwrap();
         conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation,registered_at) VALUES (?1,1,?2,'b',1,1,'codex','n',?3,'cooperative_top_level',0,'term-'||?2,'inc',0)", [seat, target, execution]).unwrap();
     }
     conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
@@ -833,7 +833,7 @@ fn multi_step_preparation_completes_across_unchanged_publications() {
     let iso = TestIsolation::new("snapshot-eligibility-multistep");
     let (context, mut conn) = send_store(&iso);
     for seat in ["x", "y"] {
-        conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0)", [seat]).unwrap();
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat]).unwrap();
         conn.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",
             [seat],

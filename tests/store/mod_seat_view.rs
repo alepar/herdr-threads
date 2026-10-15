@@ -124,7 +124,7 @@ fn view_reports_held_unresolved_retired() {
 fn base(conn: &Connection) {
     conn.execute_batch(
         "UPDATE local_node SET decision_seq=100;\
-         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('o','34750f98bd59fcfc946da45aaabe933b','resolved','native','po',1,1,0);\
+         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('o','34750f98bd59fcfc946da45aaabe933b','resolved','native','po',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
          INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t1','34750f98bd59fcfc946da45aaabe933b','a','g',0,0),('t2','34750f98bd59fcfc946da45aaabe933b','b','g',0,0),('t4','34750f98bd59fcfc946da45aaabe933b','d','g',0,0);",
     )
     .unwrap();

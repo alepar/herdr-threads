@@ -291,7 +291,7 @@ CREATE TABLE seats (
     ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
     id TEXT NOT NULL UNIQUE,
     instance_id TEXT NOT NULL REFERENCES local_node(id),
-    state TEXT NOT NULL CHECK(state IN ('resolved', 'unresolved', 'retired')),
+    state TEXT NOT NULL CHECK(state IN ('resolved', 'unresolved', 'retired', 'remote')),
     unresolved_reason TEXT CHECK(unresolved_reason IN ('host_invalidation','other')),
     unresolved_from_generation_id TEXT REFERENCES snapshot_generations(id),
     unresolved_prior_binding_generation INTEGER CHECK(unresolved_prior_binding_generation >= 0),
@@ -311,6 +311,14 @@ CREATE TABLE seats (
     retired_seq INTEGER CHECK(retired_seq > 0),
     unavailability_episode INTEGER NOT NULL DEFAULT 1 CHECK(unavailability_episode > 0),
     unavailability_open INTEGER NOT NULL DEFAULT 1 CHECK(unavailability_open IN (0,1)), wake_on TEXT NOT NULL DEFAULT 'nudge' CHECK(wake_on IN ('nudge','all')),
+    home_node TEXT NOT NULL CHECK(length(home_node)=32 AND home_node NOT GLOB '*[^0-9a-f]*'),
+    is_local INTEGER NOT NULL CHECK(is_local IN (0,1)),
+    remote_kind TEXT CHECK(remote_kind IN ('agent','human')),
+    host_id INTEGER REFERENCES herdr_hosts(host_id),
+    CHECK((is_local=0) = (remote_kind IS NOT NULL)),
+    CHECK(target_id IS NULL OR host_id IS NOT NULL),
+    CHECK(is_local=1 OR (host_id IS NULL AND target_id IS NULL AND structural_terminal_id IS NULL AND state IN ('remote','retired'))),
+    CHECK(state<>'remote' OR is_local=0),
     CHECK((state = 'retired') = (retired_at IS NOT NULL)),
     CHECK(state = 'unresolved' OR unresolved_reason IS NULL),
     CHECK((structural_terminal_id IS NULL AND structural_incarnation IS NULL AND structural_incarnation_kind IS NULL AND structural_host_boot IS NULL AND structural_host_epoch IS NULL AND structural_connection_epoch IS NULL AND structural_observation_sequence IS NULL)
@@ -1498,7 +1506,9 @@ CREATE UNIQUE INDEX snapshot_targets_terminal ON snapshot_targets(generation_id,
 
 CREATE INDEX snapshot_targets_generation_ordinal ON snapshot_targets(generation_id,ordinal);
 
-CREATE UNIQUE INDEX seats_live_target ON seats(instance_id, target_id) WHERE state = 'resolved' AND target_id IS NOT NULL;
+CREATE UNIQUE INDEX seats_live_target ON seats(host_id, target_id) WHERE state = 'resolved' AND target_id IS NOT NULL;
+
+CREATE INDEX seats_home_node ON seats(home_node, state);
 
 CREATE INDEX seats_instance_ordinal ON seats(instance_id, ordinal);
 
@@ -1866,6 +1876,14 @@ BEGIN
           AND g.status='published' AND g.staged_targets=g.expected_targets
     ) THEN RAISE(ABORT,'baseline snapshot is not complete and published') END;
 END;
+
+CREATE TRIGGER seats_home_node_insert BEFORE INSERT ON seats
+WHEN NEW.is_local IS NOT (NEW.home_node = (SELECT id FROM local_node))
+BEGIN SELECT RAISE(ABORT, 'seat home mismatch'); END;
+
+CREATE TRIGGER seats_home_node_update BEFORE UPDATE OF home_node, is_local, state ON seats
+WHEN NEW.is_local IS NOT (NEW.home_node = (SELECT id FROM local_node))
+BEGIN SELECT RAISE(ABORT, 'seat home mismatch'); END;
 
 CREATE TRIGGER seats_ordinal_immutable BEFORE UPDATE OF ordinal ON seats
 BEGIN SELECT RAISE(ABORT, 'seat ordinal is immutable'); END;

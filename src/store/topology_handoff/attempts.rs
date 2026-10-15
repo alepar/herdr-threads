@@ -540,7 +540,7 @@ mod tests {
         let boot = created().host_incarnation;
         db.execute("UPDATE herdr_hosts SET host_boot=?1,host_epoch=1,observation_sequence=1,observation_admission_sequence=1,observation_decided_sequence=1,lifecycle_revision=1,recovery_boot=?1,recovery_epoch=1",[boot.as_str()]).unwrap();
         db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) VALUES('g','34750f98bd59fcfc946da45aaabe933b',?1,1,1,'herdr-server:pid=42:start=1.000002:uid=501',0,0,'published',0,0,0,0)",[boot.as_str()]).unwrap();
-        db.execute_batch("UPDATE herdr_hosts SET active_snapshot_id='g',recovery_baseline_generation_id='g'; INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('sender','34750f98bd59fcfc946da45aaabe933b','resolved','native','w1:p1',1,0,0);").unwrap();
+        db.execute_batch("UPDATE herdr_hosts SET active_snapshot_id='g',recovery_baseline_generation_id='g'; INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('sender','34750f98bd59fcfc946da45aaabe933b','resolved','native','w1:p1',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));").unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('sender',1,'w1:p1',?1,1,'codex','session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,0)",[boot.as_str()]).unwrap();
         for (pane, terminal, generation) in
             [("w1:p1", "caller-terminal", 0), ("w1:p2", "terminal", 1)]
@@ -840,7 +840,7 @@ mod tests {
         let tx = db.transaction().unwrap();
         begin_reserve(&tx, &id);
         let p = guard.ordinary().structural_proof();
-        tx.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,?2,?3,?4,1,'native_current_target',1,2,0)",params![p.target().as_str(),p.terminal().as_str(),p.incarnation(),p.host_boot().as_str()]).unwrap();
+        tx.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) VALUES('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,?2,?3,?4,1,'native_current_target',1,2,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",params![p.target().as_str(),p.terminal().as_str(),p.incarnation(),p.host_boot().as_str()]).unwrap();
         tx.execute_batch("UPDATE herdr_hosts SET lifecycle_revision=2")
             .unwrap();
         assert!(
@@ -879,7 +879,7 @@ mod tests {
             begin_reserve(&tx, &id);
             if owned {
                 let p = guard.ordinary().structural_proof();
-                tx.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,?2,?3,?4,1,'native_current_target',1,2,0)",params![p.target().as_str(),p.terminal().as_str(),p.incarnation(),p.host_boot().as_str()]).unwrap();
+                tx.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) VALUES('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,?2,?3,?4,1,'native_current_target',1,2,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",params![p.target().as_str(),p.terminal().as_str(),p.incarnation(),p.host_boot().as_str()]).unwrap();
             }
             // A genuine canonical retirement decision changes the lifecycle
             // after publication, independently of the recovery target owner.
@@ -1038,7 +1038,7 @@ mod tests {
     #[test]
     fn common_canonical_guard_returns_exact_current_owner_without_mutation() {
         let (mut db, _, guard) = fixture();
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES('peer','34750f98bd59fcfc946da45aaabe933b','resolved','native','w1:p2',1,1,'terminal','herdr-server:pid=42:start=1.000002:uid=501',?1,1,'native_current_target',1,2,0)",[created().host_incarnation.as_str()]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) VALUES('peer','34750f98bd59fcfc946da45aaabe933b','resolved','native','w1:p2',1,1,'terminal','herdr-server:pid=42:start=1.000002:uid=501',?1,1,'native_current_target',1,2,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[created().host_incarnation.as_str()]).unwrap();
         let tx = db.transaction().unwrap();
         assert_eq!(
             seats::validate_bootstrap_creation(

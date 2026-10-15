@@ -551,7 +551,7 @@ fn archival_worker_negative_recovery_cycles_do_not_rediscover_retained_history()
         host.negative_failure.store(3, Ordering::SeqCst);
         db.execute_batch("BEGIN").unwrap();
         for n in 0..size {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','retired','native',1,0,0)",[format!("history{n:08}")]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,home_node,is_local,host_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','retired','native',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[format!("history{n:08}")]).unwrap();
             db.execute("INSERT INTO threads(id,instance_id,topic,goal,archived,created_at,updated_at) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','history','done',1,0,0)",[format!("history{n:08}")]).unwrap();
         }
         db.execute_batch("COMMIT").unwrap();

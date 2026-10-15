@@ -82,8 +82,8 @@ fn insert_seats(db: &Connection, prefix: &str, count: u64, retired: bool) {
     };
     db.execute_batch(&format!(
         "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{count}) \
-         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,retired_at,retired_seq) \
-         SELECT '{prefix}'||x,'34750f98bd59fcfc946da45aaabe933b','{state}','native',{target},1,1,0,{retired_at},{retired_seq} FROM n"
+         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) \
+         SELECT '{prefix}'||x,'34750f98bd59fcfc946da45aaabe933b','{state}','native',{target},1,1,0,{retired_at},{retired_seq},(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts) FROM n"
     ))
     .unwrap();
 }
@@ -323,7 +323,7 @@ fn with_history(history: u64) -> Connection {
     crate::test_support::attach_test_host_to_connection(&db);
     db.execute_batch(&format!("\
         WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{})\
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq) SELECT 's'||x,'34750f98bd59fcfc946da45aaabe933b',IIF(x%40=0 OR x>40,IIF(x%2=0,'retired','resolved'),'resolved'),'native',1,0,IIF(x%40=0 OR x>40,IIF(x%2=0,0,NULL),NULL),IIF(x%40=0 OR x>40,IIF(x%2=0,x,NULL),NULL) FROM n;\
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) SELECT 's'||x,'34750f98bd59fcfc946da45aaabe933b',IIF(x%40=0 OR x>40,IIF(x%2=0,'retired','resolved'),'resolved'),'native',1,0,IIF(x%40=0 OR x>40,IIF(x%2=0,0,NULL),NULL),IIF(x%40=0 OR x>40,IIF(x%2=0,x,NULL),NULL),(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts) FROM n;\
         INSERT INTO wake_work(seat_id,reservation_id,reservation_boot) SELECT id,'r'||ordinal,'{OLD}' FROM seats WHERE ordinal<=40;\
         INSERT INTO wake_work(seat_id) SELECT id FROM seats WHERE ordinal>40 AND ordinal%2=1;\
     ", 40 + history)).unwrap();

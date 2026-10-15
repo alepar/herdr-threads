@@ -1156,7 +1156,7 @@ impl Topology {
             ("sender", "w4:p1", "term_1"),
             ("recipient", "w4:p2", "term_2"),
         ] {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,1,'native_current_target',1,1,0)",params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str()]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,1,'native_current_target',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str()]).unwrap();
         }
         // The codex occupant's process is this test process, so the daemon's liveness worker
         // keeps the binding connected (deterministic availability across the epoch carry).

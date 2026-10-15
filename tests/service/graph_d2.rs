@@ -303,11 +303,11 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         let db = rusqlite::Connection::open(&paths.database_path).unwrap();
         for index in 0..20 {
             let seat = SeatId::new(format!("member-{index}"));
-            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,?2,'resolved','native',1,0)", rusqlite::params![seat.as_str(), instance.to_string()]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![seat.as_str(), instance.to_string()]).unwrap();
             db.execute("INSERT INTO memberships(thread_id,seat_id,state,voluntary_state) VALUES (?1,?2,'joined','joined')", rusqlite::params![thread.as_str(), seat.as_str()]).unwrap();
             db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,1,1)", rusqlite::params![thread.as_str(), seat.as_str()]).unwrap();
         }
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('pending',?1,'resolved','native','pane-pending',0,0,0)", [instance.to_string()]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('pending',?1,'resolved','native','pane-pending',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
         db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'pane-pending','fixture-host',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'pane-pending','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
         let (_, invited) = client.submit(ServiceOperation::Invite(ServiceInvite { thread: thread.clone(), seat: SeatId::new("pending"), constraint: InvitationConstraint::Required, deadline_millis: Some(300_000), operation: OperationId::new("require") }), &budget()).await.unwrap();
         let ServiceResult::Invitation(invitation) = invited else { panic!("missing required invitation"); };
@@ -432,7 +432,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('ordinary-populated',?1,'ordinary','ordinary',0,0)", [instance.to_string()]).unwrap();
         db.execute("INSERT INTO memberships(thread_id,seat_id,state,voluntary_state) VALUES ('ordinary-populated','member-0','joined','joined')", []).unwrap();
         db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('ordinary-populated','member-0',1,1)", []).unwrap();
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('ordinary-target',?1,'resolved','native',1,0)", [instance.to_string()]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('ordinary-target',?1,'resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
         let ordinary_thread = ThreadId::new("ordinary-populated");
         let (_, ordinary_invited) = client.submit(ServiceOperation::Invite(ServiceInvite { thread: ordinary_thread.clone(), seat: SeatId::new("ordinary-target"), constraint: InvitationConstraint::Ordinary, deadline_millis: Some(300_000), operation: OperationId::new("ordinary-invite") }), &budget()).await.unwrap();
         assert!(matches!(ordinary_invited, ServiceResult::Invitation(_)));

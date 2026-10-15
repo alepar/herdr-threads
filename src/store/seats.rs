@@ -32,6 +32,32 @@ use crate::{
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
+/// The one published local-seat predicate: a seat is local when its home is
+/// this node (`is_local = 1`; the `seats_home_node_*` triggers keep the column
+/// equal to `home_node = local_node.id`, and a home never changes).
+///
+/// Responsibility: owns the predicate's spelling ([`LOCAL_SEAT`] for SQL,
+/// [`is_local_seat`] for one seat). Hides how locality is stored. Must not be
+/// restated: callers never compare `home_node` inline. New locality questions
+/// (a remote seat's host, its kind) get a function here. Role: observation,
+/// wake and archival adopt it to skip remote seats (ht-5fr.4).
+// Unused until ht-5fr.4 adopts the predicate in observation, wake and archival.
+#[allow(dead_code)]
+pub(crate) const LOCAL_SEAT: &str = "is_local=1";
+
+/// Whether `seat` exists and is local (see [`LOCAL_SEAT`]); an unknown seat is
+/// not local.
+// Unused until ht-5fr.4 adopts the predicate (tests exercise it now).
+#[allow(dead_code)]
+pub(crate) fn is_local_seat(conn: &Connection, seat: &SeatId) -> Result<bool, ApiError> {
+    conn.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND {LOCAL_SEAT})"),
+        [seat.as_str()],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
+}
+
 #[cfg(test)]
 use crate::ports::HostSnapshot;
 
@@ -2609,7 +2635,7 @@ fn insert_ordinary_allocation(
         prefix::SEAT,
         &[("seats", "id", prefix::SEAT)],
     )?);
-    tx.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at,unavailability_episode) VALUES (?1,?2,'resolved','native',?3,1,?4,?5,?6,?7,?8,?9,?10,?11,?12,1)",
+    tx.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at,unavailability_episode,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?3,1,?4,?5,?6,?7,?8,?9,?10,?11,?12,1,?2,1,primary_host())",
                 params![seat.as_str(),instance,proof.target().as_str(),checked_host_number(proof.target_generation())?,
                     proof.terminal().as_str(),proof.incarnation(),proof.source_spelling(),proof.host_boot().as_str(),
                     checked_host_number(proof.host_epoch())?,checked_host_number(proof.connection_epoch())?,
@@ -3406,7 +3432,7 @@ pub fn mutate_operator(
                     prefix::SEAT,
                     &[("seats", "id", prefix::SEAT)],
                 )?);
-                tx.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,?2,'resolved','operator_fresh',?3,1,?4,?5,1)",
+                tx.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,home_node,is_local,host_id) VALUES (?1,?2,'resolved','operator_fresh',?3,1,?4,?5,1,?2,1,primary_host())",
                     params![seat.as_str(),instance,target.as_str(),expected_generation_sql,at.utc.0]).map_err(store_error)?;
                 CommandResult::OperatorFreshSeat(seat)
             };

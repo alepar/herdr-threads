@@ -2063,7 +2063,7 @@ fn presentation_capability_routes_use_configured_domain() {
     db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
         .unwrap();
     for seat in ["origin", "recipient"] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?1,0,0,0)", rusqlite::params![seat, instance.to_string()]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?1,0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![seat, instance.to_string()]).unwrap();
         db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,?2,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?2,'inc-'||?2,'coherent_enumeration',1)", rusqlite::params![instance.to_string(),seat]).unwrap();
     }
     let store: Arc<dyn StorePort> = Arc::new(

@@ -1315,8 +1315,8 @@ fn unmapped_pane_and_missing_context_are_invalid_request() {
         .query_row("SELECT id FROM local_node", [], |r| r.get(0))
         .unwrap();
     db.execute(
-        "INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at) \
-         VALUES('s-no-context',?1,'resolved','operator_fresh',?2,1,0)",
+        "INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at,home_node,is_local,host_id) \
+         VALUES('s-no-context',?1,'resolved','operator_fresh',?2,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
         [instance.as_str(), pane],
     )
     .unwrap();

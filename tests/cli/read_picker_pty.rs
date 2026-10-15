@@ -212,7 +212,7 @@ impl Fixture {
     }
     fn obligations(&self, thread: &str) {
         let db = self.db();
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('sPty',?1,'resolved','native',1,0)", [&self.instance]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('sPty',?1,'resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&self.instance]).unwrap();
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES (?1,'sPty','invited')",
             [thread],

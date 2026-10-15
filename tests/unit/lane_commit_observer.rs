@@ -7,7 +7,7 @@ fn fixture() -> (TestIsolation, Arc<SqliteStore>, LaneProbe) {
         StoreContext::new(iso.path("store.db"), Arc::new(SystemClock::new())).with_test_host();
     context.open_writer().unwrap().execute_batch(
         "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1;
-         INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('s','34750f98bd59fcfc946da45aaabe933b','unresolved','native',1,0);
+         INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES('s','34750f98bd59fcfc946da45aaabe933b','unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
          INSERT INTO work_jobs(id,kind,subject_id,high_water,status,completed_at) VALUES('old','send_attention','old',0,'complete',0);"
     ).unwrap();
     let store = Arc::new(

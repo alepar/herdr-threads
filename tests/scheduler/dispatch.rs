@@ -1137,7 +1137,7 @@ fn sqlite_reopen_recovers_old_boot_before_real_fake_host_attempt() {
     let db = context.open_writer().unwrap();
     db.execute_batch("\
         UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1;\
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat','34750f98bd59fcfc946da45aaabe933b','resolved','native','target',1,1,0);\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('seat','34750f98bd59fcfc946da45aaabe933b','resolved','native','target',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','target','host',1,1,0,'fresh','occupied','idle','execution',1,'term-'||'target','inc','coherent_enumeration',1);\
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('seat',1,1,'target','host',1,'codex','session','execution','fresh',0,0,'term-'||'target','inc');\
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);\
@@ -1177,7 +1177,7 @@ fn sqlite_reopen_recovers_old_boot_before_real_fake_host_attempt() {
         ("unsafe", "unresolved"),
         ("retired", "retired"),
     ] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,target_generation,created_at,retired_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,'native',1,1,0,CASE WHEN ?2='retired' THEN 0 ELSE NULL END)", rusqlite::params![seat,state]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,target_generation,created_at,retired_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,'native',1,1,0,CASE WHEN ?2='retired' THEN 0 ELSE NULL END,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![seat,state]).unwrap();
         db.execute("INSERT INTO wake_work(seat_id,reason_bits,retry_step,reservation_id,reservation_boot,last_reservation_id,last_reservation_boot,minimum_delay_ms,effective_delay_ms) VALUES (?1,0,0,?1,?2,?1,?2,60000,60000)", rusqlite::params![seat,old_daemon_boot().to_string()]).unwrap();
     }
     drop(db);
@@ -1357,7 +1357,7 @@ fn completion_fixture() -> (
     let db = context.open_writer().unwrap();
     db.execute_batch("\
         UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1;\
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat','34750f98bd59fcfc946da45aaabe933b','resolved','native','target',1,1,0);\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('seat','34750f98bd59fcfc946da45aaabe933b','resolved','native','target',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','target','host',1,1,0,'fresh','occupied','idle','execution',1,'term-'||'target','inc','coherent_enumeration',1);\
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('seat',1,1,'target','host',1,'codex','session','execution','fresh',0,0,'term-'||'target','inc');\
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);\
@@ -2319,7 +2319,7 @@ fn add_completion_peer(context: &StoreContext, n: usize) {
     let db = context.open_writer().unwrap();
     let seat = format!("peer-{n}");
     let target = format!("target-{n}");
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0)", rusqlite::params![seat,target]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![seat,target]).unwrap();
     db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'host',1,1,0,'fresh','occupied','idle',?2,1,'term-'||?1,'inc','coherent_enumeration',1)", rusqlite::params![target,seat]).unwrap();
     db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,1,1,?2,'host',1,'codex',?1,?1,'fresh',0,0,'term-'||?2,'inc')", rusqlite::params![seat,target]).unwrap();
     db.execute(
@@ -2583,7 +2583,7 @@ fn sqlite_completed_frontier_shortens_retry_only_after_new_logical_publication()
     let db = context.open_writer().unwrap();
     db.execute_batch("\
         UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=101;\
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat','34750f98bd59fcfc946da45aaabe933b','resolved','native','target',1,1,0);\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('seat','34750f98bd59fcfc946da45aaabe933b','resolved','native','target',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','target','host',1,1,0,'fresh','occupied','idle','execution',1,'term-'||'target','inc','coherent_enumeration',1);\
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('seat',1,1,'target','host',1,'codex','session','execution','fresh',0,0,'term-'||'target','inc');\
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);\
@@ -3660,8 +3660,8 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
         db.execute("UPDATE local_node SET decision_seq=10", [])
             .unwrap();
         db.execute_batch("\
-            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('a','34750f98bd59fcfc946da45aaabe933b','resolved','native','w4:p9',1,1,0);\
-            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat','34750f98bd59fcfc946da45aaabe933b','resolved','native','w4:p1',1,1,0);\
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('a','34750f98bd59fcfc946da45aaabe933b','resolved','native','w4:p9',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('seat','34750f98bd59fcfc946da45aaabe933b','resolved','native','w4:p1',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,2);\
             INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','a','joined',0);\
             INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','seat','joined',0);\

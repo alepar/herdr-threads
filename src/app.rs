@@ -1386,6 +1386,13 @@ fn load_node_identity(paths: &NodePaths) -> io::Result<NodeIdentity> {
                 format!("node key refused ({}): {error}", error.variant()),
             )
         })?;
+    publish_node_json(paths, &identity)?;
+    Ok(identity)
+}
+
+/// Writes `node.json` from the identity's current tag and `tag_k`, keeping the
+/// recorded `created_at` of an earlier hint for the same node.
+fn publish_node_json(paths: &NodePaths, identity: &NodeIdentity) -> io::Result<()> {
     let created_at = crate::node::json::read_hint(&paths.node_json_path)
         .filter(|hint| hint.node_uuid == identity.uuid())
         .map_or_else(
@@ -1404,8 +1411,58 @@ fn load_node_identity(paths: &NodePaths) -> io::Result<NodeIdentity> {
             identity.tag_k(),
             created_at,
         ),
-    )?;
-    Ok(identity)
+    )
+    .map(|_| ())
+}
+
+/// The start check of the node's identity against its store (Daemon start
+/// order step 3): the store's `local_node.id` must be the key's uuid, else the
+/// start is refused with `NodeKeyError::IdentityMismatch`; the stored `tag_k`
+/// becomes the identity's.
+fn check_store_identity(
+    conn: &rusqlite::Connection,
+    identity: &NodeIdentity,
+    key_path: &std::path::Path,
+) -> io::Result<()> {
+    // A database without a node table or row (a file the store has not
+    // initialized yet) is not this store's to judge: opening it creates or
+    // reports it. Any other failure (busy, corrupt) fails the start.
+    let (stored, tag_k): (String, u32) =
+        match conn.query_row("SELECT id, tag_k FROM local_node", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        }) {
+            Ok(found) => found,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
+            Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+                if message.starts_with("no such table: local_node") =>
+            {
+                return Ok(());
+            }
+            Err(error) => {
+                return Err(io::Error::other(format!(
+                    "store startup: identity check: {error}"
+                )));
+            }
+        };
+    let stored_uuid: crate::node::NodeUuid = stored.parse().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("store startup: local_node id {stored:?} is not a node uuid"),
+        )
+    })?;
+    if stored_uuid != identity.uuid() {
+        let error = NodeKeyError::IdentityMismatch {
+            path: key_path.to_path_buf(),
+            store: stored_uuid,
+            key: identity.uuid(),
+        };
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("node key refused ({}): {error}", error.variant()),
+        ));
+    }
+    identity.set_tag_k(tag_k);
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1429,7 +1486,7 @@ where
     // The node's identity comes from its key, loaded (or created for a new
     // node) before election; the descriptor and the store `instance` string
     // carry its uuid. node.json is a derived hint, written here so clients
-    // can find the daemon (ht-5fr.1.10 moves this after the store read).
+    // can find the daemon; it is rewritten after the store's identity check.
     let identity = load_node_identity(paths)?;
     // Instance settings and the offline switch are read once, here: the
     // manifest fetch policy is fixed for this daemon's lifetime. An invalid
@@ -1444,6 +1501,9 @@ where
     let mod_delivery = instance_settings.mod_delivery;
     let database_path = paths.database_path.clone();
     let archival_paths = paths.clone();
+    let identity_paths = paths.clone();
+    let identity_db_path = paths.database_path.clone();
+    let identity_key_path = paths.key_path.clone();
     let factory_log_path = crate::daemon::logs::daemon_log_path(paths);
     let factory_clock = Arc::clone(&clock);
     let worker_slot = Arc::new(Mutex::new(Vec::new()));
@@ -1509,6 +1569,23 @@ where
                 tag: crate::node::tag_for(identity.uuid(), 0),
                 tag_k: 0,
             });
+            // Daemon start order step 3-4: an existing store's node row must
+            // belong to the key (checked before anything is written to it, and
+            // on a read-only connection so the writer's startup evidence
+            // backfill stays with the store's own open); adopt its tag_k and
+            // regenerate node.json with it. A new store is created from the
+            // identity itself.
+            if identity_db_path.exists() {
+                let conn = rusqlite::Connection::open_with_flags(
+                    &identity_db_path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )
+                .map_err(|error| io::Error::other(format!("store startup: {error}")))?;
+                conn.busy_timeout(std::time::Duration::from_secs(5))
+                    .map_err(|error| io::Error::other(format!("store startup: {error}")))?;
+                check_store_identity(&conn, &identity, &identity_key_path)?;
+            }
+            publish_node_json(&identity_paths, &identity)?;
             // The host choice is resolved here, after the store exists: zero
             // or one Herdr server is attached (its `herdr_hosts` row stamped,
             // the store's primary host and the descriptor's `primary_host`
@@ -2805,5 +2882,89 @@ mod host_choice_tests {
             let error = choice.attach(&context(&isolation), None).err().unwrap();
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         }
+    }
+}
+
+#[cfg(test)]
+mod store_identity_tests {
+    use super::*;
+    use crate::{
+        node::tag_for,
+        protocol::time::UtcMillis,
+        store::schema::{NodeSeed, initialize},
+    };
+
+    fn store_of(seed: &NodeSeed) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        initialize(&conn, || UtcMillis(1), seed).unwrap();
+        conn
+    }
+
+    // Kills: starting a daemon on a store that belongs to another node's key
+    // (the check accepting or skipping a `local_node.id` that differs).
+    #[test]
+    fn restart_with_foreign_local_node_id_fails_identity_mismatch() {
+        let store_node = crate::test_support::test_node_seed();
+        let conn = store_of(&store_node);
+        let key = NodeIdentity::from_seed([7; 32]);
+        assert_ne!(key.uuid(), store_node.uuid);
+        let key_path = std::path::Path::new("/node/node.key");
+        let error = check_store_identity(&conn, &key, key_path).unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.starts_with("node key refused (IdentityMismatch): "),
+            "{text}"
+        );
+        assert!(text.contains(&store_node.uuid.to_string()), "{text}");
+        assert!(text.contains(&key.uuid().to_string()), "{text}");
+        assert!(text.contains("/node/node.key"), "{text}");
+        assert_eq!(key.tag_k(), 0, "a refused start adopts nothing");
+    }
+
+    // Kills: an identity check that swallows a real read failure (here a
+    // missing column) as "nothing to check".
+    #[test]
+    fn unreadable_node_row_fails_start_but_absent_table_or_row_skips() {
+        let key = NodeIdentity::from_seed([7; 32]);
+        let path = std::path::Path::new("/node/node.key");
+        let empty = rusqlite::Connection::open_in_memory().unwrap();
+        check_store_identity(&empty, &key, path).unwrap();
+        empty
+            .execute_batch("CREATE TABLE local_node (id TEXT, tag_k INTEGER)")
+            .unwrap();
+        check_store_identity(&empty, &key, path).unwrap();
+        let broken = rusqlite::Connection::open_in_memory().unwrap();
+        broken
+            .execute_batch("CREATE TABLE local_node (other TEXT)")
+            .unwrap();
+        let error = check_store_identity(&broken, &key, path).unwrap_err();
+        assert!(error.to_string().contains("identity check"), "{error}");
+    }
+
+    // Kills: a daemon that keeps `tag_k = 0` after a retag, or leaves node.json
+    // carrying the pre-store tag.
+    #[test]
+    fn node_json_regenerated_with_stored_tag() {
+        let key = NodeIdentity::from_seed([7; 32]);
+        let seed = NodeSeed {
+            uuid: key.uuid(),
+            tag: tag_for(key.uuid(), 0),
+            tag_k: 0,
+        };
+        let conn = store_of(&seed);
+        conn.execute("UPDATE local_node SET tag_k=2", []).unwrap();
+        let iso = crate::test_support::isolation::TestIsolation::new("store-identity-json");
+        let paths = crate::test_support::resolve_seeded(iso.state_root());
+        // The pre-store write, as load_node_identity does.
+        publish_node_json(&paths, &key).unwrap();
+        let before = crate::node::json::read_hint(&paths.node_json_path).unwrap();
+        assert_eq!((before.tag_k, before.tag), (0, tag_for(key.uuid(), 0)));
+        check_store_identity(&conn, &key, &paths.key_path).unwrap();
+        assert_eq!(key.tag_k(), 2);
+        publish_node_json(&paths, &key).unwrap();
+        let after = crate::node::json::read_hint(&paths.node_json_path).unwrap();
+        assert_eq!(after.node_uuid, key.uuid());
+        assert_eq!((after.tag_k, after.tag), (2, tag_for(key.uuid(), 2)));
+        assert_eq!(after.created_at, before.created_at);
     }
 }

@@ -29,7 +29,7 @@ fn lazy_store(wake_on: &str, batch_delay_ms: u64) -> (SqliteStore, std::path::Pa
     let db = context.open_writer().unwrap();
     db.execute_batch(
         "UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1;\
-         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0);\
+         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
          INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','pane','host',1,1,0,'fresh','term-pane','inc','coherent_enumeration',1);\
          UPDATE observed_targets SET occupancy='occupied',ui_state='idle',verified_execution='exec',top_level_occupant=1 WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND target_id='pane';\
          INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'pane','host',1,'codex','session','exec','fresh',0,0,'term-pane','inc');\
@@ -328,7 +328,7 @@ fn lazy_publication_sets_the_reason_bit_only_for_all_recipients() {
     let (store, path) = lazy_store("all", 0);
     let mut db = store.context.open_writer().unwrap();
     db.execute_batch(
-        "INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('n','34750f98bd59fcfc946da45aaabe933b','unresolved','native',1,0);\
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES('n','34750f98bd59fcfc946da45aaabe933b','unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
          INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-1','34750f98bd59fcfc946da45aaabe933b','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy');\
          INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-1','msg-1','t','s');\
          INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-1','msg-1','t','n');",

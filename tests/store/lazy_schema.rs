@@ -426,7 +426,7 @@ fn lazy_source_guards_pin_existing_preparation_message_derivation() {
     let db = fixture();
     stage(&db, 1);
     assert!(db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-1','wrong','t','s')",[]).is_err());
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('q','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',1,0,0)",[]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('q','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
     assert!(db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-1','wrong','t','q')",[]).is_err());
     db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('pTstABCDEFGH','34750f98bd59fcfc946da45aaabe933b','scope','compact',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy')",[]).unwrap();
     db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('pTstABCDEFGH','mTstABCDEFGH','t','s')",[]).unwrap();
@@ -440,7 +440,7 @@ fn lazy_cleanup_large_preparation_advances_bounded_units() {
     let mut db = fixture();
     stage(&db, 1);
     for n in 1..=300 {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,0,0)",[format!("seat{n}")]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[format!("seat{n}")]).unwrap();
         db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-1','msg-1','t',?1)",[format!("seat{n}")]).unwrap();
     }
     let tx = db.transaction().unwrap();

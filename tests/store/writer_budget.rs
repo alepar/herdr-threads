@@ -39,7 +39,7 @@ impl Fixture {
         let context = StoreContext::new(path.clone(), clock.clone()).with_test_host();
         let db = context.open_writer().unwrap();
         db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1;
-            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0);").unwrap();
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));").unwrap();
         db.execute("INSERT INTO wake_work(seat_id,binding_generation,reservation_id,reservation_boot,reserved_at_utc,last_reservation_id,last_reservation_boot,last_reserved_at_utc,minimum_delay_ms,effective_delay_ms) VALUES ('s',1,'attempt',?1,10,'attempt',?1,10,30000,30000)", [BOOT]).unwrap();
         drop(db);
         let store = Arc::new(

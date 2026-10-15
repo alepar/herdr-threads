@@ -48,8 +48,8 @@ fn empty() -> Connection {
     crate::test_support::attach_test_host_to_connection(&db);
     db.execute_batch("\
         UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=40;\
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-s',1,1,0);\
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('o','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-o',1,1,0);\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-s',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('o','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-o',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
     ").unwrap();
     db
 }
@@ -624,7 +624,7 @@ fn production_history(
     conn.pragma_update(None, "synchronous", "OFF").unwrap();
     conn.execute_batch("\
         UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1;\
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES ('snd','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-snd',1,1,0,1),('rcv','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-rcv',1,1,0,1);\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,home_node,is_local,host_id) VALUES ('snd','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-snd',1,1,0,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('rcv','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-rcv',1,1,0,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('hist','34750f98bd59fcfc946da45aaabe933b','history','g',0,0),('live','34750f98bd59fcfc946da45aaabe933b','live','g',0,0);\
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('hist','snd','joined'),('hist','rcv','joined'),('live','snd','joined'),('live','rcv','joined');\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('hist','snd',1,1),('hist','rcv',1,1),('live','snd',1,1),('live','rcv',1,1);\
@@ -876,7 +876,7 @@ fn production_warning_history(
     conn.pragma_update(None, "cache_size", -262_144).unwrap();
     conn.execute_batch("\
         UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1;\
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,unavailability_open) VALUES ('snd','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-snd',1,1,0,1,0),('rcv','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-rcv',1,1,0,1,0);\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,unavailability_open,home_node,is_local,host_id) VALUES ('snd','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-snd',1,1,0,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('rcv','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-rcv',1,1,0,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at) VALUES ('34750f98bd59fcfc946da45aaabe933b','p-rcv','b',1,1,1,'fresh','unknown','unknown',0,0);\
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('rcv',1,1,'p-rcv','b',1,'codex','hist-rcv','00000000-0000-4000-8000-0000000000cc','fresh',0,0,'term-rcv','inc');\
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('hist','34750f98bd59fcfc946da45aaabe933b','history','g',0,0),('live','34750f98bd59fcfc946da45aaabe933b','live','g',0,0);\
@@ -1038,7 +1038,7 @@ fn scale_invariance_inventory_of_canonical_effective_scans() {
     };
     use crate::test_support::attention_oracle::scan_effective_seat_attention;
     let (context, mut db, _guard) = production_history(0);
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES ('inv','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-inv',1,1,0,1)", []).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,home_node,is_local,host_id) VALUES ('inv','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-inv',1,1,0,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     let mut written = 0u64;
     let mut warned = 0u64;
     let mut answers: std::collections::BTreeMap<&str, String> = Default::default();
@@ -2626,7 +2626,7 @@ fn relevance_publish_unrelated_lazy(db: &mut Connection, n: u32) {
 
 fn relevance_legacy_membership_fixture() -> Connection {
     let db = relevance_db();
-    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('relevance-third','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-third',1,1,0);
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('relevance-third','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-third',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('relevance-unrelated','34750f98bd59fcfc946da45aaabe933b','unrelated','unrelated',0,0);
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('relevance-unrelated','o','joined'),('relevance-unrelated','relevance-third','joined');
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('relevance-unrelated','o',1,1),('relevance-unrelated','relevance-third',1,1);

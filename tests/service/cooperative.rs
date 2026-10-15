@@ -69,7 +69,7 @@ fn fixture_with_clock(
     let db = context.open_writer().unwrap();
     db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
         .unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',0,0,0)", []).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'p','inc','coherent_enumeration',1)", []).unwrap();
     let store: Arc<dyn StorePort> = Arc::new(
         SqliteStore::new(
@@ -216,7 +216,7 @@ fn explicit_send_accept_and_ack_are_separate_sqlite_decisions() {
     use crate::protocol::commands::{Accept, Ack, Invite, SendMessage};
     let (service, db) = fixture();
     let sender = checked(&service, lifecycle(claim(), "sender")).context;
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',0,0,0)", []).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'q','inc','coherent_enumeration',1)", []).unwrap();
     let peer = PeerIdentity::from_kernel(501);
     let created = service
@@ -568,7 +568,7 @@ fn partial_send_preparation_survives_budget_expiry_and_resumes_exact_intent() {
     };
     for index in 0..40 {
         let seat = format!("recipient-{index}");
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',0,0)",[seat.as_str()]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[seat.as_str()]).unwrap();
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES (?1,?2,'joined')",
             rusqlite::params![thread.as_str(), seat],
@@ -1029,7 +1029,7 @@ fn sends_succeed_after_host_outage_epoch_advance_and_reconfirmation() {
     let (service, db) = fixture();
     let context =
         StoreContext::new(db.directory.0.join("store.db"), Arc::new(FixedClock)).with_test_host();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',0,0,0)", []).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'q','inc','coherent_enumeration',1)", []).unwrap();
     // R01: both seats register; the recipient joins the sender's thread.
     let peer = PeerIdentity::from_kernel(501);
@@ -1244,7 +1244,7 @@ fn send_before_first_pass_to_structurally_continuous_seat_has_no_warning() {
     let (service, db) = fixture();
     let context =
         StoreContext::new(db.directory.0.join("store.db"), Arc::new(FixedClock)).with_test_host();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',0,0,0)", []).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'q','inc','coherent_enumeration',1)", []).unwrap();
     // Allocation records the seats' structural proof (terminal and
     // incarnation); the raw fixture rows carry none, so record it here.
@@ -1475,7 +1475,7 @@ impl SendScenario {
             )
             .unwrap(),
         );
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',0,0,0)", []).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
         db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'q','inc','coherent_enumeration',1)", []).unwrap();
         // Allocation records the seats' structural proof (terminal and
         // incarnation); the raw fixture rows carry none, so record it here.
@@ -2564,7 +2564,7 @@ fn operator_check_in_requires_human_lifecycle() {
 fn lazy_inbox_fix_real_service_completion() {
     use crate::protocol::commands::{CompleteInboxDelivery, DeliveryMode, SendMessage};
     let (service, db) = fixture();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',0,0,0)", []).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-q','inc','coherent_enumeration',1)", []).unwrap();
     let peer = PeerIdentity::from_kernel(501);
     let sender = checked(&service, lifecycle(claim(), "sender")).context;
@@ -3648,7 +3648,7 @@ fn direct_thread_real_service_ensure_and_lazy_send() {
     use crate::protocol::commands::{DeliveryMode, EnsureDirectThread, SendMessage};
     let (service, db) = fixture();
     let caller = checked(&service, lifecycle(claim(), "direct-checkin")).context;
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('peer','34750f98bd59fcfc946da45aaabe933b','resolved','native','peer-pane',1,1,0)",[]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('peer','34750f98bd59fcfc946da45aaabe933b','resolved','native','peer-pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
     db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('34750f98bd59fcfc946da45aaabe933b','peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
     let ensure = Command::EnsureDirectThread(EnsureDirectThread {
         creation_policy: None,

@@ -77,7 +77,7 @@ fn retirement_fixture() -> (std::path::PathBuf, String, crate::ports::Retirement
     .unwrap();
     db.execute("UPDATE local_node SET decision_seq=30", [])
         .unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('retiring',?1,'resolved','native','pane',1,1,0)", [&instance]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('retiring',?1,'resolved','native','pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&instance]).unwrap();
     db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES (?1,'pane','host-boot',1,1,0,'fresh')", [&instance]).unwrap();
     db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('thread',?1,'topic','goal',0,0,25)", [&instance]).unwrap();
     db.execute("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('thread','retiring','joined',0)", []).unwrap();
