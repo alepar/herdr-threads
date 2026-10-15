@@ -83,8 +83,7 @@ jobs:
         # tests/service/check_failpoints_absent.sh compares, as ci.yml does.
         run: |
           cargo nextest run --locked --all-targets --all-features --no-run
-          cargo build --locked --release
-          cargo build --locked --release --features test-support
+          sh tests/service/check_failpoints_absent.sh --prebuild
 
       - name: Isolated Herdr tests are provisioned, not skipped
         id: herdr_check
