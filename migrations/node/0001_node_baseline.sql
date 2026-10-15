@@ -195,6 +195,64 @@ BEGIN SELECT RAISE(ABORT, 'thread_registers_lww'); END;
 CREATE TRIGGER thread_registers_append_only BEFORE DELETE ON thread_registers
 BEGIN SELECT RAISE(ABORT, 'thread_registers_append_only'); END;
 
+-- Fork repair state (ht-5fr.6.4, incarnations design section 2). Code owner:
+-- IncarnationStore (store::incarnations).
+CREATE TABLE sync_forks (
+    fork_ix INTEGER PRIMARY KEY,
+    log_ix INTEGER NOT NULL REFERENCES sync_logs(log_ix),
+    origin TEXT NOT NULL CHECK(origin IN ('evidence','declared')),
+    proof_counter INTEGER CHECK(proof_counter IS NULL OR proof_counter >= 1),
+    held_counter INTEGER,
+    held_hash BLOB CHECK(held_hash IS NULL OR length(held_hash) = 32),
+    conflicting_counter INTEGER,
+    conflicting_hash BLOB CHECK(conflicting_hash IS NULL OR length(conflicting_hash) = 32),
+    frozen_at INTEGER NOT NULL CHECK(frozen_at >= 0),
+    source_node TEXT CHECK(source_node IS NULL OR length(source_node) = 32),
+    detected_at INTEGER NOT NULL,
+    CHECK((origin = 'evidence') = (proof_counter IS NOT NULL AND held_hash IS NOT NULL AND conflicting_hash IS NOT NULL)),
+    UNIQUE(log_ix, held_counter, held_hash, conflicting_counter, conflicting_hash)
+) STRICT;
+
+CREATE TABLE sync_branches (
+    branch_ix INTEGER PRIMARY KEY,
+    log_ix INTEGER NOT NULL REFERENCES sync_logs(log_ix),
+    tip_counter INTEGER NOT NULL CHECK(tip_counter >= 1),
+    tip_hash BLOB NOT NULL CHECK(length(tip_hash) = 32),
+    next_from INTEGER NOT NULL CHECK(next_from >= 1),
+    search_span INTEGER NOT NULL DEFAULT 0 CHECK(search_span >= 0),
+    state TEXT NOT NULL CHECK(state IN ('pulling','complete','unavailable')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at INTEGER,
+    last_error TEXT CHECK(last_error IS NULL OR length(last_error) <= 512),
+    first_seen_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(log_ix, tip_hash)
+) STRICT;
+
+CREATE TABLE sync_reissues (
+    source_log_ix INTEGER NOT NULL REFERENCES sync_logs(log_ix),
+    source_counter INTEGER NOT NULL,
+    source_hash BLOB NOT NULL CHECK(length(source_hash) = 32),
+    target_ingest_seq INTEGER NOT NULL REFERENCES journal(ingest_seq),
+    reissued_at INTEGER NOT NULL,
+    PRIMARY KEY(source_log_ix, source_counter, source_hash)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX journal_forked_creates ON journal_forked(creates) WHERE creates IS NOT NULL;
+
+CREATE TRIGGER sync_logs_freeze_lowers_only BEFORE UPDATE OF frozen_at_counter ON sync_logs
+WHEN OLD.state = 'frozen' AND NEW.frozen_at_counter > OLD.frozen_at_counter
+BEGIN SELECT RAISE(ABORT, 'sync_logs_freeze_lowers_only'); END;
+
+CREATE TRIGGER sync_forks_append_only BEFORE DELETE ON sync_forks
+BEGIN SELECT RAISE(ABORT, 'sync_forks_append_only'); END;
+
+CREATE TRIGGER sync_reissues_append_only BEFORE DELETE ON sync_reissues
+BEGIN SELECT RAISE(ABORT, 'sync_reissues_append_only'); END;
+
+CREATE TRIGGER sync_reissues_immutable BEFORE UPDATE ON sync_reissues
+BEGIN SELECT RAISE(ABORT, 'sync_reissues_immutable'); END;
+
 CREATE TABLE snapshot_generations (
     id TEXT PRIMARY KEY,
     instance_id TEXT NOT NULL REFERENCES local_node(id),
