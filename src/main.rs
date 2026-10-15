@@ -46,6 +46,8 @@ fn detached_child(args: &[OsString]) -> io::Result<()> {
     )?;
     let paths = NodePaths::resolve(&context.state_dir)?;
     let config = ServiceConfig::load(&paths)?;
+    #[cfg(feature = "test-support")]
+    let config = config.with_test_env();
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

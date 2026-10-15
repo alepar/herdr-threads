@@ -175,8 +175,17 @@ fn daemon(iso: &TestIsolation, state: &Path, verb: &str) -> std::process::Output
 /// Starts the store-only daemon of `state` the way a peer does: a pump
 /// ensures it, prints the preamble, and is let go.
 fn start_daemon(iso: &TestIsolation, state: &Path) {
-    let mut pump = iso
-        .command(BIN)
+    start_daemon_idle(iso, state, None);
+}
+
+/// [`start_daemon`] with the daemon's idle-exit period set to `idle_ms`
+/// (test-support `HT_TEST_IDLE_EXIT_MS`); the daemon inherits it from the pump.
+fn start_daemon_idle(iso: &TestIsolation, state: &Path, idle_ms: Option<u64>) {
+    let mut command = iso.command(BIN);
+    if let Some(ms) = idle_ms {
+        command.env("HT_TEST_IDLE_EXIT_MS", ms.to_string());
+    }
+    let mut pump = command
         .arg("--state-dir")
         .arg(state)
         .args(["peer", "--stdio"])
@@ -428,4 +437,102 @@ fn daemon_stop_on_dialer_reaps_children() {
         &pair.daemons(),
     );
     assert!(pumps_for(&pair.b).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// ht-5fr.5.11: idle exit of a store-only daemon with nothing to serve.
+
+const IDLE_MS: u64 = 2_000;
+
+/// One node whose dial command always fails (`exit 1`): an enabled target
+/// never links, so only the target count can keep the daemon up.
+struct Solo {
+    iso: TestIsolation,
+    state: PathBuf,
+}
+
+impl Solo {
+    /// Creates the store, optionally inserts an enabled target, and starts the
+    /// daemon with a 2 s idle-exit period.
+    fn start(label: &str, with_target: bool) -> Self {
+        let iso = TestIsolation::new(label);
+        let state = iso.path("n");
+        plant_key(&state, seed(7));
+        let mut settings = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(state.join("node").join("settings.json"))
+            .unwrap();
+        write!(
+            settings,
+            r#"{{"sync":{{"dial_command":"exit 1 # {{dest}}"}}}}"#
+        )
+        .unwrap();
+        drop(settings);
+        // The store exists only once a daemon has run (idle exit disabled).
+        start_daemon_idle(&iso, &state, Some(0));
+        stop_daemon(&iso, &state);
+        if with_target {
+            let mut conn = Connection::open(db_path(&state)).unwrap();
+            conn.busy_timeout(Duration::from_secs(5)).unwrap();
+            let tx = conn.transaction().unwrap();
+            sync_dial_targets::add_explicit(&tx, "ghost", None, 1).unwrap();
+            tx.commit().unwrap();
+        }
+        start_daemon_idle(&iso, &state, Some(IDLE_MS));
+        Self { iso, state }
+    }
+
+    fn endpoint(&self) -> PathBuf {
+        self.state.join("node").join("endpoint.json")
+    }
+
+    /// The owner lock can be taken, i.e. no daemon holds it.
+    fn lock_free(&self) -> bool {
+        use std::os::fd::AsRawFd;
+        let file = fs::File::open(self.state.join("node").join("owner.lock")).unwrap();
+        // SAFETY: flock on a descriptor this function owns.
+        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+    }
+}
+
+impl Drop for Solo {
+    fn drop(&mut self) {
+        daemon(&self.iso, &self.state, "stop");
+    }
+}
+
+#[test]
+fn store_only_daemon_without_target_idle_exits() {
+    let solo = Solo::start("sync-idle-exit", false);
+    let before = boot_id(&solo.iso, &solo.state);
+    wait_until(
+        "the idle daemon to withdraw its endpoint",
+        || (!solo.endpoint().exists()).then_some(()),
+        &[&solo.state],
+    );
+    wait_until(
+        "the idle daemon to release its lock",
+        || solo.lock_free().then_some(()),
+        &[&solo.state],
+    );
+    let log = fs::read_to_string(solo.state.join("node").join("daemon.log")).unwrap();
+    assert!(
+        log.contains("idle exit: store-only, no peer links, no dial targets, no clients for 2 s"),
+        "{log}"
+    );
+    // The next CLI use restarts it through ensure_running.
+    start_daemon_idle(&solo.iso, &solo.state, Some(0));
+    assert_ne!(boot_id(&solo.iso, &solo.state), before, "a new daemon boot");
+}
+
+#[test]
+fn daemon_with_enabled_target_stays() {
+    let solo = Solo::start("sync-idle-target", true);
+    let before = boot_id(&solo.iso, &solo.state);
+    // Three periods: an idle exit would have fired after the first.
+    std::thread::sleep(Duration::from_millis(3 * IDLE_MS));
+    assert!(solo.endpoint().exists(), "endpoint withdrawn");
+    assert_eq!(boot_id(&solo.iso, &solo.state), before, "same daemon boot");
 }

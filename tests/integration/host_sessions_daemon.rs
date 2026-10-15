@@ -48,6 +48,16 @@ impl Daemon {
         hint: Option<HostLocator>,
         sweep: Duration,
     ) -> Self {
+        Self::start_with(isolation, world, hint, sweep, ServiceConfig::default())
+    }
+
+    fn start_with(
+        isolation: &TestIsolation,
+        world: &Arc<FakeHostWorld>,
+        hint: Option<HostLocator>,
+        sweep: Duration,
+        config: ServiceConfig,
+    ) -> Self {
         let guard = crate::ONE_DAEMON.lock().unwrap_or_else(|e| e.into_inner());
         let paths: NodePaths = herdr_threads::test_support::resolve_seeded(isolation.state_root());
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
@@ -67,7 +77,7 @@ impl Daemon {
                     &paths,
                     clock,
                     daemon_stop,
-                    ServiceConfig::default(),
+                    config,
                     plan,
                     daemon_probe,
                     move |descriptor| {
@@ -223,5 +233,46 @@ fn stop_joins_every_session_thread() {
         Arc::strong_count(&host) < running,
         "the wake worker released its host port by exiting ({running} -> {})",
         Arc::strong_count(&host)
+    );
+}
+
+// ht-5fr.5.11. Kills: an idle exit that ignores attached hosts, or one that
+// never fires for a store-only daemon (so the drain is not reached).
+#[test]
+fn store_only_daemon_idle_exits_but_one_with_a_host_stays() {
+    let idle = ServiceConfig::default().with_idle_exit_after(Duration::from_secs(1));
+    let world = FakeHostWorld::new();
+
+    // Control: no host, no target, no client: the daemon stops by itself.
+    let isolation = TestIsolation::new("hs-daemon-idle-exit");
+    let mut bare = Daemon::start_with(
+        &isolation,
+        &world,
+        None,
+        Duration::from_secs(60),
+        idle.clone(),
+    );
+    wait_until("the store-only daemon to idle-exit", || {
+        bare.thread.as_ref().is_some_and(|t| t.is_finished())
+    });
+    bare.shut_down();
+    drop(bare);
+
+    // An attached host keeps it up well past the period.
+    let isolation = TestIsolation::new("hs-daemon-idle-host");
+    let hint = loc("/herdr/hint.sock");
+    world.add(&hint, refusing());
+    let daemon = Daemon::start_with(
+        &isolation,
+        &world,
+        Some(hint),
+        Duration::from_secs(60),
+        idle,
+    );
+    assert_eq!(daemon.probe.host_sessions().unwrap().attached_count(), 1);
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        !daemon.thread.as_ref().unwrap().is_finished(),
+        "a daemon with an attached host exited"
     );
 }

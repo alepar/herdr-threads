@@ -25,6 +25,7 @@ pub struct ServiceConfig {
     watch_connection_cap: usize,
     summary: SummarySettings,
     dial_template: Option<DialTemplate>,
+    idle_exit_after: std::time::Duration,
 }
 
 impl Default for ServiceConfig {
@@ -37,6 +38,7 @@ impl Default for ServiceConfig {
             watch_connection_cap: crate::protocol::watch::MAX_WATCH_CONNECTIONS,
             summary: SummarySettings::default(),
             dial_template: None,
+            idle_exit_after: crate::daemon::idle_exit::IDLE_EXIT_AFTER,
         }
     }
 }
@@ -55,6 +57,34 @@ impl ServiceConfig {
     /// The validated `sync.dial_command`, or `None` for the ssh transport.
     pub fn dial_template(&self) -> Option<&DialTemplate> {
         self.dial_template.as_ref()
+    }
+    /// How long a store-only daemon with nothing to serve stays up; zero
+    /// disables idle exit.
+    pub fn idle_exit_after(&self) -> std::time::Duration {
+        self.idle_exit_after
+    }
+    /// Test-support builds: `HT_TEST_IDLE_EXIT_MS` (milliseconds, `0`
+    /// disables) overrides the idle-exit period of a spawned daemon.
+    #[cfg(feature = "test-support")]
+    pub const TEST_IDLE_EXIT_MS_ENV: &'static str = "HT_TEST_IDLE_EXIT_MS";
+
+    /// Apply [`Self::TEST_IDLE_EXIT_MS_ENV`] when set and numeric.
+    #[cfg(feature = "test-support")]
+    pub fn with_test_env(self) -> Self {
+        match std::env::var(Self::TEST_IDLE_EXIT_MS_ENV)
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            Some(ms) => self.with_idle_exit_after(std::time::Duration::from_millis(ms)),
+            None => self,
+        }
+    }
+
+    /// Shorten (or, with `Duration::ZERO`, disable) idle exit for a test.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_idle_exit_after(mut self, after: std::time::Duration) -> Self {
+        self.idle_exit_after = after;
+        self
     }
     pub fn archive_after_ms(&self) -> u64 {
         self.archive_after_ms
@@ -218,6 +248,7 @@ impl ServiceConfig {
             watch_connection_cap: crate::protocol::watch::MAX_WATCH_CONNECTIONS,
             summary: SummarySettings::default(),
             dial_template: None,
+            idle_exit_after: crate::daemon::idle_exit::IDLE_EXIT_AFTER,
         })
     }
 
