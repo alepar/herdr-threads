@@ -1566,8 +1566,10 @@ mod archival_actual_producer_base_fixture {
                     |r| r.get::<_, i64>(0)
                 )
                 .unwrap(),
-                before_decision + 1,
-                "one lifecycle bookkeeping decision"
+                // The lifecycle audit event and the archived register write
+                // (ht-5fr.4.8) each take one position.
+                before_decision + 2,
+                "one lifecycle audit position and one register position"
             );
             let identity:(String,String,String,i64)=db.query_row("SELECT harness,native_session,execution,binding_generation FROM seat_archival WHERE seat_id='s'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
             assert_eq!(

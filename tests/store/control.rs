@@ -49,7 +49,18 @@ fn fixture(at: i64) -> (StoreContext, Connection, PathBuf, Arc<FixedClock>) {
     ));
     let clock = Arc::new(FixedClock(AtomicI64::new(at)));
     let context = StoreContext::new(path.clone(), clock.clone()).with_test_host();
-    let conn = context.open_writer().unwrap();
+    let mut conn = context.open_writer().unwrap();
+    // Thread creation and metadata commands author facts: the journal is open.
+    crate::store::journal::open(
+        &context,
+        &mut conn,
+        Arc::new(crate::node::NodeIdentity::from_seed(
+            crate::test_support::TEST_NODE_SEED,
+        )),
+        "test",
+        crate::sync::facts::FactRegistry::builtins(),
+    )
+    .unwrap();
     conn.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
         .unwrap();
     for seat in ["s1", "s2"] {
@@ -3977,6 +3988,9 @@ fn joined_member_changes_topic_with_scoped_revision_and_audit() {
         claim: claim("s1"),
     };
     let hash = cooperative_payload_hash("set_topic", &command).unwrap();
+    // The converted command reaches replicated tables only through the fact.
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(&conn);
     assert_eq!(
         set_topic(
             &context,
@@ -4008,7 +4022,7 @@ fn joined_member_changes_topic_with_scoped_revision_and_audit() {
     assert!(revision > 0);
     assert_eq!(
         conn.query_row(
-            "SELECT count(*) FROM messages WHERE thread_id=?1 AND event_key LIKE 'set_topic:%'",
+            "SELECT count(*) FROM messages WHERE thread_id=?1 AND event_key LIKE 'register:%:topic:%'",
             [thread.as_str()],
             |r| r.get::<_, i64>(0)
         )
@@ -4281,17 +4295,22 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
         claim: claim("s1"),
     };
     let hash = cooperative_payload_hash("archive", &archive_request).unwrap();
-    archive(
-        &context,
-        &mut conn,
-        &crate::protocol::time::CallBudget {
-            deadline: MonoInstant(u64::MAX),
-            cancellation: Default::default(),
-        },
-        &archive_request,
-        permit("s1", "a", ObligationRef::Control(thread.clone()), hash, 100),
-    )
-    .unwrap();
+    {
+        // The converted command reaches replicated tables only through the fact.
+        #[cfg(feature = "test-support")]
+        let _guard = crate::test_support::write_guard::arm(&conn);
+        archive(
+            &context,
+            &mut conn,
+            &crate::protocol::time::CallBudget {
+                deadline: MonoInstant(u64::MAX),
+                cancellation: Default::default(),
+            },
+            &archive_request,
+            permit("s1", "a", ObligationRef::Control(thread.clone()), hash, 100),
+        )
+        .unwrap();
+    }
     clock.0.store(300_100, Ordering::SeqCst);
     let accept_request = Accept {
         thread: thread.clone(),

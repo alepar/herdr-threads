@@ -133,6 +133,9 @@ pub fn with_input<R>(
         local_origin: cx.is_local_origin(),
         own_history: cx.is_own_history(),
         provenance: &provenance,
+        origin_hlc: cx.hlc,
+        origin_counter: cx.counter,
+        ingest_seq: Some(cx.ingest_seq),
         suppress: &suppress,
         scope: Default::default(),
     };
@@ -238,6 +241,9 @@ impl FactRegistry {
                 .with::<NodeRetag>()
                 .with::<seat::SeatCreated>()
                 .with::<seat::SeatRetired>()
+                .with::<thread::ThreadCreated>()
+                .with::<thread::ThreadRegister>()
+                .with::<thread::ThreadDirect>()
                 .build()
         })
     }
