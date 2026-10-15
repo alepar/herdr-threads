@@ -14,8 +14,13 @@
 //! - Must not: touch SQLite (every journal call goes through [`JournalPort`],
 //!   every sync-table call through `SyncStorePort`), name a harness, resolve a
 //!   fork (that is the [`ForkSink`]'s), or dial (the Dialer leaf owns that).
-//! - Where new behaviour goes: frame routing, duplicate-link ranking and clone
-//!   detection are ht-5fr.5.12; serving, live tail, ingest and Have deltas
+//! - Routing (ht-5fr.5.12): duplicate-link ranking and standby, the full
+//!   `Have` on activation, `peer_vector` merge, rx-source selection
+//!   (`reselect`) with its 30 s failover, clone detection at a third node and
+//!   the own-history `Links` flag. The pure decisions live in `routing`
+//!   (`duplicate_order`, `reselect`, `wantable`, `own_history_on`): that is
+//!   where relay-policy changes go; the actor only applies their answers.
+//! - Where new behaviour goes: serving, live tail, ingest and Have deltas
 //!   are ht-5fr.5.13. Each fills the marked stub arm of [`Actor::run`] and the
 //!   state fields marked below; `signals()` is ht-5fr.5.6's. The Dialer
 //!   (`super::dialer`, ht-5fr.5.7) is constructed here: [`SyncHandle::reload_targets`]
@@ -25,13 +30,14 @@
 //!   decisions that span links need no locks.
 //!
 //! Every `JournalPort` and `SyncStorePort` call is synchronous and takes
-//! writer turns, so an actor that makes one runs it in `spawn_blocking`; this
-//! skeleton makes one such call, the held-genesis lookup at admission.
+//! writer turns, so an actor that makes one runs it in `spawn_blocking`: the
+//! held-genesis lookup at admission and the `vector()` read that refreshes
+//! `local` (a `JoinSet` job whose result the actor joins).
 //!
 //! Core and harness-neutral.
 
 use std::any::Any;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -43,23 +49,31 @@ use tokio::time::{Instant, MissedTickBehavior, timeout};
 use uuid::Uuid;
 
 use super::dialer::{DialConfig, DialShared, Dialer, DialerDeps};
-use super::envelope::{GENESIS_KIND, WireEnvelope, hex_decode};
+use super::envelope::{GENESIS_KIND, WireEnvelope, hex_decode, hex_encode};
 use super::facts::GenesisPayload;
-use super::frame::{BranchWant, CloseReason, ForkRef, HaveLog, PeerFrame, Role, write_peer_frame};
+use super::frame::{
+    BranchWant, CloseReason, FORK_CAP, ForkRef, HaveLog, MAX_HAVE_LOGS, PeerFrame, Role,
+    write_peer_frame,
+};
 use super::journal_port::{ForkEvidence, JournalPort};
 use super::link::{
     CLOSE_WRITE_TIMEOUT, Established, HANDSHAKE_TIMEOUT, LinkError, LinkEvent, LinkHandle,
     LocalHello, PeerInfo, handshake,
 };
 use super::sync_store::SyncStorePort;
-use super::{BatchLimits, LogKey, Vector};
+use super::{BatchLimits, LogHead, LogKey, LogState, Vector};
 use crate::node::{NodeIdentity, NodeTag, NodeUuid};
 use crate::protocol::results::{ApiError, ErrorCode};
 use crate::protocol::time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis};
 use crate::service::fair_writer::FairWriter;
 use crate::service::pacer::{Pacer, Wake};
 use crate::service::workers::WorkerStatus;
+use crate::store::connection::{HoldSource, OwnHistoryHold};
 use crate::store::sync_dial_targets::TargetId;
+
+mod routing;
+
+use routing::{DupKey, SourceView};
 
 /// Offers the transport may have waiting for the actor.
 pub const PEER_INTAKE_SLOTS: usize = 16;
@@ -77,7 +91,8 @@ pub const DIAL_REPORT_SLOTS: usize = 2;
 const PACER_TICK: Duration = Duration::from_secs(1);
 /// The housekeeping interval.
 const HOUSEKEEPING_TICK: Duration = Duration::from_secs(1);
-/// `LogOnlyForkSink` logs at most once per log per this many milliseconds.
+/// `LogOnlyForkSink` logs at most once per log (or clone subject) per this many
+/// milliseconds.
 const FORK_LOG_EVERY_MS: u64 = 3_600_000;
 
 /// Any byte stream a link can run over (ssh child stdio, an accepted socket,
@@ -160,6 +175,46 @@ pub trait ForkSink: Send + Sync {
     fn fork_refs(&self) -> Vec<ForkRef> {
         Vec::new()
     }
+
+    /// Two live daemons are suspected to hold one node key. Default: ignored.
+    fn on_clone(&self, _report: CloneReport) {}
+}
+
+/// How a suspected clone was noticed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloneKind {
+    /// A handshake was refused with `node_collision` (this node's key shows
+    /// up on the other end with another boot).
+    Handshake,
+    /// An established peer link ended with the peer's `close{node_collision}`.
+    PeerClose,
+    /// Two live links carry one third node's uuid with different boots.
+    ThirdParty,
+}
+
+impl CloneKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Handshake => "handshake",
+            Self::PeerClose => "peer_close",
+            Self::ThirdParty => "third_party",
+        }
+    }
+}
+
+/// A clone suspicion handed to [`ForkSink::on_clone`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CloneReport {
+    /// The node whose key is held twice: this node for `Handshake` and
+    /// `PeerClose`, the third node for `ThirdParty`.
+    pub subject: NodeUuid,
+    pub kind: CloneKind,
+    /// The two boots seen for `ThirdParty` (`[older, newer]`); empty when the
+    /// other copy's boot is not known.
+    pub boots: Vec<Uuid>,
+    /// Who reported it: this node, except for `PeerClose`, where it is the
+    /// peer that closed.
+    pub source: NodeUuid,
 }
 
 /// A branch frame handed to [`ForkSink::on_branch`].
@@ -196,6 +251,7 @@ pub struct LogOnlyForkSink {
     log: LogFn,
     clock: Arc<dyn Clock>,
     last_logged: Mutex<BTreeMap<LogKey, MonoInstant>>,
+    clone_logged: Mutex<BTreeMap<NodeUuid, MonoInstant>>,
 }
 
 impl LogOnlyForkSink {
@@ -204,6 +260,7 @@ impl LogOnlyForkSink {
             log,
             clock,
             last_logged: Mutex::new(BTreeMap::new()),
+            clone_logged: Mutex::new(BTreeMap::new()),
         }
     }
 }
@@ -241,6 +298,30 @@ impl ForkSink for LogOnlyForkSink {
 
     fn resumed(&self) -> Vec<LogKey> {
         Vec::new()
+    }
+
+    fn on_clone(&self, report: CloneReport) {
+        let now = self.clock.monotonic_now();
+        let due = {
+            let mut last = self
+                .clone_logged
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let due = last
+                .get(&report.subject)
+                .is_none_or(|at| now.0.saturating_sub(at.0) >= FORK_LOG_EVERY_MS);
+            if due {
+                last.insert(report.subject, now);
+            }
+            due
+        };
+        if due {
+            (self.log)(&format!(
+                "sync: clone suspected for {} ({})",
+                uuid8(&report.subject),
+                report.kind.as_str()
+            ));
+        }
     }
 }
 
@@ -345,13 +426,16 @@ pub struct CoordinatorDeps {
     pub status: Arc<WorkerStatus>,
     pub log: LogFn,
     pub fork_sink: Arc<dyn ForkSink>,
+    /// The own-history hold in `SyncState`; the coordinator owns its `Links`
+    /// flag.
+    pub own_history: Arc<OwnHistoryHold>,
     /// The Dialer's transport template and test jitter seed.
     pub dial: DialConfig,
     pub cancel: Cancellation,
 }
 
-/// How a link takes part in replication. Duplicate-link ranking is
-/// ht-5fr.5.12's; until then every link reports `Active`.
+/// How a link takes part in replication: the one active link per peer node
+/// carries `have`/`want`/`entries`; the others only keep `ping`/`pong`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LinkMode {
     #[default]
@@ -370,7 +454,7 @@ pub struct LinkStatus {
     /// The ssh destination of a dialed link.
     pub dest: Option<String>,
     pub since: UtcMillis,
-    /// Filled by ht-5fr.5.13.
+    /// Logs this link is the rx source of.
     pub rx_logs: u32,
     /// Filled by ht-5fr.5.13.
     pub unsolicited: u64,
@@ -499,6 +583,12 @@ impl SyncCoordinator {
             by_node: BTreeMap::new(),
             rx: BTreeMap::new(),
             local: Vector::default(),
+            paused: BTreeSet::new(),
+            headroom_until: None,
+            probes: BTreeMap::new(),
+            refresh: JoinSet::new(),
+            refresh_again: false,
+            own_history_on: false,
             next_link_id: 1,
             handshakes: JoinSet::new(),
             events_tx,
@@ -529,12 +619,23 @@ struct Inputs {
 /// yet, so nothing sends these.
 struct IngestDone;
 
-/// The source a log is being pulled from. Filled by ht-5fr.5.13.
+/// The source a log is being pulled from. `last_progress` is set when the
+/// source is chosen or re-asked and by ht-5fr.5.13's ingest on `Stored`;
+/// `requested_from` is read by its gap handling.
 #[allow(dead_code)]
 struct RxSource {
     link: u64,
     requested_from: u64,
     last_progress: MonoInstant,
+}
+
+/// A live check of whether an older link to the same node is still answering,
+/// started when a newer link carries the node's uuid with another boot.
+struct CloneProbe {
+    older: u64,
+    /// The older link's inbound frame count when the probe started.
+    base: u64,
+    deadline: MonoInstant,
 }
 
 enum Origin {
@@ -550,6 +651,22 @@ struct LinkEntry {
     handle: LinkHandle,
     origin: Origin,
     since: UtcMillis,
+    mode: LinkMode,
+    /// In the duplicate order. False while a clone probe of an older link
+    /// decides this link's fate.
+    ranked: bool,
+    /// `close` has been queued; the link no longer counts.
+    closing: bool,
+    /// What the peer advertises. Only an active link keeps one.
+    peer_vector: Vector,
+    /// A `have` is owed to the peer (`Some(ask)`) once `local` is fresh.
+    have_pending: Option<bool>,
+    /// This activation's first `have` has gone out; until then the link is
+    /// no rx source, so a `want` never precedes the `have`.
+    announced: bool,
+    /// Penalty-until per log on this link (written here by the failover and
+    /// by ht-5fr.5.13's ingest outcomes).
+    errors: BTreeMap<LogKey, MonoInstant>,
     /// Held so the transport's slot is released when the link is.
     _permit: Option<PeerPermit>,
 }
@@ -568,14 +685,25 @@ struct Actor {
     /// Shared with [`SyncHandle::link_count`]: handshaking plus established.
     count: Arc<AtomicUsize>,
     links: BTreeMap<u64, LinkEntry>,
-    /// Links per peer node. Ranking is ht-5fr.5.12's.
+    /// Ranked links per peer node.
     by_node: BTreeMap<NodeUuid, Vec<u64>>,
-    /// Filled by ht-5fr.5.13.
-    #[allow(dead_code)]
+    /// Where each wanted log is pulled from.
     rx: BTreeMap<LogKey, RxSource>,
-    /// The last read of `journal.vector()`. Filled by ht-5fr.5.13.
-    #[allow(dead_code)]
+    /// The last read of `journal.vector()`.
     local: Vector,
+    /// Logs not to be pulled (a fork the sink holds). Written by
+    /// ht-5fr.5.13's ingest outcomes.
+    paused: BTreeSet<LogKey>,
+    /// All wants are paused until then. Written by ht-5fr.5.13 on `Headroom`.
+    headroom_until: Option<MonoInstant>,
+    /// Clone probes by the newer link's id.
+    probes: BTreeMap<u64, CloneProbe>,
+    /// `journal.vector()` reads in flight (at most one).
+    refresh: JoinSet<Result<Vector, String>>,
+    /// Another read was asked for while one was in flight.
+    refresh_again: bool,
+    /// The last value given to the own-history `Links` flag.
+    own_history_on: bool,
     next_link_id: u64,
     handshakes: JoinSet<Admission>,
     events_tx: mpsc::Sender<LinkEvent>,
@@ -607,6 +735,9 @@ impl Actor {
                         self.on_admission(admission);
                     }
                 }
+                Some(joined) = self.refresh.join_next(), if !self.refresh.is_empty() => {
+                    self.on_local(joined.unwrap_or_else(|e| Err(e.to_string())));
+                }
                 Some(request) = inputs.requests.recv() => self.on_request(request),
                 Some(IngestDone) = inputs.ingest.recv() => {
                     // Ingest results: ht-5fr.5.13 acts on the outcome here.
@@ -614,14 +745,16 @@ impl Actor {
                 wake = pacer.wait(PACER_TICK) => {
                     if wake == Wake::Kicked {
                         // A table or commit kick: re-diff the dial targets
-                        // (the Dialer limits this to once a second).
+                        // (the Dialer limits this to once a second) and
+                        // re-read the local vector.
                         self.dialer.kick();
+                        self.request_local();
                     }
                     // Have deltas on a kick: ht-5fr.5.13.
                 }
                 _ = tick.tick() => {
-                    // Housekeeping (fork_sink.resumed(), penalties, contact
-                    // flush): ht-5fr.5.12 / 5.13.
+                    self.housekeeping();
+                    // fork_sink.resumed() and the contact flush: ht-5fr.5.13.
                 }
             }
         }
@@ -685,6 +818,10 @@ impl Actor {
         });
     }
 
+    fn mono(&self) -> MonoInstant {
+        self.deps.clock.monotonic_now()
+    }
+
     fn on_admission(&mut self, admission: Admission) {
         let Admission {
             link_id,
@@ -695,6 +832,13 @@ impl Actor {
         match result {
             Err(why) => {
                 self.count.fetch_sub(1, Ordering::AcqRel);
+                if matches!(
+                    why,
+                    LinkError::Refused(CloseReason::NodeCollision)
+                        | LinkError::PeerClosed(CloseReason::NodeCollision)
+                ) {
+                    self.report_clone(CloneKind::Handshake, None);
+                }
                 if let Origin::Dialed {
                     target_id, report, ..
                 } = origin
@@ -709,6 +853,7 @@ impl Actor {
             }
             Ok(established) => {
                 let node = established.peer.node;
+                let boot = established.peer.boot;
                 let handle = crate::sync::link::spawn(
                     established,
                     link_id,
@@ -719,18 +864,268 @@ impl Actor {
                 if let Origin::Dialed { report, .. } = &origin {
                     let _ = report.try_send(DialReport::Established { node_uuid: node });
                 }
-                self.by_node.entry(node).or_default().push(link_id);
+                // A live older link of this node with another boot: the
+                // newer link waits for the probe of it.
+                let older = self.by_node.get(&node).and_then(|ids| {
+                    ids.iter().copied().find(|id| {
+                        self.links
+                            .get(id)
+                            .is_some_and(|l| !l.closing && l.handle.peer().boot != boot)
+                    })
+                });
                 self.links.insert(
                     link_id,
                     LinkEntry {
                         handle,
                         origin,
                         since: self.deps.clock.utc_now(),
+                        mode: LinkMode::Standby,
+                        ranked: false,
+                        closing: false,
+                        peer_vector: Vector::default(),
+                        have_pending: None,
+                        announced: false,
+                        errors: BTreeMap::new(),
                         _permit: permit,
                     },
                 );
+                match older {
+                    Some(older) => self.start_probe(link_id, older),
+                    None => self.rank_link(link_id),
+                }
             }
         }
+    }
+
+    /// Ping `older` and wait for any inbound frame from it before ranking
+    /// `newer`. The check runs on the housekeeping tick, so the actor never
+    /// blocks on it.
+    fn start_probe(&mut self, newer: u64, older: u64) {
+        let Some(entry) = self.links.get(&older) else {
+            self.rank_link(newer);
+            return;
+        };
+        if entry.handle.send(PeerFrame::Ping { n: u64::MAX }).is_err() {
+            self.rank_link(newer);
+            return;
+        }
+        let probe = CloneProbe {
+            older,
+            base: entry.handle.inbound_frames(),
+            deadline: MonoInstant(self.mono().0 + routing::CLONE_PROBE_MS),
+        };
+        self.probes.insert(newer, probe);
+    }
+
+    /// Settle the clone probes whose older link answered, went silent past the
+    /// deadline or is gone.
+    fn resolve_probes(&mut self, now: MonoInstant) {
+        let pending: Vec<u64> = self.probes.keys().copied().collect();
+        for newer in pending {
+            let Some(probe) = self.probes.get(&newer) else {
+                continue;
+            };
+            let (older, base, deadline) = (probe.older, probe.base, probe.deadline);
+            let answered = self
+                .links
+                .get(&older)
+                .map(|l| l.handle.inbound_frames() > base);
+            match answered {
+                None => {
+                    self.probes.remove(&newer);
+                    self.rank_link(newer);
+                }
+                Some(true) => {
+                    self.probes.remove(&newer);
+                    self.reject_clone(newer, older);
+                }
+                Some(false) if now.0 >= deadline.0 => {
+                    // A leftover of a peer daemon that restarted: end it,
+                    // then rank the newer link as if it were alone.
+                    self.probes.remove(&newer);
+                    let up_for = self.up_for(older);
+                    self.on_ended(older, LinkError::Dead, up_for);
+                    self.rank_link(newer);
+                }
+                Some(false) => {}
+            }
+        }
+    }
+
+    fn up_for(&self, link_id: u64) -> Duration {
+        self.links.get(&link_id).map_or(Duration::ZERO, |entry| {
+            let now = self.deps.clock.utc_now().0;
+            Duration::from_millis(u64::try_from(now.saturating_sub(entry.since.0)).unwrap_or(0))
+        })
+    }
+
+    /// Two live daemons hold one key: keep the older link, close the newer
+    /// with `node_collision` and report it.
+    fn reject_clone(&mut self, newer: u64, older: u64) {
+        let Some(old_boot) = self.links.get(&older).map(|l| l.handle.peer().boot) else {
+            return;
+        };
+        let Some(entry) = self.links.get_mut(&newer) else {
+            return;
+        };
+        entry.closing = true;
+        let _ = entry.handle.close(CloseReason::NodeCollision);
+        let peer = entry.handle.peer();
+        let report = CloneReport {
+            subject: peer.node,
+            kind: CloneKind::ThirdParty,
+            boots: vec![old_boot, peer.boot],
+            source: self.deps.identity.uuid(),
+        };
+        self.deps.fork_sink.on_clone(report);
+    }
+
+    /// A clone suspicion about this node itself (`Handshake`, `PeerClose`).
+    fn report_clone(&self, kind: CloneKind, peer: Option<NodeUuid>) {
+        let me = self.deps.identity.uuid();
+        self.deps.fork_sink.on_clone(CloneReport {
+            subject: me,
+            kind,
+            boots: Vec::new(),
+            source: peer.unwrap_or(me),
+        });
+    }
+
+    /// Put `link_id` into the duplicate order of its node.
+    fn rank_link(&mut self, link_id: u64) {
+        let Some(entry) = self.links.get_mut(&link_id) else {
+            return;
+        };
+        entry.ranked = true;
+        let node = entry.handle.peer().node;
+        self.by_node.entry(node).or_default().push(link_id);
+        self.rank_node(node, false);
+    }
+
+    /// Recompute which link of `node` is active (the pure
+    /// [`routing::duplicate_order`]), close the newest standby beyond two,
+    /// demote the former active link and activate the new one. `after_end`:
+    /// the change is the end of a link, so a promotion asks for the peer's
+    /// vector.
+    fn rank_node(&mut self, node: NodeUuid, after_end: bool) {
+        let order = loop {
+            let keys: Vec<DupKey> = self
+                .by_node
+                .get(&node)
+                .into_iter()
+                .flatten()
+                .filter_map(|id| {
+                    let entry = self.links.get(id)?;
+                    (entry.ranked && !entry.closing).then(|| {
+                        let peer = entry.handle.peer();
+                        DupKey {
+                            link: *id,
+                            dialer: peer.dialer_node,
+                            nonce: peer.dialer_nonce,
+                        }
+                    })
+                })
+                .collect();
+            let order = routing::duplicate_order(&keys);
+            if order.len() <= routing::MAX_LINKS_PER_NODE {
+                break order;
+            }
+            let Some(newest) = order[1..].iter().copied().max() else {
+                break order;
+            };
+            if let Some(entry) = self.links.get_mut(&newest) {
+                entry.closing = true;
+                let _ = entry.handle.close(CloseReason::Busy);
+            }
+        };
+        let Some(&active) = order.first() else {
+            return;
+        };
+        let prev = order.iter().copied().find(|id| {
+            self.links
+                .get(id)
+                .is_some_and(|l| l.mode == LinkMode::Active)
+        });
+        if prev != Some(active) {
+            for id in &order {
+                if *id != active
+                    && let Some(entry) = self.links.get(id)
+                    && entry.mode == LinkMode::Active
+                {
+                    self.demote(*id);
+                }
+            }
+            self.activate(active, prev.is_some() || after_end);
+        }
+        self.update_own_history();
+    }
+
+    /// The link becomes the node's standby: it keeps ping/pong only.
+    fn demote(&mut self, link_id: u64) {
+        let Some(entry) = self.links.get_mut(&link_id) else {
+            return;
+        };
+        entry.mode = LinkMode::Standby;
+        entry.peer_vector = Vector::default();
+        entry.have_pending = None;
+        entry.announced = false;
+        entry.errors.clear();
+        self.drop_rx_of(link_id);
+    }
+
+    /// Forget every rx source on `link_id` (the link ended or was demoted; no
+    /// `unwant` goes out) and pick new ones.
+    fn drop_rx_of(&mut self, link_id: u64) {
+        let logs: Vec<LogKey> = self
+            .rx
+            .iter()
+            .filter(|(_, src)| src.link == link_id)
+            .map(|(log, _)| *log)
+            .collect();
+        for log in &logs {
+            self.rx.remove(log);
+        }
+        for log in logs {
+            self.reselect_log(log);
+        }
+    }
+
+    /// The link becomes the node's active one: a full `have` goes out as
+    /// soon as `local` is fresh (`ask`: and the peer is asked for its own).
+    fn activate(&mut self, link_id: u64, ask: bool) {
+        let Some(entry) = self.links.get_mut(&link_id) else {
+            return;
+        };
+        entry.mode = LinkMode::Active;
+        entry.announced = false;
+        entry.have_pending = Some(ask);
+        self.request_local();
+    }
+
+    /// A `have` or `want` arrived on a standby link: the peer promoted it, so
+    /// it is active here too and the formerly active link is demoted.
+    fn promote_on_traffic(&mut self, link_id: u64) {
+        let Some(node) = self.links.get(&link_id).map(|l| l.handle.peer().node) else {
+            return;
+        };
+        let others: Vec<u64> = self
+            .by_node
+            .get(&node)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|id| *id != link_id)
+            .collect();
+        for id in others {
+            if self
+                .links
+                .get(&id)
+                .is_some_and(|l| l.mode == LinkMode::Active)
+            {
+                self.demote(id);
+            }
+        }
+        self.activate(link_id, false);
     }
 
     fn on_link_event(&mut self, event: LinkEvent) {
@@ -740,13 +1135,371 @@ impl Actor {
                 why,
                 up_for,
             } => self.on_ended(link_id, why, up_for),
-            LinkEvent::Frame { .. } => {
-                // Frame routing (have, want, entries, seen): ht-5fr.5.12 and
-                // ht-5fr.5.13. Until then a frame is read and dropped.
-            }
+            LinkEvent::Frame { link_id, frame, .. } => self.on_frame(link_id, frame),
             LinkEvent::CreditFreed { .. } => {
                 // Resuming a blocked push: ht-5fr.5.13.
             }
+        }
+    }
+
+    fn on_frame(&mut self, link_id: u64, frame: PeerFrame) {
+        let Some(entry) = self.links.get(&link_id) else {
+            return;
+        };
+        if !entry.ranked || entry.closing {
+            return;
+        }
+        if entry.mode == LinkMode::Standby {
+            // A standby carries ping/pong (the link's own) and `seen`
+            // (ht-5fr.5.6) only; a `have` or `want` is the peer's promotion.
+            if matches!(frame, PeerFrame::Have { .. } | PeerFrame::Want { .. }) {
+                self.promote_on_traffic(link_id);
+            } else {
+                return;
+            }
+        }
+        // `want`, `unwant`, `entries`, the branch frames and `seen` are
+        // served, ingested or recorded by ht-5fr.5.13 and ht-5fr.5.6.
+        if let PeerFrame::Have {
+            full, ask, logs, ..
+        } = frame
+        {
+            self.on_have(link_id, full, ask, &logs);
+        }
+    }
+
+    /// Merge a peer's `have` into its `peer_vector` and re-pick the rx source
+    /// of every log it touched.
+    fn on_have(&mut self, link_id: u64, full: bool, ask: bool, logs: &[HaveLog]) {
+        let now = self.mono();
+        let Some(entry) = self.links.get_mut(&link_id) else {
+            return;
+        };
+        let before = std::mem::take(&mut entry.peer_vector);
+        let mut vector = if full {
+            Vector::default()
+        } else {
+            before.clone()
+        };
+        let mut changed: BTreeSet<LogKey> = BTreeSet::new();
+        for log in logs {
+            let Some(head) = have_head(log) else {
+                continue;
+            };
+            let key = LogKey {
+                node: log.node,
+                incarnation: log.inc,
+            };
+            vector.0.insert(key, head);
+            changed.insert(key);
+        }
+        if full {
+            changed.extend(before.0.keys().copied());
+        }
+        entry.peer_vector = vector;
+        if ask {
+            entry.have_pending = Some(entry.have_pending.unwrap_or(false));
+        }
+        // News from the current source of a caught-up log restarts its
+        // progress clock: it is not stalled, it had nothing to do.
+        for log in &changed {
+            let held = self.local.0.get(log).map_or(0, |h| h.counter);
+            let was = before.0.get(log).map_or(0, |h| h.counter);
+            let is = self
+                .links
+                .get(&link_id)
+                .and_then(|l| l.peer_vector.0.get(log))
+                .map_or(0, |h| h.counter);
+            if was <= held
+                && is > held
+                && let Some(src) = self.rx.get_mut(log)
+                && src.link == link_id
+            {
+                src.last_progress = now;
+            }
+        }
+        for log in changed {
+            self.reselect_log(log);
+        }
+        self.update_own_history();
+        if ask {
+            self.request_local();
+        }
+    }
+
+    /// Read `journal.vector()` off the actor; the result arrives as a
+    /// `refresh` job.
+    fn request_local(&mut self) {
+        if !self.refresh.is_empty() {
+            self.refresh_again = true;
+            return;
+        }
+        let journal = self.deps.journal.clone();
+        self.refresh.spawn_blocking(move || {
+            let budget = CallBudget {
+                deadline: MonoInstant(u64::MAX),
+                cancellation: Cancellation::default(),
+            };
+            journal
+                .vector(&budget)
+                .map_err(|e| format!("{:?}: {:?}", e.code, e.detail))
+        });
+    }
+
+    /// A fresh local vector: answer the owed `have`s, re-pick every source
+    /// and refresh the own-history flag.
+    fn on_local(&mut self, result: Result<Vector, String>) {
+        match result {
+            Ok(vector) => {
+                self.local = vector;
+                let owed: Vec<(u64, bool)> = self
+                    .links
+                    .iter()
+                    .filter(|(_, l)| l.mode == LinkMode::Active && !l.closing)
+                    .filter_map(|(id, l)| l.have_pending.map(|ask| (*id, ask)))
+                    .collect();
+                for (id, ask) in owed {
+                    self.send_have(id, ask);
+                    if let Some(entry) = self.links.get_mut(&id) {
+                        entry.have_pending = None;
+                        entry.announced = true;
+                    }
+                }
+            }
+            Err(e) => (self.deps.log)(&format!("sync: local vector read failed: {e}")),
+        }
+        self.reselect_all();
+        self.update_own_history();
+        if std::mem::take(&mut self.refresh_again) {
+            self.request_local();
+        }
+    }
+
+    /// Send a full `have` of the local vector (the first
+    /// [`MAX_HAVE_LOGS`] logs by key) on `link_id`.
+    fn send_have(&self, link_id: u64, ask: bool) {
+        let Some(entry) = self.links.get(&link_id) else {
+            return;
+        };
+        let logs = self
+            .local
+            .0
+            .iter()
+            .take(MAX_HAVE_LOGS)
+            .map(|(key, head)| HaveLog {
+                node: key.node,
+                inc: key.incarnation,
+                counter: head.counter,
+                head: hex_encode(&head.head_hash),
+                frozen_at: match (head.state, head.frozen_at) {
+                    (LogState::Frozen, Some(at)) => u64::try_from(at).ok(),
+                    _ => None,
+                },
+            })
+            .collect();
+        let forks = if entry.handle.peer().caps.iter().any(|cap| cap == FORK_CAP) {
+            self.deps.fork_sink.fork_refs()
+        } else {
+            Vec::new()
+        };
+        let _ = entry.handle.send(PeerFrame::Have {
+            full: true,
+            ask,
+            logs,
+            forks,
+        });
+    }
+
+    fn send_unwant(&self, link_id: u64, log: &LogKey) {
+        if let Some(entry) = self.links.get(&link_id) {
+            let _ = entry.handle.send(PeerFrame::Unwant {
+                node: log.node,
+                inc: log.incarnation,
+            });
+        }
+    }
+
+    /// `Want` the log from `link_id` just above what is held, and record it
+    /// as the rx source.
+    fn start_rx(&mut self, log: LogKey, link_id: u64) {
+        let from = self.local.0.get(&log).map_or(0, |h| h.counter) + 1;
+        if let Some(entry) = self.links.get(&link_id) {
+            let _ = entry.handle.send(PeerFrame::Want {
+                node: log.node,
+                inc: log.incarnation,
+                from,
+            });
+        }
+        let last_progress = self.mono();
+        self.rx.insert(
+            log,
+            RxSource {
+                link: link_id,
+                requested_from: from,
+                last_progress,
+            },
+        );
+    }
+
+    fn log_paused(&self, log: &LogKey, now: MonoInstant) -> bool {
+        self.paused.contains(log) || self.headroom_until.is_some_and(|until| until.0 > now.0)
+    }
+
+    /// The pure `reselect` over the actor's current state for `log`.
+    fn pick(&self, log: &LogKey) -> Option<u64> {
+        let now = self.mono();
+        let views: Vec<SourceView> = self
+            .links
+            .iter()
+            .filter(|(_, l)| l.mode == LinkMode::Active && l.ranked && !l.closing && l.announced)
+            .map(|(id, l)| SourceView {
+                link: *id,
+                node: l.handle.peer().node,
+                adv: l.peer_vector.0.get(log).copied(),
+                penalized: l.errors.get(log).is_some_and(|until| until.0 > now.0),
+            })
+            .collect();
+        let current = self.rx.get(log).map(|src| routing::CurrentSource {
+            link: src.link,
+            last_progress: src.last_progress,
+        });
+        routing::reselect(
+            log,
+            self.local.0.get(log),
+            &views,
+            self.log_paused(log, now),
+            current,
+            now,
+        )
+    }
+
+    fn reselect_log(&mut self, log: LogKey) {
+        let pick = self.pick(&log);
+        self.apply_pick(log, pick);
+    }
+
+    /// Apply a `reselect` answer: a different source gets the `Want` and the
+    /// old one an `Unwant`; no candidate leaves a healthy source armed (live
+    /// tail) and drops an unhealthy one.
+    fn apply_pick(&mut self, log: LogKey, pick: Option<u64>) {
+        let current = self.rx.get(&log).map(|src| src.link);
+        match pick {
+            Some(new) if Some(new) == current => {}
+            Some(new) => {
+                if let Some(old) = current {
+                    self.send_unwant(old, &log);
+                }
+                self.start_rx(log, new);
+            }
+            None => {
+                let Some(old) = current else {
+                    return;
+                };
+                let now = self.mono();
+                let healthy = self.links.get(&old).is_some_and(|l| {
+                    l.mode == LinkMode::Active
+                        && !l.closing
+                        && l.errors.get(&log).is_none_or(|until| until.0 <= now.0)
+                }) && !self.log_paused(&log, now);
+                if !healthy {
+                    self.send_unwant(old, &log);
+                    self.rx.remove(&log);
+                }
+            }
+        }
+    }
+
+    fn reselect_all(&mut self) {
+        let mut logs: BTreeSet<LogKey> = self.rx.keys().copied().collect();
+        for entry in self.links.values() {
+            if entry.mode == LinkMode::Active {
+                logs.extend(entry.peer_vector.0.keys().copied());
+            }
+        }
+        for log in logs {
+            self.reselect_log(log);
+        }
+    }
+
+    /// Whether `link_id` still advertises more of `log` than is held.
+    fn advertises_more(&self, link_id: u64, log: &LogKey) -> bool {
+        self.links
+            .get(&link_id)
+            .and_then(|l| l.peer_vector.0.get(log))
+            .is_some_and(|adv| routing::wantable(self.local.0.get(log), adv, false))
+    }
+
+    /// The 30 s failover: an rx source that has not progressed while it still
+    /// advertises more is penalized for the log, and the log re-picked; when
+    /// it is the only candidate it is asked again from `contiguous + 1`
+    /// (`Want` is idempotent).
+    fn failover(&mut self, now: MonoInstant) {
+        let stalled: Vec<(LogKey, u64)> = self
+            .rx
+            .iter()
+            .filter(|(log, src)| {
+                now.0.saturating_sub(src.last_progress.0) >= routing::RX_STALL_MS
+                    && self.advertises_more(src.link, log)
+            })
+            .map(|(log, src)| (*log, src.link))
+            .collect();
+        for (log, link_id) in stalled {
+            if let Some(entry) = self.links.get_mut(&link_id) {
+                entry
+                    .errors
+                    .insert(log, MonoInstant(now.0 + routing::STALL_PENALTY_MS));
+            }
+            match self.pick(&log) {
+                Some(new) => self.apply_pick(log, Some(new)),
+                None => self.start_rx(log, link_id),
+            }
+        }
+    }
+
+    /// Lift expired penalties and re-pick the logs they covered.
+    fn expire_penalties(&mut self, now: MonoInstant) {
+        let mut lifted: BTreeSet<LogKey> = BTreeSet::new();
+        for entry in self.links.values_mut() {
+            entry.errors.retain(|log, until| {
+                let live = until.0 > now.0;
+                if !live {
+                    lifted.insert(*log);
+                }
+                live
+            });
+        }
+        for log in lifted {
+            self.reselect_log(log);
+        }
+    }
+
+    fn housekeeping(&mut self) {
+        let now = self.mono();
+        self.resolve_probes(now);
+        self.expire_penalties(now);
+        self.failover(now);
+        if self.refresh.is_empty() && self.links.values().any(|l| l.have_pending.is_some()) {
+            // A read that failed leaves `have`s owed: try again.
+            self.request_local();
+        }
+    }
+
+    /// Set the own-history `Links` flag from the active links' vectors and
+    /// the local one (the pure [`routing::own_history_on`]).
+    fn update_own_history(&mut self) {
+        let on = routing::own_history_on(
+            self.deps.identity.uuid(),
+            &self.local,
+            self.links
+                .values()
+                .filter(|l| l.mode == LinkMode::Active && l.ranked && !l.closing)
+                .map(|l| &l.peer_vector),
+        );
+        if on != self.own_history_on {
+            self.own_history_on = on;
+            self.deps
+                .own_history
+                .set(HoldSource::Links, on, self.mono());
         }
     }
 
@@ -755,13 +1508,19 @@ impl Actor {
             return;
         };
         let node = entry.handle.peer().node;
-        if let Some(ids) = self.by_node.get_mut(&node) {
+        self.probes.remove(&link_id);
+        let was_ranked = self.by_node.get_mut(&node).is_some_and(|ids| {
+            let before = ids.len();
             ids.retain(|id| *id != link_id);
-            if ids.is_empty() {
-                self.by_node.remove(&node);
-            }
+            ids.len() != before
+        });
+        if self.by_node.get(&node).is_some_and(Vec::is_empty) {
+            self.by_node.remove(&node);
         }
         self.count.fetch_sub(1, Ordering::AcqRel);
+        if matches!(why, LinkError::PeerClosed(CloseReason::NodeCollision)) {
+            self.report_clone(CloneKind::PeerClose, Some(node));
+        }
         if let Origin::Dialed {
             target_id, report, ..
         } = entry.origin
@@ -773,6 +1532,22 @@ impl Actor {
                 peer_node: Some(node),
             });
         }
+        // Probes waiting on this link: it is gone, so the newer link ranks.
+        let waiting: Vec<u64> = self
+            .probes
+            .iter()
+            .filter(|(_, p)| p.older == link_id)
+            .map(|(newer, _)| *newer)
+            .collect();
+        for newer in waiting {
+            self.probes.remove(&newer);
+            self.rank_link(newer);
+        }
+        if was_ranked {
+            self.drop_rx_of(link_id);
+            self.rank_node(node, true);
+        }
+        self.update_own_history();
     }
 
     fn on_request(&self, request: Request) {
@@ -780,21 +1555,24 @@ impl Actor {
             Request::Snapshot(reply) => {
                 let links = self
                     .links
-                    .values()
+                    .iter()
                     .take(SNAPSHOT_MAX_LINKS)
-                    .map(|entry| {
+                    .map(|(id, entry)| {
                         let peer: &PeerInfo = entry.handle.peer();
                         LinkStatus {
                             node: peer.node,
                             tag: peer.tag,
                             role: peer.role,
-                            mode: LinkMode::default(),
+                            mode: entry.mode,
                             dest: match &entry.origin {
                                 Origin::Inbound => None,
                                 Origin::Dialed { dest, .. } => Some(dest.clone()),
                             },
                             since: entry.since,
-                            rx_logs: 0,
+                            rx_logs: u32::try_from(
+                                self.rx.values().filter(|src| src.link == *id).count(),
+                            )
+                            .unwrap_or(u32::MAX),
                             unsolicited: 0,
                             last_error: None,
                         }
@@ -834,6 +1612,23 @@ impl Actor {
             self.on_ended(link_id, LinkError::Shutdown, Duration::ZERO);
         }
     }
+}
+
+/// A peer's advertised head from one `have` row; `None` for a malformed hash.
+fn have_head(log: &HaveLog) -> Option<LogHead> {
+    let frozen_at = log
+        .frozen_at
+        .map(|at| i64::try_from(at).unwrap_or(i64::MAX));
+    Some(LogHead {
+        counter: log.counter,
+        head_hash: hex_decode::<32>(&log.head)?,
+        state: if frozen_at.is_some() {
+            LogState::Frozen
+        } else {
+            LogState::Active
+        },
+        frozen_at,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -920,7 +1715,7 @@ mod tests {
     use crate::sync::journal_port::{ApplyProgress, IngestOutcome};
     use crate::sync::memory_journal::MemoryJournal;
     use crate::sync::sync_store::MemorySyncStore;
-    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::{AtomicBool, AtomicU64};
     use tokio::io::{DuplexStream, duplex};
 
     const BIG: usize = 4 << 20;
@@ -958,18 +1753,53 @@ mod tests {
         (log, lines)
     }
 
+    /// The log-only sink, recording every clone report too.
+    struct RecordingSink {
+        inner: LogOnlyForkSink,
+        clones: Mutex<Vec<CloneReport>>,
+    }
+
+    impl ForkSink for RecordingSink {
+        fn on_fork(&self, log: LogKey, evidence: ForkEvidence, source: NodeUuid) -> ForkAck {
+            self.inner.on_fork(log, evidence, source)
+        }
+        fn resumed(&self) -> Vec<LogKey> {
+            self.inner.resumed()
+        }
+        fn on_clone(&self, report: CloneReport) {
+            self.inner.on_clone(report.clone());
+            self.clones.lock().unwrap().push(report);
+        }
+    }
+
     struct Rig {
         handle: SyncHandle,
         intake: PeerIntake,
         join: JoinHandle<()>,
         cancel: Cancellation,
         clock: Arc<dyn Clock>,
+        pacer: Arc<Pacer>,
+        own_history: Arc<OwnHistoryHold>,
+        sink: Arc<RecordingSink>,
+        lines: Lines,
+    }
+
+    impl Rig {
+        fn clones(&self) -> Vec<CloneReport> {
+            self.sink.clones.lock().unwrap().clone()
+        }
     }
 
     fn start_with(journal: Arc<dyn JournalPort>) -> Rig {
         let clock: Arc<dyn Clock> = Arc::new(TokioClock(Instant::now()));
         let cancel = Cancellation::default();
-        let (log, _) = capture();
+        let (log, lines) = capture();
+        let pacer = Arc::new(Pacer::new("sync", clock.clone(), cancel.clone()));
+        let own_history = Arc::new(OwnHistoryHold::new(Arc::new(AtomicBool::new(false))));
+        let sink = Arc::new(RecordingSink {
+            inner: LogOnlyForkSink::new(log.clone(), clock.clone()),
+            clones: Mutex::new(Vec::new()),
+        });
         let (handle, intake, join) = SyncCoordinator::start(CoordinatorDeps {
             journal,
             sync_store: Arc::new(MemorySyncStore::new()),
@@ -977,10 +1807,11 @@ mod tests {
             boot: Uuid::from_u128(1),
             writer: Arc::new(FairWriter::new(8)),
             clock: clock.clone(),
-            pacer: Arc::new(Pacer::new("sync", clock.clone(), cancel.clone())),
+            pacer: pacer.clone(),
             status: Arc::new(WorkerStatus::default()),
-            log: log.clone(),
-            fork_sink: Arc::new(LogOnlyForkSink::new(log, clock.clone())),
+            log,
+            fork_sink: sink.clone(),
+            own_history: own_history.clone(),
             dial: DialConfig::default(),
             cancel: cancel.clone(),
         });
@@ -990,6 +1821,10 @@ mod tests {
             join,
             cancel,
             clock,
+            pacer,
+            own_history,
+            sink,
+            lines,
         }
     }
 
@@ -1481,5 +2316,641 @@ mod tests {
         sink.on_fork(a, evidence(), source);
         assert_eq!(lines.lock().unwrap().len(), 3, "an hour later logs again");
         assert!(sink.resumed().is_empty(), "never resumes");
+    }
+
+    // -----------------------------------------------------------------------
+    // Routing: duplicate links, Have/Want, failover, clones, own history
+    // -----------------------------------------------------------------------
+
+    use tokio::io::WriteHalf;
+
+    fn hello_boot(n: u8, boot: u128) -> LocalHello {
+        LocalHello::new(identity(n), Uuid::from_u128(boot))
+    }
+
+    fn node_of(n: u8) -> NodeUuid {
+        identity(n).uuid()
+    }
+
+    fn have_log(node: NodeUuid, inc: u32, counter: u64) -> HaveLog {
+        HaveLog {
+            node,
+            inc,
+            counter,
+            head: "00".repeat(32),
+            frozen_at: None,
+        }
+    }
+
+    /// The test-side end of a link: sends frames, records what the
+    /// coordinator wrote. `idx` is the connect order (the actor's link id order).
+    struct TestPeer {
+        idx: usize,
+        info: PeerInfo,
+        writer: WriteHalf<DuplexStream>,
+        frames: mpsc::UnboundedReceiver<PeerFrame>,
+        reader: tokio::task::JoinHandle<()>,
+    }
+
+    fn test_peer(idx: usize, est: Established<DuplexStream>) -> TestPeer {
+        let Established {
+            peer,
+            mut reader,
+            writer,
+        } = est;
+        let (tx, frames) = mpsc::unbounded_channel();
+        let reader = tokio::spawn(async move {
+            while let Ok(frame) = read_peer_frame(&mut reader, MAX_FRAME_BYTES).await {
+                if tx.send(frame).is_err() {
+                    break;
+                }
+            }
+        });
+        TestPeer {
+            idx,
+            info: peer,
+            writer,
+            frames,
+            reader,
+        }
+    }
+
+    impl TestPeer {
+        async fn send(&mut self, frame: PeerFrame) {
+            write_peer_frame(&mut self.writer, &frame).await.unwrap();
+            self.writer.flush().await.unwrap();
+        }
+
+        async fn send_have(&mut self, full: bool, ask: bool, logs: Vec<HaveLog>) {
+            self.send(PeerFrame::Have {
+                full,
+                ask,
+                logs,
+                forks: Vec::new(),
+            })
+            .await;
+        }
+
+        /// The next frame, pings included.
+        async fn next_raw(&mut self) -> PeerFrame {
+            match timeout(Duration::from_secs(5), self.frames.recv()).await {
+                Ok(Some(frame)) => frame,
+                Ok(None) => panic!("link ended while a frame was expected"),
+                Err(_) => panic!("no frame within 5 s"),
+            }
+        }
+
+        /// The next frame that is not a link-level `ping`.
+        async fn next(&mut self) -> PeerFrame {
+            loop {
+                match self.next_raw().await {
+                    PeerFrame::Ping { .. } => continue,
+                    frame => return frame,
+                }
+            }
+        }
+
+        async fn expect_have(&mut self) -> (bool, bool, Vec<HaveLog>) {
+            match self.next().await {
+                PeerFrame::Have {
+                    full, ask, logs, ..
+                } => (full, ask, logs),
+                other => panic!("expected have, got {other:?}"),
+            }
+        }
+
+        async fn expect_want(&mut self, node: NodeUuid, inc: u32, from: u64) {
+            match self.next().await {
+                PeerFrame::Want {
+                    node: n,
+                    inc: i,
+                    from: f,
+                } => assert_eq!((n, i, f), (node, inc, from)),
+                other => panic!("expected want, got {other:?}"),
+            }
+        }
+
+        async fn expect_unwant(&mut self, node: NodeUuid, inc: u32) {
+            match self.next().await {
+                PeerFrame::Unwant { node: n, inc: i } => assert_eq!((n, i), (node, inc)),
+                other => panic!("expected unwant, got {other:?}"),
+            }
+        }
+
+        async fn expect_close(&mut self) -> CloseReason {
+            match self.next().await {
+                PeerFrame::Close { reason, .. } => reason,
+                other => panic!("expected close, got {other:?}"),
+            }
+        }
+
+        /// Nothing but `ping`/`pong` arrives within a short while.
+        async fn quiet(&mut self) {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            while let Ok(frame) = self.frames.try_recv() {
+                assert!(
+                    matches!(frame, PeerFrame::Ping { .. } | PeerFrame::Pong { .. }),
+                    "link {} should be quiet, got {frame:?}",
+                    self.idx
+                );
+            }
+        }
+
+        /// Drop the link from the remote side.
+        fn end(self) {
+            self.reader.abort();
+            drop(self.writer);
+        }
+    }
+
+    async fn connect(rig: &Rig, idx: usize, hello: &LocalHello) -> TestPeer {
+        test_peer(idx, connect_inbound(rig, hello).await)
+    }
+
+    async fn snapshot(rig: &Rig) -> SyncSnapshot {
+        let budget = CallBudget {
+            deadline: MonoInstant(rig.clock.monotonic_now().0 + 5_000),
+            cancellation: Cancellation::default(),
+        };
+        rig.handle.snapshot(&budget).await.unwrap()
+    }
+
+    /// Connect-order indexes of `peers` in the duplicate order, best first.
+    fn expected_order(peers: &[&TestPeer]) -> Vec<usize> {
+        let keys: Vec<DupKey> = peers
+            .iter()
+            .map(|p| DupKey {
+                link: p.idx as u64,
+                dialer: p.info.dialer_node,
+                nonce: p.info.dialer_nonce,
+            })
+            .collect();
+        routing::duplicate_order(&keys)
+            .into_iter()
+            .map(|id| id as usize)
+            .collect()
+    }
+
+    fn rig_with_self_log() -> (Rig, Arc<MemoryJournal>) {
+        let journal = Arc::new(MemoryJournal::new(identity(1)));
+        journal.bootstrap();
+        (start_with(journal.clone()), journal)
+    }
+
+    /// Two inbound links from peer 2 with the same boot: returns
+    /// `(active, standby)` with the activation `have`s already consumed.
+    async fn two_links(rig: &Rig) -> (TestPeer, TestPeer) {
+        let mut first = connect(rig, 0, &peer_hello(2)).await;
+        first.expect_have().await;
+        let mut second = connect(rig, 1, &peer_hello(2)).await;
+        listed(rig, 2).await;
+        let order = expected_order(&[&first, &second]);
+        if order[0] == 0 {
+            second.quiet().await;
+            (first, second)
+        } else {
+            let (full, ask, _) = second.expect_have().await;
+            assert!(full && ask, "the new minimal link asks for the peer's have");
+            first.quiet().await;
+            (second, first)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn activation_sends_full_have() {
+        let (rig, journal) = rig_with_self_log();
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        let (full, ask, logs) = peer.expect_have().await;
+        assert!(full && !ask);
+        let own = journal.self_log();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(
+            (logs[0].node, logs[0].inc, logs[0].counter),
+            (own.node, own.incarnation, 1)
+        );
+        assert_eq!(logs[0].head.len(), 64);
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ask_answered_with_full_have() {
+        let (rig, _journal) = rig_with_self_log();
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        peer.quiet().await;
+        peer.send_have(true, true, Vec::new()).await;
+        let (full, ask, logs) = peer.expect_have().await;
+        assert!(full && !ask, "the reply is full and does not ask back");
+        assert_eq!(logs.len(), 1);
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rx_prefers_origin() {
+        let (rig, _journal) = rig_with_self_log();
+        let mut b = connect(&rig, 0, &peer_hello(2)).await;
+        b.expect_have().await;
+        let mut c = connect(&rig, 1, &peer_hello(3)).await;
+        c.expect_have().await;
+        let origin = node_of(3);
+
+        // B advertises C's log with a high counter and is wanted first.
+        b.send_have(true, false, vec![have_log(origin, 1, 50)])
+            .await;
+        b.expect_want(origin, 1, 1).await;
+        c.quiet().await;
+
+        // C, the origin, advertises less and still takes over.
+        c.send_have(true, false, vec![have_log(origin, 1, 10)])
+            .await;
+        b.expect_unwant(origin, 1).await;
+        c.expect_want(origin, 1, 1).await;
+        let snap = snapshot(&rig).await;
+        assert_eq!(snap.links[0].rx_logs, 0);
+        assert_eq!(snap.links[1].rx_logs, 1);
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failover_after_30s_unwant_old_want_new() {
+        let (rig, _journal) = rig_with_self_log();
+        let mut b = connect(&rig, 0, &peer_hello(2)).await;
+        b.expect_have().await;
+        let mut c = connect(&rig, 1, &peer_hello(3)).await;
+        c.expect_have().await;
+        let log_node = node_of(9);
+        b.send_have(true, false, vec![have_log(log_node, 1, 10)])
+            .await;
+        c.send_have(true, false, vec![have_log(log_node, 1, 8)])
+            .await;
+        b.expect_want(log_node, 1, 1).await;
+        c.quiet().await;
+
+        tokio::time::sleep(Duration::from_secs(28)).await;
+        b.quiet().await;
+        c.quiet().await;
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        b.expect_unwant(log_node, 1).await;
+        c.expect_want(log_node, 1, 1).await;
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failover_with_one_candidate_asks_again() {
+        let (rig, _journal) = rig_with_self_log();
+        let mut b = connect(&rig, 0, &peer_hello(2)).await;
+        b.expect_have().await;
+        let log_node = node_of(9);
+        b.send_have(true, false, vec![have_log(log_node, 1, 10)])
+            .await;
+        b.expect_want(log_node, 1, 1).await;
+        tokio::time::sleep(Duration::from_secs(31)).await;
+        b.expect_want(log_node, 1, 1).await;
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn two_links_only_minimal_carries_have_want() {
+        let (rig, _journal) = rig_with_self_log();
+        let (mut active, mut standby) = two_links(&rig).await;
+        let log_node = node_of(9);
+        active
+            .send_have(true, false, vec![have_log(log_node, 1, 5)])
+            .await;
+        active.expect_want(log_node, 1, 1).await;
+        standby.quiet().await;
+        let snap = snapshot(&rig).await;
+        let modes: Vec<LinkMode> = snap.links.iter().map(|l| l.mode).collect();
+        let mut expected = [LinkMode::Standby, LinkMode::Standby];
+        expected[active.idx] = LinkMode::Active;
+        assert_eq!(modes, expected);
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ending_active_promotes_standby_without_handshake() {
+        let (rig, _journal) = rig_with_self_log();
+        let (active, mut standby) = two_links(&rig).await;
+        active.end();
+        let (full, ask, _) = standby.expect_have().await;
+        assert!(full && ask, "promotion sends a full have that asks");
+        until(|| rig.handle.link_count() == 1).await;
+        let snap = snapshot(&rig).await;
+        assert_eq!(snap.links.len(), 1);
+        assert_eq!(snap.links[0].mode, LinkMode::Active);
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn have_on_standby_promotes_it() {
+        let (rig, _journal) = rig_with_self_log();
+        let (mut active, mut standby) = two_links(&rig).await;
+        let log_node = node_of(9);
+        standby
+            .send_have(true, false, vec![have_log(log_node, 1, 5)])
+            .await;
+        let (full, ask, _) = standby.expect_have().await;
+        assert!(full && !ask);
+        standby.expect_want(log_node, 1, 1).await;
+        active.quiet().await;
+        let snap = snapshot(&rig).await;
+        let modes: Vec<LinkMode> = snap.links.iter().map(|l| l.mode).collect();
+        let mut expected = [LinkMode::Standby, LinkMode::Standby];
+        expected[standby.idx] = LinkMode::Active;
+        assert_eq!(
+            modes, expected,
+            "the standby is active, the former active demoted"
+        );
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn third_link_closed_busy() {
+        let (rig, _journal) = rig_with_self_log();
+        let mut peers = Vec::new();
+        for idx in 0..3 {
+            peers.push(connect(&rig, idx, &peer_hello(2)).await);
+            if idx < 2 {
+                listed(&rig, idx + 1).await;
+            }
+        }
+        let refs: Vec<&TestPeer> = peers.iter().collect();
+        let order = expected_order(&refs);
+        let newest_standby = order[1..].iter().copied().max().unwrap();
+        for peer in &mut peers {
+            if peer.idx == newest_standby {
+                loop {
+                    match peer.next().await {
+                        PeerFrame::Close { reason, .. } => {
+                            assert_eq!(reason, CloseReason::Busy);
+                            break;
+                        }
+                        PeerFrame::Have { .. } => continue,
+                        other => panic!("unexpected {other:?}"),
+                    }
+                }
+            } else {
+                while let Ok(frame) = peer.frames.try_recv() {
+                    assert!(
+                        !matches!(frame, PeerFrame::Close { .. }),
+                        "only the newest standby is closed"
+                    );
+                }
+            }
+        }
+        until(|| rig.handle.link_count() == 2).await;
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn same_boot_two_links_is_duplicate() {
+        let (rig, _journal) = rig_with_self_log();
+        let (_active, _standby) = two_links(&rig).await;
+        assert_eq!(rig.handle.link_count(), 2);
+        assert!(rig.clones().is_empty(), "one boot is no clone");
+        let snap = snapshot(&rig).await;
+        let mut modes: Vec<LinkMode> = snap.links.iter().map(|l| l.mode).collect();
+        modes.sort_by_key(|m| *m == LinkMode::Standby);
+        assert_eq!(modes, [LinkMode::Active, LinkMode::Standby]);
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn third_party_clone_newer_closed_and_reported() {
+        let (rig, _journal) = rig_with_self_log();
+        let mut older = connect(&rig, 0, &hello_boot(2, 21)).await;
+        older.expect_have().await;
+
+        let mut newer = connect(&rig, 1, &hello_boot(2, 22)).await;
+        // The older link is probed with a ping; it answers.
+        match older.next_raw().await {
+            PeerFrame::Ping { n } => older.send(PeerFrame::Pong { n }).await,
+            other => panic!("expected the probe ping, got {other:?}"),
+        }
+        assert_eq!(newer.expect_close().await, CloseReason::NodeCollision);
+        until(|| !rig.clones().is_empty()).await;
+        assert_eq!(
+            rig.clones(),
+            vec![CloneReport {
+                subject: node_of(2),
+                kind: CloneKind::ThirdParty,
+                boots: vec![Uuid::from_u128(21), Uuid::from_u128(22)],
+                source: node_of(1),
+            }]
+        );
+        assert!(
+            rig.lines.lock().unwrap().iter().any(|l| l
+                == &format!(
+                    "sync: clone suspected for {} (third_party)",
+                    uuid8(&node_of(2))
+                )),
+            "{:?}",
+            rig.lines.lock().unwrap()
+        );
+        until(|| rig.handle.link_count() == 1).await;
+        let snap = snapshot(&rig).await;
+        assert_eq!(snap.links.len(), 1);
+        assert_eq!(
+            snap.links[0].mode,
+            LinkMode::Active,
+            "the older link is kept"
+        );
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn silent_older_link_dead_newer_ranked_no_report() {
+        let (rig, _journal) = rig_with_self_log();
+        let mut older = connect(&rig, 0, &hello_boot(2, 21)).await;
+        older.expect_have().await;
+
+        let mut newer = connect(&rig, 1, &hello_boot(2, 22)).await;
+        // The older link never answers its probe ping.
+        tokio::time::sleep(Duration::from_secs(11)).await;
+        let (full, ask, _) = newer.expect_have().await;
+        assert!(full && !ask, "the newer link is ranked as if alone");
+        assert!(rig.clones().is_empty(), "a restarted peer is not a clone");
+        until(|| rig.handle.link_count() == 1).await;
+        let snap = snapshot(&rig).await;
+        assert_eq!(snap.links.len(), 1);
+        assert_eq!(snap.links[0].mode, LinkMode::Active);
+        // The older link's stream is closed (dropping its handle writes
+        // `close{shutdown}`).
+        loop {
+            match timeout(Duration::from_secs(5), older.frames.recv()).await {
+                Ok(None) => break,
+                Ok(Some(PeerFrame::Ping { .. } | PeerFrame::Close { .. })) => continue,
+                other => panic!("expected the older link to end, got {other:?}"),
+            }
+        }
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn handshake_node_collision_reports_self() {
+        let (rig, _journal) = rig_with_self_log();
+        // Another daemon with this node's key dials in: the handshake is refused.
+        let (a, mut b) = duplex(BIG);
+        let clone_hello = hello_boot(1, 99);
+        let dialer = crate::sync::link::handshake(a, &clone_hello, Role::Dialer, None, deadline());
+        let offer = async {
+            let first = transport::read_frame_with_limit(&mut b, MAX_FRAME_BYTES)
+                .await
+                .unwrap();
+            rig.intake
+                .offer(PeerStream {
+                    stream: Box::new(b),
+                    first_frame: first,
+                    permit: Box::new(()),
+                })
+                .ok()
+                .expect("intake has room");
+        };
+        let (result, ()) = tokio::join!(dialer, offer);
+        assert!(matches!(
+            result,
+            Err(LinkError::PeerClosed(CloseReason::NodeCollision))
+        ));
+        until(|| !rig.clones().is_empty()).await;
+        let me = node_of(1);
+        assert_eq!(
+            rig.clones(),
+            vec![CloneReport {
+                subject: me,
+                kind: CloneKind::Handshake,
+                boots: Vec::new(),
+                source: me,
+            }]
+        );
+
+        // The same boot is a self link, not a clone.
+        let (a, mut b) = duplex(BIG);
+        let self_hello = hello_boot(1, 1);
+        let dialer = crate::sync::link::handshake(a, &self_hello, Role::Dialer, None, deadline());
+        let offer = async {
+            let first = transport::read_frame_with_limit(&mut b, MAX_FRAME_BYTES)
+                .await
+                .unwrap();
+            rig.intake
+                .offer(PeerStream {
+                    stream: Box::new(b),
+                    first_frame: first,
+                    permit: Box::new(()),
+                })
+                .ok()
+                .expect("intake has room");
+        };
+        let (result, ()) = tokio::join!(dialer, offer);
+        assert!(matches!(
+            result,
+            Err(LinkError::PeerClosed(CloseReason::SelfLink))
+        ));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(rig.clones().len(), 1, "a self link is no clone report");
+
+        // An established peer link closed with node_collision reports too.
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        peer.send(PeerFrame::Close {
+            reason: CloseReason::NodeCollision,
+            detail: None,
+        })
+        .await;
+        until(|| rig.clones().len() == 2).await;
+        assert_eq!(
+            rig.clones()[1],
+            CloneReport {
+                subject: me,
+                kind: CloneKind::PeerClose,
+                boots: Vec::new(),
+                source: node_of(2),
+            }
+        );
+        let hits = rig
+            .lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("sync: clone suspected for"))
+            .count();
+        assert_eq!(hits, 1, "one log line per subject per hour");
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    fn hold_on(rig: &Rig) -> bool {
+        rig.own_history.active(rig.clock.monotonic_now())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn peer_advertising_own_incarnation_sets_links() {
+        let (rig, _journal) = rig_with_self_log();
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        assert!(!hold_on(&rig));
+        peer.send_have(true, false, vec![have_log(node_of(1), 7, 5)])
+            .await;
+        until(|| hold_on(&rig)).await;
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ingest_or_link_end_clears_links() {
+        let (rig, journal) = rig_with_self_log();
+        let own = journal.self_log();
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+
+        // The peer holds the own log up to counter 4; local holds 1.
+        peer.send_have(true, false, vec![have_log(own.node, own.incarnation, 4)])
+            .await;
+        until(|| hold_on(&rig)).await;
+        // Local catches up (ingest up to the advertised counter).
+        for _ in 0..3 {
+            journal.author_raw("test.kind", b"{}".to_vec()).unwrap();
+        }
+        rig.pacer.kick();
+        until(|| !hold_on(&rig)).await;
+
+        // Another incarnation beyond local sets it again; the link ending
+        // clears it.
+        peer.send_have(true, false, vec![have_log(own.node, 9, 3)])
+            .await;
+        until(|| hold_on(&rig)).await;
+        peer.end();
+        until(|| !hold_on(&rig)).await;
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fresh_node_never_sets_links() {
+        let rig = start();
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        // The peer advertises its own log and a third node's, nothing of ours.
+        peer.send_have(
+            true,
+            false,
+            vec![have_log(node_of(2), 1, 9), have_log(node_of(5), 1, 3)],
+        )
+        .await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(!hold_on(&rig));
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
     }
 }

@@ -12,6 +12,7 @@ use herdr_threads::protocol::time::{Cancellation, Clock, MonoInstant, UtcMillis}
 use herdr_threads::service::fair_writer::FairWriter;
 use herdr_threads::service::pacer::Pacer;
 use herdr_threads::service::workers::WorkerStatus;
+use herdr_threads::store::connection::OwnHistoryHold;
 use herdr_threads::store::sync_dial_targets::DialState;
 use herdr_threads::sync::coordinator::{
     CoordinatorDeps, LogOnlyForkSink, SyncCoordinator, SyncHandle,
@@ -64,6 +65,7 @@ fn start(command: &str, pids: &Path) -> Node {
         status: Arc::new(WorkerStatus::default()),
         log: log.clone(),
         fork_sink: Arc::new(LogOnlyForkSink::new(log, clock)),
+        own_history: Arc::new(OwnHistoryHold::new(Arc::default())),
         dial: DialConfig {
             template: Some(DialTemplate::parse(&template).expect("template")),
             jitter_seed: Some(5),

@@ -218,7 +218,9 @@ pub struct OwnHistoryHold {
 }
 
 impl OwnHistoryHold {
-    pub(crate) fn new(apply_hint: Arc<AtomicBool>) -> Self {
+    /// A hold that sets `apply_hint` when it lifts. `SyncState` builds the
+    /// daemon's one; a coordinator test rig builds its own.
+    pub fn new(apply_hint: Arc<AtomicBool>) -> Self {
         Self {
             state: std::sync::Mutex::default(),
             apply_hint,
