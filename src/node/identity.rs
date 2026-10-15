@@ -133,7 +133,14 @@ impl fmt::Debug for NodeIdentity {
 }
 
 impl NodeIdentity {
-    pub(crate) fn from_seed(seed: [u8; 32]) -> Self {
+    /// An identity over a fixed 32-byte key seed, for tests that need a known
+    /// node (the production path reads the key file).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_seed(seed: [u8; 32]) -> Self {
+        Self::from_key_seed(seed)
+    }
+
+    fn from_key_seed(seed: [u8; 32]) -> Self {
         let signing = SigningKey::from_bytes(&seed);
         let public = signing.verifying_key().to_bytes();
         Self {
@@ -159,7 +166,7 @@ impl NodeIdentity {
     ) -> Result<Self, NodeKeyError> {
         let key_path = node_dir.join(KEY_FILE);
         match read_seed(&key_path)? {
-            Some(seed) => Ok(Self::from_seed(seed)),
+            Some(seed) => Ok(Self::from_key_seed(seed)),
             None if store_exists => Err(NodeKeyError::KeyMissingForStore { path: key_path }),
             None => create_key(node_dir, &key_path, || {}),
         }
@@ -284,12 +291,12 @@ fn create_key(
             File::open(node_dir)
                 .and_then(|dir| dir.sync_all())
                 .map_err(|e| unreadable(key_path, e))?;
-            Ok(NodeIdentity::from_seed(seed))
+            Ok(NodeIdentity::from_key_seed(seed))
         }
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
             // Another creator won: use its key, never overwrite it.
             match read_seed(key_path)? {
-                Some(winner) => Ok(NodeIdentity::from_seed(winner)),
+                Some(winner) => Ok(NodeIdentity::from_key_seed(winner)),
                 None => Err(unreadable(key_path, err)),
             }
         }
