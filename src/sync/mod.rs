@@ -5,6 +5,7 @@
 //! tree touches the store directly. Store-facing code lives in `src/store/`.
 
 pub mod chain;
+pub mod coordinator;
 pub mod envelope;
 pub mod facts;
 pub mod frame;
