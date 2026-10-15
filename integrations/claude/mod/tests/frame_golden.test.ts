@@ -19,7 +19,7 @@ for (const [name, golden] of Object.entries(cases)) {
 
 test('the golden cases cover every DP2 case', () => {
   expect(Object.keys(cases).sort()).toEqual(
-    ['attention', 'controls', 'empty', 'markers', 'multiline', 'name-equals-id'],
+    ['attention', 'controls', 'empty', 'markers', 'multiline', 'name-equals-id', 'tagged-ids'],
   )
 })
 

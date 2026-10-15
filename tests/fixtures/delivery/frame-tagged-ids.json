@@ -1,0 +1,20 @@
+[
+  {
+    "kind": "message",
+    "id": "mQ7aAb12Cd34",
+    "thread": "tQ7aZz99Yy88",
+    "threadName": "plans",
+    "sender": "sQ7aK3Fq9a2B",
+    "senderName": "alice",
+    "body": "body of mQ7aAb12Cd34"
+  },
+  {
+    "kind": "lazy",
+    "id": "mQ7aEf56Gh78",
+    "thread": "dK3Fq9a2B7x",
+    "threadName": "plans",
+    "sender": "sQ7aK3Fq9a2B",
+    "senderName": "bob",
+    "body": "body of mQ7aEf56Gh78"
+  }
+]

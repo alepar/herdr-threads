@@ -155,9 +155,14 @@ pub fn relative_pane_nick(
     parts.join("/")
 }
 
-/// A seat ID short enough for a nick: compact IDs are kept whole; persisted
-/// UUID-suffixed IDs keep eight suffix characters.
+/// A seat ID short enough for a nick: a tagged public ID `s<tag><8>` becomes
+/// `s<8>` (the random suffix, never the node tag, as `ports::short_seat`);
+/// other compact IDs are kept whole; persisted UUID-suffixed IDs keep eight
+/// suffix characters.
 pub fn short_seat(seat: &str) -> String {
+    if let Some((_, suffix)) = crate::protocol::ids::public_id_parts("s", seat) {
+        return format!("s{suffix}");
+    }
     match seat.split_once('-') {
         Some((prefix, suffix)) if suffix.chars().count() > 8 => {
             format!("{prefix}-{}", suffix.chars().take(8).collect::<String>())

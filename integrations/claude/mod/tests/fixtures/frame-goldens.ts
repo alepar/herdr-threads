@@ -190,6 +190,29 @@ export default {
     ],
     "text": "[herdr-threads] new messages:\n\n[herdr-threads] message m1 in T1 \"plans\" from S1 \"alice\" [human]:\n  human author\n\n[herdr-threads] message m2 in T1 \"plans\" from S1 \"alice\" [relays user]:\n  relays the user\n\n[herdr-threads] message m3 in T1 \"plans\" from S1 \"alice\" [query]:\n  query\n\n[herdr-threads] message m4 in T1 \"plans\" from S1 \"alice\" [request]:\n  request\n\n[herdr-threads] message m5 in T1 \"plans\" from S1 \"alice\" [rule]:\n  rule\n\n[herdr-threads] message m6 in T1 \"plans\" from S1 \"alice\":\n  unknown intent adds no marker\n\n[herdr-threads] message m7 in T1 \"plans\" from S1 \"alice\" [human] [relays user] [rule]:\n  all markers, ack required\n\n[herdr-threads] message m8 in T1 \"plans\" from S1 \"alice\":\n  no marker"
   },
+  "tagged-ids": {
+    "items": [
+      {
+        "kind": "message",
+        "id": "mQ7aAb12Cd34",
+        "thread": "tQ7aZz99Yy88",
+        "threadName": "plans",
+        "sender": "sQ7aK3Fq9a2B",
+        "senderName": "alice",
+        "body": "body of mQ7aAb12Cd34"
+      },
+      {
+        "kind": "lazy",
+        "id": "mQ7aEf56Gh78",
+        "thread": "dK3Fq9a2B7x",
+        "threadName": "plans",
+        "sender": "sQ7aK3Fq9a2B",
+        "senderName": "bob",
+        "body": "body of mQ7aEf56Gh78"
+      }
+    ],
+    "text": "[herdr-threads] new messages:\n\n[herdr-threads] message mQ7aAb12Cd34 in tQ7aZz99Yy88 \"plans\" from sQ7aK3Fq9a2B \"alice\":\n  body of mQ7aAb12Cd34\n\n[herdr-threads] lazy mQ7aEf56Gh78 in dK3Fq9a2B7x \"plans\" from sQ7aK3Fq9a2B \"bob\":\n  body of mQ7aEf56Gh78"
+  },
   "attention": {
     "items": [
       {

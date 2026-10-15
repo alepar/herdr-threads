@@ -1808,3 +1808,23 @@ fn human_guidance_machine_and_foreign_seat_selectors_survive_text_budget_boundar
     );
     assert_eq!(serde_json::to_vec(&result).unwrap(), frozen);
 }
+
+#[test]
+fn tagged_and_direct_ids_render_unchanged_in_text_output() {
+    let result: CommandResult = serde_json::from_value(serde_json::json!({"kind":"inbox_batch","data":{
+        "items":[{"kind":"invitation","thread":"dK3Fq9a2B7x","topic_data":"direct","invitation":"iQ7aAb12Cd34","required_service":null},
+                 {"kind":"invitation","thread":"tQ7aZz99Yy88","topic_data":"group","invitation":"iQ7aEf56Gh78","required_service":null}],
+        "next_cursor":null,"next_argv":null,"high_water_ordinal":2,"scope_revision":null,"has_more":false,
+        "stop_reason":"complete","consistency":"bounded_live"}}))
+    .unwrap();
+    let rendered =
+        String::from_utf8(encode_selected(&result, &OutputSpec::default()).unwrap()).unwrap();
+    for id in [
+        "dK3Fq9a2B7x",
+        "iQ7aAb12Cd34",
+        "tQ7aZz99Yy88",
+        "iQ7aEf56Gh78",
+    ] {
+        assert!(rendered.contains(id), "{id} missing from {rendered}");
+    }
+}
