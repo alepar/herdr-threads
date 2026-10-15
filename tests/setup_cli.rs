@@ -1747,6 +1747,314 @@ fn bare_setup_exits_nonzero_only_for_a_failed_harness() {
     }
 }
 
+/// The foreign `SessionStart` hook of the stale-record fixture (another tool's, never ours).
+const STALE_FOREIGN: &str = "bash '/h/herdr-agent-state.sh' session";
+const STALE_RECORDED_OWNER: &str = "8f4b21db-e3c2-4a7b-b63d-93674253cc0c";
+const STALE_COPIED_OWNER: &str = "b472b2c3-e4e5-49d0-963e-3ee6cce8a2d5";
+
+fn stale_group(event: &str, command: String) -> serde_json::Value {
+    let mut group =
+        serde_json::json!({"hooks":[{"command":command,"timeout":10,"type":"command"}]});
+    if event == "PreToolUse" {
+        group["matcher"] = serde_json::json!("^Bash$");
+    }
+    group
+}
+
+/// The per-event owner-marked command an Oct 2 to Oct 9 setup wrote for `event`.
+fn stale_command(s: &Scratch, event: &str, owner: &str) -> String {
+    format!(
+        "{} '--event' '{event}' # herdr-threads-owner:{owner}",
+        owned_codex_command(s)
+    )
+}
+
+/// The live shape reported on v0.11.0: a v2 manifest (written Oct 7) records the three per-event
+/// groups of installation `STALE_RECORDED_OWNER` over a file that held only a foreign
+/// `SessionStart` hook; hooks.json was later hand-copied (Oct 10) from another profile, so it
+/// holds the same groups marked by `STALE_COPIED_OWNER`, after the foreign hook. `edit` changes
+/// the copied file's value before it is written (negative controls). Returns the manifest path,
+/// the stale manifest bytes and the hooks.json bytes.
+fn seed_stale_record(
+    s: &Scratch,
+    edit: impl FnOnce(&mut serde_json::Value),
+) -> (PathBuf, Vec<u8>, Vec<u8>) {
+    use sha2::Digest;
+    fs::create_dir(&s.codex_home).unwrap();
+    fs::write(s.hooks(), b"{}").unwrap();
+    // A first setup creates the state directory; its records are then replaced by the fixture.
+    let setup = s.run(&["setup", "codex", "--json"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    let manifest_path = PathBuf::from(json(&setup)["manifest"].as_str().unwrap());
+    let foreign =
+        serde_json::json!({"hooks":[{"command":STALE_FOREIGN,"timeout":10,"type":"command"}]});
+    let mut original =
+        serde_json::to_vec_pretty(&serde_json::json!({"hooks":{"SessionStart":[foreign]}}))
+            .unwrap();
+    original.push(b'\n');
+    let fingerprint = |bytes: &[u8]| format!("sha256:{:x}", sha2::Sha256::digest(bytes));
+    let events = ["SessionStart", "SubagentStart", "PreToolUse"];
+    let owned: Vec<serde_json::Value> = events
+        .iter()
+        .map(|event| {
+            let group = stale_group(event, stale_command(s, event, STALE_RECORDED_OWNER));
+            serde_json::json!({
+                "event": event,
+                "fingerprint": fingerprint(&serde_json::to_vec(&group).unwrap()),
+                "group": group,
+            })
+        })
+        .collect();
+    let mut installed: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    for entry in &owned {
+        installed["hooks"][entry["event"].as_str().unwrap()]
+            .as_array_mut()
+            .map(|groups| groups.push(entry["group"].clone()))
+            .unwrap_or_else(|| {
+                installed["hooks"][entry["event"].as_str().unwrap()] =
+                    serde_json::json!([entry["group"]]);
+            });
+    }
+    let manifest = serde_json::to_vec(&serde_json::json!({
+        "version": 2,
+        "harness": "codex",
+        "scope": "user",
+        "path": s.hooks().display().to_string(),
+        "original_bytes": original,
+        "installation_base_bytes": original,
+        "installation_id": STALE_RECORDED_OWNER,
+        "owned": owned,
+        "installed_fingerprint": fingerprint(&serde_json::to_vec(&installed).unwrap()),
+        "phase": "installed",
+    }))
+    .unwrap();
+    fs::write(&manifest_path, &manifest).unwrap();
+    let copied = |event: &str| stale_group(event, stale_command(s, event, STALE_COPIED_OWNER));
+    let mut hooks = serde_json::json!({"hooks":{
+        "PreToolUse": [copied("PreToolUse")],
+        "SessionStart": [foreign, copied("SessionStart")],
+        "SubagentStart": [copied("SubagentStart")],
+    }});
+    edit(&mut hooks);
+    let bytes = serde_json::to_vec(&hooks).unwrap();
+    fs::write(s.hooks(), &bytes).unwrap();
+    for leftover in fs::read_dir(&s.codex_home).unwrap() {
+        let name = leftover.unwrap().file_name().to_string_lossy().into_owned();
+        if name.ends_with(".herdr-threads") {
+            fs::remove_file(s.codex_home.join(name)).unwrap();
+        }
+    }
+    (manifest_path, manifest, bytes)
+}
+
+/// Retained `.herdr-threads` backups beside `path`, as byte contents.
+fn backups_beside(path: &Path) -> Vec<Vec<u8>> {
+    let prefix = format!("{}.", path.file_name().unwrap().to_string_lossy());
+    fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.starts_with(&prefix) && name.ends_with(".herdr-threads")
+        })
+        .map(|entry| fs::read(entry.path()).unwrap())
+        .collect()
+}
+
+/// The foreign-only file unsetup leaves once our groups are removed.
+fn foreign_only() -> serde_json::Value {
+    serde_json::json!({"hooks":{"SessionStart":[
+        {"hooks":[{"command":STALE_FOREIGN,"timeout":10,"type":"command"}]}
+    ]}})
+}
+
+/// User decision (v0.11 qualification): herdr-threads groups an earlier setup of ours left are
+/// upgraded, not preserved as "partial or edited", when the recorded manifest is stale because
+/// the hook file was replaced by a copy holding recognisably owned groups (another owner marker,
+/// our exact per-event spelling and declared groups, an older event subset). Setup adopts them in
+/// place of the record, upgrades them to the current declaration with a timestamped backup and an
+/// atomic replace, keeps the foreign hook in its slot and value, and keeps the superseded record;
+/// unsetup removes them likewise; the installer reports them owned and updates them.
+/// Kills: refusing the stale record (the reported `partial or edited` / `remove by hand`), adopting
+/// without upgrading, moving or rewriting the foreign hook, losing the backup or the record.
+#[test]
+fn stale_record_over_copied_owned_codex_hooks_is_upgraded_and_removable() {
+    // setup
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.158.0");
+    let (manifest_path, stale_manifest, before) = seed_stale_record(&s, |_| {});
+    let setup = s.run(&["setup", "codex", "--json"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    let report = json(&setup);
+    assert_eq!(report["action"], "installed", "{report}");
+    let warnings = report["warnings"].to_string();
+    assert!(
+        warnings.contains(&format!(
+            "no longer held the hook groups recorded for installation {STALE_RECORDED_OWNER}"
+        )) && warnings.contains(STALE_COPIED_OWNER),
+        "{warnings}"
+    );
+    let hooks: serde_json::Value = serde_json::from_slice(&fs::read(s.hooks()).unwrap()).unwrap();
+    assert_eq!(
+        hooks["hooks"]["SessionStart"][0],
+        foreign_only()["hooks"]["SessionStart"][0]
+    );
+    let native = owned_codex_command(&s).replace("'hook' 'codex'", "'hook-event' 'codex'");
+    for event in CODEX_OWNED_EVENTS {
+        let commands: Vec<&str> = hooks["hooks"][event]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|group| group["hooks"][0]["command"].as_str().unwrap())
+            .filter(|command| *command != STALE_FOREIGN)
+            .collect();
+        assert_eq!(commands, [format!("{native} '{event}'")], "{event}");
+    }
+    assert!(
+        !fs::read_to_string(s.hooks())
+            .unwrap()
+            .contains("herdr-threads-owner")
+    );
+    assert_eq!(backups_beside(&s.hooks()), std::slice::from_ref(&before));
+    assert_eq!(
+        backups_beside(&manifest_path),
+        std::slice::from_ref(&stale_manifest)
+    );
+    // Atomic replace leaves no temporary sibling.
+    assert!(fs::read_dir(&s.codex_home).unwrap().all(|e| {
+        !e.unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".hooks.json.herdr-")
+    }));
+    assert_eq!(
+        json(&s.run(&["setup", "codex", "--json"]))["action"],
+        "already_installed"
+    );
+    let unsetup = s.run(&["unsetup", "codex", "--json"]);
+    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
+    let after: serde_json::Value = serde_json::from_slice(&fs::read(s.hooks()).unwrap()).unwrap();
+    assert_eq!(after, foreign_only());
+
+    // unsetup straight over the stale record
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.158.0");
+    let (manifest_path, stale_manifest, _) = seed_stale_record(&s, |_| {});
+    let unsetup = s.run(&["unsetup", "codex", "--json"]);
+    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
+    let report = json(&unsetup);
+    assert_eq!(report["action"], "removed", "{report}");
+    assert_eq!(report["adopted"], STALE_COPIED_OWNER, "{report}");
+    assert_eq!(
+        report["superseded_record"]["owner"], STALE_RECORDED_OWNER,
+        "{report}"
+    );
+    let after: serde_json::Value = serde_json::from_slice(&fs::read(s.hooks()).unwrap()).unwrap();
+    assert_eq!(after, foreign_only());
+    assert!(!manifest_path.exists());
+    assert_eq!(backups_beside(&manifest_path), [stale_manifest]);
+
+    // the installer
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.158.0");
+    seed_stale_record(&s, |_| {});
+    let installer = s.run(&["internal", "installer-integrations"]);
+    let out = text(&installer.stdout);
+    assert!(
+        out.contains("codex hooks: updated"),
+        "{out}{}",
+        text(&installer.stderr)
+    );
+    assert!(!out.contains("partial or edited"), "{out}");
+}
+
+/// Negative controls for [`stale_record_over_copied_owned_codex_hooks_is_upgraded_and_removable`]:
+/// groups that are not attributable to an earlier setup of ours are preserved. With the record
+/// stale, setup, unsetup and the installer refuse and write nothing (hooks.json, manifest, no
+/// backups). Kills: treating extra user arguments, another executable, an undeclared event or a
+/// recorded group still present as an owned stale copy.
+#[test]
+fn stale_record_beside_unattributable_hooks_is_preserved() {
+    type Edit = Box<dyn Fn(&Scratch, &mut serde_json::Value)>;
+    let controls: Vec<(&str, Edit)> = vec![
+        (
+            "extra user argument",
+            Box::new(|_, hooks| {
+                let command = hooks["hooks"]["SessionStart"][1]["hooks"][0]["command"]
+                    .as_str()
+                    .unwrap()
+                    .replace(" # ", " '--verbose' # ");
+                hooks["hooks"]["SessionStart"][1]["hooks"][0]["command"] = command.into();
+            }),
+        ),
+        (
+            "another executable",
+            Box::new(|s, hooks| {
+                let exe = Path::new(BIN).canonicalize().unwrap().display().to_string();
+                *hooks = serde_json::from_str(
+                    &hooks.to_string().replace(&exe, "/opt/other/herdr-threads"),
+                )
+                .unwrap();
+                assert!(!hooks.to_string().contains(&owned_codex_command(s)));
+            }),
+        ),
+        (
+            "undeclared event",
+            Box::new(|s, hooks| {
+                hooks["hooks"]["Stop"] = serde_json::json!([stale_group(
+                    "Stop",
+                    stale_command(s, "Stop", STALE_COPIED_OWNER)
+                )]);
+            }),
+        ),
+        (
+            "recorded group still present",
+            Box::new(|s, hooks| {
+                hooks["hooks"]["PreToolUse"] = serde_json::json!([stale_group(
+                    "PreToolUse",
+                    stale_command(s, "PreToolUse", STALE_RECORDED_OWNER)
+                )]);
+            }),
+        ),
+    ];
+    for (control, edit) in controls {
+        let s = Scratch::new();
+        s.harness("codex", "codex-cli 0.158.0");
+        let (manifest_path, manifest, bytes) = seed_stale_record(&s, |hooks| edit(&s, hooks));
+        for args in [
+            &["setup", "codex", "--json"][..],
+            &["unsetup", "codex", "--json"],
+            &["internal", "installer-integrations"],
+        ] {
+            let out = s.run(args);
+            if args[0] == "internal" {
+                assert!(
+                    text(&out.stdout).contains("codex hooks: failed"),
+                    "{control}: {}",
+                    text(&out.stdout)
+                );
+            } else {
+                assert!(
+                    !out.status.success(),
+                    "{control} {args:?}: {}",
+                    text(&out.stdout)
+                );
+            }
+            assert_eq!(fs::read(s.hooks()).unwrap(), bytes, "{control} {args:?}");
+            assert_eq!(
+                fs::read(&manifest_path).unwrap(),
+                manifest,
+                "{control} {args:?}"
+            );
+            assert!(backups_beside(&s.hooks()).is_empty(), "{control} {args:?}");
+            assert!(
+                backups_beside(&manifest_path).is_empty(),
+                "{control} {args:?}"
+            );
+        }
+    }
+}
+
 /// Copying stable hooks into another profile does not copy the private ownership evidence.
 /// Status, setup and unsetup preserve the foreign bytes in both profiles.
 #[test]
