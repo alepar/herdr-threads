@@ -26,6 +26,7 @@
 //!    directly; they use DeliveryTail.
 
 mod node_genesis;
+mod node_retag;
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -39,6 +40,7 @@ use crate::sync::EntityKey;
 
 pub use crate::store::apply::{ApplyContext, Provenance};
 pub use node_genesis::{GenesisPayload, NodeGenesis, Predecessor};
+pub use node_retag::{NodeRetag, RetagPayload, publish_committed_tag};
 
 /// A handler's failure, split by what the engine does next.
 ///
@@ -162,7 +164,12 @@ impl FactRegistry {
 
     /// The registry of shipped kinds.
     pub fn builtins() -> &'static FactRegistry {
-        BUILTINS.get_or_init(|| FactRegistry::builder().with::<NodeGenesis>().build())
+        BUILTINS.get_or_init(|| {
+            FactRegistry::builder()
+                .with::<NodeGenesis>()
+                .with::<NodeRetag>()
+                .build()
+        })
     }
 
     /// A leaked registry holding the builtins plus what `extend` adds, so

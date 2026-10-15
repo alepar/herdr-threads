@@ -216,18 +216,21 @@ pub fn apply_authored(
     decision: DecisionInstant,
     ingest_seq: i64,
 ) -> Result<(), ApiError> {
-    apply_authored_with(tx, ctx.sync()?, decision, ingest_seq)
+    apply_authored_with(tx, ctx.sync()?, decision, ingest_seq).map(|_| ())
 }
 
 /// [`apply_authored`] over an explicit runtime, for `journal::open`, which
-/// applies the bootstrap genesis before the runtime is installed.
+/// applies the bootstrap genesis before the runtime is installed. Returns the
+/// tag counter the entry (or a follow-up it queued) raised, for the caller to
+/// pass on as [`ApplyProgress::self_tag_k`].
 pub(crate) fn apply_authored_with(
     tx: &Transaction<'_>,
     sync: &SyncState,
     decision: DecisionInstant,
     ingest_seq: i64,
-) -> Result<(), ApiError> {
-    apply_entry(tx, sync, decision, ingest_seq, ApplyMode::Head, true).map(|_| ())
+) -> Result<Option<u32>, ApiError> {
+    apply_entry(tx, sync, decision, ingest_seq, ApplyMode::Head, true)
+        .map(|entered| entered.self_tag_k)
 }
 
 struct EntryRow {
@@ -497,9 +500,14 @@ fn apply_entry(
             }
             // Follow-ups go in after the trigger's own update, still inside
             // its savepoint, so their deps include the trigger.
+            let mut self_tag_k = handled.self_tag_k;
             for fact in &handled.follow_ups {
-                let Err(error) = journal::author_queued(tx, sync, decision, fact) else {
-                    continue;
+                let error = match journal::author_queued(tx, sync, decision, fact) {
+                    Ok(authored) => {
+                        self_tag_k = self_tag_k.max(authored.self_tag_k);
+                        continue;
+                    }
+                    Err(error) => error,
                 };
                 rollback_savepoint(tx)?;
                 if authored || matches!(FactError::from_api(error.clone()), FactError::Store(_)) {
@@ -520,7 +528,7 @@ fn apply_entry(
                 .map_err(store_error)?;
             Ok(Entered {
                 outcome: ApplyOutcome::Applied,
-                self_tag_k: handled.self_tag_k,
+                self_tag_k,
             })
         }
         Err(FactError::Rejected(error)) => {

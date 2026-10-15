@@ -72,6 +72,8 @@ pub struct Authored {
     pub counter: u64,
     pub hlc: HlcStamp,
     pub hash: [u8; 32],
+    /// The tag counter this entry or a follow-up it applied raised, if any.
+    pub self_tag_k: Option<u32>,
 }
 
 fn corrupt(detail: impl Into<String>) -> ApiError {
@@ -461,12 +463,13 @@ fn begin_incarnation_with(
     let ingest_seq = insert_pending(tx, log_ix, &envelope, decision)?;
     tx.execute("UPDATE local_node SET active_log_ix=?1", [log_ix])
         .map_err(store_error)?;
-    apply::apply_authored_with(tx, sync, decision, ingest_seq)?;
+    let self_tag_k = apply::apply_authored_with(tx, sync, decision, ingest_seq)?;
     Ok(Authored {
         ingest_seq,
         counter: 1,
         hlc,
         hash: envelope.hash,
+        self_tag_k,
     })
 }
 
@@ -639,12 +642,13 @@ fn author_encoded(
         params![active.log_ix, counter as i64, envelope.hash.as_slice()],
     )
     .map_err(store_error)?;
-    apply::apply_authored_with(tx, sync, decision, ingest_seq)?;
+    let self_tag_k = apply::apply_authored_with(tx, sync, decision, ingest_seq)?;
     Ok(Authored {
         ingest_seq,
         counter,
         hlc,
         hash: envelope.hash,
+        self_tag_k,
     })
 }
 
