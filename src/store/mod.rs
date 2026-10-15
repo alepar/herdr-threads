@@ -1,4 +1,5 @@
 //! SQLite-backed production store dispatch.
+pub mod apply;
 pub mod archival;
 pub mod attention;
 pub mod bindings;

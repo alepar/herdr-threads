@@ -5,6 +5,7 @@
 //! tree touches the store directly. Store-facing code lives in `src/store/`.
 
 pub mod envelope;
+pub mod facts;
 pub mod hlc;
 
 use std::collections::BTreeMap;
