@@ -150,12 +150,16 @@ const INSERTS: &[(&str, &str)] = &[
         "INSERT INTO archival_instances(instance_id,runtime_boot) VALUES ('34750f98bd59fcfc946da45aaabe933b','b')",
     ),
     (
+        "archival_hosts",
+        "INSERT INTO archival_hosts(host_id) VALUES ((SELECT min(host_id) FROM herdr_hosts))",
+    ),
+    (
         "channel_archival",
         "INSERT INTO channel_archival(thread_id,instance_id) VALUES ('t','34750f98bd59fcfc946da45aaabe933b')",
     ),
     (
         "seat_archival",
-        "INSERT INTO seat_archival(seat_id,instance_id) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b')",
+        "INSERT INTO seat_archival(seat_id,instance_id,host_id) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b',(SELECT min(host_id) FROM herdr_hosts))",
     ),
     (
         "channel_handoff_fences",

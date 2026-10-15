@@ -123,6 +123,7 @@ const APPLY_TABLES: &[&str] = &["journal"];
 const SYNC_TABLES: &[&str] = &["journal", "sync_logs", "sync_dial_targets"];
 const ARCHIVAL_TABLES: &[&str] = &[
     "archival_instances",
+    "archival_hosts",
     "channel_archival",
     "seat_archival",
     "channel_handoff_fences",

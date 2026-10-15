@@ -118,6 +118,27 @@ impl HostPort for Host {
         unreachable!()
     }
 }
+/// The fixture's one attached host: `test_host_id()` with this port and reachability.
+fn single_host(
+    port: Arc<Host>,
+    reachability: Arc<HostReachability>,
+) -> Arc<dyn herdr_threads::service::archival::ArchivalHosts> {
+    Arc::new(herdr_threads::service::archival::StaticHosts(vec![
+        herdr_threads::service::archival::ArchivalHost {
+            host_id: herdr_threads::test_support::test_host_id(),
+            port,
+            reachability,
+        },
+    ]))
+}
+/// The reachability of the worker's one fixture host.
+fn reach(worker: &ArchivalWorker) -> Arc<HostReachability> {
+    worker
+        .hosts
+        .get(herdr_threads::test_support::test_host_id())
+        .unwrap()
+        .reachability
+}
 struct RunningClock(std::time::Instant);
 impl Clock for RunningClock {
     fn utc_now(&self) -> UtcMillis {
@@ -171,9 +192,8 @@ fn worker_fixture_from_store(
     reachability.mark_archival_published(100);
     let worker = ArchivalWorker {
         store: Arc::new(fixture.store),
-        host: host.clone(),
+        hosts: single_host(host.clone(), reachability),
         writer,
-        reachability,
         source,
         boot: "worker".into(),
         after_ms: 3_600_000,
@@ -199,7 +219,7 @@ fn archival_worker_host_read_releases_both_writers_and_shutdown_owns_cancellatio
 #[test]
 fn archival_worker_initial_unknown_does_not_read_host_and_parked_lane_stops() {
     let (mut worker, host, _db, _directory) = worker_fixture();
-    worker.reachability.mark_archival_uncertain();
+    reach(&worker).mark_archival_uncertain();
     assert!(!worker.run_page().unwrap());
     assert_eq!(host.calls.load(Ordering::SeqCst), 0);
     worker.after_ms = 0;
@@ -332,7 +352,7 @@ fn archival_worker_before_host_admission_waits_for_safety_tick() {
             _directory: directory,
         });
     worker.cancellation = cancellation.clone();
-    worker.reachability.mark_archival_uncertain();
+    reach(&worker).mark_archival_uncertain();
     let store = worker.store.clone();
     let (idle_tx, idle_rx) = mpsc::channel();
     pacer.set_idle_hook(Box::new(move |n| {
@@ -436,9 +456,7 @@ fn archival_worker_negative_survives_failed_persistence_before_next_final_decisi
             mono: 0,
             utc: UtcMillis(0),
             after_ms: 100,
-            host_generation: 1,
-            coherent: true,
-            valid_until_mono: None,
+            hosts: herdr_threads::test_support::test_host_evidence(1, true),
             legacy_source: Some("covered".into()),
         };
         archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
@@ -522,7 +540,7 @@ fn archival_worker_negative_survives_failed_persistence_before_next_final_decisi
         host.negative_failure.store(0, Ordering::SeqCst);
         host.cancel_on_read.store(false, Ordering::SeqCst);
         // Even a coherent observer publication between turns must not erase the negative generation.
-        worker.reachability.mark_archival_published(100);
+        reach(&worker).mark_archival_published(100);
         let _ = worker.run_page();
         assert!(
             !db.query_row("SELECT archived FROM threads WHERE id='t'", [], |r| r
@@ -561,9 +579,7 @@ fn archival_worker_negative_recovery_cycles_do_not_rediscover_retained_history()
             mono: 100,
             utc: UtcMillis(100),
             after_ms: 3_600_000,
-            host_generation: 1,
-            coherent: true,
-            valid_until_mono: None,
+            hosts: herdr_threads::test_support::test_host_evidence(1, true),
             legacy_source: Some("covered".into()),
         };
         for _ in 0..size / archival::PAGE + 3 {
@@ -580,7 +596,7 @@ fn archival_worker_negative_recovery_cycles_do_not_rediscover_retained_history()
         for cycle in 1..=3 {
             let now = 100 + cycle * 60_000;
             clock.0.store(now, Ordering::SeqCst);
-            worker.reachability.mark_archival_published(now);
+            reach(&worker).mark_archival_published(now);
             // One stable working read followed by committed negative/recovery and
             // all advertised continuation passes, through the actual worker.
             let before = host.calls.load(Ordering::SeqCst);
@@ -591,7 +607,7 @@ fn archival_worker_negative_recovery_cycles_do_not_rediscover_retained_history()
                 }
             }
             assert_eq!(host.calls.load(Ordering::SeqCst), before + 1);
-            worker.reachability.mark_archival_published(now);
+            reach(&worker).mark_archival_published(now);
             for _ in 0..size / archival::PAGE + 8 {
                 turns += 1;
                 if !worker.run_page().unwrap() {
@@ -637,7 +653,7 @@ fn archival_worker_busy_member_does_not_reset_unrelated_all_left_grace() {
     for minute in 0..=60 {
         let now = 100 + minute * 60_000;
         clock.0.store(now, Ordering::SeqCst);
-        worker.reachability.mark_archival_published(now);
+        reach(&worker).mark_archival_published(now);
         for turn in 0..32 {
             if !worker.run_page().unwrap() {
                 break;
@@ -702,9 +718,8 @@ fn journal_worker_fixture() -> JournalWorkerFixture {
     });
     let worker = ArchivalWorker {
         store: Arc::new(store),
-        host: host.clone(),
+        hosts: single_host(host.clone(), Arc::new(HostReachability::default())),
         writer,
-        reachability: Arc::new(HostReachability::default()),
         source,
         boot: "worker".into(),
         after_ms: 60000,
@@ -818,7 +833,7 @@ fn archival_worker_deciding_bootstrap_veto_reaches_next_consumer() {
     // several pages: drain each one rather than assume a single page.
     drain_worker_traversal(&mut worker);
     super::archival_legacy::modern_compound(&paths, true, false);
-    worker.reachability.mark_archival_published(100);
+    reach(&worker).mark_archival_published(100);
     db.execute("UPDATE seat_archival SET next_mono=999999", [])
         .unwrap();
     drain_worker_traversal(&mut worker);
@@ -838,7 +853,7 @@ fn archival_worker_deciding_bootstrap_veto_reaches_next_consumer() {
 fn archival_worker_deciding_bootstrap_veto_reaches_sample_consumer() {
     let (mut worker, host, db, _directory, paths) = journal_worker_fixture();
     super::archival_legacy::modern_compound(&paths, true, false);
-    worker.reachability.mark_archival_published(100);
+    reach(&worker).mark_archival_published(100);
     worker.run_page().unwrap();
     assert_eq!(
         host.calls.load(Ordering::SeqCst),
@@ -993,4 +1008,68 @@ fn archival_worker_fresh_absence_recovers_after_consumed_runtime_failure() {
         "every absent-root scan is a complete fresh traversal, not a permanent old error veto"
     );
     assert_eq!(host.calls.load(Ordering::SeqCst), 0);
+}
+
+/// The lane lists h1 and h2 as attached, but h1's session is gone when the sample
+/// is routed (`get` finds none).
+struct VanishedSession(herdr_threads::service::archival::StaticHosts);
+impl herdr_threads::service::archival::ArchivalHosts for VanishedSession {
+    fn attached(&self) -> Vec<herdr_threads::service::archival::ArchivalHost> {
+        self.0.attached()
+    }
+    fn get(&self, id: HostId) -> Option<herdr_threads::service::archival::ArchivalHost> {
+        (id != herdr_threads::test_support::test_host_id())
+            .then(|| self.0.get(id))
+            .flatten()
+    }
+}
+#[test]
+fn sample_for_seat_without_session_marks_nothing_else_uncertain() {
+    use herdr_threads::service::archival::{ArchivalHost, StaticHosts};
+    let (mut worker, host, db, _directory) = worker_fixture();
+    let now = worker.store.clock().monotonic_now().0;
+    let h1 = reach(&worker);
+    let h2 = Arc::new(HostReachability::default());
+    h1.mark_archival_published(now);
+    h2.mark_archival_published(now);
+    let h2_port = Arc::new(Host {
+        path: host.path.clone(),
+        writer: host.writer.clone(),
+        calls: AtomicUsize::new(0),
+        cancel: Cancellation::default(),
+        cancel_on_read: false.into(),
+        negative_failure: AtomicUsize::new(0),
+    });
+    worker.hosts = Arc::new(VanishedSession(StaticHosts(vec![
+        ArchivalHost {
+            host_id: herdr_threads::test_support::test_host_id(),
+            port: host.clone(),
+            reachability: h1.clone(),
+        },
+        ArchivalHost {
+            host_id: herdr_threads::test_support::host_id_for_test(2),
+            port: h2_port.clone(),
+            reachability: h2.clone(),
+        },
+    ])));
+    // The seat's host is listed (coherent) but has no session to sample through.
+    let error = worker.run_page().unwrap_err();
+    assert_eq!(error.code, ErrorCode::HostUnavailable);
+    assert_eq!(host.calls.load(Ordering::SeqCst), 0, "no port was read");
+    assert_eq!(h2_port.calls.load(Ordering::SeqCst), 0);
+    let coherent = |r: &HostReachability| r.archival_state(now).coherent;
+    assert!(coherent(&h2), "the other host's evidence is untouched");
+    assert!(
+        coherent(&h1),
+        "no session, so no reachability to mark: nothing else turns uncertain"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM seat_archival WHERE idle_mono IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
 }

@@ -5,6 +5,7 @@ use super::{
     connection::{api_error, store_error},
     effective, schema,
 };
+use crate::ports::HostId;
 use crate::protocol::{
     ids::{SeatId, ThreadId},
     results::ErrorCode,
@@ -34,18 +35,65 @@ pub const CADENCE_MS: i64 = 60_000;
 pub const MAX_GAP_MS: i64 = 120_000;
 pub const PAGE: usize = 32;
 
+/// HostArchivalEvidence: per-host coherence for the node-wide archival lane
+/// (`Runtime.hosts`, with the `archival_hosts` table). The lane stays one
+/// node-wide lane; only its evidence is per host, so one server's outage never
+/// resets the quiet period of a thread whose members sit on another server.
+///
+/// - Owns: per host the generation, coherence, `valid_until_mono`, and (in
+///   `archival_hosts`) the `evidence_epoch` and `coherent_since`, and the rule
+///   that a host's discontinuity bumps only its own epoch (plus the node
+///   `mutation_revision`).
+/// - Hides: which hosts are attached; a host absent from `Runtime.hosts`
+///   counts as incoherent.
+/// - Must not: reset a thread's quiet period for a host none of its members
+///   sit on, or decide archival (the node-wide lane does, in `scan_members`).
+/// - Relationships: built each pass from `HostSessions::attached()` and each
+///   session's `HostReachability::archival_state`. `seat_archival.host_id` and
+///   `host_evidence_epoch` validate a member's sample against its own host's row.
+/// - Errors: none of its own. A missing session or a failed sample marks only
+///   that session's reachability uncertain.
+///
+/// A new host-scoped archival condition goes here and in `scan_members`; the
+/// lane never treats one host's outage as node-wide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostArchivalEvidence {
+    pub host_id: HostId,
+    pub generation: i64,
+    pub coherent: bool,
+    /// Latest permitted deciding instant for this host's coherent view.
+    pub valid_until_mono: Option<i64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Runtime {
     pub boot: String,
     pub mono: i64,
     pub utc: UtcMillis,
     pub after_ms: i64,
-    pub host_generation: i64,
-    pub coherent: bool,
-    /// Latest permitted deciding instant for the worker's coherent host view.
-    pub valid_until_mono: Option<i64>,
+    /// One entry per attached host; an unlisted host is incoherent.
+    pub hosts: Vec<HostArchivalEvidence>,
     /// Complete, revalidated readonly legacy-source coverage; None vetoes.
     pub legacy_source: Option<String>,
+}
+impl Runtime {
+    pub fn host(&self, id: HostId) -> Option<&HostArchivalEvidence> {
+        self.hosts.iter().find(|h| h.host_id == id)
+    }
+    pub fn host_coherent(&self, id: HostId) -> bool {
+        self.host(id).is_some_and(|h| h.coherent)
+    }
+    pub fn any_coherent(&self) -> bool {
+        self.hosts.iter().any(|h| h.coherent)
+    }
+    /// Latest permitted deciding instant over the coherent hosts' views.
+    pub fn valid_until(&self) -> Option<i64> {
+        self.hosts
+            .iter()
+            .filter(|h| h.coherent)
+            .filter_map(|h| h.valid_until_mono)
+            .min()
+    }
 }
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Progress {
@@ -102,10 +150,10 @@ pub(crate) fn advance_in_with_registry(
         return Ok(progress);
     }
     progress.has_more = seed(tx, instance, rt, epoch)?;
-    if !rt.coherent || rt.legacy_source.is_none() {
+    if !rt.any_coherent() || rt.legacy_source.is_none() {
         return Ok(progress);
     }
-    if !validate_snapshot_page(tx, instance, rt)? {
+    if !validate_snapshot_pages(tx, instance, rt)? {
         progress.has_more = true;
         return Ok(progress);
     }
@@ -130,29 +178,93 @@ pub(crate) fn advance_in_with_registry(
 
 fn reconcile_runtime(tx: &Transaction<'_>, instance: &str, rt: &Runtime) -> Result<i64, ApiError> {
     tx.execute("INSERT OR IGNORE INTO archival_instances(instance_id,runtime_boot,policy_ms) VALUES(?1,?2,?3)",params![instance,rt.boot,rt.after_ms]).map_err(store_error)?;
-    let (boot,epoch,mono,utc,policy,generation,coherent): (String,i64,Option<i64>,Option<i64>,i64,i64,Option<i64>) = tx.query_row(
-        "SELECT runtime_boot,evidence_epoch,last_mono,last_utc,policy_ms,host_generation,coherent_since FROM archival_instances WHERE instance_id=?1",[instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).map_err(store_error)?;
+    let (boot,epoch,mono,utc,policy): (String,i64,Option<i64>,Option<i64>,i64) = tx.query_row(
+        "SELECT runtime_boot,evidence_epoch,last_mono,last_utc,policy_ms FROM archival_instances WHERE instance_id=?1",[instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(store_error)?;
     let gap = mono.map(|old| rt.mono.saturating_sub(old));
     let wall_delta = utc.map(|old| rt.utc.0.saturating_sub(old));
+    // Node-wide discontinuity: a new boot, a policy change or a clock gap. Every
+    // host's evidence is then discontinuous too.
     let discontinuity = boot != rt.boot
         || policy != rt.after_ms
-        || generation != rt.host_generation
         || gap.is_some_and(|g| !(0..=MAX_GAP_MS).contains(&g))
         || gap
             .zip(wall_delta)
-            .is_some_and(|(m, w)| m.abs_diff(w) > 1_000)
-        || (!rt.coherent && coherent.is_some());
+            .is_some_and(|(m, w)| m.abs_diff(w) > 1_000);
     let epoch = epoch + i64::from(discontinuity);
     // Discovery high-water marks are not qualification evidence. Ordinary host
     // uncertainty/recovery must not rescan retained history. Due channels and
     // active samples reject stale evidence epochs lazily in their own turns.
     // A new/backward monotonic clock does require rebuilding old due times.
     let reset_discovery = boot != rt.boot || gap.is_some_and(|g| g < 0);
-    tx.execute("UPDATE archival_instances SET runtime_boot=?2,evidence_epoch=?3,policy_ms=?4,last_mono=?5,last_utc=?6,host_generation=?7,coherent_since=?8,bootstrap_veto=?9,bootstrap_source=?10,seed_cursor=CASE WHEN ?12 THEN 0 ELSE seed_cursor END,seat_seed_cursor=CASE WHEN ?12 THEN 0 ELSE seat_seed_cursor END,snapshot_checked=CASE WHEN ?11 THEN 0 ELSE snapshot_checked END WHERE instance_id=?1",
-        params![instance,rt.boot,epoch,rt.after_ms,rt.mono,rt.utc.0,rt.host_generation,
-            if rt.coherent {Some(if discontinuity {rt.mono} else {coherent.unwrap_or(rt.mono)})} else {None},
-            rt.legacy_source.is_none(),rt.legacy_source,discontinuity,reset_discovery]).map_err(store_error)?;
+    tx.execute("UPDATE archival_instances SET runtime_boot=?2,evidence_epoch=?3,policy_ms=?4,last_mono=?5,last_utc=?6,bootstrap_veto=?7,bootstrap_source=?8,seed_cursor=CASE WHEN ?9 THEN 0 ELSE seed_cursor END,seat_seed_cursor=CASE WHEN ?9 THEN 0 ELSE seat_seed_cursor END WHERE instance_id=?1",
+        params![instance,rt.boot,epoch,rt.after_ms,rt.mono,rt.utc.0,
+            rt.legacy_source.is_none(),rt.legacy_source,reset_discovery]).map_err(store_error)?;
+    reconcile_hosts(tx, instance, rt, discontinuity)?;
     Ok(epoch)
+}
+
+/// Per host: a generation change, a coherence loss (an unlisted host counts as
+/// incoherent) or a node-wide discontinuity bumps that host's `evidence_epoch`
+/// and restarts its `coherent_since`. A host-only discontinuity also bumps the
+/// node `mutation_revision` (so an in-flight scan restarts) but never resets a
+/// quiet period: threads without members on that host do not look at its row.
+fn reconcile_hosts(
+    tx: &Transaction<'_>,
+    instance: &str,
+    rt: &Runtime,
+    node_discontinuity: bool,
+) -> Result<(), ApiError> {
+    for host in &rt.hosts {
+        tx.execute(
+            "INSERT OR IGNORE INTO archival_hosts(host_id) SELECT host_id FROM herdr_hosts WHERE host_id=?1 AND node_id=?2",
+            params![host.host_id.get(), instance],
+        )
+        .map_err(store_error)?;
+    }
+    let mut statement = tx
+        .prepare("SELECT a.host_id,a.host_generation,a.coherent_since FROM archival_hosts a JOIN herdr_hosts h ON h.host_id=a.host_id WHERE h.node_id=?1 ORDER BY a.host_id")
+        .map_err(store_error)?;
+    let rows = statement
+        .query_map([instance], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+            ))
+        })
+        .map_err(store_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(store_error)?;
+    drop(statement);
+    let mut host_discontinuity = false;
+    for (id, saved_generation, since) in rows {
+        let evidence = rt.host(HostId::from_row(id));
+        let coherent = evidence.is_some_and(|h| h.coherent);
+        let generation = evidence.map_or(saved_generation, |h| h.generation);
+        let discontinuous =
+            node_discontinuity || generation != saved_generation || (!coherent && since.is_some());
+        host_discontinuity |= discontinuous && !node_discontinuity;
+        let since = coherent.then(|| {
+            if discontinuous {
+                rt.mono
+            } else {
+                since.unwrap_or(rt.mono)
+            }
+        });
+        tx.execute(
+            "UPDATE archival_hosts SET evidence_epoch=evidence_epoch+?2,host_generation=?3,coherent_since=?4,snapshot_checked=CASE WHEN ?2=1 THEN 0 ELSE snapshot_checked END WHERE host_id=?1",
+            params![id, i64::from(discontinuous), generation, since],
+        )
+        .map_err(store_error)?;
+    }
+    if host_discontinuity {
+        tx.execute(
+            "UPDATE archival_instances SET mutation_revision=mutation_revision+1 WHERE instance_id=?1",
+            [instance],
+        )
+        .map_err(store_error)?;
+    }
+    Ok(())
 }
 
 fn seed(tx: &Transaction<'_>, instance: &str, rt: &Runtime, epoch: i64) -> Result<bool, ApiError> {
@@ -184,20 +296,28 @@ fn seed(tx: &Transaction<'_>, instance: &str, rt: &Runtime, epoch: i64) -> Resul
         )
         .map_err(store_error)?;
     }
-    let mut statement=tx.prepare("SELECT ordinal,id FROM seats WHERE instance_id=?1 AND ordinal>?2 ORDER BY ordinal LIMIT ?3").map_err(store_error)?;
+    let mut statement=tx.prepare("SELECT ordinal,id,host_id FROM seats WHERE instance_id=?1 AND ordinal>?2 ORDER BY ordinal LIMIT ?3").map_err(store_error)?;
     let seats = statement
         .query_map(params![instance, seat_cursor, PAGE as i64], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+            ))
         })
         .map_err(store_error)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(store_error)?;
-    for (ordinal, seat) in &seats {
-        tx.execute(
-            "INSERT OR IGNORE INTO seat_archival(seat_id,instance_id,next_mono) VALUES(?1,?2,0)",
-            params![seat, instance],
-        )
-        .map_err(store_error)?;
+    for (ordinal, seat, host) in &seats {
+        // A remote seat has no Herdr server here, so it has no sampler row; the
+        // remote-member rule is ht-5fr.4.14's.
+        if let Some(host) = host {
+            tx.execute(
+                "INSERT OR IGNORE INTO seat_archival(seat_id,instance_id,host_id,next_mono) VALUES(?1,?2,?3,0)",
+                params![seat, instance, host],
+            )
+            .map_err(store_error)?;
+        }
         tx.execute("UPDATE seat_archival SET runtime_boot=?2,evidence_epoch=?3,idle_mono=NULL,samples=0,last_mono=NULL,observation_sequence=NULL,connection_epoch=NULL,next_mono=CASE WHEN next_mono IS NULL THEN NULL ELSE 0 END WHERE seat_id=?1 AND (runtime_boot IS NOT ?2 OR evidence_epoch IS NOT ?3)",params![seat,rt.boot,epoch]).map_err(store_error)?;
         tx.execute(
             "UPDATE archival_instances SET seat_seed_cursor=?2 WHERE instance_id=?1",
@@ -290,16 +410,9 @@ fn advance_channel(
         return Ok(1);
     }
     let quiet = quiet.unwrap();
-    let coherent_since: Option<i64> = tx
-        .query_row(
-            "SELECT coherent_since FROM archival_instances WHERE instance_id=?1",
-            [instance],
-            |r| r.get(0),
-        )
-        .map_err(store_error)?;
-    if rt.mono.saturating_sub(quiet) < rt.after_ms
-        || coherent_since.is_none_or(|since| rt.mono.saturating_sub(since) < rt.after_ms)
-        || cheap_blocker(tx, instance, thread, rt.utc.0)?
+    // Host coherence is checked per member host in `scan_members`, never for the
+    // whole node: one server's outage must not reset another server's threads.
+    if rt.mono.saturating_sub(quiet) < rt.after_ms || cheap_blocker(tx, instance, thread, rt.utc.0)?
     {
         defer(tx, thread, rt)?;
         return Ok(1);
@@ -385,7 +498,12 @@ fn scan_members(
             .map_err(store_error)?;
             continue;
         }
-        let qualified:Option<(i64,String)>=tx.query_row("SELECT a.last_mono,b.harness FROM seat_archival a JOIN seats s ON s.id=a.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL JOIN herdr_hosts h ON h.host_id=s.host_id WHERE a.seat_id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=a.binding_generation AND s.target_generation=a.target_generation AND s.target_id=a.target_id AND b.generation=a.binding_generation AND b.registered_at IS NOT NULL AND b.harness=a.harness AND b.role='top_level' AND b.liveness='connected' AND b.native_session=a.native_session AND b.execution_id=a.execution AND h.host_boot=a.host_boot AND h.host_epoch=a.host_epoch AND a.runtime_boot=?3 AND a.evidence_epoch=?4 AND a.samples>=2 AND a.idle_mono<=?5 AND a.last_mono>=?6 AND a.last_mono<=?7 AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.host_id=s.host_id AND rh.target_id=s.target_id AND rh.released_at IS NULL)",params![seat,instance,rt.boot,epoch,rt.mono.saturating_sub(rt.after_ms),rt.mono.saturating_sub(MAX_GAP_MS),rt.mono],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(store_error)?;
+        // A member qualifies only through its own host's `archival_hosts` row: the host
+        // must have been coherent for the full grace and the sample must carry that
+        // row's current epoch. An incoherent or unattached host defers only this
+        // thread. Only resolved local members get here (remote members are inactive
+        // for archival until ht-5fr.4.14's remote-member rule).
+        let qualified:Option<(i64,String)>=tx.query_row("SELECT a.last_mono,b.harness FROM seat_archival a JOIN seats s ON s.id=a.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL JOIN herdr_hosts h ON h.host_id=s.host_id JOIN archival_hosts ah ON ah.host_id=s.host_id WHERE a.seat_id=?1 AND s.instance_id=?2 AND ah.coherent_since IS NOT NULL AND ah.coherent_since<=?8 AND a.host_evidence_epoch=ah.evidence_epoch AND s.state='resolved' AND s.generation=a.binding_generation AND s.target_generation=a.target_generation AND s.target_id=a.target_id AND b.generation=a.binding_generation AND b.registered_at IS NOT NULL AND b.harness=a.harness AND b.role='top_level' AND b.liveness='connected' AND b.native_session=a.native_session AND b.execution_id=a.execution AND h.host_boot=a.host_boot AND h.host_epoch=a.host_epoch AND a.runtime_boot=?3 AND a.evidence_epoch=?4 AND a.samples>=2 AND a.idle_mono<=?5 AND a.last_mono>=?6 AND a.last_mono<=?7 AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.host_id=s.host_id AND rh.target_id=s.target_id AND rh.released_at IS NULL)",params![seat,instance,rt.boot,epoch,rt.mono.saturating_sub(rt.after_ms),rt.mono.saturating_sub(MAX_GAP_MS),rt.mono,rt.mono.saturating_sub(rt.after_ms)],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(store_error)?;
         let Some((last, harness)) = qualified else {
             return Ok((rows.len(), false, true));
         };
@@ -558,6 +676,8 @@ pub use crate::ports::ComposerObservation;
 #[derive(Debug, Clone)]
 pub struct ObservationTicket {
     claim: crate::protocol::authority::CallerClaim,
+    host_id: HostId,
+    host_evidence_epoch: i64,
     activity_revision: i64,
     runtime_boot: String,
     evidence_epoch: i64,
@@ -577,6 +697,10 @@ impl ObservationTicket {
     }
     pub fn target(&self) -> &crate::protocol::ids::HostTargetId {
         &self.claim.target
+    }
+    /// The Herdr server the seat's target lives on: the sampler routes by it.
+    pub fn host_id(&self) -> HostId {
+        self.host_id
     }
     pub fn seat(&self) -> &str {
         self.claim.seat.as_str()
@@ -607,7 +731,7 @@ pub(crate) fn observation_ticket_with_registry(
         authority::{CallerClaim, CallerRole, Harness},
         ids::*,
     };
-    let row=db.query_row("SELECT s.target_id,b.generation,b.harness,b.native_session,b.execution_id,a.activity_revision,ai.runtime_boot,ai.evidence_epoch FROM seats s JOIN seat_archival a ON a.seat_id=s.id JOIN archival_instances ai ON ai.instance_id=s.instance_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND b.registered_at IS NOT NULL AND b.role='top_level' AND b.liveness='connected'",params![seat,instance],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,i64>(5)?,r.get::<_,String>(6)?,r.get::<_,i64>(7)?))).optional().map_err(store_error)?;
+    let row=db.query_row("SELECT s.target_id,b.generation,b.harness,b.native_session,b.execution_id,a.activity_revision,ai.runtime_boot,ai.evidence_epoch,s.host_id,ah.evidence_epoch FROM seats s JOIN seat_archival a ON a.seat_id=s.id JOIN archival_instances ai ON ai.instance_id=s.instance_id JOIN archival_hosts ah ON ah.host_id=s.host_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND b.registered_at IS NOT NULL AND b.role='top_level' AND b.liveness='connected'",params![seat,instance],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,i64>(5)?,r.get::<_,String>(6)?,r.get::<_,i64>(7)?,r.get::<_,i64>(8)?,r.get::<_,i64>(9)?))).optional().map_err(store_error)?;
     let Some((
         target,
         generation,
@@ -617,6 +741,8 @@ pub(crate) fn observation_ticket_with_registry(
         activity_revision,
         runtime_boot,
         evidence_epoch,
+        host_id,
+        host_evidence_epoch,
     )) = row
     else {
         return Ok(None);
@@ -637,7 +763,9 @@ pub(crate) fn observation_ticket_with_registry(
         agent_id: None,
         liveness: None,
     };
-    if runtime_boot != rt.boot {
+    // Uncertainty is never idle: a seat on an incoherent or unattached host gets no ticket.
+    let host_id = HostId::from_row(host_id);
+    if runtime_boot != rt.boot || !rt.host_coherent(host_id) {
         return Ok(None);
     }
     let mapping = match super::seats::seat_bound_mapping(db, &claim) {
@@ -648,6 +776,8 @@ pub(crate) fn observation_ticket_with_registry(
         host_boot: HostBootId::new(mapping.boot),
         host_epoch: mapping.epoch,
         claim,
+        host_id,
+        host_evidence_epoch,
         activity_revision,
         runtime_boot,
         evidence_epoch,
@@ -680,11 +810,9 @@ pub(crate) fn next_observation_in_with_registry(
     rt: &Runtime,
     registry: &crate::harness::registry::Registry,
 ) -> Result<Option<ObservationTicket>, ApiError> {
-    let mut statement=tx.prepare("SELECT seat_id FROM seat_archival WHERE instance_id=?1 AND next_mono<=?2 ORDER BY next_mono,seat_id LIMIT ?3").map_err(store_error)?;
+    let mut statement=tx.prepare("SELECT seat_id FROM seat_archival WHERE next_mono<=?1 ORDER BY next_mono,seat_id LIMIT ?2").map_err(store_error)?;
     let rows = statement
-        .query_map(params![instance, rt.mono, PAGE as i64], |r| {
-            r.get::<_, String>(0)
-        })
+        .query_map(params![rt.mono, PAGE as i64], |r| r.get::<_, String>(0))
         .map_err(store_error)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(store_error)?;
@@ -768,6 +896,14 @@ pub(crate) fn record_sample_in_with_registry(
             |r| r.get(0),
         )
         .map_err(store_error)?;
+    let host_epoch: Option<i64> = tx
+        .query_row(
+            "SELECT evidence_epoch FROM archival_hosts WHERE host_id=?1",
+            [ticket.host_id.get()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
     let proof = observation.verified_structural_proof();
     let mapping = super::seats::seat_bound_mapping(tx, claim).ok();
     let current = effective::effective_observation(
@@ -775,7 +911,8 @@ pub(crate) fn record_sample_in_with_registry(
         super::seats::seat_host(tx, &claim.seat)?,
         claim.target.as_str(),
     )?;
-    let positive = rt.coherent
+    let positive = rt.host_coherent(ticket.host_id)
+        && host_epoch == Some(ticket.host_evidence_epoch)
         && ticket.runtime_boot == rt.boot
         && ticket.evidence_epoch == epoch
         && ticket.activity_revision == activity
@@ -819,8 +956,16 @@ pub(crate) fn record_sample_in_with_registry(
         Option<i64>,
     );
     let (idle,last,samples,old_sequence,old_boot,old_epoch,old_binding,old_connection):SampleColumns=tx.query_row("SELECT idle_mono,last_mono,samples,observation_sequence,runtime_boot,evidence_epoch,binding_generation,connection_epoch FROM seat_archival WHERE seat_id=?1",[claim.seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).map_err(store_error)?;
+    let old_host_epoch: i64 = tx
+        .query_row(
+            "SELECT host_evidence_epoch FROM seat_archival WHERE seat_id=?1",
+            [claim.seat.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
     let same_producer = old_boot.as_deref() == Some(rt.boot.as_str())
         && old_epoch == Some(epoch)
+        && old_host_epoch == ticket.host_evidence_epoch
         && old_connection == Some(proof.connection_epoch() as i64);
     // Connection epochs advance within one daemon. A late read from an older
     // connection cannot become a new producer merely by differing from it.
@@ -844,37 +989,54 @@ pub(crate) fn record_sample_in_with_registry(
     if !continuing {
         invalidate_sample(tx, claim.seat.as_str(), rt)?;
     }
-    tx.execute("UPDATE seat_archival SET runtime_boot=?2,evidence_epoch=?3,idle_mono=?4,idle_utc=CASE WHEN ?5 THEN idle_utc ELSE ?6 END,last_mono=?7,samples=?8,next_mono=?9,binding_generation=?10,target_generation=?11,target_id=?12,host_boot=?13,host_epoch=?14,terminal=?15,incarnation=?16,harness=?17,native_session=?18,execution=?19,observation_sequence=?20,connection_epoch=?21 WHERE seat_id=?1",params![claim.seat.as_str(),rt.boot,epoch,if continuing {idle.unwrap()} else {rt.mono},continuing,rt.utc.0,rt.mono,if continuing {samples.saturating_add(1)} else {1},rt.mono.saturating_add(CADENCE_MS),claim.binding_generation as i64,proof.target_generation() as i64,claim.target.as_str(),proof.host_boot().as_str(),proof.host_epoch() as i64,proof.terminal().as_str(),proof.incarnation(),claim.harness.as_str(),claim.native_session.as_str(),claim.execution.as_str(),observation.observation_sequence as i64,proof.connection_epoch() as i64]).map_err(store_error)?;
+    tx.execute("UPDATE seat_archival SET runtime_boot=?2,evidence_epoch=?3,idle_mono=?4,idle_utc=CASE WHEN ?5 THEN idle_utc ELSE ?6 END,last_mono=?7,samples=?8,next_mono=?9,binding_generation=?10,target_generation=?11,target_id=?12,host_boot=?13,host_epoch=?14,terminal=?15,incarnation=?16,harness=?17,native_session=?18,execution=?19,observation_sequence=?20,connection_epoch=?21,host_evidence_epoch=?22 WHERE seat_id=?1",params![claim.seat.as_str(),rt.boot,epoch,if continuing {idle.unwrap()} else {rt.mono},continuing,rt.utc.0,rt.mono,if continuing {samples.saturating_add(1)} else {1},rt.mono.saturating_add(CADENCE_MS),claim.binding_generation as i64,proof.target_generation() as i64,claim.target.as_str(),proof.host_boot().as_str(),proof.host_epoch() as i64,proof.terminal().as_str(),proof.incarnation(),claim.harness.as_str(),claim.native_session.as_str(),claim.execution.as_str(),observation.observation_sequence as i64,proof.connection_epoch() as i64,ticket.host_evidence_epoch]).map_err(store_error)?;
     Ok(true)
 }
 
 /// Publication may remove a target without updating any target row. Validate
-/// the new published view in bounded positive-seat pages before trusting a
-/// retained certificate. Matching Unknown structural snapshots do not reset
-/// previously earned composer evidence or the canonical mutation revision.
-fn validate_snapshot_page(
+/// each coherent host's new published view in bounded positive-seat pages
+/// before trusting a retained certificate. Matching Unknown structural snapshots
+/// do not reset previously earned composer evidence or the canonical mutation
+/// revision. An incoherent host is skipped: its members cannot qualify anyway,
+/// and its validation restarts when it is coherent again.
+fn validate_snapshot_pages(
     tx: &Transaction<'_>,
     instance: &str,
     rt: &Runtime,
 ) -> Result<bool, ApiError> {
-    // The published view is every host's active snapshot (a change on any host restarts the
-    // validation); per-host archival evidence replaces this in ht-5fr.2.9.
-    let (current,saved,checked,mut cursor):(Option<String>,Option<String>,bool,String)=tx.query_row("SELECT (SELECT NULLIF(group_concat(COALESCE(active_snapshot_id,''),','),'') FROM (SELECT active_snapshot_id FROM herdr_hosts WHERE node_id=a.instance_id ORDER BY host_id)),a.validating_snapshot,a.snapshot_checked,a.snapshot_cursor FROM archival_instances a WHERE a.instance_id=?1",[instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(store_error)?;
+    for host in rt.hosts.iter().filter(|h| h.coherent) {
+        if !validate_host_snapshot_page(tx, instance, host.host_id, rt)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+fn validate_host_snapshot_page(
+    tx: &Transaction<'_>,
+    instance: &str,
+    host: HostId,
+    rt: &Runtime,
+) -> Result<bool, ApiError> {
+    let row:Option<(Option<String>,Option<String>,bool,String)>=tx.query_row("SELECT (SELECT h.active_snapshot_id FROM herdr_hosts h WHERE h.host_id=a.host_id),a.validating_snapshot,a.snapshot_checked,a.snapshot_cursor FROM archival_hosts a WHERE a.host_id=?1",[host.get()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(store_error)?;
+    let Some((current, saved, checked, mut cursor)) = row else {
+        return Ok(true);
+    };
     if current == saved && checked {
         return Ok(true);
     }
     if current != saved {
         cursor.clear();
-        tx.execute("UPDATE archival_instances SET validating_snapshot=?2,snapshot_cursor='',snapshot_checked=0 WHERE instance_id=?1",params![instance,current]).map_err(store_error)?;
+        tx.execute("UPDATE archival_hosts SET validating_snapshot=?2,snapshot_cursor='',snapshot_checked=0 WHERE host_id=?1",params![host.get(),current]).map_err(store_error)?;
     }
-    let mut statement=tx.prepare("SELECT seat_id FROM seat_archival WHERE instance_id=?1 AND idle_mono IS NOT NULL AND seat_id>?2 ORDER BY seat_id LIMIT ?3").map_err(store_error)?;
+    let mut statement=tx.prepare("SELECT seat_id FROM seat_archival WHERE host_id=?1 AND idle_mono IS NOT NULL AND seat_id>?2 ORDER BY seat_id LIMIT ?3").map_err(store_error)?;
     let rows = statement
-        .query_map(params![instance, cursor, PAGE as i64], |r| {
+        .query_map(params![host.get(), cursor, PAGE as i64], |r| {
             r.get::<_, String>(0)
         })
         .map_err(store_error)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(store_error)?;
+    drop(statement);
     for seat in &rows {
         if !sample_still_current(tx, instance, seat)? {
             invalidate_sample(tx, seat, rt)?;
@@ -882,8 +1044,8 @@ fn validate_snapshot_page(
     }
     let complete = rows.len() < PAGE;
     tx.execute(
-        "UPDATE archival_instances SET snapshot_cursor=?2,snapshot_checked=?3 WHERE instance_id=?1",
-        params![instance, rows.last().unwrap_or(&cursor), complete],
+        "UPDATE archival_hosts SET snapshot_cursor=?2,snapshot_checked=?3 WHERE host_id=?1",
+        params![host.get(), rows.last().unwrap_or(&cursor), complete],
     )
     .map_err(store_error)?;
     Ok(complete)
@@ -915,7 +1077,7 @@ pub(crate) fn budgeted<R>(
                 ));
             }
             let (result, expiry) = work(tx, &rt)?;
-            let expiry = expiry.into_iter().chain(rt.valid_until_mono).min();
+            let expiry = expiry.into_iter().chain(rt.valid_until()).min();
             Ok((result, expiry))
         },
         |_, decision, (result, expiry)| {
@@ -1184,8 +1346,8 @@ pub(crate) fn store_next(
         let ticket = next_observation_in(tx, &store.instance, rt)?;
         let has_more = tx
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM seat_archival WHERE instance_id=?1 AND next_mono<=?2)",
-                params![store.instance, rt.mono],
+                "SELECT EXISTS(SELECT 1 FROM seat_archival WHERE next_mono<=?1)",
+                [rt.mono],
                 |r| r.get(0),
             )
             .map_err(store_error)?;

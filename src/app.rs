@@ -2137,17 +2137,25 @@ where
             ) {
                 push_worker(handle)?;
             }
+            // One node-wide lane; its evidence and sampling are per host, routed
+            // through the sessions. Interim, with the other host lanes: it starts
+            // only when a host is attached at startup (a store-only daemon runs
+            // none), and a host attached later is sampled by the running lane.
             if let Some(session) = &primary {
                 let archival_context = crate::protocol::output::ContinuationContext {
                     state_dir: Some(archival_paths.state_dir.to_string_lossy().into_owned()),
+                    // The legacy journal source is a single-host artifact: its
+                    // namespace names the startup host's endpoint. Evidence and
+                    // sampling are per host; this is only where old intents match.
                     host: Some(session.locator().as_str().to_owned()),
                 };
+                let hosts: Arc<dyn crate::service::archival::ArchivalHosts> =
+                    host_sessions.clone();
                 push_worker(crate::service::archival::start(
                     crate::service::archival::ArchivalWorker {
                         store: Arc::clone(&store),
-                        host: Arc::clone(session.port()),
+                        hosts,
                         writer: Arc::clone(&writer),
-                        reachability: Arc::clone(session.reachability()),
                         source: crate::archival_legacy::Source::new(
                             &archival_paths,
                             instance.to_string(),

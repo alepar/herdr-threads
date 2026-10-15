@@ -159,9 +159,7 @@ fn existing_thread_bootstrap_vetoes_archival_before_topology_effects() {
             mono: at,
             utc: UtcMillis(at),
             after_ms: 3_600_000,
-            host_generation: 0,
-            coherent: true,
-            valid_until_mono: None,
+            hosts: herdr_threads::test_support::test_host_evidence(0, true),
             legacy_source: Some("covered".into()),
         };
         for _ in 0..20 {

@@ -3485,6 +3485,117 @@ fn index_columns(db: &Connection, index: &str) -> Vec<String> {
         .unwrap()
 }
 
+/// ht-5fr.2.9: archival stays one node-wide lane (`archival_instances` keeps only
+/// node-wide fields) with per-host evidence in `archival_hosts`, and every
+/// `seat_archival` row names its seat's host and that host's evidence epoch.
+#[test]
+fn archival_hosts_table_and_seat_archival_host_columns() {
+    let db = fresh_db();
+    let columns = |table: &str| -> Vec<String> {
+        let mut statement = db
+            .prepare("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
+            .unwrap();
+        statement
+            .query_map([table], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(
+        columns("archival_hosts"),
+        [
+            "host_id",
+            "evidence_epoch",
+            "host_generation",
+            "coherent_since",
+            "validating_snapshot",
+            "snapshot_cursor",
+            "snapshot_checked"
+        ]
+    );
+    assert_eq!(
+        columns("archival_instances"),
+        [
+            "instance_id",
+            "runtime_boot",
+            "evidence_epoch",
+            "mutation_revision",
+            "policy_ms",
+            "last_mono",
+            "last_utc",
+            "bootstrap_veto",
+            "bootstrap_source",
+            "seed_cursor",
+            "seat_seed_cursor"
+        ]
+    );
+    let not_null = |table: &str, column: &str| -> bool {
+        db.query_row(
+            "SELECT \"notnull\" FROM pragma_table_info(?1) WHERE name=?2",
+            [table, column],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert!(not_null("seat_archival", "host_id"));
+    assert!(not_null("seat_archival", "host_evidence_epoch"));
+    let index_columns = |index: &str| -> Vec<String> {
+        let mut statement = db
+            .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")
+            .unwrap();
+        statement
+            .query_map([index], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(index_columns("seat_archival_due"), ["next_mono", "seat_id"]);
+    assert_eq!(
+        index_columns("seat_archival_target"),
+        ["host_id", "target_id"]
+    );
+    // The invalidation trigger touches the row of the host whose evidence moved,
+    // not a node-wide one.
+    let host_epoch = |host: i64| -> i64 {
+        db.query_row(
+            "SELECT evidence_epoch FROM archival_hosts WHERE host_id=?1",
+            [host],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    db.execute_batch(
+        "INSERT INTO archival_instances(instance_id,runtime_boot) VALUES('34750f98bd59fcfc946da45aaabe933b','b');
+         INSERT INTO herdr_hosts(node_id,endpoint,created_at) VALUES('34750f98bd59fcfc946da45aaabe933b','/first.sock',0),('34750f98bd59fcfc946da45aaabe933b','/other.sock',0);
+         INSERT INTO archival_hosts(host_id) SELECT host_id FROM herdr_hosts;",
+    )
+    .unwrap();
+    let other: i64 = db
+        .query_row("SELECT max(host_id) FROM herdr_hosts", [], |r| r.get(0))
+        .unwrap();
+    let first: i64 = db
+        .query_row("SELECT min(host_id) FROM herdr_hosts", [], |r| r.get(0))
+        .unwrap();
+    assert_ne!(first, other);
+    db.execute(
+        "UPDATE herdr_hosts SET host_epoch=host_epoch+1 WHERE host_id=?1",
+        [other],
+    )
+    .unwrap();
+    assert_eq!((host_epoch(first), host_epoch(other)), (0, 1));
+    // A seat's archival row takes the seat's host.
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,?1)", [other]).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT host_id FROM seat_archival WHERE seat_id='s'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        other
+    );
+}
+
 /// ht-5fr.2.4: every Herdr-scope child table is keyed by `host_id` (target ids
 /// are unique only within one Herdr server) and carries no `instance_id`.
 #[test]

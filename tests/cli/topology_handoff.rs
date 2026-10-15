@@ -1446,9 +1446,7 @@ mod live {
             mono: 0,
             utc: UtcMillis(0),
             after_ms: 60000,
-            host_generation: 0,
-            coherent: false,
-            valid_until_mono: None,
+            hosts: crate::test_support::test_host_evidence(0, false),
             legacy_source: scan.coverage.clone(),
         };
         let budget = super::super::super::cooperative_budget(store.clock());
@@ -1749,9 +1747,16 @@ mod live {
                 )
                 .unwrap(),
             ),
-            host: Arc::new(CompositionHost),
+            hosts: Arc::new(crate::service::archival::StaticHosts(vec![
+                crate::service::archival::ArchivalHost {
+                    host_id: crate::test_support::test_host_id(),
+                    port: Arc::new(CompositionHost),
+                    reachability: Arc::new(
+                        crate::service::host_reachability::HostReachability::default(),
+                    ),
+                },
+            ])),
             writer: Arc::new(crate::service::fair_writer::FairWriter::new(32)),
-            reachability: Arc::new(crate::service::host_reachability::HostReachability::default()),
             source: composition_source(f),
             boot: "composition-worker".into(),
             after_ms: 60000,

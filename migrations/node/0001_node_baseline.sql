@@ -16,8 +16,9 @@
 -- Herdr-scope child tables (snapshot_generations, observed_targets,
 -- recovery_baseline_releases, recovery_baseline_targets, recovery_holds,
 -- allocation_decisions) are keyed by host_id (ht-5fr.2.4); target ids are unique
--- only within one Herdr server. archival_instances and seat_archival keep
--- instance_id until the archival re-key (ht-5fr.2).
+-- only within one Herdr server. Archival is one node-wide lane
+-- (archival_instances keyed by instance_id) with per-host evidence in
+-- archival_hosts, and each seat_archival row names its seat's host (ht-5fr.2.9).
 --
 -- Node row delta (ht-5fr.1.5): v46's host_instances is split into `local_node`
 -- (the node's own identity, tag and the node-scope counters decision_seq,
@@ -1020,12 +1021,17 @@ CREATE TABLE archival_instances (
     policy_ms INTEGER NOT NULL DEFAULT 3600000 CHECK(policy_ms>=0),
     last_mono INTEGER,
     last_utc INTEGER,
-    coherent_since INTEGER,
-    host_generation INTEGER NOT NULL DEFAULT 0,
     bootstrap_veto INTEGER NOT NULL DEFAULT 1 CHECK(bootstrap_veto IN (0,1)),
     bootstrap_source TEXT,
     seed_cursor INTEGER NOT NULL DEFAULT 0,
-    seat_seed_cursor INTEGER NOT NULL DEFAULT 0,
+    seat_seed_cursor INTEGER NOT NULL DEFAULT 0
+) STRICT;
+
+CREATE TABLE archival_hosts (
+    host_id INTEGER PRIMARY KEY REFERENCES herdr_hosts(host_id),
+    evidence_epoch INTEGER NOT NULL DEFAULT 0,
+    host_generation INTEGER NOT NULL DEFAULT 0,
+    coherent_since INTEGER,
     validating_snapshot TEXT,
     snapshot_cursor TEXT NOT NULL DEFAULT '',
     snapshot_checked INTEGER NOT NULL DEFAULT 0 CHECK(snapshot_checked IN (0,1))
@@ -1056,6 +1062,8 @@ CREATE TABLE channel_archival (
 CREATE TABLE seat_archival (
     seat_id TEXT PRIMARY KEY REFERENCES seats(id),
     instance_id TEXT NOT NULL REFERENCES local_node(id),
+    host_id INTEGER NOT NULL REFERENCES herdr_hosts(host_id),
+    host_evidence_epoch INTEGER NOT NULL DEFAULT 0,
     activity_revision INTEGER NOT NULL DEFAULT 0,
     runtime_boot TEXT,
     evidence_epoch INTEGER,
@@ -1841,9 +1849,9 @@ CREATE INDEX invitations_effective_pending_unwarned ON invitations(deadline_at,o
 
 CREATE INDEX channel_archival_due ON channel_archival(instance_id,due_mono,thread_id) WHERE enabled=1;
 
-CREATE INDEX seat_archival_due ON seat_archival(instance_id,next_mono,seat_id) WHERE next_mono IS NOT NULL;
+CREATE INDEX seat_archival_due ON seat_archival(next_mono,seat_id) WHERE next_mono IS NOT NULL;
 
-CREATE INDEX seat_archival_target ON seat_archival(instance_id,target_id) WHERE next_mono IS NOT NULL;
+CREATE INDEX seat_archival_target ON seat_archival(host_id,target_id) WHERE next_mono IS NOT NULL;
 
 CREATE INDEX channel_handoff_live ON channel_handoff_fences(thread_id,compound) WHERE state='live';
 
@@ -1861,9 +1869,9 @@ CREATE INDEX archival_preparations_page ON send_preparations(thread_id,id);
 
 CREATE INDEX archival_service_preparations_page ON service_notification_preparations(thread_id,ordinal);
 
-CREATE INDEX archival_positive_targets ON seat_archival(instance_id,target_id) WHERE idle_mono IS NOT NULL;
+CREATE INDEX archival_positive_targets ON seat_archival(host_id,target_id) WHERE idle_mono IS NOT NULL;
 
-CREATE INDEX archival_positive_seats ON seat_archival(instance_id,seat_id) WHERE idle_mono IS NOT NULL;
+CREATE INDEX archival_positive_seats ON seat_archival(host_id,seat_id) WHERE idle_mono IS NOT NULL;
 
 CREATE INDEX memberships_archival_joined_seat ON memberships(seat_id) WHERE state='joined';
 
@@ -2381,8 +2389,8 @@ CREATE TRIGGER archival_thread_activity AFTER UPDATE OF archived,topic,goal,name
  UPDATE archival_instances SET mutation_revision=mutation_revision+1 WHERE instance_id=NEW.instance_id;
 END;
 
-CREATE TRIGGER archival_seat_insert AFTER INSERT ON seats BEGIN
- INSERT INTO seat_archival(seat_id,instance_id) VALUES(NEW.id,NEW.instance_id);
+CREATE TRIGGER archival_seat_insert AFTER INSERT ON seats WHEN NEW.host_id IS NOT NULL BEGIN
+ INSERT INTO seat_archival(seat_id,instance_id,host_id) VALUES(NEW.id,NEW.instance_id,NEW.host_id);
 END;
 
 CREATE TRIGGER archival_operation_activity AFTER INSERT ON operations WHEN NEW.actor_scope LIKE 'seat:%' BEGIN
@@ -2594,22 +2602,23 @@ CREATE TRIGGER archival_fence_channel_handoff_fences_delete AFTER DELETE ON chan
  UPDATE archival_instances SET mutation_revision=mutation_revision+1;
 END;
 
-CREATE TRIGGER archival_seat_activity AFTER UPDATE OF state,generation,target_generation,target_id ON seats BEGIN
- UPDATE seat_archival SET activity_revision=activity_revision+1,idle_mono=NULL,samples=0,next_mono=0 WHERE seat_id=NEW.id;
+CREATE TRIGGER archival_seat_activity AFTER UPDATE OF state,generation,target_generation,target_id,host_id ON seats BEGIN
+ UPDATE seat_archival SET host_id=COALESCE(NEW.host_id,host_id),activity_revision=activity_revision+1,idle_mono=NULL,samples=0,next_mono=0 WHERE seat_id=NEW.id;
 END;
 
 CREATE TRIGGER archival_host_invalidation AFTER UPDATE OF host_boot,host_epoch,invalidation_revision,baseline_hold_unclaimed ON herdr_hosts
 WHEN NEW.host_boot IS NOT OLD.host_boot OR NEW.host_epoch!=OLD.host_epoch OR NEW.invalidation_revision!=OLD.invalidation_revision OR NEW.baseline_hold_unclaimed!=OLD.baseline_hold_unclaimed BEGIN
- UPDATE archival_instances SET evidence_epoch=evidence_epoch+1,coherent_since=NULL,mutation_revision=mutation_revision+1 WHERE instance_id=NEW.node_id;
+ UPDATE archival_hosts SET evidence_epoch=evidence_epoch+1,coherent_since=NULL WHERE host_id=NEW.host_id;
+ UPDATE archival_instances SET mutation_revision=mutation_revision+1 WHERE instance_id=NEW.node_id;
 END;
 
 CREATE TRIGGER archival_current_negative_insert AFTER INSERT ON observed_targets WHEN NEW.ui_state!='idle' BEGIN
- UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id) AND target_id=NEW.target_id AND next_mono IS NOT NULL;
+ UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE host_id=NEW.host_id AND target_id=NEW.target_id AND next_mono IS NOT NULL;
  UPDATE archival_instances SET mutation_revision=mutation_revision+1 WHERE instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id);
 END;
 
 CREATE TRIGGER archival_current_negative_update AFTER UPDATE ON observed_targets WHEN NEW.ui_state!='idle' BEGIN
- UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id) AND target_id=NEW.target_id AND next_mono IS NOT NULL;
+ UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE host_id=NEW.host_id AND target_id=NEW.target_id AND next_mono IS NOT NULL;
  UPDATE archival_instances SET mutation_revision=mutation_revision+1 WHERE instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id);
 END;
 
@@ -2629,24 +2638,24 @@ CREATE TRIGGER archival_message_activity AFTER INSERT ON messages BEGIN
 END;
 
 CREATE TRIGGER archival_current_structure_insert AFTER INSERT ON observed_targets
-WHEN EXISTS(SELECT 1 FROM seat_archival a WHERE a.instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id) AND a.target_id=NEW.target_id AND a.idle_mono IS NOT NULL AND
+WHEN EXISTS(SELECT 1 FROM seat_archival a WHERE a.host_id=NEW.host_id AND a.target_id=NEW.target_id AND a.idle_mono IS NOT NULL AND
  (a.target_generation!=NEW.generation OR a.terminal IS NOT NEW.terminal_id OR a.incarnation IS NOT NEW.incarnation OR a.host_boot!=NEW.host_boot OR a.host_epoch!=NEW.epoch)) BEGIN
  UPDATE archival_instances SET mutation_revision=mutation_revision+1 WHERE instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id);
- UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id) AND target_id=NEW.target_id AND idle_mono IS NOT NULL;
+ UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE host_id=NEW.host_id AND target_id=NEW.target_id AND idle_mono IS NOT NULL;
 END;
 
 CREATE TRIGGER archival_current_structure_update AFTER UPDATE ON observed_targets
-WHEN EXISTS(SELECT 1 FROM seat_archival a WHERE a.instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id) AND a.target_id=NEW.target_id AND a.idle_mono IS NOT NULL AND
+WHEN EXISTS(SELECT 1 FROM seat_archival a WHERE a.host_id=NEW.host_id AND a.target_id=NEW.target_id AND a.idle_mono IS NOT NULL AND
  (a.target_generation!=NEW.generation OR a.terminal IS NOT NEW.terminal_id OR a.incarnation IS NOT NEW.incarnation OR a.host_boot!=NEW.host_boot OR a.host_epoch!=NEW.epoch)) BEGIN
  UPDATE archival_instances SET mutation_revision=mutation_revision+1 WHERE instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id);
- UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=NEW.host_id) AND target_id=NEW.target_id AND idle_mono IS NOT NULL;
+ UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE host_id=NEW.host_id AND target_id=NEW.target_id AND idle_mono IS NOT NULL;
 END;
 
 CREATE TRIGGER archival_snapshot_structure AFTER INSERT ON snapshot_targets
-WHEN EXISTS(SELECT 1 FROM snapshot_generations g JOIN herdr_hosts gh ON gh.host_id=g.host_id JOIN seat_archival a ON a.instance_id=gh.node_id AND a.target_id=NEW.target_id WHERE g.id=NEW.generation_id AND a.idle_mono IS NOT NULL AND
+WHEN EXISTS(SELECT 1 FROM snapshot_generations g JOIN seat_archival a ON a.host_id=g.host_id AND a.target_id=NEW.target_id WHERE g.id=NEW.generation_id AND a.idle_mono IS NOT NULL AND
  (a.target_generation!=NEW.generation OR a.terminal IS NOT NEW.terminal_id OR a.incarnation IS NOT g.incarnation OR a.host_boot!=g.host_boot OR a.host_epoch!=g.epoch OR NEW.ui_state NOT IN ('idle','unknown'))) BEGIN
  UPDATE archival_instances SET mutation_revision=mutation_revision+1 WHERE instance_id=(SELECT h.node_id FROM snapshot_generations g JOIN herdr_hosts h ON h.host_id=g.host_id WHERE g.id=NEW.generation_id);
- UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE instance_id=(SELECT h.node_id FROM snapshot_generations g JOIN herdr_hosts h ON h.host_id=g.host_id WHERE g.id=NEW.generation_id) AND target_id=NEW.target_id AND idle_mono IS NOT NULL;
+ UPDATE seat_archival SET idle_mono=NULL,samples=0,next_mono=0 WHERE host_id=(SELECT g.host_id FROM snapshot_generations g WHERE g.id=NEW.generation_id) AND target_id=NEW.target_id AND idle_mono IS NOT NULL;
 END;
 
 CREATE TRIGGER archival_membership_queue_delete AFTER DELETE ON memberships BEGIN
