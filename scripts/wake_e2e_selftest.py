@@ -2064,6 +2064,29 @@ class SideCases(unittest.TestCase):
         self.assertFalse(W.side_nudge_passed(True, True, dict(
             first, sibling_displayed=True, sibling_wake_s=31.2, sibling_delivered=False)))
 
+    def test_side_nudge_counts_a_wake_that_landed_before_the_watch(self):
+        first = {"delivered": True}
+        self.assertTrue(W.side_nudge_passed(True, True, dict(
+            first, sibling_displayed=True, sibling_wake_s=None, sibling_woke_before_watch=True,
+            sibling_delivered=True)))
+        self.assertFalse(W.side_nudge_passed(True, True, dict(
+            first, sibling_displayed=True, sibling_wake_s=None, sibling_woke_before_watch=False,
+            sibling_delivered=True)))
+
+    def test_received_in_wake_turn(self):
+        # captured from co-plain (2026-10-15): the main session's wake turn printed the sibling p0
+        woke = ("› herdr-threads: attention pending; run herdr-threads inbox\n\n• I'll read the inbox.\n"
+                "• Ran /b/herdr-threads inbox\n  └ message mS1 tT#5 from sX [p0]: x\n\n"
+                "• RECEIVED [herdr-threads] message mS1 in tT from sX [p0] [human]: x sibling\n")
+        self.assertTrue(W.received_in_wake_turn(woke, "mS1"))
+        side = ("› Side task: run /b/herdr-threads inbox and print SIBLING-SIDE-DONE\n"
+                "• RECEIVED [herdr-threads] message mS1 in tT from sX [p0]: x sibling\n")
+        self.assertFalse(W.received_in_wake_turn(side, "mS1"))  # the side turn's display is not a wake
+        hello = woke.replace("herdr-threads: attention pending; run herdr-threads inbox", "Run /b/herdr-threads inbox once")
+        self.assertFalse(W.received_in_wake_turn(hello, "mS1"))  # delivered only after the driver's follow-up
+        self.assertFalse(W.received_in_wake_turn(woke, "mOTHER"))
+        self.assertTrue(W.received_in_wake_turn("❯ herdr-threads: wake up\n⏺ RECEIVED [herdr-threads] message mS1 x\n", "mS1"))
+
     def test_side_nudge_sibling_phase_is_inconclusive_when_the_side_never_displayed_it(self):
         first = {"delivered": True}
         self.assertTrue(W.side_nudge_passed(True, True, dict(

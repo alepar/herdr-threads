@@ -141,7 +141,23 @@ def side_nudge_passed(setup_ok, woke, checks):
     first = bool(setup_ok and woke and checks.get("delivered"))
     if not checks.get("sibling_displayed"):
         return first
-    return first and checks.get("sibling_wake_s") is not None and bool(checks.get("sibling_delivered"))
+    sibling_woke = checks.get("sibling_wake_s") is not None or bool(checks.get("sibling_woke_before_watch"))
+    return first and sibling_woke and bool(checks.get("sibling_delivered"))
+
+
+def received_in_wake_turn(screen, mid):
+    """Whether the last `RECEIVED` line for `mid` belongs to a turn whose prompt was a wake marker: the nearest
+    composer prompt line (`›` or `❯`) above it is `herdr-threads: wake up` or `attention pending`. A `/side` turn's
+    own display of the message is not a wake of the main session, and its prompt is the side instruction."""
+    prompt = None
+    hit = False
+    for line in screen.splitlines():
+        text = line.lstrip()
+        if text.startswith(("›", "❯")):
+            prompt = text
+        elif "RECEIVED" in text and mid in text:
+            hit = prompt is not None and any(m in prompt for m in WAKE_MARKERS)
+    return hit
 # Session variables and agent env markers (every `AgentEnvMarker` the built-in adapters declare; the self-test
 # checks this list against src/harness) of whatever runs this script: never inherited by the commands it runs.
 CALLER_SESSION_ENV = ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SESSION_ID",
@@ -1206,6 +1222,7 @@ class Recipient:
         while self.status() in IDLE and time.time() < end:
             time.sleep(0.25)
         checks["sibling_side_busy"] = self.status() not in IDLE
+        sent_ms = int(time.time() * 1000)
         ref["sibling_message"] = mid = self.send("p0", tag + " sibling", direct=False)
         end = time.time() + 120
         while not self.shows(SIBLING_SIDE_DONE) and time.time() < end:
@@ -1220,8 +1237,13 @@ class Recipient:
         self.wait_idle()
         # A wake attempted while the side turn was busy is refused and retried after the per-seat guard.
         checks["sibling_wake_s"] = self.watch_for_wake(SPACING_S + WAKE_WINDOW_S)
-        checks["sibling_wake_state"] = self.wake_state()
-        if checks["sibling_wake_s"] is None:
+        checks["sibling_wake_state"] = state = self.wake_state()
+        # The retried wake can land while the side turn is being interrupted, before the watch starts: count it when
+        # the daemon submitted a wake after the send and the main session printed the message in that wake's turn.
+        checks["sibling_woke_before_watch"] = (
+            checks["sibling_wake_s"] is None and bool(state) and state.get("last_outcome") == "submitted"
+            and (state.get("completed_at_utc") or 0) >= sent_ms and received_in_wake_turn(self.screen(1000), mid))
+        if checks["sibling_wake_s"] is None and not checks["sibling_woke_before_watch"]:
             checks["sibling_hello_sent"] = True
             self.prompt(self.follow_up())
         self.wait_idle()
@@ -1316,7 +1338,9 @@ class Recipient:
     def draft_phase(self, checks, ref, tag):
         """side-draft after the draft is typed: send, watch past the deadline, read composer and warning."""
         time.sleep(1)
-        argv = ["send", self.group, "--body", tag, "--nudge", "--deadline", str(SIDE_DEADLINE_S)]
+        # An ACK request (p0, so it wakes): since D9 only an explicit --require-ack recipient gets a deadline and
+        # an overdue warning, and `--nudge --deadline` is refused.
+        argv = ["send", self.group, "--body", tag, "--require-ack", self.seat, "--deadline", str(SIDE_DEADLINE_S)]
         sent_seq = max([row.get("sequence") or 0 for row in walk(self.coord("read", self.group, "--recent", "1"))]
                        or [0])
         mid = (self.coord(*argv).get("result") or {}).get("data")
