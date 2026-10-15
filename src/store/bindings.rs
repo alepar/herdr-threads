@@ -353,6 +353,9 @@ pub(crate) fn enroll_with_hooks(
     .map(|_| ((), place.registered_at.is_some()))
     })?;
     let ordinal = tx.last_insert_rowid();
+    // The seat is resolved to an occupant: publish it (`seat.created`) in this
+    // transaction. No journal here, so the write runner drains the queue.
+    super::seats::queue_publication(&request.key.seat);
     let binding = query_rows(
         tx,
         &format!("SELECT {COLUMNS} FROM occupant_bindings WHERE ordinal=?1"),

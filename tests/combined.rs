@@ -21,6 +21,10 @@ mod canary_manifest_writer;
 mod channel_archival;
 #[path = "contracts.rs"]
 mod contracts;
+#[path = "store/fact_convergence_seat.rs"]
+mod fact_convergence_seat;
+#[path = "sync/facts_seat.rs"]
+mod facts_seat;
 #[path = "golden_surfaces.rs"]
 mod golden_surfaces;
 #[path = "handoff_agy.rs"]
