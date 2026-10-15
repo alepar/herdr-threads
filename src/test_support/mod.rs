@@ -1,6 +1,8 @@
 //! Test-only synchronization and fault fixtures; absent from ordinary builds.
 pub mod attention_oracle;
 pub mod counting_client;
+#[cfg(feature = "test-support")]
+pub mod fact_exchange;
 pub mod failpoints;
 pub mod harness_shim;
 pub mod history;

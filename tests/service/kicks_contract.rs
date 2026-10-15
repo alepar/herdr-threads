@@ -245,6 +245,13 @@ fn sync_dial_targets_kick_sync_and_node_contact_kicks_nothing() {
 }
 
 #[test]
+fn fact_attribution_staging_is_known_unmapped() {
+    assert_eq!(lanes_for_table("fact_attribution_staging"), LaneSet::EMPTY);
+    assert!(KNOWN_UNMAPPED.contains(&"fact_attribution_staging"));
+    assert!(!mapped_tables().any(|table| table == "fact_attribution_staging"));
+}
+
+#[test]
 fn sync_and_apply_origin_keep_sync() {
     let sealed = LaneSet::EMPTY.with(Lane::Apply).with(Lane::Sync);
     assert_eq!(

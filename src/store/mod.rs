@@ -2,6 +2,7 @@
 pub mod apply;
 pub mod archival;
 pub mod attention;
+pub(crate) mod attribution;
 pub mod bindings;
 pub mod catch_up;
 pub mod connection;

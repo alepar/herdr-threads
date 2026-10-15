@@ -166,6 +166,8 @@ const DEADLINE_TABLES: &[&str] = &[
 pub const KNOWN_UNMAPPED: &[&str] = &[
     // Pair identity is passive; its ordinary invitation/membership writes kick their own lanes.
     "direct_threads",
+    // Transient attribution staged and taken inside one writer transaction (ht-5fr.4.15).
+    "fact_attribution_staging",
     // Fork repair state (ht-5fr.6.4): freezes kick Lane::Sync through the sync_logs mapping.
     "sync_forks",
     "sync_branches",
