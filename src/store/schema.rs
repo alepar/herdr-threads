@@ -17,9 +17,6 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 
-#[cfg(test)]
-pub(crate) mod legacy_chain;
-
 use super::connection::{DecisionInstant, StoreContext, api_error, store_error};
 use super::effective::{
     EffectiveReceiptState, ReceiptSource, effective_observation, effective_receipt,

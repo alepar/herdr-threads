@@ -1,7 +1,7 @@
 """Offline checks that the demo driver's verifier never turns missing or non-model evidence into PASS.
 
 Run: python3 -m unittest tests/native/demo/test_demo_verify.py
-Builds a real schema from migrations/ in a temp dir; no daemon, Herdr or model is involved.
+Builds a real schema from migrations/node/0001_node_baseline.sql in a temp dir; no daemon, Herdr or model is involved.
 """
 
 import argparse
@@ -66,8 +66,13 @@ class DbFixture(unittest.TestCase):
         instance = self.driver.state / "instances" / "i"
         instance.mkdir(parents=True)
         self.db = sqlite3.connect(instance / "threads.sqlite3")
-        for migration in sorted((REPO / "migrations").glob("*.sql")):
-            self.db.executescript(migration.read_text())
+        self.db.executescript((REPO / "migrations" / "node" / "0001_node_baseline.sql").read_text())
+        # What `schema::initialize` stamps next to the baseline.
+        self.db.execute("PRAGMA application_id = 0x48544E44")
+        self.db.execute("PRAGMA user_version = 1")
+        # The creating transaction's node rows (`schema::insert_node_rows`) and the local Herdr host row.
+        self.db.execute("INSERT INTO local_node(id,created_at,tag,tag_k) VALUES ('0123456789abcdef0123456789abcdef',0,'abc',0)")
+        self.db.execute("INSERT INTO herdr_hosts(node_id,endpoint,created_at) VALUES ('0123456789abcdef0123456789abcdef','local',0)")
         # Integrity triggers guard the production writers; this fixture seeds only the rows the
         # read-only verifier joins, so drop them rather than fabricate a whole send pipeline.
         for (name,) in self.db.execute("SELECT name FROM sqlite_master WHERE type='trigger'").fetchall():

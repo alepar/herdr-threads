@@ -4358,12 +4358,11 @@ fn newer_schema_version_refused() {
 
 #[test]
 fn legacy_chain_store_refused() {
+    // A pre-node store: a nonempty database stamped with the old chain's
+    // `user_version` and no `application_id`.
     let db = Connection::open_in_memory().unwrap();
-    schema::legacy_chain::legacy_initialize(&db, || UtcMillis(0)).unwrap();
-    let version: i64 = db
-        .pragma_query_value(None, "user_version", |r| r.get(0))
+    db.execute_batch("CREATE TABLE host_instances(id TEXT); PRAGMA user_version = 46;")
         .unwrap();
-    assert_eq!(version, 46);
     let detail = incompatible_detail(reinitialize(&db));
     assert!(detail.contains("pre-node schema version 46"), "{detail}");
 }
@@ -4387,7 +4386,8 @@ fn query_connection_accepts_node_store_and_rejects_wrong_marker() {
         ErrorCode::IncompatibleSchema
     );
     let old = Connection::open_in_memory().unwrap();
-    schema::legacy_chain::legacy_initialize(&old, || UtcMillis(0)).unwrap();
+    old.execute_batch("CREATE TABLE host_instances(id TEXT); PRAGMA user_version = 46;")
+        .unwrap();
     assert_eq!(
         schema::verify_query_connection(&old).unwrap_err().code,
         ErrorCode::IncompatibleSchema
