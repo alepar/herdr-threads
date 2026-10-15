@@ -910,3 +910,755 @@ fn genesis_apply_validates_incarnation_and_tag() {
         (Some(10), Some("lab"))
     );
 }
+
+// ---- ingest, serve, vector, store_forked, freeze ---------------------------
+
+const SEED_B: [u8; 32] = [2; 32];
+const SEED_C: [u8; 32] = [3; 32];
+
+fn identity_b() -> Arc<NodeIdentity> {
+    Arc::new(NodeIdentity::from_seed(SEED_B))
+}
+
+/// A clock a fixed number of ms ahead of [`FixedClock`].
+struct AheadClock(i64);
+impl Clock for AheadClock {
+    fn utc_now(&self) -> UtcMillis {
+        UtcMillis(FixedClock.utc_now().0 + self.0)
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        MonoInstant(1)
+    }
+}
+
+/// A store of node B (seed 2), opened with the given incarnation seed.
+fn opened_b(store: &Store, incarnation_seed: u64) -> (StoreContext, Connection) {
+    let ctx = StoreContext::new(store.path.clone(), Arc::new(FixedClock))
+        .with_node_seed(crate::test_support::node_seed_for(identity_b().uuid()));
+    ctx.seed_incarnations(incarnation_seed);
+    let mut conn = ctx.open_writer().unwrap();
+    open(&ctx, &mut conn, identity_b(), "b-host", registry()).unwrap();
+    (ctx, conn)
+}
+
+/// Node A (seed 1) authors `puts` entries after its genesis; returns A's
+/// log and entries `1..=puts+1`.
+fn chain_of_a(store: &Store, puts: usize) -> (StoreContext, Connection, LogKey, Vec<Envelope>) {
+    let (ctx, mut conn, report) = opened(store);
+    for i in 0..puts {
+        author_put(&ctx, &mut conn, &put(&format!("a{i}"))).unwrap();
+    }
+    let entries = (1..=puts as i64 + 1)
+        .map(|counter| load_envelope(&conn, counter))
+        .collect();
+    (ctx, conn, report.self_log, entries)
+}
+
+fn ingest_into(
+    ctx: &StoreContext,
+    conn: &mut Connection,
+    log: &LogKey,
+    entries: &[Envelope],
+) -> Result<IngestOutcome, ApiError> {
+    ingest(ctx, conn, log, entries.to_vec(), &budget())
+}
+
+fn head(counter: u64, hash: [u8; 32]) -> LogHead {
+    LogHead {
+        counter,
+        head_hash: hash,
+        state: LogState::Active,
+        frozen_at: None,
+    }
+}
+
+/// A validly signed entry of `log` by `identity`, built like an authored one.
+fn signed_entry(
+    identity: &NodeIdentity,
+    log: LogKey,
+    counter: u64,
+    prev_hash: [u8; 32],
+    payload: &str,
+) -> Envelope {
+    UnsignedEnvelope {
+        log,
+        counter,
+        prev_hash,
+        hlc: HlcStamp::from_parts(1_700_000_000_000, counter as u16),
+        kind: "test.put".into(),
+        kind_version: 1,
+        deps: Deps::empty(),
+        creates: None,
+        needs: Vec::new(),
+        payload: payload.as_bytes().to_vec(),
+    }
+    .seal(identity)
+}
+
+fn journal_rows(conn: &Connection) -> i64 {
+    count(conn, "SELECT COUNT(*) FROM journal")
+}
+
+#[test]
+fn ingest_happy_path_stored_pending() {
+    let (sa, sb) = (Store::new(), Store::new());
+    let (_actx, _aconn, log, entries) = chain_of_a(&sa, 3);
+    let (ctx, mut conn) = opened_b(&sb, 77);
+    let own_rows = journal_rows(&conn);
+
+    let outcome = ingest_into(&ctx, &mut conn, &log, &entries).unwrap();
+    assert_eq!(
+        outcome,
+        IngestOutcome::Stored {
+            stored: 4,
+            duplicates: 0,
+            head: head(4, entries[3].hash),
+        }
+    );
+    assert_eq!(journal_rows(&conn), own_rows + 4);
+    let (is_self, contiguous, head_hash, applied, pubkey, state): (
+        i64,
+        i64,
+        Vec<u8>,
+        i64,
+        Vec<u8>,
+        String,
+    ) = conn
+        .query_row(
+            "SELECT is_self,contiguous_counter,head_hash,applied_through,pubkey,state FROM sync_logs \
+             WHERE node_uuid=?1",
+            [log.node.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        )
+        .unwrap();
+    assert_eq!((is_self, contiguous, applied), (0, 4, 0));
+    assert_eq!(head_hash, entries[3].hash.to_vec());
+    assert_eq!(pubkey, identity().public_key().to_vec());
+    assert_eq!(state, "active");
+    let states: Vec<(i64, String, i64)> = conn
+        .prepare(
+            "SELECT counter,apply_state,ingested_at FROM journal j JOIN sync_logs l USING(log_ix) \
+             WHERE l.node_uuid=?1 ORDER BY counter",
+        )
+        .unwrap()
+        .query_map([log.node.to_string()], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let at = FixedClock.utc_now().0;
+    assert_eq!(
+        states,
+        (1..=4)
+            .map(|c| (c, "pending".to_owned(), at))
+            .collect::<Vec<_>>()
+    );
+    // What was stored serves back byte for byte.
+    let served = serve(&conn, &log, 1, BatchLimits::default()).unwrap();
+    assert_eq!(served, entries);
+}
+
+#[test]
+fn ingest_duplicates_skipped() {
+    let (sa, sb) = (Store::new(), Store::new());
+    let (_actx, _aconn, log, entries) = chain_of_a(&sa, 3);
+    let (ctx, mut conn) = opened_b(&sb, 77);
+    ingest_into(&ctx, &mut conn, &log, &entries[..3]).unwrap();
+    let rows = journal_rows(&conn);
+    let outcome = ingest_into(&ctx, &mut conn, &log, &entries).unwrap();
+    assert_eq!(
+        outcome,
+        IngestOutcome::Stored {
+            stored: 1,
+            duplicates: 3,
+            head: head(4, entries[3].hash),
+        }
+    );
+    assert_eq!(journal_rows(&conn), rows + 1);
+    // A batch of only duplicates stores nothing and keeps the head.
+    let again = ingest_into(&ctx, &mut conn, &log, &entries[1..3]).unwrap();
+    assert_eq!(
+        again,
+        IngestOutcome::Stored {
+            stored: 0,
+            duplicates: 2,
+            head: head(4, entries[3].hash),
+        }
+    );
+    assert_eq!(journal_rows(&conn), rows + 1);
+}
+
+#[test]
+fn ingest_gap_keeps_prefix() {
+    let (sa, sb) = (Store::new(), Store::new());
+    let (_actx, _aconn, log, entries) = chain_of_a(&sa, 4);
+    let (ctx, mut conn) = opened_b(&sb, 77);
+
+    // No row yet and the batch does not start at 1: a gap, nothing created.
+    let outcome = ingest_into(&ctx, &mut conn, &log, &entries[1..3]).unwrap();
+    assert_eq!(
+        outcome,
+        IngestOutcome::Gap {
+            stored: 0,
+            expected: 1
+        }
+    );
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM sync_logs"), 1);
+
+    let batch = [entries[0].clone(), entries[1].clone(), entries[3].clone()];
+    let outcome = ingest_into(&ctx, &mut conn, &log, &batch).unwrap();
+    assert_eq!(
+        outcome,
+        IngestOutcome::Gap {
+            stored: 2,
+            expected: 3
+        }
+    );
+    let contiguous = count(
+        &conn,
+        &format!(
+            "SELECT contiguous_counter FROM sync_logs WHERE node_uuid='{}'",
+            log.node
+        ),
+    );
+    assert_eq!(contiguous, 2, "the prefix is committed");
+    assert_eq!(stored_hash(&conn, &log, 2).unwrap(), Some(entries[1].hash));
+    assert_eq!(stored_hash(&conn, &log, 3).unwrap(), None);
+}
+
+#[test]
+fn ingest_flipped_byte_corrupt_nothing_stored() {
+    let (sa, sb) = (Store::new(), Store::new());
+    let (_actx, _aconn, log, mut entries) = chain_of_a(&sa, 3);
+    let (ctx, mut conn) = opened_b(&sb, 77);
+    let rows = journal_rows(&conn);
+    let last = entries[2].payload.len() - 1;
+    entries[2].payload[last] ^= 0x01;
+
+    let outcome = ingest_into(&ctx, &mut conn, &log, &entries[..3]).unwrap();
+    assert_eq!(
+        outcome,
+        IngestOutcome::Corrupt {
+            log,
+            counter: 3,
+            reason: EnvelopeError::HashMismatch,
+        }
+    );
+    assert_eq!(
+        journal_rows(&conn),
+        rows,
+        "even the good prefix rolled back"
+    );
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM sync_logs"), 1);
+}
+
+#[test]
+fn ingest_foreign_key_bad_signature() {
+    let (sa, sb) = (Store::new(), Store::new());
+    let (_actx, _aconn, log, entries) = chain_of_a(&sa, 2);
+    let (ctx, mut conn) = opened_b(&sb, 77);
+    let rows = journal_rows(&conn);
+    let stranger = NodeIdentity::from_seed(SEED_C);
+
+    let forged = signed_entry(&stranger, log, 2, entries[0].hash, r#"{"id":"x"}"#);
+    let outcome = ingest_into(&ctx, &mut conn, &log, &[entries[0].clone(), forged]).unwrap();
+    assert_eq!(
+        outcome,
+        IngestOutcome::Corrupt {
+            log,
+            counter: 2,
+            reason: EnvelopeError::BadSignature,
+        }
+    );
+    assert_eq!(journal_rows(&conn), rows);
+
+    // A genesis announcing A's key but signed by another key is no genesis.
+    let mut genesis = entries[0].clone();
+    let forged_genesis = UnsignedEnvelope {
+        log,
+        counter: 1,
+        prev_hash: [0; 32],
+        hlc: genesis.hlc,
+        kind: genesis.kind.clone(),
+        kind_version: 1,
+        deps: Deps::empty(),
+        creates: None,
+        needs: Vec::new(),
+        payload: std::mem::take(&mut genesis.payload),
+    }
+    .seal(&stranger);
+    let outcome = ingest_into(&ctx, &mut conn, &log, &[forged_genesis]).unwrap();
+    assert!(matches!(
+        outcome,
+        IngestOutcome::Corrupt {
+            reason: EnvelopeError::BadSignature,
+            ..
+        }
+    ));
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM sync_logs"), 1);
+}
+
+#[test]
+fn ingest_conflict_is_fork_prefix_kept() {
+    let (sa, sb) = (Store::new(), Store::new());
+    let (_actx, _aconn, log, entries) = chain_of_a(&sa, 4);
+    let (ctx, mut conn) = opened_b(&sb, 77);
+    ingest_into(&ctx, &mut conn, &log, &entries[..3]).unwrap();
+
+    // Same position, other content, signed by the log's own key.
+    let rival = signed_entry(&identity(), log, 3, entries[1].hash, r#"{"id":"rival"}"#);
+    let outcome = ingest_into(&ctx, &mut conn, &log, &[entries[3].clone(), rival.clone()]).unwrap();
+    assert_eq!(
+        outcome,
+        IngestOutcome::Fork {
+            stored: 1,
+            evidence: ForkEvidence::Conflict {
+                held: Box::new(entries[2].clone()),
+                conflicting: Box::new(rival),
+            },
+        }
+    );
+    assert_eq!(
+        stored_hash(&conn, &log, 4).unwrap(),
+        Some(entries[3].hash),
+        "the prefix before the fork is kept"
+    );
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM journal_forked"), 0);
+
+    // The next entry with the wrong prev_hash, validly signed, is a fork
+    // against the held head.
+    let branch = signed_entry(&identity(), log, 5, entries[1].hash, r#"{"id":"branch"}"#);
+    let outcome = ingest_into(&ctx, &mut conn, &log, std::slice::from_ref(&branch)).unwrap();
+    assert_eq!(
+        outcome,
+        IngestOutcome::Fork {
+            stored: 0,
+            evidence: ForkEvidence::Conflict {
+                held: Box::new(entries[3].clone()),
+                conflicting: Box::new(branch),
+            },
+        }
+    );
+}
+
+#[test]
+fn ingest_own_active_log_is_ahead_of_self() {
+    let sb = Store::new();
+    let (ctx, mut conn) = opened_b(&sb, 77);
+    let own = load_envelope(&conn, 1);
+    let rows = journal_rows(&conn);
+    let outcome = ingest_into(&ctx, &mut conn, &own.log, std::slice::from_ref(&own)).unwrap();
+    assert_eq!(
+        outcome,
+        IngestOutcome::Fork {
+            stored: 0,
+            evidence: ForkEvidence::AheadOfSelf {
+                log: own.log,
+                my_head: head(1, own.hash),
+                entry: Box::new(own),
+            },
+        }
+    );
+    assert_eq!(journal_rows(&conn), rows);
+}
+
+#[test]
+fn ingest_frozen_log_is_frozen() {
+    let (sa, sb) = (Store::new(), Store::new());
+    let (_actx, _aconn, log, entries) = chain_of_a(&sa, 3);
+    let (ctx, mut conn) = opened_b(&sb, 77);
+    ingest_into(&ctx, &mut conn, &log, &entries[..2]).unwrap();
+    let tx = conn.transaction().unwrap();
+    freeze(&tx, &log, 2).unwrap();
+    tx.commit().unwrap();
+
+    let outcome = ingest_into(&ctx, &mut conn, &log, &entries[2..]).unwrap();
+    assert_eq!(
+        outcome,
+        IngestOutcome::Frozen {
+            stored: 0,
+            frozen_at: 2
+        }
+    );
+    // Entries up to the freeze point are still accepted (here: duplicates).
+    let outcome = ingest_into(&ctx, &mut conn, &log, &entries[..2]).unwrap();
+    assert!(matches!(
+        outcome,
+        IngestOutcome::Stored {
+            stored: 0,
+            duplicates: 2,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn ingest_headroom_max_nothing_opened() {
+    let (sa, sb) = (Store::new(), Store::new());
+    let (_actx, _aconn, log, entries) = chain_of_a(&sa, 1);
+    let (ctx, mut conn) = opened_b(&sb, 77);
+    let rows = journal_rows(&conn);
+    ctx.set_ingest_headroom(u64::MAX);
+
+    // A competing writer holds the database: opening BEGIN IMMEDIATE would
+    // come back StoreBusy after the busy timeout, so Ok(Headroom) proves no
+    // transaction was opened.
+    let blocker = sb.read();
+    blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let outcome = ingest_into(&ctx, &mut conn, &log, &entries).unwrap();
+    assert_eq!(outcome, IngestOutcome::Headroom);
+    blocker.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(journal_rows(&conn), rows);
+
+    ctx.set_ingest_headroom(0);
+    let outcome = ingest_into(&ctx, &mut conn, &log, &entries).unwrap();
+    assert!(matches!(outcome, IngestOutcome::Stored { stored: 2, .. }));
+}
+
+#[test]
+fn ingest_batch_bounds_are_corrupt_malformed() {
+    let (sa, sb) = (Store::new(), Store::new());
+    let (_actx, _aconn, log, entries) = chain_of_a(&sa, 1);
+    let (ctx, mut conn) = opened_b(&sb, 77);
+
+    let too_many = vec![entries[0].clone(); 257];
+    let outcome = ingest_into(&ctx, &mut conn, &log, &too_many).unwrap();
+    assert!(matches!(
+        outcome,
+        IngestOutcome::Corrupt {
+            reason: EnvelopeError::Malformed { field: "batch" },
+            ..
+        }
+    ));
+
+    let other = LogKey {
+        node: log.node,
+        incarnation: log.incarnation + 1,
+    };
+    let outcome = ingest_into(&ctx, &mut conn, &other, &entries).unwrap();
+    assert!(matches!(
+        outcome,
+        IngestOutcome::Corrupt {
+            log: reported,
+            counter: 1,
+            reason: EnvelopeError::Malformed { field: "log" },
+        } if reported == other
+    ));
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM sync_logs"), 1);
+}
+
+#[test]
+fn ingest_before_open_is_unsupported() {
+    let (sa, sb) = (Store::new(), Store::new());
+    let (_actx, _aconn, log, entries) = chain_of_a(&sa, 1);
+    let ctx = StoreContext::new(sb.path.clone(), Arc::new(FixedClock));
+    let mut conn = ctx.open_writer().unwrap();
+    let error = ingest_into(&ctx, &mut conn, &log, &entries).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unsupported);
+}
+
+#[test]
+fn ingest_own_old_incarnation_is_ordinary() {
+    let (s_old, sb) = (Store::new(), Store::new());
+    // The same node (seed 2) under an earlier incarnation, as a restored
+    // copy of its store would hold.
+    let (old_ctx, mut old_conn) = opened_b(&s_old, 11);
+    author_put(&old_ctx, &mut old_conn, &put("old")).unwrap();
+    let old_log = LogKey {
+        node: identity_b().uuid(),
+        incarnation: XorShift::fixed(11).draw_incarnation(),
+    };
+    let old_entries: Vec<Envelope> = (1..=2).map(|c| load_envelope(&old_conn, c)).collect();
+    assert_eq!(old_entries[0].log, old_log);
+
+    let (ctx, mut conn) = opened_b(&sb, 22);
+    let active: i64 = count(&conn, "SELECT active_log_ix FROM local_node");
+    let outcome = ingest_into(&ctx, &mut conn, &old_log, &old_entries).unwrap();
+    assert!(
+        matches!(outcome, IngestOutcome::Stored { stored: 2, .. }),
+        "{outcome:?}"
+    );
+    let (is_self, state): (i64, String) = conn
+        .query_row(
+            "SELECT is_self,state FROM sync_logs WHERE incarnation=?1 AND node_uuid=?2",
+            params![old_log.incarnation, old_log.node.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((is_self, state.as_str()), (1, "active"));
+    assert_eq!(
+        count(&conn, "SELECT active_log_ix FROM local_node"),
+        active,
+        "the active self log is untouched"
+    );
+    let pending = count(
+        &conn,
+        "SELECT COUNT(*) FROM journal WHERE apply_state='pending'",
+    );
+    assert_eq!(pending, 2);
+}
+
+#[test]
+fn ingest_skewed_sets_skew_leaves_hlc() {
+    let (sa, sb) = (Store::new(), Store::new());
+    // A's clock runs 2 minutes ahead of B's wall.
+    let actx = StoreContext::new(sa.path.clone(), Arc::new(AheadClock(120_000)));
+    actx.seed_incarnations(42);
+    let mut aconn = actx.open_writer().unwrap();
+    let report = open_with(&actx, &mut aconn).unwrap();
+    author_put(&actx, &mut aconn, &put("late")).unwrap();
+    let entries: Vec<Envelope> = (1..=2).map(|c| load_envelope(&aconn, c)).collect();
+
+    let (ctx, mut conn) = opened_b(&sb, 77);
+    let before = ctx.sync().unwrap().hlc.lock().unwrap().last();
+    let outcome = ingest_into(&ctx, &mut conn, &report.self_log, &entries).unwrap();
+    assert!(
+        matches!(outcome, IngestOutcome::Stored { stored: 2, .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        ctx.sync().unwrap().hlc.lock().unwrap().last(),
+        before,
+        "a skewed stamp is stored but not folded into the clock"
+    );
+    let skew = count(
+        &conn,
+        &format!(
+            "SELECT skew_ahead_ms FROM sync_logs WHERE node_uuid='{}'",
+            report.self_log.node
+        ),
+    );
+    assert_eq!(skew, 120_000);
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM journal WHERE apply_state='pending'"
+        ),
+        2
+    );
+}
+
+#[test]
+fn ingest_unskewed_folds_into_the_clock() {
+    let (sa, sb) = (Store::new(), Store::new());
+    // A's clock is 30 s ahead: within the 60 s cap, so it is absorbed.
+    let actx = StoreContext::new(sa.path.clone(), Arc::new(AheadClock(30_000)));
+    actx.seed_incarnations(42);
+    let mut aconn = actx.open_writer().unwrap();
+    let report = open_with(&actx, &mut aconn).unwrap();
+    let genesis = load_envelope(&aconn, 1);
+
+    let (ctx, mut conn) = opened_b(&sb, 77);
+    let before = ctx.sync().unwrap().hlc.lock().unwrap().last();
+    ingest_into(
+        &ctx,
+        &mut conn,
+        &report.self_log,
+        std::slice::from_ref(&genesis),
+    )
+    .unwrap();
+    let after = ctx.sync().unwrap().hlc.lock().unwrap().last();
+    assert!(after > before);
+    assert_eq!(after, genesis.hlc);
+    assert_eq!(count(&conn, "SELECT MAX(skew_ahead_ms) FROM sync_logs"), 0);
+}
+
+#[test]
+fn serve_limits_256_entries_256k_and_oversized() {
+    let sa = Store::new();
+    let (ctx, mut conn, log, entries) = chain_of_a(&sa, 299);
+    assert_eq!(entries.len(), 300);
+    let limits = BatchLimits::default();
+
+    let page = serve(&conn, &log, 1, limits).unwrap();
+    assert_eq!(page.len(), 256);
+    assert_eq!(page.first().map(|e| e.counter), Some(1));
+    assert_eq!(page.last().map(|e| e.counter), Some(256));
+    assert_eq!(page, entries[..256]);
+    let rest = serve(&conn, &log, 257, limits).unwrap();
+    assert_eq!(rest, entries[256..]);
+    assert_eq!(serve(&conn, &log, 300, limits).unwrap(), entries[299..]);
+    assert!(serve(&conn, &log, 301, limits).unwrap().is_empty());
+    let unknown = LogKey {
+        node: log.node,
+        incarnation: log.incarnation + 1,
+    };
+    assert!(serve(&conn, &unknown, 1, limits).unwrap().is_empty());
+
+    // Byte bound: stops before the entry that would pass it.
+    let two = entries[0].canonical_bytes().len() + entries[1].canonical_bytes().len();
+    let page = serve(
+        &conn,
+        &log,
+        1,
+        BatchLimits {
+            entries: 256,
+            bytes: two,
+        },
+    )
+    .unwrap();
+    assert_eq!(page.len(), 2);
+
+    // An oversized entry is served alone rather than never.
+    let mut big = put("big");
+    big.blob = "x".repeat(300_000);
+    author_put(&ctx, &mut conn, &big).unwrap();
+    author_put(&ctx, &mut conn, &put("after")).unwrap();
+    let alone = serve(&conn, &log, 301, limits).unwrap();
+    assert_eq!(alone.len(), 1);
+    assert!(alone[0].canonical_bytes().len() > limits.bytes);
+    assert_eq!(alone[0].counter, 301);
+    let next = serve(&conn, &log, 302, limits).unwrap();
+    assert_eq!(next.first().map(|e| e.counter), Some(302));
+}
+
+#[test]
+fn vector_covers_every_log() {
+    let (sa, sb) = (Store::new(), Store::new());
+    let (_actx, _aconn, log, entries) = chain_of_a(&sa, 2);
+    let (ctx, mut conn) = opened_b(&sb, 77);
+    ingest_into(&ctx, &mut conn, &log, &entries).unwrap();
+    insert_foreign(&conn, 1, "test.put", "{}", "", None);
+    let own = load_envelope(&conn, 1);
+
+    let tx = conn.transaction().unwrap();
+    freeze(&tx, &log, 2).unwrap();
+    tx.commit().unwrap();
+
+    let vector = vector(&conn).unwrap();
+    assert_eq!(vector.0.len(), 3);
+    assert_eq!(
+        vector.0[&log],
+        LogHead {
+            counter: 3,
+            head_hash: entries[2].hash,
+            state: LogState::Frozen,
+            frozen_at: Some(2),
+        }
+    );
+    assert_eq!(vector.0[&own.log], head(1, own.hash));
+    let peer = LogKey {
+        node: PEER.parse().unwrap(),
+        incarnation: 1,
+    };
+    assert_eq!(vector.0[&peer].counter, 1);
+    assert_eq!(stored_hash(&conn, &log, 2).unwrap(), Some(entries[1].hash));
+    assert_eq!(stored_hash(&conn, &log, 9).unwrap(), None);
+    assert_eq!(stored_hash(&conn, &log, 0).unwrap(), None);
+}
+
+#[test]
+fn store_forked_ignores_exact_duplicates() {
+    let (sa, sb) = (Store::new(), Store::new());
+    let (_actx, _aconn, log, entries) = chain_of_a(&sa, 2);
+    let (ctx, mut conn) = opened_b(&sb, 77);
+    ingest_into(&ctx, &mut conn, &log, &entries).unwrap();
+    let rival = signed_entry(&identity(), log, 3, entries[1].hash, r#"{"id":"rival"}"#);
+    let other = signed_entry(&identity(), log, 3, entries[1].hash, r#"{"id":"other"}"#);
+    let source = identity_b().uuid();
+
+    let tx = conn.transaction().unwrap();
+    assert_eq!(
+        store_forked(&tx, &log, &[rival.clone(), rival.clone()], Some(source)).unwrap(),
+        1
+    );
+    assert_eq!(
+        store_forked(&tx, &log, std::slice::from_ref(&rival), None).unwrap(),
+        0
+    );
+    assert_eq!(store_forked(&tx, &log, &[other], None).unwrap(), 1);
+    let stray = LogKey {
+        node: log.node,
+        incarnation: log.incarnation + 1,
+    };
+    assert_eq!(
+        store_forked(&tx, &stray, std::slice::from_ref(&rival), None)
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        store_forked(
+            &tx,
+            &log,
+            &[Envelope {
+                log: stray,
+                ..rival
+            }],
+            None
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::InvalidRequest
+    );
+    tx.commit().unwrap();
+
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM journal_forked"), 2);
+    let kept: String = conn
+        .query_row(
+            "SELECT source_node FROM journal_forked ORDER BY forked_ix LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        kept,
+        source.to_string(),
+        "the first insert's source is kept"
+    );
+    assert_eq!(
+        journal_rows(&conn),
+        1 + 3,
+        "the main chain is untouched: own genesis plus A's three"
+    );
+}
+
+#[test]
+fn freeze_frozen_lowered_unchanged_and_refuses_active_self() {
+    let (sa, sb) = (Store::new(), Store::new());
+    let (_actx, _aconn, log, entries) = chain_of_a(&sa, 4);
+    let (ctx, mut conn) = opened_b(&sb, 77);
+    ingest_into(&ctx, &mut conn, &log, &entries).unwrap();
+    let frozen_at = |conn: &Connection| -> (String, Option<i64>) {
+        conn.query_row(
+            "SELECT state,frozen_at_counter FROM sync_logs WHERE node_uuid=?1",
+            [log.node.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+
+    let tx = conn.transaction().unwrap();
+    assert_eq!(freeze(&tx, &log, 4).unwrap(), FreezeOutcome::Frozen);
+    assert_eq!(frozen_at(&tx), ("frozen".into(), Some(4)));
+    assert_eq!(freeze(&tx, &log, 2).unwrap(), FreezeOutcome::Lowered);
+    assert_eq!(frozen_at(&tx), ("frozen".into(), Some(2)));
+    assert_eq!(freeze(&tx, &log, 5).unwrap(), FreezeOutcome::Unchanged);
+    assert_eq!(freeze(&tx, &log, 2).unwrap(), FreezeOutcome::Unchanged);
+    assert_eq!(frozen_at(&tx), ("frozen".into(), Some(2)));
+
+    let own = tx
+        .query_row(
+            "SELECT node_uuid,incarnation FROM sync_logs WHERE is_self=1",
+            [],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)),
+        )
+        .unwrap();
+    let own = LogKey {
+        node: own.0.parse().unwrap(),
+        incarnation: own.1,
+    };
+    let refused = freeze(&tx, &own, 1).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Conflict);
+    assert_eq!(refused.detail, "cannot freeze the active self log");
+    let unknown = LogKey {
+        node: log.node,
+        incarnation: log.incarnation + 1,
+    };
+    assert_eq!(
+        freeze(&tx, &unknown, 1).unwrap_err().code,
+        ErrorCode::NotFound
+    );
+    tx.commit().unwrap();
+}

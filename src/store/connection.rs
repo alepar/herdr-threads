@@ -120,6 +120,8 @@ pub struct SyncState {
     pub(crate) registry: &'static FactRegistry,
     pub(crate) headroom_bytes: AtomicU64,
     pub(crate) incarnation_rng: std::sync::Mutex<XorShift>,
+    /// When (UTC ms) the hourly skew line of each log was last written.
+    pub(crate) skew_logged: std::sync::Mutex<std::collections::HashMap<crate::sync::LogKey, i64>>,
 }
 
 impl SyncState {
@@ -361,6 +363,24 @@ impl StoreContext {
             setup_end_signal: std::sync::Mutex::new(None),
             #[cfg(test)]
             rollback_journal: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// The directory holding the database file, for the free-space probe.
+    pub(crate) fn database_dir(&self) -> PathBuf {
+        match self.path.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
+            _ => PathBuf::from("."),
+        }
+    }
+
+    /// Test hook: the free-space floor below which ingest stores nothing
+    /// (`u64::MAX` makes every ingest `Headroom`). A no-op before
+    /// `journal::open`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_ingest_headroom(&self, bytes: u64) {
+        if let Some(state) = self.sync.get() {
+            state.headroom_bytes.store(bytes, Ordering::Relaxed);
         }
     }
 
