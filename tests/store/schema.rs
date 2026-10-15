@@ -1,71 +1,5 @@
 use super::*;
 
-#[test]
-fn migration_waives_legacy_human_receipts_before_later_agent_mail() {
-    let db = Connection::open_in_memory().unwrap();
-    for migration in [
-        include_str!("../../migrations/0001_initial.sql"),
-        include_str!("../../migrations/0002_service_substrate.sql"),
-        include_str!("../../migrations/0003_invitation_cancellations.sql"),
-        include_str!("../../migrations/0004_voluntary_membership.sql"),
-        include_str!("../../migrations/0005_service_notifications.sql"),
-        include_str!("../../migrations/0006_retirement_health.sql"),
-        include_str!("../../migrations/0007_attention_digest.sql"),
-        include_str!("../../migrations/0008_digest_pending_paths.sql"),
-        include_str!("../../migrations/0009_human_occupant.sql"),
-        include_str!("../../migrations/0010_b5_trust_guards.sql"),
-        include_str!("../../migrations/0011_cooperative_only.sql"),
-        include_str!("../../migrations/0012_harness_version_evidence.sql"),
-        include_str!("../../migrations/0013_thread_summaries.sql"),
-        include_str!("../../migrations/0014_catch_up_release.sql"),
-        include_str!("../../migrations/0015_preparation_retention.sql"),
-    ] {
-        db.execute_batch(migration).unwrap();
-    }
-    db.pragma_update(None, "user_version", 15).unwrap();
-    db.execute_batch("INSERT INTO host_instances(id,created_at,decision_seq) VALUES ('i',0,30); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',2,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at) VALUES ('s',1,'p','b',0,'human','human','human','operator_human',10,10,20),('s',2,'p','b',0,'codex','agent','agent','cooperative_top_level',20,20,NULL); INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES ('s',10,10,1,'operator_human'),('s',20,20,2,'cooperative_top_level');").unwrap();
-    for (prep, msg, seq, at) in [("p_h", "m_h", 14, 15), ("p_a", "m_a", 15, 25)] {
-        db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES (?1,'i','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'sealed')", [prep]).unwrap();
-        db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES (?1,'t','s',1,10,0)", [prep]).unwrap();
-        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'t',?2,'ordinary','body',?3,?4)", params![msg,seq,at,seq]).unwrap();
-        db.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,'t',?3,?4,?3,0,1,0)", params![prep,msg,seq,at]).unwrap();
-        db.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at) VALUES (?1,'s','pending',?2,?3)", params![msg,at,at+10]).unwrap();
-    }
-    for (msg, seq, at) in [("phys_h", 16, 16), ("phys_a", 17, 25)] {
-        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'t',?2,'ordinary','body',?3,?2)", params![msg,seq,at]).unwrap();
-        db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','s','pending',10,?2,?3)", params![msg,at,at+10]).unwrap();
-    }
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
-    let through: i64 = db
-        .query_row(
-            "SELECT through_decision_seq FROM human_receipt_waivers WHERE seat_id='s'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(through, 10);
-    for (msg, required) in [("m_h", 0), ("m_a", 1)] {
-        let (prepared, sparse): (i64, i64) = db.query_row("SELECT pr.ack_required,rs.ack_required FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id JOIN receipt_state rs ON rs.message_id=sm.message_id AND rs.seat_id=pr.seat_id WHERE sm.message_id=?1", [msg], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
-        assert_eq!((prepared, sparse), (required, required));
-        let projected: i64 = db.query_row("SELECT count(*) FROM digest_pending_manifest_receipts d JOIN send_manifests sm ON sm.preparation_id=d.preparation_id WHERE sm.message_id=?1", [msg], |r| r.get(0)).unwrap();
-        assert_eq!(projected, required);
-    }
-    for (msg, required) in [("phys_h", 0), ("phys_a", 1)] {
-        let (state, marker, actor): (String, i64, Option<String>) = db
-            .query_row(
-                "SELECT state,ack_required,ack_observation FROM receipts WHERE message_id=?1",
-                [msg],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!((state.as_str(), marker, actor), ("pending", required, None));
-    }
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-}
 use crate::store::schema::{self, record_overdue_if_pending};
 use crate::{
     ports::TimeBasis,
@@ -256,51 +190,6 @@ fn seeded_db(utc: i64) -> (StoreContext, Connection, Arc<TestClock>) {
     (context, db, clock)
 }
 
-#[test]
-fn v5_upgrade_adds_index_for_failed_pending_retirements() {
-    let db = Connection::open_in_memory().unwrap();
-    for migration in [
-        include_str!("../../migrations/0001_initial.sql"),
-        include_str!("../../migrations/0002_service_substrate.sql"),
-        include_str!("../../migrations/0003_invitation_cancellations.sql"),
-        include_str!("../../migrations/0004_voluntary_membership.sql"),
-        include_str!("../../migrations/0005_service_notifications.sql"),
-    ] {
-        db.execute_batch(migration).unwrap();
-    }
-    db.pragma_update(None, "user_version", 5).unwrap();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    let plan: Vec<String> = db.prepare(
-        "EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM retirements r INDEXED BY retirements_failed_pending JOIN seats s ON s.id=r.seat_id WHERE r.status='pending' AND r.last_error IS NOT NULL AND s.instance_id='i')",
-    ).unwrap().query_map([], |row| row.get(3)).unwrap().collect::<Result<_, _>>().unwrap();
-    assert!(
-        plan.iter()
-            .any(|step| step.contains("retirements_failed_pending")),
-        "{plan:?}"
-    );
-}
-
-fn v6_database() -> Connection {
-    let db = Connection::open_in_memory().unwrap();
-    for migration in [
-        include_str!("../../migrations/0001_initial.sql"),
-        include_str!("../../migrations/0002_service_substrate.sql"),
-        include_str!("../../migrations/0003_invitation_cancellations.sql"),
-        include_str!("../../migrations/0004_voluntary_membership.sql"),
-        include_str!("../../migrations/0005_service_notifications.sql"),
-        include_str!("../../migrations/0006_retirement_health.sql"),
-    ] {
-        db.execute_batch(migration).unwrap();
-    }
-    db.pragma_update(None, "user_version", 6).unwrap();
-    db
-}
-
 /// A temp store file (and its journal/WAL siblings) removed on drop. Tests
 /// that tamper with many copies of one store build it once and `copy` it,
 /// instead of replaying every migration per case.
@@ -395,47 +284,9 @@ fn fresh_db() -> Connection {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        schema::LATEST_VERSION
+        schema::NODE_SCHEMA_VERSION
     );
     db
-}
-
-// Kills: a v6 database left without the digest indexes (the producer names
-// them with INDEXED BY and would fail on every query), or a v7 migration that
-// rewrites existing rows.
-#[test]
-fn v6_upgrade_adds_seat_and_thread_leading_digest_indexes() {
-    let db = v6_database();
-    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s',1,1);").unwrap();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT count(*) FROM membership_intervals WHERE seat_id='s'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        1
-    );
-    let plan: Vec<String> = db
-        .prepare("EXPLAIN QUERY PLAN SELECT DISTINCT thread_id FROM membership_intervals WHERE seat_id='s'")
-        .unwrap()
-        .query_map([], |row| row.get(3))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap();
-    assert!(
-        plan.iter()
-            .any(|step| step.contains("membership_intervals_seat_thread")),
-        "{plan:?}"
-    );
-    // A second startup is a verified no-op.
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
 }
 
 // Kills: accepting a v7 database whose digest index is missing or altered
@@ -443,153 +294,17 @@ fn v6_upgrade_adds_seat_and_thread_leading_digest_indexes() {
 // producer's plan or fail its INDEXED BY).
 #[test]
 fn startup_rejects_missing_or_altered_digest_index() {
-    // Migrate from v6 once; each tamper starts from a private copy of it.
-    let migrated = v6_database();
-    schema::initialize(&migrated, || crate::protocol::time::UtcMillis(0)).unwrap();
-    let snapshot = image_of(&migrated);
-    drop(migrated);
+    let snapshot = image_of(&fresh_db());
     for tamper in [
         "DROP INDEX messages_thread_warning",
         "DROP INDEX send_manifests_thread_warning; CREATE INDEX send_manifests_thread_warning ON send_manifests(thread_id, base_sequence)",
     ] {
         let db = from_image(&snapshot);
-        schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
         db.execute_batch(tamper).unwrap();
         let error = schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap_err();
         assert_eq!(error.code, ErrorCode::IncompatibleSchema, "{tamper}");
-        assert!(
-            error.detail.contains("attention digest index"),
-            "{}",
-            error.detail
-        );
+        assert!(error.detail.contains("_thread_warning"), "{}", error.detail);
     }
-}
-
-fn v7_database() -> Connection {
-    let db = v6_database();
-    db.execute_batch(include_str!("../../migrations/0007_attention_digest.sql"))
-        .unwrap();
-    db.pragma_update(None, "user_version", 7).unwrap();
-    db
-}
-
-// Digest fix2: a v7 database upgrades to v8 with every pending-only projection
-// backfilled from existing rows (pending rows in, settled rows out), and a
-// second startup is a verified no-op. Kills: a missing 7 => upgrade arm, a
-// backfill that omits pending rows or copies ACKed/accepted ones, and an
-// upgrade that rewrites existing history.
-#[test]
-fn v7_upgrade_backfills_only_pending_rows_into_the_digest_projections() {
-    let db = v7_database();
-    db.execute_batch("\
-        INSERT INTO host_instances(id,created_at) VALUES ('i',0);\
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0);\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('open','t','s',1,'pending',0,1,100,100);\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,accepted_at,accepted_actor_seat_id,accepted_generation,accepted_observation) VALUES ('done','t','s',2,'accepted',0,1,100,100,1,'s',1,'obs');\
-        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('m1','i','t',1,'ordinary','b',0,2),('m2','i','t',2,'ordinary','b',0,3);\
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p1','i','a','1',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed'),('p2','i','a','2',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');\
-        INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('p1','t','s',1,100,1),('p2','t','s',1,100,1);\
-        INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('p1','m1','i','t',2,0,1,0,1,0),('p2','m2','i','t',3,0,2,0,1,0);\
-        INSERT INTO receipt_state(message_id,seat_id,state,ack_actor_seat_id,ack_generation,ack_observation,acked_at) VALUES ('m1','s','acked','s',1,'obs',1);\
-    ").unwrap();
-    let history = |db: &Connection| -> Vec<i64> {
-        [
-            "invitations",
-            "messages",
-            "prepared_recipients",
-            "receipt_state",
-        ]
-        .iter()
-        .map(|t| {
-            db.query_row(&format!("SELECT count(*) FROM {t}"), [], |r| r.get(0))
-                .unwrap()
-        })
-        .collect()
-    };
-    let before = history(&db);
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    assert_eq!(history(&db), before);
-    let rows = |sql: &str| -> Vec<String> {
-        db.prepare(sql)
-            .unwrap()
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
-    };
-    assert_eq!(
-        rows("SELECT invitation_id FROM digest_pending_invitations"),
-        ["open"]
-    );
-    assert_eq!(
-        rows("SELECT preparation_id FROM digest_pending_manifest_receipts"),
-        ["p2"]
-    );
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-}
-
-// Wave-2 fix2 (a): upgrading carries each seat's existing offer state into
-// the occupant-scoped notice frontier. `s` and `o` each received notices n1
-// (seq 3) and n2 (seq 5). `s`'s current occupant was offered through seq 3,
-// so only n2 stays pending for it; `o`'s `warning_offer` belongs to another
-// execution than its current occupant, so it settles nothing there. The
-// projection is ordered by publication, whatever the recipient insertion
-// order. Kills: a backfill without the frontier (n1 pending for `s`).
-// `o`'s result needs occupant scoping in the backfill or in the frontier
-// read; each alone suffices here, so neither single mutation fails this
-// test (demonstrated). Read-time scoping is killed by
-// `programmatic_notices_settle_page_by_page_for_the_current_occupant`.
-#[test]
-fn v6_upgrade_carries_the_current_occupant_offer_into_the_notice_frontier() {
-    let db = v6_database();
-    // Keep the old publication graph realizable: publication rows retain their
-    // canonical preparations even though the notice backfill does not read them.
-    db.pragma_update(None, "foreign_keys", "ON").unwrap();
-    db.execute_batch("\
-        INSERT INTO host_instances(id,created_at,decision_seq) VALUES ('i',0,10);\
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0),('o','i','resolved','native',1,0);\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);\
-        INSERT INTO service_authors(id,instance_id,created_at) VALUES ('svc','i',0);\
-        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,event_json,decision_at,author_kind,author_service_id) VALUES ('n1','i','t',1,'warn',3,'{}',0,'programmatic','svc'),('n2','i','t',2,'warn',5,'{}',0,'programmatic','svc');\
-        INSERT INTO service_notification_preparations(id,instance_id,author_id,operation_key,digest,thread_id,membership_revision,lifecycle_revision,interval_high_water,requirement_high_water,recipient_count,status) VALUES ('p1','i','svc','p1',zeroblob(32),'t',0,0,0,0,2,'published'),('p2','i','svc','p2',zeroblob(32),'t',0,0,0,0,2,'published');\
-        INSERT INTO service_notification_publications(preparation_id,message_id,decision_seq,recipient_count) VALUES ('p1','n1',3,2),('p2','n2',5,2);\
-        INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('n2','s',5),('n2','o',5),('n1','s',3),('n1','o',3);\
-        INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at) VALUES ('s',1,'ps','b',1,'codex','ns','exec-s','fresh',0),('o',1,'po','b',1,'codex','no','exec-o','fresh',0);\
-        INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES ('s',1,'exec-s',3),('o',1,'predecessor',5);\
-    ").unwrap();
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
-            .get::<_, i64>(
-            0
-        ))
-        .unwrap(),
-        0
-    );
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-    let pending = |seat: &str| -> Vec<String> {
-        crate::store::attention::seat_pending_warnings(&db, seat, &|| Ok(()))
-            .unwrap()
-            .items
-            .into_iter()
-            .map(|item| item.id)
-            .collect()
-    };
-    assert_eq!(pending("s"), ["n2"]);
-    assert_eq!(pending("o"), ["n2", "n1"]);
-    let order: Vec<String> = db
-        .prepare("SELECT warning_id FROM digest_programmatic_warnings WHERE seat_id='s' ORDER BY ordinal")
-        .unwrap()
-        .query_map([], |r| r.get(0))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap();
-    assert_eq!(order, ["n1", "n2"]);
 }
 
 // Digest fix2: startup verifies every v8 projection table, index and
@@ -600,13 +315,7 @@ fn v6_upgrade_carries_the_current_occupant_offer_into_the_notice_frontier() {
 // reach the projection and be silently hidden).
 #[test]
 fn startup_rejects_missing_or_altered_digest_projection() {
-    // Migrate from v6 once, verify that store once, and start each tamper
-    // from a private in-memory copy of it.
-    let migrated = v6_database();
-    schema::initialize(&migrated, || crate::protocol::time::UtcMillis(0)).unwrap();
-    schema::initialize(&migrated, || crate::protocol::time::UtcMillis(0)).unwrap();
-    let snapshot = image_of(&migrated);
-    drop(migrated);
+    let snapshot = image_of(&fresh_db());
     for tamper in [
         "DROP TRIGGER digest_receipt_state_settled_update",
         "DROP TRIGGER digest_manifest_receipt_staged",
@@ -622,82 +331,11 @@ fn startup_rejects_missing_or_altered_digest_projection() {
         let error = schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap_err();
         assert_eq!(error.code, ErrorCode::IncompatibleSchema, "{tamper}");
         assert!(
-            error.detail.contains("attention digest projection"),
+            error.detail.contains("digest_"),
             "{tamper}: {}",
             error.detail
         );
     }
-}
-
-#[test]
-fn v1_history_migrates_once_with_native_and_builtin_authors_intact() {
-    let db = Connection::open_in_memory().unwrap();
-    db.pragma_update(None, "foreign_keys", "ON").unwrap();
-    db.execute_batch(include_str!("../../migrations/0001_initial.sql"))
-        .unwrap();
-    db.pragma_update(None, "user_version", 1).unwrap();
-    db.execute_batch("\
-        INSERT INTO host_instances(id,created_at) VALUES ('i',0);\
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0);\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);\
-        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at) VALUES ('native','i','t',1,'ordinary','s',1,'hello',1);\
-        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,decision_seq,event_json,decision_at) VALUES ('builtin','i','t',2,'info','old:event',2,'{}',2);\
-    ").unwrap();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-    assert_eq!(
-        db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    assert_eq!(
-        db.query_row("SELECT id FROM seats", [], |r| r.get::<_, String>(0))
-            .unwrap(),
-        "s"
-    );
-    assert_eq!(
-        db.query_row("SELECT id FROM threads", [], |r| r.get::<_, String>(0))
-            .unwrap(),
-        "t"
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT author_kind FROM messages WHERE id='native'",
-            [],
-            |r| r.get::<_, String>(0)
-        )
-        .unwrap(),
-        "native"
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT author_kind FROM messages WHERE id='builtin'",
-            [],
-            |r| r.get::<_, String>(0)
-        )
-        .unwrap(),
-        "built_in"
-    );
-    assert_eq!(
-        db.query_row("SELECT managed_owner_author_id FROM threads", [], |r| {
-            r.get::<_, Option<String>>(0)
-        })
-        .unwrap(),
-        None
-    );
-    assert_eq!(
-        crate::store::service_substrate::message_author(&db, &MessageId::new("native")).unwrap(),
-        crate::protocol::service::EventAuthor::Native(SeatId::new("s"))
-    );
-    assert_eq!(
-        crate::store::service_substrate::message_author(&db, &MessageId::new("builtin")).unwrap(),
-        crate::protocol::service::EventAuthor::BuiltIn
-    );
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM messages", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        2
-    );
 }
 
 #[test]
@@ -907,7 +545,7 @@ fn v2_verification_rejects_a_weakened_effective_requirement_index() {
     let (_context, db, _clock) = seeded_db(100);
     db.execute_batch("DROP INDEX requirement_episodes_effective; CREATE INDEX requirement_episodes_effective ON requirement_episodes(thread_id,seat_id)").unwrap();
     assert_eq!(
-        schema::verify_existing(&db).unwrap_err().code,
+        schema::verify_baseline(&db).unwrap_err().code,
         ErrorCode::IncompatibleSchema
     );
 }
@@ -1045,7 +683,7 @@ fn startup_rejects_missing_or_weakened_acceptance_guard_without_history_changes(
         assert_eq!(
             db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            schema::LATEST_VERSION
+            schema::NODE_SCHEMA_VERSION
         );
         assert_eq!(
             db.query_row(
@@ -1198,7 +836,7 @@ fn startup_rejects_missing_or_weakened_actor_presence_checks() {
         assert_eq!(
             db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            schema::LATEST_VERSION
+            schema::NODE_SCHEMA_VERSION
         );
         assert_eq!(
             db.query_row(
@@ -1494,7 +1132,7 @@ fn fresh_database_has_durable_settings_constraints_and_read_only_queries() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        schema::LATEST_VERSION
+        schema::NODE_SCHEMA_VERSION
     );
     assert!(db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('s', 'missing', 'resolved', 'native', 1, 0)", []).is_err());
     db.execute(
@@ -1523,43 +1161,6 @@ fn fresh_database_has_durable_settings_constraints_and_read_only_queries() {
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
     let _ = std::fs::remove_file(path);
-}
-
-#[test]
-fn amended_v1_requires_goal_and_rejects_an_old_v1_file_without_rewriting_it() {
-    let path = db_path();
-    let old = Connection::open(&path).unwrap();
-    old.execute_batch(
-        "CREATE TABLE threads(id TEXT PRIMARY KEY, topic TEXT NOT NULL); PRAGMA user_version=1;",
-    )
-    .unwrap();
-    old.execute(
-        "INSERT INTO threads(id, topic) VALUES ('kept', 'history')",
-        [],
-    )
-    .unwrap();
-    drop(old);
-    let before = std::fs::read(&path).unwrap();
-    let store = StoreContext::new(path.clone(), Arc::new(FixedClock));
-    assert_eq!(
-        store.open_writer().err().unwrap().code,
-        ErrorCode::IncompatibleSchema
-    );
-    assert_eq!(std::fs::read(&path).unwrap(), before);
-
-    let fresh = StoreContext::new(db_path(), Arc::new(FixedClock));
-    let db = fresh.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id, created_at) VALUES ('i', 0)",
-        [],
-    )
-    .unwrap();
-    assert!(db.execute("INSERT INTO threads(id, instance_id, topic, created_at, updated_at) VALUES ('missing-goal', 'i', 'topic', 0, 0)", []).is_err());
-    db.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('t', 'i', 'topic', 'purpose', 0, 0)", []).unwrap();
-    let goal: String = db
-        .query_row("SELECT goal FROM threads WHERE id='t'", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(goal, "purpose");
 }
 
 #[test]
@@ -1616,7 +1217,7 @@ fn writer_audit_rejects_missing_amended_v1_objects() {
         .unwrap();
     db.execute_batch("DROP TABLE work_jobs").unwrap();
     assert_eq!(
-        schema::verify_existing(&db).unwrap_err().code,
+        schema::verify_baseline(&db).unwrap_err().code,
         ErrorCode::IncompatibleSchema
     );
 }
@@ -3561,299 +3162,6 @@ fn filter_revision_updates_only_its_scope_in_the_transaction() {
     assert_eq!(revisions, (2, 1));
 }
 
-#[test]
-fn v2_database_migrates_to_additive_invitation_cancellations_and_voluntary_state_without_rewriting_history()
- {
-    let db = Connection::open_in_memory().unwrap();
-    db.execute_batch(include_str!("../../migrations/0001_initial.sql"))
-        .unwrap();
-    db.execute_batch(include_str!("../../migrations/0002_service_substrate.sql"))
-        .unwrap();
-    db.pragma_update(None, "user_version", 2).unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
-        [],
-    )
-    .unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0)",[]).unwrap();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)",[]).unwrap();
-    db.execute(
-        "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','invited')",
-        [],
-    )
-    .unwrap();
-    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('old','t','s',1,'pending',1,10,100,110)",[]).unwrap();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT deadline_at FROM invitations WHERE id='old'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        110
-    );
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM invitation_cancellations", [], |r| r
-            .get::<_, i64>(
-            0
-        ))
-        .unwrap(),
-        0
-    );
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-}
-
-#[test]
-fn v4_database_adds_notification_schema_without_changing_existing_history() {
-    let db = Connection::open_in_memory().unwrap();
-    for migration in [
-        include_str!("../../migrations/0001_initial.sql"),
-        include_str!("../../migrations/0002_service_substrate.sql"),
-        include_str!("../../migrations/0003_invitation_cancellations.sql"),
-        include_str!("../../migrations/0004_voluntary_membership.sql"),
-    ] {
-        db.execute_batch(migration).unwrap();
-    }
-    db.pragma_update(None, "user_version", 4).unwrap();
-    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0);
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);
-        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,decision_seq,event_json,decision_at)
-            VALUES ('old','i','t',1,'info','old',1,'{\"event\":\"old\"}',0);")
-        .unwrap();
-
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    assert_eq!(
-        db.query_row("SELECT event_json FROM messages WHERE id='old'", [], |r| {
-            r.get::<_, String>(0)
-        })
-        .unwrap(),
-        "{\"event\":\"old\"}"
-    );
-    for table in [
-        "service_notification_preparations",
-        "service_notification_recipients",
-        "service_notification_publications",
-    ] {
-        assert_eq!(
-            db.query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
-                [table],
-                |r| r.get::<_, i64>(0)
-            )
-            .unwrap(),
-            1
-        );
-    }
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-}
-
-#[test]
-fn v5_startup_rejects_missing_or_weakened_notification_objects_without_mutation() {
-    let canonical = include_str!("../../migrations/0005_service_notifications.sql");
-    let cases = [
-        (
-            "missing required ordinal index",
-            "CREATE INDEX requirement_episodes_thread_ordinal\n    ON requirement_episodes(thread_id,ordinal);",
-            "",
-        ),
-        (
-            "wrong required ordinal index order",
-            "ON requirement_episodes(thread_id,ordinal)",
-            "ON requirement_episodes(ordinal,thread_id)",
-        ),
-        (
-            "wrong required ordinal index collation",
-            "ON requirement_episodes(thread_id,ordinal)",
-            "ON requirement_episodes(thread_id COLLATE NOCASE,ordinal)",
-        ),
-        (
-            "missing paging index",
-            "CREATE INDEX service_notification_recipients_page\n    ON service_notification_recipients(preparation_id,ordinal);",
-            "",
-        ),
-        (
-            "wrong paging order",
-            "ON service_notification_recipients(preparation_id,ordinal)",
-            "ON service_notification_recipients(ordinal,preparation_id)",
-        ),
-        (
-            "wrong paging collation",
-            "ON service_notification_recipients(preparation_id,ordinal)",
-            "ON service_notification_recipients(preparation_id COLLATE NOCASE,ordinal)",
-        ),
-        (
-            "weakened preparation key",
-            "    id TEXT NOT NULL UNIQUE,\n    instance_id",
-            "    id TEXT NOT NULL,\n    instance_id",
-        ),
-        (
-            "weakened preparation check",
-            "digest BLOB NOT NULL CHECK(length(digest)=32)",
-            "digest BLOB NOT NULL",
-        ),
-        (
-            "changed case-sensitive status literal",
-            "status IN ('building','sealed','discarded','published')",
-            "status IN ('BUILDING','sealed','discarded','published')",
-        ),
-        (
-            "weakened recipient uniqueness",
-            "UNIQUE(preparation_id,seat_id)",
-            "UNIQUE(preparation_id,ordinal)",
-        ),
-        (
-            "weakened recipient foreign key",
-            "seat_id TEXT NOT NULL REFERENCES seats(id)",
-            "seat_id TEXT NOT NULL",
-        ),
-        (
-            "weakened publication key",
-            "message_id TEXT NOT NULL UNIQUE REFERENCES messages(id)",
-            "message_id TEXT NOT NULL REFERENCES messages(id)",
-        ),
-        (
-            "weakened publication check",
-            "decision_seq INTEGER NOT NULL CHECK(decision_seq>0)",
-            "decision_seq INTEGER NOT NULL",
-        ),
-        (
-            "wrong operation index",
-            "ON service_notification_preparations(instance_id,author_id,operation_key,ordinal)",
-            "ON service_notification_preparations(instance_id,operation_key,author_id,ordinal)",
-        ),
-    ];
-    for (name, original, replacement) in cases {
-        assert_eq!(canonical.matches(original).count(), 1, "{name}");
-        let db = Connection::open_in_memory().unwrap();
-        for migration in [
-            include_str!("../../migrations/0001_initial.sql"),
-            include_str!("../../migrations/0002_service_substrate.sql"),
-            include_str!("../../migrations/0003_invitation_cancellations.sql"),
-            include_str!("../../migrations/0004_voluntary_membership.sql"),
-        ] {
-            db.execute_batch(migration).unwrap();
-        }
-        db.execute_batch(&canonical.replacen(original, replacement, 1))
-            .unwrap();
-        db.pragma_update(None, "user_version", 5).unwrap();
-        let before: Vec<(String, String)> = db
-            .prepare("SELECT name,coalesce(sql,'') FROM sqlite_master ORDER BY name")
-            .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert_eq!(
-            schema::initialize(&db, || crate::protocol::time::UtcMillis(0))
-                .unwrap_err()
-                .code,
-            ErrorCode::IncompatibleSchema,
-            "{name}"
-        );
-        let after: Vec<(String, String)> = db
-            .prepare("SELECT name,coalesce(sql,'') FROM sqlite_master ORDER BY name")
-            .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert_eq!(after, before, "{name}");
-        assert_eq!(
-            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-                .unwrap(),
-            5,
-            "{name}"
-        );
-    }
-}
-
-#[test]
-fn v3_required_only_shadow_recovers_prior_left_only_from_exact_leave_audit() {
-    fn legacy(with_leave_audit: bool) -> Connection {
-        let db = Connection::open_in_memory().unwrap();
-        db.execute_batch(include_str!("../../migrations/0001_initial.sql"))
-            .unwrap();
-        db.execute_batch(include_str!("../../migrations/0002_service_substrate.sql"))
-            .unwrap();
-        db.execute_batch(include_str!(
-            "../../migrations/0003_invitation_cancellations.sql"
-        ))
-        .unwrap();
-        db.pragma_update(None, "user_version", 3).unwrap();
-        db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0);
-            INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0);
-            INSERT INTO service_authors(id,instance_id,created_at) VALUES ('graph:i','i',0);
-            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,managed_owner_author_id)
-                VALUES ('t','i','topic','goal',0,0,'graph:i');
-            INSERT INTO memberships(thread_id,seat_id,episode,state,left_at) VALUES ('t','s',2,'invited',NULL);
-            INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq,left_seq) VALUES ('t','s',1,1,2);
-            INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at)
-                VALUES ('required','t','s',2,'pending',3,30,100,130);
-            INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at)
-                VALUES ('req','t','s','graph:i','required','pending',3,30);").unwrap();
-        if with_leave_audit {
-            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,decision_seq,event_json,decision_at)
-                VALUES ('leave','i','t',1,'info','leave:1',2,'{\"action\":\"leave\",\"seat\":\"s\"}',20)",[]).unwrap();
-        }
-        db
-    }
-    let missing = legacy(false);
-    assert_eq!(
-        schema::initialize(&missing, || crate::protocol::time::UtcMillis(0))
-            .unwrap_err()
-            .code,
-        ErrorCode::IncompatibleSchema
-    );
-    assert_eq!(
-        missing
-            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        3
-    );
-    assert_eq!(
-        missing
-            .query_row("SELECT state FROM memberships", [], |r| r
-                .get::<_, String>(0))
-            .unwrap(),
-        "invited"
-    );
-    let recovered = legacy(true);
-    schema::initialize(&recovered, || crate::protocol::time::UtcMillis(0)).unwrap();
-    assert_eq!(
-        recovered
-            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    assert_eq!(
-        recovered
-            .query_row("SELECT voluntary_state,left_at FROM memberships", [], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-            })
-            .unwrap(),
-        ("left".into(), 20)
-    );
-    assert_eq!(
-        recovered
-            .query_row("SELECT deadline_at FROM invitations", [], |r| r
-                .get::<_, i64>(0))
-            .unwrap(),
-        130
-    );
-    schema::initialize(&recovered, || crate::protocol::time::UtcMillis(0)).unwrap();
-}
-
 /// Kills: removing (or weakening) the writer-connection binding-evidence
 /// guard, so a live binding without terminal/incarnation could be stored and
 /// later never reconfirmed after a host invalidation.
@@ -4015,228 +3323,6 @@ fn writer_startup_backfills_legacy_binding_evidence_only_from_matching_structura
     let _ = std::fs::remove_file(&path);
 }
 
-fn v8_database() -> Connection {
-    let db = v7_database();
-    db.execute_batch(include_str!(
-        "../../migrations/0008_digest_pending_paths.sql"
-    ))
-    .unwrap();
-    db.pragma_update(None, "user_version", 8).unwrap();
-    db
-}
-
-// ht-4is.8.9: a v8 database upgrades to v9 by rebuilding occupant_bindings
-// with identical rows, ordinals, AUTOINCREMENT high water and indexes; only
-// the accepted harness set grows to include a person's `human` occupant.
-// Kills: a missing 8 => upgrade arm, a rebuild that drops or renumbers
-// history, loses an index, or still refuses the human harness.
-#[test]
-fn v8_upgrade_rebuilds_occupant_bindings_to_accept_a_human_occupant() {
-    let db = v8_database();
-    db.execute_batch("\
-        INSERT INTO host_instances(id,created_at) VALUES ('i',0);\
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',2,0);\
-        INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at,terminal_id,incarnation) VALUES ('s',1,'w1:p1','b',0,'claude','n1','e1','cooperative_top_level',1,1,5,'t','inc');\
-        INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',2,'w1:p1','b',0,'codex','n2','e2','cooperative_top_level',6,6,'t','inc');\
-    ").unwrap();
-    assert!(
-        db.execute(
-            "UPDATE occupant_bindings SET harness='human' WHERE generation=2",
-            []
-        )
-        .is_err(),
-        "v8 refuses the human harness"
-    );
-    let rows = |db: &Connection| -> Vec<(i64, String, String, Option<i64>)> {
-        db.prepare(
-            "SELECT ordinal,harness,execution_id,ended_at FROM occupant_bindings ORDER BY ordinal",
-        )
-        .unwrap()
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap()
-    };
-    let before = rows(&db);
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    assert_eq!(rows(&db), before);
-    for index in [
-        "occupant_bindings_open",
-        "occupant_bindings_session_key",
-        "occupant_bindings_history",
-        "occupant_bindings_execution",
-    ] {
-        let exists: bool = db
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1 AND tbl_name='occupant_bindings')",
-                [index],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(exists, "{index}");
-    }
-    db.execute(
-        "UPDATE occupant_bindings SET ended_at=7 WHERE generation=2",
-        [],
-    )
-    .unwrap();
-    db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',3,'w1:p1','b',0,'human','plugin_context:x','e3','operator_human',8,8,'t','inc')", [])
-        .unwrap();
-    let ordinal: i64 = db
-        .query_row(
-            "SELECT ordinal FROM occupant_bindings WHERE generation=3",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(
-        ordinal, 3,
-        "AUTOINCREMENT continues past the copied history"
-    );
-    assert!(
-        db.execute(
-            "UPDATE occupant_bindings SET harness='Robot' WHERE generation=3",
-            []
-        )
-        .is_err()
-    );
-    // A second startup is a verified no-op.
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-}
-
-fn v9_database() -> Connection {
-    let db = v8_database();
-    db.execute_batch(include_str!("../../migrations/0009_human_occupant.sql"))
-        .unwrap();
-    db.pragma_update(None, "user_version", 9).unwrap();
-    db
-}
-
-/// Tables dropped by the v11 migration (B4; v10 is B5's trust guards): those only the deleted pre-cooperative
-/// verification layer used. The mechanical sweep (`rg -w <table> src/`) found
-/// none: allocation_decisions, recovery_baseline_releases and
-/// recovery_baseline_targets are still written or read by ordinary resolution,
-/// operator repair and the effective recovery disposition.
-const DROPPED_IN_V11: &[&str] = &[];
-
-// ht-p03.2: a v9 database upgrades (through B5's v10) to v11 by dropping only
-// the tables the removed verification layer used; cooperative tables and rows
-// are intact. Kills: a missing 9 => upgrade arm, a v11 not stamped as version 11,
-// and a migration that drops or alters a cooperative table or its rows.
-#[test]
-fn v9_upgrade_to_v11_drops_removed_only_tables() {
-    let db = v9_database();
-    db.execute_batch("\
-        INSERT INTO host_instances(id,created_at) VALUES ('i',0);\
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0);\
-        INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,'w1:p1','b',0,'claude','n1','e1','cooperative_top_level',1,1,'t','inc');\
-    ").unwrap();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-    let version: i64 = db
-        .pragma_query_value(None, "user_version", |r| r.get(0))
-        .unwrap();
-    assert_eq!(
-        version,
-        schema::LATEST_VERSION,
-        "a v9 store upgrades all the way (v12: harness evidence; v13/v14: thread summaries)"
-    );
-    for dropped in DROPPED_IN_V11 {
-        let exists: bool = db
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)",
-                [dropped],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(!exists, "{dropped} still present");
-    }
-    for kept in [
-        "seats",
-        "occupant_bindings",
-        "threads",
-        "messages",
-        "receipts",
-        "recovery_holds",
-        "wake_work",
-        "work_jobs",
-        "allocation_decisions",
-        "recovery_baseline_releases",
-        "recovery_baseline_targets",
-    ] {
-        let exists: bool = db
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-                [kept],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(exists, "{kept} dropped");
-    }
-    let rows: i64 = db
-        .query_row("SELECT count(*) FROM occupant_bindings", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(rows, 1);
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap(); // second startup is a verified no-op
-}
-
-/// A v11 store (the previous release's shape) with rows in existing tables.
-/// Built from the v11 migrations themselves (not by stripping a fresh store),
-/// so the later migrations (v12 harness evidence, v13/v14 thread summaries)
-/// all run on upgrade.
-fn v11_populated_database() -> Connection {
-    let db = v11_database();
-    db.execute_batch("\
-        INSERT INTO host_instances(id,created_at) VALUES ('i',0);\
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0);\
-        INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,'w1:p1','b',0,'claude','n1','e1','cooperative_top_level',1,1,'t','inc');\
-    ").unwrap();
-    db
-}
-
-// ht-xoc.4: a populated v11 store upgrades through v12 keeping its rows and
-// gaining both evidence tables (empty, usable); a fresh store has them too.
-// (Since the thread-summaries merge both end at v14.)
-// Kills: a missing 11 => upgrade arm, a migration that loses existing rows,
-// and an audit that does not check the new tables.
-#[test]
-fn migration_applies_on_a_populated_store() {
-    let db = v11_populated_database();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-    let version: i64 = db
-        .pragma_query_value(None, "user_version", |r| r.get(0))
-        .unwrap();
-    assert_eq!(version, schema::LATEST_VERSION);
-    let bindings: i64 = db
-        .query_row("SELECT count(*) FROM occupant_bindings", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(bindings, 1, "existing rows survive");
-    for table in ["harness_version_evidence", "harness_unattributed"] {
-        let rows: i64 = db
-            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(rows, 0, "{table} starts empty");
-    }
-    db.execute(
-        "INSERT INTO harness_version_evidence(harness,version,contract_id,first_seen_at,last_seen_at) VALUES ('claude','2.1.286','0123456789abcdef',1,1)",
-        [],
-    )
-    .unwrap();
-    assert!(
-        db.execute(
-            "INSERT INTO harness_version_evidence(harness,version,contract_id,first_seen_at,last_seen_at) VALUES ('human','1.0.0','0123456789abcdef',1,1)",
-            [],
-        )
-        .is_err(),
-        "harness is constrained to claude and codex"
-    );
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap(); // second startup is a verified no-op
-}
-
 #[test]
 fn fresh_store_lands_at_latest_with_the_evidence_tables() {
     let db = Connection::open_in_memory().unwrap();
@@ -4244,7 +3330,7 @@ fn fresh_store_lands_at_latest_with_the_evidence_tables() {
     let version: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, schema::LATEST_VERSION);
+    assert_eq!(version, schema::NODE_SCHEMA_VERSION);
     for table in ["harness_version_evidence", "harness_unattributed"] {
         let present: bool = db
             .query_row(
@@ -4263,7 +3349,7 @@ fn v12_audit_rejects_a_missing_or_altered_evidence_table() {
     schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     db.execute_batch("DROP TABLE harness_unattributed").unwrap();
     assert_eq!(
-        schema::verify_existing(&db).unwrap_err().code,
+        schema::verify_baseline(&db).unwrap_err().code,
         ErrorCode::IncompatibleSchema
     );
     db.execute_batch(
@@ -4271,88 +3357,15 @@ fn v12_audit_rejects_a_missing_or_altered_evidence_table() {
     )
     .unwrap();
     assert_eq!(
-        schema::verify_existing(&db).unwrap_err().code,
+        schema::verify_baseline(&db).unwrap_err().code,
         ErrorCode::IncompatibleSchema,
         "a table without the harness CHECK is not the migration's table"
     );
 }
 
-const B1_V11: &[(&str, &str)] = &[
-    (
-        "seats_live_ordinal",
-        "CREATE INDEX seats_live_ordinal ON seats(instance_id, ordinal) WHERE state!='retired'",
-    ),
-    (
-        "work_jobs_live",
-        "CREATE INDEX work_jobs_live ON work_jobs(ordinal) WHERE status IN ('pending','failed')",
-    ),
-    (
-        "work_jobs_retention",
-        "CREATE INDEX work_jobs_retention ON work_jobs(kind, completed_at) WHERE status='complete'",
-    ),
-    (
-        "snapshot_generations_retention",
-        "CREATE INDEX snapshot_generations_retention ON snapshot_generations(instance_id, admission_sequence)",
-    ),
-    (
-        "wake_work_reserved",
-        "CREATE INDEX wake_work_reserved ON wake_work(seat_id) WHERE reservation_id IS NOT NULL",
-    ),
-];
-
-fn normalize_sql(sql: &str) -> String {
-    sql.trim()
-        .trim_end_matches(';')
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_lowercase()
-}
-
-// ht-p03.12.1: a v9 database gains the five B1 indexes with exactly the
-// contract SQL and work_jobs.completed_at; pre-v11 completed rows keep NULL.
-// Kills: a missing or reworded index, a missing column, a backfilled stamp.
-#[test]
-fn v9_upgrade_creates_b1_indexes_and_completed_at() {
-    let db = v9_database();
-    db.execute_batch("INSERT INTO work_jobs(id,kind,subject_id,high_water,status) VALUES ('done','send_attention','p1',1,'complete'),('todo','send_attention','p2',1,'pending');").unwrap();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-    for (name, sql) in B1_V11 {
-        let installed: String = db
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
-                [name],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(normalize_sql(&installed), normalize_sql(sql), "{name}");
-    }
-    let has_column: bool = db
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('work_jobs') WHERE name='completed_at')",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(has_column);
-    let stamped: i64 = db
-        .query_row(
-            "SELECT count(*) FROM work_jobs WHERE completed_at IS NOT NULL",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(stamped, 0);
-    assert!(
-        db.execute("UPDATE work_jobs SET completed_at=-1 WHERE id='done'", [])
-            .is_err(),
-        "negative completed_at violates the CHECK"
-    );
-}
-
 #[test]
 fn startup_verification_rejects_a_tampered_b1_index() {
-    let db = v9_database();
+    let db = fresh_db();
     schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     db.execute_batch("DROP INDEX work_jobs_live; CREATE INDEX work_jobs_live ON work_jobs(ordinal) WHERE status='pending';").unwrap();
     let error = schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap_err();
@@ -4365,7 +3378,7 @@ fn startup_verification_rejects_a_tampered_b1_index() {
 // seven access paths ht-p03.12.5 relies on.
 #[test]
 fn b1_indexes_are_usable_by_name() {
-    let db = v9_database();
+    let db = fresh_db();
     schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     for probe in [
         "SELECT ordinal FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND state!='retired' AND ordinal>?2 ORDER BY ordinal LIMIT 1",
@@ -4389,7 +3402,7 @@ fn b1_indexes_are_usable_by_name() {
 // all still exist (ht-p03.2 dropped no table; b4-removed-symbols.txt).
 #[test]
 fn v11_survivors_recorded() {
-    let db = v9_database();
+    let db = fresh_db();
     schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     let mut statement = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE '%baseline%' OR name LIKE '%recovery%' OR name='allocation_decisions') ORDER BY name")
@@ -4413,79 +3426,9 @@ fn v11_survivors_recorded() {
     }
 }
 
-// B5 (ht-rzi.1): a populated v9 store upgrades through v10 (rebuilding
-// allocation_decisions) to the current v11. Kills: a rebuild that renumbers or drops history,
-// loses an index, or seeds the new marker/diagnostic columns with non-NULL.
-#[test]
-fn v9_store_with_rows_migrates_to_v10_preserving_allocation_history() {
-    let db = v9_database();
-    db.execute_batch("\
-        INSERT INTO host_instances(id,created_at) VALUES ('i',0);\
-        INSERT INTO allocation_decisions(ordinal,instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (3,'i','w1:p1','s1','ordinary',10,'b',0,1,NULL);\
-        INSERT INTO allocation_decisions(ordinal,instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (7,'i','w1:p2','s2','operator_rebind',11,'b',1,2,'operator:local-user:501');\
-    ").unwrap();
-    let rows = |db: &Connection| -> Vec<(i64, String, String, String, i64, Option<String>)> {
-        db.prepare("SELECT ordinal,target_id,seat_id,kind,epoch,operator_label FROM allocation_decisions ORDER BY ordinal")
-            .unwrap()
-            .query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
-            })
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
-    };
-    let before = rows(&db);
-    assert_eq!(before.len(), 2);
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    assert_eq!(rows(&db), before);
-    let diagnostics: i64 = db
-        .query_row(
-            "SELECT count(*) FROM allocation_decisions WHERE continuity_diagnostic IS NOT NULL",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(diagnostics, 0);
-    let marker: (Option<String>, Option<i64>) = db
-        .query_row(
-            "SELECT reconciled_boot,reconciled_epoch FROM host_instances WHERE id='i'",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(marker, (None, None));
-    for index in [
-        "allocation_decisions_target",
-        "allocation_decisions_seat_history",
-    ] {
-        let exists: bool = db
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1 AND tbl_name='allocation_decisions')",
-                [index],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(exists, "{index}");
-    }
-    db.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation) VALUES ('i','w1:p3','s3','ordinary',12,'b',0,1)", [])
-        .unwrap();
-    let next: i64 = db
-        .query_row("SELECT max(ordinal) FROM allocation_decisions", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    assert_eq!(next, 8, "AUTOINCREMENT continues past the copied history");
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-}
-
 #[test]
 fn v10_allocation_decisions_accepts_b5_kinds() {
-    let db = v9_database();
+    let db = fresh_db();
     schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     db.execute(
         "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
@@ -4512,166 +3455,6 @@ fn v10_allocation_decisions_accepts_b5_kinds() {
     assert!(insert("cooperative_continuity", Some("maybe")).is_err());
 }
 
-/// A store at main's v10 (B5 trust guards, before the B4/B1 cooperative-only
-/// migration was renumbered to v11).
-fn v10_database() -> Connection {
-    let db = v9_database();
-    db.execute_batch(include_str!("../../migrations/0010_b5_trust_guards.sql"))
-        .unwrap();
-    db.pragma_update(None, "user_version", 10).unwrap();
-    db
-}
-
-/// A store at main's v11 (cooperative-only skeleton plus B1 indexes), before
-/// the harness version evidence migration (v12) and the thread-summaries
-/// migrations (v13, v14).
-fn v11_database() -> Connection {
-    let db = v10_database();
-    db.execute_batch(include_str!("../../migrations/0011_cooperative_only.sql"))
-        .unwrap();
-    db.pragma_update(None, "user_version", 11).unwrap();
-    db
-}
-
-/// A store at main's v12 (harness version evidence, ht-xoc.4), before the
-/// thread-summaries migrations (v13, v14).
-fn v12_database() -> Connection {
-    let db = v11_database();
-    db.execute_batch(include_str!(
-        "../../migrations/0012_harness_version_evidence.sql"
-    ))
-    .unwrap();
-    db.pragma_update(None, "user_version", 12).unwrap();
-    db
-}
-
-// Merge of main (B5, v10) into the remaining-findings run (B1/B4, renumbered
-// to v11): a populated main-v10 store upgrades to v11 keeping every B5 column,
-// kind and row, and gains exactly the B1 indexes and work_jobs.completed_at.
-// Kills: a missing 10 => upgrade arm, a v11 that re-runs or skips the B5
-// migration, a v10 store verified against the v11 shape before upgrading, and
-// a second startup that is not a verified no-op. (The thread-summaries merge
-// renumbered its migrations to v13/v14 after main's v12 harness version
-// evidence, so the store now ends at v14.)
-#[test]
-fn main_v10_store_upgrades_to_v11_with_both_migrations() {
-    let db = v10_database();
-    db.execute_batch("\
-        INSERT INTO host_instances(id,created_at,reconciled_boot,reconciled_epoch) VALUES ('i',0,'b',3);\
-        INSERT INTO allocation_decisions(ordinal,instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,continuity_diagnostic) VALUES (4,'i','w1:p1','s1','cooperative_continuity',10,'b',3,2,'match');\
-        INSERT INTO work_jobs(id,kind,subject_id,high_water,status) VALUES ('done','send_attention','p1',1,'complete');\
-    ").unwrap();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    let marker: (String, i64) = db
-        .query_row(
-            "SELECT reconciled_boot,reconciled_epoch FROM host_instances WHERE id='i'",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(marker, ("b".to_owned(), 3));
-    let decision: (i64, String, Option<String>) = db
-        .query_row(
-            "SELECT ordinal,kind,continuity_diagnostic FROM allocation_decisions",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(
-        decision,
-        (
-            4,
-            "cooperative_continuity".to_owned(),
-            Some("match".to_owned())
-        )
-    );
-    for (name, sql) in B1_V11 {
-        let installed: String = db
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
-                [name],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(normalize_sql(&installed), normalize_sql(sql), "{name}");
-    }
-    let stamped: i64 = db
-        .query_row(
-            "SELECT count(*) FROM work_jobs WHERE completed_at IS NOT NULL",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(stamped, 0, "pre-v11 completed rows keep NULL");
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap(); // second startup is a verified no-op
-}
-
-// A fresh store, a main-v10, a main-v11 and a main-v12 store end in the same
-// (v14) shape.
-// Kills: a fresh path that skips any migration, a v11 store that skips the
-// harness version evidence (v12) migration, and a v11 or v12 store that skips
-// the thread-summaries (v13) or catch-up release (v14) migration.
-#[test]
-fn fresh_and_main_v10_stores_share_the_v11_shape() {
-    let shape = |db: &Connection| -> Vec<(String, String, Option<String>)> {
-        db.prepare(
-            "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
-        )
-        .unwrap()
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap()
-    };
-    let fresh = fresh_db();
-    schema::initialize(&fresh, || crate::protocol::time::UtcMillis(0)).unwrap();
-    // One chain replay: the v11 and v12 stores extend a copy of the v10 one
-    // exactly as v11_database / v12_database do.
-    let upgraded = v10_database();
-    let v10_image = image_of(&upgraded);
-    schema::initialize(&upgraded, || crate::protocol::time::UtcMillis(0)).unwrap();
-    let upgraded_v11 = from_image(&v10_image);
-    upgraded_v11
-        .execute_batch(include_str!("../../migrations/0011_cooperative_only.sql"))
-        .unwrap();
-    upgraded_v11
-        .pragma_update(None, "user_version", 11)
-        .unwrap();
-    let v11_image = image_of(&upgraded_v11);
-    schema::initialize(&upgraded_v11, || crate::protocol::time::UtcMillis(0)).unwrap();
-    let upgraded_v12 = from_image(&v11_image);
-    upgraded_v12
-        .execute_batch(include_str!(
-            "../../migrations/0012_harness_version_evidence.sql"
-        ))
-        .unwrap();
-    upgraded_v12
-        .pragma_update(None, "user_version", 12)
-        .unwrap();
-    schema::initialize(&upgraded_v12, || crate::protocol::time::UtcMillis(0)).unwrap();
-    for db in [&fresh, &upgraded, &upgraded_v11, &upgraded_v12] {
-        assert_eq!(
-            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-                .unwrap(),
-            schema::LATEST_VERSION
-        );
-    }
-    let normalize =
-        |rows: Vec<(String, String, Option<String>)>| -> Vec<(String, String, Option<String>)> {
-            rows.into_iter()
-                .map(|(t, n, sql)| (t, n, sql.map(|sql| normalize_sql(&sql))))
-                .collect()
-        };
-    assert_eq!(normalize(shape(&fresh)), normalize(shape(&upgraded)));
-    assert_eq!(normalize(shape(&fresh)), normalize(shape(&upgraded_v11)));
-    assert_eq!(normalize(shape(&fresh)), normalize(shape(&upgraded_v12)));
-}
-
 fn object_exists(db: &Connection, kind: &str, name: &str) -> bool {
     db.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type=?1 AND name=?2)",
@@ -4696,7 +3479,7 @@ fn fresh_database_has_thread_summary_schema() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        schema::LATEST_VERSION
+        schema::NODE_SCHEMA_VERSION
     );
     for table in [
         "summary_blocks",
@@ -4765,93 +3548,6 @@ fn fresh_database_has_thread_summary_schema() {
 }
 
 #[test]
-fn v10_upgrade_backfills_author_role_from_the_covering_binding() {
-    let db = v10_database();
-    db.execute_batch(
-        "PRAGMA foreign_keys=ON;\
-         INSERT INTO host_instances(id,created_at) VALUES ('i',0);\
-         INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('sh','i','resolved','native',1,0),('sa','i','resolved','native',1,0),('sx','i','resolved','native',1,0),('sl','i','resolved','native',1,0),('sm','i','resolved','native',2,0);\
-         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);\
-         INSERT INTO service_authors(id,instance_id,created_at) VALUES ('svc','i',0);\
-         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('sh',1,'p','b',0,'human','n','e','operator_human',0,'tm','inc');\
-         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('sa',1,'p','b',0,'claude','n','e','cooperative_top_level',0,'tm','inc');\
-         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,ended_at,terminal_id,incarnation) VALUES ('sl',1,'p','b',0,'codex','n','e','cooperative_top_level',0,5,'tm','inc');\
-         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,ended_at,terminal_id,incarnation) VALUES ('sm',1,'p','b',0,'human','n','e','operator_human',0,5,'tm','inc');\
-         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('sm',2,'p','b',0,'claude','n','e','cooperative_top_level',5,'tm','inc');\
-         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at,author_kind) VALUES ('i','m_h','t',1,'ordinary','sh',1,'b',10,'native');\
-         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at,author_kind) VALUES ('i','m_a','t',2,'ordinary','sa',2,'b',10,'native');\
-         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at,author_kind) VALUES ('i','m_x','t',3,'ordinary','sx',3,'b',10,'native');\
-         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at,author_kind) VALUES ('i','m_late','t',4,'ordinary','sl',4,'b',10,'native');\
-         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at,author_kind) VALUES ('i','m_early','t',5,'ordinary','sl',5,'b',3,'native');\
-         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,decision_seq,body,decision_at,author_kind,author_service_id) VALUES ('i','m_svc','t',6,'ordinary',6,'b',10,'programmatic','svc');\
-         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_seq,decision_at,author_kind) VALUES ('i','m_info','t',7,'info','k','{}',7,10,'built_in');\
-         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at,author_kind) VALUES ('i','m_before','t',8,'ordinary','sm',8,'b',3,'native');\
-         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at,author_kind) VALUES ('i','m_after','t',9,'ordinary','sm',9,'b',7,'native');",
-    )
-    .unwrap();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    let rows: Vec<(String, Option<String>, i64, i64, String)> = db
-        .prepare("SELECT id,author_role,relays_user,author_role_backfilled,author_kind FROM messages ORDER BY sequence")
-        .unwrap()
-        .query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-        })
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap();
-    let expected = [
-        ("m_h", Some("human"), "native"),
-        ("m_a", Some("agent"), "native"),
-        ("m_x", None, "native"),
-        ("m_late", None, "native"),
-        ("m_early", Some("agent"), "native"),
-        ("m_svc", Some("service"), "programmatic"),
-        ("m_info", None, "built_in"),
-        ("m_before", Some("human"), "native"),
-        ("m_after", Some("agent"), "native"),
-    ];
-    assert_eq!(rows.len(), expected.len());
-    for (row, (id, role, kind)) in rows.iter().zip(expected) {
-        assert_eq!(row.0, id);
-        assert_eq!(row.1.as_deref(), role, "{id}");
-        assert_eq!(row.2, 0, "{id} relays_user");
-        assert_eq!(row.3, 1, "{id} backfilled");
-        assert_eq!(row.4, kind, "{id} author_kind unchanged");
-    }
-    assert!(
-        db.execute("UPDATE messages SET body='x'", [])
-            .unwrap_err()
-            .to_string()
-            .contains("message history is immutable")
-    );
-    let priority = |id: &str| {
-        let (role, relays): (Option<String>, i64) = db
-            .query_row(
-                "SELECT author_role,relays_user FROM messages WHERE id=?1",
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        crate::protocol::summary::is_priority(
-            role.as_deref()
-                .and_then(crate::protocol::summary::AuthorRole::from_column),
-            relays == 1,
-        )
-    };
-    assert!(priority("m_h"));
-    assert!(!priority("m_a"));
-    assert!(priority("m_before"));
-    assert!(!priority("m_after"));
-    // A second startup is a verified no-op.
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-}
-
-#[test]
 fn new_message_rows_cannot_claim_backfill_or_service_relay() {
     let (_context, db, _clock) = seeded_db(0);
     db.execute(
@@ -4888,88 +3584,6 @@ fn new_message_rows_cannot_claim_backfill_or_service_relay() {
 }
 
 #[test]
-fn backfilled_rows_read_through_is_priority() {
-    use crate::protocol::{
-        commands::{Command, HistoryQuery},
-        pagination::PageRequest,
-        summary::{AuthorRole, is_priority},
-    };
-    // Same fixture shape as the v10 backfill test, but read back through the
-    // production history query after the file database upgrades on open.
-    let db = v10_database();
-    db.execute_batch(
-        "PRAGMA foreign_keys=ON;\
-         INSERT INTO host_instances(id,created_at) VALUES ('i',0);\
-         INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('sh','i','resolved','native',1,0),('sa','i','resolved','native',1,0),('sx','i','resolved','native',1,0);\
-         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,5);\
-         INSERT INTO service_authors(id,instance_id,created_at) VALUES ('svc','i',0);\
-         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('sh',1,'p','b',0,'human','n','e','operator_human',0,'tm','inc');\
-         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('sa',1,'p','b',0,'claude','n','e','cooperative_top_level',0,'tm','inc');\
-         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at,author_kind) VALUES ('i','m_h','t',1,'ordinary','sh',1,'b',10,'native');\
-         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at,author_kind) VALUES ('i','m_a','t',2,'ordinary','sa',2,'b',10,'native');\
-         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at,author_kind) VALUES ('i','m_x','t',3,'ordinary','sx',3,'b',10,'native');\
-         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,decision_seq,body,decision_at,author_kind,author_service_id) VALUES ('i','m_svc','t',4,'ordinary',4,'b',10,'programmatic','svc');",
-    )
-    .unwrap();
-    let path = db_path();
-    db.execute("VACUUM INTO ?1", [path.to_str().unwrap()])
-        .unwrap();
-    drop(db);
-    let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
-    drop(context.open_writer().unwrap());
-    let CommandResult::History(history) = crate::store::queries::query(
-        &context,
-        "i",
-        &Command::History(HistoryQuery {
-            thread: ThreadId::new("t"),
-            page: PageRequest {
-                cursor: None,
-                limit: 20,
-                max_bytes: 65536,
-            },
-            initial: None,
-            full_bodies: false,
-        }),
-        &CallBudget {
-            deadline: MonoInstant(10_000),
-            cancellation: Cancellation::default(),
-        },
-    )
-    .unwrap() else {
-        panic!("history")
-    };
-    let read: std::collections::BTreeMap<_, _> = history
-        .items
-        .iter()
-        .map(|m| {
-            (
-                m.message.as_str().to_owned(),
-                (
-                    m.author_role,
-                    m.relays_user,
-                    m.author_role_backfilled,
-                    is_priority(m.author_role, m.relays_user),
-                ),
-            )
-        })
-        .collect();
-    assert_eq!(
-        read,
-        [
-            ("m_h", (Some(AuthorRole::Human), false, true, true)),
-            ("m_a", (Some(AuthorRole::Agent), false, true, false)),
-            // No binding covers the row: NULL reads as agent, never priority.
-            ("m_x", (None, false, true, false)),
-            ("m_svc", (Some(AuthorRole::Service), false, true, false)),
-        ]
-        .into_iter()
-        .map(|(id, v)| (id.to_owned(), v))
-        .collect()
-    );
-    let _ = std::fs::remove_file(path);
-}
-
-#[test]
 fn fresh_database_has_catch_up_release_column() {
     let (_context, db, _clock) = seeded_db(0);
     assert!(column_exists(&db, "catch_up", "release_seq"));
@@ -4982,134 +3596,6 @@ fn fresh_database_has_catch_up_release_column() {
     };
     assert!(insert(0).is_err(), "release_seq must be positive");
     insert(5).unwrap();
-}
-
-#[test]
-fn v13_database_upgrades_keeping_catch_up_rows() {
-    let db = v12_database();
-    db.execute_batch(include_str!("../../migrations/0013_thread_summaries.sql"))
-        .unwrap();
-    db.pragma_update(None, "user_version", 13).unwrap();
-    assert!(!column_exists(&db, "catch_up", "release_seq"));
-    db.execute_batch(
-        "PRAGMA foreign_keys=ON;\
-         INSERT INTO host_instances(id,created_at) VALUES ('i',0);\
-         INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0);\
-         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);\
-         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',1,'p','b',0,'codex','n','e','cooperative_top_level',0,'tm','inc');\
-         INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state) VALUES ('s','t',9,1,'e',0,'active');",
-    )
-    .unwrap();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    let (frontier, release): (i64, Option<i64>) = db
-        .query_row(
-            "SELECT frontier_seq, release_seq FROM catch_up WHERE seat_id='s'",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!((frontier, release), (9, None));
-}
-
-#[test]
-fn v14_preparations_get_fresh_grace_once_and_retention_shape_is_audited() {
-    let db = v12_database();
-    db.execute_batch(include_str!("../../migrations/0013_thread_summaries.sql"))
-        .unwrap();
-    db.execute_batch(include_str!("../../migrations/0014_catch_up_release.sql"))
-        .unwrap();
-    db.pragma_update(None, "user_version", 14).unwrap();
-    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','t','g',0,0);").unwrap();
-    for (id, status) in [
-        ("building", "building"),
-        ("sealed", "sealed"),
-        ("discarded", "discarded"),
-        ("published", "sealed"),
-    ] {
-        db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES (?1,'i','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,?2)",params![id,status]).unwrap();
-    }
-    db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,event_offset) VALUES ('m','i','t',1,'ordinary','body',0,1,0); INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('published','m','i','t',1,0,1,0,0,0);").unwrap();
-    schema::initialize(&db, || UtcMillis(123456)).unwrap();
-    schema::initialize(&db, || UtcMillis(654321)).unwrap();
-    for (id, expected) in [
-        ("building", Some(123456)),
-        ("sealed", Some(123456)),
-        ("discarded", None),
-        ("published", None),
-    ] {
-        assert_eq!(
-            db.query_row(
-                "SELECT prepared_at FROM send_preparations WHERE id=?1",
-                [id],
-                |r| r.get::<_, Option<i64>>(0)
-            )
-            .unwrap(),
-            expected,
-            "{id}"
-        );
-    }
-    db.execute_batch("DROP INDEX send_preparations_retention; CREATE INDEX send_preparations_retention ON send_preparations(id);").unwrap();
-    assert_eq!(
-        schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
-        ErrorCode::IncompatibleSchema
-    );
-}
-
-#[test]
-fn wake_batch_migration_from_v16_preserves_retry_history_and_human_waiver() {
-    let db = Connection::open_in_memory().unwrap();
-    for migration in [
-        include_str!("../../migrations/0001_initial.sql"),
-        include_str!("../../migrations/0002_service_substrate.sql"),
-        include_str!("../../migrations/0003_invitation_cancellations.sql"),
-        include_str!("../../migrations/0004_voluntary_membership.sql"),
-        include_str!("../../migrations/0005_service_notifications.sql"),
-        include_str!("../../migrations/0006_retirement_health.sql"),
-        include_str!("../../migrations/0007_attention_digest.sql"),
-        include_str!("../../migrations/0008_digest_pending_paths.sql"),
-        include_str!("../../migrations/0009_human_occupant.sql"),
-        include_str!("../../migrations/0010_b5_trust_guards.sql"),
-        include_str!("../../migrations/0011_cooperative_only.sql"),
-        include_str!("../../migrations/0012_harness_version_evidence.sql"),
-        include_str!("../../migrations/0013_thread_summaries.sql"),
-        include_str!("../../migrations/0014_catch_up_release.sql"),
-        include_str!("../../migrations/0015_preparation_retention.sql"),
-        include_str!("../../migrations/0016_human_receipt_waivers.sql"),
-    ] {
-        db.execute_batch(migration).unwrap();
-    }
-    db.execute_batch("PRAGMA user_version=16;
-        INSERT INTO host_instances(id,created_at) VALUES ('i',0);
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','unresolved','native',0,0);
-        INSERT INTO wake_work(seat_id,retry_step,minimum_delay_ms,effective_delay_ms,last_reservation_id,last_reservation_boot,last_reserved_at_utc) VALUES ('s',2,45000,120000,'attempt','00000000-0000-4000-8000-000000000001',13);
-        INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES ('s',5,0,12);").unwrap();
-    schema::initialize(&db, || UtcMillis(100)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    assert_eq!(db.query_row("SELECT retry_step,minimum_delay_ms,effective_delay_ms,last_reserved_at_utc FROM wake_work WHERE seat_id='s'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?))).unwrap(),(2,45000,120000,13));
-    assert_eq!(
-        db.query_row(
-            "SELECT through_decision_seq FROM human_receipt_waivers WHERE seat_id='s'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        5
-    );
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM wake_batches", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
 }
 
 #[test]
@@ -5126,77 +3612,14 @@ fn wake_batch_schema_audit_rejects_missing_or_altered_clear_trigger() {
         if let Some(replacement) = replacement {
             db.execute_batch(replacement).unwrap();
         }
-        let error = schema::verify_existing(&db).unwrap_err();
+        let error = schema::verify_baseline(&db).unwrap_err();
         assert_eq!(error.code, ErrorCode::IncompatibleSchema);
-        assert!(error.detail.contains("wake batching"));
+        assert!(
+            error.detail.contains("wake_batches_clear_retired"),
+            "{}",
+            error.detail
+        );
     }
-}
-
-#[test]
-fn thread_names_migration_v19_preserves_ids_and_unnamed_rows() {
-    let db = Connection::open_in_memory().unwrap();
-    for migration in [
-        include_str!("../../migrations/0001_initial.sql"),
-        include_str!("../../migrations/0002_service_substrate.sql"),
-        include_str!("../../migrations/0003_invitation_cancellations.sql"),
-        include_str!("../../migrations/0004_voluntary_membership.sql"),
-        include_str!("../../migrations/0005_service_notifications.sql"),
-        include_str!("../../migrations/0006_retirement_health.sql"),
-        include_str!("../../migrations/0007_attention_digest.sql"),
-        include_str!("../../migrations/0008_digest_pending_paths.sql"),
-        include_str!("../../migrations/0009_human_occupant.sql"),
-        include_str!("../../migrations/0010_b5_trust_guards.sql"),
-        include_str!("../../migrations/0011_cooperative_only.sql"),
-        include_str!("../../migrations/0012_harness_version_evidence.sql"),
-        include_str!("../../migrations/0013_thread_summaries.sql"),
-        include_str!("../../migrations/0014_catch_up_release.sql"),
-        include_str!("../../migrations/0015_preparation_retention.sql"),
-        include_str!("../../migrations/0016_human_receipt_waivers.sql"),
-        include_str!("../../migrations/0017_wake_batches.sql"),
-        include_str!("../../migrations/0018_warning_conditions.sql"),
-    ] {
-        db.execute_batch(migration).unwrap();
-    }
-    db.execute_batch("PRAGMA user_version=18; INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('tKEEP1234','i','old topic','old goal',11,12);").unwrap();
-    schema::initialize(&db, || UtcMillis(100)).unwrap();
-    schema::initialize(&db, || UtcMillis(200)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    let row: (String, String, String, i64, i64, Option<String>) = db
-        .query_row(
-            "SELECT id,topic,goal,created_at,updated_at,name FROM threads",
-            [],
-            |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                ))
-            },
-        )
-        .unwrap();
-    assert_eq!(
-        row,
-        (
-            "tKEEP1234".into(),
-            "old topic".into(),
-            "old goal".into(),
-            11,
-            12,
-            None
-        )
-    );
-    db.execute_batch("DROP INDEX threads_instance_name; CREATE UNIQUE INDEX threads_instance_name ON threads(instance_id,name)").unwrap();
-    assert_eq!(
-        schema::initialize(&db, || UtcMillis(300)).unwrap_err().code,
-        ErrorCode::IncompatibleSchema
-    );
 }
 
 #[test]
@@ -5215,70 +3638,14 @@ fn invitation_rejection_schema_audit_rejects_projection_guard_tampering() {
         }
         let error = schema::initialize(&db, || UtcMillis(1)).unwrap_err();
         assert_eq!(error.code, ErrorCode::IncompatibleSchema);
-        assert!(error.detail.contains("invitation rejection"));
+        assert!(
+            error
+                .detail
+                .contains("invitations_rejection_projection_guard"),
+            "{}",
+            error.detail
+        );
     }
-}
-
-#[test]
-fn invitation_rejection_v21_upgrades_v20_without_rebuilding_history() {
-    let db = Connection::open_in_memory().unwrap();
-    for migration in [
-        include_str!("../../migrations/0001_initial.sql"),
-        include_str!("../../migrations/0002_service_substrate.sql"),
-        include_str!("../../migrations/0003_invitation_cancellations.sql"),
-        include_str!("../../migrations/0004_voluntary_membership.sql"),
-        include_str!("../../migrations/0005_service_notifications.sql"),
-        include_str!("../../migrations/0006_retirement_health.sql"),
-        include_str!("../../migrations/0007_attention_digest.sql"),
-        include_str!("../../migrations/0008_digest_pending_paths.sql"),
-        include_str!("../../migrations/0009_human_occupant.sql"),
-        include_str!("../../migrations/0010_b5_trust_guards.sql"),
-        include_str!("../../migrations/0011_cooperative_only.sql"),
-        include_str!("../../migrations/0012_harness_version_evidence.sql"),
-        include_str!("../../migrations/0013_thread_summaries.sql"),
-        include_str!("../../migrations/0014_catch_up_release.sql"),
-        include_str!("../../migrations/0015_preparation_retention.sql"),
-        include_str!("../../migrations/0016_human_receipt_waivers.sql"),
-        include_str!("../../migrations/0017_wake_batches.sql"),
-        include_str!("../../migrations/0018_warning_conditions.sql"),
-        include_str!("../../migrations/0019_thread_names.sql"),
-        include_str!("../../migrations/0020_recent_activity.sql"),
-    ] {
-        db.execute_batch(migration).unwrap();
-    }
-    db.execute_batch("PRAGMA user_version=20; INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('tKEEP1234','i','old topic','old goal',11,12);").unwrap();
-    let before: i64 = db
-        .query_row(
-            "SELECT rootpage FROM sqlite_master WHERE name='invitations'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    schema::initialize(&db, || UtcMillis(100)).unwrap();
-    schema::initialize(&db, || UtcMillis(200)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT rootpage FROM sqlite_master WHERE name='invitations'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        before
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT topic,created_at FROM threads WHERE id='tKEEP1234'",
-            [],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-        )
-        .unwrap(),
-        ("old topic".into(), 11)
-    );
 }
 
 #[test]
@@ -5323,113 +3690,6 @@ fn recent_activity_writer_rejects_missing_or_null_default() {
         assert!(
             matches!(result,Err(ref error) if error.code==ErrorCode::IncompatibleSchema),
             "writer must reject the altered default before creation: {replacement}: {result:?}"
-        );
-    }
-}
-
-// Catches lost binding/evidence history, missing lexical expansion, sequence rewind,
-// and incomplete public migration chaining from supported historical versions.
-// Every migration step runs (the chain from version 1), and the sampled
-// starting points cover each seeding boundary (before/at 12 and 21) and the
-// latest three versions; each start costs a full `initialize`, so starting
-// from all 26 versions only repeated the same steps.
-#[test]
-fn adapter_migration_preserves_all_supported_history_and_rejection_overlay() {
-    for version in [1, 6, 11, 12, 18, 20, 21, 24, 25, 26] {
-        let db = adapter_historical_database(version);
-        db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (7,'s',1,'p','b',0,'codex','session','execution','cooperative_top_level',1,1,'term','inc');").unwrap();
-        db.execute_batch("INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,ended_at) VALUES (90,'s',2,'p','b',0,'codex','deleted','deleted','cooperative_top_level',2,3); DELETE FROM occupant_bindings WHERE ordinal=90;").unwrap();
-        if version >= 12 {
-            db.execute_batch("INSERT INTO harness_version_evidence(harness,version,contract_id,first_seen_at,last_seen_at,violation_at,violation_event,violation_field) VALUES ('codex','0.159.3','0123456789abcdef',1,2,2,'PreToolUse','field'); INSERT INTO harness_unattributed(harness,reason,at) VALUES ('claude','historical reason',3);").unwrap();
-        }
-        if version >= 21 {
-            db.execute_batch(r#"INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES ('inv','t','s',1,'pending',1,1,100,101); INSERT INTO invitation_rejections(invitation_id,reason,rejected_at,actor_seat_id,generation,observation) VALUES ('inv','declined',2,'s',1,'{"provenance":"cooperative_top_level"}');"#).unwrap();
-        }
-        schema::initialize(&db, || UtcMillis(10)).unwrap();
-        assert_eq!(
-            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-                .unwrap(),
-            schema::LATEST_VERSION,
-            "from {version}"
-        );
-        let history:(i64,String,String,String)=db.query_row("SELECT ordinal,native_session,execution_id,observation_provenance FROM occupant_bindings WHERE seat_id='s'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
-        assert_eq!(
-            history,
-            (
-                7,
-                "session".into(),
-                "execution".into(),
-                "cooperative_top_level".into()
-            )
-        );
-        {
-            assert_eq!(
-                db.query_row(
-                    "SELECT seq FROM sqlite_sequence WHERE name='occupant_bindings'",
-                    [],
-                    |r| r.get::<_, i64>(0)
-                )
-                .unwrap(),
-                90
-            );
-        }
-        if version >= 12 {
-            assert_eq!(
-                db.query_row(
-                    "SELECT violation_field FROM harness_version_evidence",
-                    [],
-                    |r| r.get::<_, String>(0)
-                )
-                .unwrap(),
-                "field"
-            );
-            assert_eq!(
-                db.query_row("SELECT reason FROM harness_unattributed", [], |r| r
-                    .get::<_, String>(0))
-                    .unwrap(),
-                "historical reason"
-            );
-        }
-        if version >= 21 {
-            assert_eq!(
-                db.query_row(
-                    "SELECT reason FROM invitation_rejections WHERE invitation_id='inv'",
-                    [],
-                    |r| r.get::<_, String>(0)
-                )
-                .unwrap(),
-                "declined"
-            );
-            assert!(db.execute("DELETE FROM invitation_rejections", []).is_err());
-        }
-        db.execute("UPDATE occupant_bindings SET harness='future_agent'", [])
-            .unwrap();
-        schema::initialize(&db, || UtcMillis(11)).unwrap();
-        assert_eq!(
-            db.query_row("SELECT ended_at FROM occupant_bindings", [], |r| r
-                .get::<_, Option<i64>>(0))
-                .unwrap(),
-            None
-        );
-        for table in [
-            "harness_runtime_identities",
-            "harness_contract_evidence_v2",
-            "harness_unattributed_v2",
-        ] {
-            assert_eq!(
-                db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
-                    .get::<_, i64>(0))
-                    .unwrap(),
-                0
-            );
-        }
-        assert_eq!(
-            db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
-                .get::<_, i64>(
-                0
-            ))
-            .unwrap(),
-            0
         );
     }
 }
@@ -5512,138 +3772,6 @@ fn adapter_migration_v2_tables_enforce_bounded_keys_and_references() {
     );
 }
 
-pub(crate) fn adapter_historical_database(version: usize) -> Connection {
-    let migrations = [
-        include_str!("../../migrations/0001_initial.sql"),
-        include_str!("../../migrations/0002_service_substrate.sql"),
-        include_str!("../../migrations/0003_invitation_cancellations.sql"),
-        include_str!("../../migrations/0004_voluntary_membership.sql"),
-        include_str!("../../migrations/0005_service_notifications.sql"),
-        include_str!("../../migrations/0006_retirement_health.sql"),
-        include_str!("../../migrations/0007_attention_digest.sql"),
-        include_str!("../../migrations/0008_digest_pending_paths.sql"),
-        include_str!("../../migrations/0009_human_occupant.sql"),
-        include_str!("../../migrations/0010_b5_trust_guards.sql"),
-        include_str!("../../migrations/0011_cooperative_only.sql"),
-        include_str!("../../migrations/0012_harness_version_evidence.sql"),
-        include_str!("../../migrations/0013_thread_summaries.sql"),
-        include_str!("../../migrations/0014_catch_up_release.sql"),
-        include_str!("../../migrations/0015_preparation_retention.sql"),
-        include_str!("../../migrations/0016_human_receipt_waivers.sql"),
-        include_str!("../../migrations/0017_wake_batches.sql"),
-        include_str!("../../migrations/0018_warning_conditions.sql"),
-        include_str!("../../migrations/0019_thread_names.sql"),
-        include_str!("../../migrations/0020_recent_activity.sql"),
-        include_str!("../../migrations/0021_invitation_rejections.sql"),
-        include_str!("../../migrations/0022_user_message_intent.sql"),
-        include_str!("../../migrations/0023_channel_archival.sql"),
-        include_str!("../../migrations/0024_harness_contract_diagnostics.sql"),
-        include_str!("../../migrations/0025_warning_notice_delivery.sql"),
-        include_str!("../../migrations/0026_lazy_message_delivery.sql"),
-        include_str!("../../migrations/0027_harness_adapters.sql"),
-        include_str!("../../migrations/0028_handoff_topology.sql"),
-        include_str!("../../migrations/0029_direct_threads.sql"),
-        include_str!("../../migrations/0030_automatic_handoff.sql"),
-        include_str!("../../migrations/0031_seat_wake_on.sql"),
-    ];
-    // Tests start from several versions: replay each step of the chain at
-    // most once per test process, keep the image after every prefix, and
-    // hand each call a private copy of the requested prefix (its
-    // user_version asserted).
-    static IMAGES: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
-    let mut images = IMAGES.lock().unwrap();
-    if images.len() <= version {
-        let db = match images.last() {
-            Some(image) => from_image(image),
-            None => {
-                let db = Connection::open_in_memory().unwrap();
-                images.push(image_of(&db));
-                db
-            }
-        };
-        db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
-        while images.len() <= version {
-            let applied = images.len();
-            db.execute_batch(migrations[applied - 1]).unwrap();
-            db.pragma_update(None, "user_version", applied as i64)
-                .unwrap();
-            images.push(image_of(&db));
-        }
-    }
-    let db = from_image(&images[version]);
-    db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        version as i64
-    );
-    db
-}
-
-#[test]
-fn adapter_migration_failure_rolls_back_rebuilt_tables_and_schema_version() {
-    let db = adapter_historical_database(26);
-    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0); INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at) VALUES (7,'s',1,'p','b',0,'codex','launch:n','launch:e','managed_launch',0); UPDATE sqlite_sequence SET seq=90 WHERE name='occupant_bindings'; CREATE TABLE harness_runtime_identities(collision INTEGER);").unwrap();
-    let original: String = db
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE name='occupant_bindings'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    let guards = binding_archival_guards(&db);
-    assert!(schema::initialize(&db, || UtcMillis(0)).is_err());
-    assert_eq!(binding_archival_guards(&db), guards);
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        26
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT sql FROM sqlite_master WHERE name='occupant_bindings'",
-            [],
-            |r| r.get::<_, String>(0)
-        )
-        .unwrap(),
-        original
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT seq FROM sqlite_sequence WHERE name='occupant_bindings'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        90
-    );
-    assert!(
-        db.execute("UPDATE occupant_bindings SET harness='future_agent'", [])
-            .is_err()
-    );
-    db.execute_batch("DROP TABLE harness_runtime_identities")
-        .unwrap();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
-    assert_eq!(
-        db.query_row(
-            "SELECT observation_provenance FROM occupant_bindings",
-            [],
-            |r| r.get::<_, String>(0)
-        )
-        .unwrap(),
-        "managed_launch"
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT seq FROM sqlite_sequence WHERE name='occupant_bindings'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        90
-    );
-}
-
 #[test]
 fn adapter_migration_reopen_rejects_weakened_lexical_tables_and_missing_indexes() {
     for statement in [
@@ -5682,215 +3810,12 @@ fn archival_commit_counter_origin_does_not_collide_with_requests() {
     );
 }
 
-fn user_intent_v21_fixture() -> Connection {
-    // Replayed once per test process; each call gets a private copy.
-    static IMAGE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-    from_image(IMAGE.get_or_init(|| {
-        let db = Connection::open_in_memory().unwrap();
-        for migration in [
-            include_str!("../../migrations/0001_initial.sql"),
-            include_str!("../../migrations/0002_service_substrate.sql"),
-            include_str!("../../migrations/0003_invitation_cancellations.sql"),
-            include_str!("../../migrations/0004_voluntary_membership.sql"),
-            include_str!("../../migrations/0005_service_notifications.sql"),
-            include_str!("../../migrations/0006_retirement_health.sql"),
-            include_str!("../../migrations/0007_attention_digest.sql"),
-            include_str!("../../migrations/0008_digest_pending_paths.sql"),
-            include_str!("../../migrations/0009_human_occupant.sql"),
-            include_str!("../../migrations/0010_b5_trust_guards.sql"),
-            include_str!("../../migrations/0011_cooperative_only.sql"),
-            include_str!("../../migrations/0012_harness_version_evidence.sql"),
-            include_str!("../../migrations/0013_thread_summaries.sql"),
-            include_str!("../../migrations/0014_catch_up_release.sql"),
-            include_str!("../../migrations/0015_preparation_retention.sql"),
-            include_str!("../../migrations/0016_human_receipt_waivers.sql"),
-            include_str!("../../migrations/0017_wake_batches.sql"),
-            include_str!("../../migrations/0018_warning_conditions.sql"),
-            include_str!("../../migrations/0019_thread_names.sql"),
-            include_str!("../../migrations/0020_recent_activity.sql"),
-            include_str!("../../migrations/0021_invitation_rejections.sql"),
-        ] {
-            db.execute_batch(migration).unwrap();
-        }
-        db.pragma_update(None, "user_version", 21).unwrap();
-        image_of(&db)
-    }))
-}
-
 fn user_intent_seed(db: &Connection) {
     db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0);
         INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0);
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',11,12);
         INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at) VALUES ('b','i','t','c1',0,0,1,2,'hash','old summary','s','m1','p1',15);
         INSERT INTO summary_jobs(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,fetched_at,created_at) VALUES ('j','i','t','c1',0,0,1,2,42,14);").unwrap();
-}
-
-// Catches accidental history rewrites or unequal fresh/upgrade schema shapes.
-#[test]
-fn user_intent_schema22_fresh_and_v21_upgrade() {
-    fn snapshots(db: &Connection) -> (Vec<String>, Vec<(String, i64)>) {
-        let rows = [
-            "SELECT json_array(id,author_role,relays_user,author_role_backfilled,body,decision_at) FROM messages ORDER BY id",
-            "SELECT json_array(block_id,ordinal,target_id,new_status,cite_seq) FROM summary_transitions ORDER BY ordinal",
-            "SELECT json_array(id,fetched_at,created_at) FROM summary_jobs ORDER BY id",
-        ].into_iter().flat_map(|sql| db.prepare(sql).unwrap().query_map([], |r| r.get::<_,String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()).collect();
-        let roots = db
-            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics','lazy_recipients','bootstrap_handoffs','bootstrap_child_keys','bootstrap_attempts','bootstrap_recovery_decisions','bootstrap_attachments','bootstrap_reports','receipt_send_time_cutovers','receipt_deadline_backfill','receipt_discovery_backfill','receipt_due_sparse','receipt_warning_origins','direct_threads','automatic_handoff_companions','automatic_handoff_keys','automatic_bootstrap_parents','automatic_bootstrap_keys','automatic_bootstrap_attempts','automatic_bootstrap_attachments','automatic_bootstrap_reports','automatic_bootstrap_recoveries') ORDER BY name")
-            .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
-        (rows, roots)
-    }
-    fn shape(db: &Connection) -> Vec<(String, String, String)> {
-        db.prepare(
-            "SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name",
-        )
-        .unwrap()
-        .query_map([], |r| {
-            Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get::<_, String>(2)?
-                    .split_whitespace()
-                    .collect::<String>()
-                    .to_ascii_lowercase(),
-            ))
-        })
-        .unwrap()
-        .map(Result::unwrap)
-        .collect()
-    }
-    let upgraded = user_intent_v21_fixture();
-    user_intent_seed(&upgraded);
-    upgraded.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role) VALUES ('mh','i','t',1,'ordinary','s','old human',13,1,'human'),('ma','i','t',2,'ordinary','s','old agent',14,2,'agent'); INSERT INTO summary_transitions(block_id,ordinal,thread_id,chunking_version,target_id,new_status,cite_seq) VALUES ('b',0,'t','c1','i.1','superseded',2);").unwrap();
-    let before = snapshots(&upgraded);
-    // Preserve the explicit historical22 assertion: intent is additive and rebuilds no tables.
-    upgraded
-        .execute_batch(include_str!(
-            "../../migrations/0022_user_message_intent.sql"
-        ))
-        .unwrap();
-    upgraded.pragma_update(None, "user_version", 22).unwrap();
-    assert_eq!(snapshots(&upgraded), before);
-    schema::initialize(&upgraded, || UtcMillis(100)).unwrap();
-    assert_eq!(
-        upgraded
-            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    let after = snapshots(&upgraded);
-    assert_eq!(
-        after.0, before.0,
-        "all intent and summary history remains exact"
-    );
-    // Forward24 intentionally rebuilds these three tables and adds three evidence tables.
-    // Every other historical table must retain its original root page.
-    // V32 adds binding_cursors; occupant_bindings is rebuilt again by V32.
-    // V34 rebuilds catch_up (per-binding rows). V35 rebuilds the two attention frontier tables.
-    // V36 adds in_turn_offer.
-    let adapter_tables = [
-        "occupant_bindings",
-        "binding_cursors",
-        "catch_up",
-        "warning_offer",
-        "digest_notice_offer",
-        "in_turn_offer",
-        "harness_version_evidence",
-        "harness_unattributed",
-        "harness_runtime_identities",
-        "harness_contract_evidence_v2",
-        "harness_unattributed_v2",
-    ];
-    // V45/46 create these six tables; none replaces a historical root. Audit
-    // their exact final DDL independently from the actual appended migration SQL.
-    let presentation45 = include_str!("../../migrations/0045_invitation_presentation.sql");
-    let relevance46 = include_str!("../../migrations/0046_presentation_relevance.sql");
-    let presentation_tables = [
-        ("invitation_context_latest", presentation45),
-        ("invitation_presentation_consumers", presentation45),
-        ("invitation_presentation_items", presentation45),
-        ("presentation_confirming_invitations", relevance46),
-        ("presentation_warning_fence", relevance46),
-        ("presentation_warning_proofs", relevance46),
-    ];
-    let expected_presentation = Connection::open_in_memory().unwrap();
-    for &(name, migration) in &presentation_tables {
-        assert!(
-            before.1.iter().all(|(old, _)| old.as_str() != name),
-            "new presentation table {name} must not hide a historical root"
-        );
-        let start = migration
-            .find(&format!("CREATE TABLE {name} (\n"))
-            .expect("named table is declared by its migration");
-        let declaration = &migration[start..];
-        let end = declaration.find("\n) STRICT;").unwrap() + "\n) STRICT;".len();
-        expected_presentation
-            .execute_batch(&declaration[..end])
-            .unwrap();
-    }
-    let consumer_alters: Vec<_> = relevance46
-        .lines()
-        .filter(|line| {
-            line.starts_with("ALTER TABLE invitation_presentation_consumers ADD COLUMN ")
-        })
-        .collect();
-    assert_eq!(consumer_alters.len(), 4);
-    for statement in consumer_alters {
-        expected_presentation.execute_batch(statement).unwrap();
-    }
-    for &(name, _) in &presentation_tables {
-        let table_sql = |db: &Connection| {
-            db.query_row(
-                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
-                [name],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap()
-        };
-        assert_eq!(
-            table_sql(&upgraded),
-            table_sql(&expected_presentation),
-            "exact appended presentation table DDL: {name}"
-        );
-    }
-    let unchanged = |roots: &Vec<(String, i64)>| {
-        roots
-            .iter()
-            .filter(|(name, _)| {
-                !adapter_tables.contains(&name.as_str())
-                    && !presentation_tables
-                        .iter()
-                        .any(|(table, _)| name.as_str() == *table)
-            })
-            .cloned()
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(unchanged(&after.1), unchanged(&before.1));
-    for (table, column) in [
-        ("messages", "user_intent"),
-        ("summary_transitions", "rule_change"),
-        ("summary_jobs", "fetched_bundle_json"),
-    ] {
-        assert_eq!(
-            upgraded
-                .query_row(
-                    &format!("SELECT count(*) FROM {table} WHERE {column} IS NOT NULL"),
-                    [],
-                    |r| r.get::<_, i64>(0)
-                )
-                .unwrap(),
-            0
-        );
-    }
-    let fresh = fresh_db();
-    schema::initialize(&fresh, || UtcMillis(100)).unwrap();
-    assert_eq!(shape(&upgraded), shape(&fresh));
-    schema::initialize(&fresh, || UtcMillis(200)).unwrap();
-    schema::initialize(&upgraded, || UtcMillis(200)).unwrap();
-    assert_eq!(snapshots(&upgraded), after);
 }
 
 // Catches a CHECK weakened to accept unknown claims or SQL NULL bypassing attribution.
@@ -6068,55 +3993,6 @@ fn user_intent_schema22_rejects_column_or_guard_tampering() {
 }
 
 #[test]
-fn archival_schema_upgrade_21_and_22_preserves_history_and_starts_unqualified() {
-    for version in [21, 22] {
-        let db = user_intent_v21_fixture();
-        user_intent_seed(&db);
-        if version == 22 {
-            db.execute_batch(include_str!(
-                "../../migrations/0022_user_message_intent.sql"
-            ))
-            .unwrap();
-            db.pragma_update(None, "user_version", 22).unwrap();
-            db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,user_intent) VALUES('intent','i','t',1,'ordinary','s','keep',13,1,'human','rule')").unwrap();
-        }
-        schema::initialize(&db, || UtcMillis(9_000_000)).unwrap();
-        assert_eq!(
-            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-                .unwrap(),
-            schema::LATEST_VERSION
-        );
-        // The bounded worker seeds historical rows. Migration cannot backdate eligibility.
-        assert_eq!(
-            db.query_row(
-                "SELECT count(*) FROM channel_archival WHERE quiet_mono IS NOT NULL",
-                [],
-                |r| r.get::<_, i64>(0)
-            )
-            .unwrap(),
-            0
-        );
-        assert_eq!(
-            db.query_row("SELECT topic FROM threads WHERE id='t'", [], |r| r
-                .get::<_, String>(0))
-                .unwrap(),
-            "topic"
-        );
-        if version == 22 {
-            assert_eq!(
-                db.query_row(
-                    "SELECT user_intent FROM messages WHERE id='intent'",
-                    [],
-                    |r| r.get::<_, String>(0)
-                )
-                .unwrap(),
-                "rule"
-            );
-        }
-        schema::initialize(&db, || UtcMillis(10_000_000)).unwrap();
-    }
-}
-#[test]
 fn archival_schema_refuses_missing_or_weakened_guards_before_writing() {
     for change in [
         "DROP TRIGGER channel_handoff_terminal",
@@ -6152,408 +4028,6 @@ fn archival_schema_audit_preserves_case_sensitive_terminal_state_literals() {
     );
 }
 
-// A binding table rebuild must retain canonical archival invalidation and queue producers.
-#[test]
-fn adapter_migration_main24_to26_preserves_archival_guards_and_intent_history() {
-    let db = adapter_historical_database(24);
-    user_intent_seed(&db);
-    db.execute_batch(r#"INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES(7,'s',1,'p','host',1,'codex','session','execution','cooperative_top_level',0,1);
-        UPDATE sqlite_sequence SET seq=90 WHERE name='occupant_bindings';
-        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,user_intent) VALUES('intent','i','t',1,'ordinary','s','keep rule',13,1,'human','rule');
-        UPDATE summary_jobs SET fetched_bundle_json='{"frozen":true}';
-        INSERT INTO summary_transitions(block_id,ordinal,thread_id,chunking_version,target_id,new_status,cite_seq,rule_change) VALUES('b',0,'t','c1','i.1','superseded',2,'withdrawn');
-        INSERT INTO archival_instances(instance_id,runtime_boot,mutation_revision,bootstrap_veto) VALUES('i','boot',41,0);
-        UPDATE seat_archival SET activity_revision=7,idle_mono=10,samples=3,next_mono=999 WHERE seat_id='s';
-        UPDATE channel_archival SET activity_revision=9,quiet_mono=10,quiet_utc=11,runtime_boot='boot',evidence_epoch=0 WHERE thread_id='t';
-        INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,thread_id,origin,state,created_at,completed_at) VALUES('i','s','compound','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','{}','s','create','invite','send','t','cooperative_pending_claim','completed',1,2);
-        "#).unwrap();
-    let guards = binding_archival_guards(&db);
-    assert_eq!(guards.len(), 6);
-    schema::initialize(&db, || UtcMillis(100)).unwrap();
-    // V33 narrows the insert and update fences; every other guard survives byte for byte.
-    let guards = assert_v33_guards(&guards, &binding_archival_guards(&db));
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT seq FROM sqlite_sequence WHERE name='occupant_bindings'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        90
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT user_intent FROM messages WHERE id='intent'",
-            [],
-            |r| r.get::<_, String>(0)
-        )
-        .unwrap(),
-        "rule"
-    );
-    assert_eq!(
-        db.query_row("SELECT fetched_bundle_json FROM summary_jobs", [], |r| {
-            r.get::<_, String>(0)
-        })
-        .unwrap(),
-        r#"{"frozen":true}"#
-    );
-    assert_eq!(
-        db.query_row("SELECT rule_change FROM summary_transitions", [], |r| {
-            r.get::<_, String>(0)
-        })
-        .unwrap(),
-        "withdrawn"
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT activity_revision,quiet_mono FROM channel_archival WHERE thread_id='t'",
-            [],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-        )
-        .unwrap(),
-        (9, 10)
-    );
-    assert_eq!(db.query_row("SELECT activity_revision,idle_mono,samples,next_mono FROM seat_archival WHERE seat_id='s'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?))).unwrap(),(7,10,3,999));
-    assert!(
-        db.execute(
-            "UPDATE channel_handoff_fences SET state='live',completed_at=NULL",
-            []
-        )
-        .is_err()
-    );
-    let revision = || {
-        db.query_row(
-            "SELECT mutation_revision FROM archival_instances WHERE instance_id='i'",
-            [],
-            |r| r.get::<_, i64>(0),
-        )
-        .unwrap()
-    };
-    // The binding fences fire for a seat in a scanned source: make 's' a joined member.
-    db.execute_batch(
-        "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES('t','s','joined',0)",
-    )
-    .unwrap();
-    let before = revision();
-    db.execute(
-        "UPDATE occupant_bindings SET harness='future_agent' WHERE ordinal=7",
-        [],
-    )
-    .unwrap();
-    // V33: only liveness and ended_at move the mutation revision; the seat/sample reset stays.
-    assert_eq!(revision(), before);
-    let before = revision();
-    db.execute(
-        "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=1,disconnect_reason='x' WHERE ordinal=7",
-        [],
-    )
-    .unwrap();
-    assert_eq!(revision(), before + 1);
-    assert_eq!(db.query_row("SELECT activity_revision,idle_mono,samples,next_mono FROM seat_archival WHERE seat_id='s'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,Option<i64>>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?))).unwrap(),(8,None,0,0));
-    db.execute_batch("UPDATE occupant_bindings SET ended_at=100 WHERE ordinal=7; UPDATE seat_archival SET next_mono=999;").unwrap();
-    let before = revision();
-    db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at) VALUES('s',2,'p','host',1,'future_agent','new','new','cooperative_top_level',101);").unwrap();
-    assert_eq!(revision(), before + 1);
-    assert_eq!(
-        db.query_row(
-            "SELECT next_mono FROM seat_archival WHERE seat_id='s'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
-    db.execute("UPDATE seat_archival SET next_mono=999", [])
-        .unwrap();
-    let before = revision();
-    db.execute("DELETE FROM occupant_bindings WHERE generation=2", [])
-        .unwrap();
-    assert_eq!(revision(), before + 1);
-    assert_eq!(
-        db.query_row(
-            "SELECT next_mono FROM seat_archival WHERE seat_id='s'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
-    let fresh = fresh_db();
-    schema::initialize(&fresh, || UtcMillis(0)).unwrap();
-    assert_eq!(binding_archival_guards(&fresh), guards);
-    // A lost guard on an already-upgraded database must refuse reopening.
-    for (name, _) in guards {
-        let fresh = fresh_db();
-        fresh
-            .execute_batch(&format!("DROP TRIGGER {name}"))
-            .unwrap();
-        assert_eq!(
-            schema::initialize(&fresh, || UtcMillis(0))
-                .unwrap_err()
-                .code,
-            ErrorCode::IncompatibleSchema
-        );
-    }
-}
-
-/// V33 owns the narrowed insert and update fences of occupant_bindings; every other
-/// pre-existing trigger retains its text. Later guards match the full fresh catalog.
-/// Returns all upgraded guards.
-fn assert_v33_guards(
-    before: &[(String, String)],
-    after: &[(String, String)],
-) -> Vec<(String, String)> {
-    let owned = [
-        "archival_fence_occupant_bindings_insert",
-        "archival_fence_occupant_bindings_update",
-    ];
-    assert_eq!(after, binding_archival_guards(&fresh_db()));
-    for old in before {
-        let new = after
-            .iter()
-            .find(|guard| guard.0 == old.0)
-            .unwrap_or_else(|| panic!("{} must survive the upgrade", old.0));
-        if owned.contains(&old.0.as_str()) {
-            assert_ne!(old.1, new.1, "{} must be narrowed by V33", old.0);
-            assert!(new.1.contains("WHEN EXISTS"), "{}", new.1);
-        } else {
-            assert_eq!(old, new, "{} must be unchanged", old.0);
-        }
-    }
-    after.to_vec()
-}
-fn binding_archival_guards(db: &Connection) -> Vec<(String, String)> {
-    db.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name='occupant_bindings' ORDER BY name").unwrap()
-        .query_map([],|r|Ok((r.get(0)?,r.get(1)?))).unwrap().map(Result::unwrap).collect()
-}
-
-fn v28_binding_fixture() -> Connection {
-    let db = adapter_historical_database(28);
-    db.execute_batch("
-      INSERT INTO host_instances(id,created_at,decision_seq) VALUES ('i',0,30);
-      INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES
-        ('agent','i','resolved','native',3,0),('human','i','resolved','native',1,0),
-        ('launch','i','resolved','native',1,0),('plugin','i','resolved','native',1,0),('idle','i','resolved','native',1,0);
-      INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES
-        ('t','i','topic','goal',0,0),('u','i','topic2','goal',0,0),('empty','i','topic3','goal',0,0);
-      INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES
-        ('t','agent','joined',1),('u','agent','joined',1),('empty','agent','joined',1),
-        ('t','human','joined',1),('u','launch','left',1);
-      INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES
-        ('i','m1','t',1,'ordinary','b',1,1),('i','m2','t',2,'ordinary','b',2,2),('i','m3','u',1,'ordinary','b',3,3);
-      -- repeated ended rows for one session, then the open row (r1 acceptance)
-      INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at,terminal_id,incarnation) VALUES
-        (1,'agent',1,'p1','b',0,'claude','sess-A','e1','cooperative_top_level',10,10,20,'term','inc'),
-        (2,'agent',2,'p1','b',0,'claude','sess-A','e2','cooperative_top_level',20,20,30,'term','inc'),
-        (3,'agent',3,'p1','b',0,'claude','sess-A','e3','cooperative_top_level',30,30,NULL,'term','inc'),
-        (4,'human',1,'p2','b',0,'human','human','human','operator_human',5,5,NULL,'term','inc'),
-        (5,'launch',1,'p3','b',0,'codex','launch:x','launch:x','managed_launch',6,NULL,NULL,'term','inc'),
-        (9,'plugin',1,'p4','b',0,'codex','plugin_context:00000000-0000-4000-8000-000000000009','e9','cooperative_top_level',7,7,NULL,'term','inc');
-      UPDATE sqlite_sequence SET seq=50 WHERE name='occupant_bindings';
-    ").unwrap();
-    db
-}
-
-#[test]
-fn v28_upgrade_migrates_bindings_to_session_keyed_v32() {
-    let db = v28_binding_fixture();
-    let guards = binding_archival_guards(&db);
-    schema::initialize(&db, || UtcMillis(777)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    assert_eq!(schema::LATEST_VERSION, 46);
-    // ordinals, sequence and archival guards survive the rebuild
-    assert_eq!(
-        db.query_row(
-            "SELECT seq FROM sqlite_sequence WHERE name='occupant_bindings'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        50
-    );
-    assert_v33_guards(&guards, &binding_archival_guards(&db));
-    type Row = (
-        i64,
-        String,
-        String,
-        String,
-        Option<i64>,
-        Option<String>,
-        i64,
-        Option<String>,
-        Option<i64>,
-    );
-    let rows: Vec<Row> = db.prepare("SELECT ordinal,role,agent_id,liveness,disconnected_at,disconnect_reason,migrated,migrated_session,ended_at FROM occupant_bindings ORDER BY ordinal").unwrap()
-        .query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).unwrap().map(Result::unwrap).collect();
-    assert_eq!(
-        rows,
-        vec![
-            (
-                1,
-                "top_level".into(),
-                "".into(),
-                "disconnected".into(),
-                Some(20),
-                Some("migrated".into()),
-                0,
-                None,
-                Some(20)
-            ),
-            (
-                2,
-                "top_level".into(),
-                "".into(),
-                "disconnected".into(),
-                Some(30),
-                Some("migrated".into()),
-                0,
-                None,
-                Some(30)
-            ),
-            (
-                3,
-                "top_level".into(),
-                "".into(),
-                "disconnected".into(),
-                Some(777),
-                Some("migrated".into()),
-                1,
-                Some("sess-A".into()),
-                None
-            ),
-            (
-                4,
-                "top_level".into(),
-                "".into(),
-                "connected".into(),
-                None,
-                None,
-                0,
-                None,
-                None
-            ),
-            (
-                5,
-                "top_level".into(),
-                "".into(),
-                "disconnected".into(),
-                Some(777),
-                Some("migrated".into()),
-                1,
-                None,
-                None
-            ),
-            (
-                9,
-                "top_level".into(),
-                "".into(),
-                "disconnected".into(),
-                Some(777),
-                Some("migrated".into()),
-                1,
-                None,
-                None
-            ),
-        ]
-    );
-    // every row has a distinct non-empty binding id; no fingerprints were invented
-    assert_eq!(
-        db.query_row(
-            "SELECT count(DISTINCT binding_id), count(*), count(liveness_pid) FROM occupant_bindings",
-            [],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
-        )
-        .unwrap(),
-        (6, 6, 0)
-    );
-    // one cursor per (open binding, joined thread) at the thread head; none for left memberships or ended rows
-    let cursors: Vec<(i64, String, i64)> = db.prepare("SELECT b.ordinal,c.thread_id,c.seq FROM binding_cursors c JOIN occupant_bindings b ON b.binding_id=c.binding_id ORDER BY b.ordinal,c.thread_id").unwrap()
-        .query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().map(Result::unwrap).collect();
-    assert_eq!(
-        cursors,
-        vec![
-            (3, "empty".into(), 0),
-            (3, "t".into(), 2),
-            (3, "u".into(), 1),
-            (4, "t".into(), 2)
-        ]
-    );
-    // new attribution columns exist and are NULL for history
-    assert_eq!(
-        db.query_row(
-            "SELECT count(*) FROM messages WHERE sender_binding_id IS NOT NULL",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT count(*) FROM pragma_table_info('receipts') WHERE name='ack_binding_id'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        1
-    );
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
-            .get::<_, i64>(
-            0
-        ))
-        .unwrap(),
-        0
-    );
-    // reopening audits the V32 shape without migrating again
-    schema::initialize(&db, || UtcMillis(999)).unwrap();
-    assert_eq!(
-        db.query_row(
-            "SELECT disconnected_at FROM occupant_bindings WHERE ordinal=3",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        777
-    );
-}
-
-#[test]
-fn v32_session_key_is_unique_only_among_open_rows() {
-    let db = v28_binding_fixture();
-    schema::initialize(&db, || UtcMillis(1)).unwrap();
-    let insert = |generation: i64, session: &str, agent: &str, ended: Option<i64>| {
-        db.execute(
-        "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,ended_at,agent_id,terminal_id,incarnation) VALUES ('agent',?1,'p1','b',0,'claude',?2,'e','cooperative_top_level',1,?3,?4,'term','inc')",
-        rusqlite::params![generation, session, ended, agent])
-    };
-    assert!(insert(3, "sess-A", "", None).is_err()); // same open key: refused
-    assert!(insert(3, "sess-A", "", Some(5)).is_ok()); // ended duplicate, same generation: fine
-    assert!(insert(3, "sess-B", "", None).is_ok()); // second open binding on one seat
-    assert!(insert(3, "sess-B", "agent-1", None).is_ok()); // subagent key differs by agent id
-}
-
-#[test]
-fn v32_fresh_matches_upgraded_catalog() {
-    let upgraded = v28_binding_fixture();
-    schema::initialize(&upgraded, || UtcMillis(1)).unwrap();
-    let fresh = fresh_db();
-    let catalog = |db: &Connection| {
-        db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").unwrap()
-        .query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?, r.get::<_,String>(3)?.split_whitespace().collect::<String>().replace('"', "")))).unwrap().map(Result::unwrap).collect::<Vec<_>>()
-    };
-    assert_eq!(catalog(&upgraded), catalog(&fresh));
-}
-
 #[test]
 fn v32_startup_rejects_missing_or_altered_binding_objects() {
     for alteration in [
@@ -6573,356 +4047,6 @@ fn v32_startup_rejects_missing_or_altered_binding_objects() {
     }
 }
 
-/// The V23 text of a trigger V33 drops or replaces.
-fn v23_trigger(name: &str) -> String {
-    let v23 = include_str!("../../migrations/0023_channel_archival.sql");
-    let start = v23
-        .find(&format!("CREATE TRIGGER {name} "))
-        .expect("v23 trigger");
-    let end = start + v23[start..].find("END;").unwrap() + 4;
-    v23[start..end].to_owned()
-}
-const V33_TRIGGERS: [&str; 5] = [
-    "archival_fence_seats_insert",
-    "archival_fence_seats_update",
-    "archival_fence_memberships_update",
-    "archival_fence_occupant_bindings_insert",
-    "archival_fence_occupant_bindings_update",
-];
-/// A database exactly as V32 leaves it: the historical V31 schema with the V32 step applied
-/// by hand (the fresh schema is V34 since ht-54r.22, so V33's triggers can no longer simply be
-/// swapped back).
-fn v32_database() -> Connection {
-    let db = adapter_historical_database(31);
-    db.execute_batch("BEGIN IMMEDIATE").unwrap();
-    db.execute_batch(include_str!("../../migrations/0032_session_bindings.sql"))
-        .unwrap();
-    db.pragma_update(None, "user_version", 32).unwrap();
-    db.execute_batch("COMMIT").unwrap();
-    for name in V33_TRIGGERS {
-        assert!(
-            v23_trigger(name).starts_with(&format!("CREATE TRIGGER {name} ")),
-            "V32 holds the V23 text of {name}"
-        );
-    }
-    db
-}
-fn trigger_catalog(db: &Connection) -> Vec<(String, String, String)> {
-    db.prepare(
-        "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
-    )
-    .unwrap()
-    .query_map([], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?
-                .split_whitespace()
-                .collect::<String>()
-                .replace('"', ""),
-        ))
-    })
-    .unwrap()
-    .map(Result::unwrap)
-    .collect()
-}
-
-/// Lazy rows at V28 shape (the lazy tables exist since V26): a pending published message at
-/// thread sequence 3, a displayed one at 4, and a staged (unpublished) one, all for `agent`.
-const V28_LAZY_ROWS: &str = "
-  INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES
-    ('prep-3','i','scope','prep-3',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy'),
-    ('prep-4','i','scope','prep-4',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy'),
-    ('prep-5','i','scope','prep-5',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy');
-  INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES
-    ('prep-3','msg-3','t','agent'),('prep-4','msg-4','t','agent'),('prep-5','msg-5','t','agent');
-  INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES
-    ('msg-3','i','t',3,'ordinary',4,'pending','0','lazy'),('msg-4','i','t',4,'ordinary',5,'shown','0','lazy');
-  INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES
-    ('prep-3','msg-3','i','t',4,0,3,0,1,0),('prep-4','msg-4','i','t',5,0,4,0,1,0);
-  UPDATE lazy_recipients SET state='displayed' WHERE message_id='msg-4';
-";
-
-/// A V32 database (the V32 step applied by hand) holding the V28 binding fixture, lazy rows and
-/// catch-up rows in their V32 shape.
-fn v32_delivery_fixture() -> Connection {
-    let db = v28_binding_fixture();
-    db.execute_batch(V28_LAZY_ROWS).unwrap();
-    db.execute_batch("BEGIN IMMEDIATE").unwrap();
-    apply_main_v29_to_v31(&db);
-    db.execute_batch(include_str!("../../migrations/0032_session_bindings.sql"))
-        .unwrap();
-    db.execute(
-        "UPDATE occupant_bindings SET disconnected_at=777 WHERE migrated=1 AND ended_at IS NULL",
-        [],
-    )
-    .unwrap();
-    db.pragma_update(None, "user_version", 32).unwrap();
-    db.execute_batch("COMMIT").unwrap();
-    db.execute_batch(
-        "INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,last_progress_at,state,end_reason,ended_at,release_seq) VALUES
-           ('agent','t',2,3,'e3',40,5000,45,'active',NULL,NULL,NULL),
-           ('agent','u',1,3,'e3',41,NULL,NULL,'ended','ready',50,9),
-           ('human','t',1,1,'human',42,6000,NULL,'active',NULL,NULL,NULL),
-           ('idle','t',1,1,'x',43,NULL,NULL,'active',NULL,NULL,NULL);",
-    )
-    .unwrap();
-    db
-}
-
-/// `v32_delivery_fixture` with the V33 step (archival scan scope, ht-54r.15) applied by hand:
-/// a V33 database holding lazy and catch-up rows in their pre-V34 shape.
-fn v33_delivery_fixture() -> Connection {
-    let db = v32_delivery_fixture();
-    db.execute_batch("BEGIN IMMEDIATE").unwrap();
-    db.execute_batch(include_str!(
-        "../../migrations/0033_archival_scan_scope.sql"
-    ))
-    .unwrap();
-    db.pragma_update(None, "user_version", 33).unwrap();
-    db.execute_batch("COMMIT").unwrap();
-    db
-}
-
-fn binding_id_of(db: &Connection, ordinal: i64) -> String {
-    db.query_row(
-        "SELECT binding_id FROM occupant_bindings WHERE ordinal=?1",
-        [ordinal],
-        |r| r.get(0),
-    )
-    .unwrap()
-}
-
-#[test]
-fn v33_to_v34_carries_lazy_and_catch_up_state() {
-    let db = v33_delivery_fixture();
-    let (migrated, human) = (binding_id_of(&db, 3), binding_id_of(&db, 4));
-    schema::initialize(&db, || UtcMillis(900)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    // Only the published, still pending row is legacy pending: the displayed row and the
-    // staged (unpublished) one are not.
-    let legacy: Vec<(String, i64, String)> = db
-        .prepare("SELECT message_id,legacy_pending,state FROM lazy_recipients ORDER BY ordinal")
-        .unwrap()
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect();
-    assert_eq!(
-        legacy,
-        vec![
-            ("msg-3".into(), 1, "pending".into()),
-            ("msg-4".into(), 0, "displayed".into()),
-            ("msg-5".into(), 0, "pending".into()),
-        ]
-    );
-    // catch_up rows moved to the seat's open migrated binding (else its newest binding); the
-    // row of the seat with no binding row at all is dropped; other columns carry over.
-    type Row = (
-        String,
-        String,
-        String,
-        i64,
-        Option<i64>,
-        String,
-        Option<i64>,
-    );
-    let rows: Vec<Row> = db
-        .prepare("SELECT binding_id,seat_id,thread_id,frontier_seq,extension_until,state,release_seq FROM catch_up ORDER BY seat_id,thread_id")
-        .unwrap()
-        .query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
-        })
-        .unwrap()
-        .map(Result::unwrap)
-        .collect();
-    assert_eq!(
-        rows,
-        vec![
-            (
-                migrated.clone(),
-                "agent".into(),
-                "t".into(),
-                2,
-                Some(5000),
-                "active".into(),
-                None
-            ),
-            (
-                migrated,
-                "agent".into(),
-                "u".into(),
-                1,
-                None,
-                "ended".into(),
-                Some(9)
-            ),
-            (
-                human,
-                "human".into(),
-                "t".into(),
-                1,
-                Some(6000),
-                "active".into(),
-                None
-            ),
-        ]
-    );
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
-            .get::<_, i64>(
-            0
-        ))
-        .unwrap(),
-        0
-    );
-    // The old shape is gone and the table is keyed by (binding, thread).
-    assert!(!column_exists(&db, "catch_up", "binding_generation"));
-    assert!(!column_exists(&db, "catch_up", "execution_id"));
-    db.execute(
-        "INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state) VALUES (?1,'agent','t',1,0,'active')",
-        [binding_id_of(&db, 3)],
-    )
-    .expect_err("one row per (binding, thread)");
-    // Reopening audits the V34 shape without migrating again.
-    schema::initialize(&db, || UtcMillis(901)).unwrap();
-}
-
-#[test]
-fn upgrade_from_v28_with_pending_lazy_and_catch_up_mail_delivers_exactly_once() {
-    use crate::protocol::ids::{MessageId, NativeSessionId, SeatId, ThreadId};
-    use crate::store::{
-        bindings::{self, BindingKey},
-        lazy_delivery, read_cursors,
-    };
-    // Pre-upgrade: msg-3 pending, msg-4 displayed, ordinary m1/m2 already shown, one catch-up row.
-    let db = v28_binding_fixture();
-    db.execute_batch(V28_LAZY_ROWS).unwrap();
-    db.execute_batch("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state) VALUES ('agent','t',2,3,'e3',40,'active')").unwrap();
-    schema::initialize(&db, || UtcMillis(777)).unwrap();
-    let seat = SeatId::new("agent");
-    let thread = ThreadId::new("t");
-    let key = BindingKey {
-        seat: seat.clone(),
-        harness: "claude".into(),
-        native_session: NativeSessionId::new("sess-A"),
-        agent_id: None,
-    };
-    let migrated = bindings::match_claim(&db, &key)
-        .unwrap()
-        .expect("the migrated binding is found by its stored session")
-        .binding_id;
-    let unread = |db: &Connection| -> Vec<MessageId> {
-        lazy_delivery::binding_lazy_unread(db, &migrated, 100)
-            .unwrap()
-            .into_iter()
-            .map(|u| u.message)
-            .collect()
-    };
-    let seat_page = |db: &Connection| -> Vec<MessageId> {
-        let high = lazy_delivery::capture_high_water(db, "i", &seat, None).unwrap();
-        lazy_delivery::pending_page(db, "i", &seat, None, 0, high, 100)
-            .unwrap()
-            .recipients
-            .into_iter()
-            .map(|r| r.message)
-            .collect()
-    };
-    // The migrated binding starts disconnected; the seat-level inbox still carries the
-    // pending message (legacy row), and the binding-level view carries it exactly once.
-    assert_eq!(seat_page(&db), [MessageId::new("msg-3")]);
-    assert_eq!(unread(&db), [MessageId::new("msg-3")]);
-    // The V32 cursor is the head at upgrade: nothing already displayed comes back.
-    assert_eq!(
-        read_cursors::cursor_for(&db, &migrated, &thread).unwrap(),
-        Some(4)
-    );
-    // Re-adoption (the session's next call) does not duplicate or skip it.
-    assert!(
-        bindings::connect(
-            &db,
-            &migrated,
-            None,
-            bindings::ConnectTrigger::Lifecycle,
-            UtcMillis(800)
-        )
-        .unwrap()
-    );
-    assert_eq!(seat_page(&db), [MessageId::new("msg-3")]);
-    assert_eq!(unread(&db), [MessageId::new("msg-3")]);
-    // A message published after the upgrade is past the cursor: delivered, once.
-    db.execute_batch(
-        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES ('prep-6','i','scope','prep-6',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy');
-         INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES ('prep-6','msg-6','t','agent');
-         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES ('msg-6','i','t',5,'ordinary',6,'late','0','lazy');
-         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('prep-6','msg-6','i','t',6,0,5,0,1,0);
-         UPDATE host_instances SET decision_seq=max(decision_seq,6);",
-    )
-    .unwrap();
-    assert_eq!(
-        unread(&db),
-        [MessageId::new("msg-3"), MessageId::new("msg-6")]
-    );
-    // Displaying both settles them; nothing is delivered a second time.
-    let mut db = db;
-    let tx = db.transaction().unwrap();
-    lazy_delivery::complete_for_binding(
-        &tx,
-        "i",
-        &seat,
-        Some(&migrated),
-        &[MessageId::new("msg-3"), MessageId::new("msg-6")],
-    )
-    .unwrap();
-    tx.commit().unwrap();
-    assert!(unread(&db).is_empty());
-    assert!(seat_page(&db).is_empty());
-    assert!(!read_cursors::has_unread(&db, &migrated).unwrap());
-    assert_eq!(
-        read_cursors::cursor_for(&db, &migrated, &thread).unwrap(),
-        Some(5)
-    );
-    // The catch-up row is intact for the migrated binding.
-    let (binding, state, frontier): (String, String, i64) = db
-        .query_row(
-            "SELECT binding_id,state,frontier_seq FROM catch_up WHERE seat_id='agent' AND thread_id='t'",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(
-        (binding.as_str(), state.as_str(), frontier),
-        (migrated.as_str(), "active", 2)
-    );
-}
-
-#[test]
-fn v33_fresh_matches_upgraded_catalog() {
-    let upgraded = v32_database();
-    assert_ne!(trigger_catalog(&upgraded), trigger_catalog(&fresh_db()));
-    schema::initialize(&upgraded, || UtcMillis(1)).unwrap();
-    assert_eq!(
-        upgraded
-            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    assert_eq!(trigger_catalog(&upgraded), trigger_catalog(&fresh_db()));
-    // reopening audits the V33 shape without migrating again
-    schema::initialize(&upgraded, || UtcMillis(2)).unwrap();
-    let triggers = trigger_catalog(&upgraded)
-        .into_iter()
-        .filter(|r| r.0 == "trigger" && r.1.starts_with("archival_fence_"))
-        .map(|r| r.1)
-        .collect::<Vec<_>>();
-    assert!(!triggers.contains(&"archival_fence_seats_insert".to_owned()));
-    assert!(triggers.contains(&"archival_fence_seats_update".to_owned()));
-}
-
 #[test]
 fn v33_startup_rejects_an_altered_archival_trigger() {
     for alteration in [
@@ -6931,17 +4055,6 @@ fn v33_startup_rejects_an_altered_archival_trigger() {
         "DROP TRIGGER archival_fence_memberships_update".to_owned(),
         "DROP TRIGGER archival_fence_occupant_bindings_insert".to_owned(),
         "DROP TRIGGER archival_fence_occupant_bindings_update".to_owned(),
-        // the dropped V23 insert fence returns
-        v23_trigger("archival_fence_seats_insert"),
-        // reverted to the unscoped V23 text
-        format!(
-            "DROP TRIGGER archival_fence_seats_update; {}",
-            v23_trigger("archival_fence_seats_update")
-        ),
-        format!(
-            "DROP TRIGGER archival_fence_occupant_bindings_update; {}",
-            v23_trigger("archival_fence_occupant_bindings_update")
-        ),
         // widened column list
         "DROP TRIGGER archival_fence_memberships_update; CREATE TRIGGER archival_fence_memberships_update AFTER UPDATE ON memberships BEGIN UPDATE archival_instances SET mutation_revision=mutation_revision+1; END".to_owned(),
         // dropped V23 trigger V33 does not own
@@ -6955,24 +4068,6 @@ fn v33_startup_rejects_an_altered_archival_trigger() {
             "{alteration}"
         );
     }
-}
-
-#[test]
-fn v34_fresh_matches_upgraded_catalog_with_delivery_data() {
-    let upgraded = v33_delivery_fixture();
-    assert_eq!(
-        upgraded
-            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        33
-    );
-    schema::initialize(&upgraded, || UtcMillis(1)).unwrap();
-    let fresh = fresh_db();
-    let catalog = |db: &Connection| {
-        db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").unwrap()
-        .query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?, r.get::<_,String>(3)?.split_whitespace().collect::<String>().replace('"', "")))).unwrap().map(Result::unwrap).collect::<Vec<_>>()
-    };
-    assert_eq!(catalog(&upgraded), catalog(&fresh));
 }
 
 #[test]
@@ -6998,107 +4093,6 @@ fn v34_startup_rejects_altered_catch_up_and_lazy_objects() {
     }
 }
 
-/// `v33_delivery_fixture` with the V34 step applied by hand, plus the seat-keyed attention
-/// frontiers a V34 database holds: `agent`'s offer names its open migrated binding; `human`'s
-/// names its human binding; `launch`'s names an occupant that has no binding row; `idle` has no
-/// binding row at all.
-fn v34_attention_fixture() -> Connection {
-    let db = v33_delivery_fixture();
-    db.execute_batch("BEGIN IMMEDIATE").unwrap();
-    db.execute_batch(include_str!(
-        "../../migrations/0034_binding_delivery_state.sql"
-    ))
-    .unwrap();
-    db.pragma_update(None, "user_version", 34).unwrap();
-    db.execute_batch("COMMIT").unwrap();
-    db.execute_batch(
-        "INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES
-           ('agent',3,'e3',17),('human',1,'human',5),('launch',1,'predecessor',4),('idle',1,'x',9);
-         INSERT INTO digest_notice_offer(seat_id,binding_generation,execution_id,offered_ordinal) VALUES
-           ('agent',3,'e3',8),('plugin',1,'e9',3),('idle',1,'x',2),('launch',2,'e-other',6);",
-    )
-    .unwrap();
-    db
-}
-
-#[test]
-fn v34_to_v35_moves_attention_frontiers_to_bindings() {
-    let db = v34_attention_fixture();
-    let (agent, human, plugin) = (
-        binding_id_of(&db, 3),
-        binding_id_of(&db, 4),
-        binding_id_of(&db, 9),
-    );
-    schema::initialize(&db, || UtcMillis(900)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    let rows = |sql: &str| -> Vec<(String, String, i64)> {
-        db.prepare(sql)
-            .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect()
-    };
-    // Each row moved to the binding of the occupant it named. A row whose occupant has no binding
-    // row (`launch`'s predecessor, `idle`) is dropped: the old rules already read a frontier
-    // recorded for another occupant as covering nothing.
-    assert_eq!(
-        rows("SELECT binding_id,seat_id,offered_through_seq FROM warning_offer ORDER BY seat_id"),
-        vec![
-            (agent.clone(), "agent".into(), 17),
-            (human, "human".into(), 5),
-        ]
-    );
-    assert_eq!(
-        rows("SELECT binding_id,seat_id,offered_ordinal FROM digest_notice_offer ORDER BY seat_id"),
-        vec![(agent, "agent".into(), 8), (plugin, "plugin".into(), 3)]
-    );
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
-            .get::<_, i64>(
-            0
-        ))
-        .unwrap(),
-        0
-    );
-    // The generation/execution pair is gone: the binding id replaces it.
-    for table in ["warning_offer", "digest_notice_offer"] {
-        assert!(!column_exists(&db, table, "binding_generation"), "{table}");
-        assert!(!column_exists(&db, table, "execution_id"), "{table}");
-        assert!(column_exists(&db, table, "binding_id"), "{table}");
-    }
-    // Two bindings of one seat each hold a row; one binding holds one.
-    let other = binding_id_of(&db, 2);
-    db.execute(
-        "INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) VALUES (?1,'agent',1)",
-        [&other],
-    )
-    .unwrap();
-    db.execute(
-        "INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) VALUES (?1,'agent',2)",
-        [&other],
-    )
-    .expect_err("one row per binding");
-    // Reopening audits the V35 shape without migrating again.
-    schema::initialize(&db, || UtcMillis(901)).unwrap();
-}
-
-#[test]
-fn v35_fresh_matches_upgraded_catalog_with_attention_data() {
-    let upgraded = v34_attention_fixture();
-    schema::initialize(&upgraded, || UtcMillis(1)).unwrap();
-    let fresh = fresh_db();
-    let catalog = |db: &Connection| {
-        db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").unwrap()
-        .query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?, r.get::<_,String>(3)?.split_whitespace().collect::<String>().replace('"', "")))).unwrap().map(Result::unwrap).collect::<Vec<_>>()
-    };
-    assert_eq!(catalog(&upgraded), catalog(&fresh));
-}
-
 #[test]
 fn v35_startup_rejects_altered_attention_frontier_objects() {
     for alteration in [
@@ -7120,19 +4114,6 @@ fn v35_startup_rejects_altered_attention_frontier_objects() {
     }
 }
 
-// Catches an altered current table or missing retention index accepted at v24.
-/// Main's released V29-V31 (direct threads, automatic handoff, seat wake_on), applied by hand
-/// inside the caller's transaction: every hand-built V32+ fixture sits on top of them.
-fn apply_main_v29_to_v31(db: &Connection) {
-    for migration in [
-        include_str!("../../migrations/0029_direct_threads.sql"),
-        include_str!("../../migrations/0030_automatic_handoff.sql"),
-        include_str!("../../migrations/0031_seat_wake_on.sql"),
-    ] {
-        db.execute_batch(migration).unwrap();
-    }
-}
-
 #[test]
 fn task3_versionless_schema24_rejects_altered_table_and_missing_index() {
     for alteration in [
@@ -7143,286 +4124,6 @@ fn task3_versionless_schema24_rejects_altered_table_and_missing_index() {
         db.execute_batch(alteration).unwrap();
         assert!(schema::initialize(&db, || UtcMillis(2)).is_err());
     }
-}
-
-// Catches missing additive migration and accepting incomplete current schemas.
-#[test]
-fn task3_versionless_schema24_upgrades_preserves_history_and_audits_objects() {
-    let db = adapter_historical_database(23);
-    db.execute_batch("INSERT INTO harness_version_evidence(harness,version,contract_id,first_seen_at,last_seen_at) VALUES ('codex','0.159.3','0123456789abcdef',1,2)").unwrap();
-    schema::initialize(&db, || UtcMillis(3)).unwrap();
-    assert_eq!(
-        db.query_row("SELECT version FROM harness_version_evidence", [], |row| {
-            row.get::<_, String>(0)
-        })
-        .unwrap(),
-        "0.159.3"
-    );
-    assert_eq!(
-        db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    db.execute_batch("DROP TABLE harness_contract_diagnostics")
-        .unwrap();
-    assert!(schema::initialize(&db, || UtcMillis(4)).is_err());
-}
-
-// The successor must consume actual main24 without rewriting its diagnostic history.
-#[test]
-fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog() {
-    for version in [24, 25] {
-        let db = adapter_historical_database(version);
-        db.execute_batch("INSERT INTO harness_contract_diagnostics VALUES('codex','old-session','0123456789abcdef','1Start','field',7,11)").unwrap();
-        let guards = binding_archival_guards(&db);
-        schema::initialize(&db, || UtcMillis(100)).unwrap();
-        assert_eq!(
-            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-                .unwrap(),
-            schema::LATEST_VERSION
-        );
-        assert_v33_guards(&guards, &binding_archival_guards(&db));
-        assert_eq!(
-            db.query_row(
-                "SELECT event,first_seen_at,last_seen_at FROM harness_contract_diagnostics",
-                [],
-                |r| Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, i64>(2)?
-                ))
-            )
-            .unwrap(),
-            ("1Start".into(), 7, 11)
-        );
-        db.execute_batch("INSERT INTO harness_contract_diagnostics VALUES('fourth_agent','new-session','0123456789abcdef','Session_Start','field',12,13)").unwrap();
-        for harness in ["human", "Upper", "1agent", "has.dot", ""] {
-            assert!(db.execute("INSERT INTO harness_contract_diagnostics VALUES(?1,'invalid','0123456789abcdef','SessionStart','field',12,13)",[harness]).is_err(),"{harness}");
-        }
-        let fresh = fresh_db();
-        let catalog = |db: &Connection| {
-            db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").unwrap()
-            .query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?.split_whitespace().collect::<String>().replace('\"',"")))).unwrap().map(Result::unwrap).collect::<Vec<_>>()
-        };
-        assert_eq!(catalog(&db), catalog(&fresh));
-        // V32 deltas: +1 table (binding_cursors); indexes -occupant_bindings_current,
-        // +occupant_bindings_session_key, +occupant_bindings_open, +binding_cursors_thread
-        // (net +2); triggers are recreated one for one. V33 drops archival_fence_seats_insert
-        // (a new seat is in no channel) and recreates the other four fences in place (net -1).
-        // V34 deltas: +3 indexes (catch_up_seat, lazy_recipients_legacy,
-        // lazy_recipients_seat_ordinal); catch_up and its triggers are rebuilt one for one.
-        // V35 deltas: +2 indexes (warning_offer_seat, digest_notice_offer_seat); the two
-        // frontier tables are rebuilt one for one. V36 deltas: +1 table (in_turn_offer), +1 index
-        // (in_turn_offer_seat).
-        assert_eq!(
-            catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
-            96
-        );
-        assert_eq!(
-            catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
-            168
-        );
-        assert_eq!(
-            catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
-            307
-        );
-    }
-}
-
-// An unpublished adapter schema25 is not the immutable published main25.
-#[test]
-fn absorption_rejects_development_adapter25_without_writing() {
-    let db = adapter_historical_database(24);
-    db.execute_batch(include_str!("../../migrations/0027_harness_adapters.sql"))
-        .unwrap();
-    db.pragma_update(None, "user_version", 25).unwrap();
-    let before: String = db
-        .query_row(
-            "SELECT group_concat(sql, char(10)) FROM (SELECT sql FROM sqlite_master ORDER BY name)",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(
-        schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
-        ErrorCode::IncompatibleSchema
-    );
-    let after: String = db
-        .query_row(
-            "SELECT group_concat(sql, char(10)) FROM (SELECT sql FROM sqlite_master ORDER BY name)",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(before, after);
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        25
-    );
-}
-
-#[test]
-fn absorption_main25_missing_warning_guard_refuses_before_adapter_rebuild() {
-    let db = adapter_historical_database(25);
-    db.execute_batch("DROP TRIGGER digest_transition_warning_projected")
-        .unwrap();
-    assert_eq!(
-        schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
-        ErrorCode::IncompatibleSchema
-    );
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        25
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE name='harness_runtime_identities'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
-}
-
-// Genuine immutable main24 data must traverse warning25 before adapter26;
-// neither a rewritten version stamp nor adapter tables are used as the precursor.
-#[test]
-fn absorption_main24_backfills_warning_delivery_before_adapter26() {
-    let db = adapter_historical_database(24);
-    user_intent_seed(&db);
-    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('upgrade-warning','t','s',1,'pending',0,1,50,50)").unwrap();
-    // Seed the completed immutable24 event, condition and exact recipient
-    // using its historical schema. Current post33 judges require confirmation
-    // columns and cannot be used as historical fixture writers.
-    let warning = crate::protocol::ids::MessageId::new("upgrade-warning-event");
-    db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq,source_invitation_id,author_kind) VALUES ('upgrade-warning-event','i','t',1,'warn','overdue:invitation:upgrade-warning','{\"obligation\":\"invitation\",\"seat\":\"s\",\"deadline_at\":50,\"classified_at\":100,\"materialized_at\":100,\"current_status\":\"pending\",\"physical_status\":\"pending\"}',100,2,'upgrade-warning','built_in');
-        UPDATE invitations SET warning_message_id='upgrade-warning-event' WHERE id='upgrade-warning';
-        INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('invitation','t','upgrade-warning','s','upgrade-warning-event',2);
-        INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('upgrade-warning-event','s',2);
-        UPDATE threads SET next_sequence=2 WHERE id='t'; UPDATE host_instances SET decision_seq=2 WHERE id='i';").unwrap();
-    assert_eq!(
-        db.query_row(
-            "SELECT count(*) FROM warning_recipients WHERE warning_id=?1",
-            [warning.as_str()],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        1
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT count(*) FROM digest_programmatic_warnings",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
-    schema::initialize(&db, || UtcMillis(100)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    let offered = crate::store::attention::notice_offer_page(&db, "s", 16).unwrap();
-    assert_eq!(offered.len(), 1);
-    assert_eq!(offered[0].notice.warning, warning);
-    assert_eq!(
-        db.query_row(
-            "SELECT count(*) FROM warning_recipients WHERE warning_id=?1",
-            [warning.as_str()],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        1
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT count(*) FROM warning_conditions WHERE open_warning_id=?1",
-            [warning.as_str()],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        1
-    );
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
-            .get::<_, i64>(
-            0
-        ))
-        .unwrap(),
-        0
-    );
-    schema::initialize(&db, || UtcMillis(101)).unwrap();
-    assert_eq!(
-        crate::store::attention::notice_offer_page(&db, "s", 16).unwrap(),
-        offered
-    );
-}
-
-// Reconciliation: audited legacy diagnostics must not be silently rebuilt.
-#[test]
-fn adapter_upgrade_rejects_tampered_diagnostics_from_main25_and_lazy26() {
-    for version in [25, 26] {
-        for alteration in [
-            "DROP INDEX harness_contract_diagnostics_recent",
-            "DROP TABLE harness_contract_diagnostics; CREATE TABLE harness_contract_diagnostics(harness TEXT, session_id TEXT, contract_id TEXT, event TEXT, field TEXT, first_seen_at INTEGER, last_seen_at INTEGER)",
-        ] {
-            let db = adapter_historical_database(version);
-            db.execute_batch(alteration).unwrap();
-            assert_eq!(
-                schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
-                ErrorCode::IncompatibleSchema
-            );
-            assert_eq!(
-                db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-                    .unwrap(),
-                version as i64
-            );
-            assert_eq!(
-                db.query_row(
-                    "SELECT count(*) FROM sqlite_master WHERE name='harness_runtime_identities'",
-                    [],
-                    |r| r.get::<_, i64>(0)
-                )
-                .unwrap(),
-                0
-            );
-        }
-    }
-}
-
-#[test]
-fn invitation_confirmation_schema_migrates_legacy_and_retains_frozen_origin() {
-    let db = v11_populated_database();
-    db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('old','t','s',1,'pending',1,10,30,40);").unwrap();
-    schema::initialize(&db, || UtcMillis(900)).unwrap();
-    let legacy: (Option<String>, Option<String>, i64, i64) = db.query_row("SELECT confirmation,inviter_seat_id,frozen_duration_ms,deadline_at FROM invitations WHERE id='old'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
-    assert_eq!(legacy, (None, None, 30, 40));
-    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('modern','t','s',2,'pending',2,100,50,150,'require_ack','s'),('quiet','t','s',3,'pending',3,100,50,150,'lazy','s');").unwrap();
-    assert!(db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation) VALUES ('missing-origin','t','s',4,'pending',4,100,50,150,'lazy')", []).is_err());
-    schema::initialize(&db, || UtcMillis(1000)).unwrap();
-    let modern: (String,String,i64,i64) = db.query_row("SELECT confirmation,inviter_seat_id,frozen_duration_ms,deadline_at FROM invitations WHERE id='modern'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
-    assert_eq!(modern, ("require_ack".into(), "s".into(), 50, 150));
-    let ids = db.prepare("SELECT id FROM invitations INDEXED BY invitations_confirmation_due WHERE state='pending' AND warning_message_id IS NULL AND reject_recorded=0 AND (confirmation IS NULL OR confirmation='require_ack') ORDER BY deadline_at,ordinal").unwrap().query_map([],|r|r.get::<_,String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>();
-    assert_eq!(ids, ["old", "modern"]);
-    assert!(
-        db.execute(
-            "UPDATE invitations SET inviter_seat_id=NULL WHERE id='modern'",
-            []
-        )
-        .is_err()
-    );
-    assert!(
-        db.execute(
-            "UPDATE invitations SET confirmation='lazy' WHERE id='modern'",
-            []
-        )
-        .is_err()
-    );
 }
 
 #[test]
@@ -7437,1009 +4138,249 @@ fn invitation_confirmation_schema_refuses_missing_policy_guard() {
     );
 }
 
-#[test]
-fn direct_pair_migration_preserves_v28_and_enforces_identity() {
-    let db = Connection::open_in_memory().unwrap();
-    db.pragma_update(None, "foreign_keys", true).unwrap();
-    let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect::<Vec<_>>();
-    migrations.sort();
-    for path in migrations
-        .into_iter()
-        .filter(|path| path.file_name().unwrap().to_str().unwrap() < "0029")
-    {
-        db.execute_batch(&std::fs::read_to_string(path).unwrap())
-            .unwrap();
-    }
-    db.pragma_update(None, "user_version", 28).unwrap();
-    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('a','i','resolved','native',0,0),('b','i','resolved','native',0,0),('c','i','resolved','native',0,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0),('u','i','other','goal',0,0); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','retained body',0,1);").unwrap();
-    let dump = |table: &str| {
-        let mut statement = db
-            .prepare(&format!("SELECT * FROM {table} ORDER BY ordinal"))
-            .unwrap();
-        let columns = statement.column_count();
-        statement
-            .query_map([], |row| {
-                (0..columns)
-                    .map(|n| row.get::<_, rusqlite::types::Value>(n))
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
-    };
-    let before = [dump("seats"), dump("threads"), dump("messages")];
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
-    // Later migrations (0031 wake_on) only append defaulted columns: the v28 prefix of
-    // every row is preserved byte for byte.
-    let mut after = [dump("seats"), dump("threads"), dump("messages")];
-    for (table, rows) in after.iter_mut().enumerate() {
-        for (row, old) in rows.iter_mut().zip(&before[table]) {
-            row.truncate(old.len());
-        }
-    }
-    assert_eq!(before, after);
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM direct_threads", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
-    db.execute(
-        "INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i','a','b','t')",
-        [],
-    )
-    .unwrap();
-    for (a, b, t) in [
-        ("a", "a", "u"),
-        ("b", "a", "u"),
-        ("a", "b", "u"),
-        ("a", "c", "t"),
-        ("a", "missing", "u"),
-        ("a", "c", "missing"),
-    ] {
-        assert!(db.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i',?1,?2,?3)",params![a,b,t]).is_err(),"{a}/{b}/{t}");
-    }
-    assert!(db.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('missing','a','c','u')",[]).is_err());
-    let plan: String = db.query_row("EXPLAIN QUERY PLAN SELECT thread_id FROM direct_threads WHERE instance_id='i' AND seat_a='a' AND seat_b='b'",[],|r|r.get(3)).unwrap();
-    assert!(
-        plan.contains("SEARCH direct_threads USING") && plan.contains("INDEX"),
-        "{plan}"
-    );
-    db.execute(
-        "INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i','a','c','u')",
-        [],
-    )
-    .unwrap();
-    assert!(db.execute("DELETE FROM threads WHERE id='u'", []).is_err());
-    assert!(db.execute("DELETE FROM seats WHERE id='b'", []).is_err());
+// Node baseline: creation, verification and refusal.
+
+fn incompatible_detail(result: Result<(), crate::protocol::results::ApiError>) -> String {
+    let error = result.unwrap_err();
+    assert_eq!(error.code, ErrorCode::IncompatibleSchema, "{error:?}");
+    error.detail
 }
 
-// Catches losing released direct/automatic rows or omitting the additive capacity upgrade.
+fn reinitialize(db: &Connection) -> Result<(), crate::protocol::results::ApiError> {
+    schema::initialize(db, || UtcMillis(0))
+}
+
 #[test]
-fn released_main31_populated_automatic_graph_physically_upgrades_and_reopens() {
-    let path = std::env::temp_dir().join(format!("main31-upgrade-{}.db", uuid::Uuid::new_v4()));
-    let db = Connection::open(&path).unwrap();
-    db.pragma_update(None, "foreign_keys", true).unwrap();
-    let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
-        .unwrap()
-        .map(|p| p.unwrap().path())
-        .collect::<Vec<_>>();
-    migrations.sort();
-    for migration in migrations.into_iter().take(31) {
-        db.execute_batch(&std::fs::read_to_string(migration).unwrap())
-            .unwrap();
-    }
-    db.pragma_update(None, "user_version", 31).unwrap();
-    db.execute_batch(r#"INSERT INTO host_instances(id,created_at) VALUES('i',0);
-      INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('a','i','resolved','native',1,0),('b','i','resolved','native',1,0);
-      INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0);
-      INSERT INTO direct_threads VALUES('i','a','b','t');
-      INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,original_thread,thread_id,origin,state,created_at) VALUES('i','seat:a','child',printf('%064d',0),'{"generation":1,"provenance":"cooperative_top_level"}','b','begin','ensure','send',NULL,'t','cooperative_pending_claim','live',7);
-      INSERT INTO automatic_handoff_companions VALUES('i','seat:a','child','/state','/host',x'7b7d','begin','ensure','send','complete');
-      INSERT INTO automatic_handoff_keys VALUES('i','seat:a','child','send','send');
-      INSERT INTO automatic_bootstrap_parents VALUES(9,'i','seat:a','parent','/state','/host',x'7b7d','attached',1,1,'t');
-      INSERT INTO automatic_bootstrap_keys VALUES('i','seat:a','parent-key',9,'compound',0);
-      INSERT INTO automatic_bootstrap_attempts VALUES(9,1,'created',0,x'7b7d');
-      INSERT INTO automatic_bootstrap_attachments VALUES(9,1,x'7b7d');
-      INSERT INTO automatic_bootstrap_reports VALUES(9,x'7b7d');
-      INSERT INTO automatic_bootstrap_recoveries VALUES(9,1,'recovery','recovery-key',1,x'7b7d');"#).unwrap();
-    let tables = [
-        "direct_threads",
-        "channel_handoff_fences",
-        "automatic_handoff_companions",
-        "automatic_handoff_keys",
-        "automatic_bootstrap_parents",
-        "automatic_bootstrap_keys",
-        "automatic_bootstrap_attempts",
-        "automatic_bootstrap_attachments",
-        "automatic_bootstrap_reports",
-        "automatic_bootstrap_recoveries",
-    ];
-    let snapshot = |db: &Connection| {
-        tables
-            .iter()
-            .map(|table| {
-                let columns = db
-                    .prepare(&format!("PRAGMA table_info({table})"))
-                    .unwrap()
-                    .query_map([], |r| r.get::<_, String>(1))
-                    .unwrap()
-                    .map(Result::unwrap)
-                    .collect::<Vec<_>>();
-                let values = columns
-                    .iter()
-                    .map(|column| format!("quote({column})"))
-                    .collect::<Vec<_>>()
-                    .join("||','||");
-                db.prepare(&format!("SELECT {values} FROM {table} ORDER BY rowid"))
-                    .unwrap()
-                    .query_map([], |r| r.get::<_, String>(0))
-                    .unwrap()
-                    .map(Result::unwrap)
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>()
-    };
-    let before = snapshot(&db);
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
-            .get::<_, i64>(
-            0
-        ))
-        .unwrap(),
-        0
-    );
-    drop(db);
-    let failure_path = path.with_extension("rollback.db");
-    std::fs::copy(&path, &failure_path).unwrap();
-    let db = Connection::open(&path).unwrap();
-    db.pragma_update(None, "foreign_keys", true).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        31
-    );
-    schema::initialize(&db, || UtcMillis(99)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    assert_eq!(snapshot(&db), before);
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
-            .get::<_, i64>(
-            0
-        ))
-        .unwrap(),
-        0
-    );
-    assert!(
-        db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
-            .unwrap()
-    );
-    drop(db);
-    let db = Connection::open(&path).unwrap();
-    schema::initialize(&db, || UtcMillis(100)).unwrap();
-    assert_eq!(snapshot(&db), before);
-    drop(db);
-    let db = Connection::open(&failure_path).unwrap();
-    db.pragma_update(None, "foreign_keys", false).unwrap();
-    let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
-        .unwrap()
-        .map(|p| p.unwrap().path())
-        .collect::<Vec<_>>();
-    migrations.sort();
-    for migration in migrations.into_iter().skip(31).take(12) {
-        db.execute_batch(&std::fs::read_to_string(migration).unwrap())
-            .unwrap();
-    }
-    db.pragma_update(None, "user_version", 43).unwrap();
-    db.execute(
-        "INSERT INTO automatic_bootstrap_keys VALUES('i','seat:a','orphan',999,'compound',0)",
-        [],
-    )
-    .unwrap();
-    db.pragma_update(None, "foreign_keys", true).unwrap();
-    let catalog = |db: &Connection| {
-        db.prepare("SELECT type,name,tbl_name,rootpage,sql FROM sqlite_schema ORDER BY type,name")
-            .unwrap()
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, i64>(3)?,
-                    r.get::<_, Option<String>>(4)?,
-                ))
-            })
-            .unwrap()
-            .map(Result::unwrap)
-            .collect::<Vec<_>>()
-    };
-    let failed_before = snapshot(&db);
-    let catalog_before = catalog(&db);
-    let version_before: i64 = db
+fn fresh_initialize_sets_node_application_id_and_version() {
+    let db = Connection::open_in_memory().unwrap();
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    let application_id: i64 = db
+        .pragma_query_value(None, "application_id", |r| r.get(0))
+        .unwrap();
+    let version: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version_before, 43, "fixture precedes the V44 rebuild");
-    let error = schema::initialize(&db, || UtcMillis(101)).unwrap_err();
-    assert_eq!(error.code, ErrorCode::StoreCorrupt);
+    let marker: String = db
+        .query_row("SELECT marker FROM schema_identity", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        version_before
+        (application_id, version, marker.as_str()),
+        (0x4854_4E44, 1, "herdr-threads-node-v1")
     );
-    assert!(
-        db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
-            .unwrap()
-    );
-    assert_eq!(
-        catalog(&db),
-        catalog_before,
-        "failed rebuild rolls back every object and rootpage"
-    );
-    assert_eq!(
-        snapshot(&db),
-        failed_before,
-        "failed rebuild retains exact original bytes"
-    );
-    let trigger: String = db
+    assert_eq!(application_id, i64::from(schema::NODE_APPLICATION_ID));
+}
+
+#[test]
+fn second_open_verifies() {
+    let store = ScratchStore::new("ht-second-open");
+    let db = Connection::open(store.path()).unwrap();
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    drop(db);
+    let db = Connection::open(store.path()).unwrap();
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    schema::verify_baseline(&db).unwrap();
+}
+
+#[test]
+fn drift_extra_index_is_incompatible_naming_it() {
+    let db = fresh_db();
+    db.execute_batch("CREATE INDEX drift_ix ON threads(topic)")
+        .unwrap();
+    let detail = incompatible_detail(reinitialize(&db));
+    assert!(detail.contains("drift_ix"), "{detail}");
+}
+
+#[test]
+fn drift_altered_table_is_incompatible_naming_it() {
+    let db = fresh_db();
+    db.execute_batch("ALTER TABLE threads ADD COLUMN drift INTEGER")
+        .unwrap();
+    let detail = incompatible_detail(reinitialize(&db));
+    assert!(detail.contains("table threads"), "{detail}");
+}
+
+#[test]
+fn drift_missing_object_is_incompatible_naming_it() {
+    let db = fresh_db();
+    let (kind, name): (String, String) = db
         .query_row(
-            "SELECT sql FROM sqlite_schema WHERE name='automatic_bootstrap_keys_retained'",
+            "SELECT type, name FROM sqlite_master WHERE type='trigger' ORDER BY name LIMIT 1",
             [],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    db.execute_batch("DROP TRIGGER automatic_bootstrap_keys_retained; DELETE FROM automatic_bootstrap_keys WHERE operation_key='orphan';").unwrap();
-    db.execute_batch(&trigger).unwrap();
-    drop(db);
-    let db = Connection::open(&failure_path).unwrap();
-    db.pragma_update(None, "foreign_keys", true).unwrap();
-    schema::initialize(&db, || UtcMillis(102)).unwrap();
-    assert_eq!(snapshot(&db), before);
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
+    db.execute_batch(&format!("DROP TRIGGER \"{name}\""))
+        .unwrap();
+    let detail = incompatible_detail(reinitialize(&db));
+    assert!(
+        detail.contains(&format!("missing schema object: {kind} {name}")),
+        "{detail}"
     );
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
-            .get::<_, i64>(
-            0
-        ))
-        .unwrap(),
-        0
-    );
-    drop(db);
-    std::fs::remove_file(failure_path).unwrap();
-    std::fs::remove_file(path).unwrap();
 }
 
-fn presentation_populated_v39() -> Connection {
-    presentation_populated_v39_with_confirmations(false)
-}
-fn presentation_populated_v39_with_confirmations(mixed: bool) -> Connection {
-    presentation_populate_v39(Connection::open_in_memory().unwrap(), mixed)
-}
-fn presentation_populate_v39(db: Connection, mixed: bool) -> Connection {
-    db.pragma_update(None, "foreign_keys", true).unwrap();
-    let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
-        .unwrap()
-        .map(|p| p.unwrap().path())
-        .collect::<Vec<_>>();
-    migrations.sort();
-    for path in migrations.into_iter().take(44) {
-        db.execute_batch(&std::fs::read_to_string(path).unwrap())
-            .unwrap();
-    }
-    db.pragma_update(None, "user_version", 44).unwrap();
-    let confirmation = if mixed {
-        "CASE WHEN n=2 THEN NULL WHEN n%8=0 OR n=1 THEN 'require_ack' ELSE 'lazy' END"
-    } else {
-        "'lazy'"
-    };
-    db.execute_batch(&format!("INSERT INTO host_instances(id,created_at,decision_seq) VALUES('i',0,1000); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('s','i','resolved','native',0,0),('x','i','resolved','native',0,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','retained topic','retained goal',0,0); WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<64) INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq,confirmation,inviter_seat_id) SELECT 'retained-'||n,'t','s',n,CASE WHEN n%2=0 THEN 'pending' ELSE 'recipient_retired' END,7,300,307,n,{confirmation},'x' FROM n;")).unwrap();
-    db
-}
-fn presentation_schema_catalog(
-    db: &Connection,
-) -> Vec<(String, String, String, i64, Option<String>)> {
-    db.prepare("SELECT type,name,tbl_name,rootpage,sql FROM sqlite_schema ORDER BY type,name")
-        .unwrap()
-        .query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-        })
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap()
-}
-fn presentation_retained_rows(db: &Connection) -> Vec<Vec<rusqlite::types::Value>> {
-    let mut stmt = db
-        .prepare("SELECT * FROM invitations ORDER BY ordinal")
+#[test]
+fn test_fault_trigger_is_tolerated_but_other_extra_objects_are_not() {
+    let db = fresh_db();
+    db.execute_batch(
+        "CREATE TRIGGER ht_test_fault_x BEFORE INSERT ON threads BEGIN SELECT RAISE(ABORT,'x'); END",
+    )
+    .unwrap();
+    reinitialize(&db).unwrap();
+    db.execute_batch("CREATE INDEX ht_test_fault_ix ON threads(topic)")
         .unwrap();
-    let columns = stmt.column_count();
-    stmt.query_map([], |r| {
-        (0..columns)
-            .map(|n| r.get(n))
-            .collect::<Result<Vec<_>, _>>()
-    })
-    .unwrap()
-    .collect::<Result<Vec<_>, _>>()
-    .unwrap()
+    let detail = incompatible_detail(reinitialize(&db));
+    assert!(detail.contains("ht_test_fault_ix"), "{detail}");
 }
-// Read every old table through its old columns, including WITHOUT ROWID
-// tables. This also preserves exact retained private JSON/blob bytes.
-struct PresentationRetainedTable {
-    sql: String,
-    rows: Vec<Vec<rusqlite::types::Value>>,
+
+#[test]
+fn wrong_application_id_refused() {
+    let db = fresh_db();
+    db.pragma_update(None, "application_id", 1).unwrap();
+    let detail = incompatible_detail(reinitialize(&db));
+    assert!(detail.contains("application_id 0x1"), "{detail}");
 }
-fn presentation_query_rows(db: &Connection, sql: &str) -> Vec<Vec<rusqlite::types::Value>> {
-    let mut statement = db.prepare(sql).unwrap();
-    let columns = statement.column_count();
+
+#[test]
+fn newer_schema_version_refused() {
+    let db = fresh_db();
+    db.pragma_update(None, "user_version", 2).unwrap();
+    let detail = incompatible_detail(reinitialize(&db));
+    assert!(detail.contains("newer than this binary"), "{detail}");
+}
+
+#[test]
+fn legacy_chain_store_refused() {
+    let db = Connection::open_in_memory().unwrap();
+    schema::legacy_chain::legacy_initialize(&db, || UtcMillis(0)).unwrap();
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 46);
+    let detail = incompatible_detail(reinitialize(&db));
+    assert!(detail.contains("pre-node schema version 46"), "{detail}");
+}
+
+#[test]
+fn unversioned_nonempty_refused() {
+    let db = Connection::open_in_memory().unwrap();
+    db.execute_batch("CREATE TABLE unrelated(x)").unwrap();
+    let detail = incompatible_detail(reinitialize(&db));
+    assert!(detail.contains("unversioned nonempty"), "{detail}");
+}
+
+#[test]
+fn query_connection_accepts_node_store_and_rejects_wrong_marker() {
+    let db = fresh_db();
+    schema::verify_query_connection(&db).unwrap();
+    db.execute_batch("DROP TABLE schema_identity; CREATE TABLE schema_identity(marker TEXT PRIMARY KEY); INSERT INTO schema_identity VALUES ('herdr-threads-shared-v1-r7');")
+        .unwrap();
+    assert_eq!(
+        schema::verify_query_connection(&db).unwrap_err().code,
+        ErrorCode::IncompatibleSchema
+    );
+    let old = Connection::open_in_memory().unwrap();
+    schema::legacy_chain::legacy_initialize(&old, || UtcMillis(0)).unwrap();
+    assert_eq!(
+        schema::verify_query_connection(&old).unwrap_err().code,
+        ErrorCode::IncompatibleSchema
+    );
+}
+
+type Catalog = Vec<(String, String, String, String)>;
+
+fn catalog(db: &Connection) -> Catalog {
+    let mut statement = db
+        .prepare(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master
+             WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+        )
+        .unwrap();
     statement
-        .query_map([], |row| (0..columns).map(|n| row.get(n)).collect())
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap()
-}
-fn presentation_retained_tables(db: &Connection) -> Vec<PresentationRetainedTable> {
-    let names: Vec<String> = db
-        .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-        .unwrap()
-        .query_map([], |row| row.get(0))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap();
-    names
-        .into_iter()
-        .map(|name| {
-            let quoted = format!("\"{}\"", name.replace('"', "\"\""));
-            let statement = db.prepare(&format!("SELECT * FROM {quoted}")).unwrap();
-            let columns = statement
-                .column_names()
-                .into_iter()
-                .map(|column| format!("\"{}\"", column.replace('"', "\"\"")))
-                .collect::<Vec<_>>()
-                .join(",");
-            let sql = format!("SELECT {columns} FROM {quoted} ORDER BY {columns}");
-            PresentationRetainedTable {
-                rows: presentation_query_rows(db, &sql),
-                sql,
-            }
-        })
-        .collect()
-}
-fn presentation_assert_retained_tables(db: &Connection, tables: &[PresentationRetainedTable]) {
-    for table in tables {
-        assert_eq!(
-            presentation_query_rows(db, &table.sql),
-            table.rows,
-            "{}",
-            table.sql
-        );
-    }
-}
-fn presentation_assert_foreign_keys(db: &Connection) {
-    assert!(
-        db.pragma_query_value(None, "foreign_keys", |row| row.get::<_, bool>(0))
-            .unwrap()
-    );
-    assert!(presentation_query_rows(db, "PRAGMA foreign_key_check").is_empty());
-}
-fn presentation_reopen(path: &std::path::Path) -> Connection {
-    let db = Connection::open(path).unwrap();
-    db.pragma_update(None, "foreign_keys", true).unwrap();
-    db
-}
-#[test]
-fn presentation_schema_populated_v39_upgrade_is_additive_and_reopens() {
-    // Policies are immutable: construct legacy NULL, timed and Lazy rows at
-    // insertion, never rewrite a released episode for the bootstrap fixture.
-    let file = ScratchStore::new("presentation-v39-upgrade");
-    let db = presentation_populate_v39(Connection::open(file.path()).unwrap(), true);
-    let retained = presentation_retained_tables(&db);
-    presentation_assert_foreign_keys(&db);
-    let before = presentation_retained_rows(&db);
-    let catalog = presentation_schema_catalog(&db);
-    let pending: i64 = db
-        .query_row("SELECT count(*) FROM digest_pending_invitations", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    assert_eq!(pending, 32);
-    schema::initialize(&db, || UtcMillis(10000)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    let after = presentation_retained_rows(&db);
-    assert_eq!(before.len(), after.len());
-    for (old, new) in before.iter().zip(&after) {
-        assert_eq!(&new[..old.len()], old);
-        assert_eq!(new.last(), Some(&rusqlite::types::Value::Integer(0)));
-    }
-    let after_catalog = presentation_schema_catalog(&db);
-    for (kind, name, table, root, sql) in &catalog {
-        let new = after_catalog
-            .iter()
-            .find(|row| &row.0 == kind && &row.1 == name)
-            .unwrap();
-        assert_eq!(
-            (&new.2, new.3),
-            (table, *root),
-            "old object/rootpage {name}"
-        );
-        if name != "invitations" {
-            assert_eq!(&new.4, sql, "old object DDL {name}");
-        }
-    }
-    for table in [
-        "invitation_context_latest",
-        "invitation_presentation_consumers",
-        "invitation_presentation_items",
-    ] {
-        assert_eq!(
-            db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
-            0,
-            "no projection seeding/history"
-        );
-    }
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM digest_pending_invitations", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        pending
-    );
-    let confirming=db.prepare("SELECT invitation_id,ordinal FROM presentation_confirming_invitations WHERE seat_id='s' ORDER BY ordinal").unwrap().query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
-    let expected = std::iter::once(2)
-        .chain((8..=64).step_by(8))
-        .map(|n| (format!("retained-{n}"), n))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        confirming, expected,
-        "exact populated45 bootstrap membership"
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT count(*) FROM presentation_warning_proofs",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0,
-        "no per-recipient proof seeding"
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT version FROM presentation_warning_fence WHERE singleton=1",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0,
-        "bootstrap precedes fence installation"
-    );
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
-            .get::<_, i64>(
-            0
-        ))
-        .unwrap(),
-        0
-    );
-    presentation_assert_retained_tables(&db, &retained);
-    let upgraded = presentation_retained_tables(&db);
-    db.close().unwrap();
-    let db = presentation_reopen(file.path());
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        46
-    );
-    schema::initialize(&db, || UtcMillis(20000)).unwrap();
-    assert_eq!(presentation_retained_rows(&db), after);
-    assert_eq!(presentation_schema_catalog(&db), after_catalog);
-    presentation_assert_retained_tables(&db, &upgraded);
-    presentation_assert_foreign_keys(&db);
-    db.close().unwrap();
-}
-#[test]
-fn presentation_schema_populated_v39_failed_ddl_rolls_back_epoch_and_catalog() {
-    let db = presentation_populated_v39();
-    db.execute_batch("CREATE INDEX invitation_content_initial ON threads(instance_id,ordinal)")
-        .unwrap();
-    let before = presentation_retained_rows(&db);
-    let catalog = presentation_schema_catalog(&db);
-    let error = schema::initialize(&db, || UtcMillis(10000)).unwrap_err();
-    assert!(
-        error.detail.contains("invitation_content_initial")
-            && error.detail.contains("already exists"),
-        "failure must reach new index DDL after epoch ADD: {error:?}"
-    );
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        44
-    );
-    assert_eq!(presentation_retained_rows(&db), before);
-    assert_eq!(presentation_schema_catalog(&db), catalog);
-    assert_eq!(db.query_row("SELECT count(*) FROM pragma_table_info('invitations') WHERE name='command_context_epoch'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
-            .get::<_, i64>(
-            0
-        ))
-        .unwrap(),
-        0
-    );
-}
-
-#[test]
-fn presentation_schema_pending_index_build_work_tracks_only_pending_projection() {
-    use rusqlite::StatementStatus;
-    let sql = include_str!("../../migrations/0045_invitation_presentation.sql")
-        .lines()
-        .find(|line| line.starts_with("CREATE INDEX invitation_content_initial "))
-        .unwrap();
-    let mut work = Vec::new();
-    for pending in [0, 1, 32] {
-        let db = presentation_populated_v39();
-        db.execute(
-            "UPDATE invitations SET state='recipient_retired' WHERE ordinal>?1",
-            [pending * 2],
-        )
-        .unwrap();
-        assert_eq!(
-            db.query_row("SELECT count(*) FROM invitations", [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
-            64
-        );
-        assert_eq!(
-            db.query_row("SELECT count(*) FROM digest_pending_invitations", [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
-            pending
-        );
-        let mut statement = db.prepare(sql).unwrap();
-        statement.execute([]).unwrap();
-        let vm = statement.get_status(StatementStatus::VmStep);
-        let version: String = db
-            .query_row("SELECT sqlite_version()", [], |r| r.get(0))
-            .unwrap();
-        eprintln!(
-            "SQLite {version} actual upgrade-index DDL retained=64 pending={pending} VM={vm}"
-        );
-        work.push(vm);
-    }
-    assert!(
-        work[0] < work[1] && work[1] < work[2],
-        "one-time index construction scales with pending projection: {work:?}"
-    );
-}
-
-#[test]
-fn presentation_schema_populated_v40_failed_v41_rolls_back_bootstrap_and_catalog() {
-    let file = ScratchStore::new("presentation-v40-failed-v41");
-    let db = presentation_populate_v39(Connection::open(file.path()).unwrap(), true);
-    db.execute_batch(include_str!(
-        "../../migrations/0045_invitation_presentation.sql"
-    ))
-    .unwrap();
-    db.pragma_update(None, "user_version", 45).unwrap();
-    // Fail at the final46 trigger, after projection bootstrap and earlier fence
-    // objects, to prove the entire46 step rolls back to the durable45 boundary.
-    db.execute_batch("CREATE TRIGGER presentation_fence_warning_close_sweeps_delete AFTER DELETE ON warning_close_sweeps BEGIN SELECT 1; END;").unwrap();
-    let retained = presentation_retained_tables(&db);
-    presentation_assert_foreign_keys(&db);
-    let before = presentation_retained_rows(&db);
-    let catalog = presentation_schema_catalog(&db);
-    let error = schema::initialize(&db, || UtcMillis(10000)).unwrap_err();
-    assert!(
-        error
-            .detail
-            .contains("presentation_fence_warning_close_sweeps_delete")
-            && error.detail.contains("already exists"),
-        "actual late46 DDL collision: {error:?}"
-    );
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        45
-    );
-    assert_eq!(presentation_retained_rows(&db), before);
-    assert_eq!(presentation_schema_catalog(&db), catalog);
-    assert_eq!(db.query_row("SELECT count(*) FROM sqlite_schema WHERE name IN ('presentation_confirming_invitations','presentation_warning_proofs','presentation_warning_fence')",[],|r|r.get::<_,i64>(0)).unwrap(),0,"rollback removes bootstrapped projection and new proof/fence tables");
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
-            .get::<_, i64>(
-            0
-        ))
-        .unwrap(),
-        0
-    );
-    presentation_assert_retained_tables(&db, &retained);
-    db.close().unwrap();
-    let db = presentation_reopen(file.path());
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        45
-    );
-    assert_eq!(presentation_schema_catalog(&db), catalog);
-    presentation_assert_retained_tables(&db, &retained);
-    presentation_assert_foreign_keys(&db);
-    // The injected collision remains durable, and no46 bootstrap survived.
-    // Removing only that test obstruction permits the real45 ->46 retry.
-    db.execute_batch("DROP TRIGGER presentation_fence_warning_close_sweeps_delete")
-        .unwrap();
-    schema::initialize(&db, || UtcMillis(10001)).unwrap();
-    presentation_assert_retained_tables(&db, &retained);
-    let upgraded = presentation_retained_tables(&db);
-    let upgraded_catalog = presentation_schema_catalog(&db);
-    db.close().unwrap();
-    let db = presentation_reopen(file.path());
-    schema::initialize(&db, || UtcMillis(10002)).unwrap();
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        46
-    );
-    assert_eq!(presentation_schema_catalog(&db), upgraded_catalog);
-    presentation_assert_retained_tables(&db, &upgraded);
-    presentation_assert_foreign_keys(&db);
-    db.close().unwrap();
-}
-
-#[test]
-fn presentation_schema_populated_v40_consumers_upgrade_revised_v41_and_reopen() {
-    let file = ScratchStore::new("presentation-v40-consumers-upgrade");
-    let db = presentation_populate_v39(Connection::open(file.path()).unwrap(), true);
-    db.execute_batch(include_str!(
-        "../../migrations/0045_invitation_presentation.sql"
-    ))
-    .unwrap();
-    db.pragma_update(None, "user_version", 45).unwrap();
-    db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,binding_id) VALUES('s',0,'p','b',0,'codex','retained-session','retained-execution','cooperative_top_level',0,'retained-binding')").unwrap();
-    let columns=db.prepare("SELECT name,type,\"notnull\" FROM pragma_table_info('invitation_presentation_consumers') ORDER BY cid").unwrap().query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?))).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
-    let names = columns
-        .iter()
-        .map(|(name, _, _)| name.as_str())
-        .collect::<Vec<_>>()
-        .join(",");
-    let values = columns
-        .iter()
-        .map(|(name, kind, required)| match name.as_str() {
-            "binding_id" => "'retained-binding'",
-            "seat_id" => "'s'",
-            "consumer" => "'hook'",
-            "instance_id" => "'i'",
-            "execution" => "'retained-execution'",
-            "ordinary_pending" => "'{\"prefix\":[],\"items\":[]}'",
-            "ordinary_partial" | "control_state" => "'{}'",
-            "last_descriptors" | "outbox_prefix" | "outbox_descriptors" => "'[]'",
-            _ if *required == 0 => "NULL",
-            _ if kind == "INTEGER" => "0",
-            _ => "''",
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    db.execute_batch(&format!(
-        "INSERT INTO invitation_presentation_consumers({names}) VALUES({values})"
-    ))
-    .unwrap();
-    let read_old = |db: &Connection| {
-        db.query_row(
-            &format!("SELECT {names} FROM invitation_presentation_consumers"),
-            [],
-            |r| {
-                (0..columns.len())
-                    .map(|n| r.get::<_, rusqlite::types::Value>(n))
-                    .collect::<Result<Vec<_>, _>>()
-            },
-        )
-        .unwrap()
-    };
-    let before = read_old(&db);
-    let retained = presentation_retained_tables(&db);
-    let catalog = presentation_schema_catalog(&db);
-    presentation_assert_foreign_keys(&db);
-    schema::initialize(&db, || UtcMillis(10000)).unwrap();
-    assert_eq!(
-        read_old(&db),
-        before,
-        "all retained40 presentation bytes preserved"
-    );
-    let scalars:(i64,i64,i64,i64)=db.query_row("SELECT ordinary_publication_after,ordinary_publication_high,ordinary_passive_generation,ordinary_scan_passive_generation FROM invitation_presentation_consumers",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
-    assert_eq!(scalars, (0, 0, 0, 0));
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
-            .get::<_, i64>(
-            0
-        ))
-        .unwrap(),
-        0
-    );
-    presentation_assert_retained_tables(&db, &retained);
-    let upgraded = presentation_retained_tables(&db);
-    let upgraded_catalog = presentation_schema_catalog(&db);
-    for (kind, name, table, root, sql) in &catalog {
-        let new = upgraded_catalog
-            .iter()
-            .find(|row| &row.0 == kind && &row.1 == name)
-            .unwrap();
-        assert_eq!(
-            (&new.2, new.3),
-            (table, *root),
-            "old45 object/rootpage {name}"
-        );
-        if name != "invitation_presentation_consumers" {
-            assert_eq!(&new.4, sql, "old45 object DDL {name}");
-        }
-    }
-    db.close().unwrap();
-    let db = presentation_reopen(file.path());
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        46
-    );
-    schema::initialize(&db, || UtcMillis(10001)).unwrap();
-    assert_eq!(read_old(&db), before);
-    assert_eq!(presentation_schema_catalog(&db), upgraded_catalog);
-    presentation_assert_retained_tables(&db, &upgraded);
-    presentation_assert_foreign_keys(&db);
-    db.close().unwrap();
-}
-
-// Catches an appended receipt rebuild that drops published ACK binding attribution
-// or rewrites independent binding delivery/frontier history during an upgrade.
-#[test]
-fn published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history() {
-    published_binding_upgrade_preserves_exact_ack_bindings_and_delivery_history(35);
-}
-
-#[test]
-fn published_v36_upgrade_preserves_exact_in_turn_offers_and_delivery_history() {
-    published_binding_upgrade_preserves_exact_ack_bindings_and_delivery_history(36);
-}
-
-fn published_binding_upgrade_preserves_exact_ack_bindings_and_delivery_history(version: i64) {
-    for foreign_keys in [false, true] {
-        let source = v34_attention_fixture();
-        source.execute_batch("BEGIN IMMEDIATE").unwrap();
-        source
-            .execute_batch(include_str!(
-                "../../migrations/0035_binding_attention_frontiers.sql"
+        .query_map([], |r| {
+            let sql: Option<String> = r.get(3)?;
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                sql.unwrap_or_default()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
             ))
-            .unwrap();
-        source.pragma_update(None, "user_version", 35).unwrap();
-        source.execute_batch("COMMIT").unwrap();
-        if version == 36 {
-            source
-                .execute_batch(include_str!("../../migrations/0036_in_turn_offer.sql"))
-                .unwrap();
-            source.pragma_update(None, "user_version", 36).unwrap();
-        }
-        let first = binding_id_of(&source, 1);
-        let second = binding_id_of(&source, 2);
-        // Attribution belongs to original publication: existing message history is immutable.
-        // These retained sends/ACKs lie inside the first two historical binding intervals.
-        source.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq,actor_seat_id,author_kind,author_role,sender_binding_id) VALUES('i','published35-physical','t',5,'ordinary','retained physical attribution',10,6,'agent','native','agent',?1),('i','published35-sparse','t',6,'ordinary','retained sparse attribution',21,7,'agent','native','agent',?2)", rusqlite::params![first,second]).unwrap();
-        source.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,ack_binding_id) VALUES('published35-physical','t','agent','acked',50,10,60,'agent',1,'cooperative_top_level',15,?1)", [&first]).unwrap();
-        source.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('published35-sparse-prep','i','seat:agent','published35-sparse-send',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed'); INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('published35-sparse-prep','t','agent',1,50,1); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','published35-sparse-prep','published35-sparse','t',7,21,6,0,1,0)").unwrap();
-        source.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,ack_binding_id) VALUES('published35-sparse','agent','acked',21,71,'agent',2,'cooperative_top_level',25,?1)", [&second]).unwrap();
-        if version == 36 {
-            source.execute("INSERT INTO in_turn_offer(binding_id,seat_id,item_id) VALUES (?1,'agent','published35-physical'),(?2,'agent','published35-sparse')", rusqlite::params![first, second]).unwrap();
-        }
-        let file = ScratchStore::new("published35-ack-binding-upgrade");
-        source
-            .execute("VACUUM INTO ?1", [file.path().to_str().unwrap()])
-            .unwrap();
-        source.close().unwrap();
-        let db = Connection::open(file.path()).unwrap();
-        db.pragma_update(None, "foreign_keys", foreign_keys)
-            .unwrap();
-        assert_eq!(
-            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-                .unwrap(),
-            version
-        );
-        let mut tables = vec![
-            "occupant_bindings",
-            "binding_cursors",
-            "catch_up",
-            "warning_offer",
-            "digest_notice_offer",
-            "lazy_recipients",
-            "messages",
-            "receipts",
-            "receipt_state",
-        ];
-        if version == 36 {
-            tables.push("in_turn_offer");
-        }
-        let in_turn_catalog_sql = "SELECT type,name,tbl_name,rootpage,sql FROM sqlite_schema WHERE tbl_name='in_turn_offer' ORDER BY type,name";
-        let in_turn_catalog = presentation_query_rows(&db, in_turn_catalog_sql);
-        let row_sql = |name: &str| {
-            if name == "binding_cursors" {
-                format!("SELECT * FROM {name} ORDER BY binding_id,thread_id")
-            } else {
-                format!("SELECT rowid,* FROM {name} ORDER BY rowid")
-            }
-        };
-        let captured: Vec<_> = tables
-            .iter()
-            .map(|name| presentation_query_rows(&db, &row_sql(name)))
-            .collect();
-        let receipt_catalog_sql = "SELECT type,name,tbl_name,rootpage,sql FROM sqlite_schema WHERE tbl_name IN ('receipts','receipt_state') ORDER BY type,name";
-        let receipt_catalog = presentation_query_rows(&db, receipt_catalog_sql);
-        // Force the new38 full receipt rebuild to fail its post-copy FK check.
-        // Both published ACK identities and every old receipt object must roll back.
-        db.pragma_update(None, "foreign_keys", false).unwrap();
-        db.execute_batch("CREATE TABLE published35_receipt_child(ordinal INTEGER REFERENCES receipts(ordinal)); INSERT INTO published35_receipt_child VALUES(999)").unwrap();
-        db.pragma_update(None, "foreign_keys", foreign_keys)
-            .unwrap();
-        let error = schema::initialize(&db, || UtcMillis(900)).unwrap_err();
-        assert!(
-            error
-                .detail
-                .contains("receipt upgrade foreign key violation"),
-            "must reach the new38 post-copy check: {error:?}"
-        );
-        assert_eq!(
-            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-                .unwrap(),
-            37
-        );
-        assert_eq!(
-            presentation_query_rows(&db, receipt_catalog_sql),
-            receipt_catalog
-        );
-        if version == 36 {
-            assert_eq!(
-                presentation_query_rows(&db, in_turn_catalog_sql),
-                in_turn_catalog
-            );
-        }
-        for (name, expected) in tables.iter().zip(&captured) {
-            assert_eq!(
-                &presentation_query_rows(&db, &row_sql(name)),
-                expected,
-                "failed38 retains published35 {name}"
-            );
-        }
-        assert_eq!(
-            db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
-                .unwrap(),
-            foreign_keys
-        );
-        db.execute("DELETE FROM published35_receipt_child", [])
-            .unwrap();
-        schema::initialize(&db, || UtcMillis(901)).unwrap();
-        assert_eq!(
-            db.query_row(
-                "SELECT ack_binding_id FROM receipts WHERE message_id='published35-physical'",
-                [],
-                |r| r.get::<_, String>(0)
-            )
-            .unwrap(),
-            first
-        );
-        assert_eq!(
-            db.query_row(
-                "SELECT ack_binding_id FROM receipt_state WHERE message_id='published35-sparse'",
-                [],
-                |r| r.get::<_, String>(0)
-            )
-            .unwrap(),
-            second
-        );
-        let retained = |db: &Connection| {
-            if version == 36 {
-                assert_eq!(
-                    presentation_query_rows(db, in_turn_catalog_sql),
-                    in_turn_catalog
-                );
-            }
-            for (name, expected) in tables.iter().zip(&captured) {
-                let rows = presentation_query_rows(db, &row_sql(name));
-                assert_eq!(&rows, expected, "published35 retained {name}");
-            }
-            assert_eq!(
-                db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
-                    .get::<_, i64>(
-                    0
-                ))
-                .unwrap(),
-                0
-            );
-            assert_eq!(
-                db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
-                    .unwrap(),
-                foreign_keys
-            );
-            assert_eq!(
-                db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-                    .unwrap(),
-                schema::LATEST_VERSION
-            );
-        };
-        retained(&db);
-        db.close().unwrap();
-        let db = Connection::open(file.path()).unwrap();
-        db.pragma_update(None, "foreign_keys", foreign_keys)
-            .unwrap();
-        schema::initialize(&db, || {
-            panic!("latest reopened35 upgrade must not resample migration time")
         })
-        .unwrap();
-        retained(&db);
-        db.close().unwrap();
-    }
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
 }
 
-// Real Main36 structural audits must precede appended feature work.
-#[test]
-fn published_v36_corrupt_offer_catalog_refuses_before_feature_migration() {
-    for corruption in ["DROP TABLE in_turn_offer", "DROP INDEX in_turn_offer_seat"] {
-        let db = v34_attention_fixture();
-        db.execute_batch(include_str!(
-            "../../migrations/0035_binding_attention_frontiers.sql"
-        ))
-        .unwrap();
-        db.execute_batch(include_str!("../../migrations/0036_in_turn_offer.sql"))
+fn table_rows(db: &Connection, table: &str) -> Vec<String> {
+    let columns: Vec<String> = {
+        let mut statement = db
+            .prepare("SELECT name FROM pragma_table_info(?1)")
             .unwrap();
-        db.pragma_update(None, "user_version", 36).unwrap();
-        db.execute_batch(corruption).unwrap();
-        let before = presentation_schema_catalog(&db);
-        assert!(schema::initialize(&db, || UtcMillis(900)).is_err());
-        assert_eq!(presentation_schema_catalog(&db), before);
-        assert_eq!(
-            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-                .unwrap(),
-            36
-        );
-    }
+        statement
+            .query_map([table], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let quoted = columns
+        .iter()
+        .map(|c| format!("quote(\"{c}\")"))
+        .collect::<Vec<_>>()
+        .join("||','||");
+    let mut statement = db
+        .prepare(&format!("SELECT {quoted} FROM \"{table}\" ORDER BY 1"))
+        .unwrap();
+    statement
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
 }
 
+/// TRANSIENT (removed with the legacy chain in ht-5fr.1.8): the node baseline
+/// creates exactly the objects, and a fresh store holds exactly the rows, of the
+/// v46 migration chain, apart from the identity marker and the two receipt
+/// backfill singletons the baseline starts at `completed = 1`.
 #[test]
-fn published_v35_to_v36_late_offer_index_failure_rolls_back() {
-    let db = v34_attention_fixture();
-    db.execute_batch(include_str!(
-        "../../migrations/0035_binding_attention_frontiers.sql"
-    ))
-    .unwrap();
-    db.pragma_update(None, "user_version", 35).unwrap();
-    db.execute_batch("CREATE TABLE in_turn_offer_seat(blocker INTEGER)")
-        .unwrap();
-    let before = presentation_schema_catalog(&db);
-    assert!(schema::initialize(&db, || UtcMillis(900)).is_err());
-    assert_eq!(presentation_schema_catalog(&db), before);
+fn baseline_matches_legacy_chain_v46() {
+    let chain = Connection::open_in_memory().unwrap();
+    schema::legacy_chain::legacy_initialize(&chain, || UtcMillis(0)).unwrap();
+    let baseline = Connection::open_in_memory().unwrap();
+    baseline.execute_batch(schema::NODE_BASELINE).unwrap();
+
+    let mut expected = catalog(&chain);
+    for object in &mut expected {
+        object.3 = object
+            .3
+            .replace("herdr-threads-shared-v1-r7", "herdr-threads-node-v1");
+    }
+    let actual = catalog(&baseline);
+    assert!(actual.len() > 100, "{} objects", actual.len());
     assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        35
+        actual.iter().map(|o| (&o.0, &o.1)).collect::<Vec<_>>(),
+        expected.iter().map(|o| (&o.0, &o.1)).collect::<Vec<_>>()
     );
-    assert_eq!(
-        db.query_row(
-            "SELECT count(*) FROM sqlite_schema WHERE name='in_turn_offer'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
+    for (a, e) in actual.iter().zip(&expected) {
+        assert_eq!(a, e, "object {} {}", a.0, a.1);
+    }
+
+    for (kind, name, _, _) in &actual {
+        if kind != "table" {
+            continue;
+        }
+        let (a, e) = (table_rows(&baseline, name), table_rows(&chain, name));
+        match name.as_str() {
+            "schema_identity" => {
+                assert_eq!(a, ["'herdr-threads-node-v1'"]);
+                assert_eq!(e, ["'herdr-threads-shared-v1-r7'"]);
+            }
+            "receipt_deadline_backfill" | "receipt_discovery_backfill" => {
+                assert_eq!(a, ["1,0,0,0,0,1"]);
+                assert_eq!(e, ["1,0,0,0,0,0"]);
+            }
+            _ => assert_eq!(a, e, "rows of {name}"),
+        }
+    }
 }

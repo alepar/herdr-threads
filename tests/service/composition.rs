@@ -886,7 +886,7 @@ fn elected_service_fixture(custom_settings: bool) {
         INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms)
         VALUES ('inv','t','s2',1,'pending',0,1,100,100);").unwrap();
     if custom_settings {
-        db.execute_batch("CREATE TRIGGER health_due_failure BEFORE INSERT ON messages WHEN NEW.kind='warn' BEGIN SELECT RAISE(ABORT,'health fixture due failure'); END;").unwrap();
+        db.execute_batch("CREATE TRIGGER ht_test_fault_health_due_failure BEFORE INSERT ON messages WHEN NEW.kind='warn' BEGIN SELECT RAISE(ABORT,'health fixture due failure'); END;").unwrap();
     }
     drop(db);
     if custom_settings {
@@ -991,7 +991,8 @@ fn elected_service_fixture(custom_settings: bool) {
             std::thread::sleep(Duration::from_millis(10));
         }
         let db = rusqlite::Connection::open(&paths.database_path).unwrap();
-        db.execute_batch("DROP TRIGGER health_due_failure").unwrap();
+        db.execute_batch("DROP TRIGGER ht_test_fault_health_due_failure")
+            .unwrap();
     }
     let warning_deadline =
         Instant::now() + Duration::from_secs(if custom_settings { 8 } else { 3 });

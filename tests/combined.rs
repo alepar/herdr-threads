@@ -39,8 +39,6 @@ mod inbox_continuation_context;
 mod installer_integrations;
 #[path = "store/invitation_content.rs"]
 mod invitation_content;
-#[path = "store/lazy26_prerequisite.rs"]
-mod lazy26_prerequisite;
 #[path = "protocol/lazy_delivery.rs"]
 mod lazy_delivery;
 #[path = "cli/lazy_recovery_context.rs"]

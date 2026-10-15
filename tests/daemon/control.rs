@@ -457,11 +457,12 @@ fn production_retirement_failure_degrades_health_and_recovery_clears_it() {
     use crate::protocol::results::CleanupState;
     let (path, instance, job) = retirement_fixture();
     // Real SQLite abort inside a cleanup unit; last_error is never seeded.
+    let (service, store) =
+        retirement_control(&path, &instance, Uuid::new_v4(), Cancellation::default());
+    // Injected after the store opened: the node schema audit refuses an unknown trigger.
     let db = rusqlite::Connection::open(&path).unwrap();
     db.execute_batch("CREATE TRIGGER fail_retire_receipt BEFORE UPDATE ON receipts WHEN NEW.state='recipient_retired' BEGIN SELECT RAISE(ABORT,'private receipt storage failure'); END;").unwrap();
     drop(db);
-    let (service, store) =
-        retirement_control(&path, &instance, Uuid::new_v4(), Cancellation::default());
     let budget = CallBudget {
         deadline: MonoInstant(1_000),
         cancellation: Cancellation::default(),
@@ -603,9 +604,6 @@ fn production_health_builder_redacts_retirement_failure_and_clears_on_partial_pr
     use crate::service::workers::WorkerStatus;
     use std::sync::{Arc, atomic::Ordering};
     let (path, instance, job) = retirement_fixture();
-    let db = rusqlite::Connection::open(&path).unwrap();
-    db.execute_batch("CREATE TRIGGER fail_retire_receipt BEFORE UPDATE ON receipts WHEN NEW.state='recipient_retired' BEGIN SELECT RAISE(ABORT,'private receipt storage failure'); END;").unwrap();
-    drop(db);
     let clock = Arc::new(DriverClock(std::sync::atomic::AtomicU64::new(10_000)));
     let store = Arc::new(
         crate::store::SqliteStore::new(
@@ -615,6 +613,10 @@ fn production_health_builder_redacts_retirement_failure_and_clears_on_partial_pr
         )
         .unwrap(),
     );
+    // Injected after the store opened: the node schema audit refuses an unknown trigger.
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_retire_receipt BEFORE UPDATE ON receipts WHEN NEW.state='recipient_retired' BEGIN SELECT RAISE(ABORT,'private receipt storage failure'); END;").unwrap();
+    drop(db);
     let status = Arc::new(WorkerStatus::default());
     let instance_id = Uuid::parse_str(&instance).unwrap();
     let boot = Uuid::new_v4();

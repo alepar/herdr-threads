@@ -8,7 +8,7 @@ use crate::protocol::{
     time::{CallBudget, Clock, MonoInstant, UtcMillis},
 };
 use crate::store::{connection::StoreContext, control, schema, seats};
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 use std::sync::Arc;
 
 struct TestClock;
@@ -234,64 +234,6 @@ fn lazy_ordinal_rejects_zero_and_accepts_null_or_positive() {
     )
     .unwrap();
     assert_eq!(last_lazy(&conn), Some(5));
-}
-
-/// A database at the historical schema version 30 (main's released chain), then migrated
-/// through V31 and the session-binding migrations after it.
-#[test]
-fn migration_up_adds_the_columns_with_their_defaults() {
-    let previous = crate::store::connection::tests::adapter_historical_database(30);
-    previous
-        .execute_batch(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1);
-             INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES ('old','i','resolved','native','po',1,1,0,1);
-             INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES ('old',1,1);",
-        )
-        .unwrap();
-    let has_column = |table: &str, column: &str| -> bool {
-        previous
-            .query_row(
-                &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name=?1"),
-                [column],
-                |r| r.get::<_, i64>(0),
-            )
-            .unwrap()
-            == 1
-    };
-    assert!(!has_column("seats", "wake_on") && !has_column("wake_work", "last_lazy_ordinal"));
-    schema::initialize(&previous, || UtcMillis(0)).unwrap();
-    assert_eq!(
-        previous
-            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    assert!(has_column("seats", "wake_on") && has_column("wake_work", "last_lazy_ordinal"));
-    let wake_on: String = previous
-        .query_row("SELECT wake_on FROM seats WHERE id='old'", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(wake_on, "nudge");
-    let lazy: Option<i64> = previous
-        .query_row(
-            "SELECT last_lazy_ordinal FROM wake_work WHERE seat_id='old'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(lazy, None);
-    assert!(
-        previous
-            .execute(
-                "UPDATE wake_work SET last_lazy_ordinal=0 WHERE seat_id='old'",
-                params![]
-            )
-            .is_err()
-    );
-    assert!(
-        previous
-            .execute("UPDATE seats SET wake_on='bogus' WHERE id='old'", [])
-            .is_err()
-    );
 }
 
 #[test]

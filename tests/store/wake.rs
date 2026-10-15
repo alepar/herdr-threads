@@ -385,9 +385,9 @@ fn old_boot_recovery_is_exact_preserves_history_and_cannot_clear_successor() {
     assert!(StorePort::recover_wake_reservation(&reopened, false_owner, &budget()).is_err());
     let db = reopened.context.open_writer().unwrap();
     db.execute("CREATE TRIGGER fail_recovery BEFORE UPDATE ON wake_work BEGIN SELECT RAISE(ABORT,'recovery fault'); END", []).unwrap();
-    drop(db);
+    // This connection stays open: the fault trigger is not part of the node schema, so a
+    // fresh writer open would refuse the store until the trigger is dropped.
     assert!(StorePort::recover_wake_reservation(&reopened, request.clone(), &budget()).is_err());
-    let db = reopened.context.open_writer().unwrap();
     let still_active: String = db
         .query_row(
             "SELECT reservation_id FROM wake_work WHERE seat_id='s'",
