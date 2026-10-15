@@ -24,6 +24,7 @@ use herdr_threads::store::journal;
 use herdr_threads::store::materialize::{FactRoute, HELD_KINDS};
 use herdr_threads::store::{SqliteStore, StoreSettings, seats};
 use herdr_threads::sync::EntityKey;
+use herdr_threads::sync::facts::membership::{MembershipJoined, MembershipLeft, MembershipPayload};
 use herdr_threads::sync::facts::payload::{ReferencedSeats, SeatKind};
 use herdr_threads::sync::facts::seat::{
     RetireReason, SeatCreated, SeatCreatedPayload, SeatRetired, SeatRetiredPayload,
@@ -325,19 +326,11 @@ macro_rules! test_kind {
 }
 
 test_kind!(Settled, "receipt.settled");
-test_kind!(Joined, "membership.joined");
-test_kind!(Left, "membership.left");
 test_kind!(Answered, "invitation.answered");
 test_kind!(Free, "test.free");
 
 pub fn registry() -> &'static FactRegistry {
-    FactRegistry::builtins_plus(|b| {
-        b.with::<Settled>()
-            .with::<Joined>()
-            .with::<Left>()
-            .with::<Answered>()
-            .with::<Free>()
-    })
+    FactRegistry::builtins_plus(|b| b.with::<Settled>().with::<Answered>().with::<Free>())
 }
 
 fn refs(seats: &[&SeatId]) -> Refs {
@@ -672,14 +665,38 @@ pub fn hold_off(node: &Node) {
     );
 }
 
-/// Emits each held kind for `payload` on the journal route.
-fn emit_held(node: &Node, payload: &Refs) -> Vec<Result<bool, ApiError>> {
+/// Emits the real membership fact `K` for `seat` in `thread` on the journal
+/// route; returns whether it authored an entry.
+fn emit_membership<K: FactKind<Payload = MembershipPayload>>(
+    node: &Node,
+    thread: &ThreadId,
+    seat: &SeatId,
+    n: u64,
+) -> Result<bool, ApiError> {
+    let payload = MembershipPayload {
+        thread: thread.clone(),
+        seat: seat.clone(),
+        n,
+        at: 1,
+    };
+    node.run(|tx, d| {
+        FactRoute::Journal
+            .emit::<K>(tx, node.ctx(), d, &payload, None, |_, _, _| Ok(()))
+            .map(|authored| authored.is_some())
+    })
+}
+
+/// Emits each held kind for `payload` on the journal route. The membership
+/// kinds are the real ones, in `thread` (which only the success cases need to
+/// exist).
+fn emit_held(node: &Node, thread: &ThreadId, payload: &Refs) -> Vec<Result<bool, ApiError>> {
+    let seat = &payload.seats[0];
     vec![
         emit::<Settled>(node, FactRoute::Journal, payload),
-        emit::<Joined>(node, FactRoute::Journal, payload),
-        emit::<Left>(node, FactRoute::Journal, payload),
+        emit_membership::<MembershipJoined>(node, thread, seat, 1),
+        emit_membership::<MembershipLeft>(node, thread, seat, 2),
         emit::<Answered>(node, FactRoute::Journal, payload),
-        emit_retired(node, &payload.seats[0]),
+        emit_retired(node, seat),
     ]
 }
 
@@ -705,7 +722,7 @@ fn held_kinds_refused_while_hold_active() {
     node.add_local_seat(&local);
     hold_on(&node);
     let before = node.journal().len();
-    for result in emit_held(&node, &refs(&[&local])) {
+    for result in emit_held(&node, &ThreadId::new("tNoThread001"), &refs(&[&local])) {
         let error = result.unwrap_err();
         assert_eq!(error.code, ErrorCode::ServiceBusy, "retryable");
         assert_eq!(error.detail, "own history catching up");
@@ -724,15 +741,21 @@ fn remote_seat_seat_created_non_held_and_local_only_unaffected() {
     node.add_local_seat(&local);
     node.add_remote_seat(&remote);
     hold_on(&node);
-    // A held kind for a remote seat only. `seat.retired` is not refused by the
-    // hold either; its one failure is the parked dependency (the fixture row has
-    // no `seat.created` fact), not "own history catching up".
-    let mut results = emit_held(&node, &refs(&[&remote]));
+    // A held kind for a remote seat only. None is refused by the hold: the
+    // membership kinds and `seat.retired` fail only on the parked dependency
+    // (no fact created the thread or the fixture seat), not "own history
+    // catching up".
+    let mut results = emit_held(&node, &ThreadId::new("tNoThread001"), &refs(&[&remote]));
     let retired = results.pop().unwrap().unwrap_err();
     assert_eq!(retired.code, ErrorCode::Conflict);
     assert!(retired.detail.contains("not applicable"), "{retired:?}");
-    for result in results {
-        result.unwrap();
+    let [settled, joined, left, answered]: [_; 4] = results.try_into().unwrap();
+    settled.unwrap();
+    answered.unwrap();
+    for parked in [joined, left] {
+        let error = parked.unwrap_err();
+        assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+        assert!(error.detail.contains("not applicable"), "{error:?}");
     }
     // seat.created for the local seat.
     node.run(|tx, d| {
@@ -771,7 +794,8 @@ fn held_authoring_succeeds_after_clear_or_cap() {
     hold_on(&node);
     assert!(emit::<Settled>(&node, FactRoute::Journal, &refs(&[&local])).is_err());
     hold_off(&node);
-    for result in emit_held(&node, &refs(&[&local])) {
+    let thread = node.create_thread(&local, "held", None).unwrap();
+    for result in emit_held(&node, &thread, &refs(&[&local])) {
         result.unwrap();
     }
     // The flag stays set, the 5-minute cap passes.

@@ -21,10 +21,14 @@ mod canary_manifest_writer;
 mod channel_archival;
 #[path = "contracts.rs"]
 mod contracts;
+#[path = "store/fact_convergence_membership.rs"]
+mod fact_convergence_membership;
 #[path = "store/fact_convergence_seat.rs"]
 mod fact_convergence_seat;
 #[path = "store/fact_convergence_thread.rs"]
 mod fact_convergence_thread;
+#[path = "sync/facts_membership.rs"]
+mod facts_membership;
 #[path = "sync/facts_seat.rs"]
 mod facts_seat;
 #[path = "sync/facts_thread.rs"]

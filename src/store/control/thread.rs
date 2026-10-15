@@ -14,7 +14,7 @@
 //! - Role: a new register field is one arm in [`materialize_register`].
 
 use super::{
-    bump_member_directory, cooperative_payload_hash, decide_accountable, joined_in_thread,
+    Transition, author_membership, cooperative_payload_hash, decide_accountable, joined_in_thread,
     validate_actor,
 };
 use crate::protocol::authority::{MutationPermit, ObligationRef};
@@ -26,6 +26,7 @@ use crate::store::connection::{DecisionInstant, StoreContext, api_error, store_e
 use crate::store::materialize::{FactRoute, MaterializeInput, local_only};
 use crate::store::schema::{self, EventInput};
 use crate::store::thread_registers::{self, RegisterOutcome};
+use crate::sync::facts::membership::MembershipPayload;
 use crate::sync::facts::payload::RegisterField;
 use crate::sync::facts::thread::{
     ThreadCreated, ThreadCreatedPayload, ThreadDirectPayload, ThreadRegister, ThreadRegisterPayload,
@@ -45,7 +46,7 @@ pub struct NewThread<'a> {
     pub journaled: bool,
 }
 
-fn local_instance(tx: &Transaction<'_>) -> Result<String, ApiError> {
+pub(super) fn local_instance(tx: &Transaction<'_>) -> Result<String, ApiError> {
     tx.query_row("SELECT id FROM local_node", [], |r| r.get(0))
         .map_err(store_error)
 }
@@ -54,8 +55,8 @@ fn local_instance(tx: &Transaction<'_>) -> Result<String, ApiError> {
 /// thread if absent, seeds the topic and name registers from the entry's
 /// `(hlc, node)`, appends the `create:<thread>` event and bumps the directory
 /// filter. A thread that exists already is a no-op (a re-issue copies the
-/// payload, and a fresh ID cannot collide). The creator's membership is not
-/// written here.
+/// payload, and a fresh ID cannot collide). The creator's membership is the next fact
+/// (`membership.joined`).
 pub fn materialize_thread_created(
     tx: &Transaction<'_>,
     m: &MaterializeInput<'_>,
@@ -437,7 +438,7 @@ pub(crate) fn author_register(
 
 /// Whether some journal entry created the thread's key (`thread.created` or
 /// `thread.direct`).
-fn has_creating_fact(tx: &Transaction<'_>, thread: &ThreadId) -> Result<bool, ApiError> {
+pub(super) fn has_creating_fact(tx: &Transaction<'_>, thread: &ThreadId) -> Result<bool, ApiError> {
     tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM journal WHERE creates=?1)",
         [thread.as_str()],
@@ -758,7 +759,7 @@ fn create_thread_impl(
             Ok(())
         },
         |tx, decision| {
-            decide_accountable(
+            let actor = decide_accountable(
                 context,
                 tx,
                 decision,
@@ -792,8 +793,8 @@ fn create_thread_impl(
                 &[("threads", "id", prefix::THREAD)],
             )?);
             // The creation fact inserts the thread, seeds its registers and
-            // appends the `create:` event; the creator's membership (still a
-            // local write) joins at that event's position so it sees it.
+            // appends the `create:` event; the creator's membership is the
+            // next fact.
             let created = ThreadCreatedPayload {
                 thread: thread.clone(),
                 topic: command.topic.clone(),
@@ -834,13 +835,6 @@ fn create_thread_impl(
                     },
                 )?;
             }
-            let joined_seq: i64 = tx
-                .query_row(
-                    "SELECT decision_seq FROM messages WHERE event_key=?1",
-                    [format!("create:{}", thread.as_str())],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?;
             // Attach protection in this exact CREATE transaction. Historical
             // pre-fence CREATE results are reconciled by Begin/import instead.
             if crate::store::handoff::installed(tx)? {
@@ -863,15 +857,25 @@ fn create_thread_impl(
                     )?;
                 }
             }
-            tx.execute("INSERT INTO memberships(thread_id, seat_id, state, joined_at, home_transition, last_joined_n) VALUES (?1,?2,'joined',?3,1,1)",
-                params![thread.as_str(), seat.as_str(), decision.utc.0]).map_err(store_error)?;
-            tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,1,?3)",
-                params![thread.as_str(),seat.as_str(),joined_seq]).map_err(store_error)?;
-            crate::store::read_cursors::init_for_join(tx, &seat, &thread)?;
-            schema::bump_membership_revision(tx, &thread)?;
-            schema::bump_filter_revision(tx, &instance, "directory", "all")?;
-            bump_member_directory(tx, &instance, &seat)?;
-            schema::bump_filter_revision(tx, &instance, "inbox", seat.as_str())?;
+            // The creator's membership is the next fact (ordinal 1).
+            crate::store::attribution::stage(
+                tx,
+                &crate::store::attribution::join_key(thread.as_str(), seat.as_str(), 1),
+                &actor,
+                &actor.observation(decision.utc.0),
+            )?;
+            author_membership(
+                tx,
+                context,
+                decision,
+                Transition::Joined,
+                &MembershipPayload {
+                    thread: thread.clone(),
+                    seat: seat.clone(),
+                    n: 1,
+                    at: decision.utc.0,
+                },
+            )?;
             Ok(CommandResult::ThreadCreated(thread))
         },
     )
