@@ -281,7 +281,8 @@ mod tests {
         }
     }
     fn scratch(tag: &str) -> Scratch {
-        let dir = std::env::temp_dir().join(format!("ht-{tag}-{}", uuid::Uuid::new_v4()));
+        let dir =
+            crate::test_support::scratch::temp_path(format!("ht-{tag}-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         Scratch(dir)
     }

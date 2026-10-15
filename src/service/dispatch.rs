@@ -1778,7 +1778,8 @@ mod operator_tests {
             commands::{ContinuityCheckIn, ResolveSeat},
             ids::{ExecutionId, NativeSessionId},
         };
-        let path = std::env::temp_dir().join(format!("no-host-{}.db", uuid::Uuid::new_v4()));
+        let path =
+            crate::test_support::scratch::temp_path(format!("no-host-{}.db", uuid::Uuid::new_v4()));
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let store = Arc::new(
             SqliteStore::new(

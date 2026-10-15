@@ -394,7 +394,10 @@ impl Node {
     /// `incarnation_seed`: the same identity with another value is the same
     /// node after a wipe (a new incarnation).
     fn with_incarnations(seed: u8, incarnation_seed: u64, registry: &'static FactRegistry) -> Self {
-        let path = std::env::temp_dir().join(format!("ht-apply-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "ht-apply-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let clock = Arc::new(FixedClock::new());
         let (ctx, conn, report) =
             Self::open_at(&path, seed, incarnation_seed, registry, Arc::clone(&clock));
@@ -1011,7 +1014,8 @@ fn sqlite_store_apply_pending_is_apply_pass() {
 
     let mut a = Node::new(46, base());
     a.author::<PutKind>(&put("p1"));
-    let b_path = std::env::temp_dir().join(format!("ht-apply-{}.db", uuid::Uuid::new_v4()));
+    let b_path =
+        crate::test_support::scratch::temp_path(format!("ht-apply-{}.db", uuid::Uuid::new_v4()));
     let identity = Arc::new(NodeIdentity::from_seed([47; 32]));
     let ctx = StoreContext::new(b_path.clone(), Arc::new(FixedClock::new()))
         .with_node_seed(crate::test_support::node_seed_for(identity.uuid()));

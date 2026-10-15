@@ -433,7 +433,8 @@ mod tests {
         }
     }
     fn scratch() -> Scratch {
-        let dir = std::env::temp_dir().join(format!("ht-paths-{}", uuid::Uuid::new_v4()));
+        let dir =
+            crate::test_support::scratch::temp_path(format!("ht-paths-{}", uuid::Uuid::new_v4()));
         fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
         Scratch(dir)
     }

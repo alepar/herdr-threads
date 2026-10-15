@@ -60,7 +60,10 @@ struct Store {
 
 impl Store {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("ht-materialize-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "ht-materialize-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let identity = Arc::new(NodeIdentity::from_seed([90; 32]));
         let node = identity.uuid();
         let ctx = StoreContext::new(path.clone(), Arc::new(FixedClock))

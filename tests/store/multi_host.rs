@@ -64,8 +64,10 @@ fn budget() -> CallBudget {
 }
 
 fn two_hosts() -> TwoHosts {
-    let directory =
-        Directory(std::env::temp_dir().join(format!("multi-host-{}", uuid::Uuid::new_v4())));
+    let directory = Directory(herdr_threads::test_support::scratch::temp_path(format!(
+        "multi-host-{}",
+        uuid::Uuid::new_v4()
+    )));
     std::fs::create_dir(&directory.0).unwrap();
     let path = directory.0.join("store.db");
     let context = StoreContext::new(path.clone(), Arc::new(Fixed));

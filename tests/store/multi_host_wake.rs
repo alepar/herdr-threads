@@ -95,8 +95,10 @@ fn due_seat(db: &Connection, seat: &str, socket: &str, pane: &str) {
 }
 
 fn two_hosts() -> TwoHosts {
-    let directory =
-        Directory(std::env::temp_dir().join(format!("multi-host-wake-{}", uuid::Uuid::new_v4())));
+    let directory = Directory(herdr_threads::test_support::scratch::temp_path(format!(
+        "multi-host-wake-{}",
+        uuid::Uuid::new_v4()
+    )));
     std::fs::create_dir(&directory.0).unwrap();
     let path = directory.0.join("store.db");
     let settings = StoreSettings {

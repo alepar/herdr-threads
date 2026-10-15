@@ -4166,9 +4166,10 @@ mod cross_server_continuity {
     /// Two attached servers (`h1` the fixture host), `s1` unresolved on `h1` with a
     /// `claude` binding of `SESSION`, and a free target `t` freshly observed on `h2` only.
     fn servers() -> Servers {
-        let directory = PrivateDirectory(
-            std::env::temp_dir().join(format!("c1-cross-server-{}", uuid::Uuid::new_v4())),
-        );
+        let directory = PrivateDirectory(crate::test_support::scratch::temp_path(format!(
+            "c1-cross-server-{}",
+            uuid::Uuid::new_v4()
+        )));
         std::fs::create_dir(&directory.0).unwrap();
         let clock = Arc::new(TestClock(AtomicU64::new(100)));
         let context = StoreContext::new(directory.0.join("store.db"), clock).with_test_host();

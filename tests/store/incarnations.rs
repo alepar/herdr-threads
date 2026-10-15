@@ -37,7 +37,10 @@ struct Store {
 impl Store {
     fn new() -> Self {
         Self {
-            path: std::env::temp_dir().join(format!("ht-incarnations-{}.db", uuid::Uuid::new_v4())),
+            path: crate::test_support::scratch::temp_path(format!(
+                "ht-incarnations-{}.db",
+                uuid::Uuid::new_v4()
+            )),
         }
     }
 }

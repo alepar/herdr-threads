@@ -1486,7 +1486,10 @@ fn store_only_daemon_serves_without_host_workers() {
         protocol::ids::OperationId,
         service::kicks::Lane,
     };
-    let root = std::env::temp_dir().join(format!("herdr-store-only-{}", Uuid::new_v4()));
+    let root = herdr_threads::test_support::scratch::temp_path(format!(
+        "herdr-store-only-{}",
+        Uuid::new_v4()
+    ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     struct Root(std::path::PathBuf);
     impl Drop for Root {

@@ -118,7 +118,10 @@ impl Node {
     }
 
     fn with_registry(n: u32, registry: &'static FactRegistry) -> Self {
-        let path = std::env::temp_dir().join(format!("ht-node-facts-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "ht-node-facts-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let identity = Arc::new(NodeIdentity::from_seed(seed_bytes(n)));
         let ctx = StoreContext::new(path.clone(), Arc::new(FixedClock))
             .with_node_seed(crate::test_support::node_seed_for(identity.uuid()));
@@ -224,7 +227,7 @@ impl Drop for Node {
 }
 
 fn json_path() -> PathBuf {
-    std::env::temp_dir().join(format!("ht-node-facts-{}.json", uuid::Uuid::new_v4()))
+    crate::test_support::scratch::temp_path(format!("ht-node-facts-{}.json", uuid::Uuid::new_v4()))
 }
 
 struct RemoveOnDrop(PathBuf);
