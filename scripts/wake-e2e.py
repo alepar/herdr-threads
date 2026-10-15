@@ -173,6 +173,10 @@ LINUX_DIALOG = re.compile(r"Trust this folder\?|trust (the files in )?this folde
                           r"Do you want to proceed\?|Would you like to run|"
                           r"Choose the text style that looks best|Quick safety check: Is this a project|"
                           r"Do you want to use this API key\?|Detected a custom API key", re.I)
+# A notice Claude Code (2.1.301) raises over the composer between turns, not at startup: while it is up, every
+# turn the plugin submits (a wake) or the driver prompts is swallowed. The driver cancels it (Esc) whenever it
+# waits for a settled recipient; it is Claude's onboarding UI, not a herdr-threads outcome.
+HARNESS_NOTICE = re.compile(r"Teach auto mode about your environment\?")
 LINUX_LOGIN = re.compile(r"Not logged in|Please run /login|Select login method")
 HARNESS_MODES = ("macos", "linux")
 CODEX_SANDBOXED_ARGS = "--approve-for-me"
@@ -919,6 +923,15 @@ class Recipient:
             return data["raw"]
         return self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
 
+    def dismiss_notice(self):
+        """Cancel Claude's between-turn notice (HARNESS_NOTICE) when it covers the composer; True when one was."""
+        visible = self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
+        if not HARNESS_NOTICE.search(visible):
+            return False
+        self.run.herdr("agent", "send-keys", self.pane, "esc", check=False)
+        time.sleep(1.0)
+        return True
+
     def wait_idle(self, timeout=240):
         end = time.time() + timeout
         while time.time() < end:
@@ -926,6 +939,8 @@ class Recipient:
             if s == "blocked":
                 raise RuntimeError(f"{self.name} is blocked at a dialog: {self.tail()}")
             if s in IDLE:
+                if self.dismiss_notice():
+                    continue
                 time.sleep(1.0)
                 if self.status() in IDLE:
                     return

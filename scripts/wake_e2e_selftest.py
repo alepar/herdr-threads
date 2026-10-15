@@ -1520,6 +1520,14 @@ class StartupScreens(unittest.TestCase):
     def screen(self, name):
         return (FIXTURES / name).read_text()
 
+    def test_claude_between_turn_notice_is_dismissed_not_refused(self):
+        # Claude Code 2.1.301 raises it over the composer after a turn (captured in the v1.0.1 run): the driver
+        # cancels it while waiting for a settled recipient; it is not a startup dialog and no composer matches it
+        notice = self.screen("claude-auto-mode-notice.txt")
+        self.assertTrue(W.HARNESS_NOTICE.search(notice))
+        for name in ("claude-composer-api-key.txt", "claude-composer-oauth-token.txt", "codex-composer-bypass.txt"):
+            self.assertFalse(W.HARNESS_NOTICE.search(self.screen(name)), name)
+
     def test_claude_first_run_screens_are_refused(self):
         # the theme picker and the login screen report `idle`: only the screen text can stop the driver
         for name, status, why in (("claude-theme-picker.txt", "idle", "startup dialog"),

@@ -96,7 +96,9 @@ def main() -> int:
         created = herdr_cli("workspace", "create", "--label", "wake-e2e-control", "--cwd", str(ROOT), "--no-focus")
         pane = created["result"]["root_pane"]["pane_id"]
         log, rc = root / "wake-e2e.log", root / "wake-e2e.rc"
-        command = (f"cd {shlex.quote(str(ROOT))} && python3 scripts/wake-e2e.py {shlex.join(e2e_args)} "
+        # The pane's login shell rc can put another `herdr` ahead of this release's: set PATH in the command.
+        command = (f"cd {shlex.quote(str(ROOT))} && PATH={shlex.quote(str(root / 'bin'))}:\"$PATH\" "
+                   f"python3 scripts/wake-e2e.py {shlex.join(e2e_args)} "
                    f"> {shlex.quote(str(log))} 2>&1; echo $? > {shlex.quote(str(rc))}")
         herdr_cli("pane", "run", pane, command)
         deadline, shown = time.time() + TIMEOUT_S, 0

@@ -1,0 +1,15 @@
+› Prompt from the herdr-threads plugin
+❯ herdr-threads: wake up
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Teach auto mode about your environment?
+
+   Claude Code reads this project, your recent Claude sessions, and optionally your shell history and other
+   repositories. Claude analyzes this data and customizes auto mode to make better decisions.
+
+     How you use Claude here     Mixed
+   ❯ Also scan shell history     false
+     Also scan your other repos  false
+
+     Continue
+
+   ←/→ to change · Enter to continue · Esc to cancel
