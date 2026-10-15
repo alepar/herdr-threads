@@ -131,6 +131,9 @@ pub struct SqliteStore {
     kick_sink: Mutex<Option<KickSink>>,
     #[cfg(any(test, feature = "test-support"))]
     kick_pause: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Passive WAL checkpoints run through `checkpoint_passive`.
+    #[cfg(any(test, feature = "test-support"))]
+    checkpoints: std::sync::atomic::AtomicU64,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -343,14 +346,21 @@ impl SqliteStore {
             kick_sink: Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
             kick_pause: Mutex::new(None),
+            #[cfg(any(test, feature = "test-support"))]
+            checkpoints: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
-    /// Test hook: the store's connection context (to attach a host after the
-    /// store has started).
-    #[cfg(any(test, feature = "test-support"))]
+    /// The store's connection context (the daemon's post-commit identity
+    /// update reads through it; tests attach a host after the store started).
     pub fn context(&self) -> &StoreContext {
         &self.context
+    }
+
+    /// Test hook: how many passive WAL checkpoints `checkpoint_passive` ran.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn checkpoints_run(&self) -> u64 {
+        self.checkpoints.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Replaces the lane registry commits kick through. The daemon passes the

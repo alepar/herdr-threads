@@ -124,6 +124,12 @@ pub struct SyncState {
     pub(crate) incarnation_rng: std::sync::Mutex<XorShift>,
     /// When (UTC ms) the hourly skew line of each log was last written.
     pub(crate) skew_logged: std::sync::Mutex<std::collections::HashMap<crate::sync::LogKey, i64>>,
+    /// Set when entries may be waiting to apply (startup, an ingest that stored
+    /// a pending row, an apply pass that hit its limit); cleared by the Apply
+    /// lane before each kicked pass. Authoring leaves it clear: it applies
+    /// inline, so a lane kick it causes finds nothing to do and takes no
+    /// writer turn.
+    pub(crate) apply_hint: AtomicBool,
 }
 
 impl SyncState {
@@ -136,6 +142,16 @@ impl SyncState {
     /// `None`.
     pub fn branch_walk_bound(&self) -> u64 {
         self.branch_walk_bound.load(Ordering::Relaxed)
+    }
+
+    /// Marks entries as possibly waiting to apply.
+    pub fn set_apply_hint(&self) {
+        self.apply_hint.store(true, Ordering::Release);
+    }
+
+    /// Clears the hint and returns whether it was set.
+    pub fn take_apply_hint(&self) -> bool {
+        self.apply_hint.swap(false, Ordering::AcqRel)
     }
 }
 
