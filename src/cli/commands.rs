@@ -1181,6 +1181,12 @@ struct InviteArgs {
     /// Mark this as an explicit operator invitation.
     #[arg(long)]
     operator: bool,
+    /// Removed: invitations always confirm.
+    #[arg(long, hide = true)]
+    lazy: bool,
+    /// Removed: invitations always require acceptance.
+    #[arg(long = "require-ack", hide = true)]
+    require_ack: bool,
 }
 #[derive(Args)]
 struct SendArgs {
@@ -1453,6 +1459,10 @@ struct HandoffArgs {
     /// Read the complete durable instructions from standard input.
     #[arg(long)]
     stdin: bool,
+    /// Removed: handoff invitations always require acceptance. Declared last so the visible
+    /// options keep their help order (clap numbers display order by declaration).
+    #[arg(long, hide = true)]
+    require_invite_ack: bool,
 }
 
 #[derive(Args)]
@@ -1648,6 +1658,23 @@ fn harness_arg(
 
 fn invalid(detail: impl Into<String>) -> ApiError {
     ApiError::invalid_request(detail)
+}
+
+/// Flags removed by priority delivery (ht-yha.61): still parsed (hidden) and refused with what replaced them,
+/// like `send --lazy`, before the selector pass, any body read or any side effect.
+fn refuse_removed_flags(command: &Top) -> Result<(), ApiError> {
+    match command {
+        Top::Invite(args) if args.lazy => Err(invalid(
+            "--lazy was removed: invitations always confirm (priority 0, deadline, wake); omit it",
+        )),
+        Top::Invite(args) if args.require_ack => Err(invalid(
+            "--require-ack was removed: invitations always require acceptance; omit it",
+        )),
+        Top::Handoff(args) if args.require_invite_ack => Err(invalid(
+            "--require-invite-ack was removed: handoff invitations always require acceptance; omit it",
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// The send flags resolved to a delivery priority (D3/D4); runs before any body is read.
@@ -2059,6 +2086,7 @@ fn parse_cli_in_registry(
         }),
         command => command,
     };
+    refuse_removed_flags(&cli.command)?;
     let cooperative_selector =
         cli.cooperative_target
             .as_ref()

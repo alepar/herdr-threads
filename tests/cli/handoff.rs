@@ -5203,21 +5203,28 @@ fn handoff_invitations_always_require_ack_and_the_old_flag_is_gone() {
         serde_json::to_value(request).unwrap()["policy"]["invitation_confirmation"],
         "require_ack"
     );
-    assert!(
-        crate::cli::commands::parse_argv([
-            "ht",
-            "handoff",
-            "--pane",
-            "w1:p2",
-            "--kind",
-            "codex",
-            "--thread",
-            "t1",
-            "--require-invite-ack",
-            "--",
-            "go",
-        ])
-        .is_err()
+    // ht-yha.61: the removed flag names its replacement instead of a bare clap usage error.
+    let removed = crate::cli::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--pane",
+        "w1:p2",
+        "--kind",
+        "codex",
+        "--thread",
+        "t1",
+        "--require-invite-ack",
+        "--",
+        "go",
+    ])
+    .expect_err("--require-invite-ack is refused");
+    assert_eq!(
+        removed.code,
+        crate::protocol::results::ErrorCode::InvalidRequest
+    );
+    assert_eq!(
+        removed.detail,
+        "--require-invite-ack was removed: handoff invitations always require acceptance; omit it"
     );
 }
 

@@ -2131,6 +2131,84 @@ fn handoff_parser_requires_one_thread_explicit_pane_and_one_body() {
         );
     }
 }
+// ht-yha.61 (main review I2): flags removed by priority delivery stay parseable (hidden) and fail with the
+// explicit removal message, like `send --lazy`, before any body or selector is read. Exit 2.
+#[test]
+fn removed_invitation_flags_name_their_replacement() {
+    use crate::protocol::results::ErrorCode;
+    for (argv, flag) in [
+        (
+            vec!["ht", "invite", "t1", "--seat", "s1", "--lazy"],
+            "--lazy was removed: invitations always confirm",
+        ),
+        (
+            vec!["ht", "invite", "t1", "--seat", "s1", "--require-ack"],
+            "--require-ack was removed: invitations always require acceptance",
+        ),
+        (
+            vec!["ht", "invite", "t1", "--seat", "s1", "--lazy", "--deadline", "5"],
+            "--lazy was removed: invitations always confirm",
+        ),
+        (
+            vec!["ht", "human", "invite", "t1", "--seat", "s1", "--lazy"],
+            "--lazy was removed: invitations always confirm",
+        ),
+        (
+            vec![
+                "ht",
+                "handoff",
+                "--pane",
+                "w1:p2",
+                "--kind",
+                "codex",
+                "--thread",
+                "t1",
+                "--require-invite-ack",
+                "--",
+                "go",
+            ],
+            "--require-invite-ack was removed",
+        ),
+        (
+            // No --pane: the selector pass would refuse "handoff requires --pane PANE"; the removal wins.
+            vec![
+                "ht",
+                "handoff",
+                "--kind",
+                "codex",
+                "--thread",
+                "t1",
+                "--require-invite-ack",
+                "--",
+                "go",
+            ],
+            "--require-invite-ack was removed",
+        ),
+        (
+            vec![
+                "ht",
+                "handoff",
+                "--new-tab",
+                "w",
+                "--kind",
+                "codex",
+                "--require-invite-ack",
+                "--file",
+                "/nonexistent/handoff-body",
+            ],
+            "--require-invite-ack was removed",
+        ),
+    ] {
+        // `parse_argv` returns `ApiError`; a clap usage error is also mapped to `InvalidRequest` (its detail
+        // is clap's text), so the detail is what tells the removal message from a bare clap error.
+        let api = parse_argv(argv.clone())
+            .err()
+            .unwrap_or_else(|| panic!("{argv:?} parsed"));
+        assert_eq!(api.code, ErrorCode::InvalidRequest, "{argv:?}");
+        assert!(api.detail.contains(flag), "{argv:?}: {api:?}");
+        assert_eq!(crate::cli::exit::api_exit_code(&api.code), 2, "{argv:?}");
+    }
+}
 #[test]
 fn handoff_parser_preserves_native_elements_and_distinct_names() {
     let parsed = parse_argv([
