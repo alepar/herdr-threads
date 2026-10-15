@@ -432,7 +432,6 @@ fn lazy_markers_real_store_preserves_pending_delivery_and_ready_cached_summary()
         !ready.cover.is_empty(),
         "a real completed cache must be reused"
     );
-    let before = snapshot(&db);
     let client = StoreClient {
         store: SqliteStore::new(
             context,
@@ -442,6 +441,9 @@ fn lazy_markers_real_store_preserves_pending_delivery_and_ready_cached_summary()
         .unwrap(),
         calls: Mutex::new(vec![]),
     };
+    // After the store opened: its journal bootstrap (genesis) is not the
+    // read paths' doing.
+    let before = snapshot(&db);
     for argv in [
         vec!["read", "t"],
         vec!["body", "msg-2"],

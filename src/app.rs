@@ -1377,6 +1377,31 @@ where
     .await
 }
 
+/// The longest `host_label` the journal records, in bytes.
+const HOST_LABEL_MAX_BYTES: usize = 255;
+
+/// This machine's hostname, lossy UTF-8, for the genesis `host_label`.
+fn host_label() -> String {
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer is valid for `buf.len()` bytes; gethostname writes at
+    // most that many and may omit the terminator when it truncates.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if rc != 0 {
+        return String::new();
+    }
+    let len = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+    truncate_label(&String::from_utf8_lossy(&buf[..len]))
+}
+
+/// `text` cut to at most [`HOST_LABEL_MAX_BYTES`] bytes at a char boundary.
+fn truncate_label(text: &str) -> String {
+    let mut end = text.len().min(HOST_LABEL_MAX_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
+}
+
 /// Load or create the node key and publish the `node.json` hint. A refused
 /// key is a one-line start failure naming the `NodeKeyError` variant.
 fn load_node_identity(paths: &NodePaths) -> io::Result<NodeIdentity> {
@@ -1493,7 +1518,7 @@ where
     // node) before election; the descriptor and the store `instance` string
     // carry its uuid. node.json is a derived hint, written here so clients
     // can find the daemon; it is rewritten after the store's identity check.
-    let identity = load_node_identity(paths)?;
+    let identity = Arc::new(load_node_identity(paths)?);
     // Instance settings and the offline switch are read once, here: the
     // manifest fetch policy is fixed for this daemon's lifetime. An invalid
     // settings file refuses the start with a message naming the file.
@@ -1592,6 +1617,40 @@ where
                 check_store_identity(&conn, &identity, &identity_key_path)?;
             }
             publish_node_json(&identity_paths, &identity)?;
+            // Daemon start order: the journal opens once, after the node.json
+            // step and before any host attaches. A refused open (a violated
+            // journal invariant) refuses the start.
+            {
+                let mut conn = context.open_writer().map_err(|error| {
+                    io::Error::other(format!(
+                        "store startup: journal open: {:?}: {}",
+                        error.code, error.detail
+                    ))
+                })?;
+                context.pin_binding_evidence();
+                let report = crate::store::journal::open(
+                    &context,
+                    &mut conn,
+                    Arc::clone(&identity),
+                    &host_label(),
+                    crate::sync::facts::FactRegistry::builtins(),
+                )
+                .map_err(|error| {
+                    io::Error::other(format!(
+                        "store startup: journal open: {:?}: {}",
+                        error.code, error.detail
+                    ))
+                })?;
+                rate_limited_log.write_line(&format!(
+                    "journal open: log {:?} counter {} bootstrapped {} parked_unknown {} parked_dep {} failed {}",
+                    report.self_log,
+                    report.counter,
+                    report.bootstrapped,
+                    report.parked_unknown,
+                    report.parked_dep,
+                    report.failed
+                ));
+            }
             // The host choice is resolved here, after the store exists: zero
             // or one Herdr server is attached (its `herdr_hosts` row stamped,
             // the store's primary host and the descriptor's `primary_host`
@@ -2895,6 +2954,18 @@ mod host_choice_tests {
 
 #[cfg(test)]
 mod store_identity_tests {
+    #[test]
+    fn host_label_truncates_at_char_boundary() {
+        // 'é' is two bytes: 128 of them are 256 bytes, so the cut at 255 falls
+        // inside the last char and must back up to 254.
+        let text = "é".repeat(128);
+        let cut = super::truncate_label(&text);
+        assert_eq!(cut.len(), 254);
+        assert!(text.starts_with(&cut));
+        assert_eq!(super::truncate_label("lab"), "lab");
+        assert!(super::host_label().len() <= 255);
+    }
+
     use super::*;
     use crate::{
         node::tag_for,

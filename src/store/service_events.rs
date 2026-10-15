@@ -836,7 +836,8 @@ mod tests {
             "work_jobs",
             "threads",
             "herdr_hosts",
-            "sqlite_sequence",
+            // The journal's own bootstrap genesis is not notification state.
+            "sqlite_sequence WHERE name <> 'journal'",
         ]
         .into_iter()
         .map(|table| {
