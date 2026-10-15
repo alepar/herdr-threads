@@ -1,3 +1,20 @@
+//! Incarnations: fork freeze, re-issue, restore rotation and the clone gate.
+//!
+//! The root `Incarnations` owns fork freeze, `journal_forked`, re-issue,
+//! restore rotation, clone evidence and the clone gate; callers never delete
+//! entries or author under a frozen incarnation. It is realized as four
+//! parts:
+//! - **ForkProof** (this file): the pure rule for what counts as a fork.
+//! - **IncarnationStore** (`store::incarnations`): the only SQL for fork
+//!   records, branches and clone evidence.
+//! - **IncarnationsSink / IncarnationsWorker** ([`sink`], [`requests`]): the
+//!   non-blocking [`ForkSink`](super::coordinator::ForkSink) front with its
+//!   job queue and branch-request table, and the `herdr-incarnations`
+//!   thread that runs the jobs.
+//! - **Resync**: the operator's `sync resync` salvage, run by the worker.
+//!
+//! # ForkProof
+//!
 //! ForkProof: the one statement of what counts as a fork.
 //!
 //! Pure functions over signed [`Envelope`]s: no store, clock or network.
@@ -24,6 +41,14 @@
 
 use super::LogKey;
 use super::envelope::{Envelope, EnvelopeError};
+
+mod requests;
+mod sink;
+
+pub use requests::{
+    BranchKey, Failover, Outstanding, PENALTY_MS, REQUEST_TIMEOUT_MS, RequestTable, Swept,
+};
+pub use sink::{IncarnationsSink, JOB_QUEUE_SLOTS, Job, JobQueue, Overflow};
 
 /// Two validly signed entries proven distinct at one counter.
 ///
