@@ -329,6 +329,17 @@ impl HostSessions {
         locator: &HostLocator,
         budget: &CallBudget,
     ) -> Result<Arc<HostSession>, ApiError> {
+        self.resolve_checked(locator, budget, true)
+    }
+
+    /// `resolve` with the canonical-path check optional: the operator's startup
+    /// hint is explicit, so it skips the check (its socket may not exist yet).
+    fn resolve_checked(
+        &self,
+        locator: &HostLocator,
+        budget: &CallBudget,
+        canonical_check: bool,
+    ) -> Result<Arc<HostSession>, ApiError> {
         if let Some(session) = self.by_locator(locator) {
             return Ok(session);
         }
@@ -336,7 +347,7 @@ impl HostSessions {
         if let Some(session) = self.by_locator(locator) {
             return Ok(session);
         }
-        self.attach_locked(locator, budget)
+        self.attach_locked(locator, budget, canonical_check)
     }
 
     fn lock_attach(&self, budget: &CallBudget) -> Result<std::sync::MutexGuard<'_, ()>, ApiError> {
@@ -363,6 +374,7 @@ impl HostSessions {
         &self,
         locator: &HostLocator,
         budget: &CallBudget,
+        canonical_check: bool,
     ) -> Result<Arc<HostSession>, ApiError> {
         if self.stopped.load(Ordering::SeqCst) {
             return Err(unavailable("host sessions are stopped"));
@@ -373,7 +385,8 @@ impl HostSessions {
                 locator.as_str()
             )));
         }
-        if self.deps.check_canonical && !is_canonical_on_disk(locator.as_path()) {
+        if canonical_check && self.deps.check_canonical && !is_canonical_on_disk(locator.as_path())
+        {
             return Err(ApiError::invalid_request("host locator is not canonical"));
         }
         if self.attached_count() >= MAX_ATTACHED_HOSTS {
@@ -575,7 +588,7 @@ impl HostSessions {
     /// thread failing to start is an error.
     pub fn attach_startup(self: &Arc<Self>, hint: Option<&HostLocator>) -> std::io::Result<()> {
         if let Some(hint) = hint
-            && let Err(error) = self.resolve(hint, &self.background_budget())
+            && let Err(error) = self.resolve_checked(hint, &self.background_budget(), false)
         {
             self.log_attach_failure(hint, &error);
         }
@@ -1030,6 +1043,27 @@ mod tests {
         assert_eq!(error.code, ErrorCode::InvalidRequest);
         assert_eq!(error.detail, "host locator is not canonical");
         assert_eq!(rig.sessions.attached_count(), 0);
+    }
+
+    // Kills: the startup hint failing the canonical check in production
+    // (check_canonical on) when its socket does not exist yet.
+    #[test]
+    fn startup_hint_with_missing_socket_attaches_with_canonical_check_on() {
+        let rig = Rig::new("hs-hint-canon", true, Duration::from_secs(60));
+        let hint = loc(rig._isolation.path("absent.sock").to_str().unwrap());
+        rig.world.set_live(hint.as_str(), true);
+        rig.sessions.attach_startup(Some(&hint)).unwrap();
+        assert!(rig.lines().is_empty(), "{:?}", rig.lines());
+        assert!(rig.sessions.by_locator(&hint).is_some());
+        // A non-hint resolve of the same non-existent path stays refused.
+        let other = loc(rig._isolation.path("other.sock").to_str().unwrap());
+        rig.world.set_live(other.as_str(), true);
+        let error = rig
+            .sessions
+            .resolve(&other, &rig.budget(5_000))
+            .err()
+            .unwrap();
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
     }
 
     #[test]
