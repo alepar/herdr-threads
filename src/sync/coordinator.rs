@@ -26,7 +26,7 @@
 //!   `have` deltas; `ingest` drops unsolicited `entries`, runs the one
 //!   sequential ingest worker and acts on every `IngestOutcome`. New
 //!   outcomes are handled there; fork policy goes in a [`ForkSink`]
-//!   implementation. `signals()` is ht-5fr.5.6's. The Dialer
+//!   implementation. The Dialer
 //!   (`super::dialer`, ht-5fr.5.7) is constructed here: [`SyncHandle::reload_targets`]
 //!   and [`SyncHandle::enabled_target_count`] reach it, a pacer kick re-diffs
 //!   its targets, and shutdown cancels its tasks.
@@ -38,6 +38,12 @@
 //!   after a shape check, and on the 1 s tick drains [`ForkSink::outbox`] to
 //!   the `fork.v1` links. What a fork means, and which branches to ask for,
 //!   is the sink's policy, never the coordinator's.
+//! - Reachability and rounds (ht-5fr.5.6): the actor owns the `ContactBook`
+//!   (direct contact from every inbound frame, `seen` every 10 s per active
+//!   link, a flush through `SyncStorePort::record_contacts` on the 1 s tick and
+//!   a final one at shutdown) and writes each active link's round to
+//!   [`SyncSignals`], which [`SyncHandle::signals`] hands out. The
+//!   completion rule lives in `Actor::update_rounds`.
 //! - Role: the single owner of per-link and per-log sync state, so routing
 //!   decisions that span links need no locks.
 //!
@@ -65,13 +71,14 @@ use super::envelope::{Envelope, GENESIS_KIND, WireEnvelope, hex_decode, hex_enco
 use super::facts::GenesisPayload;
 use super::frame::{
     BranchWant, CloseReason, FORK_CAP, ForkRef, HaveLog, MAX_HAVE_FORKS, MAX_HAVE_LOGS, PeerFrame,
-    Role, write_peer_frame,
+    Role, SeenAge, write_peer_frame,
 };
 use super::journal_port::{ForkEvidence, IngestOutcome, JournalPort};
 use super::link::{
     CLOSE_WRITE_TIMEOUT, Established, HANDSHAKE_TIMEOUT, LinkError, LinkEvent, LinkHandle,
     LocalHello, PeerInfo, SendError, handshake,
 };
+use super::signals::{ContactBook, LinkRound, SyncSignals};
 use super::sync_store::SyncStorePort;
 use super::{BatchLimits, LogHead, LogKey, LogState, Vector};
 use crate::node::{NodeIdentity, NodeTag, NodeUuid};
@@ -81,6 +88,7 @@ use crate::service::fair_writer::FairWriter;
 use crate::service::pacer::{Pacer, Wake};
 use crate::service::workers::WorkerStatus;
 use crate::store::connection::{HoldSource, OwnHistoryHold};
+use crate::store::sync_contacts::NodeContact;
 use crate::store::sync_dial_targets::TargetId;
 
 mod ingest;
@@ -107,6 +115,8 @@ pub const DIAL_REPORT_SLOTS: usize = 2;
 const PACER_TICK: Duration = Duration::from_secs(1);
 /// The housekeeping interval.
 const HOUSEKEEPING_TICK: Duration = Duration::from_secs(1);
+/// Each active link gets a `seen` this often.
+const SEEN_EVERY_MS: u64 = 10_000;
 /// `LogOnlyForkSink` logs at most once per log (or clone subject) per this many
 /// milliseconds.
 const FORK_LOG_EVERY_MS: u64 = 3_600_000;
@@ -504,9 +514,15 @@ pub struct SyncHandle {
     dialed: mpsc::Sender<DialedStream>,
     dial: Arc<DialShared>,
     clock: Arc<dyn Clock>,
+    signals: Arc<SyncSignals>,
 }
 
 impl SyncHandle {
+    /// The round-complete signal (written only by the actor).
+    pub fn signals(&self) -> Arc<SyncSignals> {
+        self.signals.clone()
+    }
+
     /// Links that are established or handshaking, inbound or dialed.
     pub fn link_count(&self) -> usize {
         self.links.load(Ordering::Acquire)
@@ -570,6 +586,8 @@ impl SyncCoordinator {
     /// (bounded at one second).
     pub fn start(deps: CoordinatorDeps) -> (SyncHandle, PeerIntake, JoinHandle<()>) {
         let links = Arc::new(AtomicUsize::new(0));
+        let signals = Arc::new(SyncSignals::new());
+        let contacts = ContactBook::new(deps.identity.uuid());
         let (intake, intake_rx) = PeerIntake::with_slots(PEER_INTAKE_SLOTS);
         let (dialed_tx, dialed_rx) = mpsc::channel(DIALED_SLOTS);
         let (requests_tx, requests_rx) = mpsc::channel(REQUEST_SLOTS);
@@ -602,6 +620,7 @@ impl SyncCoordinator {
             dialed: dialed_tx,
             dial: dialer.shared(),
             clock: deps.clock.clone(),
+            signals: signals.clone(),
         };
         let mut hello = LocalHello::new(deps.identity.clone(), deps.boot);
         hello.caps.push(FORK_CAP.to_owned());
@@ -631,6 +650,9 @@ impl SyncCoordinator {
             ingest_jobs: jobs_tx,
             worker: Some(worker),
             retry_logs: BTreeSet::new(),
+            signals,
+            contacts,
+            flushes: JoinSet::new(),
         };
         let join = tokio::spawn(actor.run(Inputs {
             intake: intake_rx,
@@ -714,6 +736,13 @@ struct LinkEntry {
     last_have_sent: Vector,
     /// When the last `have` went out.
     last_have_at: Option<MonoInstant>,
+    /// The current sync round; only an active link has one.
+    round: Option<RoundTrack>,
+    /// When the last `seen` went out.
+    seen_at: Option<MonoInstant>,
+    /// The link's inbound frame count at the last contact poll (the link
+    /// answers `ping`/`pong` itself, so only the count tells they arrived).
+    polled_inbound: u64,
     /// Held so the transport's slot is released when the link is.
     _permit: Option<PeerPermit>,
 }
@@ -728,6 +757,16 @@ impl LinkEntry {
     fn fork_active(&self) -> bool {
         self.mode == LinkMode::Active && self.ranked && !self.closing && self.fork_cap()
     }
+}
+
+/// A link's round as the actor tracks it. It completes once a full `have`
+/// arrived since the start and the peer advertises nothing more that is
+/// wantable (see [`Actor::update_rounds`]).
+#[derive(Clone, Copy)]
+struct RoundTrack {
+    started: MonoInstant,
+    full_have: bool,
+    complete: bool,
 }
 
 /// A finished handshake attempt, joined from the actor's `JoinSet`.
@@ -782,6 +821,18 @@ struct Actor {
     worker: Option<JoinHandle<()>>,
     /// Logs whose batch failed to store; asked again at the pacer's backoff.
     retry_logs: BTreeSet<LogKey>,
+    /// The round-complete signal this actor writes.
+    signals: Arc<SyncSignals>,
+    /// Reachability: direct contacts, gossiped ages and the flush schedule.
+    contacts: ContactBook,
+    /// `record_contacts` calls in flight (at most one).
+    flushes: JoinSet<FlushDone>,
+}
+
+/// A contact flush joined from the actor's `JoinSet`.
+struct FlushDone {
+    rows: Vec<NodeContact>,
+    result: Result<(), ApiError>,
 }
 
 impl Actor {
@@ -789,6 +840,7 @@ impl Actor {
         let _liveness = self.deps.status.lane_guard(&self.deps.cancel);
         let cancel = self.deps.cancel.clone();
         let pacer = self.deps.pacer.clone();
+        let signals = self.signals.clone();
         let mut tick = tokio::time::interval(HOUSEKEEPING_TICK);
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
@@ -807,6 +859,12 @@ impl Actor {
                     self.on_local(joined.unwrap_or_else(|e| Err(e.to_string())));
                 }
                 Some(request) = inputs.requests.recv() => self.on_request(request),
+                () = signals.requested() => self.on_round_request(),
+                Some(joined) = self.flushes.join_next(), if !self.flushes.is_empty() => {
+                    if let Ok(done) = joined {
+                        self.on_flushed(done);
+                    }
+                }
                 Some(done) = inputs.ingest.recv() => self.on_ingested(done),
                 Some(joined) = self.serve_jobs.join_next(), if !self.serve_jobs.is_empty() => {
                     if let Ok(done) = joined {
@@ -973,6 +1031,9 @@ impl Actor {
                         branch_busy: false,
                         last_have_sent: Vector::default(),
                         last_have_at: None,
+                        round: None,
+                        seen_at: None,
+                        polled_inbound: 0,
                         _permit: permit,
                     },
                 );
@@ -1145,6 +1206,7 @@ impl Actor {
             self.activate(active, prev.is_some() || after_end);
         }
         self.update_own_history();
+        self.update_rounds();
     }
 
     /// The link becomes the node's standby: it keeps ping/pong only.
@@ -1162,7 +1224,10 @@ impl Actor {
         entry.branch_queue.clear();
         entry.last_have_sent = Vector::default();
         entry.last_have_at = None;
+        entry.round = None;
+        entry.seen_at = None;
         self.drop_rx_of(link_id);
+        self.update_rounds();
     }
 
     /// Forget every rx source on `link_id` (the link ended or was demoted; no
@@ -1185,13 +1250,21 @@ impl Actor {
     /// The link becomes the node's active one: a full `have` goes out as
     /// soon as `local` is fresh (`ask`: and the peer is asked for its own).
     fn activate(&mut self, link_id: u64, ask: bool) {
+        let started = self.mono();
         let Some(entry) = self.links.get_mut(&link_id) else {
             return;
         };
         entry.mode = LinkMode::Active;
         entry.announced = false;
         entry.have_pending = Some(ask);
+        entry.seen_at = None;
+        entry.round = Some(RoundTrack {
+            started,
+            full_have: false,
+            complete: false,
+        });
         self.request_local();
+        self.update_rounds();
     }
 
     /// A `have` or `want` arrived on a standby link: the peer promoted it, so
@@ -1240,12 +1313,22 @@ impl Actor {
         let Some(entry) = self.links.get(&link_id) else {
             return;
         };
-        if !entry.ranked || entry.closing {
+        // Any frame of an established link, active or standby, is direct
+        // contact with its node.
+        let (node, usable) = (entry.handle.peer().node, entry.ranked && !entry.closing);
+        let wall = self.wall();
+        self.contacts.record_direct(node, wall);
+        if !usable {
+            return;
+        }
+        let entry = &self.links[&link_id];
+        if let PeerFrame::Seen { ages } = &frame {
+            self.contacts.merge_seen(ages, wall);
             return;
         }
         if entry.mode == LinkMode::Standby {
-            // A standby carries ping/pong (the link's own) and `seen`
-            // (ht-5fr.5.6) only; a `have` or `want` is the peer's promotion.
+            // A standby carries ping/pong (the link's own) and `seen` only
+            // (handled above); a `have` or `want` is the peer's promotion.
             if matches!(frame, PeerFrame::Have { .. } | PeerFrame::Want { .. }) {
                 self.promote_on_traffic(link_id);
             } else {
@@ -1264,7 +1347,7 @@ impl Actor {
                 return;
             }
         }
-        // `seen` is recorded by ht-5fr.5.6.
+        // `seen` is recorded by ht-5fr.5.6; the branch frames are ht-5fr.6's.
         match frame {
             PeerFrame::Have {
                 full,
@@ -1312,6 +1395,9 @@ impl Actor {
         let Some(entry) = self.links.get_mut(&link_id) else {
             return;
         };
+        if full && let Some(round) = entry.round.as_mut() {
+            round.full_have = true;
+        }
         let before = std::mem::take(&mut entry.peer_vector);
         let mut vector = if full {
             Vector::default()
@@ -1369,6 +1455,7 @@ impl Actor {
                 .fork_sink
                 .on_have(peer.node, fork_cap, logs, forks);
         }
+        self.update_rounds();
         if ask {
             self.request_local();
         }
@@ -1414,6 +1501,8 @@ impl Actor {
                         entry.last_have_sent = self.local.clone();
                         entry.last_have_at = Some(now);
                     }
+                    // The first `seen` of an activation follows its `have`.
+                    self.send_seen_if_due(id, now);
                 }
                 self.flush_have_deltas(now);
             }
@@ -1421,6 +1510,7 @@ impl Actor {
         }
         self.reselect_all();
         self.update_own_history();
+        self.update_rounds();
         // The vector moved: serve what armed subscriptions now have waiting.
         self.push_all();
         if std::mem::take(&mut self.refresh_again) {
@@ -1625,6 +1715,13 @@ impl Actor {
         self.failover(now);
         self.flush_have_deltas(now);
         self.drain_fork_outbox();
+        self.poll_contacts();
+        let ids: Vec<u64> = self.links.keys().copied().collect();
+        for id in ids {
+            self.send_seen_if_due(id, now);
+        }
+        self.flush_contacts();
+        self.update_rounds();
         if self.refresh.is_empty() && self.links.values().any(|l| l.have_pending.is_some()) {
             // A read that failed leaves `have`s owed: try again.
             self.request_local();
@@ -1695,6 +1792,175 @@ impl Actor {
             self.rank_node(node, true);
         }
         self.update_own_history();
+        self.update_rounds();
+    }
+
+    /// The local wall clock in unix ms (contacts are wall times).
+    fn wall(&self) -> u64 {
+        u64::try_from(self.deps.clock.utc_now().0).unwrap_or(0)
+    }
+
+    /// Record direct contact for every link whose inbound frame count moved
+    /// since the last poll: the link answers `ping`/`pong` itself, so a
+    /// standby's only traffic is visible nowhere else.
+    fn poll_contacts(&mut self) {
+        let wall = self.wall();
+        for entry in self.links.values_mut() {
+            let inbound = entry.handle.inbound_frames();
+            if inbound > entry.polled_inbound {
+                entry.polled_inbound = inbound;
+                self.contacts.record_direct(entry.handle.peer().node, wall);
+            }
+        }
+    }
+
+    /// `seen` on an active, announced link: right after its first `have` and
+    /// then every [`SEEN_EVERY_MS`].
+    fn send_seen_if_due(&mut self, link_id: u64, now: MonoInstant) {
+        let wall = self.wall();
+        let Some(entry) = self.links.get_mut(&link_id) else {
+            return;
+        };
+        if entry.mode != LinkMode::Active || !entry.ranked || entry.closing || !entry.announced {
+            return;
+        }
+        if entry
+            .seen_at
+            .is_some_and(|at| now.0.saturating_sub(at.0) < SEEN_EVERY_MS)
+        {
+            return;
+        }
+        let ages = self.contacts.seen_ages(&entry.handle.peer().node, wall);
+        if entry.handle.send(PeerFrame::Seen { ages }).is_ok() {
+            entry.seen_at = Some(now);
+        }
+    }
+
+    /// Write the due contact rows in one background call; at most one is in
+    /// flight, and a failed one is due again at the next flush.
+    fn flush_contacts(&mut self) {
+        if !self.flushes.is_empty() {
+            return;
+        }
+        let rows = self.contacts.due_for_flush(self.wall());
+        if rows.is_empty() {
+            return;
+        }
+        let store = self.deps.sync_store.clone();
+        self.flushes.spawn_blocking(move || {
+            let result = store.record_contacts(&rows, &unbounded_budget());
+            FlushDone { rows, result }
+        });
+    }
+
+    fn on_flushed(&mut self, done: FlushDone) {
+        match done.result {
+            Ok(()) => self.contacts.flushed(&done.rows),
+            Err(e) => (self.deps.log)(&format!(
+                "sync: contact flush failed: {:?}: {:?}",
+                e.code, e.detail
+            )),
+        }
+    }
+
+    /// Best effort at shutdown: finish the flush in flight, then write every
+    /// row the store does not hold yet. Each step is bounded.
+    async fn final_flush(&mut self) {
+        let _ = timeout(CLOSE_WRITE_TIMEOUT, async {
+            while let Some(joined) = self.flushes.join_next().await {
+                if let Ok(done) = joined {
+                    self.on_flushed(done);
+                }
+            }
+        })
+        .await;
+        self.poll_contacts();
+        let rows = self.contacts.unflushed();
+        if rows.is_empty() {
+            return;
+        }
+        let store = self.deps.sync_store.clone();
+        let call = tokio::task::spawn_blocking(move || {
+            let result = store.record_contacts(&rows, &unbounded_budget());
+            FlushDone { rows, result }
+        });
+        if let Ok(Ok(done)) = timeout(CLOSE_WRITE_TIMEOUT, call).await {
+            self.on_flushed(done);
+        }
+    }
+
+    /// A round was requested: every active link starts a new one and is sent
+    /// `Have{full, ask: true}` (once `local` is fresh).
+    fn on_round_request(&mut self) {
+        let Some(at) = self.signals.take_request() else {
+            return;
+        };
+        let started = self.mono().max(at);
+        let mut any = false;
+        for entry in self.links.values_mut() {
+            if entry.mode == LinkMode::Active && entry.ranked && !entry.closing {
+                entry.round = Some(RoundTrack {
+                    started,
+                    full_have: false,
+                    complete: false,
+                });
+                entry.have_pending = Some(true);
+                any = true;
+            }
+        }
+        if any {
+            self.request_local();
+        }
+        self.update_rounds();
+    }
+
+    /// Whether `link_id`'s peer advertises a log we could still pull from it:
+    /// ahead of what is held, and neither paused, frozen nor penalized.
+    fn advertises_wantable(&self, link_id: u64, now: MonoInstant) -> bool {
+        self.links.get(&link_id).is_some_and(|entry| {
+            entry.peer_vector.0.iter().any(|(log, adv)| {
+                routing::wantable(self.local.0.get(log), adv, self.log_paused(log, now))
+                    && entry.errors.get(log).is_none_or(|until| until.0 <= now.0)
+            })
+        })
+    }
+
+    /// Complete the rounds whose rule holds (a full `have` since the start and
+    /// nothing wantable left to pull), then publish every active link's round
+    /// to [`SyncSignals`]. Called wherever the inputs of the rule change.
+    fn update_rounds(&mut self) {
+        let now = self.mono();
+        let open: Vec<u64> = self
+            .links
+            .iter()
+            .filter(|(_, l)| l.mode == LinkMode::Active && l.ranked && !l.closing)
+            .filter(|(_, l)| l.round.is_some_and(|r| r.full_have && !r.complete))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in open {
+            if !self.advertises_wantable(id, now)
+                && let Some(round) = self.links.get_mut(&id).and_then(|l| l.round.as_mut())
+            {
+                round.complete = true;
+            }
+        }
+        let rounds = self
+            .links
+            .iter()
+            .filter(|(_, l)| l.mode == LinkMode::Active && l.ranked && !l.closing)
+            .filter_map(|(id, l)| {
+                l.round.map(|r| {
+                    (
+                        *id,
+                        LinkRound {
+                            started: r.started,
+                            complete: r.complete,
+                        },
+                    )
+                })
+            })
+            .collect();
+        self.signals.publish(rounds);
     }
 
     fn on_request(&self, request: Request) {
@@ -1770,11 +2036,19 @@ impl Actor {
         if let Some(worker) = self.worker.take() {
             let _ = timeout(CLOSE_WRITE_TIMEOUT, worker).await;
         }
+        self.final_flush().await;
         self.dialer.shutdown().await;
         let leftover: Vec<u64> = self.links.keys().copied().collect();
         for link_id in leftover {
             self.on_ended(link_id, LinkError::Shutdown, Duration::ZERO);
         }
+    }
+}
+
+fn unbounded_budget() -> CallBudget {
+    CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Cancellation::default(),
     }
 }
 
@@ -1873,11 +2147,14 @@ fn held_genesis_pubkey(
 mod tests {
     use super::*;
     use crate::daemon::transport::{self, MAX_FRAME_BYTES};
+    use crate::store::sync_contacts::ContactVia;
+    use crate::store::sync_dial_targets::{DialTarget, DialTransition};
     use crate::sync::envelope::{Deps, Envelope, UnsignedEnvelope, hex_encode};
     use crate::sync::frame::read_peer_frame;
     use crate::sync::hlc::HlcStamp;
     use crate::sync::journal_port::{ApplyProgress, IngestOutcome};
     use crate::sync::memory_journal::MemoryJournal;
+    use crate::sync::signals::RoundState;
     use crate::sync::sync_store::MemorySyncStore;
     use std::sync::atomic::{AtomicBool, AtomicU64};
     use tokio::io::{DuplexStream, duplex};
@@ -1967,7 +2244,56 @@ mod tests {
         }
     }
 
+    /// A `MemorySyncStore` that records every `record_contacts` call (when it
+    /// ran and with which rows) and can be told to fail them.
+    struct CountingStore {
+        inner: MemorySyncStore,
+        clock: Arc<dyn Clock>,
+        calls: Mutex<Vec<(i64, Vec<NodeContact>)>>,
+        fail: AtomicBool,
+    }
+
+    impl CountingStore {
+        fn calls(&self) -> Vec<(i64, Vec<NodeContact>)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl SyncStorePort for CountingStore {
+        fn enabled_targets(&self, budget: &CallBudget) -> Result<Vec<DialTarget>, ApiError> {
+            self.inner.enabled_targets(budget)
+        }
+        fn record_transition(
+            &self,
+            target: TargetId,
+            transition: &DialTransition,
+            now: UtcMillis,
+            budget: &CallBudget,
+        ) -> Result<(), ApiError> {
+            self.inner
+                .record_transition(target, transition, now, budget)
+        }
+        fn record_contacts(
+            &self,
+            contacts: &[NodeContact],
+            budget: &CallBudget,
+        ) -> Result<(), ApiError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((self.clock.utc_now().0, contacts.to_vec()));
+            if self.fail.load(Ordering::SeqCst) {
+                return Err(ApiError::new(
+                    ErrorCode::StoreBusy,
+                    "scripted flush failure",
+                ));
+            }
+            self.inner.record_contacts(contacts, budget)
+        }
+    }
+
     struct Rig {
+        store: Arc<CountingStore>,
         handle: SyncHandle,
         intake: PeerIntake,
         join: JoinHandle<()>,
@@ -2008,9 +2334,15 @@ mod tests {
             refs: Mutex::new(Vec::new()),
         });
         let status = Arc::new(WorkerStatus::default());
+        let store = Arc::new(CountingStore {
+            inner: MemorySyncStore::new(),
+            clock: clock.clone(),
+            calls: Mutex::new(Vec::new()),
+            fail: AtomicBool::new(false),
+        });
         let (handle, intake, join) = SyncCoordinator::start(CoordinatorDeps {
             journal,
-            sync_store: Arc::new(MemorySyncStore::new()),
+            sync_store: store.clone(),
             identity: identity(n),
             boot: Uuid::from_u128(u128::from(n)),
             writer: Arc::new(FairWriter::new(8)),
@@ -2024,6 +2356,7 @@ mod tests {
             cancel: cancel.clone(),
         });
         Rig {
+            store,
             handle,
             intake,
             join,
@@ -2410,6 +2743,7 @@ mod tests {
             dialed: dialed_tx,
             dial: rig.handle.dial.clone(),
             clock: rig.clock.clone(),
+            signals: rig.handle.signals(),
         };
         let short = CallBudget {
             deadline: MonoInstant(rig.clock.monotonic_now().0 + 50),
@@ -2609,11 +2943,11 @@ mod tests {
             }
         }
 
-        /// The next frame that is not a link-level `ping`.
+        /// The next frame that is neither a link-level `ping` nor a `seen`.
         async fn next(&mut self) -> PeerFrame {
             loop {
                 match self.next_raw().await {
-                    PeerFrame::Ping { .. } => continue,
+                    PeerFrame::Ping { .. } | PeerFrame::Seen { .. } => continue,
                     frame => return frame,
                 }
             }
@@ -2658,7 +2992,10 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
             while let Ok(frame) = self.frames.try_recv() {
                 assert!(
-                    matches!(frame, PeerFrame::Ping { .. } | PeerFrame::Pong { .. }),
+                    matches!(
+                        frame,
+                        PeerFrame::Ping { .. } | PeerFrame::Pong { .. } | PeerFrame::Seen { .. }
+                    ),
                     "link {} should be quiet, got {frame:?}",
                     self.idx
                 );
@@ -2943,9 +3280,15 @@ mod tests {
 
         let mut newer = connect(&rig, 1, &hello_boot(2, 22)).await;
         // The older link is probed with a ping; it answers.
-        match older.next_raw().await {
-            PeerFrame::Ping { n } => older.send(PeerFrame::Pong { n }).await,
-            other => panic!("expected the probe ping, got {other:?}"),
+        loop {
+            match older.next_raw().await {
+                PeerFrame::Seen { .. } => continue,
+                PeerFrame::Ping { n } => {
+                    older.send(PeerFrame::Pong { n }).await;
+                    break;
+                }
+                other => panic!("expected the probe ping, got {other:?}"),
+            }
         }
         assert_eq!(newer.expect_close().await, CloseReason::NodeCollision);
         until(|| !rig.clones().is_empty()).await;
@@ -3000,7 +3343,9 @@ mod tests {
         loop {
             match timeout(Duration::from_secs(5), older.frames.recv()).await {
                 Ok(None) => break,
-                Ok(Some(PeerFrame::Ping { .. } | PeerFrame::Close { .. })) => continue,
+                Ok(Some(
+                    PeerFrame::Ping { .. } | PeerFrame::Seen { .. } | PeerFrame::Close { .. },
+                )) => continue,
                 other => panic!("expected the older link to end, got {other:?}"),
             }
         }
@@ -4261,6 +4606,367 @@ mod tests {
         stop(rig).await;
     }
 
+    // -- Reachability and the round-complete signal (ht-5fr.5.6) ----------
+
+    async fn round_is(rig: &Rig, since: MonoInstant, want: RoundState) {
+        let signals = rig.handle.signals();
+        for _ in 0..200 {
+            if signals.round_state(since) == want {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!(
+            "round state stayed {:?}, wanted {want:?}",
+            signals.round_state(since)
+        );
+    }
+
+    /// The round state holds `want` through a stretch of virtual time.
+    async fn round_stays(rig: &Rig, since: MonoInstant, want: RoundState) {
+        for _ in 0..10 {
+            assert_eq!(rig.handle.signals().round_state(since), want);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    fn wall_ms(rig: &Rig) -> u64 {
+        u64::try_from(rig.clock.utc_now().0).unwrap()
+    }
+
+    fn stored_contact(rig: &Rig, node: NodeUuid) -> Option<NodeContact> {
+        rig.store
+            .inner
+            .contacts()
+            .into_iter()
+            .find(|c| c.node == node)
+    }
+
+    const ZERO: MonoInstant = MonoInstant(0);
+
+    #[tokio::test(start_paused = true)]
+    async fn round_pending_then_complete() {
+        let (rig, _journal) = rig_with_self_log();
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        listed(&rig, 1).await;
+        round_stays(&rig, ZERO, RoundState::Pending { links: 1 }).await;
+        peer.send_have(true, false, Vec::new()).await;
+        round_is(&rig, ZERO, RoundState::Complete).await;
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_delta_have_does_not_complete_a_round() {
+        let (rig, _journal) = rig_with_self_log();
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        peer.send_have(false, false, Vec::new()).await;
+        round_stays(&rig, ZERO, RoundState::Pending { links: 1 }).await;
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn request_round_resets_to_pending_until_new_round() {
+        let (rig, _journal) = rig_with_self_log();
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        peer.send_have(true, false, Vec::new()).await;
+        round_is(&rig, ZERO, RoundState::Complete).await;
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let at = rig.clock.monotonic_now();
+        rig.handle.signals().request_round(at);
+        assert_eq!(
+            rig.handle.signals().round_state(at),
+            RoundState::Pending { links: 1 },
+            "the old round started before the request"
+        );
+        let (full, ask, _) = peer.expect_have().await;
+        assert!(full && ask, "the request sends Have{{full, ask: true}}");
+        round_stays(&rig, at, RoundState::Pending { links: 1 }).await;
+        assert_eq!(
+            rig.handle.signals().round_state(ZERO),
+            RoundState::Pending { links: 1 },
+            "the reset also reopens older readers"
+        );
+        peer.send_have(true, false, Vec::new()).await;
+        round_is(&rig, at, RoundState::Complete).await;
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_links_reports_no_links() {
+        let (rig, _journal) = rig_with_self_log();
+        assert_eq!(rig.handle.signals().round_state(ZERO), RoundState::NoLinks);
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        peer.send_have(true, false, Vec::new()).await;
+        round_is(&rig, ZERO, RoundState::Complete).await;
+        peer.end();
+        round_is(&rig, ZERO, RoundState::NoLinks).await;
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn only_the_active_link_of_a_node_counts() {
+        let (rig, _journal) = rig_with_self_log();
+        let (_active, _standby) = two_links(&rig).await;
+        round_stays(&rig, ZERO, RoundState::Pending { links: 1 }).await;
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn request_round_before_any_link_cold_start() {
+        let (rig, _journal) = rig_with_self_log();
+        let at = rig.clock.monotonic_now();
+        rig.handle.signals().request_round(at);
+        round_stays(&rig, at, RoundState::NoLinks).await;
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        let (full, ask, _) = peer.expect_have().await;
+        assert!(full && !ask, "activation sends the ordinary full have");
+        listed(&rig, 1).await;
+        round_stays(&rig, at, RoundState::Pending { links: 1 }).await;
+        peer.send_have(true, false, Vec::new()).await;
+        round_is(&rig, at, RoundState::Complete).await;
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn round_waits_for_an_advertised_ahead_log() {
+        let (rig, journal) = node(1, 0, 0);
+        let f = foreign(9, 3);
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        let top = f.envs.len() as u64;
+        peer.send_have(true, false, vec![have_log(f.log.node, 1, top)])
+            .await;
+        peer.find_want(f.log.node, 1, 1).await;
+        round_stays(&rig, ZERO, RoundState::Pending { links: 1 }).await;
+        peer.send(entries_frame(&f.log, &f.envs[..2])).await;
+        until(|| open_vector_counter(&journal, &f.log) == 2).await;
+        round_stays(&rig, ZERO, RoundState::Pending { links: 1 }).await;
+        peer.send(entries_frame(&f.log, &f.envs[2..])).await;
+        until(|| open_vector_counter(&journal, &f.log) == top).await;
+        round_is(&rig, ZERO, RoundState::Complete).await;
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_penalized_ahead_log_does_not_hold_the_round() {
+        let (rig, journal) = node(1, 0, 0);
+        let f = foreign(9, 3);
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        let top = f.envs.len() as u64;
+        peer.send_have(true, false, vec![have_log(f.log.node, 1, top)])
+            .await;
+        peer.find_want(f.log.node, 1, 1).await;
+        round_stays(&rig, ZERO, RoundState::Pending { links: 1 }).await;
+        // A forged second entry penalizes the only source of the log.
+        let mut forged = f.envs[..2].to_vec();
+        forged[1].payload = payload(99, 0);
+        peer.send(entries_frame(&f.log, &forged)).await;
+        round_is(&rig, ZERO, RoundState::Complete).await;
+        assert_eq!(
+            open_vector_counter(&journal, &f.log),
+            0,
+            "the log is still behind: it is unwantable, not caught up"
+        );
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_paused_ahead_log_does_not_hold_the_round() {
+        let (rig, journal) = node(1, 0, 0);
+        let f = foreign(9, 2);
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        peer.send_have(true, false, vec![have_log(f.log.node, 1, 3)])
+            .await;
+        peer.find_want(f.log.node, 1, 1).await;
+        round_stays(&rig, ZERO, RoundState::Pending { links: 1 }).await;
+        // The sink takes a fork on the log: it is paused, not caught up.
+        journal.script(Scripted::Outcome(IngestOutcome::Fork {
+            stored: 0,
+            evidence: evidence(&f),
+        }));
+        peer.send(entries_frame(&f.log, &f.envs[..1])).await;
+        round_is(&rig, ZERO, RoundState::Complete).await;
+        assert_eq!(snapshot(&rig).await.paused_logs, vec![f.log]);
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn seen_relative_ages_give_c_relayed_contact_for_a() {
+        let (rig, _journal) = rig_with_self_log();
+        let (a, b) = (node_of(9), node_of(2));
+        let mut link_b = connect(&rig, 0, &peer_hello(2)).await;
+        link_b.expect_have().await;
+        // B reports itself at 0 and A as last heard 5 s ago.
+        let before = wall_ms(&rig);
+        link_b
+            .send(PeerFrame::Seen {
+                ages: vec![
+                    SeenAge { node: b, age_ms: 0 },
+                    SeenAge {
+                        node: a,
+                        age_ms: 5_000,
+                    },
+                ],
+            })
+            .await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let after = wall_ms(&rig);
+        let for_a = stored_contact(&rig, a).expect("C holds a contact for A");
+        assert_eq!(for_a.via, ContactVia::Relayed);
+        assert!(
+            (before - 5_000..=after - 5_000).contains(&for_a.last_contact_at),
+            "A was heard about 5 s before the report: {} not in {}..={}",
+            for_a.last_contact_at,
+            before - 5_000,
+            after - 5_000
+        );
+        let for_b = stored_contact(&rig, b).expect("C holds a contact for B");
+        assert_eq!(for_b.via, ContactVia::Direct, "B's own frame is direct");
+
+        // What C tells B: itself at 0, A by age, never B.
+        let frames = link_b.pump(10_000).await;
+        let ages = frames
+            .iter()
+            .find_map(|f| match f {
+                PeerFrame::Seen { ages } if ages.iter().any(|age| age.node == a) => {
+                    Some(ages.clone())
+                }
+                _ => None,
+            })
+            .expect("C sends a seen that lists A within 10 s");
+        let me = node_of(1);
+        assert_eq!(
+            ages[0],
+            SeenAge {
+                node: me,
+                age_ms: 0
+            }
+        );
+        assert!(ages.iter().all(|age| age.node != b), "B is left out");
+        let a_age = ages.iter().find(|age| age.node == a).expect("A is listed");
+        assert!(
+            a_age.age_ms >= 5_000,
+            "the age keeps growing from the report: {a_age:?}"
+        );
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn line_gives_c_a_relayed_contact_for_a() {
+        let (a, ja) = node(1, 1, 0);
+        let jb = TestJournal::new(2);
+        let b = start_node(2, jb.clone());
+        let jc = TestJournal::new(3);
+        let c = start_node(3, jc.clone());
+        let _ab = link_nodes(&a, &b).await;
+        let _bc = link_nodes(&b, &c).await;
+        converge(&[&ja, &jb]).await;
+        tokio::time::sleep(Duration::from_secs(25)).await;
+        assert_eq!(snapshot(&c).await.links.len(), 1, "C has no link to A");
+        let for_a = stored_contact(&c, node_of(1)).expect("C holds a contact for A");
+        assert_eq!(for_a.via, ContactVia::Relayed);
+        assert_eq!(
+            stored_contact(&c, node_of(2)).map(|c| c.via),
+            Some(ContactVia::Direct)
+        );
+        assert_eq!(
+            stored_contact(&a, node_of(2)).map(|c| c.via),
+            Some(ContactVia::Direct)
+        );
+        let for_c = stored_contact(&a, node_of(3)).expect("A holds a contact for C");
+        assert_eq!(for_c.via, ContactVia::Relayed);
+        stop(a).await;
+        stop(b).await;
+        stop(c).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn contact_flush_only_on_advance_or_crossing_at_most_every_10s() {
+        let (rig, _journal) = rig_with_self_log();
+        let mut p2 = connect(&rig, 0, &peer_hello(2)).await;
+        p2.expect_have().await;
+        let seen = || PeerFrame::Seen { ages: Vec::new() };
+        p2.send(seen()).await;
+        let first_contact = wall_ms(&rig);
+        p2.pump(2_000).await;
+        let calls = rig.store.calls();
+        assert_eq!(calls.len(), 1, "a never-written row is due at once");
+        assert_eq!(calls[0].1.len(), 1);
+        assert_eq!(calls[0].1[0].node, node_of(2));
+        let c0 = calls[0].1[0].last_contact_at;
+        assert!(
+            (first_contact..=first_contact + 2_000).contains(&c0),
+            "the row carries the frame's time: {c0} vs {first_contact}"
+        );
+
+        // Contacts at +10 s and +20 s: under the 30 s advance, nothing is
+        // written.
+        for _ in 0..2 {
+            p2.pump(10_000).await;
+            p2.send(seen()).await;
+        }
+        p2.pump(5_000).await;
+        assert_eq!(rig.store.calls().len(), 1, "a 20 s advance is not enough");
+
+        // +31 s: the advance rule fires on the next tick.
+        p2.pump(6_000).await;
+        p2.send(seen()).await;
+        p2.pump(2_000).await;
+        let calls = rig.store.calls();
+        assert_eq!(calls.len(), 2);
+        assert!(calls[1].1[0].last_contact_at - c0 >= 30_000);
+
+        // A second node due right after the flush waits out the 10 s spacing.
+        let mut p3 = connect(&rig, 1, &peer_hello(3)).await;
+        p3.expect_have().await;
+        p3.send(seen()).await;
+        p3.pump(5_000).await;
+        assert_eq!(rig.store.calls().len(), 2, "within 10 s of the last flush");
+        p3.pump(10_000).await;
+        let calls = rig.store.calls();
+        assert_eq!(calls.len(), 3);
+        assert!(calls[2].0 - calls[1].0 >= 10_000, "at most every 10 s");
+        assert_eq!(calls[2].1.len(), 1, "only the due row is written");
+        assert_eq!(calls[2].1[0].node, node_of(3));
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_contact_flush_retries_at_the_next_flush() {
+        let (rig, _journal) = rig_with_self_log();
+        rig.store.fail.store(true, Ordering::SeqCst);
+        let mut p2 = connect(&rig, 0, &peer_hello(2)).await;
+        p2.expect_have().await;
+        p2.send(PeerFrame::Seen { ages: Vec::new() }).await;
+        p2.pump(3_000).await;
+        assert_eq!(rig.store.calls().len(), 1);
+        assert!(rig.store.inner.contacts().is_empty(), "the write failed");
+        assert!(
+            rig.lines
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.contains("contact flush failed")),
+            "the failure is logged"
+        );
+        rig.store.fail.store(false, Ordering::SeqCst);
+        p2.pump(12_000).await;
+        let calls = rig.store.calls();
+        assert_eq!(calls.len(), 2, "retried once the 10 s spacing passed");
+        assert!(calls[1].0 - calls[0].0 >= 10_000);
+        assert!(stored_contact(&rig, node_of(2)).is_some());
+        p2.pump(10_000).await;
+        assert_eq!(rig.store.calls().len(), 2, "written, so not due again");
+        stop(rig).await;
+    }
+
     #[tokio::test(start_paused = true)]
     async fn malformed_branch_envelope_dropped_and_counted() {
         let (rig, _journal) = node(1, 0, 0);
@@ -4332,6 +5038,22 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn standby_frames_record_direct_contact() {
+        let (rig, _journal) = rig_with_self_log();
+        let (mut active, mut standby) = two_links(&rig).await;
+        active.pump(3_000).await;
+        assert!(
+            rig.store.inner.contacts().is_empty(),
+            "no frame has arrived yet"
+        );
+        standby.send(PeerFrame::Seen { ages: Vec::new() }).await;
+        standby.pump(3_000).await;
+        let held = stored_contact(&rig, node_of(2)).expect("the standby's frame is contact");
+        assert_eq!(held.via, ContactVia::Direct);
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn refs_changed_one_delta() {
         let (rig, _journal) = node(1, 0, 0);
         let mut fork = connect(&rig, 0, &fork_hello(2)).await;
@@ -4368,6 +5090,21 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_standby_ping_is_contact_too() {
+        let (rig, _journal) = rig_with_self_log();
+        let (mut active, mut standby) = two_links(&rig).await;
+        active.pump(3_000).await;
+        assert!(rig.store.inner.contacts().is_empty());
+        standby.send(PeerFrame::Ping { n: 7 }).await;
+        standby.pump(3_000).await;
+        assert!(
+            stored_contact(&rig, node_of(2)).is_some(),
+            "the link answers the ping itself; the frame count still shows it"
+        );
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn full_have_carries_fork_refs_only_to_fork_cap_peers() {
         let (rig, _journal) = node(1, 0, 0);
         *rig.sink.refs.lock().unwrap() = vec![fork_ref(9)];
@@ -4383,5 +5120,29 @@ mod tests {
         assert_eq!(forks_of(fork.next().await), vec![fork_ref(9)]);
         assert!(forks_of(plain.next().await).is_empty());
         stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn final_flush_on_cancel_writes_what_the_spacing_held_back() {
+        let (rig, _journal) = rig_with_self_log();
+        let seen = || PeerFrame::Seen { ages: Vec::new() };
+        let mut p2 = connect(&rig, 0, &peer_hello(2)).await;
+        p2.expect_have().await;
+        p2.send(seen()).await;
+        p2.pump(1_500).await;
+        assert_eq!(rig.store.calls().len(), 1);
+        let mut p3 = connect(&rig, 1, &peer_hello(3)).await;
+        p3.expect_have().await;
+        p3.send(seen()).await;
+        p3.pump(1_000).await;
+        assert_eq!(rig.store.calls().len(), 1, "held back by the spacing");
+        assert!(stored_contact(&rig, node_of(3)).is_none());
+        let store = rig.store.clone();
+        stop(rig).await;
+        assert_eq!(store.calls().len(), 2, "the final flush made one call");
+        assert!(
+            store.inner.contacts().iter().any(|c| c.node == node_of(3)),
+            "node 3 reached the store at shutdown"
+        );
     }
 }
