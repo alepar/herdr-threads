@@ -5,16 +5,14 @@
 //! row, freeze lower-only), `owner_rotate`/`restore_rotate` (the clone gate,
 //! the in-transaction re-check, and rotation before freeze so I1 holds),
 //! `sync_clone_evidence` with `record_clone_evidence`, `clone_suspect` and
-//! `clear_clone_evidence` (`own_unknown_newer` recording in ht-5fr.6.12),
+//! `clear_clone_evidence`, `record_own_unknown_newer`,
 //! `restore_successor`, `next_incarnation`, `upsert_branch_tip`,
 //! `branch_progress` (chain checks, skipping common entries, the exponential
 //! back-search, lowering the freeze to the first divergence), `reissue_pass`
 //! (candidate order, branch readiness, `waiting` counts, idempotence through
 //! `sync_reissues`), `adopt_declared_freeze`, `status` (including
-//! `own_unknown_newer`), and invariants I2 and I3. Landed so far:
-//! `record_fork`, `next_incarnation`, `reissue_pass`, `owner_rotate`,
-//! `restore_rotate`, `restore_successor`, the clone gate, `upsert_branch_tip`,
-//! `due_branches` and `branch_progress`. It is the only owner of `sync_forks`,
+//! `own_unknown_newer`), and invariants I2 and I3 (`check_invariants`). It
+//! is the only owner of `sync_forks`,
 //! `sync_branches`, `sync_reissues` and `sync_clone_evidence`, and the single
 //! place where repair decisions become rows.
 //!
@@ -48,7 +46,7 @@ use crate::node::NodeUuid;
 use crate::protocol::results::{ApiError, ErrorCode};
 use crate::protocol::time::UtcMillis;
 use crate::store::connection::DecisionInstant;
-use crate::store::connection::{StoreContext, api_error, store_error};
+use crate::store::connection::{StoreContext, SyncState, api_error, store_error};
 use crate::store::journal::{self, ReissueSource};
 use crate::sync::coordinator::{CloneKind, CloneReport};
 use crate::sync::envelope::{Envelope, GENESIS_KIND};
@@ -153,7 +151,15 @@ pub fn record_fork(
 /// test-support `seed_incarnations` fixes the sequence). Needs the journal
 /// open (`Unsupported "journal not open"` otherwise).
 pub fn next_incarnation(tx: &Transaction<'_>, ctx: &StoreContext) -> Result<u32, ApiError> {
-    let state = ctx.sync()?;
+    draw_unused_incarnation(tx, ctx.sync()?)
+}
+
+/// [`next_incarnation`] over a `SyncState` that is not installed yet:
+/// `journal::open` draws the bootstrap incarnation through it.
+pub(crate) fn draw_unused_incarnation(
+    tx: &Transaction<'_>,
+    state: &SyncState,
+) -> Result<u32, ApiError> {
     for _ in 0..MAX_INCARNATION_DRAWS {
         let draw = state
             .incarnation_rng
@@ -885,6 +891,21 @@ pub fn restore_successor(
     conn: &Connection,
     ctx: &StoreContext,
 ) -> Result<Option<LogKey>, ApiError> {
+    let Some((node, chain)) = restore_chain(conn, ctx)? else {
+        return Ok(None);
+    };
+    Ok(chain
+        .last()
+        .map(|&incarnation| LogKey { node, incarnation }))
+}
+
+/// The own node and the incarnations of the restore-successor chain after the
+/// active log (first log after P first, the successor last), per the rules of
+/// [`restore_successor`].
+fn restore_chain(
+    conn: &Connection,
+    ctx: &StoreContext,
+) -> Result<Option<(NodeUuid, Vec<u32>)>, ApiError> {
     if ctx.sync()?.rotated_since_start() {
         return Ok(None);
     }
@@ -943,10 +964,7 @@ pub fn restore_successor(
     if newest_of_p.is_some_and(|hlc| hlc >= first.hlc) {
         return Ok(None);
     }
-    Ok(Some(LogKey {
-        node: active.log.node,
-        incarnation: tail.incarnation,
-    }))
+    Ok(Some((active.log.node, chain)))
 }
 
 // ---- Branch pulls (ht-5fr.6.7) ------------------------------------------------
@@ -1317,6 +1335,562 @@ pub fn branch_progress(
         next_from: last + 1,
         frozen_at,
     })
+}
+
+// ---- Declared freeze, status and invariants (ht-5fr.6.12) ----------------------
+
+/// Adopts a freeze another node's `node.genesis` declared for its own
+/// predecessor `log`: when this store holds `log` (and it is not the active
+/// self log, which only the owner's rotation may retire), inserts a
+/// `sync_forks(origin='declared')` row and lowers the freeze to `k` through
+/// `journal::freeze` (lower-only). A log that is not held, or the active self
+/// log, is a no-op. Returns whether a row was written.
+pub fn adopt_declared_freeze(tx: &Transaction<'_>, log: &LogKey, k: u64) -> Result<bool, ApiError> {
+    let held: Option<(i64, bool)> = tx
+        .query_row(
+            "SELECT l.log_ix, l.log_ix IS (SELECT active_log_ix FROM local_node) \
+             FROM sync_logs l WHERE l.node_uuid=?1 AND l.incarnation=?2",
+            params![log.node.to_string(), log.incarnation],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some((log_ix, false)) = held else {
+        return Ok(false);
+    };
+    journal::freeze(tx, log, k)?;
+    tx.execute(
+        "INSERT INTO sync_forks(log_ix,origin,frozen_at,detected_at) \
+         VALUES (?1,'declared',?2,CAST(strftime('%s','now') AS INTEGER)*1000)",
+        params![log_ix, i64::try_from(k).unwrap_or(i64::MAX)],
+    )
+    .map_err(store_error)?;
+    Ok(true)
+}
+
+/// Why a log is frozen, as `sync_forks` records it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ForkOrigin {
+    /// A proof (two signed entries at one counter) froze it.
+    Evidence,
+    /// Only the owner's genesis declared it.
+    Declared,
+}
+
+/// A `sync_branches.state`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BranchState {
+    Pulling,
+    Complete,
+    Unavailable,
+}
+
+/// One conflicting branch of a log, as `status` reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BranchStatus {
+    pub branch_ix: i64,
+    pub tip_counter: u64,
+    pub tip_hash: [u8; 32],
+    pub next_from: u64,
+    pub state: BranchState,
+    pub attempts: u32,
+    pub last_error: Option<String>,
+}
+
+/// The repair state of one log that is frozen or has a fork or branch row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LogRepair {
+    pub log: LogKey,
+    /// The freeze counter, if the log is frozen.
+    pub frozen_at: Option<u64>,
+    /// `Evidence` when any proof froze it, else `Declared`; `None` for a log
+    /// with only branch rows.
+    pub origin: Option<ForkOrigin>,
+    /// `sync_forks` rows with `origin='evidence'`.
+    pub evidence_count: u32,
+    pub branches: Vec<BranchStatus>,
+    /// Entries of this log re-issued so far (`sync_reissues` rows).
+    pub reissued: u32,
+    /// Entries still to re-issue (an own frozen log's tail and forked rows).
+    pub pending: u32,
+}
+
+/// One `sync_clone_evidence` row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CloneEvidenceRow {
+    pub ev_ix: i64,
+    pub subject: NodeUuid,
+    /// `handshake`, `peer_close`, `third_party`, `own_unknown_newer` or
+    /// `lineage_branch`.
+    pub kind: String,
+    /// The log a `own_unknown_newer` or `lineage_branch` row names.
+    pub log: Option<LogKey>,
+    pub detail: String,
+    pub source_node: Option<NodeUuid>,
+    pub detected_at: i64,
+    pub last_seen_at: i64,
+    pub cleared_at: Option<i64>,
+    pub cleared_by: Option<String>,
+}
+
+/// Remedy for two live copies of this node.
+pub const REMEDY_TWO_COPIES: &str = "two live copies: move one copy's <state_dir>/node/ aside, then run `herdr-threads sync clone-cleared` on the keeper";
+/// Remedy for one restored copy the restore-successor rules cannot tell from a clone.
+pub const REMEDY_SINGLE_COPY: &str = "one restored copy: run `herdr-threads sync clone-cleared`";
+
+/// What to do about open clone evidence about this node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CloneRemedy {
+    pub two_copies: &'static str,
+    pub single_copy: &'static str,
+}
+
+/// The read side for `sync status` (ht-5fr.8).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IncarnationsStatus {
+    pub logs: Vec<LogRepair>,
+    /// Own logs that are not active, are named by no own genesis, are newer
+    /// than the active genesis and are off the restore chain: a clone
+    /// suspect. Detection only.
+    pub own_unknown_newer: Vec<LogKey>,
+    /// Own predecessors named by two own geneses.
+    pub lineage_branches: Vec<LogKey>,
+    pub restore_successor: Option<LogKey>,
+    /// Open and cleared rows, oldest first.
+    pub clone_evidence: Vec<CloneEvidenceRow>,
+    /// Set while uncleared evidence about this node is open.
+    pub remedy: Option<CloneRemedy>,
+}
+
+fn log_key(node: &str, incarnation: u32) -> Result<LogKey, ApiError> {
+    Ok(LogKey {
+        node: node
+            .parse()
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "malformed node uuid"))?,
+        incarnation,
+    })
+}
+
+fn counter_u64(value: i64) -> u64 {
+    u64::try_from(value).unwrap_or(0)
+}
+
+fn count_u32(value: i64) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+/// Not-yet-re-issued entries of an own frozen log (the `CANDIDATES` rule,
+/// counted).
+fn pending_reissues(conn: &Connection, log_ix: i64, frozen_at: i64) -> Result<u32, ApiError> {
+    let pending: i64 = conn
+        .query_row(
+            "SELECT \
+              (SELECT COUNT(*) FROM journal j WHERE j.log_ix=?1 AND j.counter>?2 AND j.kind<>?3 \
+                 AND NOT EXISTS(SELECT 1 FROM sync_reissues r WHERE r.source_log_ix=j.log_ix \
+                                AND r.source_counter=j.counter AND r.source_hash=j.hash)) \
+            + (SELECT COUNT(*) FROM journal_forked f WHERE f.log_ix=?1 AND f.kind<>?3 \
+                 AND NOT EXISTS(SELECT 1 FROM sync_reissues r WHERE r.source_log_ix=f.log_ix \
+                                AND r.source_counter=f.counter AND r.source_hash=f.hash))",
+            params![log_ix, frozen_at, GENESIS_KIND],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    Ok(count_u32(pending))
+}
+
+fn log_repairs(conn: &Connection) -> Result<Vec<LogRepair>, ApiError> {
+    let rows: Vec<(i64, String, u32, bool, Option<i64>)> = {
+        let mut statement = conn
+            .prepare(
+                "SELECT l.log_ix,l.node_uuid,l.incarnation,l.is_self,\
+                        CASE l.state WHEN 'frozen' THEN l.frozen_at_counter END \
+                 FROM sync_logs l WHERE l.state='frozen' \
+                    OR EXISTS(SELECT 1 FROM sync_forks f WHERE f.log_ix=l.log_ix) \
+                    OR EXISTS(SELECT 1 FROM sync_branches b WHERE b.log_ix=l.log_ix) \
+                 ORDER BY l.log_ix",
+            )
+            .map_err(store_error)?;
+        statement
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .map_err(store_error)?
+            .collect::<Result<_, _>>()
+            .map_err(store_error)?
+    };
+    let mut out = Vec::with_capacity(rows.len());
+    for (log_ix, node, incarnation, is_self, frozen_at) in rows {
+        let (evidence, declared): (i64, i64) = conn
+            .query_row(
+                "SELECT COALESCE(SUM(origin='evidence'),0),COALESCE(SUM(origin='declared'),0) \
+                 FROM sync_forks WHERE log_ix=?1",
+                [log_ix],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(store_error)?;
+        let origin = if evidence > 0 {
+            Some(ForkOrigin::Evidence)
+        } else if declared > 0 {
+            Some(ForkOrigin::Declared)
+        } else {
+            None
+        };
+        let reissued: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sync_reissues WHERE source_log_ix=?1",
+                [log_ix],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        let pending = match frozen_at {
+            Some(at) if is_self => pending_reissues(conn, log_ix, at)?,
+            _ => 0,
+        };
+        out.push(LogRepair {
+            log: log_key(&node, incarnation)?,
+            frozen_at: frozen_at.map(counter_u64),
+            origin,
+            evidence_count: count_u32(evidence),
+            branches: branch_statuses(conn, log_ix)?,
+            reissued: count_u32(reissued),
+            pending,
+        });
+    }
+    Ok(out)
+}
+
+fn branch_statuses(conn: &Connection, log_ix: i64) -> Result<Vec<BranchStatus>, ApiError> {
+    let mut statement = conn
+        .prepare(
+            "SELECT branch_ix,tip_counter,tip_hash,next_from,state,attempts,last_error \
+             FROM sync_branches WHERE log_ix=?1 ORDER BY branch_ix",
+        )
+        .map_err(store_error)?;
+    let rows = statement
+        .query_map([log_ix], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, Vec<u8>>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, Option<String>>(6)?,
+            ))
+        })
+        .map_err(store_error)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (branch_ix, tip_counter, tip_hash, next_from, state, attempts, last_error) =
+            row.map_err(store_error)?;
+        out.push(BranchStatus {
+            branch_ix,
+            tip_counter: counter_u64(tip_counter),
+            tip_hash: blob32(tip_hash, "branch tip hash")?,
+            next_from: counter_u64(next_from),
+            state: match state.as_str() {
+                "pulling" => BranchState::Pulling,
+                "complete" => BranchState::Complete,
+                "unavailable" => BranchState::Unavailable,
+                _ => return Err(api_error(ErrorCode::StoreCorrupt, "unknown branch state")),
+            },
+            attempts: count_u32(attempts),
+            last_error,
+        });
+    }
+    Ok(out)
+}
+
+fn clone_evidence_rows(conn: &Connection) -> Result<Vec<CloneEvidenceRow>, ApiError> {
+    let mut statement = conn
+        .prepare(
+            "SELECT e.ev_ix,e.subject,e.kind,l.node_uuid,l.incarnation,e.detail,e.source_node,\
+                    e.detected_at,e.last_seen_at,e.cleared_at,e.cleared_by \
+             FROM sync_clone_evidence e LEFT JOIN sync_logs l ON l.log_ix=e.log_ix \
+             ORDER BY e.ev_ix",
+        )
+        .map_err(store_error)?;
+    let rows = statement
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<u32>>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, i64>(7)?,
+                r.get::<_, i64>(8)?,
+                r.get::<_, Option<i64>>(9)?,
+                r.get::<_, Option<String>>(10)?,
+            ))
+        })
+        .map_err(store_error)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (ev_ix, subject, kind, log_node, log_inc, detail, source, detected, seen, at, by) =
+            row.map_err(store_error)?;
+        let node = |text: &str| {
+            text.parse::<NodeUuid>()
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "malformed node uuid"))
+        };
+        out.push(CloneEvidenceRow {
+            ev_ix,
+            subject: node(&subject)?,
+            kind,
+            log: match (log_node, log_inc) {
+                (Some(n), Some(i)) => Some(log_key(&n, i)?),
+                _ => None,
+            },
+            detail,
+            source_node: source.as_deref().map(node).transpose()?,
+            detected_at: detected,
+            last_seen_at: seen,
+            cleared_at: at,
+            cleared_by: by,
+        });
+    }
+    Ok(out)
+}
+
+/// Own logs that look like a clone's: not active, named as predecessor by no
+/// own genesis, genesis HLC above the active genesis, and off the restore
+/// chain.
+fn own_unknown_newer_logs(conn: &Connection, ctx: &StoreContext) -> Result<Vec<LogKey>, ApiError> {
+    let active = active_self(conn)?;
+    let geneses = own_geneses(conn)?;
+    let Some(base) = geneses
+        .iter()
+        .find(|g| g.incarnation == active.log.incarnation)
+    else {
+        return Ok(Vec::new());
+    };
+    let chain = restore_chain(conn, ctx)?
+        .map(|(_, chain)| chain)
+        .unwrap_or_default();
+    let mut out: Vec<LogKey> = geneses
+        .iter()
+        .filter(|g| {
+            g.incarnation != active.log.incarnation
+                && g.hlc > base.hlc
+                && !chain.contains(&g.incarnation)
+                && !geneses.iter().any(|n| n.predecessor == Some(g.incarnation))
+        })
+        .map(|g| LogKey {
+            node: active.log.node,
+            incarnation: g.incarnation,
+        })
+        .collect();
+    out.sort_by_key(|log| log.incarnation);
+    Ok(out)
+}
+
+/// Held own predecessors named by two or more own geneses, with the
+/// incarnations that name each.
+fn lineage_branch_logs(conn: &Connection) -> Result<Vec<(LogKey, Vec<u32>)>, ApiError> {
+    let node = active_self(conn)?.log.node;
+    let geneses = own_geneses(conn)?;
+    let mut predecessors: Vec<u32> = geneses.iter().filter_map(|g| g.predecessor).collect();
+    predecessors.sort_unstable();
+    predecessors.dedup();
+    let mut out = Vec::new();
+    for predecessor in predecessors {
+        let mut namers: Vec<u32> = geneses
+            .iter()
+            .filter(|g| g.predecessor == Some(predecessor))
+            .map(|g| g.incarnation)
+            .collect();
+        if namers.len() < 2 {
+            continue;
+        }
+        namers.sort_unstable();
+        let log = LogKey {
+            node,
+            incarnation: predecessor,
+        };
+        if log_ix_of(conn, &log)?.is_some() {
+            out.push((log, namers));
+        }
+    }
+    Ok(out)
+}
+
+fn log_ix_of(conn: &Connection, log: &LogKey) -> Result<Option<i64>, ApiError> {
+    conn.query_row(
+        "SELECT log_ix FROM sync_logs WHERE node_uuid=?1 AND incarnation=?2",
+        params![log.node.to_string(), log.incarnation],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(store_error)
+}
+
+/// The repair read model on a query connection (ht-5fr.8's `sync status`).
+/// Detection only: nothing here acts. `ctx` supplies `rotated_since_start`
+/// for [`restore_successor`].
+pub fn status(conn: &Connection, ctx: &StoreContext) -> Result<IncarnationsStatus, ApiError> {
+    let clone_evidence = clone_evidence_rows(conn)?;
+    let remedy = clone_suspect(conn)?.then_some(CloneRemedy {
+        two_copies: REMEDY_TWO_COPIES,
+        single_copy: REMEDY_SINGLE_COPY,
+    });
+    Ok(IncarnationsStatus {
+        logs: log_repairs(conn)?,
+        own_unknown_newer: own_unknown_newer_logs(conn, ctx)?,
+        lineage_branches: lineage_branch_logs(conn)?
+            .into_iter()
+            .map(|(log, _)| log)
+            .collect(),
+        restore_successor: restore_successor(conn, ctx)?,
+        clone_evidence,
+        remedy,
+    })
+}
+
+/// Records clone evidence for every `own_unknown_newer` log and every
+/// `lineage_branch` predecessor that no row (open or cleared) names yet, so a
+/// cleared log is acknowledged for good. Returns the number of rows
+/// inserted. Logs on the restore-successor chain are not evidence.
+pub fn record_own_unknown_newer(
+    tx: &Transaction<'_>,
+    ctx: &StoreContext,
+    now: UtcMillis,
+) -> Result<u32, ApiError> {
+    let named = |log: &LogKey| -> Result<bool, ApiError> {
+        let Some(log_ix) = log_ix_of(tx, log)? else {
+            return Ok(true);
+        };
+        tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_clone_evidence WHERE log_ix=?1)",
+            [log_ix],
+            |r| r.get(0),
+        )
+        .map_err(store_error)
+    };
+    let mut recorded = 0;
+    for log in own_unknown_newer_logs(tx, ctx)? {
+        if !named(&log)? {
+            let hlc: i64 = tx
+                .query_row(
+                    "SELECT j.hlc FROM journal j JOIN sync_logs l ON l.log_ix=j.log_ix \
+                     WHERE l.node_uuid=?1 AND l.incarnation=?2 AND j.counter=1",
+                    params![log.node.to_string(), log.incarnation],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            let detail = format!("genesis_hlc={hlc}");
+            recorded += u32::from(record_log_clone_evidence(
+                tx,
+                LogEvidence::OwnUnknownNewer,
+                &log,
+                &detail,
+                now,
+            )?);
+        }
+    }
+    for (log, namers) in lineage_branch_logs(tx)? {
+        if !named(&log)? {
+            let detail = format!(
+                "named_by={}",
+                namers
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            recorded += u32::from(record_log_clone_evidence(
+                tx,
+                LogEvidence::LineageBranch,
+                &log,
+                &detail,
+                now,
+            )?);
+        }
+    }
+    Ok(recorded)
+}
+
+/// The invariants [`check_invariants`] checks (I1 is `open`'s startup check).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Invariant {
+    /// Every `journal_forked` row of a log is above its freeze.
+    I2,
+    /// No `sync_reissues` row names a `node.genesis` entry.
+    I3,
+}
+
+/// One broken invariant, for `sync verify`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvariantViolation {
+    pub invariant: Invariant,
+    pub log: LogKey,
+    pub counter: u64,
+    pub detail: String,
+}
+
+/// Checks I2 and I3 over the whole store; an empty list is healthy.
+pub fn check_invariants(conn: &Connection) -> Result<Vec<InvariantViolation>, ApiError> {
+    let mut out = Vec::new();
+    let mut i2 = conn
+        .prepare(
+            "SELECT l.node_uuid,l.incarnation,f.counter,l.frozen_at_counter \
+             FROM journal_forked f JOIN sync_logs l ON l.log_ix=f.log_ix \
+             WHERE f.counter<=l.frozen_at_counter ORDER BY f.forked_ix",
+        )
+        .map_err(store_error)?;
+    let rows = i2
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, u32>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(store_error)?;
+    for row in rows {
+        let (node, incarnation, counter, frozen_at) = row.map_err(store_error)?;
+        out.push(InvariantViolation {
+            invariant: Invariant::I2,
+            log: log_key(&node, incarnation)?,
+            counter: counter_u64(counter),
+            detail: format!(
+                "journal_forked row at {counter} is at or below the freeze {frozen_at}"
+            ),
+        });
+    }
+    let mut i3 = conn
+        .prepare(
+            "SELECT l.node_uuid,l.incarnation,r.source_counter FROM sync_reissues r \
+             JOIN sync_logs l ON l.log_ix=r.source_log_ix \
+             WHERE EXISTS(SELECT 1 FROM journal j WHERE j.log_ix=r.source_log_ix \
+                          AND j.counter=r.source_counter AND j.hash=r.source_hash AND j.kind=?1) \
+                OR EXISTS(SELECT 1 FROM journal_forked f WHERE f.log_ix=r.source_log_ix \
+                          AND f.counter=r.source_counter AND f.hash=r.source_hash AND f.kind=?1) \
+                OR EXISTS(SELECT 1 FROM journal t WHERE t.ingest_seq=r.target_ingest_seq AND t.kind=?1) \
+             ORDER BY r.reissued_at,r.source_counter",
+        )
+        .map_err(store_error)?;
+    let rows = i3
+        .query_map([GENESIS_KIND], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, u32>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(store_error)?;
+    for row in rows {
+        let (node, incarnation, counter) = row.map_err(store_error)?;
+        out.push(InvariantViolation {
+            invariant: Invariant::I3,
+            log: log_key(&node, incarnation)?,
+            counter: counter_u64(counter),
+            detail: format!("sync_reissues row names a {GENESIS_KIND} entry at {counter}"),
+        });
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

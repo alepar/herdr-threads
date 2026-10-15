@@ -343,11 +343,7 @@ pub fn open(
             utc: wall,
             monotonic: ctx.clock().monotonic_now(),
         };
-        let incarnation = state
-            .incarnation_rng
-            .lock()
-            .map_err(|_| corrupt("incarnation source poisoned"))?
-            .draw_incarnation();
+        let incarnation = crate::store::incarnations::draw_unused_incarnation(&tx, &state)?;
         begin_incarnation_with(&tx, &state, decision, incarnation, None, host_label)?;
     }
     let opened = report(&tx, bootstrapped)?;
