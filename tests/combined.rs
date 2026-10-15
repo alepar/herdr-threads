@@ -104,6 +104,9 @@ fn every_top_level_test_file_is_built() {
 #[path = "store/lazy_publication.rs"]
 mod lazy_publication;
 
+#[path = "store/send_fence.rs"]
+mod send_fence;
+
 #[path = "store/lazy_metadata.rs"]
 mod lazy_metadata;
 

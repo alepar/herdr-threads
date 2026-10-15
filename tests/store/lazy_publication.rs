@@ -533,7 +533,9 @@ fn ordinary_publication_positive_control() {
 #[test]
 fn lazy_publication_fences_every_canonical_revision() {
     for (table, column) in [
-        ("threads", "timeline_revision"),
+        // The timeline revision fences only preparations with warnings (ht-5fr.4.17); that
+        // and its absence for a lazy send are asserted in `send_fence.rs`.
+        ("threads", "membership_revision"),
         ("herdr_hosts", "lifecycle_revision"),
         ("local_node", "send_eligibility_revision"),
         ("local_node", "duration_config_revision"),
