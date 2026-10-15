@@ -14,9 +14,9 @@ pub mod transport;
 
 use crate::daemon::{
     diagnostics::{BufferLimits, DiagnosticSink, DiagnosticSource},
-    lifecycle::run_owner_attached,
+    lifecycle::{run_owner_attached, run_owner_late_host},
     logs::RotatingLogSink,
-    ownership::EndpointDescriptor,
+    ownership::{EndpointDescriptor, PrimaryHost},
     paths::NodePaths,
 };
 use crate::ports::LocalService;
@@ -382,6 +382,38 @@ where
     Fut: Future<Output = io::Result<()>>,
 {
     run_owner_attached(
+        paths,
+        primary_host,
+        clock,
+        shutdown,
+        ChildOwnedLogSink::new(paths),
+        BufferLimits::new(64 * 1024, 16 * 1024)?,
+        make_service,
+        on_ready,
+        on_drained,
+    )
+    .await
+}
+
+/// [`run_elected_attached`] whose `primary_host` is filled by `make_service`
+/// once the daemon has attached (or not) a Herdr server, and read when the
+/// descriptor is published.
+pub async fn run_elected_late_host<F, R, D, Fut>(
+    paths: &NodePaths,
+    primary_host: PrimaryHost,
+    clock: Arc<dyn Clock>,
+    shutdown: Cancellation,
+    make_service: F,
+    on_ready: R,
+    on_drained: D,
+) -> io::Result<bool>
+where
+    F: FnOnce(crate::node::NodeUuid, Uuid, Cancellation) -> io::Result<Arc<dyn LocalService>>,
+    R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
+    D: FnOnce() -> Fut,
+    Fut: Future<Output = io::Result<()>>,
+{
+    run_owner_late_host(
         paths,
         primary_host,
         clock,

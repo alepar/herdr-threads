@@ -89,7 +89,7 @@ impl Session {
                     clock,
                     daemon_stop,
                     ServiceConfig::default(),
-                    host,
+                    herdr_threads::app::HostChoice::given(host),
                     daemon_probe,
                     move |descriptor| {
                         ready_tx

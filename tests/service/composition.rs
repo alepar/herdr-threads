@@ -1437,6 +1437,120 @@ impl herdr_threads::ports::HostPort for HungWakeHost {
     }
 }
 
+/// `HostChoice::Remembered` on a store with no remembered live host: the
+/// daemon binds, publishes a descriptor with no `primary_host`, answers Health
+/// and Stop, spawns no host workers (wake, observation, archival lanes are
+/// never registered, the deadline lane is) and refuses host-bound commands
+/// with `HostUnavailable`.
+#[test]
+fn store_only_daemon_serves_without_host_workers() {
+    if herdr_threads::test_support::spawn::ran_in_own_process(
+        module_path!(),
+        "store_only_daemon_serves_without_host_workers",
+    ) {
+        return;
+    }
+    let _stdio_guard = super::IN_PROCESS_DAEMON
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    use herdr_threads::{
+        protocol::commands::{ResolveSeat, StopRequest},
+        protocol::ids::OperationId,
+        service::kicks::Lane,
+    };
+    let root = std::env::temp_dir().join(format!("herdr-store-only-{}", Uuid::new_v4()));
+    fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+    struct Root(std::path::PathBuf);
+    impl Drop for Root {
+        fn drop(&mut self) {
+            super::print_daemon_logs_if_panicking(&self.0);
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let _root = Root(root.clone());
+    let paths = NodePaths::resolve(&root.join("state")).unwrap();
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    let lanes = herdr_threads::app::LaneProbe::default();
+    let (daemon_paths, daemon_clock, daemon_lanes) =
+        (paths.clone(), Arc::clone(&clock), lanes.clone());
+    let shutdown = Cancellation::default();
+    let fallback_stop = shutdown.clone();
+    let daemon = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(herdr_threads::app::run_elected_probed(
+                &daemon_paths,
+                daemon_clock,
+                shutdown,
+                ServiceConfig::default(),
+                herdr_threads::app::HostChoice::Remembered,
+                daemon_lanes,
+                move |descriptor| {
+                    ready_tx.send(descriptor.clone()).unwrap();
+                    Ok(())
+                },
+            ))
+    });
+    let descriptor = match ready_rx.recv_timeout(Duration::from_secs(30)) {
+        Ok(descriptor) => descriptor,
+        Err(error) => {
+            fallback_stop.cancel();
+            panic!("store-only daemon not ready: {error}; {:?}", daemon.join());
+        }
+    };
+    assert_eq!(descriptor.primary_host, None);
+    let client = LocalSocketClient::new(
+        descriptor.endpoint.clone(),
+        Arc::clone(&clock),
+        descriptor.node_uuid,
+        Some(descriptor.boot_id),
+    );
+    let budget = || CallBudget {
+        deadline: MonoInstant(clock.monotonic_now().0 + 5_000),
+        cancellation: Cancellation::default(),
+    };
+    assert!(matches!(
+        herdr_threads::ports::LocalClient::call(&client, Command::Health, &budget()).unwrap(),
+        CommandResult::Health(_)
+    ));
+    assert!(lanes.registered(Lane::Deadlines));
+    for host_lane in [Lane::Wakes, Lane::Observation, Lane::Archival] {
+        assert!(
+            !lanes.registered(host_lane),
+            "{host_lane:?} must not run without a host"
+        );
+    }
+    let refused = herdr_threads::ports::LocalClient::call(
+        &client,
+        Command::ResolveSeat(ResolveSeat {
+            target: HostTargetId::new("p"),
+            operation: OperationId::new("op"),
+        }),
+        &budget(),
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::HostUnavailable, "{refused:?}");
+    assert!(matches!(
+        herdr_threads::ports::LocalClient::call(
+            &client,
+            Command::Stop(StopRequest {
+                expected_boot: descriptor.boot_id.to_string()
+            }),
+            &budget()
+        )
+        .unwrap(),
+        CommandResult::StopAccepted(_)
+    ));
+    assert!(daemon.join().unwrap().unwrap());
+    let log = fs::read_to_string(paths.node_dir.join("daemon.log")).unwrap_or_default();
+    assert!(log.contains("store-only"), "{log}");
+    // Every lane that runs is healthy: no lane error lines in the log.
+    assert!(!log.contains("lane "), "{log}");
+}
+
 #[test]
 fn elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined() {
     // Seconds of in-process daemon time: runs beside, not behind, IN_PROCESS_DAEMON.
@@ -1498,7 +1612,7 @@ fn elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined() {
                 daemon_clock,
                 shutdown,
                 ServiceConfig::default(),
-                host,
+                herdr_threads::app::HostChoice::given(host),
                 move |descriptor: &herdr_threads::daemon::ownership::EndpointDescriptor| {
                     ready_tx.send(descriptor.clone()).unwrap();
                     Ok(())
@@ -1830,7 +1944,7 @@ impl ActualNativeFixture {
                     thread_clock,
                     thread_stop,
                     ServiceConfig::default(),
-                    host,
+                    herdr_threads::app::HostChoice::given(host),
                     thread_lanes,
                     move |descriptor| {
                         ready.send(descriptor.clone()).unwrap();
@@ -1918,7 +2032,7 @@ impl ActualNativeFixture {
                     clock,
                     stop,
                     ServiceConfig::default(),
-                    host,
+                    herdr_threads::app::HostChoice::given(host),
                     lanes,
                     move |descriptor| {
                         ready.send(descriptor.clone()).unwrap();
@@ -2567,7 +2681,7 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
                 thread_clock,
                 thread_stop,
                 ServiceConfig::default(),
-                host,
+                herdr_threads::app::HostChoice::given(host),
                 move |descriptor| {
                     ready.send(descriptor.clone()).unwrap();
                     Ok(())

@@ -9,8 +9,8 @@ use crate::daemon::logs::{
     startup_log_path, startup_logs_dir, startup_tail_text,
 };
 use crate::daemon::ownership::{
-    EndpointDescriptor, OwnerLock, owner_lock_identity, previous_owner_released, read_descriptor,
-    read_node_uuid_hint,
+    EndpointDescriptor, OwnerLock, PrimaryHost, owner_lock_identity, previous_owner_released,
+    read_descriptor, read_node_uuid_hint,
 };
 use crate::daemon::paths::{NodePaths, RuntimeContext, effective_uid};
 use crate::daemon::remedy::{RemedyContext, remedy};
@@ -680,8 +680,45 @@ where
     D: FnOnce() -> Fut,
     Fut: Future<Output = io::Result<()>>,
 {
+    run_owner_late_host(
+        paths,
+        PrimaryHost::new(primary_host),
+        clock,
+        shutdown,
+        sink,
+        limits,
+        make_service,
+        on_ready,
+        on_drained,
+    )
+    .await
+}
+
+/// [`run_owner_attached`] whose `primary_host` is filled by `make_service`
+/// (the elected daemon attaches its Herdr server after its store opens) and
+/// read when the descriptor is published.
+// Allowed: run_owner_attached's inputs with a shared primary-host slot.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_owner_late_host<S, F, R, D, Fut>(
+    paths: &NodePaths,
+    primary_host: PrimaryHost,
+    clock: Arc<dyn Clock>,
+    shutdown: Cancellation,
+    sink: S,
+    limits: BufferLimits,
+    make_service: F,
+    on_ready: R,
+    on_drained: D,
+) -> io::Result<bool>
+where
+    S: DiagnosticSink,
+    F: FnOnce(NodeUuid, Uuid, Cancellation) -> io::Result<Arc<dyn LocalService>>,
+    R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
+    D: FnOnce() -> Fut,
+    Fut: Future<Output = io::Result<()>>,
+{
     let lease = match OwnerLock::acquire(paths) {
-        Ok(lease) => lease.with_primary_host(primary_host),
+        Ok(lease) => lease.with_primary_host_slot(primary_host),
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(false),
         Err(error) => return Err(error),
     };

@@ -8,7 +8,7 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -25,6 +25,31 @@ pub struct EndpointDescriptor {
     /// `None` for a store-only daemon. Read by the interim single-host guard.
     #[serde(default)]
     pub primary_host: Option<std::path::PathBuf>,
+}
+
+/// The attached Herdr endpoint a descriptor publishes as `primary_host`, shared
+/// with the daemon's service factory: the elected daemon learns its host only
+/// after the store opens (`HostChoice`), which is after the lease exists and
+/// before the descriptor is published. Cloning shares the value.
+#[derive(Debug, Clone, Default)]
+pub struct PrimaryHost(Arc<Mutex<Option<std::path::PathBuf>>>);
+
+impl PrimaryHost {
+    pub fn new(host: Option<std::path::PathBuf>) -> Self {
+        Self(Arc::new(Mutex::new(host)))
+    }
+    pub fn set(&self, host: Option<std::path::PathBuf>) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = host;
+    }
+    pub fn get(&self) -> Option<std::path::PathBuf> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
 }
 
 /// The locked owner-lease file. Dropping the last holder releases the lease
@@ -51,7 +76,7 @@ pub struct OwnerLock {
     /// written it. Publication refuses without it.
     node_uuid: Option<NodeUuid>,
     /// Published in the descriptor as `primary_host`.
-    primary_host: Option<std::path::PathBuf>,
+    primary_host: PrimaryHost,
     owner_token: Uuid,
 }
 
@@ -141,7 +166,15 @@ impl OwnerLock {
     /// The attached Herdr endpoint the descriptor will publish as
     /// `primary_host` (canonical; `None` for a store-only daemon).
     pub fn with_primary_host(mut self, primary_host: Option<std::path::PathBuf>) -> Self {
-        self.primary_host = primary_host;
+        self.primary_host = PrimaryHost::new(primary_host);
+        self
+    }
+
+    /// [`Self::with_primary_host`] reading the endpoint from `slot` when the
+    /// descriptor is published, so a host attached after the lease is held
+    /// still reaches the descriptor.
+    pub fn with_primary_host_slot(mut self, slot: PrimaryHost) -> Self {
+        self.primary_host = slot;
         self
     }
 
@@ -153,7 +186,7 @@ impl OwnerLock {
             lock_file: Arc::new(LeaseFile(file)),
             paths: paths.clone(),
             node_uuid: hint_uuid(paths),
-            primary_host: None,
+            primary_host: PrimaryHost::default(),
             owner_token: Uuid::new_v4(),
         })
     }
@@ -285,7 +318,7 @@ impl OwnerLock {
             pid: std::process::id(),
             socket_device,
             socket_inode,
-            primary_host: self.primary_host.clone(),
+            primary_host: self.primary_host.get(),
         };
         atomic_write(
             &self.paths.descriptor_path,

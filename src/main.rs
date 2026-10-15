@@ -1,5 +1,5 @@
 use herdr_threads::{
-    app::{SystemClock, run_elected_guarded},
+    app::{HostChoice, HostFactory, SystemClock, run_elected_guarded},
     cli,
     daemon::paths::{NodePaths, RuntimeContext},
     protocol::time::{Cancellation, Clock},
@@ -44,20 +44,28 @@ fn detached_child(args: &[OsString]) -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let host = Arc::new(herdr_threads::host::native::NativeCli::new(
-        // Until HostChoice (ht-5fr.1.7) a daemon without a host hint fails
-        // start as host-missing.
-        context.require_host()?.to_path_buf(),
-        Arc::clone(&clock),
-    ));
+    // The host is chosen after the store opens: the hint attaches that
+    // endpoint, no hint attaches the remembered live one, else store-only.
+    let choice = match context.host_endpoint.clone() {
+        Some(endpoint) => HostChoice::Hint(endpoint),
+        None => HostChoice::Remembered,
+    };
+    let factory_clock = Arc::clone(&clock);
+    let factory: HostFactory = Arc::new(move |endpoint| {
+        let host = Arc::new(herdr_threads::host::native::NativeCli::new(
+            endpoint.to_path_buf(),
+            Arc::clone(&factory_clock),
+        ));
+        (host.clone(), host)
+    });
     runtime.block_on(run_elected_guarded(
         &paths,
         &context,
         clock,
         Cancellation::default(),
         config,
-        host.clone(),
-        host,
+        choice,
+        factory,
         |_| Ok(()),
     ))?;
     Ok(())

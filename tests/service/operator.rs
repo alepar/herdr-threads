@@ -285,7 +285,7 @@ impl Fixture {
                     thread_clock,
                     thread_stop,
                     ServiceConfig::default(),
-                    thread_host,
+                    herdr_threads::app::HostChoice::given(thread_host),
                     move |d| {
                         tx.send(d.clone()).unwrap();
                         Ok(())

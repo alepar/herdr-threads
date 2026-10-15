@@ -339,7 +339,7 @@ fn user_intent_service_send_stays_unclassified() {
                 // This flow checks immediate notification delivery, separately
                 // from the initial ordinary batching window.
                 ServiceConfig::default().with_wake_batch_delay(0).unwrap(),
-                host,
+                herdr_threads::app::HostChoice::given(host),
                 move |descriptor| {
                     ready_tx
                         .send(descriptor.clone())
