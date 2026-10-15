@@ -7,8 +7,10 @@
 //! records the node in the node directory. It creates and needs nothing.
 //!
 //! A genesis from another node also runs the tag-collision check
-//! (`node_retag::collision_check`). The adoption of a predecessor freeze
-//! belongs to later work (ht-5fr.6).
+//! (`node_retag::collision_check`). A predecessor with `frozen_at: Some(k)`
+//! is a freeze the owner declares: the handler adopts it, for another node's genesis, through
+//! `store::incarnations::adopt_declared_freeze` (a no-op for a log this store
+//! does not hold).
 
 use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
@@ -18,8 +20,9 @@ use super::{ApplyContext, FactError, FactKind};
 use crate::node::{NodeTag, tag_for};
 use crate::protocol::results::{ApiError, ErrorCode};
 use crate::store::connection::store_error;
+use crate::store::incarnations;
 use crate::store::node_directory::{self, NodeDirectoryRow};
-use crate::sync::EntityKey;
+use crate::sync::{EntityKey, LogKey};
 
 /// The log a new incarnation replaces: its incarnation number and, when the
 /// old log was frozen (forked), the counter it was frozen at. `None`
@@ -104,6 +107,20 @@ impl FactKind for NodeGenesis {
             if !ctx.is_local_origin() {
                 collision_check(tx, ctx, ctx.origin.node, tag)?;
             }
+        }
+        // The owner's own rotation records its fork evidence itself
+        // (`owner_rotate`), so only another node's declaration is adopted.
+        if !ctx.is_local_origin()
+            && let Some(Predecessor {
+                incarnation,
+                frozen_at: Some(k),
+            }) = payload.predecessor
+        {
+            let log = LogKey {
+                node: ctx.origin.node,
+                incarnation,
+            };
+            incarnations::adopt_declared_freeze(tx, &log, k).map_err(FactError::from_api)?;
         }
         Ok(())
     }

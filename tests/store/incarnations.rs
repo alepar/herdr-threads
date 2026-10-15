@@ -2211,3 +2211,438 @@ fn branch_progress_corrupt_on_broken_chain_or_bad_sig() {
         BranchVerdict::Corrupt { .. }
     ));
 }
+
+// ---- status, declared freeze and invariants (ht-5fr.6.12) ---------------------
+
+fn status_of(node: &Node) -> IncarnationsStatus {
+    status(&node.conn, &node.ctx).unwrap()
+}
+
+fn evidence_rows(conn: &Connection, kind: &str) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sync_clone_evidence WHERE kind=?1",
+        [kind],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+fn record_unknown(node: &mut Node) -> u32 {
+    node.decide(|tx, ctx, d| record_own_unknown_newer(tx, ctx, d.utc))
+}
+
+fn clear(node: &mut Node) -> u32 {
+    node.decide(|tx, _, d| clear_clone_evidence(tx, "operator:local-user:501", d.utc))
+}
+
+// Kills: a bootstrap that draws from the rng directly (a collision with a used
+// own incarnation is not skipped), and a draw of 1 or a non-random constant.
+#[test]
+fn bootstrap_non_1_random_via_next_incarnation_skips_collision() {
+    let store = Store::new();
+    let ctx = StoreContext::new(store.path.clone(), Arc::new(FixedClock));
+    ctx.seed_incarnations(42);
+    let mut conn = ctx.open_writer().unwrap();
+    let first = journal::open(&ctx, &mut conn, identity_a(), "a-host", registry())
+        .unwrap()
+        .self_log;
+    let mut reference = XorShift::fixed(42);
+    let (d1, d2) = (reference.draw_incarnation(), reference.draw_incarnation());
+    assert_eq!(
+        first.incarnation, d1,
+        "the bootstrap draws the seeded value"
+    );
+    assert_ne!(first.incarnation, 1);
+    assert_ne!(d1, d2);
+
+    // Bootstrap again over the same file with the first draw already used.
+    conn.execute("UPDATE local_node SET active_log_ix=NULL", [])
+        .unwrap();
+    drop(conn);
+    let ctx = StoreContext::new(store.path.clone(), Arc::new(FixedClock));
+    ctx.seed_incarnations(42);
+    let mut conn = ctx.open_writer().unwrap();
+    let second = journal::open(&ctx, &mut conn, identity_a(), "a-host", registry())
+        .unwrap()
+        .self_log;
+    assert_eq!(
+        second.incarnation, d2,
+        "the colliding first draw is skipped"
+    );
+}
+
+// Kills: a freeze that is not lowered, one that is raised, a missing declared
+// row, a held-check that errors on an unknown log, and one that freezes the
+// active self log.
+#[test]
+fn adopt_declared_freeze_lowers_and_ignores_unheld() {
+    let (_sa, _sb, log, _entries, _ctx, mut conn) = fixture();
+    let tx = conn.transaction().unwrap();
+    assert!(adopt_declared_freeze(&tx, &log, 3).unwrap());
+    tx.commit().unwrap();
+    assert_eq!(freeze_of(&conn, &log), ("frozen".into(), Some(3)));
+    let declared: (String, i64, Option<i64>) = conn
+        .query_row(
+            "SELECT origin,frozen_at,proof_counter FROM sync_forks",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(declared, ("declared".into(), 3, None));
+
+    let tx = conn.transaction().unwrap();
+    assert!(adopt_declared_freeze(&tx, &log, 1).unwrap());
+    assert!(adopt_declared_freeze(&tx, &log, 4).unwrap());
+    tx.commit().unwrap();
+    assert_eq!(
+        freeze_of(&conn, &log),
+        ("frozen".into(), Some(1)),
+        "lowered to 1, never raised to 4"
+    );
+
+    let unheld = LogKey {
+        node: identity_a().uuid(),
+        incarnation: 999,
+    };
+    let own_active = LogKey {
+        node: identity_b().uuid(),
+        incarnation: conn
+            .query_row(
+                "SELECT l.incarnation FROM local_node n JOIN sync_logs l ON l.log_ix=n.active_log_ix",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap(),
+    };
+    let rows = count(&conn, "SELECT COUNT(*) FROM sync_forks");
+    let tx = conn.transaction().unwrap();
+    assert!(!adopt_declared_freeze(&tx, &unheld, 1).unwrap());
+    assert!(!adopt_declared_freeze(&tx, &own_active, 1).unwrap());
+    tx.commit().unwrap();
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM sync_forks"), rows);
+    assert_eq!(freeze_of(&conn, &own_active).0, "active");
+}
+
+/// An owner A that authored `put`, then rotated naming the first log with
+/// `frozen_at`; and a third store C holding the first log's genesis and put.
+fn declared_freeze_pair(frozen_at: Option<u64>) -> (Node, Node, LogKey) {
+    let mut a = Node::new(identity_a(), 600, T0);
+    a.author::<PutKind>(&Put {
+        id: "p".into(),
+        fail: None,
+    });
+    let first = a.log;
+    a.clock.set(T0 + 1_000);
+    a.rotate_to(
+        501,
+        Some(Predecessor {
+            incarnation: first.incarnation,
+            frozen_at,
+        }),
+    );
+    let mut c = Node::new(identity_b(), 700, T0);
+    c.ingest(&a, &first, 1);
+    c.ingest(&a, &log_of(&a, 501), 1);
+    c.pass();
+    (a, c, first)
+}
+
+// Kills: a genesis handler that ignores `frozen_at`, a freeze one off, and a
+// missing declared row.
+#[test]
+fn genesis_frozen_at_some_freezes_predecessor_on_third_store() {
+    let (_a, c, first) = declared_freeze_pair(Some(1));
+    assert_eq!(freeze_of(&c.conn, &first), ("frozen".into(), Some(1)));
+    let row: (String, i64) = c
+        .conn
+        .query_row("SELECT origin,frozen_at FROM sync_forks", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(row, ("declared".into(), 1));
+}
+
+// Kills: a handler that freezes on any predecessor, `None` included.
+#[test]
+fn genesis_frozen_at_none_freezes_nothing() {
+    let (_a, c, first) = declared_freeze_pair(None);
+    assert_eq!(freeze_of(&c.conn, &first).0, "active");
+    assert_eq!(count(&c.conn, "SELECT COUNT(*) FROM sync_forks"), 0);
+}
+
+// Kills: a status that drops the origin, the evidence count, the branch rows
+// or the reissued/pending tallies, or counts the genesis as pending.
+#[test]
+fn status_reports_frozen_log_details() {
+    let mut o = owner(3, 2);
+    let prev2 = o.entries[1].hash;
+    let rival = o.fork(3, prev2, r#"{"id":"x3"}"#);
+    let tx = o.conn.transaction().unwrap();
+    record_fork(&tx, &proof(o.old, 3, &o.entries[2], rival.clone()), None).unwrap();
+    upsert_branch_tip(&tx, &o.old, rival.counter, rival.hash, None).unwrap();
+    tx.commit().unwrap();
+
+    let before = status(&o.conn, &o.ctx).unwrap();
+    let repair = before.logs.iter().find(|l| l.log == o.old).unwrap();
+    assert_eq!(repair.frozen_at, Some(2));
+    assert_eq!(repair.origin, Some(ForkOrigin::Evidence));
+    assert_eq!(repair.evidence_count, 1);
+    assert_eq!(repair.branches.len(), 1);
+    let branch = &repair.branches[0];
+    assert_eq!(
+        (branch.tip_counter, branch.tip_hash, branch.state),
+        (3, rival.hash, BranchState::Pulling)
+    );
+    assert_eq!(
+        (repair.reissued, repair.pending),
+        (0, 3),
+        "journal 3 and 4, plus the forked row; never the genesis"
+    );
+
+    o.pass(ALL);
+    let after = status(&o.conn, &o.ctx).unwrap();
+    let repair = after.logs.iter().find(|l| l.log == o.old).unwrap();
+    assert_eq!((repair.reissued, repair.pending), (3, 0));
+    assert!(
+        after.logs.iter().all(|l| l.log == o.old),
+        "the active log is not a repair row"
+    );
+}
+
+/// A store restored to a copy with only the first log (and a late put on it),
+/// plus the original that rotated to the `later` incarnations (a predecessor
+/// of 0 names the first log).
+fn restored_with(later: &[(u32, Option<u32>)]) -> (Node, Node) {
+    let mut orig = Node::new(identity_a(), 600, T0);
+    let first = orig.log.incarnation;
+    for (i, (incarnation, predecessor)) in later.iter().enumerate() {
+        orig.clock.set(T0 + 1_000 * (i as i64 + 1));
+        orig.rotate_to(
+            *incarnation,
+            predecessor.map(|p| Predecessor {
+                incarnation: if p == 0 { first } else { p },
+                frozen_at: None,
+            }),
+        );
+    }
+    let mut restored = Node::new(identity_a(), 600, T0);
+    assert_eq!(restored.log.incarnation, first);
+    for (incarnation, _) in later {
+        restored.ingest(&orig, &log_of(&orig, *incarnation), 1);
+    }
+    // The restored node moved on after the rotation: no restore successor.
+    restored.clock.set(T0 + 100_000);
+    restored.author::<PutKind>(&Put {
+        id: "late".into(),
+        fail: None,
+    });
+    (orig, restored)
+}
+
+// Kills: no `own_unknown_newer`, one that lists the active log, an older log
+// or a foreign node's, and one that fires for a restore successor.
+#[test]
+fn own_unknown_newer_listed_for_unnamed_newer_incarnation() {
+    let (orig, restored) = restored_with(&[(501, None)]);
+    let st = status_of(&restored);
+    assert_eq!(st.own_unknown_newer, vec![log_of(&orig, 501)]);
+    assert_eq!(st.restore_successor, None);
+    // The original's active log is the newest: nothing newer than it.
+    assert!(status_of(&orig).own_unknown_newer.is_empty());
+}
+
+// Kills: a missing "named by a genesis" check (501 is newer than the active
+// log but named by 502's genesis) and a rotated predecessor listed.
+#[test]
+fn own_unknown_newer_empty_for_rotated_predecessor() {
+    let (orig, restored) = restored_with(&[(501, Some(0)), (502, Some(501))]);
+    let st = status_of(&restored);
+    assert_eq!(
+        st.own_unknown_newer,
+        vec![log_of(&orig, 502)],
+        "501 is named by 502's genesis; only the unnamed 502 is a suspect"
+    );
+    // A properly rotated store has nothing unknown.
+    let st = status_of(&orig);
+    assert!(st.own_unknown_newer.is_empty());
+    assert_eq!(st.restore_successor, None);
+}
+
+// Kills: an I2 check missing, an off-by-one at the freeze, an I3 check
+// missing, and a healthy store reported broken.
+#[test]
+fn check_invariants_reports_seeded_i2_and_i3() {
+    let mut o = owner(3, 2);
+    let prev2 = o.entries[1].hash;
+    o.fork(3, prev2, r#"{"id":"x3"}"#);
+    o.pass(ALL);
+    assert_eq!(check_invariants(&o.conn).unwrap(), Vec::new());
+
+    // I2: a forked row at the freeze counter (2) is a violation; 3 is fine.
+    o.conn
+        .execute(
+            "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,received_at) \
+             SELECT log_ix,2,zeroblob(32),randomblob(32),0,'test.put',1,X'',X'',zeroblob(64),0 \
+             FROM sync_logs WHERE state='frozen'",
+            [],
+        )
+        .unwrap();
+    // I3: a reissue row whose source is the old log's genesis.
+    o.conn
+        .execute(
+            "INSERT INTO sync_reissues(source_log_ix,source_counter,source_hash,target_ingest_seq,reissued_at) \
+             SELECT j.log_ix,1,j.hash,(SELECT MAX(ingest_seq) FROM journal),0 \
+             FROM journal j JOIN sync_logs l ON l.log_ix=j.log_ix WHERE l.state='frozen' AND j.counter=1",
+            [],
+        )
+        .unwrap();
+    let violations = check_invariants(&o.conn).unwrap();
+    let kinds: Vec<(Invariant, u64)> = violations
+        .iter()
+        .map(|v| (v.invariant, v.counter))
+        .collect();
+    assert_eq!(kinds, vec![(Invariant::I2, 2), (Invariant::I3, 1)]);
+    assert!(violations.iter().all(|v| v.log == o.old));
+}
+
+// Kills: invariants that fire on a store with no repair state.
+#[test]
+fn check_invariants_empty_when_healthy() {
+    let (_sa, _sb, log, entries, _ctx, mut conn) = fixture();
+    assert_eq!(check_invariants(&conn).unwrap(), Vec::new());
+    let rival = signed_entry(log, 3, entries[1].hash, r#"{"id":"r"}"#);
+    let tx = conn.transaction().unwrap();
+    record_fork(&tx, &proof(log, 3, &entries[2], rival), None).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(check_invariants(&conn).unwrap(), Vec::new());
+}
+
+// Kills: a restore successor listed as a clone, recorded as evidence, or not
+// reported in `restore_successor`.
+#[test]
+fn restore_successor_exempt_from_own_unknown_newer() {
+    let (orig, mut restored) = rotated_original_and_backup(501);
+    restored.ingest(&orig, &log_of(&orig, 501), 1);
+    let st = status_of(&restored);
+    assert_eq!(st.restore_successor, Some(log_of(&orig, 501)));
+    assert!(st.own_unknown_newer.is_empty());
+    assert!(st.lineage_branches.is_empty());
+    assert_eq!(record_unknown(&mut restored), 0);
+    assert_eq!(
+        count(&restored.conn, "SELECT COUNT(*) FROM sync_clone_evidence"),
+        0
+    );
+    assert!(!clone_suspect(&restored.conn).unwrap());
+}
+
+// Kills: no lineage row, a duplicate per call, a re-record after clearing,
+// and a gate that stays shut after clearing.
+#[test]
+fn two_geneses_one_predecessor_records_one_lineage_branch_never_after_clear() {
+    let (orig, mut restored) = rotated_original_and_backup(501);
+    let mut clone = Node::new(identity_a(), 600, T0);
+    clone.clock.set(T0 + 1_500);
+    let i1 = restored.log;
+    clone.rotate_to(
+        502,
+        Some(Predecessor {
+            incarnation: i1.incarnation,
+            frozen_at: None,
+        }),
+    );
+    restored.ingest(&orig, &log_of(&orig, 501), 1);
+    restored.ingest(&clone, &log_of(&clone, 502), 1);
+
+    let st = status_of(&restored);
+    assert_eq!(st.lineage_branches, vec![i1]);
+    assert_eq!(st.restore_successor, None);
+    assert!(!clone_suspect(&restored.conn).unwrap());
+    record_unknown(&mut restored);
+    assert_eq!(evidence_rows(&restored.conn, "lineage_branch"), 1);
+    assert!(clone_suspect(&restored.conn).unwrap());
+    let named: i64 = restored
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM sync_clone_evidence e JOIN sync_logs l ON l.log_ix=e.log_ix \
+             WHERE e.kind='lineage_branch' AND l.incarnation=?1",
+            [i1.incarnation],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(named, 1, "the row names the predecessor");
+
+    assert_eq!(
+        record_unknown(&mut restored),
+        0,
+        "second call records nothing"
+    );
+    assert!(clear(&mut restored) >= 1);
+    assert!(!clone_suspect(&restored.conn).unwrap());
+    assert_eq!(
+        record_unknown(&mut restored),
+        0,
+        "cleared is acknowledged for good"
+    );
+    assert_eq!(evidence_rows(&restored.conn, "lineage_branch"), 1);
+}
+
+// Kills: a status without the two remedies, remedies shown with no open
+// evidence, and remedies that outlive the clear.
+#[test]
+fn status_carries_remedies() {
+    let (_orig, mut restored) = restored_with(&[(501, None)]);
+    assert_eq!(status_of(&restored).remedy, None, "nothing open yet");
+    assert_eq!(record_unknown(&mut restored), 1);
+    let remedy = status_of(&restored).remedy.expect("open evidence");
+    assert!(remedy.two_copies.contains("move one copy's"));
+    assert!(remedy.two_copies.contains("sync clone-cleared"));
+    assert!(remedy.single_copy.contains("sync clone-cleared"));
+    assert!(!remedy.single_copy.contains("move"));
+    clear(&mut restored);
+    assert_eq!(status_of(&restored).remedy, None);
+}
+
+// Kills: no evidence row for the two-incarnation fixture, a second call that
+// records again, and a log re-recorded after it was cleared.
+#[test]
+fn record_own_unknown_newer_once_and_not_after_clear() {
+    let (orig, mut restored) = restored_with(&[(501, None)]);
+    assert!(!clone_suspect(&restored.conn).unwrap());
+    assert_eq!(record_unknown(&mut restored), 1);
+    assert_eq!(evidence_rows(&restored.conn, "own_unknown_newer"), 1);
+    assert!(clone_suspect(&restored.conn).unwrap());
+    assert_eq!(record_unknown(&mut restored), 0);
+    assert_eq!(clear(&mut restored), 1);
+    assert!(!clone_suspect(&restored.conn).unwrap());
+    assert_eq!(record_unknown(&mut restored), 0, "that log is acknowledged");
+    assert_eq!(evidence_rows(&restored.conn, "own_unknown_newer"), 1);
+    assert_eq!(
+        status_of(&restored).own_unknown_newer,
+        vec![log_of(&orig, 501)],
+        "still listed, never re-recorded"
+    );
+}
+
+// Kills: status that omits rows, their kind, log, detail or cleared state.
+#[test]
+fn status_clone_evidence_lists_rows() {
+    let (orig, mut restored) = restored_with(&[(501, None)]);
+    record_unknown(&mut restored);
+    let rows = status_of(&restored).clone_evidence;
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row.kind, "own_unknown_newer");
+    assert_eq!(row.log, Some(log_of(&orig, 501)));
+    assert_eq!(row.subject, identity_a().uuid());
+    assert!(row.detail.starts_with("genesis_hlc="), "{}", row.detail);
+    assert_eq!((row.cleared_at, row.cleared_by.clone()), (None, None));
+
+    clear(&mut restored);
+    let rows = status_of(&restored).clone_evidence;
+    assert_eq!(rows.len(), 1, "cleared rows stay listed");
+    assert!(rows[0].cleared_at.is_some());
+    assert_eq!(
+        rows[0].cleared_by.as_deref(),
+        Some("operator:local-user:501")
+    );
+}
