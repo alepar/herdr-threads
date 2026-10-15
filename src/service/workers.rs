@@ -1156,6 +1156,9 @@ pub type ApplyPostCommit = Box<dyn Fn(&ApplyProgress) + Send>;
 /// with a passive WAL checkpoint. `post_commit` runs after each committed pass.
 /// A failed pass re-sets the hint, backs off on the Pacer and is reported
 /// through `WorkerStatus::record_failure` (the existing one-line lane format).
+/// The lane lifts an expired own-history hold on its tick and bounds its wait by
+/// the hold's remaining time, so held entries apply at the cap with no further
+/// ingest (`start_apply_lane` installs the release kick).
 /// It takes the concrete store, not `JournalPort`: that seam serves sync.
 pub fn start_apply_worker(
     store: Arc<crate::store::SqliteStore>,
@@ -1166,6 +1169,11 @@ pub fn start_apply_worker(
     status: Arc<WorkerStatus>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     status.attach_pacer(Arc::clone(&pacer));
+    let hold = store
+        .context()
+        .sync()
+        .ok()
+        .map(|sync| Arc::clone(sync.own_history_hold()));
     thread::Builder::new()
         .name("herdr-apply".into())
         .spawn(move || {
@@ -1198,6 +1206,10 @@ pub fn start_apply_worker(
             let mut replayed = false;
             let mut since_checkpoint = 0usize;
             while !cancellation.is_cancelled() {
+                // Expiry sets the hint, so the take below sees it.
+                if let Some(hold) = &hold {
+                    hold.active(StorePort::clock(store.as_ref()).monotonic_now());
+                }
                 // Always taken, so the startup hint does not trigger a second pass.
                 let hinted = store.take_apply_hint();
                 if hinted || !replayed {
@@ -1241,8 +1253,15 @@ pub fn start_apply_worker(
                         }
                     }
                 }
-                if cancellation.is_cancelled() || pacer.wait_blocking(APPLY_TICK) == Wake::Cancelled
-                {
+                let tick = hold
+                    .as_ref()
+                    .and_then(|hold| {
+                        hold.remaining(StorePort::clock(store.as_ref()).monotonic_now())
+                    })
+                    .map_or(APPLY_TICK, |left| {
+                        APPLY_TICK.min(left.max(Duration::from_millis(1)))
+                    });
+                if cancellation.is_cancelled() || pacer.wait_blocking(tick) == Wake::Cancelled {
                     break;
                 }
             }

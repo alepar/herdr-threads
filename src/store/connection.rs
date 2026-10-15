@@ -178,8 +178,10 @@ impl HoldState {
 /// touch the store. Role: set by SyncCoordinator and IncarnationsWorker,
 /// read by `apply_pass` and by the FactRoute restore-window authoring hold
 /// ([`active`](Self::active)). When the last flag clears or the cap expires
-/// it sets the shared apply hint and runs the kick hook (a `Lane::Apply`
-/// kick), so held entries apply without waiting for the safety tick.
+/// it sets the shared apply hint and runs the kick hook, which
+/// `start_apply_lane` installs (a `Lane::Apply` kick); the lane also calls
+/// `active` on its tick and bounds its wait by [`remaining`](Self::remaining),
+/// so held entries apply at the cap even with no further ingest.
 pub struct OwnHistoryHold {
     state: std::sync::Mutex<HoldState>,
     apply_hint: Arc<AtomicBool>,
@@ -201,7 +203,8 @@ impl OwnHistoryHold {
         }
     }
 
-    /// Installs the callback that kicks `Lane::Apply` when the hold lifts.
+    /// Installs the callback that kicks `Lane::Apply` when the hold lifts;
+    /// `start_apply_lane` installs it.
     pub fn set_release_kick(&self, kick: Arc<dyn Fn() + Send + Sync>) {
         if let Ok(mut slot) = self.kick.lock() {
             *slot = Some(kick);
@@ -252,6 +255,20 @@ impl OwnHistoryHold {
             self.release();
         }
         false
+    }
+
+    /// How long until the cap lifts the hold, while a flag is set and the hold
+    /// has not expired yet; `None` when no hold is active. The Apply lane
+    /// bounds its wait by it.
+    pub fn remaining(&self, now: MonoInstant) -> Option<Duration> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let started = state
+            .started
+            .filter(|_| state.any() && !state.expiry_logged)?;
+        let elapsed = now.0.saturating_sub(started.0);
+        Some(Duration::from_millis(
+            OWN_HISTORY_HOLD_MAX.saturating_sub(elapsed),
+        ))
     }
 
     #[cfg(test)]
