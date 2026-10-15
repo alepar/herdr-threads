@@ -291,7 +291,7 @@ fn prune_jobs(store: &SqliteStore, budget: &CallBudget) -> Result<(u32, bool), A
 
 /// An unpublished preparation expires after a day without a successful quantum.
 pub const PREPARATION_RETENTION_MS: i64 = 24 * 60 * 60 * 1000;
-const PREPARATION_CANDIDATES_SQL: &str = "SELECT p.id,p.status,p.prepared_at FROM send_preparations p INDEXED BY send_preparations_retention WHERE p.prepared_at IS NOT NULL AND p.status IN ('building','sealed') AND p.prepared_at<=?1 AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=p.id) ORDER BY p.prepared_at,p.id LIMIT ?2";
+const PREPARATION_CANDIDATES_SQL: &str = "SELECT p.id,p.status,p.prepared_at FROM send_preparations p INDEXED BY send_preparations_retention WHERE p.origin='local' AND p.prepared_at IS NOT NULL AND p.status IN ('building','sealed') AND p.prepared_at<=?1 AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=p.id) ORDER BY p.prepared_at,p.id LIMIT ?2";
 
 type PreparationCandidate = (String, String, i64);
 
@@ -339,7 +339,7 @@ fn discard_expired_preparations(
         }
         // The ID fences the generation. Status and progress fence publication,
         // rebuilding and a successful quantum after the read-only scan.
-        let eligible: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM send_preparations p WHERE id=?1 AND status=?2 AND status IN ('building','sealed') AND prepared_at=?3 AND prepared_at<=?4 AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=p.id))",params![id,status,progress,clock.utc_now().0.saturating_sub(PREPARATION_RETENTION_MS)],|r|r.get(0)).map_err(store_error)?;
+        let eligible: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM send_preparations p WHERE id=?1 AND p.origin='local' AND status=?2 AND status IN ('building','sealed') AND prepared_at=?3 AND prepared_at<=?4 AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=p.id))",params![id,status,progress,clock.utc_now().0.saturating_sub(PREPARATION_RETENTION_MS)],|r|r.get(0)).map_err(store_error)?;
         if eligible {
             super::messages::discard_preparation(tx, id)?;
             discarded += 1;

@@ -23,7 +23,8 @@ use super::{
     schema,
 };
 use crate::sync::facts::message::{MessageSent, MessageSentPayload};
-use crate::sync::facts::payload::{ReceiptObligation, RecipientSpec};
+use crate::sync::facts::payload::{ReceiptObligation, RecipientSpec, receipt_settle_key};
+use sha2::{Digest, Sha256};
 
 fn require_live_budget(context: &StoreContext, budget: &CallBudget) -> Result<(), ApiError> {
     if budget.is_exhausted(context.clock()) {
@@ -630,7 +631,7 @@ pub(super) fn walk_audience(
 }
 
 pub(super) fn discard_preparation(tx: &Transaction<'_>, prep_id: &str) -> Result<(), ApiError> {
-    let changed = tx.execute("UPDATE send_preparations SET status='discarded' WHERE id=?1 AND status IN ('building','sealed') AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=?1)",[prep_id]).map_err(store_error)?;
+    let changed = tx.execute("UPDATE send_preparations SET status='discarded' WHERE id=?1 AND origin='local' AND status IN ('building','sealed') AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=?1)",[prep_id]).map_err(store_error)?;
     if changed != 0 {
         tx.execute("INSERT OR IGNORE INTO work_jobs(id,kind,subject_id,high_water) VALUES (?1,'preparation_cleanup',?2,0)",params![format!("work:cleanup:{prep_id}"),prep_id]).map_err(store_error)?;
     }
@@ -646,7 +647,7 @@ pub fn abandon_send_preparation(
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(store_error)?;
-    let changed=tx.execute("UPDATE send_preparations SET status='discarded' WHERE id=?1 AND status IN ('building','sealed') AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=?1)",
+    let changed=tx.execute("UPDATE send_preparations SET status='discarded' WHERE id=?1 AND origin='local' AND status IN ('building','sealed') AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=?1)",
         [expected_preparation_id]).map_err(store_error)?;
     if changed == 0 {
         tx.rollback().map_err(store_error)?;
@@ -677,6 +678,36 @@ pub(super) fn stage_recipient(
             |r| r.get(0),
         )
         .map_err(store_error)?;
+    // A seat another node hosts: this node holds no delivery state for it and
+    // has no availability evidence about it (fact-kinds design section 8).
+    let remote_kind: Option<String> = tx
+        .query_row(
+            "SELECT remote_kind FROM seats WHERE id=?1 AND is_local=0",
+            [recipient],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    if let Some(kind) = remote_kind {
+        // A remote lazy recipient has no row here: its own node writes it when
+        // the `message.sent` payload (which lists it) applies there.
+        if lazy {
+            return Ok(());
+        }
+        // A remote human owes no receipt, like a local one. Any other remote
+        // seat owes a timed one: the sender cannot know its availability.
+        if kind != "human" {
+            let already:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM prepared_recipients WHERE preparation_id=?1 AND seat_id=?2)",params![prep_id,recipient],|r|r.get(0)).map_err(store_error)?;
+            if !already {
+                *count = count.checked_add(1).ok_or_else(|| {
+                    api_error(ErrorCode::SequenceExhausted, "recipient ordinal exhausted")
+                })?;
+                tx.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot,availability_provenance) VALUES (?1,?2,?3,?4,?5,1,'remote')",
+                    params![prep_id,thread.as_str(),recipient,*count,duration]).map_err(store_error)?;
+            }
+        }
+        return Ok(());
+    }
     if lazy {
         let already: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM lazy_recipients WHERE preparation_id=?1 AND seat_id=?2)",params![prep_id,recipient],|r|r.get(0)).map_err(store_error)?;
         if already {
@@ -806,7 +837,9 @@ pub(super) struct Publication {
 /// Inserts the message, its manifest and ordinary-only `send_attention` job for the sealed
 /// preparation `prep_id`, under the apply input `m` (its `decision_seq` and origin
 /// node) and `author` (its `decision_at` and attribution). The caller proved
-/// authority and revision currency; this touches a constant number of rows regardless
+/// authority and revision currency; `suppressed` lists (sorted) the local recipients whose
+/// delivery catch-up suppression skipped, stored on the manifest (which is immutable once
+/// written). This touches a constant number of rows regardless
 /// of audience size, except that a lazy send writes one `wake_work` row per
 /// `wake_on: all` recipient (set-based; `nudge` recipients cost no write).
 pub(super) fn insert_publication(
@@ -816,6 +849,20 @@ pub(super) fn insert_publication(
     thread: &ThreadId,
     body: &str,
     author: PublicationAuthor<'_>,
+) -> Result<Publication, ApiError> {
+    insert_publication_suppressing(tx, m, prep_id, thread, body, author, &[])
+}
+
+/// [`insert_publication`] for a publication whose local recipients `suppressed`
+/// (sorted) catch-up suppression skipped.
+pub(super) fn insert_publication_suppressing(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    prep_id: &str,
+    thread: &ThreadId,
+    body: &str,
+    author: PublicationAuthor<'_>,
+    suppressed: &[String],
 ) -> Result<Publication, ApiError> {
     let utc = author.decision_at();
     let author_role = match &author {
@@ -895,7 +942,7 @@ pub(super) fn insert_publication(
             tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_label,body,decision_at,decision_seq,author_kind,author_service_id,author_role,origin_node) VALUES (?1,?2,?3,?4,'ordinary','herdr-graph',?5,?6,?7,'programmatic',?8,'service',?9)",params![id.as_str(),instance,thread.as_str(),base,body,utc,decision_seq,author.as_str(),origin_node]).map_err(store_error)?;
         }
     }
-    tx.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![prep_id,id.as_str(),instance,thread.as_str(),decision_seq,utc,base,high_water,recipient_count,warning_count]).map_err(store_error)?;
+    tx.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count,suppressed_seats) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",params![prep_id,id.as_str(),instance,thread.as_str(),decision_seq,utc,base,high_water,recipient_count,warning_count,(!suppressed.is_empty()).then(|| suppressed.join("\n"))]).map_err(store_error)?;
     if warning_count > 0 {
         schema::record_published_unavailable_conditions(
             tx,
@@ -1030,6 +1077,29 @@ pub(super) fn build_message_sent(
             let seat = seat.map_err(store_error)?;
             audience.insert(seat.clone(), none(&seat));
         }
+        // Remote members and explicit remote recipients hold no lazy row on
+        // this node but are part of the audience their own node adopts.
+        let mut stmt = tx
+            .prepare("SELECT mi.seat_id FROM membership_intervals mi JOIN seats s ON s.id=mi.seat_id WHERE mi.thread_id=?1 AND mi.ordinal<=?2 AND mi.left_seq IS NULL AND s.retired_seq IS NULL AND s.state!='retired' AND s.is_local=0")
+            .map_err(store_error)?;
+        for seat in stmt
+            .query_map(params![request.thread.as_str(), high_water], |r| {
+                r.get::<_, String>(0)
+            })
+            .map_err(store_error)?
+        {
+            let seat = seat.map_err(store_error)?;
+            audience.insert(seat.clone(), none(&seat));
+        }
+        for seat in request
+            .invited_recipients
+            .iter()
+            .chain(request.direct_recipient.iter())
+        {
+            if is_remote_seat(tx, seat.as_str())? {
+                audience.insert(seat.as_str().to_owned(), none(seat.as_str()));
+            }
+        }
     } else {
         let mut stmt = tx
             .prepare("SELECT mi.seat_id FROM membership_intervals mi JOIN seats s ON s.id=mi.seat_id WHERE mi.thread_id=?1 AND mi.ordinal<=?2 AND mi.left_seq IS NULL AND s.retired_seq IS NULL AND s.state!='retired'")
@@ -1097,6 +1167,16 @@ pub(super) fn build_message_sent(
         duration_ms,
         recipients: audience.into_values().collect(),
     })
+}
+
+/// Whether `seat` is hosted by another node.
+fn is_remote_seat(tx: &Transaction<'_>, seat: &str) -> Result<bool, ApiError> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND is_local=0)",
+        [seat],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
 }
 
 /// Whether the audience staged for `prep_id` is the one `payload` fixed: the
@@ -1174,7 +1254,13 @@ fn check_staged_audience(
                 .collect::<Result<_, _>>()
                 .map_err(store_error)?
         };
-        let authored: Vec<&str> = payload.recipients.iter().map(|r| r.seat.as_str()).collect();
+        // Remote recipients are authored but staged nowhere on this node.
+        let mut authored: Vec<&str> = Vec::new();
+        for recipient in &payload.recipients {
+            if !is_remote_seat(tx, recipient.seat.as_str())? {
+                authored.push(recipient.seat.as_str());
+            }
+        }
         if staged
             .iter()
             .map(String::as_str)
@@ -1186,6 +1272,121 @@ fn check_staged_audience(
     Ok(())
 }
 
+/// Writes the preparation a receiver synthesizes from `payload` (fact-kinds
+/// design section 8, step 4) and returns the local recipients whose delivery
+/// catch-up suppression skipped (sorted).
+///
+/// A `replicated` preparation is sealed here (it is `building` only while its
+/// rows are inserted) and its manifest is written by the publication that follows. It holds a `prepared_recipients` row per
+/// `ack` recipient, local or remote, in payload order, and for a lazy message
+/// a `lazy_recipients` row per local recipient that is not suppressed. It
+/// never holds `prepared_unavailable_warnings`: those are the sender's
+/// derived events.
+fn synthesize_preparation(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    prep_id: &str,
+    payload: &MessageSentPayload,
+) -> Result<Vec<String>, ApiError> {
+    let digest = Sha256::digest(
+        serde_json::to_vec(payload)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "message.sent payload encode"))?,
+    );
+    let (high_water, membership, lifecycle, eligibility, timeline, config): (i64, i64, i64, i64, i64, i64) = tx
+        .query_row(
+            "SELECT COALESCE((SELECT max(ordinal) FROM membership_intervals WHERE thread_id=t.id),0),t.membership_revision,(SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=n.id),n.send_eligibility_revision,t.timeline_revision,n.duration_config_revision FROM threads t JOIN local_node n ON n.id=t.instance_id WHERE t.id=?1",
+            [payload.thread.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        )
+        .map_err(store_error)?;
+    let ack_count = payload
+        .recipients
+        .iter()
+        .filter(|r| r.receipt == ReceiptObligation::Ack)
+        .count();
+    let ack_count = i64::try_from(ack_count)
+        .map_err(|_| api_error(ErrorCode::SequenceExhausted, "recipient ordinal exhausted"))?;
+    let mode = if payload.mode.is_ordinary() {
+        "ordinary"
+    } else {
+        "lazy"
+    };
+    tx.execute(
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_cursor,recipient_count,warning_count,status,prepared_at,delivery_mode,origin) \
+         VALUES (?1,(SELECT id FROM local_node),?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?12,?12,0,'building',?13,?14,'replicated')",
+        params![
+            prep_id,
+            format!("replicated:{}", m.origin_node),
+            payload.message.as_str(),
+            digest.as_slice(),
+            payload.thread.as_str(),
+            membership,
+            lifecycle,
+            eligibility,
+            timeline,
+            config,
+            high_water,
+            ack_count,
+            payload.sent_at,
+            mode
+        ],
+    )
+    .map_err(store_error)?;
+    let mut suppressed = Vec::new();
+    let mut ordinal = 0i64;
+    for recipient in &payload.recipients {
+        let seat = recipient.seat.as_str();
+        let is_local: Option<bool> = tx
+            .query_row("SELECT is_local FROM seats WHERE id=?1", [seat], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(store_error)?;
+        let Some(is_local) = is_local else {
+            return Err(api_error(
+                ErrorCode::Conflict,
+                "message.sent names an unknown seat",
+            ));
+        };
+        if recipient.receipt == ReceiptObligation::Ack {
+            ordinal += 1;
+            let (frozen, eligible) = match recipient.deadline_at {
+                Some(deadline) => (deadline.saturating_sub(payload.sent_at).max(1), 1),
+                None => (payload.duration_ms.max(1), 0),
+            };
+            tx.execute(
+                "INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot,availability_provenance) VALUES (?1,?2,?3,?4,?5,?6,'replicated')",
+                params![prep_id, payload.thread.as_str(), seat, ordinal, frozen, eligible],
+            )
+            .map_err(store_error)?;
+        }
+        if !is_local {
+            continue;
+        }
+        let key = receipt_settle_key(&payload.message, &recipient.seat)
+            .map_err(|e| api_error(ErrorCode::InvalidRequest, e.to_string()))?;
+        if (m.suppress)(tx, &key)? {
+            suppressed.push(seat.to_owned());
+        } else if mode == "lazy" {
+            super::lazy_delivery::stage_recipient(
+                tx,
+                prep_id,
+                &payload.message,
+                &payload.thread,
+                &recipient.seat,
+            )?;
+        }
+    }
+    // Lazy rows may only be staged while `building`; seal once they exist.
+    tx.execute(
+        "UPDATE send_preparations SET status='sealed' WHERE id=?1",
+        [prep_id],
+    )
+    .map_err(store_error)?;
+    suppressed.sort();
+    Ok(suppressed)
+}
+
 /// The one materializer of a published ordinary message (`message.sent`;
 /// fact-kinds design section 8), shared by the journal handler and the
 /// local-only route.
@@ -1195,12 +1396,15 @@ fn check_staged_audience(
 /// 3. Local branch: for a local-origin fact whose preparation is `sealed`
 ///    with no manifest, the staged rows are adopted after checking they equal
 ///    the authored audience (`StoreCorrupt` "staged audience differs from
-///    authored audience" otherwise, which aborts the command), then the
-///    message is published with the attribution `take` returns.
+///    authored audience" otherwise, which aborts the command).
+/// 4. Synthesized branch (a remote origin, or an own old incarnation without
+///    a preparation): the preparation is built from the payload
+///    ([`synthesize_preparation`]); local recipients whose settlement already
+///    exists are listed in `send_manifests.suppressed_seats`.
+/// 5. The message is published with the attribution `take` returns.
 ///
-/// Any other case (a remote origin, or an own old incarnation without a
-/// preparation) is `Unsupported` until the synthesized branch lands
-/// (ht-5fr.4.16).
+/// Receipts of a recipient already retired at apply are projected by the
+/// `send_attention` job (`recipient_retired`, step 6).
 pub fn materialize_message(
     tx: &Transaction<'_>,
     m: &MaterializeInput<'_>,
@@ -1227,15 +1431,27 @@ pub fn materialize_message(
     } else {
         None
     };
-    let Some((prep_thread, prep_mode)) = adopted else {
-        return Err(api_error(
-            ErrorCode::Unsupported,
-            "message.sent without a local preparation is not supported yet",
-        ));
-    };
-    check_staged_audience(tx, &prep_id, &prep_thread, &prep_mode, payload)?;
+    let mut suppressed = Vec::new();
+    if let Some((prep_thread, prep_mode)) = adopted {
+        check_staged_audience(tx, &prep_id, &prep_thread, &prep_mode, payload)?;
+    } else {
+        let taken: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM send_preparations WHERE id=?1)",
+                [&prep_id],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if taken {
+            return Err(api_error(
+                ErrorCode::Conflict,
+                "send preparation exists but is not adoptable",
+            ));
+        }
+        suppressed = synthesize_preparation(tx, m, &prep_id, payload)?;
+    }
     let attribution = attribution::take(tx, m, &attribution::send_key(payload.message.as_str()))?;
-    insert_publication(
+    insert_publication_suppressing(
         tx,
         m,
         &prep_id,
@@ -1249,6 +1465,7 @@ pub fn materialize_message(
             user_intent: payload.user_intent,
             decision_at: payload.sent_at,
         },
+        &suppressed,
     )?;
     Ok(())
 }

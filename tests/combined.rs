@@ -23,6 +23,8 @@ mod channel_archival;
 mod contracts;
 #[path = "store/fact_convergence_membership.rs"]
 mod fact_convergence_membership;
+#[path = "store/fact_convergence_message.rs"]
+mod fact_convergence_message;
 #[path = "store/fact_convergence_seat.rs"]
 mod fact_convergence_seat;
 #[path = "store/fact_convergence_thread.rs"]
