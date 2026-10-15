@@ -646,8 +646,13 @@ impl Fixture {
         };
         let mut seats = rows("SELECT * FROM seats WHERE id='recipient'");
         assert_eq!(seats.len(), 1);
+        let mut seat = seats.pop().unwrap();
+        // The first fact that names a local seat publishes it (`seat.created`,
+        // fact-kinds design section 4): a delivery's `message.sent` flips
+        // `published`, which is replication bookkeeping, not identity.
+        seat.retain(|(name, _)| name != "published");
         RecipientIdentity {
-            seat: seats.pop().unwrap(),
+            seat,
             bindings: rows(
                 "SELECT * FROM occupant_bindings WHERE seat_id='recipient' ORDER BY ordinal",
             ),

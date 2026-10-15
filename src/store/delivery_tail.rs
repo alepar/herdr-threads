@@ -40,9 +40,9 @@ impl DeliveryTail {
     /// `send_manifests.suppressed_seats`), for a lazy one the `wake_on: all`
     /// attention writes.
     ///
-    /// `_m` is the apply input; it is reserved (suppression rides the
-    /// manifest column) and `None` for a local publication that has no input
-    /// yet.
+    /// `_m` is the apply input of the publication; it is reserved
+    /// (suppression rides the manifest column), and every caller passes
+    /// `Some`.
     pub(crate) fn message(
         tx: &Transaction<'_>,
         _m: Option<&MaterializeInput<'_>>,

@@ -210,6 +210,12 @@ pub fn send_message_id_for_preparation(preparation: &str) -> Option<String> {
     derived_message_id(preparation, prefix::SEND_PREPARATION, prefix::MESSAGE)
 }
 
+/// Recover the preparation belonging to a send message (`m<tag><8>` to
+/// `p<tag><8>`): the inverse of [`send_message_id_for_preparation`].
+pub fn send_preparation_id_for_message(message: &str) -> Option<String> {
+    derived_message_id(message, prefix::MESSAGE, prefix::SEND_PREPARATION)
+}
+
 /// Derive the message belonging to a service notification preparation
 /// (`np<tag><8>` to `n<tag><8>`).
 pub fn notification_message_id_for_preparation(preparation: &str) -> Option<String> {
@@ -444,6 +450,12 @@ mod public_id_tests {
             notification_preparation_id_for_message("nQ7aAb12Cd34"),
             Some("npQ7aAb12Cd34".to_owned())
         );
+        assert_eq!(
+            send_preparation_id_for_message("mQ7aAb12Cd34"),
+            Some("pQ7aAb12Cd34".to_owned())
+        );
+        assert_eq!(send_preparation_id_for_message("pQ7aAb12Cd34"), None);
+        assert_eq!(send_preparation_id_for_message("msg-Ab12Cd34"), None);
         for rejected in ["broken", "pAb12Cd34", "prep-Ab12Cd34", "npQ7aAb12Cd34"] {
             assert_eq!(
                 send_message_id_for_preparation(rejected),

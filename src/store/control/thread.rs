@@ -438,7 +438,7 @@ pub(crate) fn author_register(
 
 /// Whether some journal entry created the thread's key (`thread.created` or
 /// `thread.direct`).
-pub(super) fn has_creating_fact(tx: &Transaction<'_>, thread: &ThreadId) -> Result<bool, ApiError> {
+pub(crate) fn has_creating_fact(tx: &Transaction<'_>, thread: &ThreadId) -> Result<bool, ApiError> {
     tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM journal WHERE creates=?1)",
         [thread.as_str()],

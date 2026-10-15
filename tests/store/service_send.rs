@@ -372,6 +372,96 @@ fn service_send_writes_programmatic_ordinary_row() {
     assert_eq!(explicit.recipient_count, 2);
 }
 
+// A service send targets a managed, node-local thread (fact-kinds design
+// section 2): it publishes through the local-only route and the journal gains
+// no entry, no attribution is staged, and no replicated table is written
+// outside that route (the write guard is armed around the publish).
+#[test]
+fn service_send_journals_nothing() {
+    let f = Fixture::with_joined(&["s1", "s2"]);
+    assert!(
+        f.store.context.journal_open(),
+        "the journal is open, so a journaled send would show"
+    );
+    let request = f.request("k-local", "node-local", &["s1"], None);
+    let limits = MessageLimits::default();
+    let mut db = f.db();
+    loop {
+        match prepare_service_send_step(
+            &f.store.context,
+            &mut db,
+            &f.connection,
+            &f.gate,
+            &request,
+            limits,
+            &budget(),
+            16,
+        )
+        .unwrap()
+        {
+            SendPrepare::Step(SendStep::More { .. }) => {}
+            SendPrepare::Step(SendStep::Ready { .. }) => break,
+            _ => panic!("unexpected preparation outcome"),
+        }
+    }
+    let journal_before = count(&db, "SELECT count(*) FROM journal");
+    #[cfg(feature = "test-support")]
+    let guard = crate::test_support::write_guard::arm(&db);
+    let SendPublish::Committed(ServiceResult::MessageSent(sent)) = publish_service_send(
+        &f.store.context,
+        &mut db,
+        &f.connection,
+        &f.gate,
+        &request,
+        limits,
+        &budget(),
+    )
+    .unwrap() else {
+        panic!("not a committed service send")
+    };
+    #[cfg(feature = "test-support")]
+    drop(guard);
+    assert_eq!(
+        count(&db, "SELECT count(*) FROM journal"),
+        journal_before,
+        "nothing journaled"
+    );
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM journal WHERE kind='message.sent'"
+        ),
+        0
+    );
+    assert_eq!(
+        count(&db, "SELECT count(*) FROM fact_attribution_staging"),
+        0,
+        "no attribution staged"
+    );
+    let row: (String, i64, Option<String>) = db
+        .query_row(
+            "SELECT origin_node,decision_seq,sender_binding_id FROM messages WHERE id=?1",
+            [sent.summary.message.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        row.0,
+        db.query_row("SELECT id FROM local_node", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "this node is the origin"
+    );
+    assert!(row.1 > 0 && row.2.is_none(), "{row:?}");
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM send_manifests WHERE message_id IS NOT NULL"
+        ),
+        1
+    );
+    crate::test_support::assert_no_local_delivery_for_remote(&db);
+}
+
 #[test]
 fn obligations_are_joined_snapshot_plus_explicit_invitees() {
     let f = Fixture::with_joined(&["s1", "s2"]);

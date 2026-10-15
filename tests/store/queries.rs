@@ -6776,20 +6776,27 @@ fn presentation_publication_observes_old_staging_only_after_late_manifest() {
         [],
     )
     .unwrap();
+    let input = crate::store::materialize::local_only(
+        &tx,
+        crate::store::connection::DecisionInstant {
+            utc: crate::protocol::time::UtcMillis(200),
+            monotonic: crate::protocol::time::MonoInstant(1),
+        },
+    )
+    .unwrap();
     insert_publication(
         &tx,
-        200,
-        "seat:s",
-        "late-publication",
-        &[0; 32],
+        &input,
+        "pTstlate0001",
         &thread,
         "late lazy body",
         PublicationAuthor::Native {
             seat: &seat,
-            binding: &binding,
+            binding: Some(binding.as_str()),
             observation: "cooperative_top_level",
             relays_user: false,
             user_intent: None,
+            decision_at: 200,
         },
     )
     .unwrap();
