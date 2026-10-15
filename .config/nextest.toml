@@ -31,6 +31,10 @@ hermes-smoke = { max-threads = 1 }
 # against its own isolated Herdr server and waits on the 5 s liveness cadence; one at a time they
 # stay inside their own bounds and do not starve the latency-asserting chains beside them.
 session-bindings-smoke = { max-threads = 1 }
+# The real-daemon sync suites (ht-5fr.23): each test runs several real daemons and
+# `peer --stdio` pumps through `sync.dial_command` and waits in real time. Two at a time
+# keep them from starving each other and the latency-asserting chains beside them.
+sync-daemons = { max-threads = 2 }
 
 [profile.default]
 # A hang guard, not a budget: the longest test waits ~70 s by design.
@@ -46,6 +50,11 @@ final-status-level = "slow"
 [[profile.default.overrides]]
 filter = "binary(package) & test(=manifest::failpoints_are_compiled_out_of_release_builds)"
 priority = 95
+# Its two release builds alone take 274-287 s, against the default guard's 300 s
+# (5 x 60 s), and it timed out in every full-suite run. A 480 s guard for this one
+# test; the profile default stays. The suite's wall-clock budget is a separate
+# issue and is not raised here. No test group: a group of one test serializes nothing.
+slow-timeout = { period = "60s", terminate-after = 8 }
 
 [[profile.default.overrides]]
 filter = """
@@ -157,6 +166,15 @@ test-group = "service-daemon"
 filter = "binary(integration) & test(/^mod_delivery::/)"
 priority = 60
 test-group = "mod-delivery"
+
+[[profile.default.overrides]]
+filter = """
+(binary(integration) & test(/^(sync_link|sync_discovery|sync_cli)::/))
+| binary(multinode)
+| binary(sync_resync)
+"""
+priority = 60
+test-group = "sync-daemons"
 
 [[profile.default.overrides]]
 filter = "binary(integration) & test(/^hermes_enrollment_smoke::/)"
