@@ -938,9 +938,22 @@ class Recipient:
             time.sleep(0.25)
         return None
 
+    def shows(self, needle):
+        """Whether the pane shows `needle` (a string, or a compiled pattern) now: the live viewport (`visible`, a
+        plain snapshot that never scrolls) first, then the deep transcript (`screen()`, recent-unwrapped). Either
+        read is evidence of the line on the recipient's screen; a line in neither is not seen.
+        Claude Code draws on the alternate screen, so Herdr assembles its recent-unwrapped history by scrolling it
+        while idle, and that capture can come back stale: in the v0.11.0 run (cl-all send-ack/1:1) 15 reads in a
+        row ended two turns early, the last 14 with Claude's own `Jump to bottom` hint, while the turn had printed
+        the RECEIVED line and later visible reads held it. The viewport is read first, before this check's deep
+        read can leave the view scrolled."""
+        hit = (lambda text: needle in text) if isinstance(needle, str) else (lambda text: bool(needle.search(text)))
+        visible = self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
+        return hit(visible) or hit(self.screen())
+
     def on_screen(self, needle, tries=15):
         for _ in range(tries):
-            if needle in self.screen():
+            if self.shows(needle):
                 return True
             time.sleep(1)
         return False
@@ -987,7 +1000,7 @@ class Recipient:
             self.prompt(STANDING.format(coord=self.run.coord_seats(), threshold=self.threshold)
                         + (PLAIN_HINT.format(shim=self.run.bindir / "herdr-threads") if self.plain else ""),
                         expect=reported)
-            if reported.search(self.screen()):
+            if self.shows(reported):
                 break
         else:
             raise RuntimeError(f"{self.name}: agent did not report nudge-threshold {self.threshold}: {self.tail()}")
@@ -999,7 +1012,7 @@ class Recipient:
                        timeout=TURN_TIMEOUT_MS / 1000 + 30, check=False)
         if expect:
             end = time.time() + 120
-            while not expect.search(self.screen()) and time.time() < end:
+            while not self.shows(expect) and time.time() < end:
                 time.sleep(1)
         self.wait_idle()
         self.settled()

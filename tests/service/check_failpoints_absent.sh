@@ -2,9 +2,13 @@
 # ht-4is.11.1: prove crash-boundary failpoints are compiled out of ordinary
 # (release, no-feature) builds, with a positive control on a test-support build.
 #
-# Usage: tests/service/check_failpoints_absent.sh [target-dir]
+# Usage: tests/service/check_failpoints_absent.sh [--prebuild] [target-dir]
+#   --prebuild: only build the two release proof fixtures (CI runs this before
+#   the timed suite, so the suite's builds are no-ops).
 # Kills: a failpoint hook (or its registry) left reachable in release.
 set -eu
+prebuild=0
+if [ "${1:-}" = "--prebuild" ]; then prebuild=1; shift; fi
 root=$(CDPATH='' cd "$(dirname "$0")/../.." && pwd -P)
 cd "$root"
 target=${1:-${CARGO_TARGET_DIR:-$root/target}}
@@ -15,54 +19,94 @@ count=$(printf '%s\n' "$names" | grep -c . || true)
 echo "failpoint hooks in source: $count"
 printf '  %s\n' $names
 
-# Reuse one Cargo cache for the two feature configurations. CI already
-# builds both releases before the suite; separate cold trees rebuilt
-# all dependencies twice and starved timing-sensitive tests.
-#
-# The two configurations build concurrently: each is mostly one crate's
-# serial frontend and its binary, so one after the other they left the
-# proof the suite's last test. Cargo locks a whole target directory, so the
-# control builds in a copy of the shared release tree (clonefile on macOS,
-# else a reflink or plain copy, modification times kept so Cargo's freshness
-# checks see the same tree): dependencies built in the shared tree, and a
-# control CI already built there, are reused. A cold tree builds its
-# dependencies in both directories.
+# The two release configurations (ordinary, then test-support as the
+# positive control) build concurrently, each in its own persistent Cargo
+# target directory under the shared target (Cargo locks a whole directory),
+# incrementally: after the first run an edit rebuilds only what changed
+# (a one-line edit: ~10 s instead of ~5 min of release codegen). The
+# directories are seeded once from "$target/release" (clonefile on macOS,
+# else a reflink or a copy with modification times kept, so Cargo's
+# freshness checks see the same tree) and never deleted, so dependencies and
+# incremental state are reused across runs. CI builds them before the timed
+# suite with --prebuild.
 mkdir -p "$target"
-# A run killed past nextest's grace period leaves its proof directory (and
-# its copy of the release tree). Prune only old ones: a proof running beside
-# this one (a focused run next to a full suite) keeps its copy.
-find "$target" -maxdepth 1 -name 'failpoints-proof.*' -mmin +30 -exec rm -rf {} + 2>/dev/null || true
-proof=$(mktemp -d "$target/failpoints-proof.XXXXXX")
+# A run killed past nextest's grace period leaves its proof directory (or a
+# seeding lock). Prune only old ones: a proof running beside this one keeps
+# its copies.
+prune() {
+  find "$target" -maxdepth 1 \( -name 'failpoints-proof.*' -o -name 'failpoints-*.seeding' \) -mmin +30 -exec rm -rf {} + 2>/dev/null || true
+}
+prune
+ordinary_dir="$target/failpoints-release"
+control_dir="$target/failpoints-control"
 pids=
+proof=
+held=
 # Cargo does not pass a TERM on to its rustc children: stop them first.
-cleanup() {
+stop_builds() {
   for pid in $pids; do
     pkill -TERM -P "$pid" 2>/dev/null || true
     kill "$pid" 2>/dev/null || true
   done
-  rm -rf "$proof"
+}
+cleanup() {
+  stop_builds
+  [ -z "$held" ] || rm -rf "$held"
+  [ -z "$proof" ] || rm -rf "$proof"
 }
 trap cleanup EXIT
 trap 'cleanup; exit 1' HUP INT TERM
-clone="$proof/control-target"
-mkdir -p "$clone"
-if [ -d "$target/release" ]; then
-  cp -c -R "$target/release" "$clone/release" 2>/dev/null \
-    || { rm -rf "$clone/release"; cp -pR --reflink=auto "$target/release" "$clone/release" 2>/dev/null; } \
-    || { rm -rf "$clone/release"; cp -pR "$target/release" "$clone/release"; }
-fi
-CARGO_TARGET_DIR="$target" nice -n 19 cargo build --locked --release --quiet &
-release_build=$!
-CARGO_TARGET_DIR="$clone" nice -n 19 cargo build --locked --release --features test-support --quiet &
-control_build=$!
-pids="$release_build $control_build"
+# Seed "$1" once from the release tree "$2". The seeding lock is a directory:
+# a concurrent first run waits for the seed instead of copying into the same
+# tree; a lock left by a killed run is released by its trap, or pruned once
+# stale.
+seed() {
+  while [ ! -d "$1" ] && [ -d "$2" ]; do
+    if mkdir "$1.seeding" 2>/dev/null; then
+      held="$1.seeding"
+      tmp="$held/tree"
+      mkdir -p "$tmp"
+      cp -c -R "$2" "$tmp/release" 2>/dev/null \
+        || { rm -rf "$tmp/release"; cp -pR --reflink=auto "$2" "$tmp/release" 2>/dev/null; } \
+        || { rm -rf "$tmp/release"; cp -pR "$2" "$tmp/release"; }
+      mv "$tmp" "$1"
+      rm -rf "$held"
+      held=
+    else
+      prune
+      sleep 1
+    fi
+  done
+}
+build() {
+  dir=$1
+  shift
+  CARGO_INCREMENTAL=1 CARGO_TARGET_DIR="$dir" nice -n 19 cargo build --locked --release --quiet "$@" &
+  pids="$pids $!"
+}
 built=0
-wait "$release_build" || built=$?
-wait "$control_build" || built=$?
-pids=
-[ "$built" -eq 0 ] || { echo "FAIL: release proof build exited $built"; exit 1; }
-cp "$target/release/herdr-threads" "$proof/release"
-cp "$clone/release/herdr-threads" "$proof/control"
+wait_builds() {
+  for pid in $pids; do wait "$pid" || built=$?; done
+  pids=
+  [ "$built" -eq 0 ] || { echo "FAIL: release proof build exited $built"; exit 1; }
+}
+seed "$ordinary_dir" "$target/release"
+if [ -d "$target/release" ] || [ -d "$control_dir" ]; then
+  seed "$control_dir" "$target/release"
+else
+  # A cold tree (a fresh CI runner): build the ordinary release once, then
+  # seed the control from it, so dependencies build once.
+  build "$ordinary_dir"
+  wait_builds
+  seed "$control_dir" "$ordinary_dir/release"
+fi
+build "$ordinary_dir"
+build "$control_dir" --features test-support
+wait_builds
+[ "$prebuild" -eq 0 ] || { echo "release proof fixtures built"; exit 0; }
+proof=$(mktemp -d "$target/failpoints-proof.XXXXXX")
+cp "$ordinary_dir/release/herdr-threads" "$proof/release"
+cp "$control_dir/release/herdr-threads" "$proof/control"
 release="$proof/release"
 control="$proof/control"
 

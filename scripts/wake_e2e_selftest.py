@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1030,6 +1031,72 @@ class FakeAgent:
 
     def visible(self, mid):
         return mid in self.shown and time.time() >= self.shown[mid]
+
+
+def turn_block(mid, case):
+    """One Claude wake turn as Claude Code 2.1.300 draws it (v0.11.0 evidence, pane w35:p4)."""
+    return ("\u203a Prompt from the herdr-threads plugin\n\u276f The herdr-threads plugin sent a message:\n"
+            "  herdr-threads: wake up\n\n"
+            f"\u23fa RECEIVED {mid}: {case} 214752-441e\n\n\u273b Crunched for 2s \u00b7 done 9:53 PM\n\n"
+            "\u23fa herdr-threads: delivered 1 message(s)\n\n")
+
+
+COMPOSER = "\u2500" * 40 + "\n\u276f \n" + "\u2500" * 40 + "\n  \u23f5\u23f5 auto mode on\n"
+
+
+class DeliveredScreenSources(unittest.TestCase):
+    """`delivered` (and every on_screen/shows content check) reads the live viewport and the deep transcript, and
+    holds when either shows the line. v0.11.0 cl-all send-ack/1:1: 15 recent-unwrapped reads (04:53:46-04:54:01Z)
+    stopped two turns early, Claude's `Jump to bottom` hint on screen, while the turn had printed
+    `RECEIVED m6rv5kMPS` (later visible reads held it)."""
+
+    STALE_DEEP = (turn_block("mleO1WqfV", "send-ack/group") + turn_block("m2G3n2C5d", "send-lazy/1:1")
+                  + " " * 60 + "Jump to bottom (click) \u2193\n\n" + COMPOSER)
+    LIVE_VIEW = (turn_block("mdbHSm1tB", "send-nudge/1:1") + turn_block("m6rv5kMPS", "send-ack/1:1") + COMPOSER)
+
+    def recipient(self, visible, deep):
+        reads = []
+
+        def herdr(*argv, **kw):
+            if argv[:2] != ("agent", "read"):
+                raise AssertionError(f"unexpected herdr call {argv}")
+            source = argv[argv.index("--source") + 1]
+            reads.append(source)
+            return {"raw": visible if source == "visible" else deep}
+        run = SimpleNamespace(herdr=herdr)
+        r = W.Recipient(run, "cl-all", "claude", "all", "w35:p4", "sAAAAAAAA")
+        sleeps = []
+        patcher = mock.patch.object(W.time, "sleep", sleeps.append)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return r, reads, sleeps
+
+    def test_stale_deep_transcript_with_the_line_in_the_viewport_is_delivered(self):
+        """The evidence's shape: the deep read misses the line, the viewport has it."""
+        r, reads, _ = self.recipient(self.LIVE_VIEW, self.STALE_DEEP)
+        self.assertNotIn("m6rv5kMPS", r.screen())  # the old check's only source misses it
+        self.assertTrue(r.on_screen("m6rv5kMPS"))
+        self.assertEqual(reads[-1:], ["visible"])  # the viewport is read first, before the deep read can scroll it
+
+    def test_line_scrolled_out_of_the_viewport_but_in_the_deep_transcript_is_delivered(self):
+        r, reads, _ = self.recipient(COMPOSER, self.LIVE_VIEW)
+        self.assertTrue(r.on_screen("m6rv5kMPS"))
+        self.assertEqual(reads, ["visible", "recent-unwrapped"])
+
+    def test_line_on_neither_read_is_not_delivered(self):
+        """Negative control: a message that never reached the screen still fails, after every try."""
+        r, reads, sleeps = self.recipient(self.STALE_DEEP, self.STALE_DEEP)
+        self.assertFalse(r.on_screen("m6rv5kMPS"))
+        self.assertEqual(len(sleeps), 15)
+        self.assertEqual(reads.count("visible"), 15)
+        self.assertEqual(reads.count("recent-unwrapped"), 15)
+
+    def test_pattern_checks_read_both_sources(self):
+        """prompt(expect=...) and the SETUP-DONE check match a pattern the same way."""
+        r, _, _ = self.recipient("SETUP-DONE wake_on=all\n" + COMPOSER, self.STALE_DEEP)
+        self.assertTrue(r.shows(W.re.compile(r"SETUP-DONE wake_on=all\b")))
+        r, _, _ = self.recipient(COMPOSER, self.STALE_DEEP)
+        self.assertFalse(r.shows(W.re.compile(r"SETUP-DONE wake_on=all\b")))
 
 
 class CaseSpacing(unittest.TestCase):
