@@ -63,6 +63,12 @@ pub(crate) struct Session {
 
 impl Session {
     pub(crate) fn new(case: &str) -> Option<Self> {
+        Self::ticking(case, None)
+    }
+
+    /// [`Self::new`] whose lanes run on the test-support `tick` in place of
+    /// their 5 s safety ticks and cadences (`ServiceConfig::lane_tick`).
+    pub(crate) fn ticking(case: &str, tick: Option<Duration>) -> Option<Self> {
         let herdr = IsolatedHerdr::new(case)?;
         let guard = crate::ONE_DAEMON.lock().unwrap_or_else(|e| e.into_inner());
         herdr.start();
@@ -98,7 +104,12 @@ impl Session {
                     daemon_stop,
                     // Measure commit latency and outage freezing independently
                     // of the configurable initial ordinary batching window.
-                    ServiceConfig::default().with_wake_batch_delay(0).unwrap(),
+                    match tick {
+                        Some(tick) => ServiceConfig::default().with_test_lane_tick(tick).unwrap(),
+                        None => ServiceConfig::default(),
+                    }
+                    .with_wake_batch_delay(0)
+                    .unwrap(),
                     herdr_threads::test_support::single_host_plan_at(host, endpoint),
                     daemon_probe,
                     move |descriptor| {
@@ -467,7 +478,12 @@ pub(crate) struct Scene {
 
 impl Scene {
     pub(crate) fn new(case: &str, recipients: usize) -> Option<Self> {
-        let session = Session::new(case)?;
+        Self::ticking(case, recipients, None)
+    }
+
+    /// [`Self::new`] on [`Session::ticking`].
+    pub(crate) fn ticking(case: &str, recipients: usize, tick: Option<Duration>) -> Option<Self> {
+        let session = Session::ticking(case, tick)?;
         Some(Self::from_session(session, case, recipients))
     }
 
@@ -592,16 +608,33 @@ fn send_is_attempted_within_100ms_without_a_tick_wait() {
     assert!(lanes_for_table("work_jobs").contains(Lane::Deadlines));
 }
 
-/// An idle daemon commits nothing from the deadline, wake or request origins
-/// and each of those two lanes makes at most one pass per 5 s safety tick,
-/// with the observation lane running at its own 5 s cadence. Observation
-/// commits (admission, snapshot stage, seal, publish) kick no lane. The name
-/// keeps its historical `_30s`; the idle window is `IDLE_WINDOW` (12 s: two
-/// full 5 s safety ticks of each lane and two observation cycles, so a lane
-/// that polls on a short turn still overshoots the per-tick bound).
+/// The test-support lane tick (`ServiceConfig::with_test_lane_tick`) the
+/// long idle and outage tests run on, in place of the production 5 s wake and
+/// deadline safety ticks, observation cadence and liveness re-check. Every
+/// window those tests wait is stated as a multiple of it, so each proves the
+/// same property as at 5 s, scaled. The production values are pinned in
+/// `service::config::lane_tick_tests`; `sweep_remaining::
+/// retention_runs_alongside_the_wake_idle_bound` keeps running the idle bound
+/// on the production cadence end to end.
+const TEST_TICK: Duration = Duration::from_secs(1);
+
+/// An idle daemon commits nothing from the deadline, wake, request or
+/// admission-observer origins, and the deadline and wake lanes each make at
+/// most one pass per safety tick, with the observation lane running at its own
+/// cadence. Observation commits (admission, snapshot stage, seal, publish) kick
+/// no lane. Retention, kicked every 500 ms (it has no commit-driven kick),
+/// prunes a stale completed job and the superseded snapshot generations the
+/// observation lane keeps publishing, and those Retention-origin commits kick
+/// no lane either. (This absorbs the former `lane_wiring::idle_five_lanes_30s`.)
+/// The lanes run on [`TEST_TICK`]; the name keeps its historical `_30s`. The
+/// idle window is `12/5` ticks (12 s at the production 5 s: two full safety
+/// ticks of each lane and two observation cycles, so a lane that polls on a
+/// short turn still overshoots the per-tick bound).
 /// Kills: a lane that polls on a short turn (many passes), a tick pass that
-/// commits (an empty scan writing), and an observation commit that is mapped
-/// to a lane and so wakes the wake lane every cycle.
+/// commits (an empty scan writing), an observation commit that is mapped to a
+/// lane and so wakes the wake lane every cycle, a retention prune whose kick
+/// wakes the wake or deadline lane (it would then pass more often and commit),
+/// and a lane (retention for one) missing from the production worker set.
 #[test]
 fn idle_daemon_commits_nothing_from_deadline_wake_request_for_30s() {
     // Long real-time waits: runs beside, not behind, ONE_DAEMON.
@@ -611,7 +644,7 @@ fn idle_daemon_commits_nothing_from_deadline_wake_request_for_30s() {
     ) {
         return;
     }
-    let Some(scene) = Scene::new("idle_daemon_30s", 1) else {
+    let Some(scene) = Scene::ticking("idle_daemon_30s", 1, Some(TEST_TICK)) else {
         return;
     };
     let s = &scene.session;
@@ -632,9 +665,9 @@ fn idle_daemon_commits_nothing_from_deadline_wake_request_for_30s() {
             }
         }
     }
-    // Take the baseline once each lane has gone 3 s without a pass (setup's
-    // own wake work can run long on a loaded host). The lanes are watched
-    // side by side, each on its own 5 s tick phase. A lane that polls on a
+    // Take the baseline once each lane has gone 3/5 of a tick without a pass
+    // (setup's own wake work can run long on a loaded host). The lanes are
+    // watched side by side, each on its own tick phase. A lane that polls on a
     // short turn never gets there, so that failure still fails here.
     {
         let lanes = [Lane::Wakes, Lane::Deadlines];
@@ -642,7 +675,7 @@ fn idle_daemon_commits_nothing_from_deadline_wake_request_for_30s() {
         let mut last = lanes.map(|lane| (s.probe.idle_events(lane), Instant::now()));
         let mut quiet = [false; 2];
         while quiet != [true; 2] {
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(TEST_TICK / 50);
             for (index, lane) in lanes.into_iter().enumerate() {
                 if quiet[index] {
                     continue;
@@ -655,52 +688,99 @@ fn idle_daemon_commits_nothing_from_deadline_wake_request_for_30s() {
                 if now != last[index].0 {
                     last[index] = (now, Instant::now());
                 }
-                quiet[index] = last[index].1.elapsed() >= Duration::from_secs(3);
+                quiet[index] = last[index].1.elapsed() >= TEST_TICK * 3 / 5;
             }
         }
     }
+    // A completed `send_attention` job from long ago: retention deletes it, and
+    // `work_jobs` is a deadline-lane table, so only the Retention origin's
+    // discarded kick set keeps this commit from waking the deadline lane. (A
+    // second connection's write fires no commit hook.)
+    let stale_jobs = || -> i64 {
+        s.db()
+            .query_row(
+                "SELECT count(*) FROM work_jobs WHERE id = 'stale-job'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    s.db()
+        .execute(
+            "INSERT INTO work_jobs(id,kind,subject_id,high_water,status,completed_at) \
+             VALUES ('stale-job','send_attention','stale-job',0,'complete',0)",
+            [],
+        )
+        .unwrap();
+    assert_eq!(stale_jobs(), 1);
     let counts = s.probe.commit_counts();
     let kicks = s.probe.kick_log().len();
     let (wake_idle, deadline_idle) = (
         s.probe.idle_events(Lane::Wakes),
         s.probe.idle_events(Lane::Deadlines),
     );
-    const IDLE_WINDOW: Duration = Duration::from_secs(12);
-    let window = IDLE_WINDOW;
+    // At least 12/5 of a tick, extended (up to six ticks) until each lane's
+    // pass and an observation commit were seen: capture time on a loaded host
+    // does not shrink with the test tick.
+    let window = TEST_TICK * 12 / 5;
+    let window_limit = TEST_TICK * 6;
+    let observation_from = counts.get("observation").copied().unwrap_or(0);
     let started = Instant::now();
-    std::thread::sleep(window);
+    loop {
+        s.probe.kick_registered(Lane::Retention);
+        std::thread::sleep(Duration::from_millis(500).min(TEST_TICK / 2));
+        let elapsed = started.elapsed();
+        let passes_seen = s.probe.idle_events(Lane::Wakes) > wake_idle
+            && s.probe.idle_events(Lane::Deadlines) > deadline_idle
+            && s.probe
+                .commit_counts()
+                .get("observation")
+                .copied()
+                .unwrap_or(0)
+                > observation_from;
+        if (elapsed >= window && passes_seen) || elapsed >= window_limit {
+            break;
+        }
+    }
     let elapsed = started.elapsed();
     let after = s.probe.commit_counts();
-    for origin in ["deadline", "wake", "request"] {
+    for origin in ["deadline", "wake", "request", "admission-observer"] {
         assert_eq!(
             after.get(origin),
             counts.get(origin),
             "an idle daemon committed from the {origin} origin: {counts:?} -> {after:?}"
         );
     }
-    // The observation lane really ran (its commits are the only ones), and
-    // none of them kicked anything.
+    // The observation lane really ran (its commits and retention's are the
+    // only ones), and none of them kicked anything.
     assert!(
-        after["observation"] > counts["observation"],
+        after.get("observation").copied().unwrap_or(0)
+            > counts.get("observation").copied().unwrap_or(0),
         "the observation lane never committed: {counts:?} -> {after:?}"
     );
+    assert!(
+        after.get("retention").copied().unwrap_or(0)
+            > counts.get("retention").copied().unwrap_or(0),
+        "retention pruned nothing in {elapsed:?}: {counts:?} -> {after:?}"
+    );
+    assert_eq!(stale_jobs(), 0, "retention deleted the stale completed job");
     let new_kicks: Vec<KickRecord> = s.probe.kick_log().split_off(kicks);
     assert_eq!(
         new_kicks.len(),
         0,
-        "no commit at idle kicks any lane: {new_kicks:?}"
+        "no commit at idle (observation publishes, retention prunes) kicks any lane: {new_kicks:?}"
     );
-    // One pass per 5 s tick, plus one for the window's edges.
-    let ticks = elapsed.as_secs() / 5 + 1;
+    // One pass per tick, plus one for the window's edges.
+    let ticks = (elapsed.as_millis() / TEST_TICK.as_millis()) as u64 + 1;
     let wake_passes = s.probe.idle_events(Lane::Wakes) - wake_idle;
     let deadline_passes = s.probe.idle_events(Lane::Deadlines) - deadline_idle;
     assert!(
         (1..=ticks).contains(&wake_passes),
-        "wake lane made {wake_passes} passes in {elapsed:?}"
+        "wake lane made {wake_passes} passes in {elapsed:?} (at most {ticks})"
     );
     assert!(
         (1..=ticks).contains(&deadline_passes),
-        "deadline lane made {deadline_passes} passes in {elapsed:?}"
+        "deadline lane made {deadline_passes} passes in {elapsed:?} (at most {ticks})"
     );
 }
 
@@ -986,10 +1066,11 @@ fn settled_setup_invitations_do_not_require_a_sender_wake() {
 /// C4), the wake lane is frozen too (ht-72q): for the rest of the outage it
 /// makes no wake reservation, records no refusal and calls no Herdr method, so
 /// it commits nothing at all, while still waking on its safety tick. Only the
-/// detection window (Herdr stopped, no frozen capture yet; at most one 5 s
+/// detection window (Herdr stopped, no frozen capture yet; at most one
 /// observation cadence) may see refused attempts, within the per-seat
 /// refusal backoff bound (`2 x SEATS x steps`). After Herdr returns and the
-/// operator repairs the seats each one is submitted exactly once.
+/// operator repairs the seats each one is submitted exactly once. The lanes
+/// run on [`TEST_TICK`], and every window is stated in ticks.
 ///
 /// A real stop is Herdr unavailability, which freezes state (ht-yms): no
 /// invalidation is written and every seat stays resolved, so without the
@@ -1011,11 +1092,18 @@ fn herdr_stopped_freezes_wake_lane() {
         return;
     }
     const SEATS: u64 = 3;
-    // Two full 5 s wake safety ticks (the frozen lane must keep ticking) and
-    // far more than the per-seat refusal backoff's first steps (100 ms
-    // doubling: an unfrozen lane would commit refusals within ~1.5 s).
-    const OUTAGE: Duration = Duration::from_secs(11);
-    let Some(scene) = Scene::new("herdr_stopped_freezes_wake_lane", SEATS as usize) else {
+    // Two full wake safety ticks (the frozen lane must keep ticking) plus
+    // 1 s, and far more than the per-seat refusal backoff's first step (100
+    // ms doubling: an unfrozen lane would commit its first refusal within
+    // ~100 ms and several within ~1.5 s).
+    const OUTAGE: Duration = TEST_TICK
+        .saturating_mul(2)
+        .saturating_add(Duration::from_secs(1));
+    let Some(scene) = Scene::ticking(
+        "herdr_stopped_freezes_wake_lane",
+        SEATS as usize,
+        Some(TEST_TICK),
+    ) else {
         return;
     };
     let s = &scene.session;
@@ -1046,7 +1134,7 @@ fn herdr_stopped_freezes_wake_lane() {
     );
     s.herdr.stop();
     let stopped = Instant::now();
-    // The observation lane's next capture (within its 5 s cadence) is frozen
+    // The observation lane's next capture (within its cadence) is frozen
     // and marks the host down; a wake pass already running finishes.
     wait_until(
         "the frozen capture to freeze the wake lane",
@@ -1148,7 +1236,24 @@ fn herdr_stopped_freezes_wake_lane() {
             submitted == SEATS as i64
         },
     );
-    std::thread::sleep(Duration::from_secs(3));
+    // Each prompt's echo, then one full wake safety tick (and a fifth) more:
+    // a tick-driven re-prompt would land in it.
+    let echoes = |caller: &Caller| {
+        s.pane_text(&caller.pane)
+            .matches("HT-RECEIVED:herdr-threads: attention pending")
+            .count()
+    };
+    wait_until(
+        "every recipient's prompt echo",
+        Duration::from_secs(15),
+        || {
+            scene
+                .recipients
+                .iter()
+                .all(|(caller, _)| echoes(caller) >= 1)
+        },
+    );
+    std::thread::sleep(TEST_TICK * 6 / 5);
     for (caller, _) in &scene.recipients {
         let text = s.pane_text(&caller.pane);
         // The stand-in echoes each submitted line; an empty echo is only the

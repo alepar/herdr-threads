@@ -25,6 +25,7 @@ use super::{
     },
     setup::{SetupError, config_bytes, publish_manifest, write_replacement, write_user_config},
 };
+use crate::store::connection::DurableSync;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -211,7 +212,7 @@ pub fn write_files(dir: &Path, launch: Option<&[String]>) -> Result<Vec<&'static
                 .map_err(|_| SetupError::Io)?;
             handle
                 .write_all(content.as_bytes())
-                .and_then(|_| handle.sync_all())
+                .and_then(|_| handle.durable_sync())
                 .map_err(|_| SetupError::Io)?;
             fs::rename(&temp, &file).map_err(|_| SetupError::Io)
         })();

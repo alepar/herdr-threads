@@ -681,8 +681,10 @@ mod tests {
                 let _ = fs::remove_dir_all(&self.0);
             }
         }
-        let scratch =
-            Scratch(std::env::temp_dir().join(format!("ht-paths-{}", uuid::Uuid::new_v4())));
+        let scratch = Scratch(crate::test_support::scratch::temp_path(format!(
+            "ht-paths-{}",
+            uuid::Uuid::new_v4()
+        )));
         fs::DirBuilder::new()
             .mode(0o700)
             .create(&scratch.0)

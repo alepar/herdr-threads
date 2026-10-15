@@ -15,7 +15,10 @@ impl Drop for Temp {
     }
 }
 pub(super) fn source() -> (Temp, NodePaths, Source) {
-    let dir = Temp(std::env::temp_dir().join(format!("ht-archive-{}", uuid::Uuid::new_v4())));
+    let dir = Temp(herdr_threads::test_support::scratch::temp_path(format!(
+        "ht-archive-{}",
+        uuid::Uuid::new_v4()
+    )));
     std::fs::create_dir(&dir.0).unwrap();
     let context =
         RuntimeContext::explicit(dir.path().to_owned(), dir.path().join("host.sock"), None)

@@ -6,7 +6,8 @@ use std::path::PathBuf;
 
 fn paths() -> (PathBuf, NodePaths) {
     use std::os::unix::fs::PermissionsExt;
-    let root = std::env::temp_dir().join(format!("herdr-optext-{}", uuid::Uuid::new_v4()));
+    let root =
+        crate::test_support::scratch::temp_path(format!("herdr-optext-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
     let context = RuntimeContext::explicit(root.clone(), root.join("host.sock"), None).unwrap();

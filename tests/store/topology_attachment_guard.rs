@@ -1167,6 +1167,106 @@ fn automatic_linked_selected_resolve_attach_and_exact_pair_share_canonical_paren
     let _ = std::fs::remove_file(path);
 }
 
+fn automatic_status(
+    store: &crate::store::SqliteStore,
+    id: &AutomaticBootstrapIdentity,
+    budget: &CallBudget,
+) -> Result<CommandResult, ApiError> {
+    crate::ports::BootstrapStorePort::automatic_bootstrap_query(
+        store,
+        &id.plan.payload.handoff.namespace,
+        &AutomaticBootstrapMutation {
+            identity: id.clone(),
+            action: AutomaticBootstrapAction::Status,
+        },
+        budget,
+    )
+}
+
+// The canonical parent's original and attachment checks are remembered by the
+// row bytes AND the asking identity (store::verified): after a success, a
+// different identity on the same row is still a mismatch, and a changed
+// attachment row is checked again. Kills: a remembered step keyed without the
+// identity's bytes or without the row's.
+#[test]
+fn automatic_parent_checks_remembered_per_identity_and_row_bytes() {
+    let (_context, db, path, store, observation, budget, old, a) =
+        attachment_fixture_inner(false, false);
+    let id = automatic_parent(&old);
+    automatic_parent_created(&store, &id, &budget);
+    let guard = attachment_guard(
+        &store,
+        &observation,
+        &budget,
+        &id.plan.payload.keys.resolve,
+        5,
+    );
+    automatic_parent_mutate(
+        &store,
+        &id,
+        AutomaticBootstrapAction::Resolve {
+            attempt: BootstrapAttempt::first(),
+        },
+        Some(guard),
+        &budget,
+    )
+    .unwrap();
+    let child = id.child(&a.created, a.resolved_seat.clone()).unwrap();
+    let attachment = AutomaticBootstrapAttachment {
+        attempt: BootstrapAttempt::first(),
+        created: a.created,
+        resolve_operation: id.plan.payload.keys.resolve.clone(),
+        resolved_seat: a.resolved_seat,
+        child,
+    };
+    let guard = attachment_guard(
+        &store,
+        &observation,
+        &budget,
+        &id.plan.payload.keys.resolve,
+        7,
+    );
+    automatic_parent_mutate(
+        &store,
+        &id,
+        AutomaticBootstrapAction::Attach(Box::new(attachment)),
+        Some(guard),
+        &budget,
+    )
+    .unwrap();
+    // Warm: the parent's original and attachment pass for `id`.
+    for _ in 0..2 {
+        assert!(matches!(
+            automatic_status(&store, &id, &budget).unwrap(),
+            CommandResult::AutomaticBootstrap(ref v) if v.state == BootstrapState::Attached
+        ));
+    }
+    // Another valid identity with the same parent key reads the same rows.
+    let mut plan = id.plan.clone();
+    plan.payload.label.push_str(" other");
+    let other = AutomaticBootstrapIdentity::new(id.scope.clone(), id.claim.clone(), plan).unwrap();
+    assert_eq!(
+        other.plan.payload.keys.compound,
+        id.plan.payload.keys.compound
+    );
+    let error = automatic_status(&store, &other, &budget).unwrap_err();
+    assert_eq!(error.code, ErrorCode::OperationPayloadMismatch, "{error:?}");
+    // A changed attachment row is checked again, never served as remembered.
+    db.execute_batch("DROP TRIGGER automatic_bootstrap_attachment_immutable")
+        .unwrap();
+    let changed = db
+        .execute(
+            "UPDATE automatic_bootstrap_attachments SET attachment_json=CAST(replace(CAST(attachment_json AS TEXT),'\"resolve_operation\":\"','\"resolve_operation\":\"x') AS BLOB)",
+            [],
+        )
+        .unwrap();
+    assert_eq!(changed, 1);
+    let error = automatic_status(&store, &id, &budget).unwrap_err();
+    assert_eq!(error.code, ErrorCode::StoreCorrupt, "{error:?}");
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
 #[test]
 fn automatic_linked_registered_child_cannot_fall_back_before_attachment() {
     let (_context, db, path, store, _observation, budget, old, a) =

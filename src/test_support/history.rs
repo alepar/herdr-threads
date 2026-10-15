@@ -578,37 +578,12 @@ pub fn write_pending_invitations(
     deadline_millis: u64,
     tag: &str,
 ) -> Result<Vec<String>, ApiError> {
-    use crate::protocol::commands::{CreateThread, Invite};
+    use crate::protocol::commands::Invite;
     use crate::store::control;
     let from = actor(conn, inviter)?;
     let mut invitations = Vec::with_capacity(count as usize);
     for n in 0..count {
-        let create = CreateThread {
-            name: None,
-            topic: format!("{tag} {n}"),
-            goal: String::new(),
-            operation: OperationId::new(format!("{tag}-thread-{n}")),
-            claim: from.claim(),
-        };
-        let digest = control::cooperative_payload_hash("create_thread", &create)?;
-        let thread = match with_retries(|| {
-            let permit = from.permit(
-                context,
-                conn,
-                &create.operation,
-                ObligationRef::CheckIn(from.seat.clone()),
-                digest,
-            )?;
-            control::create_thread(context, conn, &unbounded(), &create, permit)
-        })? {
-            CommandResult::ThreadCreated(thread) => thread,
-            other => {
-                return Err(api_error(
-                    ErrorCode::StoreCorrupt,
-                    format!("unexpected thread result {other:?}"),
-                ));
-            }
-        };
+        let thread = create_thread(context, conn, &from, &format!("{tag} {n}"), tag, n)?;
         let invite = Invite {
             confirmation: None,
             thread: thread.clone(),
@@ -638,6 +613,61 @@ pub fn write_pending_invitations(
         }
     }
     Ok(invitations)
+}
+
+/// `count` threads created by `creator` through the real thread writer
+/// (`control::create_thread`), topics `{topic_prefix}{n}` for `n` in
+/// `0..count`, with nothing else in them. Returns the thread IDs.
+pub fn write_threads(
+    context: &StoreContext,
+    conn: &mut Connection,
+    creator: &str,
+    count: u64,
+    topic_prefix: &str,
+    tag: &str,
+) -> Result<Vec<ThreadId>, ApiError> {
+    let from = actor(conn, creator)?;
+    (0..count)
+        .map(|n| create_thread(context, conn, &from, &format!("{topic_prefix}{n}"), tag, n))
+        .collect()
+}
+
+/// One thread created by `from` through the real thread writer, under the
+/// operation key `{tag}-thread-{n}`.
+fn create_thread(
+    context: &StoreContext,
+    conn: &mut Connection,
+    from: &Actor,
+    topic: &str,
+    tag: &str,
+    n: u64,
+) -> Result<ThreadId, ApiError> {
+    use crate::protocol::commands::CreateThread;
+    use crate::store::control;
+    let create = CreateThread {
+        name: None,
+        topic: topic.to_owned(),
+        goal: String::new(),
+        operation: OperationId::new(format!("{tag}-thread-{n}")),
+        claim: from.claim(),
+    };
+    let digest = control::cooperative_payload_hash("create_thread", &create)?;
+    match with_retries(|| {
+        let permit = from.permit(
+            context,
+            conn,
+            &create.operation,
+            ObligationRef::CheckIn(from.seat.clone()),
+            digest,
+        )?;
+        control::create_thread(context, conn, &unbounded(), &create, permit)
+    })? {
+        CommandResult::ThreadCreated(thread) => Ok(thread),
+        other => Err(api_error(
+            ErrorCode::StoreCorrupt,
+            format!("unexpected thread result {other:?}"),
+        )),
+    }
 }
 
 /// Accepts every connection for the fixture's service author; the store's

@@ -340,7 +340,7 @@ fn run_drain(
 }
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
+    let dir = crate::test_support::scratch::temp_path(format!(
         "htw-{tag}-{:08x}",
         uuid::Uuid::new_v4().as_fields().0
     ));

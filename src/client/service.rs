@@ -1,6 +1,7 @@
 //! Persistent, connection-scoped service client. Mutations are journaled before
 //! the first byte is submitted and are retried only by an explicit caller action.
 
+use crate::store::connection::DurableSync;
 use crate::{
     daemon::transport::{MAX_FRAME_BYTES, encode_json, read_frame},
     protocol::{
@@ -116,7 +117,7 @@ impl ServiceIntentJournal {
                 .parent()
                 .filter(|path| !path.as_os_str().is_empty())
                 .unwrap_or(Path::new("."));
-            File::open(parent)?.sync_all()?;
+            File::open(parent)?.durable_sync()?;
         }
         if !root.is_dir() || root.symlink_metadata()?.file_type().is_symlink() {
             return Err(io::Error::new(
@@ -184,9 +185,9 @@ impl ServiceIntentJournal {
             let mut file = options.open(&temporary)?;
             serde_json::to_writer(&mut file, saved)?;
             file.write_all(b"\n")?;
-            file.sync_all()?;
+            file.durable_sync()?;
             fs::hard_link(&temporary, &path)?; // create_new semantics for the operation key
-            File::open(&self.root)?.sync_all()?;
+            File::open(&self.root)?.durable_sync()?;
             Ok(())
         })();
         let _ = fs::remove_file(&temporary);
@@ -275,11 +276,11 @@ impl ServiceIntentJournal {
             serde_json::to_writer(&mut file, completed)?;
             file.write_all(b"\n")?;
             self.boundary("before_completion_file_sync")?;
-            file.sync_all()?;
+            file.durable_sync()?;
             self.boundary("after_completion_file_sync")?;
             fs::hard_link(&temporary, &path)?;
             self.boundary("before_completion_dir_sync")?;
-            File::open(&self.root)?.sync_all()?;
+            File::open(&self.root)?.durable_sync()?;
             self.boundary("after_completion_dir_sync")?;
             Ok(())
         })();
@@ -291,14 +292,14 @@ impl ServiceIntentJournal {
         // A prior publication may have linked the completion but failed its
         // directory sync. Establish that link durably before removing intent.
         self.boundary("before_recovery_completion_dir_sync")?;
-        File::open(&self.root)?.sync_all()?;
+        File::open(&self.root)?.durable_sync()?;
         match fs::remove_file(self.path(key)?) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error),
         }
         self.boundary("after_unlink")?;
-        File::open(&self.root)?.sync_all()?;
+        File::open(&self.root)?.durable_sync()?;
         self.boundary("after_unlink_dir_sync")
     }
     fn complete(&self, key: &OperationId, response: ServiceWireResponse) -> io::Result<()> {
@@ -336,7 +337,7 @@ impl ServiceIntentJournal {
     pub fn forget_completed(&self, key: &OperationId) -> io::Result<()> {
         self.cleanup_completed(key)?;
         fs::remove_file(self.completion_path(key))?;
-        File::open(&self.root)?.sync_all()
+        File::open(&self.root)?.durable_sync()
     }
     pub fn completed(&self) -> io::Result<Vec<OperationId>> {
         let mut keys = Vec::new();

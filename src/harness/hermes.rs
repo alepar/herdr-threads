@@ -8,6 +8,7 @@ use super::{
     evidence::{AttributionHolding, EvidenceEvent, EvidenceOrigin},
 };
 use crate::protocol::{commands::BindingEventKind, time::CallBudget};
+use crate::store::connection::DurableSync;
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
@@ -323,7 +324,10 @@ fn admit_candidate(
             diagnostic: "Hermes requires actual callback input captured at startup".into(),
         };
     };
-    match parse(input) {
+    let (admitted_at, anchor) = request
+        .admitted_at
+        .map_or_else(|| (now(), Instant::now()), |at| (at.utc.0, at.instant));
+    match parse_at(input, admitted_at) {
         Ok(envelope) => {
             if request
                 .runtime_candidate
@@ -347,6 +351,8 @@ fn admit_candidate(
                 state: HermesAdmission {
                     envelope,
                     bytes: input.bytes.clone(),
+                    admitted_at,
+                    anchor,
                 },
                 recipe: "initialized-hermes-bridge-schema1",
                 diagnostic: "API candidate captured at startup; native/model acceptance unmeasured"
@@ -362,6 +368,10 @@ fn admit_candidate(
 pub struct HermesAdmission {
     envelope: Envelope,
     bytes: Vec<u8>,
+    /// The clock reading the callback window was admitted at; decode re-parses at it.
+    admitted_at: i64,
+    /// `admitted_at` on the admitting clock's monotonic domain: the callback deadline's anchor.
+    anchor: Instant,
 }
 fn text(s: &str, max: usize, empty: bool) -> bool {
     (empty || !s.is_empty()) && s.len() <= max && !s.chars().any(char::is_control)
@@ -397,7 +407,13 @@ fn witness(a: &Association) -> Result<Option<EnrollmentWitness>, ()> {
         Some(_) => Err(()),
     }
 }
+/// Strict parse with the callback window measured at the host's present (diagnostic
+/// paths with no admitting clock).
 fn parse(input: &HookInput) -> Result<Envelope, DecodeFailure> {
+    parse_at(input, now())
+}
+/// Strict parse, the callback window measured at `now` (UTC epoch milliseconds).
+fn parse_at(input: &HookInput, now: i64) -> Result<Envelope, DecodeFailure> {
     let invalid = || DecodeFailure::Invalid("invalid Hermes bridge envelope".into());
     if input.bytes.len() > 65536 {
         return Err(invalid());
@@ -576,7 +592,7 @@ fn parse(input: &HookInput) -> Result<Envelope, DecodeFailure> {
             != Some(e.deadline_at)
         || e.observation_order
             .generic()
-            .validate_deadline(now())
+            .validate_deadline(now)
             .is_err()
     {
         return Err(invalid());
@@ -896,7 +912,7 @@ impl HarnessAdapter for HermesAdapter {
         state: &HermesAdmission,
         input: &HookInput,
     ) -> Result<DecodedEvent, DecodeFailure> {
-        let e = parse(input)?;
+        let e = parse_at(input, state.admitted_at)?;
         if state.bytes != input.bytes || e != state.envelope {
             return Err(DecodeFailure::RegistrationMismatch);
         }
@@ -990,7 +1006,8 @@ impl HarnessAdapter for HermesAdapter {
                 native_event: e.callback,
                 shape_fields: e.shape.keys().cloned().collect(),
                 callback_deadline: Some(
-                    Instant::now() + Duration::from_millis((e.deadline_at - now()).max(0) as u64),
+                    state.anchor
+                        + Duration::from_millis((e.deadline_at - state.admitted_at).max(0) as u64),
                 ),
                 skill_pointer: false,
                 capability: super::Capability::ObservedInput,
@@ -1386,7 +1403,7 @@ fn inspection_helper(env: &SetupEnvironment) -> Result<PathBuf, SetupFailure> {
         .custom_flags(libc::O_NOFOLLOW);
     match options.open(&helper) {
         Ok(mut file) => {
-            if let Err(error) = file.write_all(expected).and_then(|_| file.sync_all()) {
+            if let Err(error) = file.write_all(expected).and_then(|_| file.durable_sync()) {
                 let _ = std::fs::remove_file(&helper);
                 return Err(SetupFailure::Io(error));
             }
@@ -1439,6 +1456,7 @@ fn inspect_scope(
 mod adapter_tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
     fn fixture(callback: &str) -> HookInput {
         let mut v: serde_json::Value =
             serde_json::from_slice(include_bytes!("../../tests/fixtures/hermes/envelopes.json"))
@@ -1534,6 +1552,7 @@ mod adapter_tests {
                         registered_event: None,
                     }),
                     runtime_candidate: None,
+                    admitted_at: None,
                 },
                 &budget,
             )
@@ -1941,6 +1960,7 @@ mod adapter_tests {
                         registered_event: None,
                     }),
                     runtime_candidate: None,
+                    admitted_at: None,
                 },
                 &budget,
             )
@@ -1979,6 +1999,7 @@ mod adapter_tests {
                             registered_event: None,
                         }),
                         runtime_candidate: None,
+                        admitted_at: None,
                     },
                     &budget,
                 )
@@ -2021,10 +2042,10 @@ mod adapter_tests {
     #[test]
     fn hermes_unknown_rotation_uses_declared_startup_policy_without_resume() {
         use super::super::context::*;
-        let directory = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("hermes-context-{}", uuid::Uuid::new_v4()));
+        let directory = crate::test_support::scratch::temp_path_canonical(format!(
+            "hermes-context-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir(&directory).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -2188,6 +2209,7 @@ mod adapter_tests {
                         registered_event: None,
                     }),
                     runtime_candidate: None,
+                    admitted_at: None,
                 },
                 &budget,
             )
@@ -2690,6 +2712,7 @@ mod adapter_tests {
                         registered_event: None,
                     }),
                     runtime_candidate: None,
+                    admitted_at: None,
                 },
                 &budget,
             )
@@ -2893,6 +2916,7 @@ mod adapter_tests {
                     registered_event: None,
                 }),
                 runtime_candidate: None,
+                admitted_at: None,
             };
             assert!(
                 matches!(

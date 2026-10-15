@@ -26,7 +26,10 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("ht-agy-setup-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_support::scratch::temp_path(format!(
+            "ht-agy-setup-{}",
+            uuid::Uuid::new_v4()
+        ));
         let home = root.join("home");
         let state = root.join("state");
         std::fs::create_dir_all(&home).unwrap();

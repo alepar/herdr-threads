@@ -1749,7 +1749,10 @@ mod tests {
         let adapter = fixture("relative", "Relative", &[], &["relative"]);
         let registry = registry(&[adapter]).unwrap();
         let registration = registry.by_id(registry.agent("relative").unwrap()).unwrap();
-        let root = std::env::temp_dir().join(format!("adapter-relative-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_support::scratch::temp_path(format!(
+            "adapter-relative-{}",
+            uuid::Uuid::new_v4()
+        ));
         let mut snapshot = SetupEnvironment {
             executable: "relative-plugin".into(),
             ..Default::default()
@@ -1782,7 +1785,10 @@ mod tests {
         let adapter = fixture("local", "Local", &[], &["local"]);
         let registry = registry(&[adapter]).unwrap();
         let registration = registry.by_id(registry.agent("local").unwrap()).unwrap();
-        let root = std::env::temp_dir().join(format!("adapter-local-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_support::scratch::temp_path(format!(
+            "adapter-local-{}",
+            uuid::Uuid::new_v4()
+        ));
         let mut live = SetupEnvironment {
             executable: root.join("plugin"),
             cwd: root.join("cwd"),
@@ -1927,7 +1933,10 @@ mod tests {
         let second = root_fixture("second", "Second", &["second"]);
         let third = root_fixture("third", "Third", &["third"]);
         let registry = registry(&[first, second, third]).unwrap();
-        let root = std::env::temp_dir().join(format!("adapter-aggregate-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_support::scratch::temp_path(format!(
+            "adapter-aggregate-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir(&root).unwrap();
         std::fs::write(root.join("first"), "invalid config root").unwrap();
         std::fs::write(root.join("second"), [255]).unwrap();
@@ -2029,8 +2038,10 @@ mod tests {
     struct AggregateScratch(std::path::PathBuf);
     impl AggregateScratch {
         fn new() -> Self {
-            let root =
-                std::env::temp_dir().join(format!("adapter-optional-{}", uuid::Uuid::new_v4()));
+            let root = crate::test_support::scratch::temp_path(format!(
+                "adapter-optional-{}",
+                uuid::Uuid::new_v4()
+            ));
             std::fs::create_dir(&root).unwrap();
             std::fs::create_dir(root.join("bin")).unwrap();
             Self(root)
@@ -2668,6 +2679,7 @@ mod tests {
             },
             input: None,
             runtime_candidate: None,
+            admitted_at: None,
         }
     }
     fn budget() -> CallBudget {

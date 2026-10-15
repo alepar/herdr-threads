@@ -45,6 +45,7 @@
 //! optional `If-None-Match`.
 use crate::daemon::settings::{HarnessManifestSetting, InstanceSettings};
 use crate::protocol::time::Clock;
+use crate::store::connection::DurableSync;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -1030,7 +1031,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             .mode(0o600)
             .open(&temp)?;
         file.write_all(bytes)?;
-        file.sync_all()?;
+        file.durable_sync()?;
         std::fs::rename(&temp, path)
     })();
     if result.is_err() {

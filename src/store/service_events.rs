@@ -715,7 +715,10 @@ mod tests {
         Gate,
         PathBuf,
     ) {
-        let path = std::env::temp_dir().join(format!("service-notify-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "service-notify-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
         let db = context.open_writer().unwrap();
         db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);").unwrap();

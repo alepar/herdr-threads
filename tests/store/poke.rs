@@ -20,7 +20,8 @@ impl Drop for RemoveOnDrop {
 /// Production-shaped receipts: sends and the send worker's `receipt_state`
 /// projection go through the real writers. `snd` sends, `rcv` receives.
 fn fixture() -> (StoreContext, Connection, RemoveOnDrop) {
-    let path = std::env::temp_dir().join(format!("ht-poke-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("ht-poke-{}.db", uuid::Uuid::new_v4()));
     let context =
         StoreContext::new(path.clone(), Arc::new(crate::app::SystemClock::new())).with_test_host();
     let guard = RemoveOnDrop(path);
@@ -278,7 +279,10 @@ fn budget() -> crate::protocol::time::CallBudget {
 /// receipt whose soft point (600) has passed and deadline (1000) has not.
 fn bound_store() -> (crate::store::SqliteStore, PathBuf) {
     use crate::store::{SqliteStore, StoreSettings};
-    let path = std::env::temp_dir().join(format!("ht-poke-store-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "ht-poke-store-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\

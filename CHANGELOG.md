@@ -4,9 +4,14 @@
 
 ## v0.11.0
 
+- **Tested with Herdr 0.9.4 and 0.9.5.** The release smoke list and the tested range include official Herdr 0.9.4 and 0.9.5 (checksum-verified; release smoke PASS locally on macOS arm64, Linux runs in the hosted jobs), so `daemon health` no longer reports them as untested.
+- **Codex wakes after `/side`.** Multiple plain-call session bindings sharing one foreground Codex process can receive one seat-level attention wake. Submission still requires an idle session and an empty composer; independent processes retain their refusal rules.
+- **Wake diagnostics for senders.** Overdue confirmation warnings include the recipient's latest wake-attempt outcome since the message was sent, when available. These diagnostics distinguish refused or attempted wakes from message delivery and ACKs.
 - **Installation across AISW profiles.** The installer discovers configured Claude and Codex profiles and reconciles each root separately, alongside the default roots. `--no-aisw-profiles` skips discovery; `internal installer-integrations --config-root HARNESS=DIR` selects additional roots explicitly. Invalid roots retain their individual failure reports.
 - **Shared skills and permissions.** Profiles that share owned, unedited skill or rule files through directory symlinks report them as shared. Setup preserves those links and files; foreign or edited files require reconciliation through their owning root.
 - **Skill update backups.** Replacing an existing owned skill now saves a timestamped `.herdr-threads` preimage before atomic replacement. Unchanged reruns create no additional backup, and edited skills remain protected.
+- **Fewer expired permits in automatic handoffs.** The deciding transaction no longer repeats whole-body decode and validation work that already ran before the permit was issued, when the canonical bytes are unchanged; large automatic handoffs on a loaded host stay inside the 250 ms permit window. Every canonical row is still re-read and compared in the decision, and failures are always recomputed.
+- **Hook callback deadlines follow the monotonic clock.** A hook run anchors its callback deadline on the monotonic clock read at admission, so a wall-clock step during the run can no longer extend it.
 
 ## v0.10.0
 

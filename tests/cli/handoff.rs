@@ -1272,7 +1272,10 @@ impl Drop for Temp {
     }
 }
 fn journal() -> (Temp, Journal) {
-    let temp = Temp(std::env::temp_dir().join(format!("handoff-test-{}", uuid::Uuid::new_v4())));
+    let temp = Temp(crate::test_support::scratch::temp_path(format!(
+        "handoff-test-{}",
+        uuid::Uuid::new_v4()
+    )));
     let journal = Journal::open(temp.0.join("intents")).unwrap();
     (temp, journal)
 }

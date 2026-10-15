@@ -294,7 +294,10 @@ impl Fixture {
     /// Seat `s`, cooperatively bound (codex) on pane `pane`, with one pending
     /// legacy receipt per thread in `threads`, each `WINDOW` ms from time 0.
     fn new(threads: &[&str]) -> Self {
-        let path = std::env::temp_dir().join(format!("ht-poke-flow-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "ht-poke-flow-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let clock = Arc::new(TestClock(AtomicI64::new(0)));
         let context = StoreContext::new(path.clone(), clock.clone()).with_test_host();
         let guard = RemoveOnDrop(path.clone());

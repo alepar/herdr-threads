@@ -364,7 +364,8 @@ fn thread_names_human_directory_keeps_name_beside_canonical_id() {
 #[test]
 fn human_namespace_init_preserves_provenance() {
     use crate::cli::actor_route::InvocationActor;
-    let root = std::env::temp_dir().join(format!("human-init-{}", uuid::Uuid::new_v4()));
+    let root =
+        crate::test_support::scratch::temp_path(format!("human-init-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     let runtime = crate::daemon::paths::RuntimeContext::explicit(
         root.join("state"),
@@ -494,7 +495,10 @@ impl crate::ports::LocalClient for HumanClient {
 
 impl HumanLifecycle {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("human-lifecycle-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_support::scratch::temp_path(format!(
+            "human-lifecycle-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir(&root).unwrap();
         let runtime = crate::daemon::paths::RuntimeContext::explicit(
             root.join("state"),

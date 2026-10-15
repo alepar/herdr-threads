@@ -21,10 +21,7 @@ use crate::{
         context::Harness,
         permissions::PermissionConsent,
         recipe,
-        setup::{
-            self as lib, SetupError, read_settings_manifest, remove_user_settings, shared_command,
-            shell_command,
-        },
+        setup::{self as lib, SetupError, remove_user_settings, shared_command, shell_command},
     },
     protocol::results::ErrorCode,
 };
@@ -1171,10 +1168,8 @@ pub(crate) fn codex_remove(env: &SetupEnv) -> Result<Value, RunError> {
     };
     // Independent of the hooks too: removed even when no hook installation is recorded.
     report["pane_env"] = super::pane_env::remove_report(env);
-    let mut recorded = read_settings_manifest(&paths.hooks_manifest).map_err(map)?;
-    if recorded.is_none() {
-        recorded = adopt_for_removal(kind, env, &paths.hooks, &paths.hooks_manifest)?;
-    }
+    let recorded =
+        recorded_for_removal(kind, env, &paths.hooks, &paths.hooks_manifest, &mut report)?;
     let allowance = codex_config::read_manifest(&paths.config_manifest).map_err(|error| {
         allowance_error(codex_config::AllowanceError::Setup(error), &paths.config)
     })?;

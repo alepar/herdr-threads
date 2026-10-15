@@ -98,7 +98,7 @@ impl World {
         Self::start_with_settings(panes, binary, SETTINGS)
     }
     fn start_with_settings(panes: Vec<Value>, binary: &str, settings: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
+        let root = herdr_threads::test_support::scratch::temp_path(format!(
             "htsf-{}",
             &uuid::Uuid::new_v4().simple().to_string()[..8]
         ));

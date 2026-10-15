@@ -649,7 +649,10 @@ fn doctor_reports() {
         let h = HermesScope::new();
         let installed = h.run("setup", true);
         assert!(installed.status.success(), "{}", text(&installed.stderr));
-        fs::copy(&h.launcher, h.scratch.bin.join("hermes")).unwrap();
+        // A link to the launcher setup already executed, not a fresh copy:
+        // macOS assesses a new file's first exec (up to seconds under load),
+        // which pushed the doctor's Hermes probe past its bound.
+        std::os::unix::fs::symlink(&h.launcher, h.scratch.bin.join("hermes")).unwrap();
         let mut command = h.scratch.command();
         command
             .env("PATH", &h.scratch.bin)
@@ -816,6 +819,48 @@ fn hook_stdout_per_event() {
     }
 }
 
+/// `daemon health` once the daemon's first boot observations have landed:
+/// the host probed (reachability no longer `unknown`) and every harness's
+/// executable observed. Before that, Health is the designed `starting` state
+/// (`HEALTH_STARTING_NOTE` first in `notes`, unobserved harnesses as pending
+/// limitations): answering `daemon health` (`DaemonGuard::start`) does not
+/// mean those asynchronous lanes have run, and on a loaded host the first
+/// sample can precede them. Startup-grace expiry cannot satisfy this wait:
+/// an unprobed host stays `unknown`.
+fn observed_health(s: &Scratch) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let out = s.ok(&["--json", "daemon", "health"]);
+        let health: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let data = &health["result"]["data"];
+        let lines = |key: &str| -> Vec<String> {
+            data[key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|line| line.as_str().unwrap().to_owned())
+                .collect()
+        };
+        let observed = data["host"]["reachability"] != "unknown"
+            && !lines("notes")
+                .iter()
+                .any(|note| note == herdr_threads::protocol::results::HEALTH_STARTING_NOTE)
+            && !lines("limitations").iter().any(|line| {
+                herdr_threads::daemon::health::is_pending_observation_line(line)
+                    || line == herdr_threads::daemon::health::FIRST_RECONCILIATION_OVERDUE_LINE
+            });
+        if observed {
+            return health;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon boot observations never landed: {}",
+            text(&out.stdout)
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// The deterministic part of `daemon health --json`: the harness map and the
 /// notes (the rest carries boot ids, clocks and retry counters). Unobserved:
 /// no harness executable on the daemon's PATH. Observed: fake claude, codex
@@ -829,8 +874,7 @@ fn health_json_observed_unobserved() {
             s.harness("hermes", "Hermes Agent v0.21.5");
         }
         let _daemon = DaemonGuard::start(&s);
-        let out = s.ok(&["--json", "daemon", "health"]);
-        let health: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let health = observed_health(&s);
         let data = &health["result"]["data"];
         let projected = json!({
             "protocol_version": data["protocol_version"],
@@ -1444,68 +1488,84 @@ fn hermes_launch_and_handoff_refusals() {
 /// `handoff` to a new tab and to an explicit launch pane, both kinds: the
 /// report in each form and the bootstrap `agent.start` request (kind, name,
 /// pane and the native argv with its bootstrap prompt).
+///
+/// Every case still gets its own fresh `Topology` and `setup`: a handoff
+/// leaves its thread, invitation, new seat, occupied launch pane and
+/// `agent.start` request behind, so a reused topology would change the next
+/// case's report. The four (kind, target) pairs run side by side instead,
+/// each on its own isolated daemon and fake host, its text then JSON case in
+/// turn; no golden depends on another pair.
 #[test]
 fn handoff_bootstrap_plans() {
-    for kind in ["claude", "codex"] {
-        for (mode, target) in [
-            ("new-tab", ["--new-tab", "Peer"]),
-            ("pane", ["--pane", "w4:p2"]),
-        ] {
-            for (ext, json) in [("text", false), ("json", true)] {
-                let t = Topology::new();
-                t.setup(kind);
-                let binary = t.binary(kind);
-                // Claude takes `--model` options, Codex `--config` (the
-                // pairing tests/handoff_topology_cli.rs uses for a pane).
-                let (flag, options) = if kind == "claude" {
-                    (
-                        "--agent-arg=--model",
-                        "--model 'env model' --model 'note=\"literal $HOME\"' --model repeat=true",
-                    )
-                } else {
-                    ("--agent-arg=--config", OPTIONS)
-                };
-                let mut args = vec!["handoff"];
-                args.extend(target);
-                args.extend([
-                    "--new-thread",
-                    "--topic",
-                    "Golden topic",
-                    "--goal",
-                    "Golden goal",
-                    "--kind",
-                    kind,
-                    "--harness-binary",
-                    &binary,
-                    flag,
-                    "--agent-arg=caller=\"quoted value\"",
-                    "--",
-                    BODY,
-                ]);
-                let mut cmd = t.command(json);
-                cmd.args([
-                    "--cooperative-seat",
-                    "sender",
-                    "--cooperative-target",
-                    "w4:p1",
-                    "--cooperative-harness",
-                    "codex",
-                    "--cooperative-role",
-                    "top-level",
-                ])
-                .args(&args)
-                .env("HERDR_THREADS_CODEX_OPTS", options)
-                .env("HERDR_THREADS_CLAUDE_OPTS", options);
-                let out = t.finish(cmd);
-                record(&t.norm(), &format!("handoff/{kind}.{mode}.{ext}"), &out);
-                if json {
-                    golden(
-                        &format!("handoff/{kind}.{mode}.bootstrap-argv.json"),
-                        &t.norm().apply(&pretty(&t.start_params())),
-                    );
-                }
+    std::thread::scope(|scope| {
+        for kind in ["claude", "codex"] {
+            for (mode, target) in [
+                ("new-tab", ["--new-tab", "Peer"]),
+                ("pane", ["--pane", "w4:p2"]),
+            ] {
+                scope.spawn(move || {
+                    for (ext, json) in [("text", false), ("json", true)] {
+                        handoff_bootstrap_plan(kind, mode, target, ext, json);
+                    }
+                });
             }
         }
+    });
+}
+
+/// One `handoff_bootstrap_plans` case on a fresh topology.
+fn handoff_bootstrap_plan(kind: &str, mode: &str, target: [&str; 2], ext: &str, json: bool) {
+    let t = Topology::new();
+    t.setup(kind);
+    let binary = t.binary(kind);
+    // Claude takes `--model` options, Codex `--config` (the
+    // pairing tests/handoff_topology_cli.rs uses for a pane).
+    let (flag, options) = if kind == "claude" {
+        (
+            "--agent-arg=--model",
+            "--model 'env model' --model 'note=\"literal $HOME\"' --model repeat=true",
+        )
+    } else {
+        ("--agent-arg=--config", OPTIONS)
+    };
+    let mut args = vec!["handoff"];
+    args.extend(target);
+    args.extend([
+        "--new-thread",
+        "--topic",
+        "Golden topic",
+        "--goal",
+        "Golden goal",
+        "--kind",
+        kind,
+        "--harness-binary",
+        &binary,
+        flag,
+        "--agent-arg=caller=\"quoted value\"",
+        "--",
+        BODY,
+    ]);
+    let mut cmd = t.command(json);
+    cmd.args([
+        "--cooperative-seat",
+        "sender",
+        "--cooperative-target",
+        "w4:p1",
+        "--cooperative-harness",
+        "codex",
+        "--cooperative-role",
+        "top-level",
+    ])
+    .args(&args)
+    .env("HERDR_THREADS_CODEX_OPTS", options)
+    .env("HERDR_THREADS_CLAUDE_OPTS", options);
+    let out = t.finish(cmd);
+    record(&t.norm(), &format!("handoff/{kind}.{mode}.{ext}"), &out);
+    if json {
+        golden(
+            &format!("handoff/{kind}.{mode}.bootstrap-argv.json"),
+            &t.norm().apply(&pretty(&t.start_params())),
+        );
     }
 }
 

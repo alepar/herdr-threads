@@ -25,8 +25,10 @@ impl Clock for TestClock {
 }
 fn setup() -> (StoreContext, Connection, Arc<TestClock>) {
     let clock = Arc::new(TestClock(AtomicI64::new(1000)));
-    let path: PathBuf =
-        std::env::temp_dir().join(format!("receipt-test-{}.db", uuid::Uuid::new_v4()));
+    let path: PathBuf = crate::test_support::scratch::temp_path(format!(
+        "receipt-test-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context = StoreContext::new(path, clock.clone()).with_test_host();
     let conn = context.open_writer().unwrap();
     seed_discovery_database(&conn);

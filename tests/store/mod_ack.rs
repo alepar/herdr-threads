@@ -32,7 +32,10 @@ impl Clock for TestClock {
 /// Seats `a` (sender), `b` (the Claude recipient) and `c` (not addressed).
 fn setup() -> (StoreContext, Connection, Arc<TestClock>) {
     let clock = Arc::new(TestClock(AtomicI64::new(1000)));
-    let path = std::env::temp_dir().join(format!("mod-ack-test-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "mod-ack-test-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context = StoreContext::new(path, clock.clone()).with_test_host();
     let conn = context.open_writer().unwrap();
     conn.execute_batch(

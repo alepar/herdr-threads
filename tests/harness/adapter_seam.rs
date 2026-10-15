@@ -871,7 +871,10 @@ fn member_spec(native_rewrites: bool) -> &'static SettingsKindSpec {
 }
 
 fn scratch(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("ht-seam-{label}-{}", uuid::Uuid::new_v4()));
+    let dir = crate::test_support::scratch::temp_path(format!(
+        "ht-seam-{label}-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }

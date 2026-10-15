@@ -23,7 +23,10 @@ impl Clock for TestClock {
 }
 
 fn setup(now: i64) -> (StoreContext, Connection, Arc<TestClock>, PathBuf) {
-    let path = std::env::temp_dir().join(format!("invitation-due-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "invitation-due-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let clock = Arc::new(TestClock(AtomicI64::new(now)));
     let context = StoreContext::new(path.clone(), clock.clone()).with_test_host();
     let conn = context.open_writer().unwrap();

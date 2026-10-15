@@ -5336,7 +5336,7 @@ fn other_seat_overdue_transitions_raise_no_mod_attention_for_a_bystander() {
 /// timeout) is shut and joined at once, and the client sees the close.
 #[test]
 fn stand_in_host_drop_joins_a_blocked_serving_thread() {
-    let root = Scratch(std::env::temp_dir().join(format!(
+    let root = Scratch(herdr_threads::test_support::scratch::temp_path(format!(
         "md-host-{}",
         &uuid::Uuid::new_v4().simple().to_string()[..8]
     )));

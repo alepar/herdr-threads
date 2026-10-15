@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import stat
 import signal
@@ -14,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -775,6 +777,72 @@ class FakeAgent:
         return mid in self.shown and time.time() >= self.shown[mid]
 
 
+def turn_block(mid, case):
+    """One Claude wake turn as Claude Code 2.1.300 draws it (v0.11.0 evidence, pane w35:p4)."""
+    return ("\u203a Prompt from the herdr-threads plugin\n\u276f The herdr-threads plugin sent a message:\n"
+            "  herdr-threads: wake up\n\n"
+            f"\u23fa RECEIVED {mid}: {case} 214752-441e\n\n\u273b Crunched for 2s \u00b7 done 9:53 PM\n\n"
+            "\u23fa herdr-threads: delivered 1 message(s)\n\n")
+
+
+COMPOSER = "\u2500" * 40 + "\n\u276f \n" + "\u2500" * 40 + "\n  \u23f5\u23f5 auto mode on\n"
+
+
+class DeliveredScreenSources(unittest.TestCase):
+    """`delivered` (and every on_screen/shows content check) reads the live viewport and the deep transcript, and
+    holds when either shows the line. v0.11.0 cl-all send-ack/1:1: 15 recent-unwrapped reads (04:53:46-04:54:01Z)
+    stopped two turns early, Claude's `Jump to bottom` hint on screen, while the turn had printed
+    `RECEIVED m6rv5kMPS` (later visible reads held it)."""
+
+    STALE_DEEP = (turn_block("mleO1WqfV", "send-ack/group") + turn_block("m2G3n2C5d", "send-lazy/1:1")
+                  + " " * 60 + "Jump to bottom (click) \u2193\n\n" + COMPOSER)
+    LIVE_VIEW = (turn_block("mdbHSm1tB", "send-nudge/1:1") + turn_block("m6rv5kMPS", "send-ack/1:1") + COMPOSER)
+
+    def recipient(self, visible, deep):
+        reads = []
+
+        def herdr(*argv, **kw):
+            if argv[:2] != ("agent", "read"):
+                raise AssertionError(f"unexpected herdr call {argv}")
+            source = argv[argv.index("--source") + 1]
+            reads.append(source)
+            return {"raw": visible if source == "visible" else deep}
+        run = SimpleNamespace(herdr=herdr)
+        r = W.Recipient(run, "cl-all", "claude", "all", "w35:p4", "sAAAAAAAA")
+        sleeps = []
+        patcher = mock.patch.object(W.time, "sleep", sleeps.append)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return r, reads, sleeps
+
+    def test_stale_deep_transcript_with_the_line_in_the_viewport_is_delivered(self):
+        """The evidence's shape: the deep read misses the line, the viewport has it."""
+        r, reads, _ = self.recipient(self.LIVE_VIEW, self.STALE_DEEP)
+        self.assertNotIn("m6rv5kMPS", r.screen())  # the old check's only source misses it
+        self.assertTrue(r.on_screen("m6rv5kMPS"))
+        self.assertEqual(reads[-1:], ["visible"])  # the viewport is read first, before the deep read can scroll it
+
+    def test_line_scrolled_out_of_the_viewport_but_in_the_deep_transcript_is_delivered(self):
+        r, reads, _ = self.recipient(COMPOSER, self.LIVE_VIEW)
+        self.assertTrue(r.on_screen("m6rv5kMPS"))
+        self.assertEqual(reads, ["visible", "recent-unwrapped"])
+
+    def test_line_on_neither_read_is_not_delivered(self):
+        """Negative control: a message that never reached the screen still fails, after every try."""
+        r, reads, sleeps = self.recipient(self.STALE_DEEP, self.STALE_DEEP)
+        self.assertFalse(r.on_screen("m6rv5kMPS"))
+        self.assertEqual(len(sleeps), 15)
+        self.assertEqual(reads.count("visible"), 15)
+        self.assertEqual(reads.count("recent-unwrapped"), 15)
+
+    def test_pattern_checks_read_both_sources(self):
+        """prompt(expect=...) and the SETUP-DONE check match a pattern the same way."""
+        r, _, _ = self.recipient("SETUP-DONE wake_on=all\n" + COMPOSER, self.STALE_DEEP)
+        self.assertTrue(r.shows(W.re.compile(r"SETUP-DONE wake_on=all\b")))
+        r, _, _ = self.recipient(COMPOSER, self.STALE_DEEP)
+        self.assertFalse(r.shows(W.re.compile(r"SETUP-DONE wake_on=all\b")))
+
+
 class CaseSpacing(unittest.TestCase):
     """A follow-up wake owed by one case fails that case, and the next case is measured after it, not against the
     guard of a wake it did not cause (v0.9.1 Codex run: invite/1:1 then send-lazy/group, late_wake 11.58 s)."""
@@ -861,14 +929,15 @@ class RunRoot(TempDir):
 
 FIXTURES = Path(__file__).resolve().parent / "wake_e2e_fixtures"
 FAKE_API_KEY = "sk-ant-api03-FAKEFAKEFAKEFAKE-selftest-only-0123456789"
-# launch_line() of the macOS mode as the driver produced it before the linux mode existed (dc575a28), same inputs.
+# launch_line() of the macOS mode as the driver produced it before the linux mode existed (dc575a28), same inputs;
+# the Codex line adds shell_snapshot=false (ht-l16).
 MACOS_CLAUDE_LINE = ('unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; PATH=/private/tmp/ht-wake-e2e.X/bin:"$PATH" '
                      'CLAUDE_CONFIG_DIR=/Users/me/.claude-real CLAUDE_CODE_PLUGIN_DIRS=/private/tmp/ht-wake-e2e.X/state/'
                      'claude-mod/herdr-threads HERDR_AGENT=claude command claude --setting-sources project,local '
                      '--settings /private/tmp/ht-wake-e2e.X/claude-config/settings.json --permission-mode auto')
 MACOS_CODEX_LINE = ('PATH=/private/tmp/ht-wake-e2e.X/bin:"$PATH" HERDR_AGENT=codex CODEX_HOME=/private/tmp/ht-wake-e2e.X/'
                     'codex-home command codex --no-daemon -C /repo --dangerously-bypass-hook-trust -c '
-                    'check_for_update_on_startup=false --approve-for-me')
+                    'check_for_update_on_startup=false -c features.shell_snapshot=false --approve-for-me')
 
 
 class Env:
@@ -1070,6 +1139,71 @@ class HarnessMode(TempDir):
         self.assertEqual(json.loads((cfg / ".claude.json").read_text()),
                          {"userID": "u", "hasCompletedOnboarding": True,
                           "projects": {"/repo": {"x": 1, "hasTrustDialogAccepted": True}, "/o": {}}})
+
+
+# A stand-in for Codex's command shell (ht-l16): with its shell snapshot on, each command runs under the PATH the
+# snapshot captured from an interactive login shell (~/.zprofile, then ~/.zshrc); with features.shell_snapshot=false
+# it runs in a non-interactive login shell (~/.zprofile only). It prints what a bare `herdr-threads` resolves to.
+FAKE_CODEX = r"""#!/bin/sh
+snapshot=on
+prev=
+for a in "$@"; do
+  [ "$prev" = "-c" ] && [ "$a" = "features.shell_snapshot=false" ] && snapshot=off
+  prev=$a
+done
+. "$HOME/.zprofile"
+[ "$snapshot" = on ] && . "$HOME/.zshrc"
+exec herdr-threads
+"""
+
+
+class CodexCandidateCli(TempDir):
+    """ht-l16: a Codex cell's bare `herdr-threads` is the candidate, not one installed in ~/.local/bin, though the
+    interactive rc prepends ~/.local/bin to PATH. Scratch HOME and fakes only; no real Codex or user config."""
+
+    def setUp(self):
+        super().setUp()
+        home, self.tools = self.tmp / "home", self.tmp / "tools"
+        installed = home / ".local" / "bin"
+        for d in (installed, self.tools):
+            d.mkdir(parents=True)
+        # the shape of a real install: the login profile appends ~/.local/bin, the interactive rc prepends it
+        (home / ".zprofile").write_text('export PATH="$PATH:$HOME/.local/bin"\n')
+        (home / ".zshrc").write_text('export PATH="$HOME/.local/bin:$PATH"\n')
+        self.home = home
+        self.run_ = launch_run(parsed_args(["--harness-mode", "macos"]))
+        self.run_.bindir = self.tmp / "candidate-bin"
+        self.run_.bindir.mkdir()
+        for path, says in ((installed / "herdr-threads", "installed"), (self.run_.bindir / "herdr-threads", "candidate"),
+                           (self.tools / "codex", None)):
+            path.write_text(FAKE_CODEX if says is None else f"#!/bin/sh\necho {says}\n")
+            path.chmod(0o700)
+
+    def resolve(self, line):
+        env = {"HOME": str(self.home), "PATH": f"{self.tools}:/usr/bin:/bin"}
+        out = subprocess.run(["/bin/sh", "-c", line], env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout.strip()
+
+    def test_launch_line_turns_the_shell_snapshot_off(self):
+        for mode in W.HARNESS_MODES:
+            r = launch_run(parsed_args(["--harness-mode", mode]))
+            for plain in (False, True):
+                argv = shlex.split(r.launch_line("codex", plain=plain))
+                self.assertEqual(argv[0], f"PATH={r.bindir}:$PATH", (mode, plain))  # the candidate's bin dir first
+                i = argv.index("features.shell_snapshot=false")
+                self.assertEqual(argv[i - 1], "-c", (mode, plain))
+
+    def test_a_codex_cell_runs_the_candidate(self):
+        self.assertEqual(self.resolve(self.run_.launch_line("codex")), "candidate")
+        self.assertEqual(self.resolve(self.run_.launch_line("codex", plain=True)), "candidate")
+
+    def test_without_the_fix_the_installed_cli_wins(self):
+        # negative control: the same launch line with the snapshot left on resolves the installed CLI
+        line = self.run_.launch_line("codex")
+        unfixed = line.replace(" -c features.shell_snapshot=false", "")
+        self.assertNotEqual(unfixed, line)
+        self.assertEqual(self.resolve(unfixed), "installed")
 
 
 class LinuxPreflight(TempDir):
@@ -1458,8 +1592,9 @@ class CodexStartOrder(unittest.TestCase):
     def test_linux_codex_starts_one_at_a_time(self):
         self.assertEqual(self.starts("linux"), ["run", "up", "run", "up"])
 
-    def test_macos_codex_starts_stay_concurrent(self):
-        self.assertEqual(self.starts("macos")[:2], ["run", "run"])
+    def test_macos_codex_starts_are_serial_too(self):
+        # Three Codex recipients raced on the scratch state DB on macOS as well (ht-327 side-case run).
+        self.assertEqual(self.starts("macos"), ["run", "up", "run", "up"])
 
 
 class ReviewMinors(TempDir):
@@ -1639,3 +1774,22 @@ class MainExitCode(TempDir):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SideCases(unittest.TestCase):
+    """ht-327 opt-in side cases: who runs them, and how the hookless Codex is launched."""
+
+    def test_side_cases_run_on_codex_only_and_co_plain_runs_nothing_else(self):
+        r = lambda name, harness, plain=False: SimpleNamespace(name=name, harness=harness, plain=plain)
+        run = SimpleNamespace(recipients=[r("cl-nudge", "claude"), r("co-nudge", "codex"),
+                                          r("co-plain", "codex", True)])
+        self.assertEqual(W.expected_rows(run, ["send-nudge/group", "side-nudge/group"]),
+                         {("cl-nudge", "send-nudge/group"), ("co-nudge", "send-nudge/group"),
+                          ("co-nudge", "side-nudge/group"), ("co-plain", "side-nudge/group")})
+
+    def test_plain_codex_launch_turns_its_hooks_off_and_only_then(self):
+        run = W.Run.__new__(W.Run)
+        run.bindir, run.cwd, run.codex_home = Path("/b"), "/repo", Path("/h")
+        run.args = SimpleNamespace(codex_args="--approve-for-me", codex_model=None, harness_mode="macos")
+        self.assertIn("features.codex_hooks=false", run.launch_line("codex", plain=True))
+        self.assertNotIn("codex_hooks", run.launch_line("codex"))

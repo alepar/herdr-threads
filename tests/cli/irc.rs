@@ -295,6 +295,16 @@ fn system_events_are_notice_lines_with_nicks() {
         render(&warning, &mut lookup),
         "[12:34] -!- warning: w/mad-tea-hatter-codex/s002 is overdue on an ACK\n"
     );
+    // The recipient's wake disposition (ht-327) says whether it was ever prompted.
+    let woken = event(
+        2,
+        MessageKind::Warn,
+        r#"{"obligation":"receipt","seat":"s002","deadline_at":1,"wake":"unsafe","detail":"last wake unsafe"}"#,
+    );
+    assert_eq!(
+        render(&woken, &mut lookup),
+        "[12:34] -!- warning: w/mad-tea-hatter-codex/s002 is overdue on an ACK (last wake unsafe)\n"
+    );
     // An unparseable (clipped) informational event is not a join or leave: hidden.
     let mut clipped = event(3, MessageKind::Info, "{\"action\":\"crea");
     clipped.preview_omitted = true;

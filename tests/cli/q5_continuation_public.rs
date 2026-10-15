@@ -50,8 +50,13 @@ impl Fixture {
     }
     fn with_lazy_only(lazy_only: Option<&str>) -> Self {
         let iso = TestIsolation::new("q5-public-continuations");
-        let context =
-            StoreContext::new(iso.path("db"), Arc::new(SystemClock::new())).with_test_host();
+        // The calibration's subject is byte budgets, not search's 100 ms
+        // wall budget (store::queries search_clipped_budget_* covers it).
+        let context = StoreContext::new(
+            iso.path("db"),
+            Arc::new(herdr_threads::test_support::slow_clock::SlowMonotonicClock::new()),
+        )
+        .with_test_host();
         let db = context.open_writer().unwrap();
         db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=10000;
             INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-s',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));

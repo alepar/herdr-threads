@@ -271,7 +271,8 @@ fn uninstall_preserves_unrelated_group_changes() {
 
 #[test]
 fn project_install_inspect_and_remove_preserve_permissions_and_other_hooks() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&dir).unwrap();
     let scope = dir.join("project with spaces 雪").join(".claude");
     fs::create_dir_all(&scope).unwrap();
@@ -299,7 +300,8 @@ fn project_install_inspect_and_remove_preserve_permissions_and_other_hooks() {
 
 #[test]
 fn project_setup_refuses_stale_base_and_changed_owned_entry() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&dir).unwrap();
     let scope = dir.join(".claude");
     fs::create_dir(&scope).unwrap();
@@ -352,7 +354,8 @@ fn removal_refuses_missing_owned_entry_even_when_event_is_empty() {
 
 #[test]
 fn project_install_refuses_preexisting_matching_hook_without_ownership() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&dir).unwrap();
     let scope = dir.join(".claude");
     fs::create_dir(&scope).unwrap();
@@ -374,7 +377,8 @@ fn project_install_refuses_preexisting_matching_hook_without_ownership() {
 /// `settings.local.json` or Codex's `config.toml`.
 #[test]
 fn user_install_rejects_any_other_settings_file() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&dir).unwrap();
     let manifest = dir.join("manifest.json");
     for (kind, name) in [
@@ -404,7 +408,8 @@ fn user_install_rejects_any_other_settings_file() {
 /// to the original bytes.
 #[test]
 fn codex_user_hooks_install_inspect_and_remove_keep_existing_groups() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&dir).unwrap();
     let config = dir.join("hooks.json");
     let manifest = dir.join("manifest.json");
@@ -462,7 +467,8 @@ fn codex_user_hooks_install_inspect_and_remove_keep_existing_groups() {
 
 #[test]
 fn ownership_manifest_can_reopen_large_valid_settings_backup() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     let scope = dir.join(".claude");
     fs::create_dir_all(&scope).unwrap();
     let config = scope.join("settings.json");
@@ -481,7 +487,8 @@ fn ownership_manifest_can_reopen_large_valid_settings_backup() {
 
 #[test]
 fn inspection_fingerprint_tracks_current_claude_bytes_and_codex_groups() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     let scope = dir.join(".claude");
     fs::create_dir_all(&scope).unwrap();
     let config = scope.join("settings.json");
@@ -559,7 +566,8 @@ fn inspection_rejects_empty_or_damaged_ownership() {
             .unwrap()
             .installed
     );
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     let scope = dir.join(".claude");
     fs::create_dir_all(&scope).unwrap();
     let config = scope.join("settings.json");
@@ -578,7 +586,8 @@ fn inspection_rejects_empty_or_damaged_ownership() {
 
 #[test]
 fn prepared_manifest_recovers_detected_unrelated_edit_without_overwrite() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     let scope = dir.join(".claude");
     fs::create_dir_all(&scope).unwrap();
     let config = scope.join("settings.json");
@@ -613,7 +622,8 @@ fn prepared_manifest_recovers_detected_unrelated_edit_without_overwrite() {
 
 #[test]
 fn prepared_manifest_can_be_removed_after_replacement_failure() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     let scope = dir.join(".claude");
     fs::create_dir_all(&scope).unwrap();
     let config = scope.join("settings.json");
@@ -641,7 +651,8 @@ fn prepared_manifest_can_be_removed_after_replacement_failure() {
 
 #[test]
 fn partial_manifest_write_is_invisible_and_retryable() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     let scope = dir.join(".claude");
     fs::create_dir_all(&scope).unwrap();
     let config = scope.join("settings.json");
@@ -668,7 +679,8 @@ fn partial_manifest_write_is_invisible_and_retryable() {
 
 #[test]
 fn prepared_removal_refuses_edited_owned_command() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     let scope = dir.join(".claude");
     fs::create_dir_all(&scope).unwrap();
     let config = scope.join("settings.json");
@@ -708,7 +720,8 @@ fn prepared_removal_refuses_edited_owned_command() {
 
 #[test]
 fn installed_manifest_retry_is_idempotent_after_publication() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     let scope = dir.join(".claude");
     fs::create_dir_all(&scope).unwrap();
     let config = scope.join("settings.json");
@@ -729,7 +742,8 @@ fn installed_manifest_retry_is_idempotent_after_publication() {
 
 #[test]
 fn public_retry_after_settings_publication_keeps_later_unrelated_edit() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     let scope = dir.join(".claude");
     fs::create_dir_all(&scope).unwrap();
     let config = scope.join("settings.json");
@@ -751,7 +765,8 @@ fn public_retry_after_settings_publication_keeps_later_unrelated_edit() {
 
 #[test]
 fn prepared_retry_refuses_independently_added_identical_hook() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     let scope = dir.join(".claude");
     fs::create_dir_all(&scope).unwrap();
     let config = scope.join("settings.json");
@@ -784,7 +799,8 @@ fn prepared_retry_refuses_independently_added_identical_hook() {
 
 #[test]
 fn owned_command_marker_keeps_shell_argv_unchanged() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     let scope = dir.join(".claude");
     fs::create_dir_all(&scope).unwrap();
     let config = scope.join("settings.json");
@@ -814,7 +830,8 @@ fn owned_command_marker_keeps_shell_argv_unchanged() {
 
 #[test]
 fn damaged_installation_marker_is_not_owned() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     let scope = dir.join(".claude");
     fs::create_dir_all(&scope).unwrap();
     let config = scope.join("settings.json");
@@ -840,7 +857,8 @@ fn damaged_installation_marker_is_not_owned() {
 #[cfg(unix)]
 #[test]
 fn ownership_manifest_is_private_when_first_published_and_after_replacement() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     let scope = dir.join(".claude");
     fs::create_dir_all(&scope).unwrap();
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
@@ -873,7 +891,10 @@ fn ownership_manifest_is_private_when_first_published_and_after_replacement() {
 #[test]
 fn damaged_installation_baseline_cannot_erase_unrelated_settings_or_publish_invalid_json() {
     for damaged in [b"{}".as_slice(), b"not json".as_slice()] {
-        let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_support::scratch::temp_path(format!(
+            "herdr-setup-{}",
+            uuid::Uuid::new_v4()
+        ));
         let scope = dir.join(".claude");
         fs::create_dir_all(&scope).unwrap();
         let config = scope.join("settings.json");
@@ -897,7 +918,8 @@ fn pinned() -> crate::harness::codex::InstalledVersion {
 }
 
 fn claude_scope() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     let scope = dir.join(".claude");
     fs::create_dir_all(&scope).unwrap();
     let config = scope.join("settings.json");
@@ -2354,7 +2376,8 @@ fn forged_historical_record_is_refused() {
 // ---- per-event registration (`--event`) ----
 
 fn codex_scope() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     let scope = dir.join(".codex");
     fs::create_dir_all(&scope).unwrap();
     (
@@ -2729,7 +2752,8 @@ fn operation_scope_defaults_preserve_legacy_resolution_and_refuse_foreign_genera
     use crate::protocol::time::{CallBudget, MonoInstant};
     let registry = registry::builtins();
     let registration = registry.by_id(registry.agent("claude").unwrap()).unwrap();
-    let root = std::env::temp_dir().join(format!("scope-default-{}", uuid::Uuid::new_v4()));
+    let root =
+        crate::test_support::scratch::temp_path(format!("scope-default-{}", uuid::Uuid::new_v4()));
     let environment = SetupEnvironment {
         config_roots: [("claude".into(), root.join("claude"))].into(),
         ..Default::default()
@@ -2973,7 +2997,10 @@ mod extension_proof {
     }
 
     fn scratch(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ht-ext-{label}-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_support::scratch::temp_path(format!(
+            "ht-ext-{label}-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -3275,7 +3302,8 @@ fn backups(dir: &std::path::Path) -> Vec<(String, Vec<u8>, u32)> {
 /// Kills a replacement that loses the prior bytes, exposes them, or changes the file's mode.
 #[test]
 fn user_config_backup_keeps_exact_prior_bytes_privately() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&dir).unwrap();
     let config = dir.join("settings.json");
     fs::write(&config, b"{\"a\":1}").unwrap();
@@ -3306,7 +3334,8 @@ fn user_config_backup_keeps_exact_prior_bytes_privately() {
 /// Kills a backup or write for an unchanged file, and a write over bytes the caller did not see.
 #[test]
 fn user_config_unchanged_or_stale_writes_nothing() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&dir).unwrap();
     let config = dir.join("hooks.json");
     fs::write(&config, b"{}").unwrap();
@@ -3325,7 +3354,8 @@ fn user_config_unchanged_or_stale_writes_nothing() {
 /// Kills a real hook writer that publishes or removes without keeping each prior version.
 #[test]
 fn hook_install_and_removal_back_up_each_prior_version() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     let scope = dir.join(".claude");
     fs::create_dir_all(&scope).unwrap();
     let config = scope.join("settings.json");
@@ -3359,7 +3389,8 @@ fn hook_install_and_removal_back_up_each_prior_version() {
 /// Kills skipping the backup of an existing file that holds no settings: every pre-image is kept.
 #[test]
 fn user_config_without_settings_is_still_backed_up() {
-    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let dir =
+        crate::test_support::scratch::temp_path(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&dir).unwrap();
     let config = dir.join("settings.json");
     for empty in [&b""[..], b"{}", b" {\n}\n"] {
@@ -3381,7 +3412,8 @@ fn stable_owned_reinstall_preserves_identity_positions_and_foreign_groups() {
         (crate::harness::claude::settings_kind(), "claude"),
         (crate::harness::codex::settings_kind(), "codex"),
     ] {
-        let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
+        let dir =
+            crate::test_support::scratch::temp_path(format!("ht-task9-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&dir).unwrap();
         let config = dir.join(kind.file_name());
         let manifest_path = dir.join("ownership.json");
@@ -3442,7 +3474,8 @@ fn stable_foreign_identical_and_owned_drift_are_preserved() {
         (crate::harness::claude::settings_kind(), "claude"),
         (crate::harness::codex::settings_kind(), "codex"),
     ] {
-        let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
+        let dir =
+            crate::test_support::scratch::temp_path(format!("ht-task9-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&dir).unwrap();
         let config = dir.join(kind.file_name());
         let manifest_path = dir.join("ownership.json");
@@ -3558,7 +3591,10 @@ fn stable_uuid_and_shared_migration_recovers_and_preserves_order() {
                 InstallFault::InterruptAfterIntent,
                 InstallFault::InterruptAfterPublication,
             ] {
-                let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
+                let dir = crate::test_support::scratch::temp_path(format!(
+                    "ht-task9-{}",
+                    uuid::Uuid::new_v4()
+                ));
                 fs::create_dir(&dir).unwrap();
                 let config = dir.join(kind.file_name());
                 let manifest_path = dir.join("ownership.json");
@@ -3637,7 +3673,7 @@ fn stable_uuid_and_shared_migration_recovers_and_preserves_order() {
 
 #[test]
 fn stable_codex_layer_command_is_identified_without_adoption() {
-    let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
+    let dir = crate::test_support::scratch::temp_path(format!("ht-task9-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&dir).unwrap();
     let config = dir.join("config.toml");
     fs::write(&config, "[[hooks.SessionStart]]\nhooks = [{ type = \"command\", command = \"'/x/herdr-threads' '--state-dir' '/route' 'hook-event' 'codex' 'SessionStart'\" }]\n").unwrap();
@@ -3666,7 +3702,8 @@ fn stable_same_event_foreign_route_conflicts_without_config_changes() {
         crate::harness::claude::settings_kind(),
         crate::harness::codex::settings_kind(),
     ] {
-        let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
+        let dir =
+            crate::test_support::scratch::temp_path(format!("ht-task9-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&dir).unwrap();
         let config = dir.join(kind.file_name());
         let manifest = dir.join("ownership.json");
@@ -3691,7 +3728,8 @@ fn stable_same_event_foreign_route_conflicts_without_config_changes() {
         crate::harness::claude::settings_kind(),
         crate::harness::codex::settings_kind(),
     ] {
-        let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
+        let dir =
+            crate::test_support::scratch::temp_path(format!("ht-task9-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&dir).unwrap();
         let config = dir.join(kind.file_name());
         let manifest = dir.join("ownership.json");
@@ -3806,7 +3844,8 @@ fn stable_v1_shared_owned_migration_after_intent_recovers() {
         crate::harness::claude::settings_kind(),
         crate::harness::codex::settings_kind(),
     ] {
-        let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
+        let dir =
+            crate::test_support::scratch::temp_path(format!("ht-task9-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&dir).unwrap();
         let config = dir.join(kind.file_name());
         let manifest_path = dir.join("ownership.json");
@@ -3857,7 +3896,8 @@ fn stable_migration_result_is_not_reported_unchanged_and_warns_for_retrust() {
     use crate::cli::setup::{SetupEnv, SetupVerb};
     use crate::harness::setup::legacy::{OwnedFile, install_settings};
     for recorded in [true, false] {
-        let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
+        let dir =
+            crate::test_support::scratch::temp_path(format!("ht-task9-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&dir).unwrap();
         let config = dir.join("hooks.json");
         let manifest_path = dir.join("ownership.json");

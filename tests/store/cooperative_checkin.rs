@@ -60,9 +60,9 @@ fn fixture_with_context() -> (
     Arc<TestClock>,
     StoreContext,
 ) {
-    let directory = Arc::new(PrivateDirectory(
-        std::env::temp_dir().join(format!("cooperative-fixture-{}", uuid::Uuid::new_v4())),
-    ));
+    let directory = Arc::new(PrivateDirectory(crate::test_support::scratch::temp_path(
+        format!("cooperative-fixture-{}", uuid::Uuid::new_v4()),
+    )));
     std::fs::create_dir(&directory.0).unwrap();
     let clock = Arc::new(TestClock(AtomicU64::new(100)));
     let context = StoreContext::new(directory.0.join("store.db"), clock.clone()).with_test_host();

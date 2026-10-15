@@ -376,7 +376,10 @@ fn unsafe_recipient_preparation_refuses_before_any_write() {
 struct TempRoot(std::path::PathBuf);
 impl TempRoot {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("sp-qhz8-fixture-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_support::scratch::temp_path(format!(
+            "sp-qhz8-fixture-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir(&root).unwrap();
         Self(root)
     }

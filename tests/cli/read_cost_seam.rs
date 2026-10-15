@@ -238,7 +238,10 @@ impl Invocation {
             move |command| answer(command, &log),
             DaemonVintage::Current,
         ));
-        let root = std::env::temp_dir().join(format!("read-cost-seam-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_support::scratch::temp_path(format!(
+            "read-cost-seam-{}",
+            uuid::Uuid::new_v4()
+        ));
         let paths = NodePaths {
             state_dir: root.clone(),
             node_dir: root.clone(),

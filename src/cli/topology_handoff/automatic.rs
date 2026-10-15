@@ -1,6 +1,7 @@
 //! New-tab V2 producer. Canonical parent and child commands retain all authority;
 //! these local records only preserve the original native submission boundary.
 use super::{BootstrapSubmissionInputs, RunError};
+use crate::store::connection::DurableSync;
 use crate::{
     cli::{
         actor_route::InvocationActor,
@@ -1125,14 +1126,14 @@ fn save_terminal(
             .custom_flags(libc::O_NOFOLLOW)
             .open(&temp)?;
         file.write_all(&bytes)?;
-        file.sync_all()?;
+        file.durable_sync()?;
         std::fs::hard_link(&temp, &path)?;
-        std::fs::File::open(journal.root())?.sync_all()
+        std::fs::File::open(journal.root())?.durable_sync()
     })();
     let cleanup = std::fs::remove_file(&temp);
     result?;
     cleanup?;
-    std::fs::File::open(journal.root())?.sync_all()?;
+    std::fs::File::open(journal.root())?.durable_sync()?;
     Ok(())
 }
 fn present_completed<W: Write>(

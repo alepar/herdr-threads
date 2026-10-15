@@ -161,7 +161,7 @@ fn known_broken_snippet_round_trips() {
         rows[0]["known_broken"],
         json!([{"min": "2.1.290", "max": null}])
     );
-    let path = std::env::temp_dir().join(format!(
+    let path = crate::test_support::scratch::temp_path(format!(
         "herdr-threads-snippet-roundtrip-{}.json",
         std::process::id()
     ));

@@ -22,7 +22,10 @@ impl Clock for TestClock {
 }
 
 fn setup() -> (StoreContext, Connection) {
-    let path = std::env::temp_dir().join(format!("wake-on-test-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "wake-on-test-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context = StoreContext::new(path, Arc::new(TestClock)).with_test_host();
     let conn = context.open_writer().unwrap();
     conn.execute_batch(

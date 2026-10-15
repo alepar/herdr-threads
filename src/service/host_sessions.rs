@@ -119,6 +119,11 @@ pub struct SessionDeps {
     /// The remembered `herdr_hosts` rows, read through the store.
     pub remembered: RememberedHosts,
     pub sweep_interval: Duration,
+    /// Each session's wake-lane safety tick and observation capture cadence
+    /// (production: `WAKE_SAFETY_TICK_MILLIS` and `OBSERVATION_CADENCE`; see
+    /// `ServiceConfig::lane_tick`).
+    pub wake_safety_tick: Duration,
+    pub observation_cadence: Duration,
     /// Production attaches only a locator that is its own canonical path on
     /// disk; a fake factory's locators are not on disk.
     pub check_canonical: bool,
@@ -148,6 +153,10 @@ impl SessionDeps {
             lane_log: None,
             remembered: Arc::new(|_: &CallBudget| Ok(Vec::new())),
             sweep_interval: DEFAULT_SWEEP_INTERVAL,
+            wake_safety_tick: Duration::from_millis(
+                crate::service::workers::WAKE_SAFETY_TICK_MILLIS,
+            ),
+            observation_cadence: crate::service::workers::OBSERVATION_CADENCE,
             check_canonical: false,
         }
     }
@@ -676,6 +685,7 @@ impl HostSessions {
                 Arc::clone(&evidence),
                 Arc::clone(&observation_pacer),
                 Arc::clone(&reachability),
+                deps.observation_cadence,
             )?);
             spawn_fault(locator)?;
             started.push(start_wake_worker_named(
@@ -695,6 +705,7 @@ impl HostSessions {
                 Arc::clone(&deps.mod_channels),
                 Arc::clone(&deps.hook_pull),
                 deps.liveness.clone(),
+                deps.wake_safety_tick,
             )?);
             Ok(())
         })();
@@ -1111,6 +1122,10 @@ mod tests {
                     crate::store::hosts::remembered(&db, usize::MAX)
                 }),
                 sweep_interval: sweep,
+                wake_safety_tick: Duration::from_millis(
+                    crate::service::workers::WAKE_SAFETY_TICK_MILLIS,
+                ),
+                observation_cadence: crate::service::workers::OBSERVATION_CADENCE,
                 check_canonical,
             };
             let sessions = Arc::new(HostSessions::new(Arc::clone(&index), factory, deps));

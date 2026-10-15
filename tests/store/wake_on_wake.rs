@@ -24,7 +24,10 @@ fn budget() -> CallBudget {
 /// An idle, registered seat `s` with a lazy-capable thread `t`, and no
 /// ordinary attention at all, so a lazy row is the only possible wake reason.
 fn lazy_store(wake_on: &str, batch_delay_ms: u64) -> (SqliteStore, std::path::PathBuf) {
-    let path = std::env::temp_dir().join(format!("herdr-wake-on-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-wake-on-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context = StoreContext::new(path.clone(), Arc::new(LazyWakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch(

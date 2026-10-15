@@ -53,8 +53,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let path =
-            std::env::temp_dir().join(format!("herdr-discovery-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "herdr-discovery-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
         let db = context.open_writer().unwrap();
         db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1")

@@ -12,6 +12,7 @@ use crate::protocol::{
     handoff::HandoffResult,
     output::{OutputFormat, OutputSpec},
 };
+use crate::store::connection::DurableSync;
 use crate::{
     ports::LocalClient,
     protocol::{
@@ -1060,16 +1061,16 @@ fn save_terminal(
             .custom_flags(libc::O_NOFOLLOW)
             .open(&temp)?;
         file.write_all(&bytes)?;
-        file.sync_all()?;
+        file.durable_sync()?;
         // Exclusive publication: never replace an existing historical terminal record.
         fs::hard_link(&temp, terminal_path(journal, reference))?;
-        File::open(journal.root())?.sync_all()
+        File::open(journal.root())?.durable_sync()
     };
     let result = save();
     let cleanup = fs::remove_file(&temp);
     result?;
     cleanup?;
-    File::open(journal.root())?.sync_all()?;
+    File::open(journal.root())?.durable_sync()?;
     Ok(())
 }
 /// Read-only original selection for the shared original-actor gate at activation.
@@ -1183,8 +1184,8 @@ pub fn retry_to_writer<C: LocalClient + ?Sized, W: Write>(
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(terminal_path(journal, reference))?
-            .sync_all()?;
-        File::open(journal.root())?.sync_all()?;
+            .durable_sync()?;
+        File::open(journal.root())?.durable_sync()?;
         terminal
     } else {
         let original = journal.snapshot_delivery_origin(reference)?;
@@ -1332,7 +1333,7 @@ fn remove_completed_files(journal: &Journal, reference: &IntentRef) -> io::Resul
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    File::open(journal.root())?.sync_all()
+    File::open(journal.root())?.durable_sync()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1473,15 +1474,15 @@ fn save_automatic_terminal(
             .custom_flags(libc::O_NOFOLLOW)
             .open(&temp)?;
         file.write_all(&bytes)?;
-        file.sync_all()?;
+        file.durable_sync()?;
         fs::hard_link(&temp, automatic_terminal_path(journal, reference))?;
-        File::open(journal.root())?.sync_all()
+        File::open(journal.root())?.durable_sync()
     };
     let result = save();
     let cleanup = fs::remove_file(&temp);
     result?;
     cleanup?;
-    File::open(journal.root())?.sync_all()?;
+    File::open(journal.root())?.durable_sync()?;
     Ok(())
 }
 
@@ -1809,8 +1810,8 @@ fn retry_automatic_inner<C: LocalClient + ?Sized, W: Write>(
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(automatic_terminal_path(journal, reference))?
-            .sync_all()?;
-        File::open(journal.root())?.sync_all()?;
+            .durable_sync()?;
+        File::open(journal.root())?.durable_sync()?;
         terminal
     } else {
         let mut query = envelope.clone();

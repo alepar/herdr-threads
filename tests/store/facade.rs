@@ -36,8 +36,10 @@ impl Clock for FixedClock {
 fn service_recovery_audit_is_durable_and_uses_a_reserved_operation_scope() {
     let instance = crate::node::NodeUuid::new_v4().to_string();
     let boot = uuid::Uuid::new_v4();
-    let path =
-        std::env::temp_dir().join(format!("herdr-recovery-audit-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-recovery-audit-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let settings = StoreSettings {
         daemon_boot: Some(boot),
         ..StoreSettings::default()
@@ -112,7 +114,10 @@ fn service_recovery_audit_is_durable_and_uses_a_reserved_operation_scope() {
 
 #[test]
 fn public_facade_invitation_due_scan_is_idempotent_after_reopen() {
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -166,7 +171,10 @@ fn public_facade_invitation_due_scan_is_idempotent_after_reopen() {
 
 #[test]
 fn public_facade_late_accept_and_ack_share_unique_due_warnings() {
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -255,7 +263,10 @@ fn public_facade_operator_invites_into_an_archived_orphan_without_receipt_author
         authority::{OperatorActor, PeerIdentity},
         commands::OperatorOrphanInvite,
     };
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -328,7 +339,10 @@ fn public_facade_operator_invites_into_an_archived_orphan_without_receipt_author
 fn public_facade_pages_participants_recipients_and_canonical_pending_ids() {
     use crate::cli::commands::{CliAction, parse_argv};
     use crate::protocol::commands::{ParticipantsQuery, PendingReceiptsQuery, RecipientsQuery};
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -457,7 +471,10 @@ fn public_facade_pages_participants_recipients_and_canonical_pending_ids() {
 
 #[test]
 fn receipt_only_due_admission_runs_even_when_invitation_has_priority() {
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -487,7 +504,10 @@ fn receipt_only_due_admission_runs_even_when_invitation_has_priority() {
 
 #[test]
 fn one_candidate_due_budget_retains_unvisited_admitted_phase() {
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -548,7 +568,10 @@ fn one_candidate_due_budget_retains_unvisited_admitted_phase() {
 
 #[test]
 fn pending_work_pages_global_job_order_and_keeps_a_reachable_cursor() {
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -595,7 +618,10 @@ fn pending_work_pages_global_job_order_and_keeps_a_reachable_cursor() {
 // jobs is never visited and the first page already holds the ready job.
 #[test]
 fn pending_work_skips_a_full_slice_of_completed_jobs() {
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -622,7 +648,10 @@ fn pending_work_skips_a_full_slice_of_completed_jobs() {
 // continuation cursor, and the page fits the smallest legal byte budget.
 #[test]
 fn pending_work_with_only_completed_jobs_is_an_empty_final_page() {
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -655,7 +684,10 @@ fn pending_work_with_only_completed_jobs_is_an_empty_final_page() {
 
 #[test]
 fn pending_work_fits_escaped_candidate_and_reaches_withheld_row() {
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -728,7 +760,10 @@ fn public_facade_publishes_an_empty_coherent_snapshot_atomically() {
     use crate::ports::{
         EnumerationEvidence, EvidenceKind, HostSnapshot, IncarnationEvidence, SnapshotHeader,
     };
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -785,7 +820,10 @@ fn public_facade_publishes_an_empty_coherent_snapshot_atomically() {
 
 #[test]
 fn public_facade_retirement_fences_before_bounded_cleanup() {
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -863,7 +901,10 @@ fn public_facade_mixed_retirement_keeps_cutover_across_quanta_and_reopen() {
         commands::{OperatorOrphanInvite, PendingReceiptsQuery},
         results::CleanupState,
     };
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let clock = Arc::new(AdvancingClock(std::sync::atomic::AtomicI64::new(100)));
     let context = connection::StoreContext::new(path.clone(), clock.clone()).with_test_host();
     let db = context.open_writer().unwrap();
@@ -1104,7 +1145,10 @@ fn public_facade_operator_fresh_and_rebind_keep_provenance_without_receipt_autho
             ids::{HostCallId, TerminalId},
         },
     };
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -1337,7 +1381,10 @@ fn public_facade_operator_fresh_and_rebind_keep_provenance_without_receipt_autho
 
 #[test]
 fn public_facade_check_in_commits_anchor_and_exact_empty_offer() {
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -1411,7 +1458,10 @@ fn public_facade_check_in_commits_anchor_and_exact_empty_offer() {
 // (a resumed session would keep a stale watermark above the decision sequence).
 #[test]
 fn lifecycle_check_in_resets_only_its_own_offer() {
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -1509,7 +1559,10 @@ fn public_facade_rejects_expired_permit() {
             MonoInstant(252)
         }
     }
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context = connection::StoreContext::new(path.clone(), Arc::new(LateClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\
@@ -1587,7 +1640,10 @@ fn public_facade_rejects_expired_permit() {
 
 #[test]
 fn public_facade_creates_thread_with_current_cooperative_permit() {
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -1632,7 +1688,10 @@ fn public_facade_creates_thread_with_current_cooperative_permit() {
 
 #[test]
 fn operation_status_uses_only_trusted_read_scope() {
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -1710,7 +1769,10 @@ fn permitted(
 
 #[test]
 fn public_facade_creates_invites_sends_accepts_acks_and_archives_with_stable_ids() {
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -1838,7 +1900,10 @@ fn public_facade_creates_invites_sends_accepts_acks_and_archives_with_stable_ids
 
 #[test]
 fn public_facade_routes_directory_through_real_query_connection() {
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -1878,7 +1943,10 @@ fn public_facade_routes_directory_through_real_query_connection() {
 
 #[test]
 fn default_directory_and_inbox_resolve_only_the_trusted_selected_seat() {
-    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-facade-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -1946,7 +2014,10 @@ fn join_hint_fixture_inner(
     Accept,
     crate::protocol::ids::InvitationId,
 ) {
-    let path = std::env::temp_dir().join(format!("herdr-join-hint-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-join-hint-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context =
         connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
@@ -2078,7 +2149,10 @@ fn invalid_inbox_completion_writes_no_state() {
     use crate::protocol::{
         authority::ObligationRef, commands::CompleteInboxDelivery, ids::MessageId,
     };
-    let path = std::env::temp_dir().join(format!("inert-completion-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "inert-completion-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let store = SqliteStore::new(
         StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host(),
         "34750f98bd59fcfc946da45aaabe933b",
@@ -2606,7 +2680,10 @@ fn public_join_cli_journal_recovers_committed_response_loss_without_rejoining() 
         retry,
     };
     let (store, path, accept, _) = join_hint_fixture_inner(0, false);
-    let temp = std::env::temp_dir().join(format!("public-join-journal-{}", uuid::Uuid::new_v4()));
+    let temp = crate::test_support::scratch::temp_path(format!(
+        "public-join-journal-{}",
+        uuid::Uuid::new_v4()
+    ));
     let journal = Journal::open(&temp).unwrap();
     let scope = IntentScope::Cooperative {
         host: crate::test_support::test_host_locator(),

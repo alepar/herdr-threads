@@ -23,7 +23,8 @@ impl Peer {
         mode: usize,
         cancellation: Option<crate::protocol::time::Cancellation>,
     ) -> Self {
-        let path = std::env::temp_dir().join(format!("ht-qhz3-{}", uuid::Uuid::new_v4()));
+        let path =
+            crate::test_support::scratch::temp_path(format!("ht-qhz3-{}", uuid::Uuid::new_v4()));
         let listener = UnixListener::bind(&path).unwrap();
         listener.set_nonblocking(true).unwrap();
         let stop = Arc::new(AtomicBool::new(false));

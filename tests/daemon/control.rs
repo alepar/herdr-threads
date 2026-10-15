@@ -61,7 +61,10 @@ impl LocalService for RetirementDomain {
 fn retirement_fixture() -> (std::path::PathBuf, String, crate::ports::RetirementJob) {
     use crate::ports::{ClosureEvidence, StorePort};
     use crate::protocol::ids::{HostBootId, HostTargetId};
-    let path = std::env::temp_dir().join(format!("herdr-retirement-control-{}.db", Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-retirement-control-{}.db",
+        Uuid::new_v4()
+    ));
     let instance = crate::node::NodeUuid::new_v4().to_string();
     let context = crate::store::connection::StoreContext::new(
         path.clone(),
@@ -915,7 +918,8 @@ fn stop_requires_exact_instance_and_boot_before_cancellation() {
 
 #[test]
 fn oversized_log_fragment_rotates_to_two_bounded_private_files() {
-    let directory = std::env::temp_dir().join(format!("herdr-control-test-{}", Uuid::new_v4()));
+    let directory =
+        crate::test_support::scratch::temp_path(format!("herdr-control-test-{}", Uuid::new_v4()));
     fs::create_dir(&directory).unwrap();
     fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
     let history = directory.join("history.sqlite3");
@@ -1271,7 +1275,8 @@ fn compatible_old_software_stops_and_unresponsive_client_fails_without_pid_actio
         deadline: MonoInstant(100),
         cancellation: Cancellation::default(),
     };
-    let root = std::env::temp_dir().join(format!("herdr-stop-skew-{}", Uuid::new_v4()));
+    let root =
+        crate::test_support::scratch::temp_path(format!("herdr-stop-skew-{}", Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let paths = crate::daemon::paths::NodePaths::resolve(
@@ -1341,7 +1346,8 @@ impl crate::protocol::time::Clock for StopClock {
 fn stop_completion_waits_for_real_owner_lock_after_socket_and_descriptor_disappear() {
     use crate::daemon::ownership::OwnerLock;
     use crate::daemon::paths::{NodePaths, RuntimeContext};
-    let root = std::env::temp_dir().join(format!("herdr-stop-owner-{}", Uuid::new_v4()));
+    let root =
+        crate::test_support::scratch::temp_path(format!("herdr-stop-owner-{}", Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let paths = NodePaths::resolve(

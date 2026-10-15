@@ -534,7 +534,10 @@ struct HealthTestDir(std::path::PathBuf);
 impl HealthTestDir {
     fn new() -> Self {
         use std::os::unix::fs::DirBuilderExt;
-        let path = std::env::temp_dir().join(format!("herdr-health-{}", uuid::Uuid::new_v4()));
+        let path = herdr_threads::test_support::scratch::temp_path(format!(
+            "herdr-health-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::DirBuilder::new()
             .mode(0o700)
             .create(&path)

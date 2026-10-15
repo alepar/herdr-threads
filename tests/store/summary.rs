@@ -45,7 +45,8 @@ impl Fx {
     /// Instance `i` with seats `a` and `b` (open bindings, executions `ea` and
     /// `eb`) and thread `t`; instance `o` with seat `x`.
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("summary-{}.db", uuid::Uuid::new_v4()));
+        let path =
+            crate::test_support::scratch::temp_path(format!("summary-{}.db", uuid::Uuid::new_v4()));
         let context = StoreContext::new(path, Arc::new(FixedClock)).with_test_host();
         let db = context.open_writer().unwrap();
         // Instance `o` stands for rows of another instance: a store has one

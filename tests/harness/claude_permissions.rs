@@ -12,10 +12,10 @@ struct Scope {
 }
 impl Scope {
     fn new(settings: &[u8]) -> Self {
-        let dir = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("ht-claude-permissions-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_support::scratch::temp_path_canonical(format!(
+            "ht-claude-permissions-{}",
+            uuid::Uuid::new_v4()
+        ));
         fs::create_dir_all(dir.join(".claude")).unwrap();
         let settings_path = dir.join(".claude/settings.json");
         fs::write(&settings_path, settings).unwrap();

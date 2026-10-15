@@ -35,7 +35,10 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("operator-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "operator-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let context = StoreContext::new(path.clone(), Arc::new(Fixed)).with_test_host();
         let db = context.open_writer().unwrap();
         db.execute_batch("PRAGMA foreign_keys=OFF; INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('foreign-seat','foreign','unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0),('foreign-thread','foreign','topic','goal',0,0);").unwrap();

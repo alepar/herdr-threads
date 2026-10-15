@@ -1,4 +1,5 @@
 //! Local cooperative context journal. No transport, ACK, or invitation acceptance lives here.
+use crate::store::connection::DurableSync;
 use crate::{
     harness::cache::{CacheReadError, CachedCheckIn, CachedCheckInKey},
     protocol::time::{CallBudget, Clock},
@@ -682,13 +683,13 @@ impl ContextJournal {
         let operation = (|| {
             let mut f = options.open(&temp)?;
             f.write_all(&bytes)?;
-            f.sync_all()?;
+            f.durable_sync()?;
             let path = self.directory.join("context.json");
             if fs::symlink_metadata(&path).is_ok() {
                 private_metadata(&path, false)?;
             }
             fs::rename(&temp, path)?;
-            File::open(&self.directory)?.sync_all()?;
+            File::open(&self.directory)?.durable_sync()?;
             Ok(())
         })();
         if operation.is_err() {
@@ -1724,7 +1725,8 @@ mod identity_tests {
     // aarch64); a hardcoded value silently followed links on one of them.
     #[test]
     fn secure_options_refuse_a_symlinked_final_component() {
-        let dir = std::env::temp_dir().join(format!("ht-nofollow-{}", Uuid::new_v4()));
+        let dir =
+            crate::test_support::scratch::temp_path(format!("ht-nofollow-{}", Uuid::new_v4()));
         fs::create_dir(&dir).unwrap();
         fs::write(dir.join("target"), b"x").unwrap();
         std::os::unix::fs::symlink(dir.join("target"), dir.join("link")).unwrap();
@@ -1780,10 +1782,10 @@ mod identity_tests {
     #[test]
     fn unknown_context_identity_is_rejected_without_rewriting_file() {
         // The journal requires a physical path; macOS temp dirs sit under /var.
-        let directory = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("context-{}", Uuid::new_v4()));
+        let directory = crate::test_support::scratch::temp_path_canonical(format!(
+            "context-{}",
+            Uuid::new_v4()
+        ));
         fs::create_dir_all(&directory).unwrap();
         #[cfg(unix)]
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();

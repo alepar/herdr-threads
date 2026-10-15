@@ -52,9 +52,10 @@ fn budget() -> CallBudget {
     }
 }
 fn fixture() -> Fixture {
-    let directory = Arc::new(Directory(
-        std::env::temp_dir().join(format!("task48-{}", uuid::Uuid::new_v4())),
-    ));
+    let directory = Arc::new(Directory(crate::test_support::scratch::temp_path(format!(
+        "task48-{}",
+        uuid::Uuid::new_v4()
+    ))));
     std::fs::create_dir(&directory.0).unwrap();
     let clock = Arc::new(TestClock(AtomicU64::new(100)));
     let context =

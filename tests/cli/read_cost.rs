@@ -152,7 +152,10 @@ fn run(argv: &[&str], seats: Vec<SeatSummary>) -> Run {
         },
         DaemonVintage::Current,
     ));
-    let root = std::env::temp_dir().join(format!("read-cost-unused-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_support::scratch::temp_path(format!(
+        "read-cost-unused-{}",
+        uuid::Uuid::new_v4()
+    ));
     let paths = NodePaths {
         state_dir: root.clone(),
         node_dir: root.clone(),
@@ -379,7 +382,10 @@ fn participant_json_with_active_host_source_makes_no_enrichment_calls() {
             })
         };
         let source = crate::host::native::NativeCli::new(
-            std::env::temp_dir().join(format!("absent-participant-json-{}", uuid::Uuid::new_v4())),
+            crate::test_support::scratch::temp_path(format!(
+                "absent-participant-json-{}",
+                uuid::Uuid::new_v4()
+            )),
             Arc::new(SystemClock::default()),
         );
         let mut output = Vec::new();

@@ -658,6 +658,7 @@ fn the_thread_rechecks_on_its_cadence_and_stops_on_cancel() {
         pacer.clone(),
         cancel.clone(),
         Arc::new(|_| {}),
+        crate::scheduler::config::LIVENESS_RECHECK_INTERVAL,
     )
     .unwrap();
     // The first pass runs at once and leaves the live binding alone.

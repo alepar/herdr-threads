@@ -146,7 +146,10 @@ fn activated_lazy_routes_are_advertised() {
             MonoInstant(1)
         }
     }
-    let root = std::env::temp_dir().join(format!("lazy-routes-{}", uuid::Uuid::new_v4()));
+    let root = herdr_threads::test_support::scratch::temp_path(format!(
+        "lazy-routes-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir(&root).unwrap();
     let path = root.join("store.db");
     let store = SqliteStore::new(

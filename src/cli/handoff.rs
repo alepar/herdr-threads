@@ -5,6 +5,7 @@ use super::{
     journal::{IntentRef, IntentScope, Journal, SemanticMutation},
     launch::LaunchRequest,
 };
+use crate::store::connection::DurableSync;
 use crate::{
     ports::LocalClient,
     protocol::{
@@ -429,9 +430,9 @@ pub(crate) fn save_progress_at<T: Serialize>(
         .mode(0o600)
         .open(&temp)?;
     file.write_all(&bytes)?;
-    file.sync_all()?;
+    file.durable_sync()?;
     fs::rename(temp, path)?;
-    File::open(journal.root())?.sync_all()
+    File::open(journal.root())?.durable_sync()
 }
 fn load(journal: &Journal, reference: &IntentRef) -> io::Result<Progress> {
     load_progress(journal, reference)
@@ -2379,14 +2380,14 @@ pub(crate) fn save_automatic_diagnostics(
         let mut writer = io::BufWriter::new(file);
         serde_json::to_writer(&mut writer, report)?;
         writer.flush()?;
-        writer.get_ref().sync_all()?;
+        writer.get_ref().durable_sync()?;
         fs::hard_link(&temp, automatic_diagnostics_path(journal, reference))?;
-        File::open(journal.root())?.sync_all()
+        File::open(journal.root())?.durable_sync()
     })();
     let cleanup = fs::remove_file(&temp);
     result?;
     cleanup?;
-    File::open(journal.root())?.sync_all()
+    File::open(journal.root())?.durable_sync()
 }
 pub(crate) fn automatic_diagnostics_marker(
     journal: &Journal,

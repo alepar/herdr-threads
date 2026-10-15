@@ -134,8 +134,10 @@ fn peer() -> PeerIdentity {
 
 impl Fixture {
     fn new(consumer: PresentationConsumer) -> Self {
-        let root =
-            std::env::temp_dir().join(format!("presentation-owner-{}", uuid::Uuid::new_v4()));
+        let root = herdr_threads::test_support::scratch::temp_path(format!(
+            "presentation-owner-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::DirBuilder::new()
             .mode(0o700)
             .create(&root)

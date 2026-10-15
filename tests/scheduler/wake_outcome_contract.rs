@@ -252,7 +252,10 @@ fn native_stub_reports_unknown() {
     };
     let target = wake_target(&host);
     let cli = crate::host::native::NativeCli::new(
-        std::env::temp_dir().join(format!("herdr-no-socket-{}", uuid::Uuid::new_v4())),
+        crate::test_support::scratch::temp_path(format!(
+            "herdr-no-socket-{}",
+            uuid::Uuid::new_v4()
+        )),
         Arc::new(FakeClock(AtomicU64::new(0))),
     );
     assert_eq!(

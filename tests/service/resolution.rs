@@ -325,10 +325,28 @@ impl Fixture {
         Self::start(hold_baseline, true, 0)
     }
     fn start(hold_baseline: bool, seed: bool, snapshot_mode: u64) -> Self {
+        Self::start_with_clock(
+            hold_baseline,
+            seed,
+            snapshot_mode,
+            Arc::new(SystemClock::new()),
+        )
+    }
+    /// `clock` drives the store, the private daemon, the host stand-in and
+    /// the fixture's budgets.
+    fn start_with_clock(
+        hold_baseline: bool,
+        seed: bool,
+        snapshot_mode: u64,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
         let stdio_guard = super::IN_PROCESS_DAEMON
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let root = std::env::temp_dir().join(format!("herdr-resolve-service-{}", Uuid::new_v4()));
+        let root = herdr_threads::test_support::scratch::temp_path(format!(
+            "herdr-resolve-service-{}",
+            Uuid::new_v4()
+        ));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let runtime_context =
             RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
@@ -336,7 +354,6 @@ impl Fixture {
         let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
         let instance = owner.node_uuid().unwrap();
         drop(owner);
-        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let store = Arc::new(
             SqliteStore::new(
                 StoreContext::new(paths.database_path.clone(), Arc::clone(&clock))
@@ -1645,7 +1662,10 @@ fn committed_resolution_with_lost_wire_response_retains_exact_intent_for_explici
     let command = semantic
         .to_command(reference.operation.clone(), None)
         .unwrap();
-    let proxy_path = std::env::temp_dir().join(format!("h-{}.sock", Uuid::new_v4().simple()));
+    let proxy_path = herdr_threads::test_support::scratch::temp_path(format!(
+        "h-{}.sock",
+        Uuid::new_v4().simple()
+    ));
     let listener = UnixListener::bind(&proxy_path).unwrap();
     let endpoint = fixture.descriptor.endpoint.clone();
     let (committed_tx, committed_rx) = mpsc::sync_channel(1);
@@ -1800,7 +1820,18 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
     // reconciliation cannot move the hand-inserted check-in seat's mapping
     // between the insert and the check-in below; this test is about the held
     // search, not the observation lane.
-    let fixture = Fixture::start(false, true, 4);
+    // Every Search gets a 100 ms wall budget from the store's clock
+    // (store::queries::query_inner). This test's subject is the held search,
+    // cancellation and worker reuse, not elapsed time, so the monotonic clock
+    // runs at 1/100 speed: on a loaded runner the successor search must not be
+    // decided by host scheduling. The search wall budget keeps its own
+    // ticking-clock test (search_clipped_budget_returns_same_position_contextual_retry).
+    let fixture = Fixture::start_with_clock(
+        false,
+        true,
+        4,
+        Arc::new(herdr_threads::test_support::slow_clock::SlowMonotonicClock::new()),
+    );
     let literal = format!("held-search-{}", Uuid::new_v4().simple());
     let successor_literal = format!("successor-search-{}", Uuid::new_v4().simple());
     let db = fixture.db();

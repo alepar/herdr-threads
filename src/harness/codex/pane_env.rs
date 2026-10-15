@@ -30,6 +30,7 @@
 //!
 //! The block is advisory foreground configuration, never execution proof or
 //! attribution authority (TRUST-POLICY "Foreground harness execution").
+use crate::store::connection::DurableSync;
 use crate::{
     cli::{
         RunError,
@@ -374,8 +375,8 @@ fn create(path: &Path, bytes: &[u8]) -> Result<(), SetupError> {
         })?;
     note_created_user_config(path);
     file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .and_then(|()| fs::File::open(path.parent().unwrap_or(Path::new("/")))?.sync_all())
+        .and_then(|()| file.durable_sync())
+        .and_then(|()| fs::File::open(path.parent().unwrap_or(Path::new("/")))?.durable_sync())
         .map_err(|_| SetupError::Io)
 }
 
@@ -387,7 +388,7 @@ fn delete_created(path: &Path, current: &[u8]) -> Result<(), SetupError> {
     }
     fs::remove_file(path).map_err(|_| SetupError::Io)?;
     fs::File::open(path.parent().ok_or(SetupError::Invalid)?)
-        .and_then(|dir| dir.sync_all())
+        .and_then(|dir| dir.durable_sync())
         .map_err(|_| SetupError::Io)
 }
 
@@ -1207,7 +1208,8 @@ mod tests {
         }
     }
     fn dir() -> Dir {
-        let path = std::env::temp_dir().join(format!("pane-env-{}", uuid::Uuid::new_v4()));
+        let path =
+            crate::test_support::scratch::temp_path(format!("pane-env-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&path).unwrap();
         Dir(path)
     }

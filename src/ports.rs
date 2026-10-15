@@ -176,7 +176,7 @@ mod service_decision_contract_tests {
 
     #[test]
     fn actual_sqlite_transaction_ends_before_authority_guard_on_every_exit() {
-        let path = std::env::temp_dir().join(format!(
+        let path = crate::test_support::scratch::temp_path(format!(
             "herdr-service-decision-{}.db",
             uuid::Uuid::new_v4()
         ));
@@ -2144,8 +2144,11 @@ pub enum ComposerChoice<'a> {
     Unspecified,
     /// The one target whose process is among the pane's foreground processes.
     Binding(&'a WakeTarget),
-    /// No unique foreground match (none, or several targets in the foreground set): no
-    /// composer wake.
+    /// Several matching targets that are bindings of one process: the same fingerprint pid and
+    /// harness (a harness that forks sessions inside its own process, ht-327). The
+    /// composer is that process's; which of its bindings takes the next turn is not known.
+    Process(Vec<&'a WakeTarget>),
+    /// No foreground match, or matches in several processes or harnesses: no composer wake.
     NoMatch,
 }
 
@@ -2188,18 +2191,30 @@ impl ReservedWakeAuthority {
 
     /// The composer-wake target: the one target whose `fingerprint_pid` is among Herdr's pane
     /// foreground pids (one target or several; a launcher and its native child are both
-    /// foreground, ht-54r.89). Zero or several matching targets are no match; no heuristic
-    /// fallback.
+    /// foreground, ht-54r.89). Several matching targets of one pid and harness are that one
+    /// process ([`ComposerChoice::Process`]); any other several, or none, are no match; no
+    /// heuristic fallback.
     pub fn composer_choice(&self, foreground: &[u32]) -> ComposerChoice<'_> {
         match self.targets() {
             [] => ComposerChoice::Unspecified,
             many => {
-                let mut matching = many.iter().filter(|t| {
-                    t.fingerprint_pid
-                        .is_some_and(|pid| foreground.contains(&pid))
-                });
-                match (matching.next(), matching.next()) {
-                    (Some(found), None) => ComposerChoice::Binding(found),
+                let matching: Vec<&WakeTarget> = many
+                    .iter()
+                    .filter(|t| {
+                        t.fingerprint_pid
+                            .is_some_and(|pid| foreground.contains(&pid))
+                    })
+                    .collect();
+                match matching.as_slice() {
+                    [] => ComposerChoice::NoMatch,
+                    [found] => ComposerChoice::Binding(found),
+                    [first, rest @ ..]
+                        if rest.iter().all(|t| {
+                            t.fingerprint_pid == first.fingerprint_pid && t.harness == first.harness
+                        }) =>
+                    {
+                        ComposerChoice::Process(matching)
+                    }
                     _ => ComposerChoice::NoMatch,
                 }
             }
@@ -2207,6 +2222,17 @@ impl ReservedWakeAuthority {
     }
 }
 impl WakeReservation {
+    /// Whether the wake is for seat-level attention (an invitation, receipt or warning, or a
+    /// receipt's soft-deadline poke), which is shown to whichever binding of the seat takes its
+    /// next turn, unlike unread mail, which is each binding's own.
+    pub fn for_seat_attention(&self) -> bool {
+        self.reasons.iter().any(|reason| {
+            matches!(
+                reason.as_str(),
+                "pending_invitation" | "pending_receipt" | "actionable_warning" | "soft_deadline"
+            )
+        })
+    }
     /// Cooperative structural recheck against a new host read: the same
     /// target, boot, epoch, generation, terminal and verified server
     /// incarnation, from a fresh current-target read with no positive

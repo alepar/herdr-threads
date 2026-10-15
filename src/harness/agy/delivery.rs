@@ -248,7 +248,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             .mode(0o600)
             .open(&temp)?;
         file.write_all(bytes)?;
-        file.sync_all()
+        crate::store::connection::durable_sync(&file)
     })();
     match written.and_then(|()| std::fs::rename(&temp, path)) {
         Ok(()) => Ok(()),

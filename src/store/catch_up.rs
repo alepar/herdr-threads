@@ -469,7 +469,10 @@ mod tests {
     }
 
     fn seeded() -> (Connection, SeatId, ThreadId) {
-        let path = std::env::temp_dir().join(format!("catch-up-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "catch-up-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let db = StoreContext::new(path, Arc::new(FixedClock))
             .with_test_host()
             .open_writer()

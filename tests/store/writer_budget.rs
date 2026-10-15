@@ -33,8 +33,10 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let path =
-            std::env::temp_dir().join(format!("herdr-writer-budget-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "herdr-writer-budget-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let clock = Arc::new(LiveClock(Instant::now()));
         let context = StoreContext::new(path.clone(), clock.clone()).with_test_host();
         let db = context.open_writer().unwrap();

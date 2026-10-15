@@ -35,7 +35,10 @@ impl Drop for TestChild {
 
 #[test]
 fn elected_health_sees_late_retirement_and_keeps_exact_error_on_seat_inspect() {
-    let root = std::env::temp_dir().join(format!("herdr-retirement-health-{}", Uuid::new_v4()));
+    let root = herdr_threads::test_support::scratch::temp_path(format!(
+        "herdr-retirement-health-{}",
+        Uuid::new_v4()
+    ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let context =
         RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();

@@ -98,6 +98,7 @@ impl Lane5 {
             Arc::new(HostEvidenceStatus::default()),
             Arc::clone(&pacer),
             Arc::new(Default::default()),
+            herdr_threads::service::workers::OBSERVATION_CADENCE,
         )
         .unwrap();
         Self {

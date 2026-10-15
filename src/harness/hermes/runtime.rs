@@ -570,16 +570,34 @@ mod tests {
         crate::protocol::time::CallBudget,
     ) {
         use std::os::unix::fs::PermissionsExt;
-        let tmp = TestDir(
-            std::env::temp_dir()
-                .canonicalize()
-                .unwrap()
-                .join(format!("hermes-runtime-{}", uuid::Uuid::new_v4())),
-        );
+        let tmp = TestDir(crate::test_support::scratch::temp_path_canonical(format!(
+            "hermes-runtime-{}",
+            uuid::Uuid::new_v4()
+        )));
         std::fs::create_dir(&tmp.0).unwrap();
         let path = tmp.path().join("launcher with spaces");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\n[ \"$1\" = '--fixture-warm' ] && exit 0\n{body}\n"),
+        )
+        .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // macOS assesses the first exec of every newly written file
+        // (syspolicyd): ~0.2 s idle, several seconds while a loaded suite
+        // writes new executables. Pay it here, before the budget's clock
+        // starts, so the 5 s budget and the hung-child watcher's 3 s window
+        // measure the probe and not the host's assessment queue. The guard
+        // line exits before the body runs.
+        use crate::test_support::spawn::SpawnOwned;
+        let warm = crate::test_support::spawn::command(&path)
+            .arg("--fixture-warm")
+            .current_dir(tmp.path())
+            .stdin(Stdio::null())
+            .spawn_owned()
+            .unwrap()
+            .wait_with_output()
+            .unwrap();
+        assert!(warm.status.success(), "fixture warm-up exec failed");
         let env = crate::harness::adapter::SetupEnvironment {
             home: Some(tmp.path().as_os_str().to_owned()),
             cwd: tmp.path().to_owned(),

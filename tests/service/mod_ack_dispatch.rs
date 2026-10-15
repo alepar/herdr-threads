@@ -109,7 +109,10 @@ fn peer() -> PeerIdentity {
 /// with `s` joined and pending ordinary messages `m1`, `m2` for it.
 fn fixture() -> Fixture {
     use std::os::unix::fs::DirBuilderExt;
-    let directory = std::env::temp_dir().join(format!("mod-ack-dispatch-{}", uuid::Uuid::new_v4()));
+    let directory = crate::test_support::scratch::temp_path(format!(
+        "mod-ack-dispatch-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::DirBuilder::new()
         .mode(0o700)
         .create(&directory)

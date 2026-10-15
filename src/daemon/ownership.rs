@@ -2,6 +2,7 @@
 
 use crate::daemon::paths::{NodePaths, effective_uid};
 use crate::node::{NodeUuid, json::read_hint};
+use crate::store::connection::DurableSync;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -623,9 +624,9 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
             .mode(0o600)
             .open(&temporary)?;
         file.write_all(bytes)?;
-        file.sync_all()?;
+        file.durable_sync()?;
         fs::rename(&temporary, path)?;
-        File::open(path.parent().unwrap())?.sync_all()
+        File::open(path.parent().unwrap())?.durable_sync()
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);

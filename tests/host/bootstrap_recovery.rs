@@ -133,7 +133,7 @@ mod bootstrap_recovery {
             host_incarnation: observation.host_boot.clone(),
             witness,
         };
-        let path = std::env::temp_dir().join(format!("ht-bootstrap-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!("ht-bootstrap-{}.db", uuid::Uuid::new_v4()));
         let _files = DatabaseFiles(path.clone());
         let mut db = Connection::open(&path).unwrap();
         schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed()).unwrap();

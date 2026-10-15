@@ -179,7 +179,8 @@ fn elected_output_fixture() {
 
 #[test]
 fn elected_child_output_rotates_without_retaining_a_terminal() {
-    let root = std::env::temp_dir().join(format!("herdr-task23-{}", uuid::Uuid::new_v4()));
+    let root =
+        crate::test_support::scratch::temp_path(format!("herdr-task23-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let started = Instant::now();
@@ -229,7 +230,8 @@ fn elected_child_output_rotates_without_retaining_a_terminal() {
 
 #[test]
 fn startup_error_is_retained_in_elected_child_log() {
-    let root = std::env::temp_dir().join(format!("herdr-task23-{}", uuid::Uuid::new_v4()));
+    let root =
+        crate::test_support::scratch::temp_path(format!("herdr-task23-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let status = scrubbed_process(std::env::current_exe().unwrap())
@@ -255,7 +257,8 @@ fn startup_error_is_retained_in_elected_child_log() {
 
 #[test]
 fn prepublication_factory_error_is_logged_without_a_ready_endpoint() {
-    let root = std::env::temp_dir().join(format!("herdr-task23-{}", uuid::Uuid::new_v4()));
+    let root =
+        crate::test_support::scratch::temp_path(format!("herdr-task23-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let status = scrubbed_process(std::env::current_exe().unwrap())
@@ -289,7 +292,8 @@ fn prepublication_factory_error_is_logged_without_a_ready_endpoint() {
 
 #[test]
 fn owner_error_after_oversized_output_survives_final_drain() {
-    let root = std::env::temp_dir().join(format!("herdr-task23-{}", uuid::Uuid::new_v4()));
+    let root =
+        crate::test_support::scratch::temp_path(format!("herdr-task23-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let status = scrubbed_process(std::env::current_exe().unwrap())
@@ -447,7 +451,8 @@ fn detached_writer_completion_survives_its_owner_reaper() {
 }
 
 fn run_continuous_case(slow: bool, probe_drain: bool, writer_end_gate: bool) {
-    let root = std::env::temp_dir().join(format!("herdr-task23-{}", uuid::Uuid::new_v4()));
+    let root =
+        crate::test_support::scratch::temp_path(format!("herdr-task23-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let executable = std::env::current_exe().unwrap();
@@ -727,7 +732,8 @@ fn losing_owner_fixture() {
 
 #[test]
 fn detached_output_survives_ensure_parent_and_loser_does_not_touch_logs() {
-    let root = std::env::temp_dir().join(format!("herdr-task23-{}", uuid::Uuid::new_v4()));
+    let root =
+        crate::test_support::scratch::temp_path(format!("herdr-task23-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     // Removed however the test ends (a panic used to leak the root).

@@ -36,7 +36,10 @@ fn budget(ms: u64) -> CallBudget {
     }
 }
 fn socket_path() -> PathBuf {
-    std::env::temp_dir().join(format!("ht-host-socket-{}", uuid::Uuid::new_v4()))
+    herdr_threads::test_support::scratch::temp_path(format!(
+        "ht-host-socket-{}",
+        uuid::Uuid::new_v4()
+    ))
 }
 fn read_request(stream: &mut UnixStream) -> Value {
     let mut line = String::new();
@@ -98,10 +101,12 @@ fn releases_from_the_floor_allow_transport_and_snapshot_without_claiming_capabil
         ("0.9.1", 22, None),
         ("0.9.2", 22, None),
         ("0.9.3", 22, None),
+        ("0.9.4", 22, None),
+        ("0.9.5", 22, None),
         (
             "0.10.0",
             23,
-            Some("untested Herdr 0.10.0; tested 0.9.1-0.9.3"),
+            Some("untested Herdr 0.10.0; tested 0.9.1-0.9.5"),
         ),
     ] {
         let snapshot = json!({"type":"session_snapshot","snapshot":{
@@ -142,6 +147,9 @@ fn releases_from_the_floor_allow_transport_and_snapshot_without_claiming_capabil
                     Err(error) => panic!("operation accept: {error}"),
                 }
             };
+            // macOS accept inherits the listener's O_NONBLOCK flag; the read
+            // must block (bounded by the timeout) until the client writes.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
@@ -326,8 +334,14 @@ fn connected_no_reply_obeys_whole_call_deadline_and_closes_owned_socket() {
 
 #[test]
 fn cancellation_closes_socket_and_prompt_result_is_unknown() {
-    let (path, handle) = serve(|stream, request| {
+    let call_budget = budget(5000);
+    let cancel = call_budget.cancellation.clone();
+    // Cancel only once the whole request has arrived, so the cancellation
+    // always lands while the client awaits the reply (a wall-clock timer can
+    // fire before the write on a loaded runner, and nothing is sent at all).
+    let (path, handle) = serve(move |stream, request| {
         assert_eq!(request["method"], "agent.prompt");
+        cancel.cancel();
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
@@ -335,17 +349,10 @@ fn cancellation_closes_socket_and_prompt_result_is_unknown() {
         assert_eq!(std::io::Read::read(stream, &mut byte).unwrap(), 0);
     });
     let cli = NativeCli::new(path.clone(), Arc::new(TestClock(Instant::now())));
-    let call_budget = budget(5000);
-    let cancel = call_budget.cancellation.clone();
-    let notifier = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(50));
-        cancel.cancel();
-    });
     assert_eq!(
         cli.prompt("w4:p1", "hint", &call_budget),
         PromptOutcome::Unknown
     );
-    notifier.join().unwrap();
     cleanup(path, handle);
 }
 
@@ -1484,7 +1491,7 @@ fn answered_ping_is_observed_even_when_the_operation_fails() {
         assert_eq!(release.summary(), "0.10.0 (protocol 23)");
         assert_eq!(
             release.warning().as_deref(),
-            Some("untested Herdr 0.10.0; tested 0.9.1-0.9.3")
+            Some("untested Herdr 0.10.0; tested 0.9.1-0.9.5")
         );
     }
 }

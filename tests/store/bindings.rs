@@ -1254,7 +1254,8 @@ mod resolution {
 
     #[test]
     fn concurrent_enrollment_creates_exactly_one_binding() {
-        let dir = std::env::temp_dir().join(format!("ht-54r3-{}", std::process::id()));
+        let dir =
+            crate::test_support::scratch::temp_path(format!("ht-54r3-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("db.sqlite");
         {

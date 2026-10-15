@@ -199,6 +199,18 @@ impl HookPhases {
         state.active = true;
         generation
     }
+    /// Waits until no service handler is in flight (each `HANG` handler
+    /// holds at most `HANG_FOR`); panics past `ceiling`.
+    fn wait_idle(&self, ceiling: Duration) {
+        let started = Instant::now();
+        while self.0.lock().unwrap().capture.inflight != 0 {
+            assert!(
+                started.elapsed() < ceiling,
+                "service handlers still in flight"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
     fn active_generation(&self) -> Option<u64> {
         let state = self.0.lock().unwrap();
         state.active.then_some(state.capture.generation)
@@ -336,8 +348,16 @@ impl Counting {
                 .lock()
                 .unwrap()
                 .get_or_insert_with(Instant::now);
-            // Bounded and joined by Fixture::drop; no helper outlives the test.
-            std::thread::sleep(Duration::from_millis(3000));
+            // Held until the test releases it (mode leaves
+            // WITHHOLD_CAPABILITIES, at the latest in Fixture::stop) or
+            // HANG_FOR passes; joined by Fixture::drop, so no helper outlives
+            // the test. The hook under test has exited before the release.
+            let held = Instant::now();
+            while self.mode.load(Ordering::SeqCst) == WITHHOLD_CAPABILITIES
+                && held.elapsed() < HANG_FOR
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
     }
     fn observe(&self, command: &Command) -> Result<(), herdr_threads::protocol::results::ApiError> {
@@ -489,6 +509,10 @@ fn harness_path(host: &Path) -> String {
     format!("{}:/usr/bin:/bin", dir.display())
 }
 
+/// Set, under the `serialized()` gate, while a production-durability fixture
+/// is up: its hooks run with the production journal syncs.
+static PRODUCTION_DURABILITY_HOOKS: AtomicBool = AtomicBool::new(false);
+
 fn run_hook(command: &str, pane: &str, host: &Path, stdin: &[u8]) -> Hook {
     run_hook_with(command, pane, host, stdin, true)
 }
@@ -534,6 +558,9 @@ fn run_hook_traced(
     );
     if !scaled {
         command_line.env_remove(herdr_threads::protocol::time::TEST_TIMEOUT_SCALE_ENV);
+    }
+    if PRODUCTION_DURABILITY_HOOKS.load(Ordering::SeqCst) {
+        command_line.env_remove(herdr_threads::store::connection::TEST_RELAXED_DURABILITY_ENV);
     }
     command_line
         .env("HERDR_ENV", "1")
@@ -861,9 +888,25 @@ impl Fixture {
     fn start_at(state_rel: &str) -> Self {
         Self::launch(Some(serialized()), state_rel)
     }
+    /// A fixture on production durability: its in-process daemon commits
+    /// with `FULL` and its hooks run without the test relax switch, so their
+    /// journal syncs are real (`F_FULLFSYNC` on macOS). Test processes relax
+    /// both by default; these hook budgets include them.
+    fn start_production_durability() -> Self {
+        let gate = serialized();
+        PRODUCTION_DURABILITY_HOOKS.store(true, Ordering::SeqCst);
+        Self::launch_with(Some(gate), "state", true)
+    }
     /// `gate` is the caller's `serialized()` guard; a test that already holds
     /// it passes `None`.
     fn launch(gate: Option<std::sync::MutexGuard<'static, ()>>, state_rel: &str) -> Self {
+        Self::launch_with(gate, state_rel, false)
+    }
+    fn launch_with(
+        gate: Option<std::sync::MutexGuard<'static, ()>>,
+        state_rel: &str,
+        production_durability: bool,
+    ) -> Self {
         use herdr_threads::{
             daemon::{
                 control::{ControlService, StopController},
@@ -937,6 +980,9 @@ impl Fixture {
                             claim_host,
                             herdr_threads::test_support::test_host_id(),
                         );
+                        if production_durability {
+                            context.require_commit_durability();
+                        }
                         let store: Arc<dyn StorePort> = Arc::new(
                             SqliteStore::new(
                                 context,
@@ -1104,6 +1150,8 @@ impl Fixture {
         })
     }
     fn stop(&mut self) {
+        // Releases a withheld capability response before the join.
+        self.mode.store(PASS, Ordering::SeqCst);
         self.stop.cancel();
         if let Some(worker) = self.worker.take() {
             worker.join().unwrap();
@@ -1113,6 +1161,7 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.stop();
+        PRODUCTION_DURABILITY_HOOKS.store(false, Ordering::SeqCst);
         let _ = fs::remove_dir_all(&self.root);
     }
 }
@@ -1126,7 +1175,7 @@ fn context_of(hook: &Hook) -> String {
 
 #[test]
 fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
-    let mut fx = Fixture::start();
+    let mut fx = Fixture::start_production_durability();
     let (state, host, db) = (fx.state.clone(), fx.host.clone(), fx.db.clone());
     let command = fx.command.clone();
     let check_ins = Arc::clone(&fx.check_ins);
@@ -1359,7 +1408,8 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
         "{}",
         hung.stderr
     );
-    std::thread::sleep(HANG_FOR + Duration::from_millis(200));
+    // The hung reads answer late; the next hook runs after they have.
+    fx.phases.wait_idle(2 * HANG_FOR);
     // A tool-boundary read leaves nothing pending: the next hook is clean.
     let recovered = run_hook(&command, "w9:p1", &host, &tool("sess-2"));
     assert_eq!(recovered.code, Some(0), "{}", recovered.stderr);
@@ -2843,13 +2893,14 @@ fn attention_beyond_the_check_in_page_is_emitted_and_then_coalesced() {
     let fx = Fixture::start();
     fx.register("w9:p1", "sess-1");
     fx.register("w9:p2", "peer-sess");
-    for n in 0..105 {
-        fx.cooperative(
-            "peer",
-            "w9:p2",
-            &["thread", "create", "--topic", &format!("filler-{n}")],
-        );
-    }
+    // The fillers go through the production thread writer on a setup
+    // connection, not 105 CLI round trips through the daemon.
+    let (context, mut conn) = fx.history_writer();
+    herdr_threads::test_support::history::write_threads(
+        &context, &mut conn, "peer", 105, "filler-", "filler",
+    )
+    .unwrap();
+    drop(conn);
     let call = || {
         let hook = fx.hook("w9:p1", &tool("sess-1"));
         assert_eq!(hook.code, Some(0), "{}", hook.stderr);
@@ -3117,7 +3168,7 @@ fn carried_notices(label: &str, data: &str) -> (Vec<String>, bool) {
 // tool budget or fail open), and a summary without the new item's ID.
 #[test]
 fn attention_beyond_any_inbox_page_is_emitted_once_then_quiet() {
-    let fx = Fixture::start();
+    let fx = Fixture::start_production_durability();
     fx.register("w9:p1", "sess-1");
     fx.register("w9:p2", "peer-sess");
     fx.filler_threads(7_000);
@@ -3703,17 +3754,30 @@ enum PendingAxis {
 const LONG_MILLIS: u64 = 864_000_000;
 
 impl Fixture {
-    fn pending_axis_history(&self, axis: PendingAxis, n: u64) -> Duration {
-        use herdr_threads::test_support::history;
-        let started = Instant::now();
+    /// A setup-only writer on the running daemon's store for history written
+    /// through `test_support::history`.
+    fn history_writer(&self) -> (StoreContext, rusqlite::Connection) {
         let context =
             StoreContext::new(self.db.clone(), Arc::new(SystemClock::new())).with_test_host();
         // History setup only: the production writers run unchanged, but this
         // setup connection commits with `synchronous=NORMAL` (WAL), so writing
         // the history is not fsync-bound on a disk shared with the suite.
         context.relax_commit_durability();
-        let mut conn = context.open_writer().unwrap();
+        // Its statement journals stay in memory: on the default file temp
+        // store a spilling writer statement creates, writes and unlinks a
+        // temporary file, which under disk load made most of the invitation
+        // history's time. Set as the writer opens, so the production TEMP
+        // binding-evidence guards it installs stay in place
+        // (schema::temp_store_writer_keeps_production_temp_guards).
+        context.use_memory_temp_store();
+        let conn = context.open_writer().unwrap();
         conn.busy_timeout(Duration::from_secs(30)).unwrap();
+        (context, conn)
+    }
+    fn pending_axis_history(&self, axis: PendingAxis, n: u64) -> Duration {
+        use herdr_threads::test_support::history;
+        let started = Instant::now();
+        let (context, mut conn) = self.history_writer();
         conn.execute_batch(
             "BEGIN; \
              INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) \
@@ -7428,4 +7492,6 @@ fn versionless_registered_event_mismatch_keeps_tool_deadline_with_withheld_capab
         rejected.elapsed,
         rejected.stderr
     );
+    // The withheld response outlasted the hook: release it only now.
+    fx.mode.store(PASS, Ordering::SeqCst);
 }

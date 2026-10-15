@@ -15,10 +15,12 @@ pub mod journal_oracle;
 #[cfg(feature = "test-support")]
 pub mod multinode;
 pub mod owner_watch;
+pub mod scratch;
 #[cfg(feature = "test-support")]
 pub mod search_barrier;
 #[cfg(feature = "test-support")]
 pub mod server_completion;
+pub mod slow_clock;
 pub mod spawn;
 
 pub use fake_hosts::{

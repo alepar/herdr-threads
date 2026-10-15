@@ -197,7 +197,10 @@ impl Fixture {
         let guard = super::IN_PROCESS_DAEMON
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let root = std::env::temp_dir().join(format!("operator-ipc-{}", uuid::Uuid::new_v4()));
+        let root = herdr_threads::test_support::scratch::temp_path(format!(
+            "operator-ipc-{}",
+            uuid::Uuid::new_v4()
+        ));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let runtime =
             RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();

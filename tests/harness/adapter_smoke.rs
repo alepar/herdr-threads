@@ -141,6 +141,7 @@ fn fourth_author_consumers() {
                 installed: InstallObservation::NotRequested,
                 input: None,
                 runtime_candidate: None,
+                admitted_at: None,
             },
             &budget,
         )
@@ -769,6 +770,7 @@ mod enum_only_callback {
                         registered_event: Some("SyntheticStart".into()),
                     }),
                     runtime_candidate: None,
+                    admitted_at: None,
                 },
                 &budget,
             )
@@ -888,7 +890,8 @@ fn hermes_presence_controls_never_invoke_or_admit_the_executable() {
             &AdmissionRequest {
                 installed,
                 input: None,
-                runtime_candidate: None
+                runtime_candidate: None,
+                admitted_at: None,
             },
             &budget
         )

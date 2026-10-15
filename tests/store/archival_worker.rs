@@ -326,9 +326,11 @@ fn archival_worker_before_host_admission_waits_for_safety_tick() {
         }
     }
 
-    let directory = super::handoff_fences::Directory(
-        std::env::temp_dir().join(format!("archival-startup-{}", uuid::Uuid::new_v4())),
-    );
+    let directory =
+        super::handoff_fences::Directory(herdr_threads::test_support::scratch::temp_path(format!(
+            "archival-startup-{}",
+            uuid::Uuid::new_v4()
+        )));
     std::fs::create_dir(&directory.0).unwrap();
     let path = directory.0.join("store.db");
     let clock = Arc::new(ManualClock(AtomicU64::new(100)));

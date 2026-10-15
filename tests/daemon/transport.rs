@@ -31,7 +31,8 @@ fn guarded_listener() -> (
         paths::{NodePaths, RuntimeContext},
     };
     use std::os::unix::fs::PermissionsExt;
-    let root = std::env::temp_dir().join(format!("herdr-ipc-{}", uuid::Uuid::new_v4()));
+    let root =
+        crate::test_support::scratch::temp_path(format!("herdr-ipc-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
     let host = root.join("host-placeholder.sock");
@@ -492,7 +493,8 @@ async fn malformed_requests_do_not_reach_service_and_peer_uid_is_kernel_supplied
 
 #[tokio::test]
 async fn lost_response_reports_unknown_outcome_without_retry() {
-    let path = std::env::temp_dir().join(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&path).unwrap();
     let accepted = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
@@ -600,7 +602,8 @@ async fn disconnect_cancels_handler_budget() {
 
 #[tokio::test]
 async fn client_cancellation_after_send_reports_unknown_outcome_promptly() {
-    let path = std::env::temp_dir().join(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&path).unwrap();
     let clock = Arc::new(TestClock);
     let cancellation = Cancellation::default();
@@ -1120,7 +1123,8 @@ async fn drain_wait_keeps_owner_lease_after_an_earlier_task_error() {
 #[tokio::test]
 async fn client_rejects_oversized_request_before_submission() {
     use crate::protocol::{commands::SearchQuery, pagination::PageRequest};
-    let path = std::env::temp_dir().join(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&path).unwrap();
     let clock = Arc::new(TestClock);
     let budget = CallBudget {
@@ -1272,7 +1276,8 @@ async fn another_instance_request_never_reaches_handler() {
 
 #[tokio::test]
 async fn client_rejects_wrong_boot_after_submission_without_retry() {
-    let path = std::env::temp_dir().join(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&path).unwrap();
     let instance = crate::node::NodeUuid::new_v4();
     let expected_boot = uuid::Uuid::new_v4();
@@ -1313,7 +1318,8 @@ async fn client_rejects_wrong_boot_after_submission_without_retry() {
 
 #[tokio::test]
 async fn client_rejects_wrong_response_instance_after_submission() {
-    let path = std::env::temp_dir().join(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&path).unwrap();
     let expected_instance = crate::node::NodeUuid::new_v4();
     let other_instance = crate::node::NodeUuid::new_v4();
@@ -1355,7 +1361,8 @@ async fn client_rejects_wrong_response_instance_after_submission() {
 
 #[tokio::test]
 async fn client_rejects_malformed_boot_even_without_expected_boot() {
-    let path = std::env::temp_dir().join(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&path).unwrap();
     let instance = crate::node::NodeUuid::new_v4();
     let accepted = tokio::spawn(async move {
@@ -1389,7 +1396,8 @@ async fn client_rejects_malformed_boot_even_without_expected_boot() {
 
 #[tokio::test]
 async fn correlated_server_rejection_preserves_its_error_code() {
-    let path = std::env::temp_dir().join(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&path).unwrap();
     let instance = crate::node::NodeUuid::new_v4();
     let boot = uuid::Uuid::new_v4();
@@ -2945,7 +2953,10 @@ fn health_lock_store(
     boot: uuid::Uuid,
     clock: Arc<dyn Clock>,
 ) -> HealthLockStore {
-    let root = std::env::temp_dir().join(format!("herdr-health-lock-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_support::scratch::temp_path(format!(
+        "herdr-health-lock-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir(&root).unwrap();
     let database = root.join("threads.sqlite3");
     let context =
@@ -3255,7 +3266,8 @@ async fn cancelled_serve_loop_returns_without_polling() {
 
 #[tokio::test]
 async fn waiting_client_returns_on_cancel() {
-    let path = std::env::temp_dir().join(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&path).unwrap();
     let clock = Arc::new(TestClock);
     let cancellation = Cancellation::default();
@@ -3459,7 +3471,8 @@ async fn matching_or_absent_expected_boot_dispatches() {
 
 #[tokio::test]
 async fn client_maps_daemon_boot_changed_to_definite_rejection() {
-    let path = std::env::temp_dir().join(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&path).unwrap();
     let instance = crate::node::NodeUuid::new_v4();
     let expected_boot = uuid::Uuid::new_v4();
@@ -3502,7 +3515,10 @@ async fn client_maps_daemon_boot_changed_to_definite_rejection() {
 #[tokio::test]
 async fn local_client_sends_expected_boot_from_descriptor() {
     for boot in [Some(uuid::Uuid::new_v4()), None] {
-        let path = std::env::temp_dir().join(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "herdr-ipc-{}.sock",
+            uuid::Uuid::new_v4()
+        ));
         let listener = UnixListener::bind(&path).unwrap();
         let instance = crate::node::NodeUuid::new_v4();
         let accepted = tokio::spawn(async move {
@@ -3906,7 +3922,8 @@ fn historical_completed_transport_result(
 async fn automatic_historical_response_keeps_one_mib_client_allocation_limit() {
     use crate::protocol::handoff::{AutomaticBootstrapAction, AutomaticBootstrapMutation};
     for large in [false, true] {
-        let path = std::env::temp_dir().join(format!("ht-h-{}.sock", uuid::Uuid::new_v4()));
+        let path =
+            crate::test_support::scratch::temp_path(format!("ht-h-{}.sock", uuid::Uuid::new_v4()));
         let listener = UnixListener::bind(&path).unwrap();
         let instance = crate::node::NodeUuid::new_v4();
         let result = historical_completed_transport_result(

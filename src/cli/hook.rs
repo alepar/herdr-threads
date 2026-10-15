@@ -418,7 +418,7 @@ pub fn observe_harness_in(
             state_dir: state_dir.map(Path::to_path_buf),
             clock: Arc::clone(&clock),
         },
-        &budget(Instant::now() + timeout, clock.as_ref()),
+        &budget(clock.instant_now() + timeout, clock.as_ref()),
     );
     Err(observation_failure(observation))
 }
@@ -452,10 +452,11 @@ pub fn parse_event(
         installed: InstallObservation::NotRequested,
         input: None,
         runtime_candidate: None,
+        admitted_at: None,
     };
     let clock = SystemClock::new();
     let admitted = registration
-        .admit(&request, &budget(Instant::now() + TOOL_BUDGET, &clock))
+        .admit(&request, &budget(clock.instant_now() + TOOL_BUDGET, &clock))
         .map_err(|error| ContextError::UnsupportedVersion(error.diagnostic))?;
     registration
         .decode(
@@ -1420,8 +1421,12 @@ fn report_parse_failure_to_daemon(
     report_parse_failure(&client, &capabilities, args.harness, error, &call_budget);
 }
 
+/// The call budget left before `deadline`, measured on `clock` (the hook's injected clock:
+/// the host's in production), so a run's IPC timeouts shrink only as that clock advances.
+/// `deadline` must be in `clock`'s domain: derive it from `clock.instant_now()`, never from
+/// `Instant::now()` (with a held test clock that would inflate the budget).
 pub(super) fn budget(deadline: Instant, clock: &dyn Clock) -> CallBudget {
-    let remaining = deadline.saturating_duration_since(Instant::now());
+    let remaining = deadline.saturating_duration_since(clock.instant_now());
     CallBudget {
         deadline: MonoInstant(
             clock
@@ -1697,7 +1702,7 @@ fn connect_pane(
     if let Some(executable) = ensure_executable {
         // Startup may ensure the daemon (design: 5 s startup budget). The result
         // is advisory: a reachable degraded daemon still serves CheckIn.
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = deadline.saturating_duration_since(clock.instant_now());
         if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2657,7 +2662,9 @@ impl PaneCall<'_> {
             return None;
         }
         let claim = contexts.claim(&saved).ok()?;
-        let capped = self.deadline.min(Instant::now() + INBOX_READ_BUDGET);
+        let capped = self
+            .deadline
+            .min(self.clock.instant_now() + INBOX_READ_BUDGET);
         super::hook_inbox::read_page(self.client, claim, &budget(capped, self.clock.as_ref()))
     }
 
@@ -2668,7 +2675,9 @@ impl PaneCall<'_> {
         if !recovery_event(event) {
             return None;
         }
-        let capped = self.deadline.min(Instant::now() + RECOVERY_READ_BUDGET);
+        let capped = self
+            .deadline
+            .min(self.clock.instant_now() + RECOVERY_READ_BUDGET);
         let hot = bridge::read_hot_threads(self.client, seat, &budget(capped, self.clock.as_ref()))
             .ok()?;
         RecoveryRows::from_hot_threads(&hot)
@@ -3030,6 +3039,7 @@ fn hook_admission_request(
     registration: &Registration,
     installed: InstallObservation,
     input: &HookInput,
+    clock: &dyn Clock,
 ) -> AdmissionRequest {
     AdmissionRequest {
         installed,
@@ -3038,6 +3048,15 @@ fn hook_admission_request(
             registered_event: input.registered_event.clone(),
         }),
         runtime_candidate: None,
+        admitted_at: Some({
+            // Instant first: the anchor never trails the UTC sample, so the window can only
+            // err short.
+            let instant = clock.instant_now();
+            crate::harness::adapter::AdmissionInstant {
+                utc: clock.utc_now(),
+                instant,
+            }
+        }),
     }
 }
 fn callback_install_observation(registration: &Registration) -> InstallObservation {
@@ -3100,12 +3119,20 @@ pub(crate) fn run_hook_registered(
             InstallObservation::NotRequested
         }
     };
-    let request = hook_admission_request(registration, installed, &input);
+    let request = hook_admission_request(registration, installed, &input, clock.as_ref());
     let admitted = match registration.admit(&request, &budget(deadline, clock.as_ref())) {
         Ok(handle) => handle,
         Err(error) => return quiet_outcome(error.to_string()),
     };
-    let decoded = match decode_refined(registration, &admitted, &input, args, env, Instant::now()) {
+    let decoded = match decode_refined(
+        registration,
+        &admitted,
+        &input,
+        args,
+        env,
+        clock.instant_now(),
+        clock.as_ref(),
+    ) {
         Ok(event) => event,
         Err(error) => {
             {
@@ -3131,7 +3158,7 @@ pub(crate) fn run_hook_registered(
         Some(&input),
         env,
         deadline,
-        Instant::now(),
+        clock.instant_now(),
         None,
         clock,
         ensure_executable,
@@ -3156,6 +3183,7 @@ fn decode_refined(
     args: &HookArgs,
     env: &HookEnv,
     started: Instant,
+    clock: &dyn Clock,
 ) -> Result<DecodedEvent, DecodeFailure> {
     let mut decoded = registration.decode(admitted, input)?;
     let deadline = started + event_bound(registration, &decoded) / 2;
@@ -3163,11 +3191,11 @@ fn decode_refined(
     let state_dir = adapter_state_dir(args, registration, false);
     let home = std::env::var_os("HOME");
     let pane_session = || {
-        pane_context_snapshot(args, env, harness, deadline).and_then(|context| {
-            match context.session {
-                SessionReference::Native(session) => Some(session),
-                SessionReference::PluginContext(_) => None,
-            }
+        pane_context_snapshot(args, env, harness, deadline, clock).and_then(|context| match context
+            .session
+        {
+            SessionReference::Native(session) => Some(session),
+            SessionReference::PluginContext(_) => None,
         })
     };
     let evidence = registration.local_evidence(&LocalEvidenceRequest {
@@ -3231,7 +3259,7 @@ fn run_hook_step(
     clock: &dyn Clock,
 ) -> HookOutcome {
     let harness: Harness = crate::harness::registry::OccupantHarness::Agent(decoded.harness).into();
-    let claim = pane_context_snapshot(args, env, harness, deadline)
+    let claim = pane_context_snapshot(args, env, harness, deadline, clock)
         .filter(|context| {
             matches!(
                 (&context.session, &decoded.native_session),
@@ -3375,6 +3403,7 @@ fn pane_context_journal(
     env: &HookEnv,
     harness: Harness,
     deadline: Instant,
+    clock: &dyn Clock,
 ) -> Option<(crate::harness::context::ContextJournal, OccupantContext)> {
     let target = env.pane.as_deref()?;
     let context = hook_runtime_context(args).ok()?;
@@ -3383,7 +3412,7 @@ fn pane_context_journal(
     let entries = std::fs::read_dir(paths.node_dir.join("contexts")).ok()?;
     let mut matching = None;
     for (index, entry) in entries.enumerate() {
-        if index >= 256 || Instant::now() >= deadline {
+        if index >= 256 || clock.instant_now() >= deadline {
             return None;
         }
         let entry = entry.ok()?;
@@ -3391,7 +3420,7 @@ fn pane_context_journal(
             &entry.path(),
             instance,
             deadline
-                .saturating_duration_since(Instant::now())
+                .saturating_duration_since(clock.instant_now())
                 .min(Duration::from_millis(50)),
         ) else {
             continue;
@@ -3416,8 +3445,9 @@ fn pane_context_snapshot(
     env: &HookEnv,
     harness: Harness,
     deadline: Instant,
+    clock: &dyn Clock,
 ) -> Option<OccupantContext> {
-    pane_context_journal(args, env, harness, deadline).map(|(_, snapshot)| snapshot)
+    pane_context_journal(args, env, harness, deadline, clock).map(|(_, snapshot)| snapshot)
 }
 fn record_observer_reset(
     args: &HookArgs,
@@ -3432,7 +3462,7 @@ fn record_observer_reset(
     let Some(target) = env.pane.as_deref() else {
         return;
     };
-    if let Some((journal, _)) = pane_context_journal(args, env, args.harness, deadline) {
+    if let Some((journal, _)) = pane_context_journal(args, env, args.harness, deadline, clock) {
         let _ =
             bridge::record_declared_reset(&journal, args.harness, target, reset, clock.utc_now().0);
     }
@@ -3552,7 +3582,7 @@ pub fn run_admitted_hook(
         None,
         env,
         deadline,
-        Instant::now(),
+        clock.instant_now(),
         None,
         clock,
         ensure_executable,
@@ -3575,8 +3605,11 @@ fn run_admitted_hook_since(
     if let Err(error) = registration.validate_event(admitted, decoded) {
         return quiet_outcome(error.to_string());
     }
+    // Every bound of this run is measured on the injected clock: the host's in production, a
+    // fixture's in tests (so host load cannot spend a simulated callback's budget).
     let bound = event_bound(registration, decoded);
-    let deadline = deadline.min(Instant::now() + bound);
+    let deadline = deadline.min(clock.instant_now() + bound);
+    // The native deadline is anchored at admission; the UTC checks below may only shorten it.
     let deadline = decoded
         .metadata
         .callback_deadline
@@ -3589,14 +3622,14 @@ fn run_admitted_hook_since(
             }
             let remaining =
                 order.observed_at_millis + i64::from(order.callback_budget_millis) - now;
-            deadline.min(Instant::now() + Duration::from_millis(remaining as u64))
+            deadline.min(clock.instant_now() + Duration::from_millis(remaining as u64))
         } else {
             deadline
         }
     } else {
         deadline
     };
-    if deadline <= Instant::now() {
+    if deadline <= clock.instant_now() {
         return quiet_outcome("hook callback budget expired".into());
     }
     if !env.herdr_env || env.pane.is_none() {
@@ -3613,7 +3646,7 @@ fn run_admitted_hook_since(
         // Child guidance follows a start, so a slow daemon must not spend the whole budget the
         // guidance (and the watchdog's margin) needs; a stop or end renders nothing.
         let report_deadline = if matches!(decoded.intent, EventIntent::Lifecycle(_)) {
-            deadline.min(Instant::now() + BINDING_EVENT_BEFORE_GUIDANCE)
+            deadline.min(clock.instant_now() + BINDING_EVENT_BEFORE_GUIDANCE)
         } else {
             deadline
         };
@@ -4066,7 +4099,7 @@ pub fn run_process_with(
                 args,
                 &stdin,
                 hook_state_dir(args).as_deref(),
-                Instant::now() + super::hook_evidence::FOREIGN_CALL,
+                clock.instant_now() + super::hook_evidence::FOREIGN_CALL,
                 super::hook_evidence::FOREIGN_CALL,
                 clock,
             );
@@ -4103,7 +4136,7 @@ pub fn run_process_with(
                     state_dir: state_dir.clone(),
                     clock: Arc::clone(&clock),
                 },
-                &budget(Instant::now() + observe_budget, clock.as_ref()),
+                &budget(clock.instant_now() + observe_budget, clock.as_ref()),
             );
             if registration.hook_admission_policy() == HookAdmissionPolicy::InstalledObservation
                 && matches!(
@@ -4123,32 +4156,40 @@ pub fn run_process_with(
                     bytes: stdin.clone(),
                     registered_event: args.event.clone(),
                 };
-                let request = hook_admission_request(registration, observation, &input);
+                let request =
+                    hook_admission_request(registration, observation, &input, clock.as_ref());
                 let admitted = match registration
                     .admit(&request, &budget(observation_deadline, clock.as_ref()))
                 {
                     Ok(admitted) => admitted,
                     Err(error) => return quiet_outcome(error.to_string()),
                 };
-                let event =
-                    match decode_refined(registration, &admitted, &input, &args, env, started) {
-                        Ok(event) => event,
-                        Err(error) => {
-                            {
-                                report_parse_failure_to_daemon(
-                                    &args,
-                                    &native_decode_error(&error),
-                                    env,
-                                    observation_deadline,
-                                    Arc::clone(&clock),
-                                );
-                            }
-                            return quiet_outcome(format!(
-                                "unsupported hook payload: {}",
-                                decode_failure_detail(registration, &error)
-                            ));
+                let event = match decode_refined(
+                    registration,
+                    &admitted,
+                    &input,
+                    &args,
+                    env,
+                    started,
+                    clock.as_ref(),
+                ) {
+                    Ok(event) => event,
+                    Err(error) => {
+                        {
+                            report_parse_failure_to_daemon(
+                                &args,
+                                &native_decode_error(&error),
+                                env,
+                                observation_deadline,
+                                Arc::clone(&clock),
+                            );
                         }
-                    };
+                        return quiet_outcome(format!(
+                            "unsupported hook payload: {}",
+                            decode_failure_detail(registration, &error)
+                        ));
+                    }
+                };
                 let event_bound = event_bound(registration, &event);
                 let event_bound = event
                     .metadata

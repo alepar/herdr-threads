@@ -21,7 +21,8 @@ fn budget() -> CallBudget {
 
 #[test]
 fn pending_invitation_is_a_wake_candidate_before_work_row_projection() {
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1")
@@ -58,7 +59,8 @@ fn pending_invitation_is_a_wake_candidate_before_work_row_projection() {
 
 #[test]
 fn wake_candidate_is_found_past_one_hundred_settled_receipts() {
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=101")
@@ -97,7 +99,8 @@ fn wake_candidate_is_found_past_one_hundred_settled_receipts() {
 
 #[test]
 fn wake_page_requires_its_complete_encoded_page_budget() {
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\
@@ -160,7 +163,8 @@ fn wake_page_requires_its_complete_encoded_page_budget() {
 
 #[test]
 fn wake_candidate_finds_unprojected_manifest_receipt_and_warning() {
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\
@@ -198,7 +202,8 @@ fn wake_candidate_finds_unprojected_manifest_receipt_and_warning() {
 #[test]
 fn second_published_receipt_advances_wake_frontier_before_projection() {
     use crate::ports::LogicalPublicationKey;
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\
@@ -268,7 +273,8 @@ fn second_published_receipt_advances_wake_frontier_before_projection() {
 
 #[test]
 fn reservation_persists_daemon_boot_attempt_and_delay_then_ignores_late_completion() {
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1")
@@ -405,7 +411,8 @@ fn reservation_persists_daemon_boot_attempt_and_delay_then_ignores_late_completi
 #[test]
 fn old_boot_recovery_is_exact_preserves_history_and_cannot_clear_successor() {
     use crate::ports::{WakeRecoveryOutcome, WakeRecoveryRequest};
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\
@@ -600,7 +607,8 @@ fn old_boot_recovery_is_exact_preserves_history_and_cannot_clear_successor() {
 #[test]
 fn recovery_page_includes_retired_zero_reason_attempt_without_stealing_current_boot() {
     use crate::ports::{WakeRecoveryOutcome, WakeRecoveryRequest};
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let old_boot = uuid::Uuid::parse_str(DAEMON_BOOT).unwrap();
     let current_boot = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
@@ -666,7 +674,8 @@ fn recovery_page_includes_retired_zero_reason_attempt_without_stealing_current_b
 
 #[test]
 fn recognized_idle_unregistered_occupant_gets_recovery_hint_reservation() {
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\
@@ -718,7 +727,8 @@ fn recognized_idle_unregistered_occupant_gets_recovery_hint_reservation() {
 
 #[test]
 fn completion_cas_ignores_old_attempt_and_releases_matching_attempt_without_losing_history() {
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','unresolved','native',2,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
@@ -772,7 +782,8 @@ fn completion_cas_ignores_old_attempt_and_releases_matching_attempt_without_losi
 
 #[test]
 fn matching_completion_records_submitted_and_retains_zero_reason_history() {
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
@@ -806,7 +817,8 @@ fn matching_completion_records_submitted_and_retains_zero_reason_history() {
 
 #[test]
 fn unresolved_recovery_hold_blocks_candidate_continuity_even_with_fresh_target() {
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1")
@@ -838,7 +850,8 @@ fn unresolved_recovery_hold_blocks_candidate_continuity_even_with_fresh_target()
 /// binding, a connected one first; never a subagent, never whichever row SQLite returns first.
 #[test]
 fn candidate_binding_is_the_newest_connected_top_level_binding() {
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\
@@ -911,7 +924,10 @@ fn candidate_binding_is_the_newest_connected_top_level_binding() {
 fn unverified_execution_gets_structural_cooperative_reservation() {
     use crate::ports::ReservedWakeAuthority;
     let open = |registered: bool| {
-        let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "herdr-wake-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
         let db = context.open_writer().unwrap();
         db.execute_batch("\
@@ -1142,7 +1158,8 @@ fn walk_all(store: &SqliteStore, limit: u16) -> (Vec<(String, String, String)>, 
 }
 
 fn recovery_store(seats: u64) -> (SqliteStore, std::path::PathBuf, rusqlite::Connection) {
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     let current = "00000000-0000-0000-0000-000000000002";
@@ -1277,7 +1294,10 @@ fn refused_completion_restores_the_prior_ladder_in_the_fenced_update() {
         (crate::ports::RefusalCause::Unavailable, "unavailable"),
         (crate::ports::RefusalCause::TimedOut, "timed_out"),
     ] {
-        let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "herdr-wake-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let store = refusal_store(&path);
         let matched = StorePort::complete_wake(
             &store,
@@ -1314,7 +1334,8 @@ fn refused_completion_restores_the_prior_ladder_in_the_fenced_update() {
 fn non_refused_completions_ignore_a_supplied_restore_and_report_no_match() {
     // Kills: restoring on OutcomeUnknown (the unsent-prompt outcome keeps the
     // advanced step) or returning true for a plain settlement.
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let store = refusal_store(&path);
     let matched = StorePort::complete_wake(
         &store,
@@ -1350,7 +1371,8 @@ fn fence_miss_restores_nothing_and_keeps_the_advanced_step() {
     // Design roast r1 (ht-p03.56): mark-unresolved / registration loss clears
     // reservation_id between reserve and a Refused completion. The fenced
     // restore matches 0 rows: no error, the step stays advanced by one.
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let store = refusal_store(&path);
     let db = store.context.open_writer().unwrap();
     db.execute(
@@ -1383,7 +1405,8 @@ fn fence_miss_restores_nothing_and_keeps_the_advanced_step() {
 fn refused_completion_of_a_different_boot_matches_nothing() {
     // Kills: a restore fenced on reservation_id alone, which would let a stale
     // boot rewrite a successor daemon's reservation.
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let store = refusal_store(&path);
     let db = store.context.open_writer().unwrap();
     db.execute(
@@ -1412,7 +1435,8 @@ fn refused_completion_of_a_different_boot_matches_nothing() {
 /// `(id, harness)`: occupied idle pane, current binding of that harness, an
 /// invited membership and a pending invitation (decision sequence 1).
 fn seeded_store(seats: &[(&str, &str)]) -> (SqliteStore, std::path::PathBuf) {
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\
@@ -1897,7 +1921,8 @@ fn cooperative_wake_requires_an_open_binding() {
 /// A seat with one open binding of `harness` on a fresh, verified-incarnation
 /// target with a pending invitation: the cooperative reservation fixture.
 fn bound_seat_store(harness: &str) -> (SqliteStore, std::path::PathBuf) {
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\
@@ -2145,7 +2170,8 @@ fn managed_launch_binding_reserves_a_cooperative_wake() {
 
 #[test]
 fn durable_batch_uses_oldest_saturated_publication_and_clears_when_work_drains() {
-    let path = std::env::temp_dir().join(format!("herdr-batch-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-batch-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=300;
@@ -2235,7 +2261,10 @@ fn durable_batch_uses_oldest_saturated_publication_and_clears_when_work_drains()
 
 #[test]
 fn canonical_batch_cleanup_clears_catch_up_holds_and_release_starts_new_window() {
-    let path = std::env::temp_dir().join(format!("herdr-batch-hold-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-batch-hold-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=3;
@@ -2384,7 +2413,10 @@ fn canonical_batch_cleanup_clears_catch_up_holds_and_release_starts_new_window()
 
 #[test]
 fn durable_batch_window_enumeration_pages_only_retained_windows() {
-    let path = std::env::temp_dir().join(format!("herdr-batch-page-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-batch-page-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     for n in 0..25 {
@@ -2457,7 +2489,10 @@ fn durable_batch_window_enumeration_pages_only_retained_windows() {
 
 #[test]
 fn batch_window_ignores_human_waived_receipts_and_clears_last_required_waiver() {
-    let path = std::env::temp_dir().join(format!("herdr-batch-waived-{}.db", uuid::Uuid::new_v4()));
+    let path = crate::test_support::scratch::temp_path(format!(
+        "herdr-batch-waived-{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=3;
@@ -2823,7 +2858,20 @@ fn composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match() {
     };
     assert_eq!(found(10).as_deref(), Some("a"));
     assert_eq!(found(20).as_deref(), Some("b"));
-    assert_eq!(found(30), None, "two bindings share the pid: ambiguous");
+    assert_eq!(
+        found(30),
+        None,
+        "two bindings share the pid: no unique binding"
+    );
+    // ...but they are one process (same pid and harness, ht-327): its composer, for the
+    // dispatcher to use only for seat-level attention.
+    match authority.composer_choice(&[30]) {
+        crate::ports::ComposerChoice::Process(group) => assert_eq!(
+            group.iter().map(|t| t.binding.as_str()).collect::<Vec<_>>(),
+            ["dup1", "dup2"]
+        ),
+        other => panic!("one process expected, got {other:?}"),
+    }
     assert_eq!(found(40), None, "a subagent is never the foreground agent");
     assert_eq!(
         found(50),
@@ -3216,7 +3264,8 @@ fn a_binding_served_one_reason_is_still_woken_for_another() {
 /// prompt to the served binding is refused. Kills: skipping the served check for recovery hints.
 #[test]
 fn a_recovery_hint_wake_to_a_served_binding_is_refused() {
-    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\

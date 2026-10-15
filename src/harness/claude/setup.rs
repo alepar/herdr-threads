@@ -14,8 +14,8 @@ use crate::harness::{
     recipe,
     setup::{
         JsonSetupPlan, NativeObservation, SetupError, allow_rule_json, inspect_user_settings,
-        inspect_user_settings_for, plan_settings, read_settings_manifest, remove_user_settings,
-        shared_command, shell_command,
+        inspect_user_settings_for, plan_settings, remove_user_settings, shared_command,
+        shell_command,
     },
 };
 use crate::protocol::results::ErrorCode;
@@ -578,11 +578,7 @@ pub(crate) fn claude_remove(env: &SetupEnv) -> Result<Value, RunError> {
             }),
         },
     });
-    let mut recorded = read_settings_manifest(&manifest)
-        .map_err(|e| settings_error(e, SetupVerb::Remove, kind, &settings, &manifest))?;
-    if recorded.is_none() {
-        recorded = adopt_for_removal(kind, env, &settings, &manifest)?;
-    }
+    let recorded = recorded_for_removal(kind, env, &settings, &manifest, &mut report)?;
     let Some(recorded) = recorded else {
         report["action"] = json!("not_installed");
         report["note"] = json!(

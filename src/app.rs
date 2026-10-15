@@ -26,7 +26,7 @@ use crate::{
         pacer::Pacer,
         workers::{
             ApplyPostCommit, WorkerStatus, admission_handle, start_admission_observer,
-            start_apply_worker, start_deadline_worker, start_mod_channel_worker,
+            start_apply_worker, start_deadline_worker_ticking, start_mod_channel_worker,
             start_retention_worker,
         },
     },
@@ -1853,12 +1853,15 @@ where
                     .push(handle);
                 Ok(())
             };
-            push_worker(start_deadline_worker(
+            push_worker(start_deadline_worker_ticking(
                 Arc::clone(&store),
                 Arc::clone(&writer),
                 register_lane(Lane::Deadlines),
                 factory_stop.clone(),
                 Arc::clone(&factory_status),
+                config.lane_tick(Duration::from_millis(
+                    crate::scheduler::deadlines::TICK_MILLIS,
+                )),
             )?)?;
             // The one registry of live mod delivery channels (spec D2, D7),
             // shared by the wake lane (routing), the domain service (digest
@@ -1945,6 +1948,11 @@ where
                         crate::store::hosts::remembered(&db, usize::MAX)
                     }),
                     sweep_interval: factory_probe.host_sweep_interval(),
+                    wake_safety_tick: config.lane_tick(Duration::from_millis(
+                        crate::service::workers::WAKE_SAFETY_TICK_MILLIS,
+                    )),
+                    observation_cadence: config
+                        .lane_tick(crate::service::workers::OBSERVATION_CADENCE),
                     // Production attaches only a locator that is its own
                     // canonical path on disk; fake locators are not on disk.
                     check_canonical: cfg!(not(any(test, feature = "test-support"))),
@@ -1985,6 +1993,7 @@ where
                     let log = Arc::clone(&rate_limited_log);
                     Arc::new(move |line: &str| log.write_line(line))
                 },
+                config.lane_tick(crate::scheduler::config::LIVENESS_RECHECK_INTERVAL),
             )?)?;
             push_worker(start_mod_channel_worker(
                 Arc::clone(&mod_registry),

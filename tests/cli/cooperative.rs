@@ -90,7 +90,8 @@ fn selected_first_lifecycle_fixture(replace_human: bool) {
             SeatInspection, SeatSummary,
         },
     };
-    let root = std::env::temp_dir().join(format!("cli-selection-{}", uuid::Uuid::new_v4()));
+    let root =
+        crate::test_support::scratch::temp_path(format!("cli-selection-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     let runtime = crate::daemon::paths::RuntimeContext::explicit(
         root.join("state"),
@@ -418,7 +419,8 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
             Ok(())
         }
     }
-    let root = std::env::temp_dir().join(format!("cli-replay-{}", uuid::Uuid::new_v4()));
+    let root =
+        crate::test_support::scratch::temp_path(format!("cli-replay-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     let runtime = crate::daemon::paths::RuntimeContext::explicit(
         root.join("state"),
@@ -560,7 +562,10 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
 
     // The transport can lose the response after service commit, leaving a
     // pending local request rather than a completed cached response.
-    let root = std::env::temp_dir().join(format!("cli-pending-replay-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_support::scratch::temp_path(format!(
+        "cli-pending-replay-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir(&root).unwrap();
     let runtime = crate::daemon::paths::RuntimeContext::explicit(
         root.join("state"),
@@ -653,7 +658,10 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
     assert_eq!(client.check_ins.load(Ordering::SeqCst), 4);
     std::fs::remove_dir_all(root).unwrap();
 
-    let root = std::env::temp_dir().join(format!("cli-uncommitted-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_support::scratch::temp_path(format!(
+        "cli-uncommitted-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir(&root).unwrap();
     let runtime = crate::daemon::paths::RuntimeContext::explicit(
         root.join("state"),
@@ -699,7 +707,10 @@ fn claim() -> CallerClaim {
 }
 #[test]
 fn cooperative_ack_retry_retains_claim_key_after_output_loss_and_restart() {
-    let dir = std::env::temp_dir().join(format!("cooperative-intent-{}", uuid::Uuid::new_v4()));
+    let dir = crate::test_support::scratch::temp_path(format!(
+        "cooperative-intent-{}",
+        uuid::Uuid::new_v4()
+    ));
     let j = Journal::open(&dir).unwrap();
     let c = claim();
     let scope = IntentScope::Cooperative {
@@ -759,10 +770,10 @@ fn cooperative_ack_retry_retains_claim_key_after_output_loss_and_restart() {
 
 #[test]
 fn displayed_ack_keeps_frozen_intent_after_uncertain_submission() {
-    let dir = std::env::temp_dir()
-        .canonicalize()
-        .unwrap()
-        .join(format!("displayed-ack-intent-{}", uuid::Uuid::new_v4()));
+    let dir = crate::test_support::scratch::temp_path_canonical(format!(
+        "displayed-ack-intent-{}",
+        uuid::Uuid::new_v4()
+    ));
     let journal = Journal::open(&dir).unwrap();
     let claim = claim();
     let scope = IntentScope::Cooperative {
@@ -825,7 +836,10 @@ fn displayed_ack_keeps_frozen_intent_after_uncertain_submission() {
 }
 #[test]
 fn cooperative_scope_rejects_child_operator_and_wrong_instance() {
-    let dir = std::env::temp_dir().join(format!("cooperative-scope-{}", uuid::Uuid::new_v4()));
+    let dir = crate::test_support::scratch::temp_path(format!(
+        "cooperative-scope-{}",
+        uuid::Uuid::new_v4()
+    ));
     let j = Journal::open(&dir).unwrap();
     let mut c = claim();
     c.role = CallerRole::Subagent;
@@ -872,7 +886,10 @@ fn cooperative_scope_rejects_child_operator_and_wrong_instance() {
 
 #[test]
 fn required_acceptance_journal_retains_revision_across_recovery() {
-    let dir = std::env::temp_dir().join(format!("required-accept-intent-{}", uuid::Uuid::new_v4()));
+    let dir = crate::test_support::scratch::temp_path(format!(
+        "required-accept-intent-{}",
+        uuid::Uuid::new_v4()
+    ));
     let journal = Journal::open(&dir).unwrap();
     let c = claim();
     let scope = IntentScope::Cooperative {
@@ -907,7 +924,10 @@ fn required_acceptance_journal_retains_revision_across_recovery() {
 }
 #[test]
 fn lifecycle_intent_recovers_original_claim_and_cas_before_context_publication() {
-    let dir = std::env::temp_dir().join(format!("cooperative-event-{}", uuid::Uuid::new_v4()));
+    let dir = crate::test_support::scratch::temp_path(format!(
+        "cooperative-event-{}",
+        uuid::Uuid::new_v4()
+    ));
     let j = Journal::open(&dir).unwrap();
     let c = claim();
     let scope = IntentScope::Cooperative {
@@ -954,7 +974,10 @@ fn lifecycle_intent_recovers_original_claim_and_cas_before_context_publication()
 #[test]
 fn allocator_lock_wait_is_bounded_before_context_factory() {
     use std::fs::OpenOptions;
-    let dir = std::env::temp_dir().join(format!("cooperative-lock-{}", uuid::Uuid::new_v4()));
+    let dir = crate::test_support::scratch::temp_path(format!(
+        "cooperative-lock-{}",
+        uuid::Uuid::new_v4()
+    ));
     let j = Journal::open(&dir).unwrap();
     let lock = OpenOptions::new()
         .read(true)
@@ -1008,10 +1031,10 @@ fn explicit_lifecycle_argv_retains_external_identity_and_session_absence() {
 }
 #[test]
 fn model_ack_runner_requires_current_context_and_child_cannot_mutate() {
-    let dir = std::env::temp_dir()
-        .canonicalize()
-        .unwrap()
-        .join(format!("cooperative-runner-{}", uuid::Uuid::new_v4()));
+    let dir = crate::test_support::scratch::temp_path_canonical(format!(
+        "cooperative-runner-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir(&dir).unwrap();
     #[cfg(unix)]
     {
@@ -1089,10 +1112,10 @@ fn cooperative_reader_enforces_selected_page_budget_before_writing() {
             ))
         }
     }
-    let dir = std::env::temp_dir()
-        .canonicalize()
-        .unwrap()
-        .join(format!("cooperative-budget-{}", uuid::Uuid::new_v4()));
+    let dir = crate::test_support::scratch::temp_path_canonical(format!(
+        "cooperative-budget-{}",
+        uuid::Uuid::new_v4()
+    ));
     let j = Journal::open(&dir).unwrap();
     let c = crate::harness::context::ContextJournal::open(
         &dir,
@@ -1315,10 +1338,10 @@ fn inbox_empty_work_flush_before_ack(v2: bool, lazy: bool) {
             }
         }
     }
-    let root = std::env::temp_dir()
-        .canonicalize()
-        .unwrap()
-        .join(format!("inbox-display-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_support::scratch::temp_path_canonical(format!(
+        "inbox-display-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir(&root).unwrap();
     #[cfg(unix)]
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -1564,10 +1587,10 @@ fn inbox_empty_work_flush_before_ack(v2: bool, lazy: bool) {
 /// consuming the pending intent.
 #[test]
 fn cooperative_retry_without_any_context_is_invalid_request() {
-    let dir = std::env::temp_dir()
-        .canonicalize()
-        .unwrap()
-        .join(format!("cooperative-retry-ctx-{}", uuid::Uuid::new_v4()));
+    let dir = crate::test_support::scratch::temp_path_canonical(format!(
+        "cooperative-retry-ctx-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir(&dir).unwrap();
     #[cfg(unix)]
     {
@@ -1896,7 +1919,8 @@ fn cli_command_against_previous_protocol_descriptor_is_refused_before_send() {
     };
     use crate::protocol::{results::ErrorCode, wire::PROTOCOL_VERSION};
     use std::os::unix::fs::PermissionsExt;
-    let root = std::env::temp_dir().join(format!("herdr-cli-skew-{}", uuid::Uuid::new_v4()));
+    let root =
+        crate::test_support::scratch::temp_path(format!("herdr-cli-skew-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
     let context = RuntimeContext::explicit(root.clone(), root.join("host.sock"), None).unwrap();
@@ -1932,7 +1956,10 @@ fn cli_command_against_previous_protocol_descriptor_is_refused_before_send() {
 
 #[test]
 fn foreign_pane_inbox_never_requests_display_ack_caller() {
-    let root = std::env::temp_dir().join(format!("ht-foreign-pane-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_support::scratch::temp_path(format!(
+        "ht-foreign-pane-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir(&root).unwrap();
     let runtime = crate::daemon::paths::RuntimeContext::explicit(
         root.join("state"),
@@ -2021,7 +2048,10 @@ fn recipient_panes_reads_do_not_allocate_and_invite_uses_guarded_resolution() {
             }
         }
     }
-    let root = std::env::temp_dir().join(format!("ht-pane-recipient-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_support::scratch::temp_path(format!(
+        "ht-pane-recipient-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir(&root).unwrap();
     let runtime = crate::daemon::paths::RuntimeContext::explicit(
         root.join("state"),
@@ -2961,10 +2991,10 @@ mod scoped_runtime {
 // the honest frozen Human/operator origin, and may consume completed intents.
 #[test]
 fn actor_prerequisite_human_and_operator_retry_refuses_before_context_or_transport() {
-    let root = std::env::temp_dir()
-        .canonicalize()
-        .unwrap()
-        .join(format!("actor-preflight-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_support::scratch::temp_path_canonical(format!(
+        "actor-preflight-{}",
+        uuid::Uuid::new_v4()
+    ));
     use std::os::unix::fs::DirBuilderExt;
     std::fs::DirBuilder::new()
         .mode(0o700)
@@ -3064,10 +3094,10 @@ fn actor_prerequisite_human_and_operator_retry_refuses_before_context_or_transpo
 
 #[test]
 fn actor_prerequisite_agent_fresh_action_refuses_selected_human_context() {
-    let root = std::env::temp_dir()
-        .canonicalize()
-        .unwrap()
-        .join(format!("actor-fresh-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_support::scratch::temp_path_canonical(format!(
+        "actor-fresh-{}",
+        uuid::Uuid::new_v4()
+    ));
     use std::os::unix::fs::DirBuilderExt;
     std::fs::DirBuilder::new()
         .mode(0o700)
@@ -3131,10 +3161,10 @@ fn actor_prerequisite_all_unfrozen_handoffs_refuse_before_dispatch() {
             recipient: SeatId::new("peer"),
         })),
     ] {
-        let root = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("actor-unfrozen-{}", uuid::Uuid::new_v4()));
+        let root = crate::test_support::scratch::temp_path_canonical(format!(
+            "actor-unfrozen-{}",
+            uuid::Uuid::new_v4()
+        ));
         use std::os::unix::fs::DirBuilderExt;
         std::fs::DirBuilder::new()
             .mode(0o700)
@@ -3197,10 +3227,10 @@ fn actor_prerequisite_all_unfrozen_handoffs_refuse_before_dispatch() {
 #[test]
 fn actor_prerequisite_public_retry_refuses_before_daemon_state_or_connect() {
     use crate::daemon::paths::{NodePaths, RuntimeContext};
-    let root = std::env::temp_dir()
-        .canonicalize()
-        .unwrap()
-        .join(format!("actor-public-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_support::scratch::temp_path_canonical(format!(
+        "actor-public-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir_all(&root).unwrap();
     let runtime =
         RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
@@ -3556,10 +3586,10 @@ fn actor_prerequisite_lifecycle_guard_uses_its_selected_initial_seed() {
             consistency: Consistency::BoundedLive,
         }
     }
-    let root = std::env::temp_dir()
-        .canonicalize()
-        .unwrap()
-        .join(format!("actor-lifecycle-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_support::scratch::temp_path_canonical(format!(
+        "actor-lifecycle-{}",
+        uuid::Uuid::new_v4()
+    ));
     use std::os::unix::fs::DirBuilderExt;
     std::fs::DirBuilder::new()
         .mode(0o700)
@@ -3713,7 +3743,8 @@ fn actor_boundary_selected(human_route: bool) {
             ))
         }
     }
-    let root = std::env::temp_dir().join(format!("actor-boundary-{}", uuid::Uuid::new_v4()));
+    let root =
+        crate::test_support::scratch::temp_path(format!("actor-boundary-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     let runtime = crate::daemon::paths::RuntimeContext::explicit(
         root.join("state"),
@@ -4259,10 +4290,10 @@ fn public_join_cli_capability_refusal_precedes_journal_submission() {
             self.call(command, budget)
         }
     }
-    let root = std::env::temp_dir()
-        .canonicalize()
-        .unwrap()
-        .join(format!("public-join-cli-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_support::scratch::temp_path_canonical(format!(
+        "public-join-cli-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir(&root).unwrap();
     #[cfg(unix)]
     {
@@ -4441,10 +4472,10 @@ mod main539_composition {
             use crate::harness::context::{
                 ContextJournal, Harness, OccupantContext, Role, SessionReference,
             };
-            let root = std::env::temp_dir()
-                .canonicalize()
-                .unwrap()
-                .join(format!("ht-main539-{}", uuid::Uuid::new_v4()));
+            let root = crate::test_support::scratch::temp_path_canonical(format!(
+                "ht-main539-{}",
+                uuid::Uuid::new_v4()
+            ));
             std::fs::create_dir(&root).unwrap();
             #[cfg(unix)]
             {
@@ -5274,8 +5305,10 @@ impl OrdinaryHumanRetryFixture {
             ports::LocalClient,
             protocol::commands::{CheckIn, CheckInMode},
         };
-        let dir =
-            std::env::temp_dir().join(format!("ht-ordinary-human-retry-{}", uuid::Uuid::new_v4()));
+        let dir = crate::test_support::scratch::temp_path(format!(
+            "ht-ordinary-human-retry-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir(&dir).unwrap();
         let runtime = crate::daemon::paths::RuntimeContext::explicit(
             dir.join("state"),
@@ -5829,10 +5862,10 @@ fn subagent_own_inbox_displays_advances_only_its_cursor_and_machine_read_carries
             }
         }
     }
-    let root = std::env::temp_dir()
-        .canonicalize()
-        .unwrap()
-        .join(format!("subagent-inbox-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_support::scratch::temp_path_canonical(format!(
+        "subagent-inbox-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir(&root).unwrap();
     #[cfg(unix)]
     {
@@ -6009,10 +6042,10 @@ fn subagent_text_inbox_without_binding_cursors_is_a_read_only_read() {
             }
         }
     }
-    let root = std::env::temp_dir()
-        .canonicalize()
-        .unwrap()
-        .join(format!("subagent-inbox-ro-{}", uuid::Uuid::new_v4()));
+    let root = crate::test_support::scratch::temp_path_canonical(format!(
+        "subagent-inbox-ro-{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir(&root).unwrap();
     #[cfg(unix)]
     {
