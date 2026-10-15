@@ -649,7 +649,7 @@ class Run:
             else:
                 cfg = f"CLAUDE_CONFIG_DIR={q(self.args.claude_config_dir)} " if self.args.claude_config_dir else ""
             cfg += f"CLAUDE_CODE_PLUGIN_DIRS={q(str(self.state / 'claude-mod' / 'herdr-threads'))} "
-            return f"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; {path} {cfg}HERDR_AGENT=claude {shlex.join(argv)}"
+            return f"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_PID; {path} {cfg}HERDR_AGENT=claude {shlex.join(argv)}"
         # shell_snapshot off: the snapshot replays the interactive ~/.zshrc PATH, which can put an installed
         # herdr-threads ahead of the candidate's bin dir (ht-l16); a non-interactive login shell keeps it first.
         argv = ["command", "codex", "--no-daemon", "-C", self.cwd, "--dangerously-bypass-hook-trust",
@@ -925,6 +925,8 @@ class Recipient:
 
     def dismiss_notice(self):
         """Cancel Claude's between-turn notice (HARNESS_NOTICE) when it covers the composer; True when one was."""
+        if self.harness != "claude":
+            return False
         visible = self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
         if not HARNESS_NOTICE.search(visible):
             return False

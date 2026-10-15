@@ -1187,7 +1187,7 @@ FIXTURES = Path(__file__).resolve().parent / "wake_e2e_fixtures"
 FAKE_API_KEY = "sk-ant-api03-FAKEFAKEFAKEFAKE-selftest-only-0123456789"
 # launch_line() of the macOS mode as the driver produced it before the linux mode existed (dc575a28), same inputs;
 # the Codex line adds shell_snapshot=false (ht-l16).
-MACOS_CLAUDE_LINE = ('unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; PATH=/private/tmp/ht-wake-e2e.X/bin:"$PATH" '
+MACOS_CLAUDE_LINE = ('unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_PID; PATH=/private/tmp/ht-wake-e2e.X/bin:"$PATH" '
                      'CLAUDE_CONFIG_DIR=/Users/me/.claude-real CLAUDE_CODE_PLUGIN_DIRS=/private/tmp/ht-wake-e2e.X/state/'
                      'claude-mod/herdr-threads HERDR_AGENT=claude command claude --setting-sources project,local '
                      '--settings /private/tmp/ht-wake-e2e.X/claude-config/settings.json --permission-mode auto')

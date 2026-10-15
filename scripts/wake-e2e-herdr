@@ -32,10 +32,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TIMEOUT_S = 3600
-# Caller harness markers: the server's panes are not this caller's session.
-CALLER_ENV_PREFIXES = ("HERDR_", "CLAUDE_CODE_", "CODEX_SESSION", "CODEX_THREAD", "CODEX_SANDBOX")
-CALLER_ENV = ("CLAUDECODE", "AI_AGENT", "HERMES_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID",
-              "ANTIGRAVITY_AGENT")
+# Caller harness markers: the server's panes are not this caller's session. CLAUDE_PID above all: it is the
+# Claude process fingerprint, so a value inherited from a Claude session that runs this script gives every
+# Claude recipient the same process, and liveness supersedes all but one of their bindings.
+CALLER_ENV_PREFIXES = ("HERDR_", "CLAUDE", "CODEX_SESSION", "CODEX_THREAD", "CODEX_SANDBOX")
+CALLER_ENV = ("AI_AGENT", "HERMES_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_AGENT")
+KEEP_ENV = ("CLAUDE_CONFIG_DIR",)  # the harness's real config (credentials), as in the default run
 
 
 def smoke_module():
@@ -68,7 +70,7 @@ def main() -> int:
     (root / "bin/herdr").symlink_to(herdr)
     socket = root / "h.sock"
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith(CALLER_ENV_PREFIXES) and k not in CALLER_ENV}
+           if k in KEEP_ENV or not (k.startswith(CALLER_ENV_PREFIXES) or k in CALLER_ENV)}
     # A private XDG_CONFIG_HOME too: Herdr loads plugins from there, and a user's linked plugins
     # (an installed herdr-threads among them) must not start in this server.
     env.update(HERDR_SOCKET_PATH=str(socket), HERDR_CONFIG_PATH=str(root / "cfg/herdr.toml"),
