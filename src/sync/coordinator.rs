@@ -230,7 +230,7 @@ pub struct PeerIntake {
 }
 
 impl PeerIntake {
-    fn with_slots(slots: usize) -> (Self, mpsc::Receiver<PeerStream>) {
+    pub(crate) fn with_slots(slots: usize) -> (Self, mpsc::Receiver<PeerStream>) {
         let (tx, rx) = mpsc::channel(slots);
         (Self { tx }, rx)
     }
