@@ -10,6 +10,7 @@ pub mod effective;
 pub mod first_contact;
 pub mod handoff;
 pub mod harness_evidence;
+pub mod hosts;
 pub mod invitation_content;
 pub mod invitation_due;
 pub mod lazy_delivery;
@@ -2158,6 +2159,15 @@ impl StorePort for SqliteStore {
         }
         let writer = self.writer(budget)?;
         seats::persisted_host_epoch(&writer, instance)
+    }
+    fn attach_host(
+        &self,
+        locator: &crate::protocol::ids::HostLocator,
+        now: i64,
+        budget: &CallBudget,
+    ) -> Result<(crate::ports::HostId, i64), ApiError> {
+        let mut writer = self.writer(budget)?;
+        hosts::attach_host(&mut writer, locator, now)
     }
     fn begin_host_observation(
         &self,
