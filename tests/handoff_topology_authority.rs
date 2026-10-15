@@ -2090,9 +2090,7 @@ fn automatic_canonical_parent_blocks_archival_before_child_registration() {
             mono: at,
             utc: herdr_threads::protocol::time::UtcMillis(at),
             after_ms: 60000,
-            host_generation: 0,
-            coherent: true,
-            valid_until_mono: None,
+            hosts: herdr_threads::test_support::test_host_evidence(0, true),
             legacy_source: Some("covered".into()),
         };
         for _ in 0..20 {

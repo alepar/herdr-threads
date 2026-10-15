@@ -92,6 +92,26 @@ pub fn test_host_id() -> crate::ports::HostId {
     crate::ports::HostId::from_row(1)
 }
 
+/// A `HostId` for fixtures that build a second host: the raw `herdr_hosts.host_id`
+/// (the second `attach_host` of a fresh store gets 2).
+pub fn host_id_for_test(raw: i64) -> crate::ports::HostId {
+    crate::ports::HostId::from_row(raw)
+}
+
+/// The archival lane's evidence for the fixture host alone, as one attached
+/// session reports it: `Runtime.hosts` of a one-host archival fixture.
+pub fn test_host_evidence(
+    generation: i64,
+    coherent: bool,
+) -> Vec<crate::store::archival::HostArchivalEvidence> {
+    vec![crate::store::archival::HostArchivalEvidence {
+        host_id: test_host_id(),
+        generation,
+        coherent,
+        valid_until_mono: None,
+    }]
+}
+
 /// Attaches the fixture Herdr host to a store: upserts its `herdr_hosts` row
 /// through `conn` and publishes it into `ctx`'s `HostIndex` under
 /// [`test_host_locator`] (the host a fixture claim names). Idempotent.

@@ -1473,9 +1473,7 @@ fn automatic_linked_terminal_reconciles_completed_child_without_reopening_or_rel
             mono: at,
             utc: UtcMillis(at),
             after_ms: 60000,
-            host_generation: 0,
-            coherent: true,
-            valid_until_mono: None,
+            hosts: crate::test_support::test_host_evidence(0, true),
             legacy_source: Some("covered".into()),
         };
         for _ in 0..30 {

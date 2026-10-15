@@ -88,9 +88,7 @@ fn runtime(at: i64) -> Runtime {
         mono: at,
         utc: UtcMillis(at),
         after_ms: 3_600_000,
-        host_generation: 0,
-        coherent: true,
-        valid_until_mono: None,
+        hosts: herdr_threads::test_support::test_host_evidence(0, true),
         legacy_source: Some("covered-source".into()),
     }
 }
@@ -155,7 +153,7 @@ fn archival_forward_clock_jump_restart_outage_and_partial_import_never_age_into_
         match interruption {
             "jump" => rt.utc = UtcMillis(10_000_000),
             "restart" => rt.boot = "next".into(),
-            "outage" => rt.coherent = false,
+            "outage" => rt.hosts[0].coherent = false,
             _ => rt.legacy_source = None,
         }
         tick(&mut db, &rt);
@@ -215,14 +213,22 @@ pub(super) fn sample(
     at: i64,
     ui: herdr_threads::ports::HostUiState,
 ) -> archival::ComposerObservation {
+    sample_on(("p", "b", "term", "inc"), at, ui)
+}
+/// A composer-aware read of `(target, host boot, terminal, incarnation)`.
+fn sample_on(
+    (target, boot, terminal, incarnation): (&str, &str, &str, &str),
+    at: i64,
+    ui: herdr_threads::ports::HostUiState,
+) -> archival::ComposerObservation {
     use herdr_threads::{
         ports::*,
         protocol::{ids::*, time::MonoInstant},
     };
     archival::ComposerObservation(
         HostObservation {
-            target: HostTargetId::new("p"),
-            host_boot: HostBootId::new("b"),
+            target: HostTargetId::new(target),
+            host_boot: HostBootId::new(boot),
             epoch: 1,
             generation: 0,
             observed_at_utc: UtcMillis(at),
@@ -231,10 +237,10 @@ pub(super) fn sample(
             occupant: None,
             ui,
             focused: false,
-            terminal: Some(TerminalId::new("term")),
+            terminal: Some(TerminalId::new(terminal)),
             occupancy: StructuralOccupancy::Unknown,
             incarnation: IncarnationEvidence::Verified {
-                identity: "inc".into(),
+                identity: incarnation.into(),
                 evidence_kind: EvidenceKind::NativeCurrentTarget,
             },
             execution: ExecutionEvidence::Unknown,
@@ -417,9 +423,7 @@ fn channel_archival_production_store_admission_cancels_without_mutation() {
         mono: 0,
         utc: UtcMillis(0),
         after_ms: 3_600_000,
-        host_generation: 0,
-        coherent: true,
-        valid_until_mono: None,
+        hosts: herdr_threads::test_support::test_host_evidence(0, true),
         legacy_source: Some("source".into()),
     };
     let cancellation = Cancellation::default();
@@ -602,7 +606,7 @@ fn archival_deciding_clock_expiry_rolls_back_provisional_work() {
     };
     let fixture = super::handoff_fences::store_fixture();
     let mut rt = runtime(0);
-    rt.valid_until_mono = Some(99);
+    rt.hosts[0].valid_until_mono = Some(99);
     let budget = CallBudget {
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
@@ -805,7 +809,7 @@ fn archival_recurring_observation_work_excludes_retained_inactive_history() {
             )
             .unwrap();
         assert_eq!(due, 0, "only the eligible seat was due");
-        let plan=db.prepare("EXPLAIN QUERY PLAN SELECT seat_id FROM seat_archival WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND next_mono<=60000 ORDER BY next_mono,seat_id LIMIT 32").unwrap().query_map([],|r|r.get::<_,String>(3)).unwrap().collect::<Result<Vec<_>,_>>().unwrap().join("; ");
+        let plan=db.prepare("EXPLAIN QUERY PLAN SELECT seat_id FROM seat_archival WHERE next_mono<=60000 ORDER BY next_mono,seat_id LIMIT 32").unwrap().query_map([],|r|r.get::<_,String>(3)).unwrap().collect::<Result<Vec<_>,_>>().unwrap().join("; ");
         assert!(plan.contains("seat_archival_due"), "{plan}");
         assert!(!plan.contains("TEMP B-TREE"), "{plan}");
         counter.units()
@@ -1160,9 +1164,7 @@ mod archival_actual_producer_base_fixture {
             mono: 1_000,
             utc: UtcMillis(1_000),
             after_ms: 60_000,
-            host_generation: 0,
-            coherent: true,
-            valid_until_mono: None,
+            hosts: herdr_threads::test_support::test_host_evidence(0, true),
             legacy_source: Some("covered-source".into()),
         };
         super::tick(&mut db, &rt); // Actual advance initializes runtime and seat certificate rows.
@@ -1357,9 +1359,7 @@ mod archival_actual_producer_base_fixture {
                 mono: 1000,
                 utc: UtcMillis(1000),
                 after_ms: 60000,
-                host_generation: 0,
-                coherent: true,
-                valid_until_mono: None,
+                hosts: herdr_threads::test_support::test_host_evidence(0, true),
                 legacy_source: Some("covered-source".into()),
             };
             injected::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt, r).unwrap();
@@ -1501,9 +1501,7 @@ mod archival_actual_producer_base_fixture {
                     mono: at as i64,
                     utc: UtcMillis(at as i64),
                     after_ms: 60000,
-                    host_generation: 0,
-                    coherent: true,
-                    valid_until_mono: None,
+                    hosts: herdr_threads::test_support::test_host_evidence(0, true),
                     legacy_source: Some("covered-source".into()),
                 };
                 injected::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt, r).unwrap();
@@ -1721,9 +1719,7 @@ mod archival_actual_producer_base_fixture {
                 mono: 1000,
                 utc: UtcMillis(1000),
                 after_ms: 60000,
-                host_generation: 0,
-                coherent: true,
-                valid_until_mono: None,
+                hosts: herdr_threads::test_support::test_host_evidence(0, true),
                 legacy_source: Some("covered-source".into()),
             };
             super::tick(&mut db, &rt);
@@ -2165,7 +2161,7 @@ fn archival_startup_waits_for_canonical_host_instance() {
     )
     .unwrap();
     let mut rt = runtime(0);
-    rt.coherent = false;
+    rt.hosts[0].coherent = false;
     assert_eq!(
         archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap(),
         archival::Progress::default()
@@ -2302,7 +2298,7 @@ fn archival_store_startup_pass_and_next_wait_for_canonical_host_instance() {
         cancellation: Default::default(),
     };
     let mut rt = runtime(0);
-    rt.coherent = false;
+    rt.hosts[0].coherent = false;
     let mut identity = super::handoff_fences::identity();
     identity.thread = None;
     let hints = [herdr_threads::archival_legacy::Hint::Handoff {
@@ -2635,4 +2631,192 @@ fn membership_and_liveness_changes_bump_it() {
             "{what} must bump the revision"
         );
     }
+}
+
+// Per-host archival evidence (ht-5fr.2.9): one node-wide lane, coherence and
+// sampling per Herdr server.
+const NODE: &str = "34750f98bd59fcfc946da45aaabe933b";
+/// A seat's read identity: (target, host boot, terminal, incarnation).
+type Identity = (&'static str, &'static str, &'static str, &'static str);
+const H1: Identity = ("p", "b", "term", "inc");
+const H2: Identity = ("p2", "b2", "term2", "inc2");
+
+fn host(id: i64, coherent: bool) -> archival::HostArchivalEvidence {
+    archival::HostArchivalEvidence {
+        host_id: herdr_threads::test_support::host_id_for_test(id),
+        generation: 1,
+        coherent,
+        valid_until_mono: None,
+    }
+}
+/// A runtime with the fixture host (h1) and the second host (h2) attached.
+fn runtime2(at: i64, h1_coherent: bool, h2_coherent: bool) -> Runtime {
+    let mut rt = runtime(at);
+    rt.hosts = vec![host(1, h1_coherent), host(2, h2_coherent)];
+    rt
+}
+/// Adds the second Herdr server (host_id 2) and a thread `u`.
+fn second_host(db: &Connection) {
+    db.execute_batch(&format!("INSERT INTO herdr_hosts(node_id,endpoint,created_at,host_boot,host_epoch) VALUES('{NODE}','/h2.sock',0,'b2',1); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','{NODE}','topic','goal',-999999999,-999999999)")).unwrap();
+}
+/// Seat `s2` on h2 (target `p2`), a member of each of `threads`.
+fn agent_on_h2(db: &Connection, threads: &[&str]) {
+    db.execute_batch(&format!("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('s2','{NODE}','resolved','native','p2',1,0,0,(SELECT id FROM local_node),1,2);
+INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('s2',1,'p2','b2',1,'codex','session2','00000000-0000-4000-8000-000000000002','cooperative_top_level',0,0);
+INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch,ui_state) VALUES (2,'p2','b2',1,0,1,'fresh',0,'term2','inc2','native_current_target',1,'idle');")).unwrap();
+    for thread in threads {
+        db.execute(
+            "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES(?1,'s2','joined',0)",
+            [thread],
+        )
+        .unwrap();
+    }
+}
+/// One admission, then a sample of `seat` when its host is coherent in `rt`
+/// (an incoherent host hands out no ticket), then the lane's decision turns.
+fn step(db: &mut Connection, rt: &Runtime, seats: &[(&str, Identity)]) {
+    use herdr_threads::ports::HostUiState;
+    archival::advance(db, NODE, rt).unwrap();
+    for (seat, identity) in seats {
+        if let Some(ticket) = archival::observation_ticket(db, NODE, seat, rt).unwrap() {
+            archival::record_sample(
+                db,
+                &ticket,
+                rt,
+                &sample_on(*identity, rt.mono, HostUiState::Idle),
+            )
+            .unwrap();
+        }
+    }
+    tick(db, rt);
+}
+fn archived_thread(db: &Connection, thread: &str) -> bool {
+    db.query_row("SELECT archived FROM threads WHERE id=?1", [thread], |r| {
+        r.get(0)
+    })
+    .unwrap()
+}
+fn host_row(db: &Connection, host: i64) -> (i64, Option<i64>) {
+    db.query_row(
+        "SELECT evidence_epoch,coherent_since FROM archival_hosts WHERE host_id=?1",
+        [host],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .unwrap()
+}
+fn node_row(db: &Connection) -> (i64, i64) {
+    db.query_row(
+        "SELECT evidence_epoch,mutation_revision FROM archival_instances WHERE instance_id=?1",
+        [NODE],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .unwrap()
+}
+
+#[test]
+fn thread_on_h2_archives_while_h1_incoherent() {
+    let mut db = fixture();
+    thread(&db);
+    second_host(&db);
+    agent_on_h2(&db, &["t"]);
+    for at in (0..3_600_000).step_by(60_000) {
+        step(&mut db, &runtime2(at, false, true), &[("s2", H2)]);
+        assert!(!archived(&db), "not before the full grace at {at}");
+    }
+    step(&mut db, &runtime2(3_600_000, false, true), &[("s2", H2)]);
+    assert!(
+        archived(&db),
+        "h2's thread archives although h1 never was coherent"
+    );
+    assert_eq!(host_row(&db, 1).1, None, "h1 stayed incoherent");
+}
+
+#[test]
+fn thread_with_member_on_h1_defers() {
+    let mut db = fixture();
+    thread(&db);
+    joined_agent(&db);
+    second_host(&db);
+    agent_on_h2(&db, &["t", "u"]);
+    let seats = [("s", H1), ("s2", H2)];
+    for at in (0..=3_600_000).step_by(60_000) {
+        step(&mut db, &runtime2(at, false, true), &seats);
+    }
+    assert!(
+        archived_thread(&db, "u"),
+        "the thread with all members on h2 archives"
+    );
+    assert!(
+        !archived(&db),
+        "the thread with a member on incoherent h1 defers"
+    );
+    // h1 regains coherence: its member needs the full grace of coherence again.
+    let regained = 3_660_000;
+    for at in (regained..regained + 3_600_000).step_by(60_000) {
+        step(&mut db, &runtime2(at, true, true), &seats);
+        assert!(!archived(&db), "h1's grace restarts at {regained}: {at}");
+    }
+    step(&mut db, &runtime2(regained + 3_600_000, true, true), &seats);
+    assert!(archived(&db), "archives after h1's full coherent grace");
+}
+
+#[test]
+fn h1_coherence_loss_bumps_only_h1_epoch_and_node_revision() {
+    let mut db = fixture();
+    thread(&db);
+    joined_agent(&db);
+    second_host(&db);
+    agent_on_h2(&db, &["t", "u"]);
+    let seats = [("s", H1), ("s2", H2)];
+    for at in [0, 60_000, 120_000] {
+        step(&mut db, &runtime2(at, true, true), &seats);
+    }
+    let (h1_epoch, h1_since) = host_row(&db, 1);
+    let (h2_epoch, h2_since) = host_row(&db, 2);
+    let (node_epoch, revision) = node_row(&db);
+    let quiet: i64 = db
+        .query_row(
+            "SELECT quiet_mono FROM channel_archival WHERE thread_id='u'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let seat_epoch = |seat: &str| -> (i64, bool) {
+        db.query_row(
+            "SELECT host_evidence_epoch,idle_mono IS NOT NULL FROM seat_archival WHERE seat_id=?1",
+            [seat],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!(seat_epoch("s"), (h1_epoch, true));
+    assert_eq!(seat_epoch("s2"), (h2_epoch, true));
+    assert!(h1_since.is_some() && h2_since.is_some());
+
+    // h1 loses coherence; h2 is untouched.
+    archival::advance(&db, NODE, &runtime2(180_000, false, true)).unwrap();
+    assert_eq!(
+        host_row(&db, 1),
+        (h1_epoch + 1, None),
+        "h1 epoch bumped, coherence cleared"
+    );
+    assert_eq!(host_row(&db, 2), (h2_epoch, h2_since), "h2 row untouched");
+    assert_eq!(
+        node_row(&db),
+        (node_epoch, revision + 1),
+        "node revision bumps once; the node epoch stays"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT quiet_mono FROM channel_archival WHERE thread_id='u'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        quiet,
+        "no quiet-period reset for a thread without members on h1"
+    );
+    // h2 member's sample is still valid against its host row; h1's is stale.
+    assert_eq!(seat_epoch("s2"), (host_row(&db, 2).0, true));
+    assert_ne!(seat_epoch("s").0, host_row(&db, 1).0);
 }

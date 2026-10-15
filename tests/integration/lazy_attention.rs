@@ -995,9 +995,7 @@ fn lazy_attention_backlog_allows_qualified_quiet_archive() {
             mono: at,
             utc: UtcMillis(at),
             after_ms: 60_000,
-            host_generation: 0,
-            coherent: true,
-            valid_until_mono: None,
+            hosts: herdr_threads::test_support::test_host_evidence(0, true),
             legacy_source: Some("covered".into()),
         };
         archival::advance(&f.db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();

@@ -647,9 +647,7 @@ fn import_scan(
         mono: 0,
         utc: UtcMillis(0),
         after_ms: 60000,
-        host_generation: 0,
-        coherent: false,
-        valid_until_mono: None,
+        hosts: herdr_threads::test_support::test_host_evidence(0, false),
         legacy_source: scan.coverage.clone(),
     };
     store.archival_pass(&rt, &scan.hints, &budget)
@@ -1883,9 +1881,7 @@ fn archival_legacy_budget_admission_error_vetoes_queued_coverage_but_fresh_scan_
         mono: 0,
         utc: UtcMillis(0),
         after_ms: 60000,
-        host_generation: 0,
-        coherent: false,
-        valid_until_mono: None,
+        hosts: herdr_threads::test_support::test_host_evidence(0, false),
         legacy_source: sample.coverage.clone(),
     };
     let budget = CallBudget {

@@ -1,7 +1,7 @@
 //! Cancellation-owned channel lifecycle lane. All host/filesystem I/O is outside writer ownership.
 use crate::{
     archival_legacy::Source,
-    ports::{HostPort, StorePort},
+    ports::{HostId, HostPort, StorePort},
     protocol::{
         results::{ApiError, ErrorCode},
         time::{CallBudget, Cancellation, MonoInstant},
@@ -9,18 +9,92 @@ use crate::{
     service::{
         fair_writer::FairWriter,
         host_reachability::HostReachability,
+        host_sessions::HostSessions,
         kicks::{self, Lane},
         pacer::{Pacer, Wake},
         workers::WorkerStatus,
     },
-    store::archival::Runtime,
+    store::archival::{HostArchivalEvidence, Runtime},
 };
 use std::{sync::Arc, time::Duration};
+
+/// One attached Herdr server as the archival lane sees it: the port it samples
+/// through and the reachability that says whether its evidence is coherent.
+#[derive(Clone)]
+pub struct ArchivalHost {
+    pub host_id: HostId,
+    pub port: Arc<dyn HostPort>,
+    pub reachability: Arc<HostReachability>,
+}
+/// The hosts the archival lane may sample and take coherence evidence from.
+/// Production is `HostSessions`; `attached` is in `HostId` order so the lane
+/// always takes the hosts' evidence locks in one order.
+pub trait ArchivalHosts: Send + Sync {
+    fn attached(&self) -> Vec<ArchivalHost>;
+    fn get(&self, id: HostId) -> Option<ArchivalHost>;
+}
+fn archival_host(session: &crate::service::host_sessions::HostSession) -> ArchivalHost {
+    ArchivalHost {
+        host_id: session.host_id(),
+        port: Arc::clone(session.port()),
+        reachability: Arc::clone(session.reachability()),
+    }
+}
+impl ArchivalHosts for HostSessions {
+    fn attached(&self) -> Vec<ArchivalHost> {
+        HostSessions::attached(self)
+            .iter()
+            .map(|session| archival_host(session))
+            .collect()
+    }
+    fn get(&self, id: HostId) -> Option<ArchivalHost> {
+        HostSessions::get(self, id).map(|session| archival_host(&session))
+    }
+}
+/// A fixed host set (tests, and a daemon composed with one fixed host).
+pub struct StaticHosts(pub Vec<ArchivalHost>);
+impl ArchivalHosts for StaticHosts {
+    fn attached(&self) -> Vec<ArchivalHost> {
+        self.0.clone()
+    }
+    fn get(&self, id: HostId) -> Option<ArchivalHost> {
+        self.0.iter().find(|h| h.host_id == id).cloned()
+    }
+}
+
+type EvidenceWork<'a, R> = Box<dyn FnOnce(&[HostArchivalEvidence]) -> R + 'a>;
+
+/// Runs `work` with every host's evidence lock held (in `hosts` order), so no
+/// reachability mark can interleave with the deciding store transaction.
+fn with_host_evidence<'a, R>(
+    hosts: &[ArchivalHost],
+    now: u64,
+    evidence: &mut Vec<HostArchivalEvidence>,
+    work: EvidenceWork<'a, R>,
+) -> R {
+    let Some((host, rest)) = hosts.split_first() else {
+        return work(evidence);
+    };
+    host.reachability.with_archival_state(now, |state| {
+        evidence.push(HostArchivalEvidence {
+            host_id: host.host_id,
+            generation: i64::try_from(state.generation).unwrap_or(i64::MAX),
+            coherent: state.coherent,
+            valid_until_mono: state
+                .published_at
+                .and_then(|at| i64::try_from(at).ok())
+                .map(|at| at.saturating_add(crate::store::archival::MAX_GAP_MS)),
+        });
+        with_host_evidence(rest, now, evidence, work)
+    })
+}
+
+/// The node-wide archival lane. Its evidence and sampling are per host
+/// (`HostArchivalEvidence`); the decision stays node-wide.
 pub struct ArchivalWorker {
     pub store: Arc<dyn StorePort>,
-    pub host: Arc<dyn HostPort>,
+    pub hosts: Arc<dyn ArchivalHosts>,
     pub writer: Arc<FairWriter>,
-    pub reachability: Arc<HostReachability>,
     pub source: Source,
     pub boot: String,
     pub after_ms: u64,
@@ -33,6 +107,14 @@ impl ArchivalWorker {
             cancellation: self.cancellation.clone(),
         }
     }
+    /// Every attached host's archival evidence at `now`.
+    fn evidence(&self) -> Vec<HostArchivalEvidence> {
+        let now = self.store.clock().monotonic_now().0;
+        let hosts = self.hosts.attached();
+        let mut evidence = Vec::with_capacity(hosts.len());
+        with_host_evidence(&hosts, now, &mut evidence, Box::new(|_| ()));
+        evidence
+    }
     fn deciding<R>(
         &self,
         budget: &CallBudget,
@@ -40,27 +122,27 @@ impl ArchivalWorker {
         work: impl FnOnce(&Runtime) -> Result<R, ApiError>,
     ) -> Result<R, ApiError> {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
-        self.reachability
-            .with_archival_state(self.store.clock().monotonic_now().0, |state| {
+        let now = self.store.clock().monotonic_now().0;
+        let hosts = self.hosts.attached();
+        let after_ms = i64::try_from(self.after_ms)
+            .map_err(|_| ApiError::new(ErrorCode::InvalidRequest, "archive grace range"))?;
+        let mut evidence = Vec::with_capacity(hosts.len());
+        with_host_evidence(
+            &hosts,
+            now,
+            &mut evidence,
+            Box::new(|hosts: &[HostArchivalEvidence]| {
                 let rt = Runtime {
                     boot: self.boot.clone(),
                     mono: 0,
                     utc: self.store.clock().utc_now(),
-                    after_ms: i64::try_from(self.after_ms).map_err(|_| {
-                        ApiError::new(ErrorCode::InvalidRequest, "archive grace range")
-                    })?,
-                    host_generation: i64::try_from(state.generation).map_err(|_| {
-                        ApiError::new(ErrorCode::InvalidRequest, "host generation range")
-                    })?,
-                    coherent: state.coherent,
-                    valid_until_mono: state
-                        .published_at
-                        .and_then(|at| i64::try_from(at).ok())
-                        .map(|at| at.saturating_add(crate::store::archival::MAX_GAP_MS)),
+                    after_ms,
+                    hosts: hosts.to_vec(),
                     legacy_source: source,
                 };
                 work(&rt)
-            })
+            }),
+        )
     }
     pub fn run_page(&mut self) -> Result<bool, ApiError> {
         if self.cancellation.is_cancelled() {
@@ -96,10 +178,8 @@ impl ArchivalWorker {
                 return Err(error);
             }
             let mut has_more = scan.pending || progress.has_more;
-            let state = self
-                .reachability
-                .archival_state(self.store.clock().monotonic_now().0);
-            if !state.coherent {
+            let before = self.evidence();
+            if !before.iter().any(|h| h.coherent) {
                 return Ok(has_more);
             }
             let coverage = self.source.filter_coverage(coverage);
@@ -108,28 +188,51 @@ impl ArchivalWorker {
             })?;
             has_more |= work.has_more;
             if let Some(ticket) = work.ticket {
+                let host = self.hosts.get(ticket.host_id());
                 let context = ticket.host_context(budget.clone());
-                let sample = self
-                    .host
-                    .observe_current_target_for_archival(ticket.target(), &context);
-                // A host failure breaks global continuity. A successful nonidle
-                // observation vetoes only that seat's channels in the deciding write.
-                // This lane is single-owner: no subsequent archive decision can run
-                // until that write succeeds, or the failure below installs uncertainty.
+                let sample = match &host {
+                    Some(host) => host
+                        .port
+                        .observe_current_target_for_archival(ticket.target(), &context),
+                    None => Err(ApiError::new(
+                        ErrorCode::HostUnavailable,
+                        "no session for the seat's Herdr server",
+                    )),
+                };
+                // A host failure breaks that host's continuity only. A successful
+                // nonidle observation vetoes only that seat's channels in the
+                // deciding write. This lane is single-owner: no subsequent archive
+                // decision can run until that write succeeds, or the failure below
+                // installs uncertainty. A host with no session has no reachability
+                // to mark and already counts as incoherent.
+                let mark_uncertain = || {
+                    if let Some(host) = &host {
+                        host.reachability.mark_archival_uncertain();
+                    }
+                };
                 if sample.is_err() {
-                    self.reachability.mark_archival_uncertain();
+                    mark_uncertain();
                 }
+                let before_generation = before
+                    .iter()
+                    .find(|h| h.host_id == ticket.host_id())
+                    .map(|h| h.generation);
                 let coverage = self.source.filter_coverage(coverage);
                 let persisted = self.deciding(&budget, coverage, |rt| {
                     let mut rt = rt.clone();
-                    // A transient outage/recovery entirely inside the host call also
-                    // breaks continuity, even if the current reachability is back up.
-                    rt.coherent &= rt.host_generation as u64 == state.generation;
+                    // A transient outage/recovery of the ticket's host entirely inside
+                    // the host call also breaks its continuity, even if its current
+                    // reachability is back up.
+                    for host in &mut rt.hosts {
+                        if host.host_id == ticket.host_id() {
+                            host.coherent &= Some(host.generation) == before_generation;
+                        }
+                    }
                     self.store
                         .archival_sample(&rt, &ticket, sample.as_ref().ok(), &budget)
                 });
                 if persisted.is_err() {
-                    self.reachability.mark_archival_uncertain();
+                    mark_uncertain();
                 }
                 persisted?;
                 sample?;
