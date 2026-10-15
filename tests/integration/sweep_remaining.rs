@@ -71,6 +71,7 @@ impl Scene {
     fn send_to_wake_attempt(&self, recipient: usize, body: &str) -> Duration {
         let s = self.session();
         s.wait_commits_quiet("wake", Duration::from_millis(1500));
+        empty_wal_before_measuring(s);
         let (caller, thread) = &self.0.recipients[recipient];
         let db = s.db();
         let target = WakeTarget::fresh(&db, &caller.seat, thread, &self.0.sender.seat, body);
@@ -189,6 +190,44 @@ impl Scene {
             std::thread::sleep(Duration::from_millis(1));
         }
     }
+}
+
+/// SQLite runs a WAL auto-checkpoint (default every 1000 frames; the store
+/// never changes it) inside whichever commit crosses the threshold, before
+/// that commit's kick is flushed. The checkpoint syncs the WAL and the
+/// database file even under the fixture's relaxed `synchronous=NORMAL`, so it
+/// would put fsync time into the measured commit-to-wake chain, which
+/// `relax_commit_durability` keeps out. On this fixture the crossing fell on
+/// send 1's Deadlines materialization commit (hosted 38636459023: 143 ms
+/// between the publication kick and the Deadlines -> Wakes kick, wake lane
+/// 11 ms). Emptying the WAL before each measured send leaves the window
+/// (about 80 frames per send) 1000 frames of headroom.
+fn empty_wal_before_measuring(s: &lanes_latency::Session) {
+    let db = s.db();
+    let (busy, log): (i64, i64) = db
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(
+        (busy, log),
+        (0, 0),
+        "the WAL must be empty before a measured send"
+    );
+}
+
+/// Size of a WAL that has reached SQLite's auto-checkpoint threshold.
+fn auto_checkpoint_wal_bytes(db: &rusqlite::Connection) -> u64 {
+    let page: i64 = db.query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap();
+    let frames: i64 = db
+        .query_row("PRAGMA wal_autocheckpoint", [], |r| r.get(0))
+        .unwrap();
+    u64::try_from(32 + frames * (24 + page)).unwrap()
+}
+
+fn wal_bytes(db: &rusqlite::Connection) -> u64 {
+    let path = format!("{}-wal", db.path().expect("isolated database path"));
+    fs::metadata(path).map_or(0, |m| m.len())
 }
 
 const TRACE_CAP: usize = 64;
@@ -2278,6 +2317,46 @@ fn send_commit_wake_under_100ms_with_all_five_lanes() {
             "send {round}: commit to wake attempt took {latency:?}"
         );
     }
+}
+
+/// A measured send never carries SQLite's WAL auto-checkpoint: with the WAL
+/// padded to 40 frames under the threshold (where the next send's chain would
+/// cross it, as send 1 did on hosted 38636459023), the measured send still
+/// leaves the WAL short of the threshold, so no commit in its window ran the
+/// checkpoint. The WAL file never shrinks without a TRUNCATE checkpoint, so
+/// reaching the threshold at any point in the window would show at the end.
+/// Kills: a fixture that measures without emptying the WAL first.
+#[test]
+fn measured_send_window_never_reaches_the_wal_auto_checkpoint() {
+    let Some(scene) = Scene::new("sweep_send_wal_headroom", 1) else {
+        return;
+    };
+    let db = scene.session().db();
+    let threshold = auto_checkpoint_wal_bytes(&db);
+    let page: i64 = db.query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap();
+    db.execute_batch("CREATE TABLE sweep_wal_padding(x BLOB)")
+        .unwrap();
+    while wal_bytes(&db) < threshold - 40 * (24 + page.unsigned_abs()) {
+        db.execute(
+            "INSERT INTO sweep_wal_padding VALUES (randomblob(?1))",
+            [page - 200],
+        )
+        .unwrap();
+    }
+    assert!(
+        wal_bytes(&db) < threshold,
+        "padding stays under the threshold"
+    );
+    let latency = scene.send_to_wake_attempt(0, "wal headroom probe");
+    let after = wal_bytes(&db);
+    assert!(
+        after < threshold,
+        "the measured window reached the WAL auto-checkpoint ({after} of {threshold} bytes)"
+    );
+    assert!(
+        latency < Duration::from_millis(100),
+        "commit to wake attempt took {latency:?}"
+    );
 }
 
 /// 6,000 completed jobs younger than the 24 h retention age are left alone;

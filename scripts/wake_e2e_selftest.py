@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import stat
 import signal
@@ -1327,6 +1328,71 @@ class HarnessMode(TempDir):
         self.assertEqual(json.loads((cfg / ".claude.json").read_text()),
                          {"userID": "u", "hasCompletedOnboarding": True,
                           "projects": {"/repo": {"x": 1, "hasTrustDialogAccepted": True}, "/o": {}}})
+
+
+# A stand-in for Codex's command shell (ht-l16): with its shell snapshot on, each command runs under the PATH the
+# snapshot captured from an interactive login shell (~/.zprofile, then ~/.zshrc); with features.shell_snapshot=false
+# it runs in a non-interactive login shell (~/.zprofile only). It prints what a bare `herdr-threads` resolves to.
+FAKE_CODEX = r"""#!/bin/sh
+snapshot=on
+prev=
+for a in "$@"; do
+  [ "$prev" = "-c" ] && [ "$a" = "features.shell_snapshot=false" ] && snapshot=off
+  prev=$a
+done
+. "$HOME/.zprofile"
+[ "$snapshot" = on ] && . "$HOME/.zshrc"
+exec herdr-threads
+"""
+
+
+class CodexCandidateCli(TempDir):
+    """ht-l16: a Codex cell's bare `herdr-threads` is the candidate, not one installed in ~/.local/bin, though the
+    interactive rc prepends ~/.local/bin to PATH. Scratch HOME and fakes only; no real Codex or user config."""
+
+    def setUp(self):
+        super().setUp()
+        home, self.tools = self.tmp / "home", self.tmp / "tools"
+        installed = home / ".local" / "bin"
+        for d in (installed, self.tools):
+            d.mkdir(parents=True)
+        # the shape of a real install: the login profile appends ~/.local/bin, the interactive rc prepends it
+        (home / ".zprofile").write_text('export PATH="$PATH:$HOME/.local/bin"\n')
+        (home / ".zshrc").write_text('export PATH="$HOME/.local/bin:$PATH"\n')
+        self.home = home
+        self.run_ = launch_run(parsed_args(["--harness-mode", "macos"]))
+        self.run_.bindir = self.tmp / "candidate-bin"
+        self.run_.bindir.mkdir()
+        for path, says in ((installed / "herdr-threads", "installed"), (self.run_.bindir / "herdr-threads", "candidate"),
+                           (self.tools / "codex", None)):
+            path.write_text(FAKE_CODEX if says is None else f"#!/bin/sh\necho {says}\n")
+            path.chmod(0o700)
+
+    def resolve(self, line):
+        env = {"HOME": str(self.home), "PATH": f"{self.tools}:/usr/bin:/bin"}
+        out = subprocess.run(["/bin/sh", "-c", line], env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout.strip()
+
+    def test_launch_line_turns_the_shell_snapshot_off(self):
+        for mode in W.HARNESS_MODES:
+            r = launch_run(parsed_args(["--harness-mode", mode]))
+            for plain in (False, True):
+                argv = shlex.split(r.launch_line("codex", plain=plain))
+                self.assertEqual(argv[0], f"PATH={r.bindir}:$PATH", (mode, plain))  # the candidate's bin dir first
+                i = argv.index("features.shell_snapshot=false")
+                self.assertEqual(argv[i - 1], "-c", (mode, plain))
+
+    def test_a_codex_cell_runs_the_candidate(self):
+        self.assertEqual(self.resolve(self.run_.launch_line("codex")), "candidate")
+        self.assertEqual(self.resolve(self.run_.launch_line("codex", plain=True)), "candidate")
+
+    def test_without_the_fix_the_installed_cli_wins(self):
+        # negative control: the same launch line with the snapshot left on resolves the installed CLI
+        line = self.run_.launch_line("codex")
+        unfixed = line.replace(" -c features.shell_snapshot=false", "")
+        self.assertNotEqual(unfixed, line)
+        self.assertEqual(self.resolve(unfixed), "installed")
 
 
 class LinuxPreflight(TempDir):
