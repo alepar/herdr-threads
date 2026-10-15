@@ -798,6 +798,139 @@ fn p0_body_fits_every_bound_from_the_documented_floor() {
         "the refit went below the documented floor: {first_run:?}"
     );
 }
+/// A p0 daemon that validates the wire floor like the real one and fits a History
+/// page to the request bound the way the store does: whole newest-first items, the
+/// longest prefix that encodes within the bound, a cursor continuation carrying the
+/// request bound when items are cut, and `invalid_budget` when not even one fits.
+struct BoundedP0History {
+    calls: Mutex<Vec<Command>>,
+    messages: u64,
+    preview: String,
+}
+impl LocalClient for BoundedP0History {
+    fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
+        name == MESSAGE_DELIVERY_MODES
+    }
+    fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
+        self.call_with_output(command, &OutputSpec::default(), budget)
+    }
+    fn call_with_output(
+        &self,
+        command: Command,
+        spec: &OutputSpec,
+        _: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        use herdr_threads::protocol::{commands::HistoryRange, pagination::DEFAULT_PAGE_BYTES};
+        self.calls.lock().unwrap().push(command.clone());
+        command.validate().map_err(ApiError::invalid_budget)?;
+        match command {
+            Command::MessageDeliveryModes(q) => Ok(CommandResult::MessageDeliveryModes(
+                q.messages
+                    .into_iter()
+                    .map(|message| MessageDeliveryMode {
+                        priority: Some(DeliveryPriority::new(0).unwrap()),
+                        message,
+                        delivery_mode: DeliveryMode::Lazy,
+                    })
+                    .collect(),
+            )),
+            Command::History(q) => {
+                let take = match q.initial {
+                    Some(HistoryRange::Recent { count }) => count.min(q.page.limit),
+                    _ => q.page.limit,
+                } as usize;
+                let items: Vec<MessageSummary> = (2..2 + self.messages)
+                    .rev()
+                    .take(take)
+                    .map(|n| MessageSummary {
+                        preview_data: self.preview.clone(),
+                        ..summary(n)
+                    })
+                    .collect();
+                let available = items.len();
+                for k in (1..=available).rev() {
+                    let mut fitted = page(items[..k].to_vec());
+                    if k < available {
+                        let cursor = format!("cursor-{}", items[k - 1].sequence);
+                        let mut argv: Vec<String> =
+                            vec!["herdr-threads".into(), "read".into(), "t".into()];
+                        argv.extend(["--cursor".into(), cursor.clone()]);
+                        if q.page.max_bytes != DEFAULT_PAGE_BYTES {
+                            argv.extend(["--max-bytes".into(), q.page.max_bytes.to_string()]);
+                        }
+                        fitted.next_cursor = Some(cursor);
+                        fitted.next_argv = Some(argv);
+                        fitted.has_more = true;
+                        fitted.stop_reason = StopReason::Bytes;
+                    }
+                    let result = CommandResult::History(fitted);
+                    if encode_selected(&result, spec)?.len() <= q.page.max_bytes as usize {
+                        return Ok(result);
+                    }
+                }
+                Err(ApiError::invalid_budget("history item cannot fit"))
+            }
+            _ => panic!("unexpected {command:?}"),
+        }
+    }
+}
+/// ht-yha.72: a p0-annotated `read` fits at every bound from the documented 256
+/// floor; the refit reselects a smaller page (below 256 when needed) instead of
+/// refusing, and the output stays within the requested bytes.
+#[test]
+fn p0_read_fits_every_bound_from_the_documented_floor() {
+    use herdr_threads::protocol::pagination::MIN_REFIT_READ_BYTES;
+    // `--recent 1`: one p0 message whose row fits the bound with its marker.
+    // A full page: three p0 messages, so the marker rows force a smaller page.
+    for (recent, messages) in [(true, 1u64), (false, 3)] {
+        let client = BoundedP0History {
+            calls: Mutex::new(vec![]),
+            messages,
+            preview: "abcdefghij".repeat(6),
+        };
+        for bound in 256..=342usize {
+            let arg = bound.to_string();
+            let mut argv = vec!["read", "t", "--max-bytes", &arg];
+            if recent {
+                argv.extend(["--recent", "1"]);
+            }
+            let before = client.calls.lock().unwrap().len();
+            let (text, _) = run(&argv, &client);
+            assert!(text.len() <= bound, "{bound}: {} bytes: {text}", text.len());
+            assert!(text.starts_with("[p0] msg-"), "{bound}: {text}");
+            let newest = format!("msg-{}", 1 + messages);
+            assert!(text.contains(&newest), "{bound}: {text}");
+            if text.contains("--cursor") {
+                assert!(
+                    text.contains(&format!("--max-bytes {bound}")),
+                    "{bound}: continuation carries the invocation bound: {text}"
+                );
+            }
+            let calls = client.calls.lock().unwrap();
+            for call in &calls[before..] {
+                if let Command::History(q) = call {
+                    assert!(q.page.max_bytes >= MIN_REFIT_READ_BYTES, "{bound}");
+                }
+            }
+        }
+        if !recent {
+            let bounds: Vec<u32> = client
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|c| match c {
+                    Command::History(q) => Some(q.page.max_bytes),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                bounds.iter().any(|b| *b < 256),
+                "the refit went below the documented floor: {bounds:?}"
+            );
+        }
+    }
+}
 #[test]
 fn lazy_markers_human_selected_body_and_search_are_canonical() {
     for argv in [
