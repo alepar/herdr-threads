@@ -1,34 +1,6 @@
 use herdr_threads::{protocol::time::UtcMillis, store::schema};
 use rusqlite::Connection;
 
-#[test]
-fn lazy_schema_upgrade25_defaults_existing_messages_to_ordinary() {
-    let db = Connection::open_in_memory().unwrap();
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
-    let mut paths = std::fs::read_dir(root)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .collect::<Vec<_>>();
-    paths.sort();
-    for path in paths.into_iter().take(25) {
-        db.execute_batch(&std::fs::read_to_string(path).unwrap())
-            .unwrap();
-    }
-    db.execute_batch("PRAGMA user_version=25; INSERT INTO host_instances(id,created_at) VALUES('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at) VALUES('m','i','t',1,'ordinary',1,'old',0)").unwrap();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
-    assert_eq!(
-        db.query_row("SELECT delivery_mode FROM messages WHERE id='m'", [], |r| r
-            .get::<_, String>(0))
-            .unwrap(),
-        "ordinary"
-    );
-    assert_eq!(
-        db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
-            .unwrap(),
-        46
-    );
-}
-
 use herdr_threads::{
     protocol::{
         commands::DeliveryMode,

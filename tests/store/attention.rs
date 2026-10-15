@@ -574,69 +574,6 @@ fn assert_digest_cost_flat_in_settled_history(sizes: &[(u64, u64)]) {
     }
 }
 
-// Kills: a projection that keeps settled rows because its maintaining trigger
-// is missing (each settlement path leaves the projection holding only the
-// still-pending rows), and a backfill that omits pending rows or copies
-// settled ones when a v7 database is upgraded.
-#[test]
-fn projections_hold_only_pending_rows_through_settlement_and_upgrade() {
-    let db = with_settled_history(10, 9);
-    let projected = |db: &Connection| -> Vec<(String, i64)> {
-        [
-            "digest_pending_invitations",
-            "digest_pending_manifest_receipts",
-            "digest_open_warnings",
-            "digest_programmatic_warnings",
-        ]
-        .iter()
-        .map(|t| {
-            (
-                t.to_string(),
-                db.query_row(&format!("SELECT count(*) FROM {t}"), [], |r| r.get(0))
-                    .unwrap(),
-            )
-        })
-        .collect()
-    };
-    let expect = vec![
-        ("digest_pending_invitations".to_string(), 2),
-        ("digest_pending_manifest_receipts".to_string(), 1),
-        ("digest_open_warnings".to_string(), 1),
-        ("digest_programmatic_warnings".to_string(), 0),
-    ];
-    assert_eq!(projected(&db), expect);
-    // Rebuild the projections from scratch through the migration backfill.
-    db.execute_batch(
-        "DELETE FROM digest_pending_invitations; DELETE FROM digest_pending_manifest_receipts; DELETE FROM digest_open_warnings; DELETE FROM digest_programmatic_warnings;",
-    )
-    .unwrap();
-    let backfill: String = include_str!("../../migrations/0008_digest_pending_paths.sql")
-        .split("\n\n")
-        // The notice frontier backfill is the V8 table's shape; V35 owns the table now.
-        .filter(|s| s.trim_start().starts_with("INSERT") && !s.contains("INTO digest_notice_offer"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    db.execute_batch(&backfill).unwrap();
-    assert_eq!(projected(&db), expect);
-    let run = digest(&db, "s");
-    assert_eq!(ids(&run.digest.receipts), ["mm", "mp"]);
-    assert_eq!(ids(&run.digest.warnings), ["w-open"]);
-    // Settling the last pending items empties every projection.
-    db.execute_batch("\
-        UPDATE invitations SET state='accepted',accepted_at=2,accepted_actor_seat_id='s',accepted_generation=1,accepted_observation='obs' WHERE id IN ('inv-s','inv-o');\
-        INSERT INTO receipt_state(message_id,seat_id,state,ack_actor_seat_id,ack_generation,ack_observation,acked_at) VALUES ('mm','s','acked','s',1,'obs',1);\
-    ").unwrap();
-    assert!(
-        projected(&db).iter().all(|(_, n)| *n == 0),
-        "{:?}",
-        projected(&db)
-    );
-    let run = digest(&db, "s");
-    assert_eq!(run.digest.invitations.count, 0);
-    assert_eq!(ids(&run.digest.receipts), ["mp"]);
-    assert_eq!(run.digest.warnings.count, 0);
-}
-
 /// A file-backed store with sender `snd` and recipient `rcv`, both joined to
 /// threads `hist` and `live`, holding `acked` ACKed receipts for `rcv` in
 /// `hist` written through the real send/manifest/projection/ACK writers and
@@ -1872,54 +1809,6 @@ fn offer_settlement_writes_are_constant() {
 #[ignore = "writes 3x10^5 notices through the real writers; run in release"]
 fn offer_settlement_writes_are_constant_at_three_hundred_thousand() {
     assert_offer_settlement_constant(&[1_000, 300_000]);
-}
-
-// Kills: a v8 backfill that rebuilds `digest_open_warnings` but not
-// `digest_open_warning_recipients` (an upgraded database would list the
-// warning for nobody: the recipient walk reads the recipients projection).
-// Seat `s` received warning `w1` about seat `o`'s pending invitation before the
-// recipient projection existed; rebuilding the projections from the migration's
-// INSERT statements alone must bring the recipient row and the digest back.
-#[test]
-fn recipients_backfill_covers_existing_warnings() {
-    let db = empty();
-    db.execute_batch("\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','g',0,0);\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv-o','t','o',1,'pending',0,3,100,100);\
-        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('w1','i','t',1,'warn','{}',0,12,1);\
-        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('w1',12,'t',100,'o','invitation','inv-o');\
-        INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('w1','s',1);\
-        UPDATE warning_jobs SET status='complete',phase='complete';\
-    ").unwrap();
-    let recipient_rows = |db: &Connection| -> Vec<(String, String)> {
-        db.prepare("SELECT seat_id,warning_id FROM digest_open_warning_recipients ORDER BY seat_id,warning_id")
-            .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
-    };
-    let live = vec![("s".to_string(), "w1".to_string())];
-    assert_eq!(recipient_rows(&db), live);
-    assert_eq!(ids(&digest(&db, "s").digest.warnings), ["w1"]);
-    // The projections as a pre-projection (v7) database would have them: empty.
-    db.execute_batch(
-        "DELETE FROM digest_open_warnings; DELETE FROM digest_open_warning_recipients;",
-    )
-    .unwrap();
-    assert!(recipient_rows(&db).is_empty());
-    assert!(ids(&digest(&db, "s").digest.warnings).is_empty());
-    let backfill: String = include_str!("../../migrations/0008_digest_pending_paths.sql")
-        .split("\n\n")
-        // The notice frontier backfill is the V8 table's shape; V35 owns the table now.
-        .filter(|s| s.trim_start().starts_with("INSERT") && !s.contains("INTO digest_notice_offer"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    db.execute_batch(&backfill).unwrap();
-    assert_eq!(recipient_rows(&db), live);
-    let run = digest(&db, "s");
-    assert_eq!(ids(&run.digest.warnings), ["w1"]);
-    assert_eq!(run.digest.warnings.count, 1);
 }
 
 // Kills narrowing a saturated warning window to nothing: a full window of

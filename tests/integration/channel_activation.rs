@@ -39,7 +39,7 @@ struct World {
     _scratch: Scratch,
 }
 impl World {
-    fn new(version: i64, disabled: bool) -> Self {
+    fn new(disabled: bool) -> Self {
         let root = PathBuf::from(format!(
             "{}/htch-{}",
             herdr_threads::test_support::SHORT_TMP,
@@ -56,32 +56,6 @@ impl World {
         )
         .unwrap();
         paths.prepare_instance_dir().unwrap();
-        if version != 0 {
-            let db = rusqlite::Connection::open(&paths.database_path).unwrap();
-            let mut migrations = fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
-                .unwrap()
-                .map(|e| e.unwrap().path())
-                .collect::<Vec<_>>();
-            migrations.sort();
-            for path in migrations {
-                let n = path.file_name().unwrap().to_str().unwrap()[..4]
-                    .parse::<i64>()
-                    .unwrap();
-                if n <= version {
-                    db.execute_batch(&fs::read_to_string(path).unwrap())
-                        .unwrap();
-                }
-            }
-            db.pragma_update(None, "user_version", version).unwrap();
-            let owner = herdr_threads::daemon::ownership::OwnerLock::acquire(&paths).unwrap();
-            let instance = owner.instance_uuid().to_string();
-            db.execute(
-                "INSERT INTO host_instances(id,created_at) VALUES(?1,0)",
-                [&instance],
-            )
-            .unwrap();
-            db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('historical',?1,'old channel','preserve',-9000000,-9000000)", [&instance]).unwrap();
-        }
         if disabled {
             let path = paths.instance_dir.join("settings.json");
             fs::write(&path, r#"{"auto_archive_after_ms":0}"#).unwrap();
@@ -206,77 +180,48 @@ fn wait(what: &str, mut check: impl FnMut() -> bool) {
     }
 }
 #[test]
-fn channel_activation_real_daemon_loads_fresh_21_and_22_and_owns_archival_lane() {
-    for version in [0, 21, 22] {
-        let w = World::new(version, false);
-        // The boot archival pass may precede canonical host admission, then
-        // park until its 60s safety tick. Resolve a real fixture target before
-        // expecting prompt initialization: this admits qualified host evidence
-        // and the seat_archival insertion kicks the existing archival lane.
-        w.ok(None, &["seat", "resolve", "--pane", "w1:p1"]);
-        let db = w.db();
-        // The initializer upgrades each historical input to the composed schema46.
-        assert_eq!(
-            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-                .unwrap(),
-            46
-        );
-        wait("archival worker initialization", || {
-            db.query_row(
-                "SELECT count(*) FROM archival_instances WHERE policy_ms=3600000",
-                [],
-                |r| r.get::<_, i64>(0),
-            )
-            .unwrap()
-                == 1
-        });
-        let old_boot: String = db
-            .query_row("SELECT runtime_boot FROM archival_instances", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        w.ok(None, &["daemon", "stop"]);
-        w.ok(None, &["daemon", "ensure"]);
-        wait("fresh runtime grace", || {
-            db.query_row("SELECT runtime_boot FROM archival_instances", [], |r| {
-                r.get::<_, String>(0)
-            })
-            .unwrap()
-                != old_boot
-        });
-        assert_eq!(
-            db.query_row("SELECT count(*) FROM threads WHERE archived=1", [], |r| r
-                .get::<_, i64>(
-                0
-            ))
-            .unwrap(),
-            0,
-            "migration and restart cannot archive historical channels immediately"
-        );
-        if version != 0 {
-            wait("historical channel discovery", || {
-                db.query_row(
-                    "SELECT count(*) FROM channel_archival WHERE thread_id='historical'",
-                    [],
-                    |r| r.get::<_, i64>(0),
-                )
-                .unwrap()
-                    == 1
-            });
-            let (quiet, due): (Option<i64>, i64) = db
-                .query_row(
-                    "SELECT quiet_mono,due_mono FROM channel_archival WHERE thread_id='historical'",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .unwrap();
-            assert!(
-                quiet.is_none_or(|at| at >= 0) && due >= 0,
-                "historical timestamps cannot backdate monotonic grace"
-            );
-        }
-    }
-    let w = World::new(0, true);
+fn channel_activation_real_daemon_loads_fresh_store_and_owns_archival_lane() {
+    let w = World::new(false);
+    // The boot archival pass may precede canonical host admission, then
+    // park until its 60s safety tick. Resolve a real fixture target before
+    // expecting prompt initialization: this admits qualified host evidence
+    // and the seat_archival insertion kicks the existing archival lane.
+    w.ok(None, &["seat", "resolve", "--pane", "w1:p1"]);
+    let db = w.db();
+    herdr_threads::store::schema::verify_baseline(&db).unwrap();
+    wait("archival worker initialization", || {
+        db.query_row(
+            "SELECT count(*) FROM archival_instances WHERE policy_ms=3600000",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+            == 1
+    });
+    let old_boot: String = db
+        .query_row("SELECT runtime_boot FROM archival_instances", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    w.ok(None, &["daemon", "stop"]);
+    w.ok(None, &["daemon", "ensure"]);
+    wait("fresh runtime grace", || {
+        db.query_row("SELECT runtime_boot FROM archival_instances", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap()
+            != old_boot
+    });
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM threads WHERE archived=1", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0,
+        "restart cannot archive channels immediately"
+    );
+    let w = World::new(true);
     let claim = w.check_in();
     w.ok(Some(&claim), &["thread", "create", "--topic", "disabled"]);
     assert_eq!(
@@ -291,7 +236,7 @@ fn channel_activation_real_daemon_loads_fresh_21_and_22_and_owns_archival_lane()
 
 #[test]
 fn channel_activation_cli_complete_removal_failure_archived_binding_retry_is_cleanup_only() {
-    let mut w = World::new(22, false);
+    let mut w = World::new(false);
     let claim = w.check_in();
     let recipient = SeatId::new(
         w.ok(None, &["seat", "resolve", "--pane", "w1:p2"])

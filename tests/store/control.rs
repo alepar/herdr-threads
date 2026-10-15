@@ -5402,10 +5402,11 @@ fn mixed_retirement_preserves_committed_prefix_across_failed_quantum_and_reopen(
             .unwrap(),
         0
     );
-    drop(conn);
-    let mut conn = context.open_writer().unwrap();
+    // The fault trigger is not part of the node schema: drop it before the reopen audit.
     conn.execute_batch("DROP TRIGGER fail_retire_selection;")
         .unwrap();
+    drop(conn);
+    let mut conn = context.open_writer().unwrap();
     let first = advance_retirement(
         &context,
         &mut conn,
@@ -5514,8 +5515,6 @@ fn mixed_retirement_preserves_committed_prefix_across_failed_quantum_and_reopen(
     conn.execute_batch("DROP TRIGGER fail_retire_cursor;")
         .unwrap();
     conn.execute_batch("CREATE TRIGGER fail_retire_audit BEFORE INSERT ON retirement_audits WHEN NEW.thread_id='retire-b' BEGIN SELECT RAISE(ABORT,'injected audit failure'); END;").unwrap();
-    drop(conn);
-    let mut conn = context.open_writer().unwrap();
     let mut audit_failure_seen = false;
     for _ in 0..8 {
         let before: (i64,String,i64,i64) = conn.query_row("SELECT thread_ordinal,phase,obligation_ordinal,processed_units FROM retirements WHERE id=?1",[job.id.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
@@ -6907,11 +6906,12 @@ fn retirement_quantum_failure_retains_bounded_error_until_successful_progress() 
     );
 
     // The error survives reopen, and a later successful quantum clears it.
+    // The fault trigger is not part of the node schema: drop it before the reopen audit.
+    conn.execute_batch("DROP TRIGGER fail_retire_receipt;")
+        .unwrap();
     drop(conn);
     let mut conn = context.open_writer().unwrap();
     assert_eq!(durable(&conn).3.as_deref(), Some(error.as_str()));
-    conn.execute_batch("DROP TRIGGER fail_retire_receipt;")
-        .unwrap();
     let recovered = advance_retirement(
         &context,
         &mut conn,

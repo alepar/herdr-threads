@@ -4930,64 +4930,6 @@ fn recent_picker_activity_and_rename_invalidate_only_selected_instance() {
 }
 
 #[test]
-fn recent_picker_migration_backfills_committed_info_and_creation() {
-    // Construct the historical schema rather than downgrade the current one.
-    let db = rusqlite::Connection::open_in_memory().unwrap();
-    for migration in [
-        include_str!("../../migrations/0001_initial.sql"),
-        include_str!("../../migrations/0002_service_substrate.sql"),
-        include_str!("../../migrations/0003_invitation_cancellations.sql"),
-        include_str!("../../migrations/0004_voluntary_membership.sql"),
-        include_str!("../../migrations/0005_service_notifications.sql"),
-        include_str!("../../migrations/0006_retirement_health.sql"),
-        include_str!("../../migrations/0007_attention_digest.sql"),
-        include_str!("../../migrations/0008_digest_pending_paths.sql"),
-        include_str!("../../migrations/0009_human_occupant.sql"),
-        include_str!("../../migrations/0010_b5_trust_guards.sql"),
-        include_str!("../../migrations/0011_cooperative_only.sql"),
-        include_str!("../../migrations/0012_harness_version_evidence.sql"),
-        include_str!("../../migrations/0013_thread_summaries.sql"),
-        include_str!("../../migrations/0014_catch_up_release.sql"),
-        include_str!("../../migrations/0015_preparation_retention.sql"),
-        include_str!("../../migrations/0016_human_receipt_waivers.sql"),
-        include_str!("../../migrations/0017_wake_batches.sql"),
-        include_str!("../../migrations/0018_warning_conditions.sql"),
-        include_str!("../../migrations/0019_thread_names.sql"),
-    ] {
-        db.execute_batch(migration).unwrap();
-    }
-    db.execute_batch("PRAGMA user_version=19; INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);").unwrap();
-    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq,event_offset) VALUES('e1','i','t',1,'info','event1','{}',456,1,0)",[]).unwrap();
-    db.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
-        .unwrap();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('empty','i','topic','goal',123,123)",[]).unwrap();
-    super::super::schema::initialize(&db, || UtcMillis(500)).unwrap();
-    assert_eq!(
-        db.query_row("SELECT last_activity FROM threads WHERE id='t'", [], |r| {
-            r.get::<_, i64>(0)
-        })
-        .unwrap(),
-        456
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT last_activity FROM threads WHERE id='empty'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        123
-    );
-    db.execute_batch("DROP INDEX threads_recent_activity; CREATE INDEX threads_recent_activity ON threads(instance_id,ordinal);").unwrap();
-    assert_eq!(
-        super::super::schema::initialize(&db, || UtcMillis(500))
-            .unwrap_err()
-            .code,
-        ErrorCode::IncompatibleSchema
-    );
-}
-
-#[test]
 fn recent_picker_committed_notices_update_activity_duplicates_and_rollback_do_not() {
     let (store, mut db) = fixture();
     let thread = ThreadId::new("t");
@@ -6324,19 +6266,23 @@ fn presentation_generated_marker_inverse_refuses_wrong_variant_or_body() {
 fn presentation_publication_range_uses_exact_index_and_bounded_sqlite_work() {
     use rusqlite::StatementStatus;
     let sql = crate::store::invitation_content::PUBLICATION_RANGE_SQL;
-    let migration = include_str!("../../migrations/0001_initial.sql");
-    let start = migration.find("CREATE TABLE send_manifests (").unwrap();
-    let end = migration[start..]
-        .find("CREATE INDEX send_manifests_warning_decision")
-        .unwrap()
-        + start;
+    let baseline = crate::store::schema::NODE_BASELINE;
+    let statement = |prefix: &str| {
+        let start = baseline.find(prefix).unwrap();
+        &baseline[start..start + baseline[start..].find(";\n").unwrap() + 1]
+    };
+    let ddl = format!(
+        "{}\n{}",
+        statement("CREATE TABLE send_manifests ("),
+        statement("CREATE UNIQUE INDEX send_manifests_instance_decision")
+    );
     let mut work = Vec::new();
     for count in [128, 8192] {
         // Exact canonical relation/index DDL; unrelated FK relations are not
         // needed for this linked-SQLite query-work witness.
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.pragma_update(None, "foreign_keys", false).unwrap();
-        db.execute_batch(&migration[start..end]).unwrap();
+        db.execute_batch(&ddl).unwrap();
         db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) SELECT 'p'||n,'m'||n,'i','t',n,0,n,0,0,0 FROM n",[count]).unwrap();
         let plan = db
             .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))

@@ -73,4 +73,4 @@ src/protocol/results.rs:pub claude: HarnessState, — frozen-wire: v1 HarnessHea
 src/protocol/results.rs:pub codex: HarnessState, — frozen-wire: v1 HarnessHealth fields and constructor (frozen wire shape)
 src/protocol/watch.rs:NotClaude, — frozen-wire: not_claude wire code and its NotClaude variants (frozen wire shape)
 src/protocol/watch.rs:Self::NotClaude — frozen-wire: not_claude wire code and its NotClaude variants (frozen wire shape)
-src/store/schema.rs:check(harnessin('codex','claude','human')) — history: schema-history shape check of the harness CHECK constraint (historical migration)
+src/store/schema/legacy_chain.rs:check(harnessin('codex','claude','human')) — history: schema-history shape check of the harness CHECK constraint (historical migration)

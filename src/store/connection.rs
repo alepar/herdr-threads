@@ -820,7 +820,7 @@ mod fresh_schema_template {
         let path = exe.with_file_name(format!(
             "{}.schema-v{}-{}-{}.db",
             exe.file_name()?.to_str()?,
-            schema::LATEST_VERSION,
+            schema::NODE_SCHEMA_VERSION,
             meta.len(),
             built.as_nanos()
         ));

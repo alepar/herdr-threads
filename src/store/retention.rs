@@ -13,8 +13,7 @@
 //! and every in-flight stage (`building`/`sealed` with `admission_sequence >
 //! observation_decided_sequence`). The current baseline's
 //! `recovery_baseline_releases` ride with the baseline generation: both tables
-//! survived schema v11 (`migrations/0011_cooperative_only.sql`), so both
-//! clauses are present. Prunable: older superseded published generations,
+//! exist in every node store, so both clauses are present. Prunable: older superseded published generations,
 //! discarded generations, and dead stages (`admission_sequence <= decided`,
 //! which publish rejects).
 use super::{SqliteStore, connection::store_error};

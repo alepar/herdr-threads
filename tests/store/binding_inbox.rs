@@ -4,7 +4,7 @@
 use super::*;
 use crate::ports::StorePort;
 use crate::protocol::{
-    authority::{CallerClaim, CallerRole, Harness, LivenessFingerprint, ObligationRef},
+    authority::{CallerClaim, CallerRole, Harness, ObligationRef},
     commands::{Ack, AdvanceCursors, Join, PermitMutation, SendMessage},
     ids::*,
     results::InboxBatchV2Item,
@@ -126,14 +126,6 @@ fn claim(seat: &str, session: &str, execution: &str, agent: Option<&str>) -> Cal
         target: HostTargetId::new(format!("p{seat}")),
         agent_id: agent.map(AgentId::new),
         liveness: None,
-    }
-}
-/// `claim(..)` carrying a liveness fingerprint, which the daemon requires of every call that
-/// enrolls, reconnects or reopens a binding (decision 9).
-fn claim_fp(seat: &str, session: &str, execution: &str) -> CallerClaim {
-    CallerClaim {
-        liveness: Some(LivenessFingerprint::TEST),
-        ..claim(seat, session, execution, None)
     }
 }
 fn claim_a() -> CallerClaim {
@@ -568,165 +560,6 @@ fn join_gives_every_open_binding_a_cursor_at_the_join_point() {
         .execute("UPDATE memberships SET state='left' WHERE seat_id='c'", [])
         .unwrap();
     assert_eq!(cursor(&fx, &c1), Some(head));
-}
-
-// The store migrates V28 to the current LATEST_VERSION. The guarantee checked: nothing displayed
-// before the upgrade is delivered again, and pending obligations are listed once. The migrated
-// binding is disconnected, so its first call re-adopts it and must carry a fingerprint
-// (spec section 4 Migration V29, shipped as V32, decision 9; the 24 h grace is archival only).
-// Kills: re-showing a message that was already displayed before the upgrade (the migrated
-// binding's cursors start at each thread's head), losing a pending obligation, listing one
-// twice (once as unread and once as an obligation), a re-adoption without a fingerprint being
-// admitted, and a re-adoption enrolling a second binding.
-#[test]
-fn no_duplicate_delivery_after_v29_migration() {
-    let old = crate::store::connection::tests::adapter_historical_database(28);
-    old.execute_batch(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,50);
-         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES
-           ('a','i','resolved','native','pa',1,1,0,1),('b','i','resolved','native','pb',1,1,0,1);
-         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES
-           ('i','pa','b',1,1,0,'fresh','term-pa','inc','coherent_enumeration',1),('i','pb','b',1,1,0,'fresh','term-pb','inc','coherent_enumeration',1);
-         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);
-         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','a','joined'),('t','b','joined');
-         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','a',1,1),('t','b',1,1);
-         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES
-           ('a',1,'pa','b',1,1,'codex','na','00000000-0000-4000-8000-0000000000aa','cooperative_top_level',0,0,'term-pa','inc'),
-           ('b',1,'pb','b',1,1,'codex','nb1','00000000-0000-4000-8000-0000000000b1','cooperative_top_level',0,0,'term-pb','inc');",
-    )
-    .unwrap();
-    // m1 was displayed and ACKed before the upgrade; m2 and m3 are still pending obligations.
-    for (n, id) in ["m1", "m2", "m3"].into_iter().enumerate() {
-        let n = n + 1;
-        old.execute_batch(&format!(
-            "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('i','{id}','t',{n},'ordinary','a','body {n}',{n},{n});
-             INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p-{id}','i','actor','{id}',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
-             INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('p-{id}','t','b',1,300,1);
-             INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('p-{id}','{id}','i','t',{n},{n},{n},0,1,0);"
-        ))
-        .unwrap();
-    }
-    old.execute_batch(
-        "INSERT INTO receipt_state(message_id,seat_id,state,ack_actor_seat_id,ack_generation,ack_observation,acked_at) VALUES ('m1','b','acked','b',1,'cooperative_top_level',5);",
-    )
-    .unwrap();
-    let iso = TestIsolation::new("bi-v29");
-    let path = iso.path("store.db");
-    old.execute("VACUUM INTO ?1", [path.to_str().unwrap()])
-        .unwrap();
-    drop(old);
-    let fx = Fx {
-        context: StoreContext::new(path, Arc::new(FixedClock)),
-        conn: Connection::open_in_memory().unwrap(),
-        iso,
-        sends: 0,
-    };
-    // Opening the store migrates it.
-    let conn = fx.context.open_writer().unwrap();
-    let migrated = binding_of_in(&conn, &claim("b", "nb1", EXEC_B1, None));
-    assert_eq!(
-        read_cursors::cursor_for(&conn, &migrated, &ThreadId::new("t")).unwrap(),
-        Some(3),
-        "the migrated binding starts at the thread head"
-    );
-    let want = vec![Row::Msg("m2".into(), true), Row::Msg("m3".into(), true)];
-    // Until it is re-adopted the migrated binding is disconnected: it is not an accountable
-    // top-level binding, so it lists the same messages without offering to ACK them.
-    let before_readopt = vec![Row::Msg("m2".into(), false), Row::Msg("m3".into(), false)];
-    assert_eq!(
-        page(&fx, Some(&claim("b", "nb1", EXEC_B1, None))),
-        before_readopt
-    );
-    let state = |conn: &Connection| {
-        conn.query_row(
-            "SELECT liveness, disconnect_reason, liveness_pid, liveness_start, migrated FROM occupant_bindings WHERE binding_id=?1",
-            [migrated.as_str()],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, Option<i64>>(2)?,
-                    r.get::<_, Option<i64>>(3)?,
-                    r.get::<_, i64>(4)?,
-                ))
-            },
-        )
-        .unwrap()
-    };
-    let before = state(&conn);
-    assert_eq!(
-        (before.0.as_str(), before.1.as_deref(), before.4),
-        ("disconnected", Some("migrated"), 1)
-    );
-    // The re-adopting call without a fingerprint is refused and changes nothing.
-    let refused = store(&fx)
-        .advance_cursors(
-            &AdvanceCursors {
-                in_turn: false,
-                invitations: Vec::new(),
-                claim: claim("b", "nb1", EXEC_B1, None),
-                operation: OperationId::new("readopt-nofp"),
-                displayed: vec![MessageId::new("m2")],
-            },
-            &budget(),
-        )
-        .unwrap_err();
-    assert_eq!(refused.code, ErrorCode::LivenessFingerprintRequired);
-    assert_eq!(
-        state(&conn),
-        before,
-        "a refused call leaves the binding as migrated"
-    );
-    assert_eq!(
-        read_cursors::cursor_for(&conn, &migrated, &ThreadId::new("t")).unwrap(),
-        Some(3)
-    );
-    // Re-adopting the binding (its first call after the upgrade, with its fingerprint) neither
-    // lowers its cursors nor delivers anything again.
-    let readopter = claim_fp("b", "nb1", EXEC_B1);
-    advance(&fx, &readopter, "readopt", &[&MessageId::new("m2")]);
-    let after = state(&conn);
-    assert_eq!(
-        (after.0.as_str(), after.1.clone(), after.2, after.3),
-        ("connected", None, Some(1), Some(1)),
-        "re-adoption reconnects the migrated binding with the caller's fingerprint"
-    );
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM occupant_bindings WHERE seat_id='b' AND native_session='nb1' AND ended_at IS NULL",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        1,
-        "re-adoption must not enroll a second binding"
-    );
-    assert_eq!(
-        binding_of_in(&conn, &readopter),
-        migrated,
-        "the same binding is re-adopted"
-    );
-    assert_eq!(
-        read_cursors::cursor_for(&conn, &migrated, &ThreadId::new("t")).unwrap(),
-        Some(3)
-    );
-    let rows = page(&fx, Some(&readopter));
-    assert!(
-        !rows.is_empty()
-            && !rows.contains(&Row::Msg("m1".into(), true))
-            && !rows.contains(&Row::Msg("m1".into(), false)),
-        "no duplicate delivery: m1 was displayed and ACKed before the upgrade, got {rows:?}"
-    );
-    assert_eq!(rows, want, "pending obligations are listed once each");
-    // A session the upgrade never saw starts at the seat maximum: the same obligations, once.
-    assert_eq!(page(&fx, Some(&claim_fp("b", "fresh", EXEC_B2))), want);
-}
-
-fn binding_of_in(conn: &Connection, claim: &CallerClaim) -> BindingId {
-    bindings::match_claim(conn, &bindings::BindingKey::from_claim(claim))
-        .unwrap()
-        .unwrap()
-        .binding_id
 }
 
 /// Spec §2: every binding sees its own full lazy stream; one binding's display never hides a lazy
