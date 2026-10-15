@@ -1109,7 +1109,8 @@ seats are not occupiable: a claim, a binding open or connect, a check-in or an o
 home is another node is refused with CallerUnverified "cooperative seat is not local" (enforced by ht-5fr.2.6
 through `seats::is_local_seat`). So no action is ever attributed on this node to a remote seat, and no fact is
 authored for it. Delivery rows, wakes and deadlines are created only for local seats; the sender's node owns the
-deadline and overdue decision for an obligation it authored.
+deadline and overdue decision for an obligation it authored. Catch-up extensions exist only for local bindings, so a remote recipient
+mid catch-up can be reported overdue earlier than a local one would be (accepted limit).
 
 **N6. Peer identity binding.** A link handshake is refused with `auth_failed` when SHA-256(hello pubkey)[0..16]
 differs from the node_uuid the peer claims, and also when a genesis pubkey is already recorded for that node_uuid

@@ -464,6 +464,10 @@ fn warning_unit(
 }
 
 fn attribute(tx: &Connection, warning: &str, seat: &str, event_seq: i64) -> Result<(), ApiError> {
+    // Warning recipients are local: a remote seat's node derives its own copy.
+    if !super::seats::is_local_seat(tx, &crate::protocol::ids::SeatId::new(seat))? {
+        return Ok(());
+    }
     let inserted=tx.execute("INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES(?1,?2,?3) ON CONFLICT(warning_id,seat_id) DO NOTHING",params![warning,seat,event_seq]).map_err(store_error)?;
     if inserted == 0 {
         let prior: i64 = tx
@@ -684,6 +688,9 @@ fn service_notification_unit(
     let Some((ordinal, seat)) = row else {
         return Ok((high_water, true));
     };
+    if !super::seats::is_local_seat(tx, &crate::protocol::ids::SeatId::new(seat.as_str()))? {
+        return Ok((ordinal as u64, false));
+    }
     let inserted=tx.execute(
         "INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES(?1,?2,?3) ON CONFLICT(warning_id,seat_id) DO NOTHING",
         params![message,seat,seq]).map_err(store_error)?;
