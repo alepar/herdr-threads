@@ -124,3 +124,6 @@ mod readme_commands;
 
 #[path = "cli/direct_send.rs"]
 mod direct_send;
+
+#[path = "cli/legacy_purge.rs"]
+mod legacy_purge;

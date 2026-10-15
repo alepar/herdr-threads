@@ -23,6 +23,7 @@ pub mod irc;
 pub mod journal;
 pub mod launch;
 pub mod lazy_display;
+pub(crate) mod legacy;
 pub mod me;
 pub mod output;
 pub mod panes;
@@ -517,6 +518,9 @@ fn run_parsed_in_pane<W: Write>(
     }
     if let CliAction::Doctor { .. } = &parsed.action {
         return doctor::run(&parsed, writer);
+    }
+    if let CliAction::LegacyPurge { confirm, operator } = &parsed.action {
+        return run_legacy_purge(&parsed, *confirm, *operator, writer);
     }
     if let CliAction::Setup(request) = &parsed.action {
         return setup::run(request, &parsed.output, writer);
@@ -1019,6 +1023,9 @@ fn run_parsed_in_pane<W: Write>(
             unreachable!("setup is handled before context resolution")
         }
         CliAction::Skill => unreachable!("skill is handled before context resolution"),
+        CliAction::LegacyPurge { .. } => {
+            unreachable!("legacy purge is handled before context resolution")
+        }
         CliAction::Adapters
         | CliAction::ContractId { .. }
         | CliAction::HarnessVersionNormalize { .. } => {
@@ -2586,6 +2593,55 @@ fn exact_check_in_replay(
 /// The registered agent ID used by the contract and version helpers.
 fn harness_name(harness: crate::harness::context::Harness) -> &'static str {
     harness.as_str()
+}
+
+/// `legacy purge [--confirm] [--operator]`: local only, no daemon call. The
+/// dry run prints the doctor's legacy lines; `--confirm` runs the
+/// [`legacy::LegacyInventory`] preconditions, then removes `<state>/instances`
+/// and nothing else.
+fn run_legacy_purge<W: Write>(
+    parsed: &commands::ParsedCli,
+    confirm: bool,
+    operator: bool,
+    writer: &mut W,
+) -> Result<(), RunError> {
+    let inputs = instance::InstanceInputs::from_process(
+        parsed.output.context.state_dir.as_ref().map(PathBuf::from),
+        parsed.output.context.host.as_ref().map(PathBuf::from),
+    );
+    let (context, ..) = instance::resolve_context_with_selected_paths(&inputs)
+        .map_err(|error| invalid_request(&error.to_string()))?;
+    let Some(inventory) = legacy::LegacyInventory::scan(&context.state_dir) else {
+        writeln!(
+            writer,
+            "no legacy data: {}",
+            crate::daemon::paths::legacy_instances_dir(&context.state_dir).display()
+        )?;
+        return Ok(());
+    };
+    if !confirm {
+        write!(writer, "{}", legacy::report_lines(&inventory.to_json()))?;
+        writeln!(writer, "next: {} --confirm", legacy::REMEDY)?;
+        return Ok(());
+    }
+    let uid = crate::daemon::paths::effective_uid();
+    inventory
+        .purge_preconditions(
+            agent_env_marker(std::env::vars())
+                .map(|marker| format!("environment variable {marker} is set")),
+            operator,
+            uid,
+        )
+        .map_err(|refusal| invalid_request(&refusal.to_string()))?;
+    legacy::purge(&inventory)?;
+    writeln!(
+        writer,
+        "purged {} ({} instances, {}) by operator:local-user:{uid}",
+        inventory.path.display(),
+        inventory.instances,
+        legacy::human_size(inventory.bytes)
+    )?;
+    Ok(())
 }
 
 fn invalid_request(detail: &str) -> RunError {

@@ -106,6 +106,13 @@ pub enum CliAction {
     },
     /// Print the embedded agent skill (`skill` or `--skill`); local only.
     Skill,
+    /// `legacy purge`: report or, with `confirm`, remove the legacy
+    /// `<state>/instances` tree; local only, never contacts the daemon.
+    /// `operator` overrides the agent-evidence guard.
+    LegacyPurge {
+        confirm: bool,
+        operator: bool,
+    },
     /// Local registry discovery; never observes installations or contacts the daemon.
     Adapters,
     /// `contract-id [--harness H]`: the native hook payload contract ids;
@@ -288,6 +295,7 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::TopologyRecover(_)
         | CliAction::MeInit { .. }
         | CliAction::Skill
+        | CliAction::LegacyPurge { .. }
         | CliAction::Adapters
         | CliAction::ContractId { .. }
         | CliAction::Watch(_)
@@ -782,6 +790,11 @@ enum Top {
         #[command(subcommand)]
         command: MeSub,
     },
+    /// Legacy `instances/` data from before the node layout (unused).
+    Legacy {
+        #[command(subcommand)]
+        command: LegacySub,
+    },
     /// Print the agent skill (SKILL.md): how agents should use herdr-threads.
     /// Also available as `--skill`. Local only; never contacts the daemon.
     #[command(long_flag = "skill")]
@@ -937,6 +950,19 @@ enum InternalSub {
         /// Print the keys of the object at the path, one per line (exit 3 when not an object).
         #[arg(long)]
         keys: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum LegacySub {
+    /// List the legacy `instances/` data; with --confirm, remove it (never `node/`).
+    Purge {
+        /// Remove `<state>/instances` instead of listing it.
+        #[arg(long)]
+        confirm: bool,
+        /// With --confirm: override the agent guard as the local account.
+        #[arg(long)]
+        operator: bool,
     },
 }
 
@@ -2860,6 +2886,9 @@ fn parse_cli_in_registry(
         }
         Top::PendingOps(args) => CliAction::PendingOps(page(args)?),
         Top::Skill => CliAction::Skill,
+        Top::Legacy {
+            command: LegacySub::Purge { confirm, operator },
+        } => CliAction::LegacyPurge { confirm, operator },
         Top::WakeOn(args) => CliAction::WakeOn(
             args.value
                 .map(|value| {
