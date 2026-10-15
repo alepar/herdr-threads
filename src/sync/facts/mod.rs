@@ -134,6 +134,7 @@ pub fn with_input<R>(
         own_history: cx.is_own_history(),
         provenance: &provenance,
         suppress: &suppress,
+        scope: Default::default(),
     };
     f(&input).map_err(FactError::from_api)
 }

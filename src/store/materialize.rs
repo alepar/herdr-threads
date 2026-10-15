@@ -27,6 +27,15 @@ use crate::sync::EntityKey;
 /// exists, so a delivery for it must be skipped.
 pub type SuppressFn<'a> = dyn Fn(&Transaction<'_>, &EntityKey) -> Result<bool, ApiError> + 'a;
 
+/// The test-support write-scope marker a [`local_only`] input carries so the
+/// `WriteGuard` authorizer lets its writes through (`()` outside test-support
+/// builds; every other constructor leaves it default).
+#[cfg(feature = "test-support")]
+pub type WriteScope = Option<crate::test_support::write_guard::ScopeGuard>;
+/// See the test-support alias.
+#[cfg(not(feature = "test-support"))]
+pub type WriteScope = ();
+
 /// What a materializer needs to know about the apply it runs in.
 ///
 /// Owns: the local apply instant, the entry's one `decision_seq`, the origin
@@ -53,6 +62,8 @@ pub struct MaterializeInput<'a> {
     pub provenance: &'a str,
     /// Catch-up suppression for a settlement key (`ApplyContext::delivery_suppressed`).
     pub suppress: &'a SuppressFn<'a>,
+    /// Test-support only: held for the input's lifetime by [`local_only`].
+    pub scope: WriteScope,
 }
 
 fn never_suppress(_: &Transaction<'_>, _: &EntityKey) -> Result<bool, ApiError> {
@@ -90,6 +101,10 @@ pub fn local_only(
         own_history: true,
         provenance: "local",
         suppress: &never_suppress,
+        #[cfg(feature = "test-support")]
+        scope: Some(crate::test_support::write_guard::enter_replicated_write_scope()),
+        #[cfg(not(feature = "test-support"))]
+        scope: (),
     })
 }
 

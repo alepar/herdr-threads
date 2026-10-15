@@ -576,6 +576,9 @@ fn apply_entry(
 
     tx.execute_batch("SAVEPOINT apply_entry")
         .map_err(store_error)?;
+    // The write guard lets replicated tables change only while this is held.
+    #[cfg(feature = "test-support")]
+    let _write_scope = crate::test_support::write_guard::enter_replicated_write_scope();
     let handled = match run_handler(tx, sync, decision, ingest_seq, &row, mode) {
         Ok(handled) => handled,
         Err(error) => {
