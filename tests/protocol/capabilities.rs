@@ -361,7 +361,7 @@ fn every_advertised_capability_has_a_handler() {
                 assert_eq!(outcome.unwrap_err().code, ErrorCode::NotFound);
             }
             LAZY_SEND | SEND_TIME_RECEIPTS_V1 => {
-                let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"delivery_mode":if *name == LAZY_SEND { "lazy" } else { "ordinary" },"thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"34750f98bd59fcfc946da45aaabe933b","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"delivery_mode":if *name == LAZY_SEND { "lazy" } else { "ordinary" },"thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"34750f98bd59fcfc946da45aaabe933b","host":"/host.sock","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
                 assert!(command.validate().is_ok());
                 let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
                 assert_eq!(
@@ -387,6 +387,7 @@ fn every_advertised_capability_has_a_handler() {
                         recipient: crate::protocol::ids::SeatId::new("peer"),
                         operation: crate::protocol::ids::OperationId::new("direct-probe"),
                         claim: crate::protocol::authority::CallerClaim {
+                            host: crate::test_support::test_host_locator(),
                             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                             seat: crate::protocol::ids::SeatId::new("sender"),
                             binding_generation: 1,
@@ -441,7 +442,7 @@ fn every_advertised_capability_has_a_handler() {
                 // The command decodes and routes to the domain service (served by
                 // `service::delivery_pull`, tested there); this daemon has none.
                 let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
-                let command: Command = serde_json::from_value(serde_json::json!({"kind":"delivery_pull","args":{"claim":{"instance":"34750f98bd59fcfc946da45aaabe933b","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                let command: Command = serde_json::from_value(serde_json::json!({"kind":"delivery_pull","args":{"claim":{"instance":"34750f98bd59fcfc946da45aaabe933b","host":"/host.sock","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
                 assert!(command.validate().is_ok());
                 assert_eq!(
                     handler
@@ -500,6 +501,7 @@ fn every_advertised_capability_has_a_handler() {
                 let command = Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
                     in_turn: true,
                     claim: crate::protocol::authority::CallerClaim {
+                        host: crate::test_support::test_host_locator(),
                         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                         seat: crate::protocol::ids::SeatId::new("s"),
                         binding_generation: 1,
@@ -531,6 +533,7 @@ fn every_advertised_capability_has_a_handler() {
                         seat: crate::protocol::ids::SeatId::new("s"),
                         lazy: false,
                         claim: Some(crate::protocol::authority::CallerClaim {
+                            host: crate::test_support::test_host_locator(),
                             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                             seat: crate::protocol::ids::SeatId::new("s"),
                             binding_generation: 1,
@@ -577,6 +580,7 @@ fn probe_binding_cursors() {
         in_turn: false,
         invitations: Vec::new(),
         claim: CallerClaim {
+            host: crate::test_support::test_host_locator(),
             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("nobody"),
             binding_generation: 1,
@@ -646,6 +650,7 @@ fn probe_mod_watch(presentation_v2: bool) {
     let request = WatchRequest {
         presentation_v2,
         claim: CallerClaim {
+            host: crate::test_support::test_host_locator(),
             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("nobody"),
             binding_generation: 1,
@@ -1358,6 +1363,7 @@ fn probe_invitation_reject() {
         reason: "Outside assigned role".into(),
         operation: OperationId::new("reject-probe"),
         claim: CallerClaim {
+            host: crate::test_support::test_host_locator(),
             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("s1"),
             binding_generation: 1,
@@ -1889,6 +1895,7 @@ fn probe_thread_join() {
         thread: crate::protocol::ids::ThreadId::new("t1"),
         operation: crate::protocol::ids::OperationId::new("join-probe"),
         claim: crate::protocol::authority::CallerClaim {
+            host: crate::test_support::test_host_locator(),
             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: crate::protocol::ids::SeatId::new("s1"),
             binding_generation: 1,
@@ -1917,7 +1924,7 @@ fn probe_thread_join() {
 
 #[test]
 fn invitation_confirmation_wire_preserves_legacy_and_distinguishes_modern_requests() {
-    let legacy = r#"{"kind":"invite","args":{"thread":"t","seat":"s","deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}}"#;
+    let legacy = r#"{"kind":"invite","args":{"thread":"t","seat":"s","deadline_millis":null,"operation":"op","claim":{"instance":"i","host":"/host.sock","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}}"#;
     let original: serde_json::Value = serde_json::from_str(legacy).unwrap();
     let historical: Command = serde_json::from_str(legacy).unwrap();
     assert_eq!(serde_json::to_string(&historical).unwrap(), legacy);
@@ -1928,7 +1935,7 @@ fn invitation_confirmation_wire_preserves_legacy_and_distinguishes_modern_reques
         .collect::<String>();
     assert_eq!(
         digest_hex,
-        "828be585cb68fe75bc8decd1a9d5e23f5f8c5e2da738fb9bb4bb175e8430d3ad"
+        "f0ad00529a4ca051d582980f98d952bf1f8a33ea1b4d85a4b5964a8509a3cae1"
     );
     for mode in ["lazy", "require_ack"] {
         let mut modern = original.clone();
@@ -2093,6 +2100,7 @@ fn presentation_capability_routes_use_configured_domain() {
     let check_in = |seat: &str| {
         let session = format!("session-{seat}");
         let claim = CallerClaim {
+            host: crate::test_support::test_host_locator(),
             instance: instance.to_string(),
             seat: SeatId::new(seat),
             binding_generation: 0,

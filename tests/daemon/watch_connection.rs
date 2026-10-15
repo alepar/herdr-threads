@@ -124,6 +124,7 @@ impl LocalService for WatchFake {
 
 fn claim() -> CallerClaim {
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "ignored".into(),
         seat: SeatId::new("seat-w"),
         binding_generation: 3,

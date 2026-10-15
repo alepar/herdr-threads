@@ -1095,12 +1095,14 @@ where
             &selection.target,
             generation,
         );
-        let claim = bridge::caller_claim(&current).map_err(|_| CallerFailure::NoBinding)?;
+        let host = context.claim_host().map_err(|_| CallerFailure::Other)?;
+        let claim = bridge::caller_claim(&current, host).map_err(|_| CallerFailure::NoBinding)?;
         let claim = own_session_claim(claim, session, Some(env.fingerprint))?;
         return Ok((claim, selection.seat, *instance));
     }
-    let contexts =
-        seat_contexts(paths, *instance, &selection.seat).map_err(|_| CallerFailure::Other)?;
+    let host = context.claim_host().map_err(|_| CallerFailure::Other)?;
+    let contexts = seat_contexts(paths, *instance, &host, &selection.seat)
+        .map_err(|_| CallerFailure::Other)?;
     let current = contexts
         .current()
         .map_err(|_| CallerFailure::Other)?
@@ -1111,7 +1113,7 @@ where
     ) {
         return Err(CallerFailure::NoPushChannel);
     }
-    let claim = bridge::caller_claim(&current).map_err(|_| CallerFailure::NoBinding)?;
+    let claim = bridge::caller_claim(&current, host).map_err(|_| CallerFailure::NoBinding)?;
     let claim = own_session_claim(claim, session, None)?;
     Ok((claim, selection.seat, *instance))
 }

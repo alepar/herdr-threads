@@ -256,6 +256,7 @@ fn execute_owned(argv: &[String], client: &impl LocalClient) -> (Result<(), RunE
         "seat-1",
         Duration::from_secs(1),
     )
+    .map(|journal| journal.with_host(herdr_threads::test_support::test_host_locator()))
     .unwrap();
     let parsed = parse_argv(argv.iter().map(String::as_str)).unwrap();
     let _guard = PresentationGuard::enter(parsed.presentation, &parsed.output);

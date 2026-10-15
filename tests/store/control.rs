@@ -942,6 +942,7 @@ fn first_published_baseline_hold_survives_later_snapshots_and_operator_release()
     )
     .unwrap();
     let command = OperatorFreshSeat {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("new-target"),
         operation: OperationId::new("release-baseline"),
     };
@@ -1547,6 +1548,7 @@ fn snapshot_stage_is_hidden_bounded_and_allows_a_foreground_writer() {
 
 fn claim(seat: &str) -> CallerClaim {
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new(seat),
         binding_generation: 1,
@@ -1695,6 +1697,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
         expected_revision: requirement.revision,
         operation: OperationId::new("accept-required-two"),
         claim: CallerClaim {
+            host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s2"),
             ..claim("s2")
         },
@@ -2026,6 +2029,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
         expected_revision: reverse_requirement.revision,
         operation: OperationId::new("accept-required-reverse"),
         claim: CallerClaim {
+            host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s2"),
             ..claim("s2")
         },
@@ -2198,6 +2202,7 @@ fn native_ordinary_offer_after_required_offer_can_be_accepted_after_join() {
         expected_revision: req.revision,
         operation: OperationId::new("accept-required-native-offer"),
         claim: CallerClaim {
+            host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s2"),
             ..claim("s2")
         },
@@ -4511,6 +4516,7 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
     drop(conn);
     let mut conn = context.open_writer().unwrap();
     let ordinary = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("p1"),
         operation: OperationId::new("resolve"),
     };
@@ -4531,6 +4537,7 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
         ErrorCode::TargetUnresolved
     );
     let fresh = OperatorFreshSeat {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("p1"),
         operation: OperationId::new("fresh"),
     };
@@ -4672,6 +4679,7 @@ fn ordinary_allocation_replay_returns_original_seat_after_retirement() {
         .unwrap()
     );
     let request = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("p3"),
         operation: OperationId::new("resolve-once"),
     };
@@ -4762,6 +4770,7 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
     let stage = staged_test_snapshot(&context, &mut conn, admission, &first, &budget);
     seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
     let request = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("p3"),
         operation: OperationId::new("ordinary-empty-proof"),
     };
@@ -5551,6 +5560,7 @@ fn operator_rebind_rejects_exhausted_binding_generation() {
     .unwrap();
     conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','free','b',1,1,1,100,'fresh','term-'||'free','inc','coherent_enumeration',1)",[]).unwrap();
     let command = OperatorRebind {
+        host: crate::test_support::test_host_locator(),
         seat: SeatId::new("s1"),
         target: HostTargetId::new("free"),
         operation: OperationId::new("rebind-exhausted"),
@@ -6482,6 +6492,7 @@ fn review_operator_rebind_new_incarnation_then_absence() {
             .unwrap()
     );
     let command = OperatorRebind {
+        host: crate::test_support::test_host_locator(),
         seat: SeatId::new("s1"),
         target: fresh.target.clone(),
         operation: OperationId::new("review-rebind"),
@@ -6632,6 +6643,7 @@ fn ordinary_resolution_guard_rejects_unqualified_or_mismatched_read() {
     )
     .unwrap();
     let request = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("pane-new"),
         operation: OperationId::new("resolve"),
     };
@@ -6735,6 +6747,7 @@ fn ordinary_resolution_returns_existing_owner_and_replays_through_host_loss_and_
     use crate::protocol::{commands::ResolveSeat, results::ErrorCode};
     let (context, mut conn, path, store, observation, budget) = ordinary_resolution_fixture();
     let first = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: observation.target.clone(),
         operation: OperationId::new("first-resolve"),
     };
@@ -6873,6 +6886,7 @@ fn ordinary_resolution_two_keys_share_allocation_and_operation_namespace() {
         let barrier = barrier.clone();
         let budget = budget.clone();
         let request = ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: current.target.clone(),
             operation: OperationId::new(key),
         };
@@ -6912,6 +6926,7 @@ fn ordinary_resolution_two_keys_share_allocation_and_operation_namespace() {
         2
     );
     let replay = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: current.target.clone(),
         operation: OperationId::new("concurrent-a"),
     };
@@ -6950,6 +6965,7 @@ fn final_resolved_target_check_rejects_hold_retirement_and_changed_structure() {
     ] {
         let (context, mut conn, path, store, observation, budget) = ordinary_resolution_fixture();
         let request = ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: observation.target.clone(),
             operation: OperationId::new("resolve"),
         };
@@ -7109,6 +7125,7 @@ fn ordinary_resolution_enforces_durable_allocation_classes_after_reopen() {
             observation.terminal = Some(TerminalId::new("terminal-created-after"));
         }
         let request = ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: observation.target.clone(),
             operation: OperationId::new("resolve"),
         };
@@ -7170,6 +7187,7 @@ fn ordinary_resolution_cancelled_writer_wait_has_no_seat_or_operation_effect() {
     use crate::protocol::{commands::ResolveSeat, results::ErrorCode};
     let (_context, conn, path, store, observation, budget) = ordinary_resolution_fixture();
     let request = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: observation.target.clone(),
         operation: OperationId::new("cancelled-resolve"),
     };
@@ -7938,6 +7956,7 @@ fn operator_fresh_seat_lifts_when_no_unresolved_remains() {
     )
     .unwrap();
     let command = OperatorFreshSeat {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("new-target"),
         operation: OperationId::new("fresh-lift"),
     };
@@ -7978,6 +7997,7 @@ fn operator_rebind_of_last_unresolved_seat_lifts_holds_in_same_transaction() {
     )
     .unwrap();
     let rebind = |operation: &str| OperatorRebind {
+        host: crate::test_support::test_host_locator(),
         seat: SeatId::new("s1"),
         target: HostTargetId::new("new-target"),
         operation: OperationId::new(operation),
@@ -8523,6 +8543,7 @@ fn b5_replace_request(
         protocol::commands::{OperatorCommand, OperatorReplace},
     };
     let command = OperatorReplace {
+        host: crate::test_support::test_host_locator(),
         seat: SeatId::new(old),
         target: HostTargetId::new(pane),
         replace: SeatId::new(new),
@@ -8688,6 +8709,7 @@ fn rebind_onto_owned_target_lists_both_resolutions() {
     };
     let (context, mut conn, path, _) = b5_replace_fixture();
     let command = OperatorRebind {
+        host: crate::test_support::test_host_locator(),
         seat: SeatId::new("s1"),
         target: HostTargetId::new("s2"),
         operation: OperationId::new("rebind-owned"),
@@ -8755,6 +8777,7 @@ fn c1_command(
     operation: &str,
 ) -> crate::protocol::commands::ContinuityCheckIn {
     crate::protocol::commands::ContinuityCheckIn {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new(target),
         harness: Harness::Claude,
         native_session: NativeSessionId::new(session),

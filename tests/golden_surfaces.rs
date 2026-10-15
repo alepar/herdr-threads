@@ -1173,6 +1173,7 @@ impl Topology {
             .unwrap();
         fs::set_permissions(&contexts, fs::Permissions::from_mode(0o700)).unwrap();
         ContextJournal::open(&contexts, instance, "sender", Duration::from_secs(1))
+            .map(|journal| journal.with_host(herdr_threads::test_support::test_host_locator()))
             .unwrap()
             .install_reattached(OccupantContext {
                 format_version: 1,

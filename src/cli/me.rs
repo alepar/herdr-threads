@@ -50,6 +50,7 @@ fn resolve_seat(
     client: &crate::client::local::LocalSocketClient,
     paths: &NodePaths,
     instance: crate::node::NodeUuid,
+    host: &crate::protocol::ids::HostLocator,
     pane: &HostTargetId,
     clock: &dyn Clock,
 ) -> Result<SeatId, RunError> {
@@ -63,6 +64,7 @@ fn resolve_seat(
         },
         journal::SemanticMutation::ResolveSeat {
             target: pane.clone(),
+            host: host.clone(),
         },
         clock.utc_now().0,
         || {
@@ -197,9 +199,10 @@ pub(crate) fn run_me_init<W: Write>(
         return Err(agent_evidence_refusal(pane.as_str(), &evidence));
     }
     let (instance, _, client) = connect(paths, clock)?;
+    let host = context.claim_host().map_err(super::context_error)?;
     let seat = match pane_seat(&client, &parsed.output, &pane, clock.as_ref())? {
         Some(seat) => seat,
-        None => resolve_seat(&client, paths, instance, &pane, clock.as_ref())?,
+        None => resolve_seat(&client, paths, instance, &host, &pane, clock.as_ref())?,
     };
     let selection = CooperativeSelection {
         seat: seat.clone(),
@@ -223,7 +226,7 @@ pub(crate) fn run_me_init<W: Write>(
         return Err(mapping_error("service returned no seat inspection"));
     };
     let generation = selected_generation(&selection, &inspection)?;
-    let contexts = seat_contexts(paths, instance, &seat)?;
+    let contexts = seat_contexts(paths, instance, &host, &seat)?;
     let journal = journal::Journal::open(paths.node_dir.join("intents"))?;
     if operator {
         discard_pending_human_event(&journal, &contexts)?;
@@ -241,6 +244,7 @@ pub(crate) fn run_me_init<W: Write>(
         &selection,
         paths,
         instance,
+        &host,
         &client,
         clock.as_ref(),
         &mut sink,

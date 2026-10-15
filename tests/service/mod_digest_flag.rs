@@ -184,6 +184,7 @@ fn domain_leaves_mod_channel_live_false_without_a_channel() {
 /// A non-human claim for `session` of seat `s` (the SessionStart / hook caller).
 fn claim(session: &str) -> CallerClaim {
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s"),
         binding_generation: 0,

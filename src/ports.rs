@@ -4491,6 +4491,7 @@ mod allocation_tests {
             completed_at_mono: MonoInstant(1),
         };
         let fresh = OperatorFreshSeat {
+            host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("p1"),
             operation: OperationId::new("o1"),
         };
@@ -4507,6 +4508,7 @@ mod allocation_tests {
             OperatorRequest::FreshSeat(..)
         ));
         let rebind = OperatorRebind {
+            host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s1"),
             target: HostTargetId::new("p2"),
             operation: OperationId::new("o2"),
@@ -4562,6 +4564,7 @@ mod allocation_tests {
             evidence_kind: EvidenceKind::NativeCurrentTarget,
         };
         let request = ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("w1:p2"),
             operation: OperationId::new("resolve"),
         };
@@ -4673,6 +4676,7 @@ mod allocation_tests {
         let target = HostTargetId::new("p1");
         let command = OperatorFreshSeat {
             target,
+            host: crate::test_support::test_host_locator(),
             operation: OperationId::new("o1"),
         };
         let guard = OperatorTargetGuard::try_new(
@@ -4698,6 +4702,7 @@ mod allocation_tests {
     fn operator_request_rejects_wrong_command_target_or_instance_without_consuming() {
         let target = HostTargetId::new("p1");
         let original = OperatorRebind {
+            host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s1"),
             target: target.clone(),
             operation: OperationId::new("o1"),
@@ -4710,6 +4715,7 @@ mod allocation_tests {
         .unwrap();
         let mut request = OperatorRequest::Rebind(
             OperatorRebind {
+                host: crate::test_support::test_host_locator(),
                 seat: SeatId::new("s1"),
                 target: HostTargetId::new("p2"),
                 operation: OperationId::new("o1"),
@@ -4740,6 +4746,7 @@ mod allocation_tests {
     fn operator_request_rejects_different_command_on_same_target() {
         let target = HostTargetId::new("p1");
         let original = OperatorRebind {
+            host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s1"),
             target: target.clone(),
             operation: OperationId::new("o1"),
@@ -4752,6 +4759,7 @@ mod allocation_tests {
         .unwrap();
         let mut request = OperatorRequest::Rebind(
             OperatorRebind {
+                host: crate::test_support::test_host_locator(),
                 seat: SeatId::new("s1"),
                 target: target.clone(),
                 operation: OperationId::new("o2"),
@@ -4787,6 +4795,7 @@ mod allocation_tests {
         let target = HostTargetId::new("p1");
         let command = OperatorFreshSeat {
             target,
+            host: crate::test_support::test_host_locator(),
             operation: OperationId::new("o1"),
         };
         let guard = OperatorTargetGuard::try_new(
@@ -4833,6 +4842,7 @@ mod allocation_tests {
         let target = HostTargetId::new("p1");
         let command = OperatorFreshSeat {
             target,
+            host: crate::test_support::test_host_locator(),
             operation: OperationId::new("o1"),
         };
         let guard = OperatorTargetGuard::try_new(
@@ -4852,6 +4862,7 @@ mod allocation_tests {
     #[test]
     fn structural_proof_needs_fresh_ordered_verified_evidence() {
         let request = ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("p1"),
             operation: OperationId::new("op1"),
         };
@@ -5149,6 +5160,7 @@ mod contract_adapter_tests {
             expected_epoch: Some(4),
         };
         let request = ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("p1"),
             operation: OperationId::new("op1"),
         };

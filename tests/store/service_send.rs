@@ -560,6 +560,7 @@ fn reads_and_notify_create_no_acks() {
     .unwrap();
     // A check-in by a recipient presents the pending item and acknowledges nothing.
     let claim = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s1"),
         binding_generation: 1,

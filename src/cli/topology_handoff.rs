@@ -147,6 +147,7 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
     .map_err(fail)?;
     let scope = super::journal::IntentScope::Cooperative {
         instance: inputs.claim.instance.clone(),
+        host: inputs.claim.host.clone(),
         seat: inputs.claim.seat.clone(),
     };
     let identity = AutomaticBootstrapIdentity::new(
@@ -430,6 +431,7 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
         compound: compound.clone(),
         scope: super::journal::IntentScope::Cooperative {
             instance: inputs.claim.instance.clone(),
+            host: inputs.claim.host.clone(),
             seat: inputs.claim.seat.clone(),
         },
         claim: inputs.claim.clone(),

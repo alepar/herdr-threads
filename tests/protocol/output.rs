@@ -1154,7 +1154,7 @@ fn compact_inbox_pending_participants_and_check_in_carry_no_json() {
     );
     let check_in = compact_text(serde_json::json!({"kind":"checked_in","data":{
         "context_disposition":"current",
-        "context":{"instance":"i","seat":"seat-a","binding_generation":2,"role":"top_level","harness":"claude",
+        "context":{"instance":"i","host":"/host.sock","seat":"seat-a","binding_generation":2,"role":"top_level","harness":"claude",
                    "native_session":"plugin_context:e","execution":"00000000-0000-4000-8000-000000000001","target":"w1:p1"},
         "seat":"seat-a","offered_through":"31","warning_count":0,"warning_count_has_more":false,
         "warnings":page(serde_json::json!([])),"inbox":page(inbox_items)
@@ -1567,7 +1567,7 @@ fn human_guidance_check_in_ready_command_preserves_namespace_and_payload() {
     };
     let result: CommandResult = serde_json::from_value(serde_json::json!({"kind":"checked_in","data":{
         "context_disposition":"historical",
-        "context":{"instance":"i","seat":"s","binding_generation":2,"role":"top_level","harness":"human",
+        "context":{"instance":"i","host":"/host.sock","seat":"s","binding_generation":2,"role":"top_level","harness":"human",
         "native_session":"plugin_context:human","execution":"00000000-0000-4000-8000-000000000001","target":"p"},
         "seat":"s","offered_through":"31","warning_count":0,"warning_count_has_more":false,
         "warnings":page(serde_json::json!([])),"inbox":page(serde_json::json!([{

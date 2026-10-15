@@ -582,6 +582,7 @@ mod tests {
         };
         let guard = BootstrapAttachmentGuard::try_new(
             &crate::protocol::commands::ResolveSeat {
+                host: crate::test_support::test_host_locator(),
                 target: observation.target.clone(),
                 operation: id.payload.resolve_key.clone(),
             },
@@ -725,7 +726,7 @@ mod tests {
             ),
             (
                 "decision",
-                "3670e24c2258bb71fcac461bf03252cfd5f94d6fb346f3e68fe93da870427f44",
+                "1893c2d014394553312a07e67d81503ae0a8e2a65a0884e53faba72a853eb9dc",
             ),
             (
                 "disposition",
@@ -733,19 +734,19 @@ mod tests {
             ),
             (
                 "identity",
-                "275b792ea3985867c2b759604bd163988779a9e4064acdad40381ea620656809",
+                "4f02df1449de09c8274d4706616ec559ebe441bd188db58b134d938adfbd733a",
             ),
             (
                 "operation",
-                "a3e52e53fa18b6f87522a3b2c59ad29a89e25290ec35ca671c17b97be32fd5ee",
+                "c9123d68b43dc528ef3ef15339ac84493eff2f756c6b201b7d5b58c6acaf2843",
             ),
             (
                 "request",
-                "ba88e8c0bd5a43da3f1aa1c7a4c84541afcea6a309a64a4049b525e8697c840f",
+                "3af594a4cc098f654ecb71b5ccda4f8e9655750500ba20cf5af9a2b0df926f34",
             ),
             (
                 "semantic",
-                "d2568486c6c8222a257a97a6e48d28118d823097cac4427a6634058e27558655",
+                "536013471d8761b639c339d18c350f337c9e7505a2c15f62c906d1e9ddcc41fd",
             ),
         ]);
         for (name, hash) in hashes {

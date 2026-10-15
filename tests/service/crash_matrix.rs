@@ -201,6 +201,7 @@ impl Matrix {
     fn check_in(&self, seat: &str) -> CallerClaim {
         let n = self.executions.fetch_add(1, Ordering::SeqCst);
         let claim = CallerClaim {
+            host: crate::test_support::test_host_locator(),
             instance: self.instance.clone(),
             seat: SeatId::new(seat),
             binding_generation: 0,
@@ -1810,6 +1811,7 @@ impl Matrix {
         for pane in ["pane-s", "pane-r"] {
             let CommandResult::SeatResolved(seat) = self
                 .handle(Command::ResolveSeat(ResolveSeat {
+                    host: crate::test_support::test_host_locator(),
                     target: HostTargetId::new(pane),
                     operation: OperationId::new(format!("resolve-{pane}")),
                 }))
@@ -1827,6 +1829,7 @@ impl Matrix {
                 .unwrap()
                 .1 = Some(execution.clone());
             let claim = CallerClaim {
+                host: crate::test_support::test_host_locator(),
                 instance: self.instance.clone(),
                 seat: seat.clone(),
                 binding_generation: 0,
@@ -2003,6 +2006,7 @@ impl Matrix {
             &seat.selection,
             &seat.paths,
             seat.instance,
+            &crate::test_support::test_host_locator(),
             &MatrixClient(self),
             self.clock.as_ref(),
             &mut output,
@@ -2018,9 +2022,13 @@ impl Matrix {
             seat.selection.seat.as_str(),
             Duration::from_secs(1),
         )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
         .unwrap();
-        crate::harness::bridge::caller_claim(&contexts.current().unwrap().expect("context"))
-            .unwrap()
+        crate::harness::bridge::caller_claim(
+            &contexts.current().unwrap().expect("context"),
+            crate::test_support::test_host_locator(),
+        )
+        .unwrap()
     }
 
     fn seat_generation(&self, seat: &SeatId) -> i64 {
@@ -2349,6 +2357,7 @@ fn operator_repair_invalidates_pre_repair_context() {
     let CommandResult::OperatorRebound(rebound) = m
         .handle(Command::OperatorRebind(
             crate::protocol::commands::OperatorRebind {
+                host: crate::test_support::test_host_locator(),
                 seat: pair.r.seat.clone(),
                 target: pair.r.target.clone(),
                 operation: OperationId::new("repair-r"),
@@ -2418,6 +2427,7 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
     assert_eq!((retirements, error), (0, None));
     let CommandResult::SeatResolved(seat_u) = m
         .handle(Command::ResolveSeat(ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("pane-u"),
             operation: OperationId::new("resolve-pane-u"),
         }))
@@ -2433,6 +2443,7 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
     };
     assert_eq!(bindings_u(), 0, "resolved but never registered");
     let u = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: m.instance.clone(),
         seat: seat_u.clone(),
         binding_generation: 0,
@@ -2646,6 +2657,7 @@ fn startup_evidence_health_recomputes_after_operator_repair_and_reregistration()
     let CommandResult::OperatorRebound(rebound) = m
         .handle(Command::OperatorRebind(
             crate::protocol::commands::OperatorRebind {
+                host: crate::test_support::test_host_locator(),
                 seat: pair.s.seat.clone(),
                 target: pair.s.target.clone(),
                 operation: OperationId::new("repair-s"),

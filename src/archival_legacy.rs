@@ -851,6 +851,7 @@ impl Source {
                 if header.scope
                     != (IntentScope::Cooperative {
                         instance: self.instance.clone(),
+                        host: claim.host.clone(),
                         seat: claim.seat.clone(),
                     })
                     || claim.instance != self.instance

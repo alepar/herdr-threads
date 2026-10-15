@@ -7,6 +7,7 @@ use crate::protocol::{
 
 fn claim() -> CallerClaim {
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "i".into(),
         seat: SeatId::new("s"),
         binding_generation: 1,
@@ -622,6 +623,7 @@ fn cli_inbox_prints_first_contact_once() {
         &context.seat,
         std::time::Duration::from_secs(1),
     )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
     .unwrap();
     contexts.install_reattached(context).unwrap();
     let journal = crate::cli::journal::Journal::open(private("intents")).unwrap();

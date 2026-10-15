@@ -315,6 +315,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         assert_eq!(required.revision, 1);
         assert_eq!(required.state, herdr_threads::protocol::service::RequirementState::Pending);
         let native = CallerClaim {
+            host: herdr_threads::test_support::test_host_locator(),
             instance: instance.to_string(), seat: SeatId::new("pending"), binding_generation: 0,
             role: CallerRole::TopLevel, harness: Harness::Codex,
             native_session: NativeSessionId::new("session-pending"),
@@ -396,6 +397,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         db.execute("UPDATE seats SET target_id='pane-member-1',target_generation=0 WHERE id='member-1'", []).unwrap();
         db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'pane-member-1','fixture-host',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'pane-member-1','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
         let recipient_claim = CallerClaim {
+            host: herdr_threads::test_support::test_host_locator(),
             instance: instance.to_string(), seat: SeatId::new("member-1"), binding_generation: 1,
             role: CallerRole::TopLevel, harness: Harness::Codex,
             native_session: NativeSessionId::new("session-member-1"),

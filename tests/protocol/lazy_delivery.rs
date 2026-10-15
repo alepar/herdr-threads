@@ -1,6 +1,6 @@
 use herdr_threads::protocol::commands::Command;
 
-const ORDINARY: &str = r#"{"kind":"send_message","args":{"thread":"t","body":"hello","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"34750f98bd59fcfc946da45aaabe933b","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}}"#;
+const ORDINARY: &str = r#"{"kind":"send_message","args":{"thread":"t","body":"hello","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"34750f98bd59fcfc946da45aaabe933b","host":"/host.sock","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}}"#;
 
 fn lazy_value() -> serde_json::Value {
     let mut value: serde_json::Value = serde_json::from_str(ORDINARY).unwrap();

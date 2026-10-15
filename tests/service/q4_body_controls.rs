@@ -76,6 +76,7 @@ impl BodyFixture {
             .with_cooperative_owner(501, Arc::new(FairWriter::new(32)));
         let enroll = |seat: &str, target: &str, session: &str, pid: u32| {
             let claim = CallerClaim {
+                host: crate::test_support::test_host_locator(),
                 instance: instance.to_string(),
                 seat: SeatId::new(seat),
                 binding_generation: 1,
@@ -285,6 +286,7 @@ impl BodyFixture {
             claim.seat.as_str(),
             Duration::from_millis(20),
         )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
         .unwrap()
         .with_agent_caller(context, claim.liveness.unwrap())
         .unwrap();

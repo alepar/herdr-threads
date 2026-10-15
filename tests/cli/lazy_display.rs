@@ -27,6 +27,7 @@ impl Fixture {
             root,
             journal,
             claim: CallerClaim {
+                host: herdr_threads::test_support::test_host_locator(),
                 instance: "instance".into(),
                 seat: SeatId::new("seat"),
                 binding_generation: 1,
@@ -300,6 +301,7 @@ fn run_to_writer<C: herdr_threads::ports::LocalClient, W: Write>(
         &context.seat,
         std::time::Duration::from_secs(1),
     )
+    .map(|journal| journal.with_host(herdr_threads::test_support::test_host_locator()))
     .unwrap();
     contexts.install_reattached(context).unwrap();
     herdr_threads::cli::run_cooperative(
@@ -414,6 +416,7 @@ fn lazy_display_default_text_routes_v2_settles_complete_body() {
     assert_eq!(
         completion.claim,
         CallerClaim {
+            host: herdr_threads::test_support::test_host_locator(),
             instance: herdr_threads::node::NodeUuid::from_u128(1).to_string(),
             seat: SeatId::new("seat"),
             binding_generation: 1,

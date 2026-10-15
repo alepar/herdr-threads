@@ -19,6 +19,11 @@ use std::{
     time::Duration,
 };
 
+/// The Herdr server of the isolated fixture: the namespace's `host_endpoint`.
+fn isolated_host() -> herdr_threads::protocol::ids::HostLocator {
+    herdr_threads::protocol::ids::HostLocator::parse("/isolated-host.sock").unwrap()
+}
+
 struct Fixture {
     root: PathBuf,
     journal: Journal,
@@ -118,8 +123,9 @@ impl Fixture {
         std::fs::create_dir(&directory).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let contexts =
-            ContextJournal::open(&directory, instance, "seat-a", Duration::from_secs(1)).unwrap();
+        let contexts = ContextJournal::open(&directory, instance, "seat-a", Duration::from_secs(1))
+            .map(|journal| journal.with_host(isolated_host()))
+            .unwrap();
         contexts
             .install_reattached(OccupantContext {
                 format_version: 1,
@@ -215,6 +221,7 @@ impl Write for LostOutput {
 // Kills: admitting a new ordinary direct compound from Direct/Ensure support
 // alone, mutating the pair before send-time receipt semantics are negotiated.
 #[test]
+
 fn modern_ordinary_direct_send_requires_receipt_capability_before_any_effect() {
     use herdr_threads::protocol::{
         capabilities::{DIRECT_THREADS_V1, ENSURE_CREATION_POLICY_V1},
@@ -435,6 +442,7 @@ fn record_historical_direct_receipt_control(
         send_key: OperationId::new(uuid::Uuid::new_v4().to_string()),
     };
     let scope = IntentScope::Cooperative {
+        host: isolated_host(),
         instance: claim.instance.clone(),
         seat: claim.seat.clone(),
     };
@@ -792,7 +800,8 @@ fn assert_direct_send_frozen_claim_survives_changed_caller(
 
     let mut f = Fixture::new(false);
     let original_context = f.contexts.current().unwrap().unwrap();
-    let mut expected = herdr_threads::harness::bridge::caller_claim(&original_context).unwrap();
+    let mut expected =
+        herdr_threads::harness::bridge::caller_claim(&original_context, isolated_host()).unwrap();
     expected.liveness = fingerprint;
     let open_contexts = || {
         ContextJournal::open(
@@ -801,6 +810,7 @@ fn assert_direct_send_frozen_claim_survives_changed_caller(
             &original_context.seat,
             Duration::from_secs(1),
         )
+        .map(|journal| journal.with_host(isolated_host()))
         .unwrap()
     };
     if let Some(fingerprint) = fingerprint {
@@ -1638,6 +1648,7 @@ fn ensure_command(
         recipient: SeatId::new("seat-b"),
         operation: OperationId::new(operation),
         claim: CallerClaim {
+            host: isolated_host(),
             instance: herdr_threads::node::NodeUuid::from_u128(1).to_string(),
             seat: SeatId::new("seat-a"),
             binding_generation: 1,

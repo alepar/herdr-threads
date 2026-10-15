@@ -143,6 +143,7 @@ where
     };
     let scope = IntentScope::Cooperative {
         instance: candidates.claim.instance.clone(),
+        host: candidates.claim.host.clone(),
         seat: candidates.claim.seat.clone(),
     };
     let human = candidates.claim.harness == crate::protocol::authority::Harness::Human;

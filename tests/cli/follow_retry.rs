@@ -295,8 +295,9 @@ fn nick_cache_render_path_takes_no_context_lock() {
     lock.lock().unwrap();
 
     // Control: the locking reader cannot get in while the lock is held.
-    let journal =
-        ContextJournal::open(&dir, instance, "seat-a", Duration::from_millis(50)).unwrap();
+    let journal = ContextJournal::open(&dir, instance, "seat-a", Duration::from_millis(50))
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
+        .unwrap();
     assert!(
         journal.current().is_err(),
         "the fixture must really hold the lock"
@@ -434,6 +435,7 @@ impl CompletedRetryFixture {
             ),
         };
         let claim = CallerClaim {
+            host: crate::test_support::test_host_locator(),
             instance: "000000000000000000000000000000b1".into(),
             seat: SeatId::new("sender"),
             target: HostTargetId::new("w1:p1"),
@@ -474,6 +476,7 @@ impl CompletedRetryFixture {
         let reference = journal
             .record(
                 IntentScope::Cooperative {
+                    host: crate::test_support::test_host_locator(),
                     instance: claim.instance.clone(),
                     seat: claim.seat.clone(),
                 },
@@ -654,7 +657,13 @@ fn completed_agent_retry_survives_live_human_binding() {
     .unwrap();
     let paths = crate::daemon::paths::NodePaths::resolve_read_only(&runtime.state_dir).unwrap();
     let instance = crate::node::NodeUuid::parse_str(&fixture.claim.instance).unwrap();
-    let live = crate::cli::seat_contexts(&paths, instance, &fixture.claim.seat).unwrap();
+    let live = crate::cli::seat_contexts(
+        &paths,
+        instance,
+        &crate::test_support::test_host_locator(),
+        &fixture.claim.seat,
+    )
+    .unwrap();
     live.install_reattached(OccupantContext {
         format_version: 1,
         instance,

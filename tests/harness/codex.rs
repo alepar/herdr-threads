@@ -583,6 +583,7 @@ fn lifecycle_sources_map_and_clear_or_resume_reject_stale_session_requests() {
         let instance = crate::node::NodeUuid::new_v4();
         let journal =
             ContextJournal::open(&dir, instance, "seat", std::time::Duration::from_millis(50))
+                .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
                 .unwrap();
         let event =
             codex::parse_event_for_version(&session_start(source, "new-session"), "ev", &pinned())
@@ -610,7 +611,9 @@ fn failed_startup_then_fresh_root_callback_keeps_the_frozen_request() {
     let dir = private_dir("failed-start");
     let instance = crate::node::NodeUuid::new_v4();
     let journal =
-        ContextJournal::open(&dir, instance, "seat", std::time::Duration::from_millis(50)).unwrap();
+        ContextJournal::open(&dir, instance, "seat", std::time::Duration::from_millis(50))
+            .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
+            .unwrap();
     let first =
         codex::parse_event_for_version(&session_start("startup", "s1"), "start-1", &pinned())
             .unwrap();
@@ -711,6 +714,7 @@ fn concurrent_children_stay_distinct_and_never_gain_root_authority() {
         "seat",
         std::time::Duration::from_millis(50),
     )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
     .unwrap();
     for event in events.iter().filter(|e| e.role == Role::Subagent) {
         assert_eq!(check_in_event(event, &journal, None, &mut never), Ok(None));

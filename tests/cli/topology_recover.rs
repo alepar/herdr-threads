@@ -74,6 +74,7 @@ fn canonical_fixture(
     };
     let guard = BootstrapAttachmentGuard::try_new(
         &crate::protocol::commands::ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: observation.target.clone(),
             operation: id.payload.resolve_key.clone(),
         },
@@ -192,6 +193,16 @@ impl Env {
             canonical_fixture(&runtime.host_endpoint.clone().unwrap());
         identity.payload.handoff.namespace.state_dir = runtime.state_dir;
         identity.payload.handoff.namespace.host_endpoint = runtime.host_endpoint.clone().unwrap();
+        // The original claim comes from the pane's Herdr server, the namespace's host.
+        identity.claim.host = crate::protocol::ids::HostLocator::parse(
+            runtime.host_endpoint.as_ref().unwrap().to_str().unwrap(),
+        )
+        .unwrap();
+        identity.scope = super::super::journal::IntentScope::Cooperative {
+            instance: identity.claim.instance.clone(),
+            host: identity.claim.host.clone(),
+            seat: identity.claim.seat.clone(),
+        };
         identity.payload.cwd = root.clone();
         identity.digest = identity.semantic_digest().unwrap();
         let semantic = SemanticMutation::freeze(
@@ -720,6 +731,7 @@ fn wrong_original_kind_harness_or_exact_scope_never_becomes_recovery() {
                 target: HostTargetId::new("w1:p2"),
             },
             SemanticMutation::ResolveSeat {
+                host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("w1:p2"),
             },
         ),

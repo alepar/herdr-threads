@@ -71,6 +71,7 @@ impl Plan {
     pub(crate) fn validate_claim(&self, claim: &CallerClaim) -> io::Result<()> {
         self.validate()?;
         if self.namespace.instance != claim.instance
+            || self.namespace.host_endpoint.as_path() != claim.host.as_path()
             || self.request.target == claim.seat
             || (claim.harness != Harness::Human
                 && self.request.user_intent.is_some()
@@ -283,6 +284,7 @@ pub(crate) fn start<C: LocalClient + ?Sized, W: Write>(
     inspect(client, clock, &p.request.target)?;
     let scope = IntentScope::Cooperative {
         instance: claim.instance.clone(),
+        host: claim.host.clone(),
         seat: claim.seat.clone(),
     };
     let semantic = SemanticMutation::freeze(SemanticMutation::DirectSend(Box::new(p)), claim)?;

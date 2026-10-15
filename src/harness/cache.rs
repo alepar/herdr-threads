@@ -930,6 +930,7 @@ mod tests {
             &context.seat,
             Duration::from_secs(1),
         )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
         .unwrap();
         let request = PendingCheckIn {
             operation_id: Uuid::from_u128(2),

@@ -4913,14 +4913,14 @@ fn conflicting_globals_fail_the_cli_but_fail_open_only_for_hook() {
     }
 }
 
-// A user-level hook runs in every harness session. Outside a Herdr pane, or
-// in a pane of another Herdr instance than the installed `--host-endpoint`,
-// it must exit 0 at once with no stdout and no stderr, without observing the
-// harness version (no `claude --version` probe), reading state or starting a
-// daemon. Inside a pane of the installed instance it still runs (here it
-// reports a hook diagnostic, without invoking the harness). Kills: a
-// user-level hook that is noisy or slow in unrelated sessions, ignores the
-// recorded instance, or starts a daemon for a foreign Herdr server.
+// A user-level hook runs in every harness session. Outside a Herdr pane
+// (or without HERDR_PANE_ID) it must exit 0 at once with no stdout and no
+// stderr, without observing the harness version (no `claude --version`
+// probe), reading state or starting a daemon. Inside any Herdr pane it runs,
+// whichever Herdr server the pane belongs to: the claim carries the pane's own
+// server and the daemon decides by lazy attach (here it reports a hook
+// diagnostic, without invoking the harness). Kills: a user-level hook that is
+// noisy or slow in unrelated sessions, or silent in a pane of another server.
 // -- harness version evidence (ht-xoc.4) ------------------------------------
 
 /// The Claude hook command setup installs for `event` (it names the event with
@@ -5189,19 +5189,7 @@ fn user_level_hook_is_silent_outside_its_herdr_instance() {
         (output, started.elapsed())
     };
     let other = root.join("other.sock").display().to_string();
-    for env in [
-        vec![],
-        vec![("HERDR_ENV", "1".to_owned())],
-        vec![
-            ("HERDR_ENV", "1".to_owned()),
-            ("HERDR_PANE_ID", "w1:p1".to_owned()),
-        ],
-        vec![
-            ("HERDR_ENV", "1".to_owned()),
-            ("HERDR_PANE_ID", "w1:p1".to_owned()),
-            ("HERDR_SOCKET_PATH", other.clone()),
-        ],
-    ] {
+    for env in [vec![], vec![("HERDR_ENV", "1".to_owned())]] {
         let (output, elapsed) = run(&env);
         assert_eq!(output.status.code(), Some(0), "{env:?}");
         assert!(output.stdout.is_empty(), "{env:?}");
@@ -5214,6 +5202,30 @@ fn user_level_hook_is_silent_outside_its_herdr_instance() {
         assert!(!marker.exists(), "{env:?}: the harness version was probed");
         assert!(!state.exists(), "{env:?}: state was created");
     }
+    // A pane without HERDR_SOCKET_PATH falls back to the installed host, and a pane of another
+    // Herdr server claims that server: neither is foreign. The hook proceeds past the gate (and,
+    // with no daemon to attach, reports) without probing the harness.
+    let (output, _) = run(&[
+        ("HERDR_ENV", "1".to_owned()),
+        ("HERDR_PANE_ID", "w1:p1".to_owned()),
+    ]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(!marker.exists(), "operational hooks must not probe");
+    assert!(
+        !output.stderr.is_empty(),
+        "a pane without HERDR_SOCKET_PATH was gated out"
+    );
+    let (output, _) = run(&[
+        ("HERDR_ENV", "1".to_owned()),
+        ("HERDR_PANE_ID", "w1:p1".to_owned()),
+        ("HERDR_SOCKET_PATH", other.clone()),
+    ]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(!marker.exists(), "operational hooks must not probe");
+    assert!(
+        !output.stderr.is_empty(),
+        "a pane of another Herdr server was gated out"
+    );
     // The same socket through another spelling of its directory is the
     // installed instance: the hook proceeds past the gate.
     let (output, _) = run(&[
@@ -5966,6 +5978,7 @@ mod continuity {
                         target: HostTargetId::new(PANE),
                     },
                     SemanticMutation::ResolveSeat {
+                        host: herdr_threads::test_support::test_host_locator(),
                         target: HostTargetId::new(PANE),
                     },
                     1,
@@ -6709,6 +6722,7 @@ mod continuity {
                     target: HostTargetId::new(PANE),
                 },
                 SemanticMutation::ContinuityCheckIn {
+                    host: herdr_threads::test_support::test_host_locator(),
                     target: HostTargetId::new(PANE),
                     harness: if harness == "codex" {
                         Wire::Codex
@@ -6752,6 +6766,7 @@ mod continuity {
             .create(&dir)
             .unwrap();
         ContextJournal::open(&dir, fx.instance, seat, Duration::from_secs(1))
+            .map(|journal| journal.with_host(herdr_threads::test_support::test_host_locator()))
             .unwrap()
             .install_reattached(OccupantContext {
                 format_version: 1,
@@ -6871,6 +6886,7 @@ mod continuity {
                         target: HostTargetId::new(PANE),
                     },
                     SemanticMutation::ContinuityCheckIn {
+                        host: herdr_threads::test_support::test_host_locator(),
                         target: HostTargetId::new(PANE),
                         harness: herdr_threads::protocol::authority::Harness::Claude,
                         native_session: herdr_threads::protocol::ids::NativeSessionId::new("S-1"),
@@ -6976,6 +6992,7 @@ mod continuity {
                         target: HostTargetId::new(PANE),
                     },
                     SemanticMutation::ContinuityCheckIn {
+                        host: herdr_threads::test_support::test_host_locator(),
                         target: HostTargetId::new(PANE),
                         harness: if harness == "codex" {
                             herdr_threads::protocol::authority::Harness::Codex

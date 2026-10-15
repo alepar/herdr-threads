@@ -89,6 +89,7 @@ fn fingerprint(session: &str) -> LivenessFingerprint {
 
 fn claim(session: &str) -> CallerClaim {
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s"),
         binding_generation: SEAT_GENERATION,

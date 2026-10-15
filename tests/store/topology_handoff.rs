@@ -19,6 +19,7 @@ pub(super) fn identity() -> BootstrapIdentity {
     let mut identity = BootstrapIdentity {
         compound: OperationId::new("bootstrap"),
         scope: IntentScope::Cooperative {
+            host: herdr_threads::test_support::test_host_locator(),
             instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: claim.seat.clone(),
         },

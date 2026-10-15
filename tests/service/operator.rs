@@ -333,6 +333,7 @@ impl Fixture {
     }
     fn fresh(&self, target: &str, operation: &str) -> Result<CommandResult, ApiError> {
         self.call(Command::OperatorFreshSeat(OperatorFreshSeat {
+            host: herdr_threads::test_support::test_host_locator(),
             target: HostTargetId::new(target),
             operation: OperationId::new(operation),
         }))
@@ -356,6 +357,7 @@ fn elected_operator_rebind_and_fresh_preserve_history_and_replay_without_host() 
     history.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('old-message',?1,'history',1,'ordinary','unresolved history',1,0)",[f.descriptor.node_uuid.to_string()]).unwrap();
     history.execute_batch("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('old-message','history','saved','pending',90000);").unwrap();
     let rebind = Command::OperatorRebind(OperatorRebind {
+        host: herdr_threads::test_support::test_host_locator(),
         seat: SeatId::new("saved"),
         target: HostTargetId::new("w1:p1"),
         operation: OperationId::new("rebind"),
@@ -398,6 +400,7 @@ fn elected_operator_rebind_and_fresh_preserve_history_and_replay_without_host() 
     )
     .unwrap();
     let retired = Command::OperatorRebind(OperatorRebind {
+        host: herdr_threads::test_support::test_host_locator(),
         seat: SeatId::new("saved"),
         target: HostTargetId::new("w1:p3"),
         operation: OperationId::new("retired"),
@@ -1202,6 +1205,7 @@ fn elected_operator_replace_over_ipc() {
     };
     let replace = |operation: &str, replace: &SeatId| {
         Command::OperatorReplace(OperatorReplace {
+            host: herdr_threads::test_support::test_host_locator(),
             seat: SeatId::new("saved"),
             target: HostTargetId::new("w1:p2"),
             replace: replace.clone(),

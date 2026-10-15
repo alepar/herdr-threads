@@ -92,6 +92,7 @@ fn fixture_with_context() -> (
 }
 pub(crate) fn claim() -> CallerClaim {
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s"),
         binding_generation: 0,
@@ -2607,6 +2608,7 @@ fn programmatic_notices_settle_page_by_page_for_the_current_occupant() {
 
 pub(crate) fn human_claim(from: &CallerClaim, generation: u64) -> CallerClaim {
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         harness: Harness::Human,
         native_session: NativeSessionId::new("plugin_context:person"),
         execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
@@ -3362,6 +3364,7 @@ fn human_guidance_check_in_continuation_before_page_fit() {
 pub(crate) fn session_claim(session: &str, execution: &str) -> CallerClaim {
     let pid = 1000 + session.bytes().map(u32::from).sum::<u32>();
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         native_session: NativeSessionId::new(session),
         execution: ExecutionId::new(execution),
         liveness: Some(crate::protocol::authority::LivenessFingerprint { pid, start: 1 }),
@@ -3891,6 +3894,7 @@ mod hermes_lineage {
     }
     fn session_claim(session: &str, pid: u32) -> CallerClaim {
         CallerClaim {
+            host: crate::test_support::test_host_locator(),
             harness: hermes(),
             native_session: NativeSessionId::new(session),
             liveness: Some(LivenessFingerprint { pid, start: 9 }),

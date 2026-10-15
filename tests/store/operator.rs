@@ -64,12 +64,14 @@ impl Drop for Fixture {
 }
 fn fresh() -> OperatorCommand {
     OperatorCommand::FreshSeat(OperatorFreshSeat {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("p"),
         operation: OperationId::new("op"),
     })
 }
 fn rebind() -> OperatorCommand {
     OperatorCommand::Rebind(OperatorRebind {
+        host: crate::test_support::test_host_locator(),
         seat: SeatId::new("s"),
         target: HostTargetId::new("p"),
         operation: OperationId::new("op"),
@@ -165,6 +167,7 @@ fn replay_rejects_payload_reuse_wrong_result_and_exhausted_budget() {
         rebind(),
         orphan(),
         OperatorCommand::FreshSeat(OperatorFreshSeat {
+            host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("other"),
             operation: OperationId::new("op"),
         }),

@@ -227,6 +227,7 @@ fn public_begin_refuses_copied_namespace_and_subagent_before_mutation() {
                 identity.payload.handoff.namespace.instance = "foreign".into();
                 identity.claim.instance = "foreign".into();
                 identity.scope = herdr_threads::cli::journal::IntentScope::Cooperative {
+                    host: herdr_threads::test_support::test_host_locator(),
                     instance: "foreign".into(),
                     seat: identity.claim.seat.clone(),
                 };
@@ -331,6 +332,7 @@ fn delivery() -> DeliveryMutation {
         recipient: claim.seat.clone(),
     };
     let scope = IntentScope::Cooperative {
+        host: herdr_threads::test_support::test_host_locator(),
         instance: claim.instance.clone(),
         seat: claim.seat.clone(),
     };
@@ -890,6 +892,7 @@ fn automatic_contract_public_dispatch_refuses_every_phase_without_effects() {
     let plan = AutomaticDeliveryPlan::new(payload, SeatId::new("peer")).unwrap();
     let request = AutomaticDeliveryMutation::new(
         IntentScope::Cooperative {
+            host: herdr_threads::test_support::test_host_locator(),
             instance: claim.instance.clone(),
             seat: claim.seat.clone(),
         },
@@ -936,6 +939,7 @@ fn automatic_request(f: &Fixture) -> AutomaticDeliveryMutation {
     let claim = super::handoff_fences::identity().claim;
     AutomaticDeliveryMutation::new(
         IntentScope::Cooperative {
+            host: herdr_threads::test_support::test_host_locator(),
             instance: claim.instance.clone(),
             seat: claim.seat.clone(),
         },

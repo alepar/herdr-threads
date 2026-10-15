@@ -3530,6 +3530,7 @@ fn maximum_automatic_recovery_result(
             .unwrap();
     let id = AutomaticBootstrapIdentity::new(
         crate::cli::journal::IntentScope::Cooperative {
+            host: crate::test_support::test_host_locator(),
             instance: instance.into(),
             seat: claim.seat.clone(),
         },

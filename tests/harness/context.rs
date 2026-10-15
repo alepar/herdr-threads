@@ -43,7 +43,9 @@ fn request(instance: crate::node::NodeUuid, event: &str, generation: u64) -> Pen
     }
 }
 fn journal(path: &std::path::Path, instance: crate::node::NodeUuid) -> ContextJournal {
-    ContextJournal::open(path, instance, "seat", Duration::from_millis(300)).unwrap()
+    ContextJournal::open(path, instance, "seat", Duration::from_millis(300))
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
+        .unwrap()
 }
 fn result(p: &PendingCheckIn, generation: u64) -> CheckInResponse {
     let mut c = p.context.clone();
@@ -239,7 +241,8 @@ fn symlink_state_and_permissive_directory_are_refused() {
     fs::remove_file(path.join("context.json")).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(matches!(
-        ContextJournal::open(&path, i, "seat", Duration::from_millis(5)),
+        ContextJournal::open(&path, i, "seat", Duration::from_millis(5))
+            .map(|journal| journal.with_host(crate::test_support::test_host_locator())),
         Err(ContextError::UnsafePath)
     ));
     fs::remove_dir_all(path).unwrap();
@@ -257,7 +260,8 @@ fn directory_symlink_is_not_hidden_by_canonicalization() {
             crate::node::NodeUuid::new_v4(),
             "seat",
             Duration::from_millis(5)
-        ),
+        )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator())),
         Err(ContextError::UnsafePath)
     ));
     fs::remove_file(link).unwrap();
@@ -296,6 +300,7 @@ fn lock_wait_is_bounded_and_crashed_lock_owner_releases() {
     file.lock().unwrap();
     assert_eq!(
         ContextJournal::open(&path, i, "seat", Duration::from_millis(5))
+            .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
             .unwrap()
             .current(),
         Err(ContextError::LockTimeout)
@@ -434,6 +439,7 @@ fn atomic_get_or_prepare_runs_one_external_intent_factory_for_concurrent_duplica
                 // budget made that wait a wall-clock race under IO load; use
                 // the maximum budget so only a real deadlock can time out.
                 ContextJournal::open(&path, instance, "seat", Duration::from_secs(10))
+                    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
                     .unwrap()
                     .get_or_prepare("start", |current| {
                         assert_eq!(current, None);

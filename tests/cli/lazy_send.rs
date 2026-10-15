@@ -61,6 +61,7 @@ impl Fixture {
             &context.seat,
             Duration::from_secs(1),
         )
+        .map(|journal| journal.with_host(herdr_threads::test_support::test_host_locator()))
         .unwrap();
         contexts.install_reattached(context.clone()).unwrap();
         let journal = Journal::open(root.join("intents")).unwrap();
@@ -190,7 +191,10 @@ fn lazy_send_flag_freezes_lazy_mode() {
         send.user_intent,
         Some(herdr_threads::protocol::summary::UserIntent::Rule)
     );
-    assert_eq!(send.claim, caller_claim(&f.context).unwrap());
+    assert_eq!(
+        send.claim,
+        caller_claim(&f.context, herdr_threads::test_support::test_host_locator()).unwrap()
+    );
     assert_eq!(
         serde_json::to_value(saved.semantic).unwrap()["mutation"]["delivery_mode"],
         "lazy"
@@ -285,7 +289,9 @@ fn ordinary_send_omits_mode_and_preserves_digest() {
     };
     let command = spec
         .into_command(
-            Some(caller_claim(&f.context).unwrap()),
+            Some(
+                caller_claim(&f.context, herdr_threads::test_support::test_host_locator()).unwrap(),
+            ),
             OperationId::new("op1"),
         )
         .unwrap();
@@ -357,10 +363,14 @@ fn lazy_send_retry_preserves_frozen_claim_and_mode() {
     assert_eq!(sends.len(), 2);
     assert_eq!(sends[0], sends[1]);
     assert_eq!(sends[1].delivery_mode, DeliveryMode::Lazy);
-    assert_eq!(sends[1].claim, caller_claim(&f.context).unwrap());
+    assert_eq!(
+        sends[1].claim,
+        caller_claim(&f.context, herdr_threads::test_support::test_host_locator()).unwrap()
+    );
     assert_eq!(
         saved.header.scope,
         IntentScope::Cooperative {
+            host: herdr_threads::test_support::test_host_locator(),
             instance: f.context.instance.to_string(),
             seat: sends[1].claim.seat.clone()
         }
@@ -388,8 +398,11 @@ fn lazy_send_journal_rejects_obligations_before_recording() {
         }
         let semantic = serde_json::from_value(value).unwrap();
         let scope = IntentScope::Cooperative {
+            host: herdr_threads::test_support::test_host_locator(),
             instance: f.context.instance.to_string(),
-            seat: caller_claim(&f.context).unwrap().seat,
+            seat: caller_claim(&f.context, herdr_threads::test_support::test_host_locator())
+                .unwrap()
+                .seat,
         };
         assert!(f.journal.record(scope, semantic, 1).is_err());
     }
@@ -484,10 +497,16 @@ fn ordinary_historical_retry_refuses_unsupported_without_rewriting_intent() {
             .journal
             .record(
                 IntentScope::Cooperative {
+                    host: herdr_threads::test_support::test_host_locator(),
                     instance: f.context.instance.to_string(),
                     seat: herdr_threads::protocol::ids::SeatId::new(f.context.seat.clone()),
                 },
-                SemanticMutation::freeze(legacy, caller_claim(&f.context).unwrap()).unwrap(),
+                SemanticMutation::freeze(
+                    legacy,
+                    caller_claim(&f.context, herdr_threads::test_support::test_host_locator())
+                        .unwrap(),
+                )
+                .unwrap(),
                 0,
             )
             .unwrap();

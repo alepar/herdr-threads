@@ -645,6 +645,7 @@ fn kind_count(fx: &Fx, kind: &str) -> i64 {
 fn fixture_claim(seat: &str) -> crate::protocol::authority::CallerClaim {
     use crate::protocol::{authority::*, ids::*};
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new(seat),
         binding_generation: 1,

@@ -604,6 +604,7 @@ pub struct RetirementJobsQuery {
 #[serde(deny_unknown_fields)]
 pub struct ResolveSeat {
     pub target: HostTargetId,
+    pub host: HostLocator,
     pub operation: OperationId,
 }
 /// TRUST-POLICY C1. A resumed top-level session asks the daemon to reattach
@@ -615,6 +616,7 @@ pub struct ResolveSeat {
 #[serde(deny_unknown_fields)]
 pub struct ContinuityCheckIn {
     pub target: HostTargetId,
+    pub host: HostLocator,
     pub harness: crate::protocol::authority::Harness,
     pub native_session: NativeSessionId,
     /// The hook's SessionStart source. Only `resume` can reattach.
@@ -1071,12 +1073,14 @@ pub struct ThreadMutation {
 pub struct OperatorRebind {
     pub seat: SeatId,
     pub target: HostTargetId,
+    pub host: HostLocator,
     pub operation: OperationId,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperatorFreshSeat {
     pub target: HostTargetId,
+    pub host: HostLocator,
     pub operation: OperationId,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1103,6 +1107,7 @@ pub struct OperatorRetire {
 pub struct OperatorReplace {
     pub seat: SeatId,
     pub target: HostTargetId,
+    pub host: HostLocator,
     pub replace: SeatId,
     pub operation: OperationId,
 }
@@ -1134,6 +1139,44 @@ impl Command {
             Self::SetThreadName(v) => Some(&v.claim),
             Self::Archive(v) | Self::Reopen(v) => Some(&v.claim),
             _ => None,
+        }
+    }
+
+    /// The Herdr server this command is about: the one accessor dispatch reads. A claim-bearing
+    /// command returns its claim's `host`; `ResolveSeat`, `ContinuityCheckIn`, `OperatorRebind`,
+    /// `OperatorFreshSeat` and `OperatorReplace` return their explicit `host` (they name a
+    /// `target`, not a claim); every other command (`OperatorRetire`, `OperatorOrphanInvite`,
+    /// seatless queries) is host-free and returns `None`.
+    pub fn host_locator(&self) -> Option<&HostLocator> {
+        match self {
+            Self::ResolveSeat(v) => Some(&v.host),
+            Self::ContinuityCheckIn(v) => Some(&v.host),
+            Self::OperatorRebind(v) => Some(&v.host),
+            Self::OperatorFreshSeat(v) => Some(&v.host),
+            Self::OperatorReplace(v) => Some(&v.host),
+            Self::DeliveryPull(v) => Some(&v.claim.host),
+            Self::DeliveryPullV2(v) => Some(&v.claim.host),
+            Self::DeliveryPresentationConfirmV2(v) => Some(&v.claim.host),
+            Self::DeliveryConfirm(v) => Some(&v.claim.host),
+            Self::AdvanceCursors(v) => Some(&v.claim.host),
+            Self::BindingEvent(v) => Some(&v.claim.host),
+            Self::Summary(v) => Some(&v.claim.host),
+            Self::SummaryJob(v) => Some(&v.claim.host),
+            Self::SummarySubmit(v) => Some(&v.claim.host),
+            Self::HandoffDelivery(v) => Some(&v.claim.host),
+            Self::AutomaticHandoffDelivery(v) => Some(&v.claim.host),
+            Self::AutomaticBootstrap(v) => Some(&v.identity.claim.host),
+            Self::BeginBootstrap(v) => Some(&v.identity.claim.host),
+            Self::ReserveBootstrapAttempt(v) => Some(&v.identity.claim.host),
+            Self::RecordBootstrapCreated(v) => Some(&v.identity.claim.host),
+            Self::RecordBootstrapNotSubmitted(v) => Some(&v.identity.claim.host),
+            Self::AttachBootstrapHandoff(v) => Some(&v.identity.claim.host),
+            Self::CompleteLinkedBootstrap(v) => Some(&v.identity.claim.host),
+            Self::CheckBootstrapSubmission(v) => Some(&v.identity.claim.host),
+            Self::BootstrapStatus(v) => Some(&v.identity.claim.host),
+            Self::ResolveBootstrapSeat(v) => Some(&v.identity.claim.host),
+            Self::RecoverBootstrap(v) => Some(&v.identity.claim.host),
+            other => other.accountable_claim().map(|claim| &claim.host),
         }
     }
 
@@ -1566,3 +1609,103 @@ impl TryFrom<Command> for PermitMutation {
 #[cfg(test)]
 #[path = "../../tests/protocol/history_full_bodies.rs"]
 mod history_full_bodies;
+
+#[cfg(test)]
+mod host_locator_tests {
+    use super::*;
+    use crate::protocol::authority::{CallerRole, Harness};
+
+    fn host(path: &str) -> HostLocator {
+        HostLocator::parse(path).unwrap()
+    }
+    fn claim() -> CallerClaim {
+        CallerClaim {
+            instance: "i".into(),
+            host: host("/claim.sock"),
+            seat: SeatId::new("s"),
+            binding_generation: 1,
+            role: CallerRole::TopLevel,
+            harness: Harness::Codex,
+            native_session: NativeSessionId::new("n"),
+            execution: ExecutionId::new("e"),
+            target: HostTargetId::new("w1:p1"),
+            agent_id: None,
+            liveness: None,
+        }
+    }
+
+    #[test]
+    fn host_locator_for_claim_and_target_commands() {
+        let op = || OperationId::new("op");
+        let target = || HostTargetId::new("w1:p1");
+        let explicit = host("/explicit.sock");
+        // Claim-bearing commands answer with the claim's host, never a default.
+        let check_in = Command::CheckIn(CheckIn {
+            claim: claim(),
+            mode: CheckInMode::Current,
+            operation: op(),
+            lineage_parent: None,
+        });
+        assert_eq!(check_in.host_locator(), Some(&host("/claim.sock")));
+        let archive = Command::Archive(ThreadMutation {
+            thread: ThreadId::new("t"),
+            operation: op(),
+            claim: claim(),
+        });
+        assert_eq!(archive.host_locator(), Some(&host("/claim.sock")));
+        // The five target-bearing commands answer with their explicit host.
+        let target_bearing = [
+            Command::ResolveSeat(ResolveSeat {
+                target: target(),
+                host: explicit.clone(),
+                operation: op(),
+            }),
+            Command::ContinuityCheckIn(ContinuityCheckIn {
+                target: target(),
+                host: explicit.clone(),
+                harness: Harness::Codex,
+                native_session: NativeSessionId::new("n"),
+                source: "resume".into(),
+                operation: op(),
+                execution: ExecutionId::new("e"),
+                liveness: None,
+            }),
+            Command::OperatorRebind(OperatorRebind {
+                seat: SeatId::new("s"),
+                target: target(),
+                host: explicit.clone(),
+                operation: op(),
+            }),
+            Command::OperatorFreshSeat(OperatorFreshSeat {
+                target: target(),
+                host: explicit.clone(),
+                operation: op(),
+            }),
+            Command::OperatorReplace(OperatorReplace {
+                seat: SeatId::new("s"),
+                target: target(),
+                host: explicit.clone(),
+                replace: SeatId::new("r"),
+                operation: op(),
+            }),
+        ];
+        for command in &target_bearing {
+            assert_eq!(command.host_locator(), Some(&explicit), "{command:?}");
+        }
+        // Retire and orphan invite name no pane: host-free.
+        let retire = Command::OperatorRetire(OperatorRetire {
+            seat: SeatId::new("s"),
+            operation: op(),
+        });
+        let orphan = Command::OperatorOrphanInvite(OperatorOrphanInvite {
+            thread: ThreadId::new("t"),
+            seat: SeatId::new("s"),
+            deadline_millis: None,
+            operation: op(),
+        });
+        assert_eq!(retire.host_locator(), None);
+        assert_eq!(orphan.host_locator(), None);
+        // A host-free read.
+        assert_eq!(Command::Health.host_locator(), None);
+    }
+}

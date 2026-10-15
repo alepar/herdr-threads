@@ -86,8 +86,8 @@ pub struct HookArgs {
 
 /// The exact argv setup installs as the native hook command. Pane agents do not
 /// inherit `HERDR_PLUGIN_STATE_DIR`, so an explicit state dir belongs here; the
-/// host endpoint names the one Herdr instance whose panes the (user-level)
-/// hook serves: in any other session it stays silent ([`foreign_session`]).
+/// host endpoint is the fallback claim host and the daemon attach hint: the
+/// pane's own `HERDR_SOCKET_PATH` wins ([`super::instance::claim_host`]).
 pub fn installed_argv(
     executable: &str,
     state_dir: Option<&str>,
@@ -1330,7 +1330,11 @@ pub(crate) fn recipient_argv(
 /// explicit (pane agents do not inherit HERDR_PLUGIN_STATE_DIR).
 pub fn diagnose_argv(args: &HookArgs, pane: &InstanceInputs) -> Vec<String> {
     let state_dir = args.state_dir.clone().or_else(|| pane.env_state.clone());
-    let host = args.host_endpoint.clone().or_else(|| pane.env_host.clone());
+    let host = super::instance::claim_host(
+        None,
+        pane.env_host.as_deref(),
+        args.host_endpoint.as_deref(),
+    );
     let mut argv = cli_prefix(&pane_selectors(state_dir.as_deref(), host.as_deref(), pane));
     argv.extend(["daemon".to_owned(), "health".to_owned()]);
     argv
@@ -1390,9 +1394,7 @@ fn report_parse_failure_to_daemon(
     if !env.herdr_env {
         return;
     }
-    let Ok(context) =
-        RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
-    else {
+    let Ok(context) = hook_runtime_context(args) else {
         return;
     };
     let Ok(paths) = NodePaths::resolve(&context.state_dir) else {
@@ -1685,8 +1687,7 @@ fn connect_pane(
     let target = HostTargetId::parse(pane.clone())
         .map_err(|_| Failure::Quiet("HERDR_PANE_ID is not a valid target".into()))?;
     let context =
-        RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
-            .map_err(|e| Failure::Quiet(format!("runtime context: {e}")))?;
+        hook_runtime_context(args).map_err(|e| Failure::Quiet(format!("runtime context: {e}")))?;
     // A hook claim binds a pane of the claim host's Herdr server.
     context
         .require_host()
@@ -1733,12 +1734,16 @@ fn enroll_pane(
     ensure_executable: Option<&Path>,
 ) -> Result<SeatId, Failure> {
     let Connected {
+        context,
         paths,
         instance,
         target,
         client,
         ..
     } = connect_pane(args, env, deadline, &clock, ensure_executable)?;
+    let host = context
+        .claim_host()
+        .map_err(|e| Failure::Quiet(format!("runtime context: {e}")))?;
     if let PaneSeat::HeldOrUnresolved(detail) =
         find_seat_for(args.harness, &client, &target, deadline, clock.as_ref())?
     {
@@ -1750,6 +1755,7 @@ fn enroll_pane(
         &client,
         &journal,
         instance,
+        &host,
         &target,
         clock.as_ref(),
         &budget(deadline, clock.as_ref()),
@@ -1889,10 +1895,15 @@ fn check_in(
         let journal = call
             .journal()
             .ok_or_else(|| Failure::Unavailable("seat enrollment journal unavailable".into()))?;
+        let host = call
+            .context
+            .claim_host()
+            .map_err(|e| Failure::Quiet(format!("runtime context: {e}")))?;
         let resolved = super::launch::resolve_seat(
             &client,
             &journal,
             instance,
+            &host,
             &target,
             clock.as_ref(),
             &budget(deadline, clock.as_ref()),
@@ -2143,6 +2154,7 @@ impl PaneCall<'_> {
             session.as_str(),
             None,
         );
+        let host = self.context.claim_host().ok()?;
         let reference = journal
             .record(
                 super::journal::IntentScope::Continuity {
@@ -2151,6 +2163,7 @@ impl PaneCall<'_> {
                 },
                 super::journal::SemanticMutation::ContinuityCheckIn {
                     target: self.target.clone(),
+                    host,
                     harness,
                     native_session: session.clone(),
                     source: event.source.clone(),
@@ -2251,9 +2264,16 @@ impl PaneCall<'_> {
         }
         let fast_forward = reattached.fast_forward;
         let seat = reattached.seat;
-        let contexts = match super::seat_contexts(self.paths, self.instance, &seat) {
+        let contexts = match self
+            .context
+            .claim_host()
+            .map_err(|e| e.to_string())
+            .and_then(|host| {
+                super::seat_contexts(self.paths, self.instance, &host, &seat)
+                    .map_err(|error| format!("{error:?}"))
+            }) {
             Ok(contexts) => contexts,
-            Err(error) => return Reattach::InstallFailed(format!("{}: {error:?}", seat.as_str())),
+            Err(error) => return Reattach::InstallFailed(format!("{}: {error}", seat.as_str())),
         };
         // The reattached session's identity is its environment, not a saved context: only a
         // request still pending for the replaced context is dead.
@@ -2519,7 +2539,8 @@ impl PaneCall<'_> {
         }
         let native = event.native_session.as_deref()?;
         let agent = event.agent_id.as_deref()?;
-        let contexts = super::seat_contexts(self.paths, self.instance, seat).ok()?;
+        let host = self.context.claim_host().ok()?;
+        let contexts = super::seat_contexts(self.paths, self.instance, &host, seat).ok()?;
         let current = OccupantContext {
             format_version: 1,
             instance: self.instance,
@@ -2536,7 +2557,7 @@ impl PaneCall<'_> {
             session: SessionReference::Native(native.to_owned()),
             role: Role::TopLevel,
         };
-        let mut claim = bridge::caller_claim(&current).ok()?;
+        let mut claim = bridge::caller_claim(&current, contexts.claim_host().ok()?.clone()).ok()?;
         claim.role = crate::protocol::authority::CallerRole::Subagent;
         claim.agent_id = Some(crate::protocol::ids::AgentId::parse(agent).ok()?);
         let seen = bridge::subagent_boundary(
@@ -2581,7 +2602,11 @@ impl PaneCall<'_> {
         seat: &SeatId,
         generation: u64,
     ) -> Result<crate::harness::context::ContextJournal, Failure> {
-        let contexts = super::seat_contexts(self.paths, self.instance, seat)
+        let host = self
+            .context
+            .claim_host()
+            .map_err(|e| Failure::Quiet(format!("runtime context: {e}")))?;
+        let contexts = super::seat_contexts(self.paths, self.instance, &host, seat)
             .map_err(|_| Failure::Unavailable("seat context journal unavailable".into()))?;
         let Some(native) = event.native_session.as_deref() else {
             return Err(Failure::Quiet(format!(
@@ -3162,9 +3187,7 @@ fn adapter_state_dir(
     registration: &Registration,
     create: bool,
 ) -> Option<PathBuf> {
-    let context =
-        RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
-            .ok()?;
+    let context = hook_runtime_context(args).ok()?;
     let node_dir = crate::daemon::paths::node_dir(&context.state_dir);
     let dir = node_dir
         .join("adapter-state")
@@ -3215,19 +3238,21 @@ fn run_hook_step(
                 (SessionReference::Native(session), Some(native)) if session == native
             )
         })
-        .and_then(|context| bridge::caller_claim(&context).ok())
+        .and_then(|context| {
+            let host = hook_runtime_context(args).ok()?.claim_host().ok()?;
+            bridge::caller_claim(&context, host).ok()
+        })
         .map(|mut claim| {
             // The honest current process, as a CLI call of this session sends; only a re-adopting
             // pull needs it, so a failure leaves it unset.
             claim.liveness = hook_fingerprint(harness).ok();
             claim
         });
-    let connected =
-        RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
-            .ok()
-            .and_then(|context| NodePaths::resolve_read_only(&context.state_dir).ok())
-            .and_then(|paths| connect_existing(&paths, Arc::new(SystemClock::new())).ok())
-            .map(|(_, client, link)| (client, link));
+    let connected = hook_runtime_context(args)
+        .ok()
+        .and_then(|context| NodePaths::resolve_read_only(&context.state_dir).ok())
+        .and_then(|paths| connect_existing(&paths, Arc::new(SystemClock::new())).ok())
+        .map(|(_, client, link)| (client, link));
     let daemon = connected.as_ref().map(|(client, _)| HookStepClient {
         client,
         clock,
@@ -3235,7 +3260,11 @@ fn run_hook_step(
     });
     let pane = pane_inputs();
     let state = args.state_dir.clone().or_else(|| pane.env_state.clone());
-    let host = args.host_endpoint.clone().or_else(|| pane.env_host.clone());
+    let host = super::instance::claim_host(
+        None,
+        pane.env_host.as_deref(),
+        args.host_endpoint.as_deref(),
+    );
     let state_dir = adapter_state_dir(args, registration, true);
     let prepared = step.run_with_completion(&HookStepContext {
         input,
@@ -3327,9 +3356,7 @@ fn quiet_outcome(detail: String) -> HookOutcome {
     }
 }
 fn child_endpoint_available(args: &HookArgs) -> bool {
-    let Ok(context) =
-        RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
-    else {
+    let Ok(context) = hook_runtime_context(args) else {
         return false;
     };
     let Ok(paths) = NodePaths::resolve(&context.state_dir) else {
@@ -3350,9 +3377,7 @@ fn pane_context_journal(
     deadline: Instant,
 ) -> Option<(crate::harness::context::ContextJournal, OccupantContext)> {
     let target = env.pane.as_deref()?;
-    let context =
-        RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
-            .ok()?;
+    let context = hook_runtime_context(args).ok()?;
     let paths = NodePaths::resolve_read_only(&context.state_dir).ok()?;
     let instance = read_node_uuid_hint(&paths).ok()??;
     let entries = std::fs::read_dir(paths.node_dir.join("contexts")).ok()?;
@@ -3429,6 +3454,7 @@ fn report_binding_event(
 ) -> Result<(), Failure> {
     use crate::protocol::commands::{BindingEvent, BindingEventKind};
     let Connected {
+        context: runtime,
         instance,
         target,
         client,
@@ -3470,7 +3496,8 @@ fn report_binding_event(
         session: SessionReference::Native(session.to_owned()),
         role: Role::TopLevel,
     };
-    let mut claim = bridge::caller_claim(&context).map_err(|_| invalid("session"))?;
+    let host = runtime.claim_host().map_err(|_| invalid("host"))?;
+    let mut claim = bridge::caller_claim(&context, host).map_err(|_| invalid("session"))?;
     claim.liveness = match hook_fingerprint(args.harness) {
         Ok(fingerprint) => Some(fingerprint),
         Err(failure) if event.kind == BindingEventKind::SubagentStart => return Err(failure),
@@ -3859,34 +3886,43 @@ fn same_endpoint(a: &Path, b: &Path) -> bool {
     a == b || matches!((canonical(a), canonical(b)), (Some(x), Some(y)) if x == y)
 }
 
+/// The runtime context a hook serves: the node from the argv or environment, the claim host from
+/// the calling pane (`HERDR_SOCKET_PATH`) before the installed argv's `--host-endpoint`
+/// ([`super::instance::claim_host`]).
+fn hook_runtime_context(args: &HookArgs) -> io::Result<RuntimeContext> {
+    let pane_host = std::env::var_os("HERDR_SOCKET_PATH")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    hook_runtime_context_with(args, pane_host)
+}
+
+/// [`hook_runtime_context`] with the pane's `HERDR_SOCKET_PATH` given.
+fn hook_runtime_context_with(
+    args: &HookArgs,
+    pane_host: Option<PathBuf>,
+) -> io::Result<RuntimeContext> {
+    RuntimeContext::from_environment(
+        args.state_dir.clone(),
+        super::instance::claim_host(None, pane_host.as_deref(), args.host_endpoint.as_deref()),
+    )
+}
+
 /// Why this invocation is not ours at all, decided from the environment
-/// alone (no file, process or socket I/O beyond resolving two directories):
-/// not a Herdr pane, or a pane of another Herdr instance than the installed
-/// `--host-endpoint`. A user-level hook runs in every harness session; in
-/// these it must exit 0 with no output, no version probe and no daemon start.
-/// The one thing it still does is the harness evidence note
+/// alone (no file, process or socket I/O): not a Herdr pane. A user-level hook
+/// runs in every harness session; outside a pane it must exit 0 with no
+/// output, no version probe and no daemon start. A pane of another Herdr
+/// server is not foreign: the claim carries the pane's own server
+/// ([`super::instance::claim_host`]) and the daemon decides by lazy attach.
+/// The one thing a foreign session still does is the harness evidence note
 /// ([`super::hook_evidence`]): a bounded read of the payload and, when the
 /// per-session gate says so, one short best-effort call to a daemon that is
 /// already running.
-pub fn foreign_session(
-    args: &HookArgs,
-    env: &HookEnv,
-    socket: Option<&std::ffi::OsStr>,
-) -> Option<&'static str> {
+pub fn foreign_session(env: &HookEnv) -> Option<&'static str> {
     if !env.herdr_env {
         return Some("not running inside a Herdr pane");
     }
     if env.pane.is_none() {
         return Some("HERDR_PANE_ID missing");
-    }
-    if let Some(installed) = &args.host_endpoint {
-        match socket.filter(|value| !value.is_empty()) {
-            None => return Some("HERDR_SOCKET_PATH missing"),
-            Some(socket) if !same_endpoint(installed, Path::new(socket)) => {
-                return Some("a pane of another Herdr instance");
-            }
-            Some(_) => (),
-        }
     }
     None
 }
@@ -4018,7 +4054,7 @@ pub fn run_process_with(
         return 0;
     }
     if let Ok(args) = &parsed
-        && foreign_session(args, env, std::env::var_os("HERDR_SOCKET_PATH").as_deref()).is_some()
+        && foreign_session(env).is_some()
     {
         quiet.store(true, Ordering::SeqCst);
         // Silent, but the payload is still evidence about the harness: a

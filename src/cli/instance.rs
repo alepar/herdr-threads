@@ -287,6 +287,19 @@ pub fn resolve_state_dir(inputs: &InstanceInputs) -> Result<(PathBuf, String), S
     }
 }
 
+/// The claim host: the Herdr server of the calling pane. An explicit user flag on an interactive
+/// command wins, then the pane's own `HERDR_SOCKET_PATH`, then the host baked into an installed
+/// argv at setup, which is only a fallback (and the daemon attach hint): a user-level hook runs in
+/// panes of any Herdr server, so the pane it runs in decides. Hooks pass no `explicit` (their argv
+/// is always installed). Spellings are returned as given; `RuntimeContext` canonicalizes.
+pub fn claim_host(
+    explicit: Option<&Path>,
+    pane_env: Option<&Path>,
+    installed: Option<&Path>,
+) -> Option<PathBuf> {
+    explicit.or(pane_env).or(installed).map(Path::to_path_buf)
+}
+
 /// The host endpoint and where it came from.
 pub fn resolve_host_endpoint(inputs: &InstanceInputs) -> Result<(PathBuf, String), String> {
     if let Some(host) = &inputs.host_flag {

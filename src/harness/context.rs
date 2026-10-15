@@ -432,6 +432,10 @@ pub struct ContextJournal {
     seat: String,
     lock_timeout: Duration,
     agent: Option<AgentCaller>,
+    /// The calling pane's Herdr server, the `host` of every claim this handle builds. The
+    /// persisted context has none (it is the caller's environment, not its identity), so a handle
+    /// that builds claims gets it from the caller's `RuntimeContext` ([`Self::with_host`]).
+    host: Option<crate::protocol::ids::HostLocator>,
 }
 /// The calling agent session, from the harness environment or hook payload (spec §1, decision
 /// 15). It replaces the journal's saved `current` context: an agent's identity is never read
@@ -495,7 +499,17 @@ impl ContextJournal {
             seat: seat.into(),
             lock_timeout,
             agent: None,
+            host: None,
         })
+    }
+    /// Set the claim host (see the `host` field); claims fail without one.
+    pub fn with_host(mut self, host: crate::protocol::ids::HostLocator) -> Self {
+        self.host = Some(host);
+        self
+    }
+    /// The claim host this handle was given; claims cannot be built without one.
+    pub fn claim_host(&self) -> Result<&crate::protocol::ids::HostLocator, ContextError> {
+        self.host.as_ref().ok_or(ContextError::Invalid)
     }
     /// Make this handle act as one agent session: `current()` is that session's context at the
     /// seat's mapping generation, nothing about it is persisted, and claims built through
@@ -527,7 +541,8 @@ impl ContextJournal {
         &self,
         context: &OccupantContext,
     ) -> Result<crate::protocol::authority::CallerClaim, ContextError> {
-        let mut claim = crate::harness::bridge::caller_claim(context)?;
+        let host = self.host.clone().ok_or(ContextError::Invalid)?;
+        let mut claim = crate::harness::bridge::caller_claim(context, host)?;
         if let Some(agent) = &self.agent
             && context.session == agent.current.session
             && context.harness == agent.current.harness

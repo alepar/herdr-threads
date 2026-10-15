@@ -57,11 +57,14 @@ fn invalid(detail: impl AsRef<str>) -> RunError {
 }
 
 /// Run a summary command as the selected seat; stdin is the submission source.
+// Allowed: the parsed action and selected seat, node paths and instance, claim host, client, clock and writer.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run<C: LocalClient + ?Sized, W: Write>(
     parsed: ParsedCli,
     selection: &CooperativeSelection,
     paths: &NodePaths,
     instance: crate::node::NodeUuid,
+    host: &crate::protocol::ids::HostLocator,
     client: &C,
     clock: &dyn Clock,
     writer: &mut W,
@@ -71,6 +74,7 @@ pub(crate) fn run<C: LocalClient + ?Sized, W: Write>(
         selection,
         paths,
         instance,
+        host,
         client,
         clock,
         &mut std::io::stdin().lock(),
@@ -105,6 +109,7 @@ pub(crate) fn run_with_input<C: LocalClient + ?Sized, W: Write>(
     selection: &CooperativeSelection,
     paths: &NodePaths,
     instance: crate::node::NodeUuid,
+    host: &crate::protocol::ids::HostLocator,
     client: &C,
     clock: &dyn Clock,
     input: &mut dyn Read,
@@ -141,7 +146,7 @@ pub(crate) fn run_with_input<C: LocalClient + ?Sized, W: Write>(
     };
     let generation = super::selected_generation(selection, &inspection)?;
     let contexts = super::caller_journal(
-        super::seat_contexts(paths, instance, &selection.seat)?,
+        super::seat_contexts(paths, instance, host, &selection.seat)?,
         instance,
         selection,
         generation,

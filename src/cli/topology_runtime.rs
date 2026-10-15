@@ -133,6 +133,7 @@ pub(crate) fn is_compound(semantic: &SemanticMutation) -> bool {
 fn agent_claim(claim: &CallerClaim) -> Result<(), RunError> {
     let scope = IntentScope::Cooperative {
         instance: claim.instance.clone(),
+        host: claim.host.clone(),
         seat: claim.seat.clone(),
     };
     if super::journal::classify_original_claim(&scope, claim)? != OriginalActor::Agent
@@ -395,8 +396,13 @@ pub(crate) fn run(
             let mut env = super::setup::SetupEnv::from_process(&output)?;
             env.state_dir = Some(selected.state_dir.clone());
             env.host_endpoint = Some(selected.require_host()?.to_path_buf());
-            let seats =
-                super::launch::DaemonSeatResolver::new(&client, journal, instance, clock.as_ref());
+            let seats = super::launch::DaemonSeatResolver::new(
+                &client,
+                journal,
+                instance,
+                selected.claim_host()?,
+                clock.as_ref(),
+            );
             let shell = super::launch::SystemShellProbe::from_process();
             let mut launcher = super::handoff::NativeLauncher {
                 registry,
@@ -494,6 +500,7 @@ pub(crate) fn run(
             )?;
             let scope = IntentScope::Cooperative {
                 instance: claim.instance.clone(),
+                host: claim.host.clone(),
                 seat: claim.seat.clone(),
             };
             let semantic = SemanticMutation::freeze(
@@ -560,8 +567,13 @@ pub(crate) fn run(
             let mut env = super::setup::SetupEnv::from_process(&output)?;
             env.state_dir = Some(selected.state_dir.clone());
             env.host_endpoint = Some(selected.require_host()?.to_path_buf());
-            let seats =
-                super::launch::DaemonSeatResolver::new(&client, journal, instance, clock.as_ref());
+            let seats = super::launch::DaemonSeatResolver::new(
+                &client,
+                journal,
+                instance,
+                selected.claim_host()?,
+                clock.as_ref(),
+            );
             let shell = super::launch::SystemShellProbe::from_process();
             let effective = super::topology_handoff::preflight_launch_request(&identity)?;
             let expected = crate::harness::launch::compose_native_argv(
@@ -616,6 +628,7 @@ pub(crate) fn run(
             if original.header.scope
                 != (IntentScope::Cooperative {
                     instance: claim.instance.clone(),
+                    host: claim.host.clone(),
                     seat: claim.seat.clone(),
                 })
                 || original.semantic.frozen_claim() != Some(&claim)
@@ -664,6 +677,7 @@ pub(crate) fn run(
                     &client,
                     journal,
                     instance,
+                    selected.claim_host()?,
                     clock.as_ref(),
                 );
                 let shell = super::launch::SystemShellProbe::from_process();
@@ -862,8 +876,15 @@ pub(crate) fn run(
         }
     };
     env.host_endpoint = Some(selected.require_host()?.to_path_buf());
+    let claim_host = selected.claim_host()?;
     env.state_dir = Some(selected.state_dir);
-    let seats = super::launch::DaemonSeatResolver::new(&client, journal, instance, clock.as_ref());
+    let seats = super::launch::DaemonSeatResolver::new(
+        &client,
+        journal,
+        instance,
+        claim_host,
+        clock.as_ref(),
+    );
     let shell = super::launch::SystemShellProbe::from_process();
     let mut launcher = super::handoff::NativeLauncher {
         registry: crate::harness::registry::builtins(),

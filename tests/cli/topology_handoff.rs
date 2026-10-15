@@ -102,7 +102,7 @@ fn prepared(
     let namespace = crate::protocol::handoff::HandoffNamespace {
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         state_dir: root.join("state dir"),
-        host_endpoint: root.join("host.sock"),
+        host_endpoint: "/host.sock".into(),
     };
     prepare(
         r,
@@ -240,6 +240,7 @@ fn publication_rejects_tampered_identity_before_allocation() {
         },
         |i: &mut crate::protocol::handoff::BootstrapIdentity| {
             i.scope = super::super::journal::IntentScope::Cooperative {
+                host: crate::test_support::test_host_locator(),
                 instance: "foreign".into(),
                 seat: i.claim.seat.clone(),
             }
@@ -410,7 +411,7 @@ fn publication_explicit_cwd_claude_options_and_invalid_inputs() {
     let namespace = crate::protocol::handoff::HandoffNamespace {
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         state_dir: temp.path().join("state"),
-        host_endpoint: temp.path().join("host.sock"),
+        host_endpoint: "/host.sock".into(),
     };
     let r = Request {
         automatic: false,
@@ -4050,6 +4051,7 @@ mod live {
             let (_, observation, admission, _) = scoped_current(&f);
             let guard = crate::ports::BootstrapAttachmentGuard::try_new(
                 &crate::protocol::commands::ResolveSeat {
+                    host: crate::test_support::test_host_locator(),
                     target: evidence.root_pane.clone(),
                     operation: f.peer.identity.payload.resolve_key.clone(),
                 },
@@ -4604,6 +4606,7 @@ mod live {
         let (context, observation, admission, budget) = scoped_peer_current(peer);
         let guard = BootstrapAttachmentGuard::try_new(
             &crate::protocol::commands::ResolveSeat {
+                host: crate::test_support::test_host_locator(),
                 target: observation.target.clone(),
                 operation: peer.identity.payload.resolve_key.clone(),
             },
@@ -4726,6 +4729,7 @@ mod live {
         };
         let (ctx, observation, admission, budget) = scoped_current(f);
         let request = crate::protocol::commands::ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("w1:p2"),
             operation: OperationId::new("preexisting-fixture"),
         };
@@ -4956,6 +4960,7 @@ mod live {
             let response = response.unwrap();
             let guard = BootstrapAttachmentGuard::try_new(
                 &crate::protocol::commands::ResolveSeat {
+                    host: crate::test_support::test_host_locator(),
                     target: HostTargetId::new("w1:p2"),
                     operation: f.peer.identity.payload.resolve_key.clone(),
                 },
@@ -6209,6 +6214,7 @@ mod live {
                     scoped_peer_current(&self.base.peer);
                 BootstrapAttachmentGuard::try_new(
                     &crate::protocol::commands::ResolveSeat {
+                        host: crate::test_support::test_host_locator(),
                         target: observation.target.clone(),
                         operation: identity.plan.payload.keys.resolve.clone(),
                     },
@@ -9286,7 +9292,7 @@ fn current_main_topology_native_argv_preserves_empty_tokens() {
     let namespace = crate::protocol::handoff::HandoffNamespace {
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         state_dir: temp.path().join("state"),
-        host_endpoint: temp.path().join("host.sock"),
+        host_endpoint: "/host.sock".into(),
     };
     let identity = prepare(
         &request,
@@ -9738,7 +9744,7 @@ fn automatic_bootstrap_preparation_freezes_v2_without_invite_or_create_child() {
     let namespace = crate::protocol::handoff::HandoffNamespace {
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         state_dir: temp.path().join("state dir"),
-        host_endpoint: temp.path().join("host.sock"),
+        host_endpoint: "/host.sock".into(),
     };
     let identity = prepare_automatic(
         &request,
@@ -9775,7 +9781,7 @@ fn automatic_bootstrap_preparation_refuses_a_kind_whose_composition_rewrites_the
     let namespace = crate::protocol::handoff::HandoffNamespace {
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         state_dir: temp.path().join("state dir"),
-        host_endpoint: temp.path().join("host.sock"),
+        host_endpoint: "/host.sock".into(),
     };
     let prepare = |kind: &str, argv: &[&str]| {
         let mut request = kind_request(kind, argv);

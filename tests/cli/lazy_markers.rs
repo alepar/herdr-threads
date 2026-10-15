@@ -158,6 +158,7 @@ fn execute<C: LocalClient>(
         "seat-1",
         Duration::from_secs(1),
     )
+    .map(|journal| journal.with_host(herdr_threads::test_support::test_host_locator()))
     .unwrap();
     let parsed = parse_argv(std::iter::once("herdr-threads").chain(argv.iter().copied())).unwrap();
     let spec = parsed.output.clone();
@@ -363,6 +364,7 @@ fn lazy_markers_real_store_preserves_pending_delivery_and_ready_cached_summary()
         INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-2','msg-2','t','s');
         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('prep-2','msg-2','34750f98bd59fcfc946da45aaabe933b','t',2,0,2,0,1,0);").unwrap();
     let claim = CallerClaim {
+        host: herdr_threads::test_support::test_host_locator(),
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s"),
         binding_generation: 1,

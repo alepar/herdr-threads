@@ -951,12 +951,14 @@ fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
                 target: HostTargetId::new("w1:p1"),
             },
             SemanticMutation::ResolveSeat {
+                host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new("w1:p1"),
             },
             0,
         )
         .unwrap();
     let claim = CallerClaim {
+        host: herdr_threads::test_support::test_host_locator(),
         instance: instance.clone(),
         seat: SeatId::new("s"),
         binding_generation: 1,
@@ -969,6 +971,7 @@ fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
         liveness: None,
     };
     let scope = IntentScope::Cooperative {
+        host: herdr_threads::test_support::test_host_locator(),
         instance: instance.clone(),
         seat: claim.seat.clone(),
     };
