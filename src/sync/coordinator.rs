@@ -110,6 +110,8 @@ const LINK_EVENT_SLOTS: usize = 256;
 const REQUEST_SLOTS: usize = 16;
 /// Most links a snapshot lists.
 pub const SNAPSHOT_MAX_LINKS: usize = 64;
+/// Most logs a snapshot lists an advertised counter for.
+pub const SNAPSHOT_MAX_ADVERTISED: usize = 1024;
 /// Capacity of a dialed link's report channel: `Established` and `LinkEnded`.
 pub const DIAL_REPORT_SLOTS: usize = 2;
 /// How long the actor waits on its pacer before looping.
@@ -501,6 +503,10 @@ pub struct SyncSnapshot {
     pub paused_logs: Vec<LogKey>,
     /// Every want is paused until then (no disk headroom).
     pub headroom_until: Option<UtcMillis>,
+    /// The highest counter any active link advertises per log (at most
+    /// [`SNAPSHOT_MAX_ADVERTISED`] logs): `sync status` shows the lag behind
+    /// it.
+    pub advertised: BTreeMap<LogKey, u64>,
 }
 
 enum Request {
@@ -2079,10 +2085,27 @@ impl Actor {
                             let left = i64::try_from(until.0 - now.0).unwrap_or(i64::MAX);
                             UtcMillis(self.deps.clock.utc_now().0.saturating_add(left))
                         });
+                let mut advertised = BTreeMap::<LogKey, u64>::new();
+                for entry in self
+                    .links
+                    .values()
+                    .filter(|entry| entry.mode == LinkMode::Active && !entry.closing)
+                {
+                    for (log, head) in &entry.peer_vector.0 {
+                        if advertised.len() >= SNAPSHOT_MAX_ADVERTISED
+                            && !advertised.contains_key(log)
+                        {
+                            continue;
+                        }
+                        let slot = advertised.entry(*log).or_insert(0);
+                        *slot = (*slot).max(head.counter);
+                    }
+                }
                 let _ = reply.send(SyncSnapshot {
                     links,
                     paused_logs: self.paused.iter().copied().collect(),
                     headroom_until,
+                    advertised,
                 });
             }
         }

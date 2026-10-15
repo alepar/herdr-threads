@@ -81,6 +81,7 @@ pub struct DomainService {
     cooperative_runtime: Option<(u32, Arc<FairWriter>)>,
     bootstrap: Option<BootstrapRuntime>,
     mod_channels: Arc<dyn crate::ports::ModChannels>,
+    sync_admin: Option<Arc<super::sync_admin::SyncAdmin>>,
     pub(super) presentation: super::delivery_presentation::PresentationState,
     pub(super) delivery_pull: Arc<super::delivery_pull::DeliveryPullState>,
 }
@@ -97,6 +98,7 @@ impl DomainService {
             cooperative_runtime: None,
             bootstrap: None,
             mod_channels: Arc::new(crate::ports::NoModChannels),
+            sync_admin: None,
             delivery_pull: Default::default(),
             presentation: Default::default(),
         }
@@ -112,6 +114,12 @@ impl DomainService {
     /// The shared registry of live mod delivery channels (spec D2).
     pub fn with_mod_channels(mut self, channels: Arc<dyn crate::ports::ModChannels>) -> Self {
         self.mod_channels = channels;
+        self
+    }
+    /// The operator and status commands for cross-node sync (ht-5fr.8); a
+    /// daemon without a sync runtime answers them `Unsupported`.
+    pub fn with_sync_admin(mut self, admin: Arc<super::sync_admin::SyncAdmin>) -> Self {
+        self.sync_admin = Some(admin);
         self
     }
     pub fn mod_channels(&self) -> &Arc<dyn crate::ports::ModChannels> {
@@ -1434,6 +1442,30 @@ impl LocalService for DomainService {
                 }
                 let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
                 self.store.record_managed_launch(launch, budget)
+            }
+            Command::Sync(sync) => {
+                let admin = self.sync_admin.as_ref().ok_or_else(|| {
+                    error(ErrorCode::Unsupported, "sync administration unavailable")
+                })?;
+                // Mutating commands are operator actions: only the elected
+                // owner's peer, recorded as `operator:local-user:<uid>`.
+                let actor = if sync.is_mutating() {
+                    Some(
+                        self.operator_owner_uid
+                            .and_then(|uid| OperatorActor::from_peer(peer, uid))
+                            .ok_or_else(|| {
+                                error(
+                                    ErrorCode::Unauthorized,
+                                    "operator peer does not match elected owner",
+                                )
+                            })?,
+                    )
+                } else {
+                    None
+                };
+                admin
+                    .run(sync, actor.as_ref(), budget)
+                    .map(CommandResult::Sync)
             }
             Command::DeliveryPullV2(pull) => self.presentation_pull(&pull, peer, budget),
             Command::DeliveryPresentationConfirmV2(confirm) => {

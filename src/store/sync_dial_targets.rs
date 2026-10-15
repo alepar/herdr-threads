@@ -54,7 +54,7 @@ pub enum DialSource {
 }
 
 impl DialSource {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Explicit => "explicit",
             Self::HerdrMachine => "herdr_machine",
@@ -100,7 +100,7 @@ pub enum DialState {
 }
 
 impl DialState {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Idle => "idle",
             Self::Dialing => "dialing",

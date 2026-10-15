@@ -40,6 +40,7 @@ pub mod service_substrate;
 pub mod summary;
 pub mod sync_contacts;
 pub mod sync_dial_targets;
+pub mod sync_status;
 pub mod thread_registers;
 pub mod topology_handoff;
 pub mod wake;

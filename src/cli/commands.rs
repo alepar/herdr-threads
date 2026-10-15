@@ -806,6 +806,19 @@ enum Top {
         #[command(subcommand)]
         command: LegacySub,
     },
+    /// Cross-node sync peers: the ssh destinations this node dials. `add` and
+    /// `forget` are operator commands (`herdr-threads human peer ...`).
+    Peer {
+        #[command(subcommand)]
+        command: PeerSub,
+    },
+    /// Cross-node sync: status, verification and operator repair. `unapplied
+    /// replay`, `resync` and `clone-cleared` are operator commands
+    /// (`herdr-threads human sync ...`).
+    Sync {
+        #[command(subcommand)]
+        command: SyncSub,
+    },
     /// Print the agent skill (SKILL.md): how agents should use herdr-threads.
     /// Also available as `--skill`. Local only; never contacts the daemon.
     #[command(long_flag = "skill")]
@@ -962,6 +975,70 @@ enum InternalSub {
         #[arg(long)]
         keys: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum PeerSub {
+    /// Dial SSH_DEST (anything `ssh` accepts) to link its node. Re-adding a
+    /// target restarts a stopped one.
+    Add {
+        ssh_dest: String,
+        /// The command to run on the remote side instead of `herdr-threads
+        /// peer --stdio`.
+        #[arg(long)]
+        remote_command: Option<String>,
+    },
+    /// Stop dialing a destination or a node (uuid or tag); deletes nothing.
+    Forget { target: String },
+    /// List every dial target with its state and learned node.
+    List,
+}
+
+#[derive(Subcommand)]
+enum SyncSub {
+    /// Per log counter, head, applied_through, parked and failed counts,
+    /// freeze, lag and skew; per link state, rx logs and last error; repairs,
+    /// open clone evidence with its remedy, store size and headroom.
+    Status {
+        /// Only the logs of this node (uuid or tag).
+        #[arg(long)]
+        log: Option<String>,
+    },
+    /// Check the journal invariants and every stored hash chain's linkage.
+    Verify,
+    /// Parked or failed journal entries: `list` (default) or `replay`.
+    Unapplied {
+        #[command(subcommand)]
+        command: Option<UnappliedSub>,
+    },
+    /// Rebuild the store from a peer's logs: stops this daemon; the next
+    /// start backs up the old store and pulls from NODE.
+    Resync {
+        /// The node (uuid or tag) to rebuild from.
+        #[arg(long)]
+        from: String,
+        /// Only these nodes' logs (uuid or tag); may repeat.
+        #[arg(long = "log")]
+        logs: Vec<String>,
+    },
+    /// Clear open clone evidence about this node (operator provenance) and
+    /// let held repairs run. See `sync status` for which remedy applies.
+    CloneCleared,
+}
+
+#[derive(Subcommand)]
+enum UnappliedSub {
+    /// A page of parked_unknown, parked_dep and failed entries.
+    List {
+        /// Continue after this ingest sequence (the page's `next:`).
+        #[arg(long)]
+        after: Option<u64>,
+        /// Entries per page (1..=64).
+        #[arg(long)]
+        limit: Option<u16>,
+    },
+    /// Re-attempt every parked and failed entry once (bounded).
+    Replay,
 }
 
 #[derive(Subcommand)]
@@ -1955,20 +2032,26 @@ where
             words.join(" ")
         ))));
     }
-    let requires_human = matches!(
+    // The mutating sync commands are operator commands (`human peer add`, ...).
+    let sync_operator = matches!(
         &parsed.action,
-        CliAction::MeInit { .. }
-            | CliAction::TopologyRecover(_)
-            | CliAction::Mutation(
-                MutationSpec::FreshSeat(_)
-                    | MutationSpec::Rebind { .. }
-                    | MutationSpec::Replace { .. }
-                    | MutationSpec::Retire(_)
-                    | MutationSpec::Invite { operator: true, .. }
-                    | MutationSpec::CheckInLifecycle { operator: true, .. }
-            )
-            | CliAction::Wire(WireCommand::ServiceDisconnect(_))
+        CliAction::Wire(WireCommand::Sync(sync)) if sync.is_mutating()
     );
+    let requires_human = sync_operator
+        || matches!(
+            &parsed.action,
+            CliAction::MeInit { .. }
+                | CliAction::TopologyRecover(_)
+                | CliAction::Mutation(
+                    MutationSpec::FreshSeat(_)
+                        | MutationSpec::Rebind { .. }
+                        | MutationSpec::Replace { .. }
+                        | MutationSpec::Retire(_)
+                        | MutationSpec::Invite { operator: true, .. }
+                        | MutationSpec::CheckInLifecycle { operator: true, .. }
+                )
+                | CliAction::Wire(WireCommand::ServiceDisconnect(_))
+        );
     if actor == InvocationActor::Agent && requires_human {
         return Err(ParseFailure::Invalid(invalid(guidance(&original, None))));
     }
@@ -2896,6 +2979,27 @@ fn parse_cli_in_registry(
             }
         }
         Top::PendingOps(args) => CliAction::PendingOps(page(args)?),
+        Top::Peer { command } => CliAction::Wire(match command {
+            PeerSub::Add {
+                ssh_dest,
+                remote_command,
+            } => super::peer::add(ssh_dest, remote_command)?,
+            PeerSub::Forget { target } => super::peer::forget(target)?,
+            PeerSub::List => super::peer::list(),
+        }),
+        Top::Sync { command } => CliAction::Wire(match command {
+            SyncSub::Status { log } => super::sync::status(log)?,
+            SyncSub::Verify => super::sync::verify(),
+            SyncSub::Unapplied { command: None } => super::sync::unapplied_list(None, None)?,
+            SyncSub::Unapplied {
+                command: Some(UnappliedSub::List { after, limit }),
+            } => super::sync::unapplied_list(after, limit)?,
+            SyncSub::Unapplied {
+                command: Some(UnappliedSub::Replay),
+            } => super::sync::unapplied_replay(),
+            SyncSub::Resync { from, logs } => super::sync::resync(from, logs)?,
+            SyncSub::CloneCleared => super::sync::clone_cleared(),
+        }),
         Top::Skill => CliAction::Skill,
         Top::Legacy {
             command: LegacySub::Purge { confirm, operator },
