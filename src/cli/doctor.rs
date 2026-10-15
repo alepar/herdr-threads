@@ -578,6 +578,12 @@ fn collect_local_with_budget(
     }
     report["hooks"] = json!({});
     report["local_harnesses"] = json!({});
+    if let Some(legacy) = report["context"]["state_dir"]
+        .as_str()
+        .and_then(|state| super::legacy::LegacyInventory::scan(std::path::Path::new(state)))
+    {
+        report["legacy"] = legacy.to_json();
+    }
     let entries: Vec<_> = registry
         .registrations()
         .iter()
@@ -1372,6 +1378,7 @@ pub(crate) fn render_text_in(
     if daemon["version_matches"] == json!(false) {
         out.push_str("issue: daemon version differs from this CLI; inspect with --debug\n");
     }
+    out.push_str(&super::legacy::report_lines(&report["legacy"]));
     for registration in &adapters {
         let hooks = &report["hooks"][registration.metadata().id];
         if hooks.is_null() {

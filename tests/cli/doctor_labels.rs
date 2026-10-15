@@ -675,3 +675,41 @@ fn store_only_label() {
         0
     );
 }
+
+/// Kills: a missing legacy line, a live-owner line without the pid, a
+/// settings line per file collapsed, and legacy lines changing the result.
+#[test]
+fn legacy_lines_in_default_text() {
+    let report = json!({
+        "result": "ok",
+        "context": {"ok": true, "state_dir": "/s"},
+        "state_dir": {"exists": true, "safe": true},
+        "daemon": {"state": "healthy"},
+        "legacy": {
+            "path": "/s/instances", "instances": 3, "bytes": 1536,
+            "settings": ["/s/instances/a/settings.json", "/s/instances/b/settings.json"],
+            "live": [{"instance": "a", "pid": 99}],
+            "remedy": "herdr-threads legacy purge",
+        },
+    });
+    let text = render_text(&report);
+    assert!(text.starts_with("doctor: ok\n"), "{text}");
+    assert!(
+        text.contains(
+            "legacy data: /s/instances (3 instances, 1.5 KiB) not used; remove: herdr-threads legacy purge\n"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("legacy daemon running: pid 99\n"), "{text}");
+    assert!(
+        text.contains("legacy settings not carried over: /s/instances/a/settings.json\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("legacy settings not carried over: /s/instances/b/settings.json\n"),
+        "{text}"
+    );
+    let mut without = report.clone();
+    without.as_object_mut().unwrap().remove("legacy");
+    assert!(!render_text(&without).contains("legacy"), "{text}");
+}
