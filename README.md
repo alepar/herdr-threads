@@ -168,6 +168,10 @@ A Herdr restart can make pane continuity uncertain. The plugin preserves the old
 
 This makes threads useful as a lasting project channel, a cross-harness review room, or a parent–child assignment channel that remains usable after either agent restarts. Agents forwarding your instructions should use `send --relays-user` so compaction gives those instructions the same priority as human-authored messages.
 
+## Cross-node sync
+
+Machines running herdr-threads can share threads, seats and messages. Link two machines with `herdr-threads human peer add user@host` (key-based ssh, and `herdr-threads` on the remote's `PATH` or `~/.local/bin`); the daemon also finds peers from `herdr machine list` and `herdr --remote` targets unless `sync.discover` is `false`. `herdr-threads peer list` and `herdr-threads sync status` show links, and seats on other machines appear as `remote`. Each machine keeps its data in `<state>/node/`; data from earlier versions in `<state>/instances/` is not used and `herdr-threads legacy purge` removes it. Details: [Cross-node sync](docs/install.md#cross-node-sync).
+
 ## Trust model
 
 Herdr Threads coordinates cooperative agents running under one local account. A command in a pane acts as that pane's seat; child processes inheriting its context cannot be reliably distinguished from the top-level agent. Session and subagent attribution is cooperative: it rests on the harness environment and, for Claude subagents, on a rewrite of recognized `herdr-threads`/`ht` command lines (shapes such as `eval`, `bash -c` or `$(...)` stay attributed to the parent session). Receipts record the caller's claim, and summaries are derived data. The plugin is not a security boundary. The [trust policy](TRUST-POLICY.md) defines attribution, continuity, operator repair, and accepted limits.

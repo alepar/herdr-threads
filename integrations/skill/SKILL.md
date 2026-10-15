@@ -139,6 +139,10 @@ herdr-threads leave THREAD
 
 `herdr-threads seat list` pages nonretired seats newest first; run `next:` for older seats. `--include-retired` persists in continuation commands. `--human` adds workspace/tab/pane labels for resolved seats; they never prove continuity. `--json` and machine text keep IDs, state and timestamps without host lookup; use `seat inspect SEAT` before operator repair.
 
+## Other machines
+
+Linked machines (nodes) share threads, seats and messages. A seat whose home is another node shows state `remote` in the state column, with no pane columns, and cannot be occupied here. IDs carry a 3-character node tag (`<prefix><tag><8>`; direct threads are `d` plus 10 characters), so a seat ID tells which node it lives on. `node <tag> unreachable since <time>` (one line per unreachable home node, after the seat rows) means messages to its seats wait until that node is reachable again. Peers on linked machines are as cooperative as local ones. Linking nodes (`peer`, `sync`) is the person's job.
+
 ## Warnings
 
 `warnings --seat SEAT` keeps overdue, clear, unavailable-recipient and service-notice history. Inbox/digest counts are **pending** only. Built-in open/clear events and service notices settle once carried by a committed check-in offer or turn-hook delivery page to the checking-in session's binding; fresh offers omit settled events. Exact operation retry may present its retained result. A new event or successor occupant can receive a fresh offer. This is informational delivery, never invitation acceptance, receipt ACK or task completion.
