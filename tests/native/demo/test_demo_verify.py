@@ -80,7 +80,7 @@ class DbFixture(unittest.TestCase):
         for seat in (SEAT, COORD):
             self.db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?,?,?,?,?,?,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
                             (seat, "i", "resolved", "operator_fresh", 1, 0))
-        self.db.execute("INSERT INTO send_manifests VALUES ('prep-1',?, 'i', ?, 5, 0, 3, 1, 1, 0)", (MSG, THREAD))
+        self.db.execute("INSERT INTO send_manifests VALUES ('prep-1',?, 'i', ?, 5, 0, 3, 1, 1, 0, NULL)", (MSG, THREAD))
         self.db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) "
                         "VALUES ('prep-1', ?, ?, 1, 900000, 0)", (THREAD, SEAT))
         self.db.commit()
@@ -99,8 +99,8 @@ class DbFixture(unittest.TestCase):
                         "VALUES (?,?,'acked',?,1,?,1)", (MSG, SEAT, actor, observation))
         if accept:
             self.db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,"
-                            "accepted_at,accepted_actor_seat_id,accepted_generation,accepted_observation) VALUES "
-                            "('inv-1',?,?,1,'accepted',1,0,900000,1,1,?,1,?)", (THREAD, SEAT, actor, observation))
+                            "accepted_at,accepted_actor_seat_id,accepted_generation,accepted_observation,origin_node) VALUES "
+                            "('inv-1',?,?,1,'accepted',1,0,900000,1,1,?,1,?,(SELECT id FROM local_node))", (THREAD, SEAT, actor, observation))
         self.db.commit()
 
     def say(self, command, child=False):
@@ -1671,14 +1671,14 @@ class ClaudeDemo3VerifyTests(unittest.TestCase):
         self.thread = "thread-d8ad9d0a-a8c0-4b1f-818f-f354b76e7414"
         self.db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?,?,?,?,?,?,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
                         (seat, "i", "resolved", "operator_fresh", 2, 0))
-        self.db.execute("INSERT INTO send_manifests VALUES ('prep-3',?, 'i', ?, 6, 0, 3, 1, 1, 0)", (message, self.thread))
+        self.db.execute("INSERT INTO send_manifests VALUES ('prep-3',?, 'i', ?, 6, 0, 3, 1, 1, 0, NULL)", (message, self.thread))
         self.db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) "
                         "VALUES ('prep-3', ?, ?, 1, 900000, 0)", (self.thread, seat))
         self.db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_actor_seat_id,ack_generation,ack_observation,acked_at) "
                         "VALUES (?,?,'acked',?,?,?,?)", (message, seat, receipt["ack_actor_seat_id"], receipt["ack_generation"],
                                                         receipt["ack_observation"], receipt["acked_at"]))
         self.db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,"
-                        "accepted_at,accepted_actor_seat_id,accepted_generation,accepted_observation) VALUES (?,?,?,1,'accepted',1,0,900000,1,?,?,?,?)",
+                        "accepted_at,accepted_actor_seat_id,accepted_generation,accepted_observation,origin_node) VALUES (?,?,?,1,'accepted',1,0,900000,1,?,?,?,?,(SELECT id FROM local_node))",
                         (invitation["id"], self.thread, seat, invitation["accepted_at"], invitation["accepted_actor_seat_id"],
                          invitation["accepted_generation"], invitation["accepted_observation"]))
         self.db.commit()
@@ -2048,7 +2048,7 @@ class MidturnScenarioTests(ScenarioBase):
         self.assertEqual(self.driver.s_midturn_delivery()[0], demo.NOT_EXERCISED)
 
     def insert_mid(self, acked):
-        self.db.execute("INSERT INTO send_manifests VALUES ('prep-2',?, 'i', ?, 6, 0, 4, 1, 1, 0)", (self.MID, THREAD))
+        self.db.execute("INSERT INTO send_manifests VALUES ('prep-2',?, 'i', ?, 6, 0, 4, 1, 1, 0, NULL)", (self.MID, THREAD))
         self.db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) "
                         "VALUES ('prep-2', ?, ?, 1, 900000, 0)", (THREAD, SEAT))
         if acked:
@@ -2264,8 +2264,8 @@ class BurstScenarioTests(ScenarioBase):
         def fake_ht(*argv, tag, **kw):
             if tag.startswith("coordinator:burst-thread"):
                 created.append(f"thread-b{len(created)}")
-                self.db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) "
-                                "VALUES (?,?,?,1,'pending',1,0,900000,1)", (f"inv-{created[-1]}", created[-1], SEAT))
+                self.db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) "
+                                "VALUES (?,?,?,1,'pending',1,0,900000,1,(SELECT id FROM local_node))", (f"inv-{created[-1]}", created[-1], SEAT))
                 self.db.commit()
                 return 0, json.dumps({"thread_id": created[-1]}), ""
             return 0, "{}", ""
@@ -2366,11 +2366,11 @@ class ServiceSendVerdicts(ScenarioBase):
         self.driver.facts["servicesend"] = {"thread": self.SVC, "author": self.AUTHOR, "message": self.SVC_MSG,
                                             "invitation": "inv-r", "requirement": "req-1", "revision": 1}
         self.db.execute("INSERT INTO service_authors(id,instance_id,created_at) VALUES (?,'i',0)", (self.AUTHOR,))
-        self.db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?,'i','t','g',0,0)", (self.SVC,))
+        self.db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?,'i','t','g',0,0,0)", (self.SVC,))
         self.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,author_kind,author_service_id,actor_seat_id,"
                         "decision_seq,decision_at) VALUES (?,?,?,1,'ordinary','do it','programmatic',?,NULL,40,1)",
                         (self.SVC_MSG, "i", self.SVC, self.AUTHOR))
-        self.db.execute("INSERT INTO send_manifests VALUES ('prep-svc',?, 'i', ?, 6, 0, 3, 1, 1, 0)", (self.SVC_MSG, self.SVC))
+        self.db.execute("INSERT INTO send_manifests VALUES ('prep-svc',?, 'i', ?, 6, 0, 3, 1, 1, 0, NULL)", (self.SVC_MSG, self.SVC))
         self.db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) "
                         "VALUES ('prep-svc', ?, ?, 1, 900000, 0)", (self.SVC, SEAT))
         self.db.commit()

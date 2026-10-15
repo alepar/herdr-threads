@@ -75,7 +75,7 @@ fn fixture(live: u64, history: History) -> Connection {
     };
     db.execute_batch(
         "UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1000000;\
-         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);",
+         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);",
     )
     .unwrap();
     // Retired seats take the low ordinals, so only the live partial index can skip them.
@@ -92,13 +92,13 @@ fn fixture(live: u64, history: History) -> Connection {
         ],
     );
     db.execute_batch(
-        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv-l1','t','l1',1,'pending',0,1,100,100);",
+        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv-l1','t','l1',1,'pending',0,1,100,100,(SELECT id FROM local_node));",
     )
     .unwrap();
     each(
         history.settled_invitations,
         &[
-            "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,accepted_at,accepted_actor_seat_id,accepted_generation,accepted_observation) SELECT 'si'||x,'t','l1',x+1,'accepted',0,x+1,100,100,1,'l1',1,'obs' FROM n",
+            "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,accepted_at,accepted_actor_seat_id,accepted_generation,accepted_observation,origin_node) SELECT 'si'||x,'t','l1',x+1,'accepted',0,x+1,100,100,1,'l1',1,'obs',(SELECT id FROM local_node) FROM n",
         ],
     );
     each(

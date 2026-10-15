@@ -582,7 +582,7 @@ fn wake_store(path: &std::path::Path, clock: Arc<TestClock>, boot: uuid::Uuid) -
     let context = crate::store::connection::StoreContext::new(path.into(), clock).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1;
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);").unwrap();
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);").unwrap();
     db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [WAKE_SEAT]).unwrap();
     db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'host',1,1,0,'fresh','occupied','idle','execution',1)", [WAKE_SEAT]).unwrap();
     db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,1,1,?1,'host',1,'codex','session','execution','fresh',0,0,'term-'||?1,'inc')", [WAKE_SEAT]).unwrap();
@@ -591,7 +591,7 @@ fn wake_store(path: &std::path::Path, clock: Arc<TestClock>, boot: uuid::Uuid) -
         [WAKE_SEAT],
     )
     .unwrap();
-    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq) VALUES (?1,'t',?1,1,'pending',0,1000000,1000000,1)", [WAKE_SEAT]).unwrap();
+    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq,origin_node) VALUES (?1,'t',?1,1,'pending',0,1000000,1000000,1,(SELECT id FROM local_node))", [WAKE_SEAT]).unwrap();
     drop(db);
     FailingWakes {
         store: crate::store::SqliteStore::new(

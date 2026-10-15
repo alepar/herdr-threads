@@ -3045,8 +3045,8 @@ impl Fixture {
         db.busy_timeout(Duration::from_secs(10)).unwrap();
         db.execute_batch(&format!(
             "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{n}) \
-             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) \
-             SELECT 'fill-'||x,(SELECT id FROM local_node),'filler','',0,0 FROM n;"
+             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) \
+             SELECT 'fill-'||x,(SELECT id FROM local_node),'filler','',0,0,0 FROM n;"
         ))
         .unwrap();
     }
@@ -3336,8 +3336,8 @@ impl Fixture {
         db.busy_timeout(Duration::from_secs(30)).unwrap();
         db.execute_batch(&format!(
             "BEGIN; \
-             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) \
-             SELECT 'hist',(SELECT id FROM local_node),'history','',0,0; \
+             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) \
+             SELECT 'hist',(SELECT id FROM local_node),'history','',0,0,0; \
              INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('hist','seat',1,1); \
              WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{acked}) \
              INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,event_offset) \
@@ -3346,8 +3346,8 @@ impl Fixture {
              SELECT id,'hist','seat','pending',100 FROM messages WHERE thread_id='hist'; \
              UPDATE receipts SET state='acked',ack_actor_seat_id='seat',ack_generation=1,ack_observation='obs',acked_at=1 WHERE thread_id='hist'; \
              WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{warns}) \
-             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) \
-             SELECT 'hist-i'||x,'hist','seat',x+1,'pending',0,1,100,100 FROM n; \
+             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) \
+             SELECT 'hist-i'||x,'hist','seat',x+1,'pending',0,1,100,100,(SELECT id FROM local_node) FROM n; \
              INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) \
              SELECT 'hist-w'||ordinal,(SELECT id FROM local_node),'hist',10000000+ordinal,'warn','{{}}',0,1,5000000+ordinal FROM invitations WHERE thread_id='hist'; \
              INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) \
@@ -3462,8 +3462,8 @@ impl Fixture {
         conn.busy_timeout(Duration::from_secs(30)).unwrap();
         conn.execute_batch(
             "BEGIN; \
-             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) \
-             SELECT 'hist',(SELECT id FROM local_node),'history','',0,0; \
+             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) \
+             SELECT 'hist',(SELECT id FROM local_node),'history','',0,0,0; \
              INSERT INTO memberships(thread_id,seat_id,state) VALUES ('hist','peer','joined'),('hist','seat','joined'); \
              INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('hist','peer',1,1),('hist','seat',1,1); \
              COMMIT;",
@@ -3477,8 +3477,8 @@ impl Fixture {
         // accept writer leaves them (state UPDATE, v8 triggers firing).
         conn.execute_batch(&format!(
             "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{acked}) \
-             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) \
-             SELECT 'settled-'||x,'hist','seat',x+10,'pending',0,1,100,100 FROM n; \
+             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) \
+             SELECT 'settled-'||x,'hist','seat',x+10,'pending',0,1,100,100,(SELECT id FROM local_node) FROM n; \
              UPDATE invitations SET state='accepted',accepted_at=2,accepted_actor_seat_id='seat',accepted_generation=1,accepted_observation='obs' WHERE id LIKE 'settled-%';"
         ))
         .unwrap();
@@ -3623,8 +3623,8 @@ impl Fixture {
         conn.busy_timeout(Duration::from_secs(30)).unwrap();
         conn.execute_batch(
             "BEGIN; \
-             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) \
-             SELECT 'hist',(SELECT id FROM local_node),'history','',0,0; \
+             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) \
+             SELECT 'hist',(SELECT id FROM local_node),'history','',0,0,0; \
              INSERT INTO memberships(thread_id,seat_id,state) VALUES ('hist','peer','joined'),('hist','seat','joined'); \
              INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('hist','peer',1,1),('hist','seat',1,1); \
              COMMIT;",
@@ -3780,8 +3780,8 @@ impl Fixture {
         let (context, mut conn) = self.history_writer();
         conn.execute_batch(
             "BEGIN; \
-             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) \
-             SELECT 'hist',(SELECT id FROM local_node),'history','',0,0; \
+             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) \
+             SELECT 'hist',(SELECT id FROM local_node),'history','',0,0,0; \
              INSERT INTO memberships(thread_id,seat_id,state) VALUES ('hist','peer','joined'),('hist','seat','joined'); \
              INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('hist','peer',1,1),('hist','seat',1,1); \
              COMMIT;",

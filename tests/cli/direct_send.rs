@@ -1892,11 +1892,8 @@ fn historical_ensure_omits_new_result_and_modern_reuse_reports_old_timed_origin_
     assert_eq!(modern["data"]["outcome"], "existing_pending");
     assert_eq!(modern["data"]["invitation"]["confirmation"], "require_ack");
     assert_eq!(modern["data"]["invitation"]["effective_deadline_at"], row.0);
-    assert_eq!(
-        modern["data"]["invitation"]["inviter"],
-        serde_json::Value::Null
-    );
-    assert_eq!(row.1, None);
+    assert_eq!(modern["data"]["invitation"]["inviter"], "seat-a");
+    assert_eq!(row.1.as_deref(), Some("seat-a"));
     let replay = ensure_call(&f, ensure_command(false, None, "historical-initial")).unwrap();
     assert_eq!(serde_json::to_value(replay).unwrap(), historical);
 }

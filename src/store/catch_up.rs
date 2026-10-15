@@ -478,7 +478,7 @@ mod tests {
             .open_writer()
             .unwrap();
         db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at,home_node,is_local,host_id) VALUES ('s', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
-        db.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('t', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'purpose', 0, 0)", []).unwrap();
+        db.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at,journaled) VALUES ('t', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'purpose', 0, 0,0)", []).unwrap();
         (db, SeatId::new("s"), ThreadId::new("t"))
     }
 

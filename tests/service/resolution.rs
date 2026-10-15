@@ -696,13 +696,13 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
     for n in 0..25 {
         let thread = format!("selected-thread-{n:02}");
         let invitation = format!("selected-invite-{n:02}");
-        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,?2,'selected topic','goal',0,0)", rusqlite::params![thread, fixture.descriptor.node_uuid.to_string()]).unwrap();
+        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,?2,'selected topic','goal',0,0,0)", rusqlite::params![thread, fixture.descriptor.node_uuid.to_string()]).unwrap();
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES (?1,?2,'invited')",
             rusqlite::params![thread, seat.as_str()],
         )
         .unwrap();
-        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES (?1,?2,?3,1,'pending',0,?4,9223372036854775807,300000)", rusqlite::params![invitation, thread, seat.as_str(), n+1]).unwrap();
+        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES (?1,?2,?3,1,'pending',0,?4,9223372036854775807,300000,(SELECT id FROM local_node))", rusqlite::params![invitation, thread, seat.as_str(), n+1]).unwrap();
     }
     db.execute(
         "UPDATE local_node SET decision_seq=25 WHERE id=?1",
@@ -1836,11 +1836,11 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
     let successor_literal = format!("successor-search-{}", Uuid::new_v4().simple());
     let db = fixture.db();
     db.execute(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('search-thread',?1,?2,'goal',0,0)",
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('search-thread',?1,?2,'goal',0,0,0)",
         rusqlite::params![fixture.descriptor.node_uuid.to_string(), literal],
     ).unwrap();
     db.execute(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('successor-thread',?1,?2,'goal',0,0)",
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('successor-thread',?1,?2,'goal',0,0,0)",
         rusqlite::params![fixture.descriptor.node_uuid.to_string(), successor_literal],
     ).unwrap();
     db.execute(
@@ -1984,7 +1984,7 @@ fn composed_search_admits_one_active_four_waiters_and_releases_all_slots() {
     let fixture = Fixture::new(false);
     let literal = format!("queue-search-{}", Uuid::new_v4().simple());
     fixture.db().execute(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('queue-thread',?1,?2,'goal',0,0)",
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('queue-thread',?1,?2,'goal',0,0,0)",
         rusqlite::params![fixture.descriptor.node_uuid.to_string(), literal],
     ).unwrap();
     let query = Command::Search(SearchQuery {
@@ -2255,8 +2255,8 @@ fn elected_hung_snapshot_keeps_health_deadlines_and_owner_until_physical_join() 
     let instance = fixture.descriptor.node_uuid.to_string();
     let db = fixture.db();
     db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('due',?1,'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&instance]).unwrap();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('due-thread',?1,'topic','goal',0,0)", [&instance]).unwrap();
-    db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('due-thread','due','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('due-inv','due-thread','due',1,'pending',0,1,100,100);").unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('due-thread',?1,'topic','goal',0,0,0)", [&instance]).unwrap();
+    db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('due-thread','due','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('due-inv','due-thread','due',1,'pending',0,1,100,100,(SELECT id FROM local_node));").unwrap();
     assert!(matches!(
         LocalClient::call(&fixture.client(), Command::Health, &fixture.budget()).unwrap(),
         CommandResult::Health(_)
@@ -2853,7 +2853,7 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
     };
     let db = fixture.db();
     db.execute(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('handoff',?1,'topic','goal',0,0)",
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('handoff',?1,'topic','goal',0,0,0)",
         [fixture.descriptor.node_uuid.to_string()],
     )
     .unwrap();

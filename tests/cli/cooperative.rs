@@ -4524,7 +4524,7 @@ mod main539_composition {
             db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?3,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![claim.seat.as_str(),claim.instance,claim.target.as_str()]).unwrap();
             db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),?2,'b',1,1,?3,'fresh','term','inc','coherent_enumeration',1)", rusqlite::params![claim.instance,claim.target.as_str(),clock.utc_now().0]).unwrap();
             db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,1,?2,'b',1,?3,?4,?5,?6,?7,'term','inc')", rusqlite::params![claim.seat.as_str(),claim.target.as_str(),if human {"human"} else {"codex"},claim.native_session.as_str(),claim.execution.as_str(),if human {"operator_human"} else {"cooperative_top_level"},clock.utc_now().0]).unwrap();
-            db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t',?1,'topic','goal',0,0)", [&claim.instance]).unwrap();
+            db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t',?1,'topic','goal',0,0,0)", [&claim.instance]).unwrap();
             drop(db);
             let store = Arc::new(
                 crate::store::SqliteStore::new(context, claim.instance.clone(), Default::default())

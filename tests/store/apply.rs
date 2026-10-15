@@ -1147,8 +1147,8 @@ fn is_local_seat_by_home() {
              VALUES ((SELECT id FROM local_node),'local',0);\
              INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) \
              VALUES('s-local',(SELECT id FROM local_node),'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
-             INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind) \
-             VALUES('s-remote',(SELECT id FROM local_node),'remote','native',1,0,'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',0,'agent');",
+             INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published) \
+             VALUES('s-remote',(SELECT id FROM local_node),'remote','native',1,0,'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',0,'agent',1);",
         )
         .unwrap();
     let check = |a: &mut Node, id: &str| {

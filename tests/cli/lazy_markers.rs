@@ -355,7 +355,7 @@ fn lazy_markers_real_store_preserves_pending_delivery_and_ready_cached_summary()
     db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=10000;
         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-s',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,terminal_id,incarnation,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('s',1,1,'pane-s','term-s','inc-s','host',1,'codex','ns','es','cooperative_top_level',0,0);
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,11);").unwrap();
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,11,0);").unwrap();
     let full_body = format!("full lazy source {}", "x".repeat(180));
     for n in 1..=10 {
         db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode,author_role) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','s',?3,?2,0,'lazy','agent')",rusqlite::params![format!("msg-{n}"),n,full_body]).unwrap();
@@ -719,7 +719,7 @@ fn lazy_markers_manifest_warning_history_and_body_render_readonly() {
     let db = context.open_writer().unwrap();
     db.execute_batch("UPDATE local_node SET decision_seq=10;
         INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES('s','34750f98bd59fcfc946da45aaabe933b','unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,4);
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,4,0);
         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('p','34750f98bd59fcfc946da45aaabe933b','scope','op',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
         INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES('p','key','warn-id','s',1,1,'{}');
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at,delivery_mode) VALUES('ordinary-id','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','ordinary control',10,0,'ordinary'),('lazy-id','34750f98bd59fcfc946da45aaabe933b','t',3,'ordinary','lazy control',11,0,'lazy');

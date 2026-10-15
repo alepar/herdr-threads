@@ -3212,7 +3212,7 @@ fn managed_release_cancels_only_required_invitation_and_replay_retains_history()
         ErrorCode::OperationPayloadMismatch
     );
     let ordinary = ThreadId::new("ordinary-2");
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',100,100)",
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',100,100,0)",
         [ordinary.as_str()]).unwrap();
     let ordinary_invite = ServiceOperation::Invite(ServiceInvite {
         thread: ordinary.clone(),
@@ -4135,7 +4135,7 @@ fn operator_orphan_invite_uses_configured_duration_and_keeps_pending_deadline() 
         commands::OperatorOrphanInvite,
     };
     let (context, mut conn, path, _) = fixture(100);
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,archived) VALUES ('orphan','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,1)",[]).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,archived,journaled) VALUES ('orphan','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,1,0)",[]).unwrap();
     let actor = OperatorActor::from_peer(PeerIdentity::from_kernel(501), 501).unwrap();
     let command = OperatorOrphanInvite {
         thread: ThreadId::new("orphan"),
@@ -5685,7 +5685,7 @@ fn mixed_retirement_preserves_committed_prefix_across_failed_quantum_and_reopen(
     };
     let (context, mut conn, path, clock) = fixture(100);
     for thread in ["retire-a", "retire-b"] {
-        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", [thread]).unwrap();
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", [thread]).unwrap();
     }
     conn.execute("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('retire-a','s2','joined',0)", []).unwrap();
     conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('retire-a','s2',1,1)", []).unwrap();
@@ -5694,7 +5694,7 @@ fn mixed_retirement_preserves_committed_prefix_across_failed_quantum_and_reopen(
         [],
     )
     .unwrap();
-    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES ('retire-invite','retire-b','s2',1,'pending',0,90,90,1)", []).unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq,origin_node) VALUES ('retire-invite','retire-b','s2',1,'pending',0,90,90,1,(SELECT id FROM local_node))", []).unwrap();
     for n in 0..18 {
         let id = format!("retire-message-{n}");
         conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'retire-a',?2,'ordinary','body',0,?2)", rusqlite::params![id,n+1]).unwrap();
@@ -6057,7 +6057,7 @@ fn retirement_fence_allows_orphan_invite_before_membership_cleanup() {
     };
     let (context, mut conn, path, _) = fixture(100);
     for thread in ["new-orphan", "still-joined"] {
-        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)",[thread]).unwrap();
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)",[thread]).unwrap();
         conn.execute("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES (?1,'s2','joined',0)",[thread]).unwrap();
         conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,'s2',1,1)",[thread]).unwrap();
     }
@@ -6159,7 +6159,7 @@ fn retirement_fence_is_immediate_and_cleanup_is_bounded_with_ordered_warnings() 
         protocol::time::{CallBudget, Cancellation},
     };
     let (context, mut conn, path, _) = fixture(100);
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", []).unwrap();
     conn.execute(
         "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s2','joined',0)",
         [],
@@ -6296,7 +6296,7 @@ fn retirement_materializes_unprojected_manifest_receipts_in_bounded_turns() {
         protocol::time::{CallBudget, Cancellation},
     };
     let (context, mut conn, path, _) = fixture(100);
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('logical','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)",[]).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('logical','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)",[]).unwrap();
     conn.execute("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('logical','s2','joined',0)",[]).unwrap();
     for n in 0..20 {
         let prep = format!("p{n}");
@@ -6415,9 +6415,9 @@ fn retirement_materializes_unprojected_manifest_receipts_in_bounded_turns() {
 }
 
 fn seed_structural_continuity_obligations(conn: &Connection) {
-    conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('fix3-thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);
+    conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('fix3-thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('fix3-thread','s1','invited');
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('fix3-invite','fix3-thread','s1',1,'pending',0,(SELECT decision_seq+1 FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'),300,300);
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('fix3-invite','fix3-thread','s1',1,'pending',0,(SELECT decision_seq+1 FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'),300,300,(SELECT id FROM local_node));
         UPDATE local_node SET decision_seq=decision_seq+1 WHERE id='34750f98bd59fcfc946da45aaabe933b';
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('fix3-message','34750f98bd59fcfc946da45aaabe933b','fix3-thread',1,'ordinary','body',(SELECT decision_seq+1 FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'),0);
         UPDATE local_node SET decision_seq=decision_seq+1 WHERE id='34750f98bd59fcfc946da45aaabe933b';
@@ -7302,7 +7302,7 @@ fn retirement_quantum_failure_retains_bounded_error_until_successful_progress() 
         protocol::time::{CallBudget, Cancellation},
     };
     let (context, mut conn, path, clock) = fixture(100);
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('fail-thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,3)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('fail-thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,3,0)", []).unwrap();
     conn.execute("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('fail-thread','s2','joined',0)", []).unwrap();
     conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('fail-thread','s2',1,1)", []).unwrap();
     for n in 1..=2 {
@@ -7455,7 +7455,7 @@ fn partial_retirement_progress_after_failure_clears_error_before_completion() {
         protocol::time::{CallBudget, Cancellation},
     };
     let (context, mut conn, path, clock) = fixture(100);
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('long-thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,31)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('long-thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,31,0)", []).unwrap();
     conn.execute("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('long-thread','s2','joined',0)", []).unwrap();
     conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('long-thread','s2',1,1)", []).unwrap();
     for n in 1..=30 {
@@ -7558,7 +7558,7 @@ fn idle_retirement_quantum_returns_and_keeps_retained_error() {
         protocol::time::{CallBudget, Cancellation},
     };
     let (context, mut conn, path, clock) = fixture(100);
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('idle-thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,3)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('idle-thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,3,0)", []).unwrap();
     conn.execute("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('idle-thread','s2','joined',0)", []).unwrap();
     conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('idle-thread','s2',1,1)", []).unwrap();
     for n in 1..=2 {
@@ -8415,7 +8415,7 @@ fn reconfirm_structure_of_last_unresolved_seat_lifts_and_not_before() {
 fn b5_seed_obligations(conn: &Connection, seat: &str, tag: &str) {
     let (joined, invited) = (format!("{tag}-joined"), format!("{tag}-invited"));
     for thread in [&joined, &invited] {
-        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", [thread]).unwrap();
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", [thread]).unwrap();
     }
     conn.execute(
         "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES (?1,?2,'joined',0)",
@@ -8432,7 +8432,7 @@ fn b5_seed_obligations(conn: &Connection, seat: &str, tag: &str) {
         [&invited, seat],
     )
     .unwrap();
-    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES (?1,?2,?3,1,'pending',0,90,90,1)",
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq,origin_node) VALUES (?1,?2,?3,1,'pending',0,90,90,1,(SELECT id FROM local_node))",
         [&format!("{tag}-invite"), &invited, seat]).unwrap();
     let message = format!("{tag}-message");
     conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,?2,1,'ordinary','body',0,?3)", rusqlite::params![message, joined, if tag == "new" { 2 } else { 3 }]).unwrap();
@@ -9266,7 +9266,7 @@ fn c1_history(conn: &Connection, messages: i64) {
 
 /// [`c1_history`] with every message body the SQL expression `body` (messages are immutable).
 fn c1_history_body(conn: &Connection, messages: i64, body: &str) {
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('ct','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('ct','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", []).unwrap();
     conn.execute(
         "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('ct','s1','joined')",
         [],
@@ -10862,7 +10862,7 @@ fn invitation_rejection_frozen_members_and_binding_scoped_prefix() {
         0
     );
     // A second exact invitation can be independently refused, producing a new notice.
-    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,state,created_at,deadline_at,episode,created_decision_seq,frozen_duration_ms) SELECT 'second-refusal',thread_id,seat_id,'pending',created_at,deadline_at,episode+1,created_decision_seq,frozen_duration_ms FROM invitations WHERE id=?1", [invitation.as_str()]).unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,state,created_at,deadline_at,episode,created_decision_seq,frozen_duration_ms,origin_node,inviter_seat_id) SELECT 'second-refusal',thread_id,seat_id,'pending',created_at,deadline_at,episode+1,created_decision_seq,frozen_duration_ms,(SELECT id FROM local_node),COALESCE(inviter_seat_id,seat_id) FROM invitations WHERE id=?1", [invitation.as_str()]).unwrap();
     let mut second = command.clone();
     second.invitation = InvitationId::new("second-refusal");
     second.operation = OperationId::new("second-refusal");
@@ -11298,7 +11298,7 @@ fn invitation_rejection_leaves_message_receipts_and_deadlines_unchanged() {
 fn invitation_rejection_history_does_not_expand_due_scan_work() {
     let (context, mut conn, path, _, thread, invitation) = rejection_offer();
     // Fill retained terminal history without involving clocks or external processes.
-    conn.execute("WITH RECURSIVE n(v) AS (SELECT 2 UNION ALL SELECT v+1 FROM n WHERE v<2000) INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) SELECT 'history-'||v,?1,'s2',v,'pending',100,v,10,110 FROM n", [thread.as_str()]).unwrap();
+    conn.execute("WITH RECURSIVE n(v) AS (SELECT 2 UNION ALL SELECT v+1 FROM n WHERE v<2000) INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,origin_node,inviter_seat_id) SELECT 'history-'||v,?1,'s2',v,'pending',100,v,10,110,(SELECT id FROM local_node),'s2' FROM n", [thread.as_str()]).unwrap();
     conn.execute("INSERT INTO invitation_rejections(invitation_id,reason,rejected_at,actor_seat_id,generation,observation) SELECT id,'outside role',100,'s2',1,'cooperative_top_level:test' FROM invitations WHERE thread_id=?1",[thread.as_str()]).unwrap();
     let mut statement = conn
         .prepare(crate::store::invitation_due::INVITATION_DUE_SELECTION)
@@ -11509,7 +11509,7 @@ mod topology_attachment;
 /// disconnected (`end_event`), each with a cursor row on thread `t`.
 fn multi_binding_retirement_fixture() -> (StoreContext, Connection, PathBuf, Arc<FixedClock>) {
     let (context, conn, path, clock) = fixture(100);
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", []).unwrap();
     for (id, session, live) in [
         ("b1", "sess-1", true),
         ("b2", "sess-2", true),
@@ -11618,7 +11618,7 @@ fn retirement_with_two_bindings_retires_memberships_settles_receipts_closes_invi
         protocol::time::{CallBudget, Cancellation},
     };
     let (context, mut conn, path, clock) = multi_binding_retirement_fixture();
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", []).unwrap();
     conn.execute(
         "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s2','joined',0)",
         [],
@@ -11630,7 +11630,7 @@ fn retirement_with_two_bindings_retires_memberships_settles_receipts_closes_invi
         [],
     )
     .unwrap();
-    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES ('inv','u','s2',1,'pending',0,90,90,1)", []).unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq,origin_node) VALUES ('inv','u','s2',1,'pending',0,90,90,1,(SELECT id FROM local_node))", []).unwrap();
     conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m1','t',1,'ordinary','body',0,2)", []).unwrap();
     conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('m1','t','s2','pending',90,0,90)", []).unwrap();
     conn.execute("UPDATE threads SET next_sequence=5 WHERE id='t'", [])
@@ -11697,14 +11697,14 @@ fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not() 
     for recent in [false, true] {
         for changed in ["first", "later"] {
             let (context, conn, path, clock) = bound_fixture(100);
-            conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('first','34750f98bd59fcfc946da45aaabe933b','needle','goal',0,0),('later','34750f98bd59fcfc946da45aaabe933b','needle','goal',0,0);
+            conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('first','34750f98bd59fcfc946da45aaabe933b','needle','goal',0,0,0),('later','34750f98bd59fcfc946da45aaabe933b','needle','goal',0,0,0);
                 INSERT INTO memberships(thread_id,seat_id,state) VALUES ('first','s1','joined'),('later','s1','joined');").unwrap();
             conn.execute(
                 "UPDATE threads SET topic='unrelated' WHERE id=?1",
                 [changed],
             )
             .unwrap();
-            conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('anchor-a','34750f98bd59fcfc946da45aaabe933b','needle','goal',0,0),('anchor-b','34750f98bd59fcfc946da45aaabe933b','needle','goal',0,0);").unwrap();
+            conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('anchor-a','34750f98bd59fcfc946da45aaabe933b','needle','goal',0,0,0),('anchor-b','34750f98bd59fcfc946da45aaabe933b','needle','goal',0,0,0);").unwrap();
             let store = SqliteStore::new(
                 StoreContext::new(path.clone(), clock).with_test_host(),
                 "34750f98bd59fcfc946da45aaabe933b",

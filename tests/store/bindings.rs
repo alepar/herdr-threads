@@ -10,7 +10,7 @@ pub(crate) fn db() -> Connection {
     db.execute_batch("PRAGMA foreign_keys=ON;
         UPDATE local_node SET decision_seq=30;
         INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native',4,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);
         INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s','joined',1);
         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m1','t',1,'ordinary','b',1,1),('34750f98bd59fcfc946da45aaabe933b','m2','t',2,'ordinary','b',2,2);").unwrap();
     db

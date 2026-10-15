@@ -125,7 +125,7 @@ fn base(conn: &Connection) {
     conn.execute_batch(
         "UPDATE local_node SET decision_seq=100;\
          INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('o','34750f98bd59fcfc946da45aaabe933b','resolved','native','po',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
-         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t1','34750f98bd59fcfc946da45aaabe933b','a','g',0,0),('t2','34750f98bd59fcfc946da45aaabe933b','b','g',0,0),('t4','34750f98bd59fcfc946da45aaabe933b','d','g',0,0);",
+         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t1','34750f98bd59fcfc946da45aaabe933b','a','g',0,0,0),('t2','34750f98bd59fcfc946da45aaabe933b','b','g',0,0,0),('t4','34750f98bd59fcfc946da45aaabe933b','d','g',0,0,0);",
     )
     .unwrap();
 }
@@ -184,7 +184,7 @@ fn fingerprint_changes_on_each_call_site() {
         &store,
         &conn,
         "invitation",
-        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv-s','t1','s',1,'pending',0,3,100,100);",
+        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv-s','t1','s',1,'pending',0,3,100,100,(SELECT id FROM local_node));",
     );
     assert_eq!(fp(&store).other_pending, 1);
 
@@ -194,7 +194,7 @@ fn fingerprint_changes_on_each_call_site() {
     let (store, conn, _) = fixture();
     base(&conn);
     conn.execute_batch(
-        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv-o','t1','o',1,'pending',0,30,100,100);\
+        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv-o','t1','o',1,'pending',0,30,100,100,(SELECT id FROM local_node));\
          INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t4','s',1,1),('t4','o',1,1);\
          INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('w-member','34750f98bd59fcfc946da45aaabe933b','t4',1,'warn','{}',0,12,1);",
     )
@@ -616,7 +616,7 @@ fn commit_notifies_the_mod_observer_for_attention_sources_only() {
     assert_eq!(count.load(Ordering::SeqCst), 2);
     // Only an unlisted table (a topic change) stays silent.
     write(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('tx','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);",
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('tx','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);",
     );
     write("UPDATE threads SET topic='renamed' WHERE id='tx';");
     assert_eq!(count.load(Ordering::SeqCst), 2);

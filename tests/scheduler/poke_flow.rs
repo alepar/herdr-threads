@@ -311,7 +311,7 @@ impl Fixture {
         for (n, thread) in threads.iter().enumerate() {
             let message = format!("m-{thread}");
             db.execute(
-                "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,2)",
+                "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,2,0)",
                 [thread],
             )
             .unwrap();
@@ -1001,7 +1001,7 @@ fn receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path(
         db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane2',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('recipient','34750f98bd59fcfc946da45aaabe933b','unresolved','native',NULL,0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
         INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'pane2','host',1,1,0,'fresh','term-pane','inc','native_current_target',1);
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES ('s2',1,1,'pane2','host',0,'codex','session2','original-sender2','cooperative_top_level',0,0,'term-pane','inc',4242,1);
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,3);
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,3,0);
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','left'),('t','s2','left');").unwrap();
         for (n, seat) in [(1, "s"), (2, "s2")] {
             db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,author_kind,actor_seat_id,decision_seq,decision_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','handoff','native',?3,?2,0)",rusqlite::params![format!("source-{n}"),n,seat]).unwrap();

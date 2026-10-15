@@ -1658,7 +1658,7 @@ fn fixture(ordinary: usize) -> Fixture {
         db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat, target]).unwrap();
         db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?1,'inc','coherent_enumeration',1)", [target]).unwrap();
     }
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,1)", []).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,1,0)", []).unwrap();
     for seat in ["s", "x", "c"] {
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",
@@ -2423,8 +2423,8 @@ fn pending_invitation(f: &Fixture) {
             |r| r.get(0),
         )
         .unwrap();
-    f.db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,1)", []).unwrap();
-    f.db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES('inv','t2','s',1,'pending',0,?1,300,300)", [decision]).unwrap();
+    f.db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,1,0)", []).unwrap();
+    f.db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,origin_node) VALUES('inv','t2','s',1,'pending',0,?1,300,300,(SELECT id FROM local_node))", [decision]).unwrap();
     bump_wake_attention(f);
 }
 fn pull_with_prefix(
@@ -3057,7 +3057,7 @@ fn overdue_notice_about_x(f: &Fixture, id: &str) {
 fn rejection_notice(f: &Fixture, id: &str) {
     let sequence = next_sequence(&f.db);
     let inv = format!("inv-{id}");
-    f.db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES(?1,'t','x',9,'pending',0,1,300,300)", [&inv]).unwrap();
+    f.db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,origin_node) VALUES(?1,'t','x',9,'pending',0,1,300,300,(SELECT id FROM local_node))", [&inv]).unwrap();
     f.db.execute("INSERT INTO invitation_rejections(invitation_id,reason,rejected_at,actor_seat_id,generation,observation) VALUES (?1,'outside role',100,'x',1,'cooperative_top_level:test')", [&inv]).unwrap();
     let json =
         format!(r#"{{"action":"reject","seat":"x","invitation":"{inv}","reason":"outside role"}}"#);

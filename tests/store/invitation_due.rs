@@ -32,7 +32,7 @@ fn setup(now: i64) -> (StoreContext, Connection, Arc<TestClock>, PathBuf) {
     let conn = context.open_writer().unwrap();
     conn.execute("PRAGMA foreign_keys=OFF", []).unwrap();
     conn.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at,home_node,is_local,host_id) VALUES ('seat', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
-    conn.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('thread', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'purpose', 0, 0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at,journaled) VALUES ('thread', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'purpose', 0, 0,0)", []).unwrap();
     (context, conn, clock, path)
 }
 
@@ -41,7 +41,7 @@ fn invitation(conn: &Connection, id: &str, episode: i64, deadline: i64, state: &
         "UPDATE local_node SET decision_seq=decision_seq+1 WHERE id='34750f98bd59fcfc946da45aaabe933b' RETURNING decision_seq",
         [], |row| row.get(0),
     ).unwrap();
-    conn.execute("INSERT INTO invitations(id, thread_id, seat_id, episode, state, created_decision_seq, created_at, frozen_duration_ms, deadline_at, accepted_at, accepted_actor_seat_id, accepted_generation, accepted_observation) VALUES (?1, 'thread', 'seat', ?2, ?3, ?6, 0, ?4, ?5, CASE WHEN ?3='accepted' THEN 0 END, CASE WHEN ?3='accepted' THEN 'seat' END, CASE WHEN ?3='accepted' THEN 1 END, CASE WHEN ?3='accepted' THEN 'test-observation' END)",
+    conn.execute("INSERT INTO invitations(id, thread_id, seat_id, episode, state, created_decision_seq, created_at, frozen_duration_ms, deadline_at, accepted_at, accepted_actor_seat_id, accepted_generation, accepted_observation,origin_node) VALUES (?1, 'thread', 'seat', ?2, ?3, ?6, 0, ?4, ?5, CASE WHEN ?3='accepted' THEN 0 END, CASE WHEN ?3='accepted' THEN 'seat' END, CASE WHEN ?3='accepted' THEN 1 END, CASE WHEN ?3='accepted' THEN 'test-observation' END,(SELECT id FROM local_node))",
         params![id, episode, state, deadline, deadline, decision_seq]).unwrap();
 }
 
@@ -263,7 +263,7 @@ fn thirty_thousand_settled_rows_do_not_delay_a_new_due_invitation() {
     let (context, mut conn, _, _) = setup(100);
     let tx = conn.transaction().unwrap();
     {
-        let mut insert = tx.prepare("INSERT INTO invitations(id, thread_id, seat_id, episode, state, created_decision_seq, created_at, frozen_duration_ms, deadline_at, accepted_at, accepted_actor_seat_id, accepted_generation, accepted_observation) VALUES (?1, 'thread', 'seat', ?2, 'accepted', ?2, 0, 100, 100, 0, 'seat', 1, 'test-observation')").unwrap();
+        let mut insert = tx.prepare("INSERT INTO invitations(id, thread_id, seat_id, episode, state, created_decision_seq, created_at, frozen_duration_ms, deadline_at, accepted_at, accepted_actor_seat_id, accepted_generation, accepted_observation,origin_node) VALUES (?1, 'thread', 'seat', ?2, 'accepted', ?2, 0, 100, 100, 0, 'seat', 1, 'test-observation',(SELECT id FROM local_node))").unwrap();
         for n in 1..=30_000 {
             insert.execute(params![format!("settled-{n}"), n]).unwrap();
         }
@@ -286,7 +286,7 @@ fn due_slice_accepts_the_full_hundred_candidate_admission() {
     let (context, mut conn, _, _) = setup(100);
     let tx = conn.transaction().unwrap();
     {
-        let mut insert = tx.prepare("INSERT INTO invitations(id, thread_id, seat_id, episode, state, created_decision_seq, created_at, frozen_duration_ms, deadline_at) VALUES (?1, 'thread', 'seat', ?2, 'pending', ?2, 0, 100, 100)").unwrap();
+        let mut insert = tx.prepare("INSERT INTO invitations(id, thread_id, seat_id, episode, state, created_decision_seq, created_at, frozen_duration_ms, deadline_at,origin_node) VALUES (?1, 'thread', 'seat', ?2, 'pending', ?2, 0, 100, 100,(SELECT id FROM local_node))").unwrap();
         for n in 1..=101 {
             insert.execute(params![format!("due-{n}"), n]).unwrap();
         }
@@ -401,7 +401,7 @@ fn lazy_invitation_is_discoverable_but_never_due_or_waking() {
     ).unwrap());
 
     conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('origin','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
-    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('lazy','thread','seat',1,'pending',1,0,100,100,'lazy','origin')", []).unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id,origin_node) VALUES ('lazy','thread','seat',1,'pending',1,0,100,100,'lazy','origin',(SELECT id FROM local_node))", []).unwrap();
     let batch = scan_invitation_due_batch(&context, &mut conn, None, 100).unwrap();
     assert_eq!((batch.inspected, batch.warnings_added), (0, 0));
     let tx = conn.transaction().unwrap();
@@ -487,7 +487,7 @@ fn invitation_snapshot_finishes_with_250_initial_rows_despite_continuing_arrival
 fn timed_invitation_warns_original_inviter_after_leaving_and_clear_is_passive() {
     let (context, mut conn, _, _) = setup(100);
     conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('origin','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
-    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('timed','thread','seat',1,'pending',1,0,100,100,'require_ack','origin')", []).unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id,origin_node) VALUES ('timed','thread','seat',1,'pending',1,0,100,100,'require_ack','origin',(SELECT id FROM local_node))", []).unwrap();
     assert_eq!(
         scan_invitation_due_batch(&context, &mut conn, None, 100)
             .unwrap()
@@ -535,7 +535,7 @@ fn timed_invitation_warns_original_inviter_after_leaving_and_clear_is_passive() 
 fn invitation_due_index_bounds_physical_work_across_lazy_and_future_backlogs() {
     let (context, mut conn, _, _) = setup(100);
     conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('origin','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
-    conn.execute("WITH RECURSIVE n(v) AS (SELECT 1 UNION ALL SELECT v+1 FROM n WHERE v<2000) INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) SELECT 'lazy-'||v,'thread','seat',v,'pending',1,0,1,1,'lazy','origin' FROM n",[]).unwrap();
+    conn.execute("WITH RECURSIVE n(v) AS (SELECT 1 UNION ALL SELECT v+1 FROM n WHERE v<2000) INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id,origin_node) SELECT 'lazy-'||v,'thread','seat',v,'pending',1,0,1,1,'lazy','origin',(SELECT id FROM local_node) FROM n",[]).unwrap();
     for i in 0..250 {
         invitation(&conn, &format!("future-{i}"), 2001 + i, 1_000, "pending");
     }

@@ -901,10 +901,10 @@ fn elected_service_fixture(custom_settings: bool) {
         .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
     let db = setup.open_writer().unwrap();
     db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s2',?1,'resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t',?1,'topic','goal',0,0)", [instance.to_string()]).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t',?1,'topic','goal',0,0,0)", [instance.to_string()]).unwrap();
     db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s2','invited');
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms)
-        VALUES ('inv','t','s2',1,'pending',0,1,100,100);").unwrap();
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node)
+        VALUES ('inv','t','s2',1,'pending',0,1,100,100,(SELECT id FROM local_node));").unwrap();
     if custom_settings {
         db.execute_batch("CREATE TRIGGER ht_test_fault_health_due_failure BEFORE INSERT ON messages WHEN NEW.kind='warn' BEGIN SELECT RAISE(ABORT,'health fixture due failure'); END;").unwrap();
     }
@@ -1169,7 +1169,7 @@ fn elected_service_fixture(custom_settings: bool) {
     };
     assert_eq!(page.items.len(), 1);
     let db = rusqlite::Connection::open(&paths.database_path).unwrap();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2',?1,?2,'goal',1,1)", rusqlite::params![instance.to_string(), "second \"topic\"\n\u{2028}"]).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t2',?1,?2,'goal',1,1,0)", rusqlite::params![instance.to_string(), "second \"topic\"\n\u{2028}"]).unwrap();
     drop(db);
     let selected = OutputSpec {
         format: OutputFormat::Text,
@@ -1622,8 +1622,8 @@ fn elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined() {
         .unwrap();
     db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('wake',?1,'resolved','native','pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
     db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),'pane','host',1,1,0,'fresh','occupied','idle','exec',1,'term-'||'pane','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t',?1,'topic','goal',0,0)", [instance.to_string()]).unwrap();
-    db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','wake','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv','t','wake',1,'pending',0,1,9223372036854775807,300000);").unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t',?1,'topic','goal',0,0,0)", [instance.to_string()]).unwrap();
+    db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','wake','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv','t','wake',1,'pending',0,1,9223372036854775807,300000,(SELECT id FROM local_node));").unwrap();
     drop(db);
     let (entered_tx, entered_rx) = mpsc::sync_channel(1);
     let release = Arc::new(AtomicBool::new(false));
@@ -1688,7 +1688,7 @@ fn elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined() {
     assert!(!reserved.is_empty());
     // Make a different invitation overdue only after the host call is held.
     db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('due',?1,'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
-    db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','due','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('due-inv','t','due',1,'pending',0,2,100,100);").unwrap();
+    db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','due','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('due-inv','t','due',1,'pending',0,2,100,100,(SELECT id FROM local_node));").unwrap();
     let client = LocalSocketClient::new(
         descriptor.endpoint.clone(),
         Arc::clone(&clock),
@@ -2182,8 +2182,8 @@ fn actual_native_snapshot_cancellation_closes_peer_before_elected_worker_join_an
     let db = fixture.db();
     let instance = fixture.descriptor.node_uuid.to_string();
     db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('due',?1,'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&instance]).unwrap();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t',?1,'topic','goal',0,0)", [&instance]).unwrap();
-    db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','due','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('due-inv','t','due',1,'pending',0,1,100,100);").unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t',?1,'topic','goal',0,0,0)", [&instance]).unwrap();
+    db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','due','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('due-inv','t','due',1,'pending',0,1,100,100,(SELECT id FROM local_node));").unwrap();
     assert!(matches!(
         herdr_threads::ports::LocalClient::call(
             &fixture.client(),

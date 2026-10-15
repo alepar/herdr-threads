@@ -184,7 +184,7 @@ fn seeded_db(utc: i64) -> (StoreContext, Connection, Arc<TestClock>) {
     let context = StoreContext::new(db_path(), clock.clone()).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at,home_node,is_local,host_id) VALUES ('s', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
-    db.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('t', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'purpose', 0, 0)", []).unwrap();
+    db.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at,journaled) VALUES ('t', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'purpose', 0, 0,0)", []).unwrap();
     (context, db, clock)
 }
 
@@ -393,8 +393,8 @@ fn service_requirement_substrate_enforces_owner_link_and_one_effective_episode()
     )
     .unwrap();
     db.execute_batch("\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('inv1','t','s',1,'pending',1,100,1000,1100);\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('inv2','t','s',2,'pending',2,200,1000,1200);\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('inv1','t','s',1,'pending',1,100,1000,1100,(SELECT id FROM local_node));\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('inv2','t','s',2,'pending',2,200,1000,1200,(SELECT id FROM local_node));\
     ").unwrap();
     let insert = "INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at) VALUES (?1,'t','s',?2,?3,'pending',?4,?5)";
     db.execute(insert, params!["req1", author.as_str(), "inv1", 1, 100])
@@ -499,7 +499,7 @@ fn service_author_and_requirement_acceptance_keep_explicit_provenance() {
         [author.as_str()],
     )
     .unwrap();
-    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('inv','t','s',1,'pending',1,100,1000,1100)").unwrap();
+    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('inv','t','s',1,'pending',1,100,1000,1100,(SELECT id FROM local_node))").unwrap();
     db.execute("INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at) VALUES ('req','t','s',?1,'inv','pending',1,100)", [author.as_str()]).unwrap();
     assert!(db.execute("UPDATE requirement_episodes SET state='accepted',revision=2,accepted_at=150,accepted_by_seat_id='s' WHERE id='req'", []).is_err());
     db.execute("UPDATE requirement_episodes SET state='accepted',revision=2,accepted_at=150,accepted_by_seat_id='s',accepted_generation=1,accepted_observation='native:current' WHERE id='req'", []).unwrap();
@@ -585,7 +585,7 @@ fn pending_requirement_fixture() -> Connection {
         [author.as_str()],
     )
     .unwrap();
-    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('inv','t','s',1,'pending',1,100,1000,1100)").unwrap();
+    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('inv','t','s',1,'pending',1,100,1000,1100,(SELECT id FROM local_node))").unwrap();
     db.execute("INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at) VALUES ('req','t','s',?1,'inv','pending',1,100)", [author.as_str()]).unwrap();
     db
 }
@@ -797,7 +797,7 @@ fn accepted_requirement_requires_actor_on_update_and_direct_insert() {
 
     let direct = pending_requirement_fixture();
     direct.execute("UPDATE requirement_episodes SET state='released',revision=2,released_at=200 WHERE id='req'", []).unwrap();
-    direct.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('inv2','t','s',2,'pending',2,200,1000,1200)").unwrap();
+    direct.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('inv2','t','s',2,'pending',2,200,1000,1200,(SELECT id FROM local_node))").unwrap();
     let missing_actor = "INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at,accepted_generation,accepted_observation,accepted_at) SELECT 'req2','t','s',managed_owner_author_id,'inv2','accepted',2,200,1,'native:claimed',200 FROM threads WHERE id='t'";
     assert!(direct.execute(missing_actor, []).is_err());
     assert_eq!(
@@ -895,7 +895,7 @@ fn startup_rejects_missing_or_weakened_actor_presence_checks() {
 fn direct_accepted_insert_requires_native_actor() {
     let db = pending_requirement_fixture();
     db.execute("UPDATE requirement_episodes SET state='released',revision=2,released_at=200 WHERE id='req'", []).unwrap();
-    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('inv2','t','s',2,'pending',2,200,1000,1200)", []).unwrap();
+    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('inv2','t','s',2,'pending',2,200,1000,1200,(SELECT id FROM local_node))", []).unwrap();
     let missing_actor = "INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at,accepted_generation,accepted_observation,accepted_at) SELECT 'req2','t','s',managed_owner_author_id,'inv2','accepted',2,200,1,'native:claimed',200 FROM threads WHERE id='t'";
     assert!(db.execute(missing_actor, []).is_err());
     assert_eq!(
@@ -960,7 +960,7 @@ fn requirement_acceptance_field_subsets_and_terminal_insert_shapes() {
 
     let direct = pending_requirement_fixture();
     direct.execute("UPDATE requirement_episodes SET state='released',revision=2,released_at=200 WHERE id='req'", []).unwrap();
-    direct.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('inv2','t','s',2,'pending',2,200,1000,1200)", []).unwrap();
+    direct.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('inv2','t','s',2,'pending',2,200,1000,1200,(SELECT id FROM local_node))", []).unwrap();
     for mask in 0..16 {
         let actor = if mask & 1 != 0 { "'s'" } else { "NULL" };
         let generation = if mask & 2 != 0 { "1" } else { "NULL" };
@@ -1011,13 +1011,13 @@ fn requirement_acceptance_field_subsets_and_terminal_insert_shapes() {
             (3, "'s',1,'native:accepted',150"),
         ] {
             let invitation = format!("inv{ordinal}");
-            db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES (?1,'t','s',?2,'pending',?2,100,1000,1100)", params![invitation, ordinal]).unwrap();
+            db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES (?1,'t','s',?2,'pending',?2,100,1000,1100,(SELECT id FROM local_node))", params![invitation, ordinal]).unwrap();
             let sql = format!(
                 "INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at,{terminal_time},accepted_by_seat_id,accepted_generation,accepted_observation,accepted_at) SELECT 'req{ordinal}','t','s',managed_owner_author_id,'inv{ordinal}','{state}',{ordinal},100,200,{tuple} FROM threads WHERE id='t'"
             );
             db.execute(&sql, []).unwrap();
         }
-        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('inv4','t','s',4,'pending',4,100,1000,1100)", []).unwrap();
+        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('inv4','t','s',4,'pending',4,100,1000,1100,(SELECT id FROM local_node))", []).unwrap();
         let partial = format!(
             "INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at,{terminal_time},accepted_generation,accepted_observation,accepted_at) SELECT 'req4','t','s',managed_owner_author_id,'inv4','{state}',4,100,200,1,'native:claimed',150 FROM threads WHERE id='t'"
         );
@@ -1085,8 +1085,8 @@ fn read_connection_rejects_previous_experimental_schema_marker() {
 #[test]
 fn invitation_publication_key_is_required_positive_and_immutable() {
     let (_, db, _) = seeded_db(0);
-    assert!(db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at) VALUES ('v','t','s',1,'pending',0,300,300)",[]).is_err());
-    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('v','t','s',1,'pending',1,0,300,300)",[]).unwrap();
+    assert!(db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('v','t','s',1,'pending',0,300,300,(SELECT id FROM local_node))",[]).is_err());
+    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('v','t','s',1,'pending',1,0,300,300,(SELECT id FROM local_node))",[]).unwrap();
     assert!(
         db.execute(
             "UPDATE invitations SET created_decision_seq=2 WHERE id='v'",
@@ -1104,7 +1104,7 @@ fn invitation_publication_key_is_required_positive_and_immutable() {
 
 fn add_invitation(db: &Connection, id: &str, deadline: i64, state: &str) {
     let episode = id.trim_start_matches('v').parse::<i64>().unwrap();
-    db.execute("INSERT INTO invitations(id, thread_id, seat_id, episode, state, created_decision_seq, created_at, frozen_duration_ms, deadline_at, accepted_at, accepted_actor_seat_id, accepted_generation, accepted_observation) VALUES (?1, 't', 's', ?2, ?3, ?2, 0, 300000, ?4, CASE WHEN ?3='accepted' THEN 1 END, CASE WHEN ?3='accepted' THEN 's' END, CASE WHEN ?3='accepted' THEN 1 END, CASE WHEN ?3='accepted' THEN 'fixture-proof' END)",
+    db.execute("INSERT INTO invitations(id, thread_id, seat_id, episode, state, created_decision_seq, created_at, frozen_duration_ms, deadline_at, accepted_at, accepted_actor_seat_id, accepted_generation, accepted_observation,origin_node) VALUES (?1, 't', 's', ?2, ?3, ?2, 0, 300000, ?4, CASE WHEN ?3='accepted' THEN 1 END, CASE WHEN ?3='accepted' THEN 's' END, CASE WHEN ?3='accepted' THEN 1 END, CASE WHEN ?3='accepted' THEN 'fixture-proof' END,(SELECT id FROM local_node))",
         params![id, episode, state, deadline]).unwrap();
 }
 
@@ -1916,7 +1916,7 @@ fn canonical_digest_ignores_object_insertion_order() {
 #[test]
 fn duplicate_event_key_cannot_suppress_another_threads_event() {
     let (context, mut db, _) = seeded_db(50);
-    db.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('t2', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'purpose', 0, 0)", []).unwrap();
+    db.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at,journaled) VALUES ('t2', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'purpose', 0, 0,0)", []).unwrap();
     let t1 = ThreadId::new("t");
     let t2 = ThreadId::new("t2");
     context
@@ -1965,7 +1965,7 @@ fn duplicate_event_key_cannot_suppress_another_threads_event() {
 #[test]
 fn one_decision_batch_allocates_distinct_global_event_offsets() {
     let (_, mut db, _) = seeded_db(50);
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", []).unwrap();
     let tx = db.transaction().unwrap();
     let seq = schema::next_decision_seq(&tx, "34750f98bd59fcfc946da45aaabe933b").unwrap();
     for (thread, key) in [("t", "first"), ("t2", "second")] {
@@ -1994,7 +1994,7 @@ fn one_decision_batch_allocates_distinct_global_event_offsets() {
 fn logical_message_keys_are_instance_scoped_and_thread_bound() {
     let (_, db, _) = seeded_db(0);
     db.execute("PRAGMA foreign_keys=OFF", []).unwrap();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('other-thread','other','topic','goal',0,0)", []).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('other-thread','other','topic','goal',0,0,0)", []).unwrap();
     db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m1','t',1,'ordinary','body',0,1)", []).unwrap();
     db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('other','m2','other-thread',1,'ordinary','body',0,1)", []).unwrap();
     assert!(db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','bad','other-thread',2,'ordinary','body',0,2)", []).is_err());
@@ -2094,7 +2094,7 @@ fn message_contents_and_history_are_immutable() {
 #[test]
 fn receipt_thread_must_match_its_message_thread() {
     let (_, db, _) = seeded_db(50);
-    db.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('other', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'purpose', 0, 0)", []).unwrap();
+    db.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at,journaled) VALUES ('other', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'purpose', 0, 0,0)", []).unwrap();
     db.execute("INSERT INTO messages(instance_id,id, thread_id, sequence, kind, body, decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m', 't', 1, 'ordinary', 'body', 0,1)", []).unwrap();
     assert!(db.execute("INSERT INTO receipts(message_id, thread_id, seat_id, state, frozen_duration_ms) VALUES ('m', 'other', 's', 'pending', 300000)", []).is_err());
     db.execute("INSERT INTO receipts(message_id, thread_id, seat_id, state, frozen_duration_ms) VALUES ('m', 't', 's', 'pending', 300000)", []).unwrap();
@@ -2563,7 +2563,7 @@ fn unavailable_recovery_records_one_bounded_close_job_for_many_threads() {
     for number in 0..CONDITIONS {
         let thread = format!("u{number}");
         let warning = format!("e{number}");
-        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", [&thread]).unwrap();
+        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", [&thread]).unwrap();
         db.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,episode,open_warning_id,opened_seq) VALUES ('unavailable',?1,'1:s:1','s',1,?2,1)", params![thread,warning]).unwrap();
     }
     let before: i64 = db
@@ -2677,7 +2677,7 @@ fn overlapping_waiver_sweeps_keep_each_conditions_first_close_time() {
     let (context, mut db, clock) = seeded_db(300_000);
     for (thread, warning) in [("t", "eold"), ("t2", "enew")] {
         if thread == "t2" {
-            db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
+            db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", []).unwrap();
         }
         db.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('receipt',?1,'s','s',?2,1)", params![thread, warning]).unwrap();
         if thread == "t" {
@@ -4191,7 +4191,7 @@ fn archival_commit_counter_origin_does_not_collide_with_requests() {
 
 fn user_intent_seed(db: &Connection) {
     db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',11,12);
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',11,12,0);
         INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at) VALUES ('b','34750f98bd59fcfc946da45aaabe933b','t','c1',0,0,1,2,'hash','old summary','s','m1','p1',15);
         INSERT INTO summary_jobs(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,fetched_at,created_at) VALUES ('j','34750f98bd59fcfc946da45aaabe933b','t','c1',0,0,1,2,42,14);").unwrap();
 }
@@ -5293,8 +5293,8 @@ fn insert_seat(
     target: Option<&str>,
 ) -> rusqlite::Result<usize> {
     db.execute(
-        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,host_id,target_id,retired_at) \
-         VALUES (?1,?2,?3,'native',1,0,?4,?5,?6,?7,?8,CASE WHEN ?3='retired' THEN 1 END)",
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,host_id,target_id,retired_at,published) \
+         VALUES (?1,?2,?3,'native',1,0,?4,?5,?6,?7,?8,CASE WHEN ?3='retired' THEN 1 END,CASE WHEN ?5=0 THEN 1 ELSE 0 END)",
         params![id, node, state, home, is_local, remote_kind, host, target],
     )
 }
@@ -5534,6 +5534,197 @@ fn live_target_unique_per_host() {
     )
     .unwrap_err();
     assert!(error.to_string().contains("UNIQUE"), "{error}");
+}
+
+fn fact_thread(db: &Connection, node: &str, id: &str, journaled: i64) {
+    db.execute(
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,?2,'t','g',0,0,?3)",
+        params![id, node, journaled],
+    )
+    .unwrap();
+}
+
+fn fact_local_seat(db: &Connection, node: &str, host: i64, id: &str) {
+    insert_seat(
+        db,
+        id,
+        node,
+        "resolved",
+        node,
+        1,
+        None,
+        Some(host),
+        Some(id),
+    )
+    .unwrap();
+}
+
+fn fact_invitation(
+    db: &Connection,
+    state: &str,
+    origin: &str,
+    inviter: Option<&str>,
+    thread: &str,
+) -> rusqlite::Result<usize> {
+    db.execute(
+        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,inviter_seat_id,origin_node) \
+         VALUES (?1,?2,'s',1,?3,1,0,100,100,?4,?5)",
+        params![format!("inv-{state}-{origin}-{thread}"), thread, state, inviter, origin],
+    )
+}
+
+fn check_failed(error: &rusqlite::Error) -> bool {
+    error.to_string().contains("CHECK constraint failed")
+}
+
+// Kills: a baseline that lacks a fact-kind column or index, or one whose
+// objects drift from the verified copy.
+#[test]
+fn fact_kind_columns_verify() {
+    let db = fresh_db();
+    schema::verify_baseline(&db).unwrap();
+    for (table, column) in [
+        ("threads", "journaled"),
+        ("seats", "published"),
+        ("memberships", "home_transition"),
+        ("memberships", "last_joined_n"),
+        ("invitations", "origin_node"),
+        ("invitations", "invitee_n"),
+        ("messages", "origin_node"),
+        ("send_preparations", "origin"),
+        ("send_manifests", "suppressed_seats"),
+        ("receipt_state", "settle_batch"),
+        ("direct_threads", "created_hlc"),
+        ("direct_threads", "created_node"),
+        ("retirements", "origin"),
+    ] {
+        let found: i64 = db
+            .query_row(
+                &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name='{column}'"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(found, 1, "{table}.{column}");
+    }
+    for index in ["invitations_due_origin", "messages_origin_ordinary"] {
+        let found: i64 = db
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='index' AND name=?1 AND sql LIKE '%WHERE%'",
+                [index],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(found, 1, "{index}");
+    }
+}
+
+// Kills: a remote seat row that is not published.
+#[test]
+fn remote_seat_unpublished_refused() {
+    let (db, node, _, _) = seat_home_db();
+    let error = db
+        .execute(
+            "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published) \
+             VALUES ('r',?1,'remote','native',1,0,?2,0,'agent',0)",
+            params![node, FOREIGN_NODE],
+        )
+        .unwrap_err();
+    assert!(check_failed(&error), "{error}");
+    db.execute(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published) \
+         VALUES ('r',?1,'remote','native',1,0,?2,0,'agent',1)",
+        params![node, FOREIGN_NODE],
+    )
+    .unwrap();
+}
+
+// Kills: an invitation state outside the closed set; accepts `already_joined`.
+#[test]
+fn unknown_invitation_state_refused() {
+    let (db, node, host, _) = seat_home_db();
+    fact_local_seat(&db, &node, host, "s");
+    fact_thread(&db, &node, "t", 1);
+    let error = fact_invitation(&db, "bogus", &node, Some("s"), "t").unwrap_err();
+    assert!(check_failed(&error), "{error}");
+    fact_invitation(&db, "already_joined", &node, Some("s"), "t").unwrap();
+}
+
+// Kills: a settle batch label past 64 bytes; 64 bytes is accepted.
+#[test]
+fn settle_batch_65_bytes_refused() {
+    let (db, node, host, _) = seat_home_db();
+    fact_local_seat(&db, &node, host, "s");
+    let insert = |batch: String| {
+        db.execute(
+            "INSERT INTO receipt_state(message_id,seat_id,state,settle_batch) VALUES ('m','s','pending',?1)",
+            [batch],
+        )
+    };
+    let error = insert("b".repeat(65)).unwrap_err();
+    assert!(check_failed(&error), "{error}");
+    insert("b".repeat(64)).unwrap();
+}
+
+// Kills: an origin node that is not a 32-char id (messages: wrong length;
+// invitations also: non-hex).
+#[test]
+fn bad_origin_node_refused() {
+    let (db, node, host, _) = seat_home_db();
+    fact_local_seat(&db, &node, host, "s");
+    fact_thread(&db, &node, "t", 1);
+    for bad in ["abab".to_owned(), "z".repeat(32), "A".repeat(32)] {
+        let error = fact_invitation(&db, "pending", &bad, Some("s"), "t").unwrap_err();
+        assert!(check_failed(&error), "{bad}: {error}");
+    }
+    let message = |origin: &str| {
+        db.execute(
+            "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,origin_node) \
+             VALUES (?1,?2,'t',1,'ordinary','s','b',1,0,?3)",
+            params![format!("m-{origin}"), node, origin],
+        )
+    };
+    let error = message("abab").unwrap_err();
+    assert!(check_failed(&error), "{error}");
+    message(&node).unwrap();
+}
+
+// Kills: a local retirement that carries no closure proof.
+#[test]
+fn local_retirement_without_closure_boot_refused() {
+    let (db, node, host, _) = seat_home_db();
+    fact_local_seat(&db, &node, host, "s");
+    let error = db
+        .execute(
+            "INSERT INTO retirements(id,seat_id,cutover_at,origin) VALUES ('j','s',0,'local')",
+            [],
+        )
+        .unwrap_err();
+    assert!(check_failed(&error), "{error}");
+    db.execute(
+        "INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation,origin) VALUES ('j','s',0,'b',1,'p',1,'local')",
+        [],
+    )
+    .unwrap();
+}
+
+// Kills: a replicated retirement that carries a local closure proof.
+#[test]
+fn replicated_retirement_with_closure_boot_refused() {
+    let (db, node, host, _) = seat_home_db();
+    fact_local_seat(&db, &node, host, "s");
+    let error = db
+        .execute(
+            "INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation,origin) VALUES ('j','s',0,'b',1,'p',1,'replicated')",
+            [],
+        )
+        .unwrap_err();
+    assert!(check_failed(&error), "{error}");
+    db.execute(
+        "INSERT INTO retirements(id,seat_id,cutover_at,origin) VALUES ('j','s',0,'replicated')",
+        [],
+    )
+    .unwrap();
 }
 
 #[test]

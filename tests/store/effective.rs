@@ -91,7 +91,7 @@ fn inbox_token_scans_unrelated_publications_boundedly_then_completes() {
 fn inbox_token_detects_unprojected_warning_and_revision_change() {
     let db = fixture();
     let token = capture_inbox_token(&db, "34750f98bd59fcfc946da45aaabe933b", "s").unwrap();
-    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('v','t','s',1,'pending',10,0,300,300); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq,source_invitation_id) VALUES ('34750f98bd59fcfc946da45aaabe933b','w','t',1,'warn','key','{}',300,11,'v'); INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('w',11,'t',0,'s','invitation','v'); UPDATE local_node SET decision_seq=11 WHERE id='34750f98bd59fcfc946da45aaabe933b';").unwrap();
+    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('v','t','s',1,'pending',10,0,300,300,(SELECT id FROM local_node)); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq,source_invitation_id) VALUES ('34750f98bd59fcfc946da45aaabe933b','w','t',1,'warn','key','{}',300,11,'v'); INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('w',11,'t',0,'s','invitation','v'); UPDATE local_node SET decision_seq=11 WHERE id='34750f98bd59fcfc946da45aaabe933b';").unwrap();
     assert_eq!(
         validate_inbox_token(
             &db,
@@ -189,7 +189,7 @@ fn populate_fixture(db: &Connection) {
     db.execute_batch("\
         UPDATE local_node SET decision_seq=10;\
         INSERT INTO seats(id, instance_id, state, role, generation, created_at,home_node,is_local,host_id) VALUES ('s', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
-        INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('t', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'goal', 0, 0);\
+        INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at,journaled) VALUES ('t', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'goal', 0, 0,0);\
         INSERT INTO send_preparations(id, instance_id, operation_scope, operation_key, digest, thread_id, captured_membership_revision, captured_lifecycle_revision, captured_eligibility_revision, captured_timeline_revision, captured_config_revision, interval_high_water, recipient_high_water, status) VALUES ('p', '34750f98bd59fcfc946da45aaabe933b', 'actor', 'o', zeroblob(32), 't', 0, 0, 0, 0, 0, 0, 1, 'sealed');\
         INSERT INTO prepared_recipients(preparation_id, thread_id, seat_id, receipt_ordinal, frozen_duration_ms, eligible_at_snapshot) VALUES ('p', 't', 's', 1, 300, 0);\
     ").unwrap();
@@ -771,7 +771,7 @@ fn physical_warning_with_only_recipient_ledger_pages_its_historical_seats() {
 #[test]
 fn seat_attention_finds_unprojected_receipt_and_warning_with_bounded_progress() {
     let db = fixture();
-    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('v','t','s',1,'pending',10,0,300,300); INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES ('p','key','warning','s',1,1,'{}'); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m','t',1,'ordinary','body',1000,10); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','m','t',10,1000,1,0,1,1);").unwrap();
+    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('v','t','s',1,'pending',10,0,300,300,(SELECT id FROM local_node)); INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES ('p','key','warning','s',1,1,'{}'); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m','t',1,'ordinary','body',1000,10); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','m','t',10,1000,1,0,1,1);").unwrap();
     let mut position = None;
     let mut total_visited = 0;
     loop {
@@ -800,7 +800,7 @@ fn seat_attention_finds_unprojected_receipt_and_warning_with_bounded_progress() 
 #[test]
 fn seat_attention_ignores_settled_warning_without_erasing_history() {
     let db = fixture();
-    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('v','t','s',1,'pending',10,0,300,300); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq,source_invitation_id) VALUES ('34750f98bd59fcfc946da45aaabe933b','w','t',1,'warn','key','{}',300,10,'v'); INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('w',10,'t',0,'s','invitation','v');").unwrap();
+    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('v','t','s',1,'pending',10,0,300,300,(SELECT id FROM local_node)); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq,source_invitation_id) VALUES ('34750f98bd59fcfc946da45aaabe933b','w','t',1,'warn','key','{}',300,10,'v'); INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('w',10,'t',0,'s','invitation','v');").unwrap();
     let before = scan_effective_seat_attention(&db, "s", None, 100)
         .unwrap()
         .attention

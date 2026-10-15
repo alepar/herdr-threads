@@ -422,7 +422,7 @@ fn create_thread_impl(
                 &[("threads", "id", prefix::THREAD)],
             )?);
             let joined_seq = schema::next_decision_seq(tx, &instance)?;
-            tx.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at, name) VALUES (?1,?2,?3,?4,?5,?5,?6)",
+            tx.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at, name, journaled) VALUES (?1,?2,?3,?4,?5,?5,?6,1)",
                 params![thread.as_str(), instance, command.topic,command.goal,decision.utc.0,command.name]).map_err(store_error)?;
             // Attach protection in this exact CREATE transaction. Historical
             // pre-fence CREATE results are reconciled by Begin/import instead.
@@ -446,7 +446,7 @@ fn create_thread_impl(
                     )?;
                 }
             }
-            tx.execute("INSERT INTO memberships(thread_id, seat_id, state, joined_at) VALUES (?1,?2,'joined',?3)",
+            tx.execute("INSERT INTO memberships(thread_id, seat_id, state, joined_at, home_transition, last_joined_n) VALUES (?1,?2,'joined',?3,1,1)",
                 params![thread.as_str(), seat.as_str(), decision.utc.0]).map_err(store_error)?;
             tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,1,?3)",
                 params![thread.as_str(),seat.as_str(),joined_seq as i64]).map_err(store_error)?;

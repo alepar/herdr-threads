@@ -702,7 +702,7 @@ fn send_store(iso: &TestIsolation) -> (StoreContext, Connection) {
         conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat, target]).unwrap();
         conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation,registered_at) VALUES (?1,1,?2,'b',1,1,'codex','n',?3,'cooperative_top_level',0,'term-'||?2,'inc',0)", [seat, target, execution]).unwrap();
     }
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", []).unwrap();
     for seat in ["a", "r"] {
         conn.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",

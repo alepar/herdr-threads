@@ -35,7 +35,7 @@ fn seat(conn: &Connection, id: &str) {
 /// A thread (with an optional name) that `members` have joined.
 fn thread(conn: &Connection, id: &str, name: Option<&str>, members: &[&str]) {
     conn.execute(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,name) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,?2)",
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,name,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,?2,0)",
         params![id, name],
     )
     .unwrap();

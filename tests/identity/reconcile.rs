@@ -1383,7 +1383,7 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
         OrdinaryResolutionOutcome::Resolved(seat.clone())
     );
     conn.execute(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('handoff','34750f98bd59fcfc946da45aaabe933b','handoff','goal',100,100)",
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('handoff','34750f98bd59fcfc946da45aaabe933b','handoff','goal',100,100,0)",
         [],
     )
     .unwrap();

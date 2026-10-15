@@ -36,7 +36,7 @@ fn init_for_new_binding_starts_at_the_seat_maximum_else_head() {
     assert_eq!(cursor_for(&db, &b, &t()).unwrap(), Some(1));
     // A joined thread with no messages gets 0.
     db.execute_batch(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('e','34750f98bd59fcfc946da45aaabe933b','empty','goal',0,0);
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('e','34750f98bd59fcfc946da45aaabe933b','empty','goal',0,0,0);
          INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('e','s','joined',2);",
     )
     .unwrap();
@@ -74,7 +74,7 @@ fn init_for_join_gives_every_open_binding_a_cursor_at_the_join_point() {
     )
     .unwrap();
     db.execute_batch(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','topic2','goal',0,0);
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','topic2','goal',0,0,0);
          INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('u','s','joined',2);
          INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES
            ('34750f98bd59fcfc946da45aaabe933b','u1','u',1,'ordinary','b',3,3),('34750f98bd59fcfc946da45aaabe933b','u2','u',2,'ordinary','b',4,4),('34750f98bd59fcfc946da45aaabe933b','u3','u',3,'ordinary','b',5,5);",
@@ -162,7 +162,7 @@ fn seed_modes() {
     )
     .unwrap();
     db.execute_batch(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('v','34750f98bd59fcfc946da45aaabe933b','topic3','goal',0,0);
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('v','34750f98bd59fcfc946da45aaabe933b','topic3','goal',0,0,0);
          INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('v','s','joined',2);",
     )
     .unwrap();

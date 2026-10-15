@@ -49,7 +49,7 @@ impl Fixture {
         let db = context.open_writer().unwrap();
         db.execute_batch(
             "UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1000000;\
-             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);",
+             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);",
         )
         .unwrap();
         Self { path, context }
@@ -286,8 +286,8 @@ fn wake_pages_round_trip_cursors_and_match_the_oracle() {
     let db = fixture.writer();
     seed_seats(&db, 48);
     db.execute_batch(
-        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) \
-         SELECT 'inv-'||id,'t',id,1,'pending',0,1,100,100 FROM seats WHERE ordinal%3!=0",
+        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) \
+         SELECT 'inv-'||id,'t',id,1,'pending',0,1,100,100,(SELECT id FROM local_node) FROM seats WHERE ordinal%3!=0",
     )
     .unwrap();
     let all_seats = ordinals(&db, "seats", "id");

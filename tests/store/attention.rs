@@ -59,10 +59,10 @@ fn empty() -> Connection {
 fn every_source() -> Connection {
     let db = empty();
     db.execute_batch("\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t1','34750f98bd59fcfc946da45aaabe933b','a','g',0,0),('t2','34750f98bd59fcfc946da45aaabe933b','b','g',0,0),('t3','34750f98bd59fcfc946da45aaabe933b','c','g',0,0),('t4','34750f98bd59fcfc946da45aaabe933b','d','g',0,0),('t5','34750f98bd59fcfc946da45aaabe933b','e','g',0,0);\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv-s','t1','s',1,'pending',0,3,100,100);\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,accepted_at,accepted_actor_seat_id,accepted_generation,accepted_observation) VALUES ('inv-old','t2','s',1,'accepted',0,2,100,100,1,'s',1,'obs');\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv-o','t1','o',1,'pending',0,30,100,100);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t1','34750f98bd59fcfc946da45aaabe933b','a','g',0,0,0),('t2','34750f98bd59fcfc946da45aaabe933b','b','g',0,0,0),('t3','34750f98bd59fcfc946da45aaabe933b','c','g',0,0,0),('t4','34750f98bd59fcfc946da45aaabe933b','d','g',0,0,0),('t5','34750f98bd59fcfc946da45aaabe933b','e','g',0,0,0);\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv-s','t1','s',1,'pending',0,3,100,100,(SELECT id FROM local_node));\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,accepted_at,accepted_actor_seat_id,accepted_generation,accepted_observation,origin_node) VALUES ('inv-old','t2','s',1,'accepted',0,2,100,100,1,'s',1,'obs',(SELECT id FROM local_node));\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv-o','t1','o',1,'pending',0,30,100,100,(SELECT id FROM local_node));\
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('m0','34750f98bd59fcfc946da45aaabe933b','t2',1,'ordinary','b',0,4),('m1','34750f98bd59fcfc946da45aaabe933b','t2',2,'ordinary','b',0,5),('mo','34750f98bd59fcfc946da45aaabe933b','t2',3,'ordinary','b',0,31);\
         INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,acked_at,ack_actor_seat_id,ack_generation,ack_observation) VALUES ('m0','t2','s','acked',100,1,'s',1,'obs');\
         INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m1','t2','s','pending',100),('mo','t2','o','pending',100);\
@@ -154,7 +154,7 @@ fn wake_seat_attention_matches_the_oracle() {
     db.pragma_update(None, "foreign_keys", "OFF").unwrap();
     db.execute_batch("\
         INSERT INTO service_authors(id,instance_id,created_at) VALUES ('svc','34750f98bd59fcfc946da45aaabe933b',0);\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t6','34750f98bd59fcfc946da45aaabe933b','f','g',0,0);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t6','34750f98bd59fcfc946da45aaabe933b','f','g',0,0,0);\
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset,author_kind,author_service_id) VALUES ('n1','34750f98bd59fcfc946da45aaabe933b','t6',1,'warn','{}',0,20,3,'programmatic','svc'),('n2','34750f98bd59fcfc946da45aaabe933b','t6',2,'warn','{}',0,21,4,'programmatic','svc');\
         INSERT INTO service_notification_publications(preparation_id,message_id,decision_seq,recipient_count) VALUES ('np1','n1',20,1),('np2','n2',21,1);\
         INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('n1','s',1),('n2','o',1);\
@@ -262,10 +262,10 @@ fn ack_advances_nothing_and_arrival_advances() {
 #[test]
 fn class_lists_the_newest_bounded_ids_with_an_exact_count() {
     let db = empty();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','a','g',0,0)", []).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','a','g',0,0,0)", []).unwrap();
     for n in 1..=7 {
         db.execute(
-            "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES (?1,'t','s',?2,'pending',0,?2,100,100)",
+            "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES (?1,'t','s',?2,'pending',0,?2,100,100,(SELECT id FROM local_node))",
             rusqlite::params![format!("inv-{n}"), n],
         ).unwrap();
     }
@@ -280,19 +280,19 @@ fn class_lists_the_newest_bounded_ids_with_an_exact_count() {
 fn burst_after_handoff(burst: i64) -> Connection {
     let db = empty();
     db.execute_batch("\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('th','34750f98bd59fcfc946da45aaabe933b','h','g',0,0);\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv-h','th','s',1,'pending',0,1,100,100);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('th','34750f98bd59fcfc946da45aaabe933b','h','g',0,0,0);\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv-h','th','s',1,'pending',0,1,100,100,(SELECT id FROM local_node));\
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('m-h','34750f98bd59fcfc946da45aaabe933b','th',1,'ordinary','b',0,2);\
         INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m-h','th','s','pending',100);\
     ").unwrap();
     for n in 1..=burst {
         db.execute(
-            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','b','g',0,0)",
+            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','b','g',0,0,0)",
             rusqlite::params![format!("tb-{n}")],
         )
         .unwrap();
         db.execute(
-            "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES (?1,?2,'s',1,'pending',0,?3,100,100)",
+            "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES (?1,?2,'s',1,'pending',0,?3,100,100,(SELECT id FROM local_node))",
             rusqlite::params![format!("inv-b{n}"), format!("tb-{n}"), n + 2],
         )
         .unwrap();
@@ -360,8 +360,8 @@ fn listed_required_invitations_carry_their_pending_requirement() {
     let db = every_source();
     db.execute_batch("\
         INSERT INTO service_authors(id,instance_id,created_at) VALUES ('author','34750f98bd59fcfc946da45aaabe933b',0);\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,managed_owner_author_id) VALUES ('tm','34750f98bd59fcfc946da45aaabe933b','m','g',0,0,'author');\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv-req','tm','s',1,'pending',0,6,100,100);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,managed_owner_author_id,journaled) VALUES ('tm','34750f98bd59fcfc946da45aaabe933b','m','g',0,0,'author',0);\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv-req','tm','s',1,'pending',0,6,100,100,(SELECT id FROM local_node));\
         INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at) VALUES ('req-1','tm','s','author','inv-req','pending',6,0);\
     ").unwrap();
     let d = digest(&db, "s").digest;
@@ -406,18 +406,18 @@ fn at_scale(threads: u64) -> Connection {
     let db = empty();
     db.execute_batch(&format!("\
         WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{threads})\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) SELECT 'x'||x,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0 FROM n;\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) SELECT 'x'||x,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0 FROM n;\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) SELECT id,'o',1,1 FROM threads;\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) SELECT '34750f98bd59fcfc946da45aaabe933b'||id,id,'o',1,'pending',0,2,100,100 FROM threads;\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) SELECT '34750f98bd59fcfc946da45aaabe933b'||id,id,'o',1,'pending',0,2,100,100,(SELECT id FROM local_node) FROM threads;\
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,event_offset) SELECT 'm'||id,'34750f98bd59fcfc946da45aaabe933b',id,1,'ordinary','b',0,3,ordinal FROM threads;\
         INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) SELECT 'm'||id,id,'o','pending',100 FROM threads;\
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) SELECT 'w'||id,'34750f98bd59fcfc946da45aaabe933b',id,2,'warn','{{}}',0,4,ordinal FROM threads;\
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) SELECT 'w'||id,4,id,100,'o','invitation','34750f98bd59fcfc946da45aaabe933b'||id FROM threads;\
         INSERT INTO warning_recipients(warning_id,seat_id,generation) SELECT 'w'||id,'o',1 FROM threads;\
         UPDATE warning_jobs SET status='complete',phase='complete';\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','a','g',0,0),('s2','34750f98bd59fcfc946da45aaabe933b','b','g',0,0),('s3','34750f98bd59fcfc946da45aaabe933b','c','g',0,0);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','a','g',0,0,0),('s2','34750f98bd59fcfc946da45aaabe933b','b','g',0,0,0),('s3','34750f98bd59fcfc946da45aaabe933b','c','g',0,0,0);\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('s1','s',1,1),('s2','s',1,1),('s3','s',1,1);\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv-s','s3','s',1,'pending',0,5,100,100);\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv-s','s3','s',1,'pending',0,5,100,100,(SELECT id FROM local_node));\
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('ms','34750f98bd59fcfc946da45aaabe933b','s1',1,'ordinary','b',0,6);\
         INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('ms','s1','s','pending',100);\
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('ws','34750f98bd59fcfc946da45aaabe933b','s2',1,'warn','{{}}',0,7,0);\
@@ -477,7 +477,7 @@ fn with_settled_history(acked: u64, warns: u64) -> Connection {
     let half = acked / 2;
     let third = warns / 3;
     db.execute_batch(&format!("\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('h','34750f98bd59fcfc946da45aaabe933b','hist','g',0,0);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('h','34750f98bd59fcfc946da45aaabe933b','hist','g',0,0,0);\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('h','s',1,1),('h','o',1,1);\
         WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{half})\
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) SELECT 'ph'||x,'34750f98bd59fcfc946da45aaabe933b','h',x,'ordinary','b',0,1000000+x FROM n;\
@@ -490,7 +490,7 @@ fn with_settled_history(acked: u64, warns: u64) -> Connection {
         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) SELECT 'p'||id,id,'34750f98bd59fcfc946da45aaabe933b','h',decision_seq,0,sequence,0,1,0 FROM messages WHERE id LIKE 'mf%';\
         INSERT INTO receipt_state(message_id,seat_id,state,ack_actor_seat_id,ack_generation,ack_observation,acked_at) SELECT id,'s','acked','s',1,'obs',1 FROM messages WHERE id LIKE 'mf%';\
         WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{third})\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) SELECT 'hi'||x,'h','o',x+1,'pending',0,3,100,100 FROM n;\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) SELECT 'hi'||x,'h','o',x+1,'pending',0,3,100,100,(SELECT id FROM local_node) FROM n;\
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq) SELECT 'w'||id,'34750f98bd59fcfc946da45aaabe933b','h',3000000+ordinal,'warn','{{}}',0,3000000+ordinal FROM invitations WHERE id LIKE 'hi%';\
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) SELECT 'w'||id,3000000+ordinal,'h',100,'o','invitation',id FROM invitations WHERE id LIKE 'hi%';\
         UPDATE invitations SET state='accepted',accepted_at=2,accepted_actor_seat_id='o',accepted_generation=1,accepted_observation='obs' WHERE id LIKE 'hi%';\
@@ -505,7 +505,7 @@ fn with_settled_history(acked: u64, warns: u64) -> Connection {
         INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) SELECT id,'k'||id,'wu'||id,'o',1,1,'{{}}' FROM send_preparations WHERE id LIKE 'pu%';\
         UPDATE seats SET unavailability_open=0 WHERE id='o';\
         UPDATE warning_jobs SET status='complete',phase='complete';\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv-s','h','s',1,'pending',0,5,100,100),('inv-o','h','o',1,'pending',0,5,100,100);\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv-s','h','s',1,'pending',0,5,100,100,(SELECT id FROM local_node)),('inv-o','h','o',1,'pending',0,5,100,100,(SELECT id FROM local_node));\
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('mp','34750f98bd59fcfc946da45aaabe933b','h',9000001,'ordinary','b',0,6),('mm','34750f98bd59fcfc946da45aaabe933b','h',9000002,'ordinary','b',0,7);\
         INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('mp','h','s','pending',100);\
         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('pmm','34750f98bd59fcfc946da45aaabe933b','actor','mm',zeroblob(32),'h',0,0,0,0,0,0,1,'sealed');\
@@ -627,7 +627,7 @@ fn production_history(
     conn.execute_batch("\
         UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1;\
         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,home_node,is_local,host_id) VALUES ('snd','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-snd',1,1,0,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('rcv','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-rcv',1,1,0,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('hist','34750f98bd59fcfc946da45aaabe933b','history','g',0,0),('live','34750f98bd59fcfc946da45aaabe933b','live','g',0,0);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('hist','34750f98bd59fcfc946da45aaabe933b','history','g',0,0,0),('live','34750f98bd59fcfc946da45aaabe933b','live','g',0,0,0);\
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('hist','snd','joined'),('hist','rcv','joined'),('live','snd','joined'),('live','rcv','joined');\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('hist','snd',1,1),('hist','rcv',1,1),('live','snd',1,1),('live','rcv',1,1);\
     ").unwrap();
@@ -640,7 +640,7 @@ fn production_history(
     if acked > 0 {
         conn.execute_batch(&format!("\
         WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{acked})\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) SELECT 'settled-'||x,'hist','rcv',x+10,'pending',0,1,100,100 FROM n;\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) SELECT 'settled-'||x,'hist','rcv',x+10,'pending',0,1,100,100,(SELECT id FROM local_node) FROM n;\
         UPDATE invitations SET state='accepted',accepted_at=2,accepted_actor_seat_id='rcv',accepted_generation=1,accepted_observation='obs' WHERE id LIKE 'settled-%';\
     ")).unwrap();
     }
@@ -651,7 +651,7 @@ fn production_history(
     )
     .unwrap();
     conn.execute_batch("\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv-live','live','rcv',2,'pending',0,1,100,100);\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv-live','live','rcv',2,'pending',0,1,100,100,(SELECT id FROM local_node));\
     ").unwrap();
     (context, conn, guard)
 }
@@ -881,7 +881,7 @@ fn production_warning_history(
         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,unavailability_open,home_node,is_local,host_id) VALUES ('snd','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-snd',1,1,0,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('rcv','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-rcv',1,1,0,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
         INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p-rcv','b',1,1,1,'fresh','unknown','unknown',0,0);\
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('rcv',1,1,'p-rcv','b',1,'codex','hist-rcv','00000000-0000-4000-8000-0000000000cc','fresh',0,0,'term-rcv','inc');\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('hist','34750f98bd59fcfc946da45aaabe933b','history','g',0,0),('live','34750f98bd59fcfc946da45aaabe933b','live','g',0,0);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('hist','34750f98bd59fcfc946da45aaabe933b','history','g',0,0,0),('live','34750f98bd59fcfc946da45aaabe933b','live','g',0,0,0);\
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('hist','snd','joined'),('hist','rcv','joined'),('live','snd','joined'),('live','rcv','joined');\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('hist','snd',1,1),('hist','rcv',1,1),('live','snd',1,1),('live','rcv',1,1);\
     ").unwrap();
@@ -894,7 +894,7 @@ fn production_warning_history(
     )
     .unwrap();
     conn.execute_batch("\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv-live','live','rcv',2,'pending',0,1,100,100);\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv-live','live','rcv',2,'pending',0,1,100,100,(SELECT id FROM local_node));\
     ").unwrap();
     (context, conn, guard)
 }
@@ -1070,7 +1070,7 @@ fn scale_invariance_inventory_of_canonical_effective_scans() {
         if axis == "B" {
             db.execute_batch(&format!("\
                 WITH RECURSIVE n(x) AS (VALUES({}) UNION ALL SELECT x+1 FROM n WHERE x<{size})\
-                INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) SELECT 'overdue-'||x,'hist','inv',x,'pending',0,1,100,100 FROM n;\
+                INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) SELECT 'overdue-'||x,'hist','inv',x,'pending',0,1,100,100,(SELECT id FROM local_node) FROM n;\
             ", warned + 1)).unwrap();
             let tx = db.transaction().unwrap();
             for n in warned + 1..=size {
@@ -1102,7 +1102,7 @@ fn scale_invariance_inventory_of_canonical_effective_scans() {
             .unwrap();
             db.execute_batch(&format!("\
             WITH RECURSIVE n(x) AS (VALUES({}) UNION ALL SELECT x+1 FROM n WHERE x<{size})\
-            INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) SELECT 'settled-'||x,'hist','rcv',x+10,'pending',0,1,100,100 FROM n;\
+            INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) SELECT 'settled-'||x,'hist','rcv',x+10,'pending',0,1,100,100,(SELECT id FROM local_node) FROM n;\
             UPDATE invitations SET state='accepted',accepted_at=2,accepted_actor_seat_id='rcv',accepted_generation=1,accepted_observation='obs' WHERE id LIKE 'settled-%' AND state='pending';\
         ", written + 1)).unwrap();
             written = size;
@@ -1325,11 +1325,11 @@ fn assert_pending_warning_count_flat_in_threads(sizes: &[u64]) {
         let db = empty();
         db.execute_batch(&format!("\
             WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{threads})\
-            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) SELECT 'x'||x,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,2 FROM n;\
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) SELECT 'x'||x,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,2,0 FROM n;\
             INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,event_offset) SELECT 'm'||id,'34750f98bd59fcfc946da45aaabe933b',id,1,'ordinary','b',0,3,ordinal FROM threads;\
-            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','a','g',0,0,2);\
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','a','g',0,0,2,0);\
             INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('s1','s',1,1);\
-            INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv-o','s1','o',1,'pending',0,5,100,100);\
+            INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv-o','s1','o',1,'pending',0,5,100,100,(SELECT id FROM local_node));\
             INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('ws','34750f98bd59fcfc946da45aaabe933b','s1',1,'warn','{{}}',0,7,0);\
             INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('ws',7,'s1',1000000000,'o','invitation','inv-o');\
         ")).unwrap();
@@ -1381,10 +1381,10 @@ fn pending_warning_counts_are_capped_with_has_more() {
     };
     let db = empty();
     db.execute_batch("\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','a','g',0,0,1003);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','a','g',0,0,1003,0);\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('s1','s',1,1);\
         WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1002)\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) SELECT 'inv-'||x,'s1','o',x,'pending',0,5,100,100 FROM n;\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) SELECT 'inv-'||x,'s1','o',x,'pending',0,5,100,100,(SELECT id FROM local_node) FROM n;\
         WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1002)\
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) SELECT 'w-'||x,'34750f98bd59fcfc946da45aaabe933b','s1',x,'warn','{}',0,40,x FROM n;\
         WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1002)\
@@ -1860,7 +1860,7 @@ fn saturated_other_seat_transitions_do_not_hide_an_older_waking_notice() {
     db.pragma_update(None, "foreign_keys", "OFF").unwrap();
     db.execute_batch("\
         INSERT INTO service_authors(id,instance_id,created_at) VALUES ('svc','34750f98bd59fcfc946da45aaabe933b',0);\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t6','34750f98bd59fcfc946da45aaabe933b','f','g',0,0);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t6','34750f98bd59fcfc946da45aaabe933b','f','g',0,0,0);\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t6','s',1,1),('t6','o',1,1);\
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset,author_kind,author_service_id) VALUES ('n0','34750f98bd59fcfc946da45aaabe933b','t6',1,'warn','{}',0,20,1,'programmatic','svc');\
         INSERT INTO service_notification_publications(preparation_id,message_id,decision_seq,recipient_count) VALUES ('np0','n0',20,1);\
@@ -1926,7 +1926,7 @@ use crate::protocol::ids::{BindingId, ThreadId};
 fn per_binding() -> Connection {
     let db = empty();
     db.execute_batch("\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','a','g',0,0);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','a','g',0,0,0);\
         INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s','joined',1);\
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,binding_id) VALUES \
             ('s',1,1,'pane-s','host',1,'claude','sess-A','ea','cooperative_top_level',0,0,'bind-A'),\
@@ -2384,7 +2384,7 @@ fn relevance_claim() -> crate::protocol::authority::CallerClaim {
 fn relevance_db() -> Connection {
     let db = empty();
     db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES ('s',1,1,'pane-s','host',1,'codex','relevance-session','relevance-execution','cooperative_top_level',0,0);
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('relevance-thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);").unwrap();
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('relevance-thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);").unwrap();
     db
 }
 fn relevance_budget() -> crate::protocol::time::CallBudget {
@@ -2417,7 +2417,7 @@ fn presentation_relevance_required_lazy_overlay_tracks_digest_and_requirement() 
     let db = relevance_db();
     db.execute_batch("INSERT INTO service_authors(id,instance_id,created_at) VALUES ('relevance-service','34750f98bd59fcfc946da45aaabe933b',0);
         UPDATE threads SET managed_owner_author_id='relevance-service' WHERE id='relevance-thread';
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,confirmation,inviter_seat_id) VALUES ('relevance-invite','relevance-thread','s',1,'pending',0,2,100,100,'lazy','o');").unwrap();
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,confirmation,inviter_seat_id,origin_node) VALUES ('relevance-invite','relevance-thread','s',1,'pending',0,2,100,100,'lazy','o',(SELECT id FROM local_node));").unwrap();
     let count = || {
         db.query_row(
             "SELECT count(*) FROM presentation_confirming_invitations WHERE seat_id='s'",
@@ -2497,7 +2497,7 @@ fn presentation_relevance_walks_retained_membership_and_revalidates_exact_witnes
         store::presentation_relevance::{self, Relevance},
     };
     let db = relevance_db();
-    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('relevance-other-invite','relevance-thread','o',1,'pending',0,2,100,100);
+    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('relevance-other-invite','relevance-thread','o',1,'pending',0,2,100,100,(SELECT id FROM local_node));
         WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<257)
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) SELECT 'unpublished-'||x,20,'relevance-thread',1000000,'o','invitation','relevance-other-invite' FROM n;
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('relevance-warning','34750f98bd59fcfc946da45aaabe933b','relevance-thread',1,'warn','{}',0,20,1);
@@ -2630,10 +2630,10 @@ fn relevance_publish_unrelated_lazy(db: &mut Connection, n: u32) {
 fn relevance_legacy_membership_fixture() -> Connection {
     let db = relevance_db();
     db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('relevance-third','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-third',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('relevance-unrelated','34750f98bd59fcfc946da45aaabe933b','unrelated','unrelated',0,0);
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('relevance-unrelated','34750f98bd59fcfc946da45aaabe933b','unrelated','unrelated',0,0,0);
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('relevance-unrelated','o','joined'),('relevance-unrelated','relevance-third','joined');
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('relevance-unrelated','o',1,1),('relevance-unrelated','relevance-third',1,1);
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('relevance-churn-invite','relevance-thread','o',1,'pending',0,2,100,100);
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('relevance-churn-invite','relevance-thread','o',1,'pending',0,2,100,100,(SELECT id FROM local_node));
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset,source_invitation_id) VALUES ('relevance-churn-warning','34750f98bd59fcfc946da45aaabe933b','relevance-thread',1,'warn','{}',0,20,1,'relevance-churn-invite');
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('relevance-churn-warning',20,'relevance-thread',1000000,'o','invitation','relevance-churn-invite');
         WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<301)
@@ -2876,11 +2876,11 @@ fn presentation_relevance_canonical_receipt_sweep_closes_before_clear_publicatio
 fn presentation_relevance_direct_association_survives_prepared_same_id() {
     use crate::store::presentation_relevance::Relevance;
     let db = relevance_db();
-    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('relevance-union-invite','relevance-thread','o',1,'pending',0,2,100,100);
+    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('relevance-union-invite','relevance-thread','o',1,'pending',0,2,100,100,(SELECT id FROM local_node));
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset,source_invitation_id) VALUES ('relevance-union-warning','34750f98bd59fcfc946da45aaabe933b','relevance-thread',1,'warn','{}',0,20,1,'relevance-union-invite');
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('relevance-union-warning',20,'relevance-thread',0,'o','invitation','relevance-union-invite');
         INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('relevance-union-warning','s',20);
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('relevance-union-other','34750f98bd59fcfc946da45aaabe933b','other','other',0,0);
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('relevance-union-other','34750f98bd59fcfc946da45aaabe933b','other','other',0,0,0);
         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('prep-relevance-union','34750f98bd59fcfc946da45aaabe933b','seat:o','union',zeroblob(32),'relevance-union-other',0,0,0,0,0,0,0,'sealed');
         INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES ('prep-relevance-union','union-key','relevance-union-warning','o',1,1,'{}');
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('msg-relevance-union','34750f98bd59fcfc946da45aaabe933b','relevance-union-other',1,'ordinary','other',0,21);
@@ -2941,7 +2941,7 @@ fn relevance_append_covered_receipt(db: &mut Connection, n: u32) {
     let tx = db.transaction().unwrap();
     let thread = format!("relevance-covered-thread-{n}");
     let message = format!("relevance-covered-message-{n}");
-    tx.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','covered','covered',0,0,2)",[&thread]).unwrap();
+    tx.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','covered','covered',0,0,2,0)",[&thread]).unwrap();
     let seq = schema::next_decision_seq(&tx, "34750f98bd59fcfc946da45aaabe933b").unwrap();
     tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,actor_seat_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,1,'ordinary','covered',0,?3,'o')",params![message,thread,seq as i64]).unwrap();
     tx.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,?2,'s','pending',100,0,100)",params![message,thread]).unwrap();
@@ -3666,7 +3666,7 @@ fn presentation_relevance_unavailable_exact_episode_and_late_publication_are_swe
         let tx = db.transaction().unwrap();
         let thread = format!("relevance-episode-{n}");
         let prep = format!("pEpi{n:08}");
-        tx.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','episode','episode',0,0)",[&thread]).unwrap();
+        tx.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','episode','episode',0,0,0)",[&thread]).unwrap();
         tx.execute("INSERT INTO memberships(thread_id,seat_id,state) VALUES (?1,'s','joined'),(?1,'o','joined')",[&thread]).unwrap();
         tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,'s',1,1),(?1,'o',1,1)",[&thread]).unwrap();
         tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','seat:o',?2,zeroblob(32),?2,0,0,0,0,0,1000000,0,'building')",params![prep,thread]).unwrap();

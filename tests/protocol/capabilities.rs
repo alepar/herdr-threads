@@ -1785,7 +1785,7 @@ fn directory_search_generated_continuation_preserves_literal_scope_order_and_out
     };
     let iso = TestIsolation::new("directory-search-continuation");
     let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host();
-    context.open_writer().unwrap().execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t1','34750f98bd59fcfc946da45aaabe933b','雪''s %_.* topic','goal',0,0),('t2','34750f98bd59fcfc946da45aaabe933b','雪''s %_.* topic','goal',0,0);").unwrap();
+    context.open_writer().unwrap().execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES('t1','34750f98bd59fcfc946da45aaabe933b','雪''s %_.* topic','goal',0,0,0),('t2','34750f98bd59fcfc946da45aaabe933b','雪''s %_.* topic','goal',0,0,0);").unwrap();
     let store = SqliteStore::new(
         context,
         "34750f98bd59fcfc946da45aaabe933b",
@@ -1852,7 +1852,7 @@ fn probe_message_delivery_modes() {
     };
     let iso = TestIsolation::new("cap-message-delivery-modes");
     let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host();
-    context.open_writer().unwrap().execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('m','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary',1,'ordinary body',0,'lazy');").unwrap();
+    context.open_writer().unwrap().execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('m','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary',1,'ordinary body',0,'lazy');").unwrap();
     let store = SqliteStore::new(
         context,
         "34750f98bd59fcfc946da45aaabe933b",

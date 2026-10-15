@@ -369,7 +369,7 @@ impl Drop for Fixture {
 fn elected_operator_rebind_and_fresh_preserve_history_and_replay_without_host() {
     let f = Fixture::new();
     let history = f.db();
-    history.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('history',?1,'original topic','original goal',0,0,2)",[f.descriptor.node_uuid.to_string()]).unwrap();
+    history.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('history',?1,'original topic','original goal',0,0,2,0)",[f.descriptor.node_uuid.to_string()]).unwrap();
     history.execute_batch("INSERT INTO memberships(thread_id,seat_id,state,episode) VALUES ('history','saved','invited',1);").unwrap();
     history.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('old-message',?1,'history',1,'ordinary','unresolved history',1,0)",[f.descriptor.node_uuid.to_string()]).unwrap();
     history.execute_batch("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('old-message','history','saved','pending',90000);").unwrap();
@@ -451,7 +451,7 @@ fn elected_operator_rebind_and_fresh_preserve_history_and_replay_without_host() 
 fn elected_operator_orphan_invites_atomically_without_join_or_target_capture() {
     let f = Fixture::new();
     let db = f.db();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('thread',?1,'topic','goal',0,0)",[f.descriptor.node_uuid.to_string()]).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('thread',?1,'topic','goal',0,0,0)",[f.descriptor.node_uuid.to_string()]).unwrap();
     let invite = OperatorOrphanInvite {
         thread: ThreadId::new("thread"),
         seat: SeatId::new("saved"),

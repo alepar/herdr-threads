@@ -60,7 +60,7 @@ impl Fixture {
         let db = context.open_writer().unwrap();
         db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=10000;
             INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-s',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
-            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,41);").unwrap();
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,41,0);").unwrap();
         // Historical ordinary-content rows with canonical mixed delivery modes.
         // Read/Search do not require a membership/read cursor; none is manufactured.
         for n in 1..=40_i64 {

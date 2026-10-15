@@ -858,10 +858,10 @@ pub(super) fn insert_publication(
             relays_user,
             user_intent,
         } => {
-            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user,user_intent,delivery_mode,sender_binding_id) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![id.as_str(),instance,thread.as_str(),base,seat.as_str(),observation,body,utc,decision_seq as i64,author_role,relays_user as i64,user_intent.map(crate::protocol::summary::UserIntent::as_str),mode,binding.as_str()]).map_err(store_error)?;
+            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user,user_intent,delivery_mode,sender_binding_id,origin_node) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?2)",params![id.as_str(),instance,thread.as_str(),base,seat.as_str(),observation,body,utc,decision_seq as i64,author_role,relays_user as i64,user_intent.map(crate::protocol::summary::UserIntent::as_str),mode,binding.as_str()]).map_err(store_error)?;
         }
         PublicationAuthor::Programmatic(author) => {
-            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_label,body,decision_at,decision_seq,author_kind,author_service_id,author_role) VALUES (?1,?2,?3,?4,'ordinary','herdr-graph',?5,?6,?7,'programmatic',?8,'service')",params![id.as_str(),instance,thread.as_str(),base,body,utc,decision_seq as i64,author.as_str()]).map_err(store_error)?;
+            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_label,body,decision_at,decision_seq,author_kind,author_service_id,author_role,origin_node) VALUES (?1,?2,?3,?4,'ordinary','herdr-graph',?5,?6,?7,'programmatic',?8,'service',?2)",params![id.as_str(),instance,thread.as_str(),base,body,utc,decision_seq as i64,author.as_str()]).map_err(store_error)?;
         }
     }
     tx.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![prep_id,id.as_str(),instance,thread.as_str(),decision_seq as i64,utc,base,high_water,recipient_count,warning_count]).map_err(store_error)?;

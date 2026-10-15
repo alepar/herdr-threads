@@ -184,7 +184,7 @@ impl Fixture {
         db
     }
     fn thread(&self, id: &str, name: &str, at: i64, archived: bool) {
-        self.db().execute("INSERT INTO threads(id,instance_id,name,topic,goal,created_at,updated_at,archived) VALUES (?1,?2,?3,'private picker fixture','test',?4,?4,?5)", params![id,self.instance,name,at,archived]).unwrap();
+        self.db().execute("INSERT INTO threads(id,instance_id,name,topic,goal,created_at,updated_at,archived,journaled) VALUES (?1,?2,?3,'private picker fixture','test',?4,?4,?5,0)", params![id,self.instance,name,at,archived]).unwrap();
     }
     /// `count` active threads `{prefix}{n:03}` named `channel {n:03}`, created
     /// at `n`, committed in one transaction (one connection, one commit).
@@ -192,7 +192,7 @@ impl Fixture {
         let mut db = self.db();
         let tx = db.transaction().unwrap();
         for n in 0..count {
-            tx.execute("INSERT INTO threads(id,instance_id,name,topic,goal,created_at,updated_at,archived) VALUES (?1,?2,?3,'private picker fixture','test',?4,?4,0)", params![format!("{prefix}{n:03}"),self.instance,format!("channel {n:03}"),n]).unwrap();
+            tx.execute("INSERT INTO threads(id,instance_id,name,topic,goal,created_at,updated_at,archived,journaled) VALUES (?1,?2,?3,'private picker fixture','test',?4,?4,0,0)", params![format!("{prefix}{n:03}"),self.instance,format!("channel {n:03}"),n]).unwrap();
         }
         tx.commit().unwrap();
     }
@@ -218,7 +218,7 @@ impl Fixture {
             [thread],
         )
         .unwrap();
-        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('vPty',?1,'sPty',1,'pending',1,0,60000,9223372036854770000)", [thread]).unwrap();
+        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('vPty',?1,'sPty',1,'pending',1,0,60000,9223372036854770000,(SELECT id FROM local_node))", [thread]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,?2,'sPty','pending',60000,0,9223372036854770000)", params![format!("m{thread}1"),thread]).unwrap();
     }
     fn obligation_states(&self) -> (String, String, String) {

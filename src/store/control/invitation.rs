@@ -195,7 +195,7 @@ pub fn accept(
                         |r| r.get(0),
                     )
                     .map_err(store_error)?;
-                tx.execute("UPDATE memberships SET state='joined',voluntary_state='joined',episode=?1,joined_at=?2,left_at=NULL WHERE thread_id=?3 AND seat_id=?4",
+                tx.execute("UPDATE memberships SET state='joined',voluntary_state='joined',episode=?1,joined_at=?2,left_at=NULL,home_transition=home_transition+1,last_joined_n=home_transition+1 WHERE thread_id=?3 AND seat_id=?4",
                     params![episode,decision.utc.0,thread.as_str(),caller.as_str()]).map_err(store_error)?;
                 tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,?3,?4)",
                     params![thread.as_str(),caller.as_str(),episode,event_seq as i64]).map_err(store_error)?;
@@ -509,7 +509,7 @@ pub fn accept_required(
                         |r| r.get(0),
                     )
                     .map_err(store_error)?;
-                tx.execute("UPDATE memberships SET state='joined',voluntary_state='joined',episode=?1,joined_at=?2,left_at=NULL WHERE thread_id=?3 AND seat_id=?4",
+                tx.execute("UPDATE memberships SET state='joined',voluntary_state='joined',episode=?1,joined_at=?2,left_at=NULL,home_transition=home_transition+1,last_joined_n=home_transition+1 WHERE thread_id=?3 AND seat_id=?4",
                     params![episode,decision.utc.0,command.thread.as_str(),caller.as_str()]).map_err(store_error)?;
                 tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,?3,?4)",
                     params![command.thread.as_str(),caller.as_str(),episode,seq as i64]).map_err(store_error)?;
@@ -704,7 +704,7 @@ pub fn invite(
                         "invitation decision sequence exhausted",
                     )
                 })?;
-            tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8,?9,?10)",
+            tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id,origin_node,invitee_n) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8,?9,?10,(SELECT id FROM local_node),COALESCE((SELECT home_transition FROM memberships WHERE thread_id=?2 AND seat_id=?3),0))",
                 params![invitation.as_str(), command.thread.as_str(), command.seat.as_str(), episode, decision.utc.0, created_decision_seq, duration, deadline.0,confirmation,caller.as_str()]).map_err(store_error)?;
             let mut payload = serde_json::json!({"action":"invite", "actor_seat":caller.as_str(), "seat":command.seat.as_str(),
                 "invitation":invitation.as_str()});
@@ -856,7 +856,7 @@ pub fn operator_orphan_invite(
                         "invitation decision sequence exhausted",
                     )
                 })?;
-            tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8)",
+            tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,origin_node,invitee_n) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8,(SELECT id FROM local_node),COALESCE((SELECT home_transition FROM memberships WHERE thread_id=?2 AND seat_id=?3),0))",
                 params![invitation.as_str(),command.thread.as_str(),command.seat.as_str(),episode,decision.utc.0,created_decision_seq,duration,deadline.0]).map_err(store_error)?;
             let payload = serde_json::json!({"action":"operator_orphan_invite", "actor":actor.audit_label(),
                 "seat":command.seat.as_str(),"invitation":invitation.as_str(),"deadline_at":deadline.0}).to_string();

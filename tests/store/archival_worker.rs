@@ -573,7 +573,7 @@ fn archival_worker_negative_recovery_cycles_do_not_rediscover_retained_history()
         db.execute_batch("BEGIN").unwrap();
         for n in 0..size {
             db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,home_node,is_local,host_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','retired','native',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[format!("history{n:08}")]).unwrap();
-            db.execute("INSERT INTO threads(id,instance_id,topic,goal,archived,created_at,updated_at) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','history','done',1,0,0)",[format!("history{n:08}")]).unwrap();
+            db.execute("INSERT INTO threads(id,instance_id,topic,goal,archived,created_at,updated_at,journaled) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','history','done',1,0,0,0)",[format!("history{n:08}")]).unwrap();
         }
         db.execute_batch("COMMIT").unwrap();
         let rt = Runtime {
@@ -651,7 +651,7 @@ fn archival_worker_busy_member_does_not_reset_unrelated_all_left_grace() {
     let fixture = super::handoff_fences::store_fixture_with_clock(clock.clone());
     let (mut worker, host, db, _directory) = worker_fixture_from_store(fixture);
     host.negative_failure.store(3, Ordering::SeqCst);
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('quiet','34750f98bd59fcfc946da45aaabe933b','quiet','done',0,0)", []).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES('quiet','34750f98bd59fcfc946da45aaabe933b','quiet','done',0,0,0)", []).unwrap();
     for minute in 0..=60 {
         let now = 100 + minute * 60_000;
         clock.0.store(now, Ordering::SeqCst);
