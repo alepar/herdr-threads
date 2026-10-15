@@ -134,6 +134,10 @@ const INSERTS: &[(&str, &str)] = &[
         "INSERT INTO sync_logs(log_ix,node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) VALUES (1,printf('%032d',1),1,0,zeroblob(32),zeroblob(32),1,zeroblob(32),0); INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,ingested_at,apply_state) VALUES (1,1,zeroblob(32),zeroblob(32),0,'k',1,x'',x'',zeroblob(64),0,'pending')",
     ),
     (
+        "sync_logs",
+        "INSERT INTO sync_logs(log_ix,node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) VALUES (1,printf('%032d',1),1,0,zeroblob(32),zeroblob(32),1,zeroblob(32),0)",
+    ),
+    (
         "bootstrap_handoffs",
         "INSERT INTO bootstrap_handoffs(instance_id,state_dir,host_endpoint,actor_scope,compound,digest,identity_json,create_key,state,current_attempt,created_at) VALUES ('34750f98bd59fcfc946da45aaabe933b','/state','/host','seat:s1','c',printf('%064d',0),x'7b7d','create','prepared',1,0)",
     ),
@@ -410,20 +414,23 @@ fn each_table_kicks_exactly_its_lanes() {
 }
 
 /// Journal rows are append-only (the guard triggers refuse UPDATE and DELETE),
-/// so only the insert is exercised: it kicks Apply from a request thread and
-/// kicks nothing from the Apply lane itself.
+/// so only the insert is exercised: it kicks Apply and Sync from a request
+/// thread and only Sync from the Apply lane itself.
 fn journal_kicks_apply_except_from_apply(insert: &str) {
-    assert_eq!(lanes_for_table("journal"), set(&[Lane::Apply]));
+    assert_eq!(lanes_for_table("journal"), set(&[Lane::Apply, Lane::Sync]));
     let fixture = Fixture::new("kicks-journal");
     fixture.run(&format!("BEGIN; {insert}; COMMIT;"));
-    assert_eq!(fixture.flushed(), vec![(set(&[Lane::Apply]), None)]);
+    assert_eq!(
+        fixture.flushed(),
+        vec![(set(&[Lane::Apply, Lane::Sync]), None)]
+    );
     let fixture = Fixture::new("kicks-journal-apply");
     let _apply = enter_lane(Lane::Apply);
     fixture.run(&format!("BEGIN; {insert}; COMMIT;"));
     assert_eq!(
         fixture.flushed(),
-        vec![],
-        "an Apply commit never kicks Apply"
+        vec![(set(&[Lane::Sync]), Some(Lane::Apply))],
+        "an Apply commit never kicks Apply but keeps Sync"
     );
     assert_eq!(fixture.count("apply"), 1);
 }
@@ -580,6 +587,7 @@ fn per_origin_counter_counts_commits() {
         "admission-observer",
         "archival",
         "apply",
+        "sync",
         "request",
     ];
     assert!(keys.iter().all(|key| fixture.count(key) == 0));

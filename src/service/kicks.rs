@@ -11,6 +11,9 @@ use std::sync::{Arc, Mutex};
 /// Does not own lane workers, or table classification beyond the table map
 /// ([`lanes_for_table`]). A new lane is a variant here plus its table mapping.
 /// Role: the one vocabulary commit kicks, Pacers and health share.
+///
+/// `Sync` is the peer-sync lane: it computes and pushes Have deltas to
+/// subscribers on journal and sync-log commits, and reloads dial targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Lane {
     Deadlines,
@@ -21,10 +24,12 @@ pub enum Lane {
     Archival,
     /// Materializes journal entries into canonical state (ht-5fr.3).
     Apply,
+    /// Peer sync: Have deltas, push to subscribers, dial-target reload (ht-5fr.5).
+    Sync,
 }
 
 impl Lane {
-    pub const COUNT: usize = 7;
+    pub const COUNT: usize = 8;
     pub const INTERNAL_ALL: [Lane; Self::COUNT] = [
         Lane::Deadlines,
         Lane::Wakes,
@@ -33,6 +38,7 @@ impl Lane {
         Lane::AdmissionObserver,
         Lane::Archival,
         Lane::Apply,
+        Lane::Sync,
     ];
     pub const ALL: [Lane; Self::COUNT] = {
         let mut lanes = [Lane::Deadlines; Self::COUNT];
@@ -43,12 +49,13 @@ impl Lane {
         }
         lanes
     };
-    /// The lanes that run a worker today, in `ALL` order. `Apply` is the last
-    /// lane and joins when its worker registers a Pacer (ht-5fr.3.15).
-    pub const WORKERS: [Lane; Self::COUNT - 1] = {
-        let mut lanes = [Lane::Deadlines; Self::COUNT - 1];
+    /// The lanes that run a worker today, in `ALL` order. `Apply` and `Sync`
+    /// are the last lanes and join when their workers register a Pacer
+    /// (ht-5fr.3.15, ht-5fr.5).
+    pub const WORKERS: [Lane; Self::COUNT - 2] = {
+        let mut lanes = [Lane::Deadlines; Self::COUNT - 2];
         let mut i = 0;
-        while i < Self::COUNT - 1 {
+        while i < Self::COUNT - 2 {
             lanes[i] = Self::INTERNAL_ALL[i];
             i += 1;
         }
@@ -64,6 +71,7 @@ impl Lane {
             Lane::AdmissionObserver => "admission-observer",
             Lane::Archival => "archival",
             Lane::Apply => "apply",
+            Lane::Sync => "sync",
         }
     }
 
@@ -109,6 +117,9 @@ impl LaneSet {
 
 /// Tables whose commits wake the apply lane: journal rows await materialization.
 const APPLY_TABLES: &[&str] = &["journal"];
+/// Tables whose commits wake the sync lane: new journal rows and sync-log
+/// changes alter the Have deltas pushed to peers.
+const SYNC_TABLES: &[&str] = &["journal", "sync_logs"];
 const ARCHIVAL_TABLES: &[&str] = &[
     "archival_instances",
     "channel_archival",
@@ -206,10 +217,8 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "herdr_hosts",
     "local_node",
     "node_directory",
-    // Journal core (ht-5fr.3.4): `journal` maps to Lane::Apply (ht-5fr.3.12);
-    // ht-5fr.5 re-maps `sync_logs`/`journal` for Lane::Sync.
+    // Journal core (ht-5fr.3.4): `journal` maps to Apply and Sync, `sync_logs` to Sync.
     "journal_forked",
-    "sync_logs",
     "thread_registers",
     // Passive inbox progress never schedules attention or deadlines.
     "lazy_recipients",
@@ -269,6 +278,9 @@ pub fn lanes_for_table(table: &str) -> LaneSet {
     if APPLY_TABLES.contains(&table) {
         set = set.with(Lane::Apply);
     }
+    if SYNC_TABLES.contains(&table) {
+        set = set.with(Lane::Sync);
+    }
     debug_assert!(
         set != LaneSet::EMPTY || KNOWN_UNMAPPED.contains(&table),
         "table {table} is not classified in service::kicks"
@@ -283,6 +295,7 @@ pub fn mapped_tables() -> impl Iterator<Item = &'static str> {
         .chain(DEADLINE_TABLES)
         .chain(ARCHIVAL_TABLES)
         .chain(APPLY_TABLES)
+        .chain(SYNC_TABLES)
         .copied()
 }
 
