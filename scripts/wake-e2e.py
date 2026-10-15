@@ -1208,7 +1208,7 @@ class Recipient:
         checks["sibling_side_busy"] = self.status() not in IDLE
         ref["sibling_message"] = mid = self.send("p0", tag + " sibling", direct=False)
         end = time.time() + 120
-        while not SIBLING_SIDE_DONE.search(self.screen()) and time.time() < end:
+        while not self.shows(SIBLING_SIDE_DONE) and time.time() < end:
             time.sleep(1)
         self.wait_idle()
         side = sorted(self.binding_ids() - before)
