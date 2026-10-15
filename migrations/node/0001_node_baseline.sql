@@ -42,7 +42,9 @@ CREATE TABLE local_node (
     tag_k INTEGER NOT NULL DEFAULT 0 CHECK(tag_k >= 0),
     decision_seq INTEGER NOT NULL DEFAULT 0 CHECK(decision_seq >= 0),
     send_eligibility_revision INTEGER NOT NULL DEFAULT 0 CHECK(send_eligibility_revision >= 0),
-    duration_config_revision INTEGER NOT NULL DEFAULT 0 CHECK(duration_config_revision >= 0)
+    duration_config_revision INTEGER NOT NULL DEFAULT 0 CHECK(duration_config_revision >= 0),
+    -- The log this node authors into; NULL until journal::open bootstraps (ht-5fr.3.4).
+    active_log_ix INTEGER REFERENCES sync_logs(log_ix)
 ) STRICT;
 
 CREATE TABLE herdr_hosts (
@@ -77,6 +79,121 @@ CREATE TABLE node_directory (
 ) STRICT;
 
 CREATE INDEX node_directory_tag ON node_directory(tag);
+
+-- Journal core (ht-5fr.3.4, journal-core design section 4). Code owners: the
+-- Journal (ht-5fr.3.6) and ThreadRegisters (ht-5fr.3.11).
+CREATE TABLE sync_logs (
+    log_ix INTEGER PRIMARY KEY,
+    node_uuid TEXT NOT NULL CHECK(length(node_uuid) = 32 AND node_uuid NOT GLOB '*[^0-9a-f]*'),
+    incarnation INTEGER NOT NULL CHECK(incarnation BETWEEN 1 AND 4294967295),
+    is_self INTEGER NOT NULL CHECK(is_self IN (0,1)),
+    pubkey BLOB NOT NULL CHECK(length(pubkey) = 32),
+    genesis_hash BLOB NOT NULL CHECK(length(genesis_hash) = 32),
+    contiguous_counter INTEGER NOT NULL CHECK(contiguous_counter >= 0),
+    head_hash BLOB NOT NULL CHECK(length(head_hash) = 32),
+    applied_through INTEGER NOT NULL DEFAULT 0 CHECK(applied_through BETWEEN 0 AND contiguous_counter),
+    blocked_on TEXT CHECK(blocked_on IS NULL OR length(blocked_on) <= 200),
+    state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','frozen')),
+    frozen_at_counter INTEGER CHECK((state = 'frozen') = (frozen_at_counter IS NOT NULL)),
+    skew_ahead_ms INTEGER NOT NULL DEFAULT 0 CHECK(skew_ahead_ms >= 0),
+    first_seen_at INTEGER NOT NULL,
+    UNIQUE(node_uuid, incarnation)
+) STRICT;
+
+CREATE TABLE journal (
+    ingest_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    log_ix INTEGER NOT NULL REFERENCES sync_logs(log_ix),
+    counter INTEGER NOT NULL CHECK(counter >= 1),
+    prev_hash BLOB NOT NULL CHECK(length(prev_hash) = 32),
+    hash BLOB NOT NULL CHECK(length(hash) = 32),
+    hlc INTEGER NOT NULL CHECK(hlc >= 0),
+    kind TEXT NOT NULL CHECK(length(kind) BETWEEN 1 AND 64),
+    kind_version INTEGER NOT NULL CHECK(kind_version BETWEEN 1 AND 65535),
+    deps BLOB NOT NULL,
+    creates TEXT CHECK(creates IS NULL OR length(creates) BETWEEN 1 AND 160),
+    needs TEXT NOT NULL DEFAULT '',
+    payload BLOB NOT NULL CHECK(length(payload) <= 524288),
+    signature BLOB NOT NULL CHECK(length(signature) = 64),
+    ingested_at INTEGER NOT NULL,
+    apply_state TEXT NOT NULL CHECK(apply_state IN ('applied','pending','parked_unknown','parked_dep','failed')),
+    applied_seq INTEGER CHECK((apply_state = 'applied') = (applied_seq IS NOT NULL)),
+    parked_on TEXT CHECK((apply_state = 'parked_dep') = (parked_on IS NOT NULL)),
+    apply_error TEXT CHECK(apply_error IS NULL OR length(CAST(apply_error AS BLOB)) <= 512),
+    UNIQUE(log_ix, counter)
+) STRICT;
+
+CREATE UNIQUE INDEX journal_applied_seq ON journal(applied_seq) WHERE applied_seq IS NOT NULL;
+CREATE INDEX journal_unapplied ON journal(apply_state, ingest_seq) WHERE apply_state <> 'applied';
+CREATE INDEX journal_creates ON journal(creates) WHERE creates IS NOT NULL;
+CREATE INDEX journal_parked_on ON journal(parked_on) WHERE apply_state = 'parked_dep';
+
+CREATE TABLE journal_forked (
+    forked_ix INTEGER PRIMARY KEY AUTOINCREMENT,
+    log_ix INTEGER NOT NULL REFERENCES sync_logs(log_ix),
+    counter INTEGER NOT NULL CHECK(counter >= 1),
+    prev_hash BLOB NOT NULL CHECK(length(prev_hash) = 32),
+    hash BLOB NOT NULL CHECK(length(hash) = 32),
+    hlc INTEGER NOT NULL CHECK(hlc >= 0),
+    kind TEXT NOT NULL CHECK(length(kind) BETWEEN 1 AND 64),
+    kind_version INTEGER NOT NULL CHECK(kind_version BETWEEN 1 AND 65535),
+    deps BLOB NOT NULL,
+    creates TEXT CHECK(creates IS NULL OR length(creates) BETWEEN 1 AND 160),
+    needs TEXT NOT NULL DEFAULT '',
+    payload BLOB NOT NULL CHECK(length(payload) <= 524288),
+    signature BLOB NOT NULL CHECK(length(signature) = 64),
+    source_node TEXT CHECK(source_node IS NULL OR length(source_node) = 32),
+    received_at INTEGER NOT NULL,
+    UNIQUE(log_ix, counter, hash)
+) STRICT;
+
+CREATE TABLE thread_registers (
+    thread_id TEXT NOT NULL,
+    field TEXT NOT NULL CHECK(field IN ('topic','name','archived')),
+    value TEXT,
+    hlc INTEGER NOT NULL CHECK(hlc >= 0),
+    node_uuid TEXT NOT NULL CHECK(length(node_uuid) = 32 AND node_uuid NOT GLOB '*[^0-9a-f]*'),
+    src_ingest_seq INTEGER NOT NULL REFERENCES journal(ingest_seq),
+    PRIMARY KEY(thread_id, field)
+) STRICT, WITHOUT ROWID;
+
+CREATE TRIGGER journal_envelope_immutable BEFORE UPDATE OF log_ix, counter, prev_hash, hash, hlc, kind, kind_version, deps, creates, needs, payload, signature, ingested_at ON journal
+BEGIN SELECT RAISE(ABORT, 'journal_envelope_immutable'); END;
+
+CREATE TRIGGER journal_append_only BEFORE DELETE ON journal
+BEGIN SELECT RAISE(ABORT, 'journal_append_only'); END;
+
+CREATE TRIGGER journal_applied_terminal BEFORE UPDATE OF apply_state, applied_seq ON journal
+WHEN OLD.apply_state = 'applied'
+BEGIN SELECT RAISE(ABORT, 'journal_applied_terminal'); END;
+
+CREATE TRIGGER journal_forked_immutable BEFORE UPDATE ON journal_forked
+BEGIN SELECT RAISE(ABORT, 'journal_forked_immutable'); END;
+
+CREATE TRIGGER journal_forked_append_only BEFORE DELETE ON journal_forked
+BEGIN SELECT RAISE(ABORT, 'journal_forked_append_only'); END;
+
+CREATE TRIGGER sync_logs_identity_immutable BEFORE UPDATE OF node_uuid, incarnation, is_self, pubkey, genesis_hash ON sync_logs
+BEGIN SELECT RAISE(ABORT, 'sync_logs_identity_immutable'); END;
+
+CREATE TRIGGER sync_logs_append_only BEFORE DELETE ON sync_logs
+BEGIN SELECT RAISE(ABORT, 'sync_logs_append_only'); END;
+
+CREATE TRIGGER sync_logs_monotone BEFORE UPDATE ON sync_logs
+WHEN NEW.contiguous_counter < OLD.contiguous_counter
+  OR NEW.applied_through < OLD.applied_through
+  OR (OLD.state = 'frozen' AND NEW.state <> 'frozen')
+BEGIN SELECT RAISE(ABORT, 'sync_logs_monotone'); END;
+
+CREATE TRIGGER sync_logs_self_flag BEFORE INSERT ON sync_logs
+WHEN NEW.is_self <> (NEW.node_uuid = (SELECT id FROM local_node))
+BEGIN SELECT RAISE(ABORT, 'sync_logs_self_flag'); END;
+
+CREATE TRIGGER thread_registers_lww BEFORE UPDATE ON thread_registers
+WHEN (NEW.hlc, NEW.node_uuid) <= (OLD.hlc, OLD.node_uuid)
+BEGIN SELECT RAISE(ABORT, 'thread_registers_lww'); END;
+
+CREATE TRIGGER thread_registers_append_only BEFORE DELETE ON thread_registers
+BEGIN SELECT RAISE(ABORT, 'thread_registers_append_only'); END;
 
 CREATE TABLE snapshot_generations (
     id TEXT PRIMARY KEY,
